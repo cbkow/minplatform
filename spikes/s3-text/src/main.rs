@@ -1,7 +1,10 @@
-//! S3 text — scaffold. A parley `PlainEditor` drawn by vello in a winit window: typing, backspace/delete,
-//! arrows, shift-selection, click-to-place, IME preedit + commit (the macOS marked-text path). AccessKit is
-//! the next step (docs/spikes/S3-text.md). This binary dies with the spike.
-use std::{num::NonZeroUsize, sync::Arc};
+//! S3 text — a parley `PlainEditor` drawn by vello in a winit window: typing, backspace/delete, arrows, shift-selection,
+//! click-to-place, IME preedit + commit (the macOS marked-text path), and an ACCESSKIT tree (step 1: a window → multiline
+//! text input → one text run per laid-out line, with per-character geometry and the live selection; VoiceOver / the AX API
+//! read it). `--seconds N` exits; `--select a-b` sets a byte selection at start (for the AX self-check). docs/spikes/S3-text.md.
+mod ax;
+use std::{num::NonZeroUsize, sync::Arc, time::Instant};
+use accesskit_winit::{Adapter, Event as AkEvent, WindowEvent as AkWindowEvent};
 use parley::{FontContext, LayoutContext, PlainEditor, PositionedLayoutItem, StyleProperty};
 use vello::{kurbo::{Affine, Rect}, peniko::{Brush, Color, Fill}, util::{RenderContext, RenderSurface}, AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
 use winit::{application::ApplicationHandler, event::{ElementState, Ime, MouseButton, WindowEvent}, event_loop::{ActiveEventLoop, EventLoop}, keyboard::{Key, NamedKey}, window::{Window, WindowId}};
@@ -13,6 +16,7 @@ struct Ctx {
     surface: RenderSurface<'static>,
     renderer: Renderer,
     scene: Scene,
+    adapter: Adapter,
 }
 
 struct App {
@@ -24,11 +28,16 @@ struct App {
     shift: bool,
     cursor: (f64, f64),
     frames: u32,
+    proxy: Option<winit::event_loop::EventLoopProxy<AkEvent>>,
+    seconds: f32, t0: Instant, select: Option<(usize, usize)>, ax_updates: u32, ax_update_us: Vec<f32>,
 }
 
 impl App {
     fn init(&mut self, el: &ActiveEventLoop) {
-        let window = Arc::new(el.create_window(Window::default_attributes().with_title("S3 text — parley + vello").with_inner_size(winit::dpi::LogicalSize::new(900.0, 600.0))).unwrap());
+        // the AccessKit adapter must exist before the window is first shown
+        let window = Arc::new(el.create_window(Window::default_attributes().with_title("S3 text — parley + vello").with_inner_size(winit::dpi::LogicalSize::new(900.0, 600.0)).with_visible(false)).unwrap());
+        let adapter = Adapter::with_event_loop_proxy(el, &window, self.proxy.take().expect("proxy"));
+        window.set_visible(true);
         window.set_ime_allowed(true);
         let size = window.inner_size();
         let surface = pollster::block_on(self.rc.create_surface(window.clone(), size.width.max(1), size.height.max(1), wgpu::PresentMode::AutoVsync)).expect("surface");
@@ -37,7 +46,20 @@ impl App {
         let renderer = Renderer::new(&dev.device, RendererOptions { use_cpu: false, antialiasing_support: AaSupport::area_only(), num_init_threads: NonZeroUsize::new(1), pipeline_cache: None }).expect("renderer");
         self.editor.set_scale(window.scale_factor() as f32);
         self.editor.set_width(Some(size.width as f32 - 2.0 * 32.0 * window.scale_factor() as f32));
-        self.ctx = Some(Ctx { window, surface, renderer, scene: Scene::new() });
+        if let Some((a, b)) = self.select { let mut d = self.editor.driver(&mut self.font_cx, &mut self.layout_cx); d.move_to_byte(a); d.extend_selection_to_byte(b); }
+        self.ctx = Some(Ctx { window, surface, renderer, scene: Scene::new(), adapter });
+        self.push_ax();
+    }
+    /// Rebuild the whole AccessKit tree from the editor (the proxy path needs a full tree per update) and push it if a client listens.
+    fn push_ax(&mut self) {
+        let Some(c) = self.ctx.as_mut() else { return };
+        let t = Instant::now();
+        let scale = c.window.scale_factor();
+        let text = self.editor.raw_text().to_string(); let sel = self.editor.raw_selection().clone(); let size = c.window.inner_size();
+        let layout = self.editor.layout(&mut self.font_cx, &mut self.layout_cx);
+        let update = ax::tree(layout, &text, &sel, 32.0, 32.0, scale, size);
+        c.adapter.update_if_active(|| update);
+        self.ax_updates += 1; self.ax_update_us.push(t.elapsed().as_secs_f32() * 1e6);
     }
     fn draw(&mut self) {
         let Some(c) = self.ctx.as_mut() else { return };
@@ -77,9 +99,25 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AkEvent> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) { if self.ctx.is_none() { self.init(el); } }
+    fn user_event(&mut self, _el: &ActiveEventLoop, event: AkEvent) {
+        match event.window_event {
+            AkWindowEvent::InitialTreeRequested => { println!("accesskit: initial tree requested"); self.push_ax(); }
+            AkWindowEvent::ActionRequested(req) => {
+                println!("accesskit: action {:?} on {:?}", req.action, req.target_node);
+                if let Some(accesskit::ActionData::SetTextSelection(sel)) = req.data {
+                    println!("accesskit: SetTextSelection anchor {:?}/{} focus {:?}/{}", sel.anchor.node, sel.anchor.character_index, sel.focus.node, sel.focus.character_index);
+                    let text = self.editor.raw_text().to_string();
+                    let layout = self.editor.layout(&mut self.font_cx, &mut self.layout_cx);
+                    if let Some((a, f)) = ax::selection_to_bytes(layout, &text, &sel) { let mut d = self.editor.driver(&mut self.font_cx, &mut self.layout_cx); d.move_to_byte(a); d.extend_selection_to_byte(f); self.push_ax(); if let Some(c) = &self.ctx { c.window.request_redraw(); } }
+                }
+            }
+            AkWindowEvent::AccessibilityDeactivated => println!("accesskit: deactivated"),
+        }
+    }
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let Some(c) = self.ctx.as_mut() { c.adapter.process_event(&c.window, &event); }
         let mut redraw = true;
         match event {
             WindowEvent::CloseRequested => el.exit(),
@@ -88,7 +126,7 @@ impl ApplicationHandler for App {
                 self.editor.set_width(Some(s.width as f32 - 64.0 * c.window.scale_factor() as f32));
             },
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => self.editor.set_scale(scale_factor as f32),
-            WindowEvent::RedrawRequested => { self.draw(); redraw = false; }
+            WindowEvent::RedrawRequested => { self.draw(); redraw = false; if self.seconds > 0.0 && self.t0.elapsed().as_secs_f32() > self.seconds { el.exit(); return } if let Some(c) = &self.ctx { c.window.request_redraw(); } }
             WindowEvent::ModifiersChanged(m) => self.shift = m.state().shift_key(),
             WindowEvent::CursorMoved { position, .. } => { self.cursor = (position.x, position.y); redraw = false; }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -99,6 +137,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Ime(ime) => {
                 let mut d = self.editor.driver(&mut self.font_cx, &mut self.layout_cx);
+                println!("ime: {ime:?}");
                 match ime {
                     Ime::Preedit(text, cursor) => if text.is_empty() { d.clear_compose() } else { d.set_compose(&text, cursor) },
                     Ime::Commit(text) => d.insert_or_replace_selection(&text),
@@ -124,7 +163,7 @@ impl ApplicationHandler for App {
             }
             _ => redraw = false,
         }
-        if redraw { if let Some(c) = &self.ctx { c.window.request_redraw(); } }
+        if redraw { self.push_ax(); if let Some(c) = &self.ctx { c.window.request_redraw(); } }
     }
 }
 
@@ -134,8 +173,14 @@ fn main() {
     editor.set_text(SAMPLE);
     editor.edit_styles().insert(StyleProperty::Brush(Brush::Solid(Color::from_rgb8(230, 230, 230))));
     editor.edit_styles().insert(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(1.4)));
-    let el = EventLoop::new().unwrap();
-    let mut app = App { rc: RenderContext::new(), ctx: None, font_cx: FontContext::new(), layout_cx: LayoutContext::new(), editor, shift: false, cursor: (0.0, 0.0), frames: 0 };
+    let args: Vec<String> = std::env::args().collect();
+    let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
+    let seconds = arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let select = arg("--select").and_then(|v| v.split_once('-').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())));
+    let el = EventLoop::<AkEvent>::with_user_event().build().unwrap();
+    let proxy = el.create_proxy();
+    let mut app = App { rc: RenderContext::new(), ctx: None, font_cx: FontContext::new(), layout_cx: LayoutContext::new(), editor, shift: false, cursor: (0.0, 0.0), frames: 0, proxy: Some(proxy), seconds, t0: Instant::now(), select, ax_updates: 0, ax_update_us: vec![] };
     el.run_app(&mut app).unwrap();
-    println!("frames: {}  final text: {:?}", app.frames, app.editor.text().to_string());
+    let mut us = app.ax_update_us.clone(); us.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("frames: {}  accesskit tree builds: {} (µs p50 {:.0} max {:.0})  final text: {:?}", app.frames, app.ax_updates, us.get(us.len() / 2).copied().unwrap_or(0.0), us.last().copied().unwrap_or(0.0), app.editor.text().to_string());
 }
