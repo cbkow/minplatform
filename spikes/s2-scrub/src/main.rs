@@ -3,6 +3,7 @@
 //! `--play` and `--cut` print PER-VIDEO-FRAME LATENESS (the number P0 could not take). Verdict: docs/spikes/S2-scrub.md.
 #[path = "../../s1-present/src/decode.rs"] mod decode;
 #[cfg(target_os = "macos")] #[path = "../../s1-present/src/vt.rs"] mod vt;
+#[cfg(windows)] #[path = "../../s1-present/src/d3d.rs"] mod vt;
 mod timeline; mod scrub;
 use std::{collections::BTreeMap, sync::Arc, time::{Duration, Instant}};
 use timeline::{Rate, Timeline, Clip};
@@ -52,13 +53,13 @@ impl Drop for Slot { fn drop(&mut self) { self.cmd.send(Cmd::Quit).ok(); } }
 struct Shown { textures: Vec<wgpu::Texture>, _vt: Option<(decode::VtFrame, vt::Imported)>, bind: wgpu::BindGroup, bi: bool }
 struct Gpu { window: Arc<Window>, surface: wgpu::Surface<'static>, device: wgpu::Device, queue: wgpu::Queue, config: wgpu::SurfaceConfiguration,
     layout: wgpu::BindGroupLayout, bi_layout: wgpu::BindGroupLayout, pipeline: wgpu::RenderPipeline, bi_pipeline: wgpu::RenderPipeline, sampler: wgpu::Sampler, ubuf: wgpu::Buffer,
-    #[cfg(target_os = "macos")] vt: Option<vt::VtImport>, shown: Option<Shown>, size: (u32, u32), uniforms_written: bool, imports: u32 }
+    #[cfg(any(target_os = "macos", windows))] vt: Option<vt::VtImport>, shown: Option<Shown>, size: (u32, u32), uniforms_written: bool, imports: u32 }
 
 impl Gpu {
     /// Upload / import a frame and make it the one the next present shows.
     fn show(&mut self, f: &decode::Frame) {
         if let Some(vtf) = f.vt.as_ref() {
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             {
                 let imp = self.vt.as_mut().expect("vt").import(&self.device, vtf.pixel_buffer());
                 if !self.uniforms_written { self.write_uniforms(if imp.ten_bit { 65535.0 / 65472.0 } else { 1.0 }, imp.full_range || f.full_range, 0.0); }
@@ -137,6 +138,17 @@ struct Harness {
 }
 
 impl Harness {
+    /// Open the scrub decoder (scrub / shuttle / seeks) and the two streaming slots (play / seeks / cut). Called once the GPU exists.
+    fn open_decoders(&mut self) {
+        if matches!(self.mode, Mode::Scrub { .. } | Mode::Shuttle | Mode::Seeks(_)) {
+            self.scrub = Some(scrub::ScrubDecoder::open(&self.tl.clips[0].path, self.scrub_hw, 512 << 20).expect("scrub decoder"));
+            println!("scrub decoder: {}", if self.scrub_hw { "hardware (VideoToolbox / D3D12VA)" } else { "software" });
+        }
+        if !matches!(self.mode, Mode::Scrub { .. } | Mode::Shuttle) {
+            // slot A on clip 0; slot B prewarmed on clip 1 (the gapless pair)
+            for (i, c) in self.tl.clips.iter().enumerate().take(2) { self.slots.push(Slot::open(&c.path, i, self.hw, c.src_in, c.src_out)); }
+        }
+    }
     fn now_frame(&self, now: Instant) -> i64 { self.frame0 + ((now - self.t0.unwrap()).as_secs_f64() * self.tl.rate.as_f64()).floor() as i64 }
 
     /// Pull every decoded frame the active (and prewarmed) slots have produced into `ready`, keyed by TIMELINE frame.
@@ -216,8 +228,12 @@ impl App {
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         #[cfg(target_os = "macos")]
         let vt = if self.h.hw || self.h.scrub_hw { vt::VtImport::new(&device) } else { None };
+        #[cfg(windows)]
+        let vt = if self.h.hw || self.h.scrub_hw { vt::VtImport::new(&device, &queue) } else { None };
+        // the decoders open HERE, after the GPU: on Windows the D3D12VA device context must be wgpu's own ID3D12Device
+        self.h.open_decoders();
         let vsize = { let d = decode::Decoder::open(&self.h.tl.clips[0].path, 0, false).expect("probe"); (d.width, d.height) };
-        self.gpu = Some(Gpu { window, surface, device, queue, config, layout, bi_layout, pipeline, bi_pipeline, sampler, ubuf, #[cfg(target_os = "macos")] vt, shown: None, size: vsize, uniforms_written: false, imports: 0 });
+        self.gpu = Some(Gpu { window, surface, device, queue, config, layout, bi_layout, pipeline, bi_pipeline, sampler, ubuf, #[cfg(any(target_os = "macos", windows))] vt, shown: None, size: vsize, uniforms_written: false, imports: 0 });
         self.h.started = Instant::now();
     }
 
@@ -346,16 +362,10 @@ fn main() {
         let clips = c.split(',').map(|part| { let (p, r) = part.split_once('@').unwrap_or((part, "")); let (i, o) = r.split_once('-').map(|(i, o)| (i.parse().unwrap(), o.parse().unwrap())).unwrap_or((0, frames)); let path = if p.contains('/') { p.to_string() } else { format!("{fixtures}/{p}") }; Clip { path, src_rate: rate, src_in: i, src_out: o, start: 0 } }).collect();
         Timeline::playlist(rate, clips)
     } else { Timeline::playlist(rate, vec![Clip { path: file.clone(), src_rate: rate, src_in: 0, src_out: frames, start: 0 }]) };
-    let mut slots = vec![];
     let scrub_hw = has("--scrub-hw");   // default SOFTWARE for the scrub decoder — QCView's choice on Apple (VideoToolbox pays a flush/re-prime per seek)
-    let scrub = match mode { Mode::Scrub { .. } | Mode::Shuttle | Mode::Seeks(_) => Some(scrub::ScrubDecoder::open(&tl.clips[0].path, scrub_hw, 512 << 20).expect("scrub decoder")), _ => None };
-    if scrub.is_some() { println!("scrub decoder: {}", if scrub_hw { "VideoToolbox" } else { "software" }); }
-    if !matches!(mode, Mode::Scrub { .. } | Mode::Shuttle) {
-        // slot A on clip 0; slot B prewarmed on clip 1 (the gapless pair)
-        for (i, c) in tl.clips.iter().enumerate().take(2) { slots.push(Slot::open(&c.path, i, hw, c.src_in, c.src_out)); }
-    }
     let seconds = arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    let h = Harness { mode, tl, hw, scrub_hw, slots, active: 0, scrub, ready: BTreeMap::new(), t0: None, frame0: 0, refresh: 16.667, stat: Stat::new(), started: Instant::now(),
+    // the decoders open in App::init, after the GPU exists (Harness::open_decoders)
+    let h = Harness { mode, tl, hw, scrub_hw, slots: vec![], active: 0, scrub: None, ready: BTreeMap::new(), t0: None, frame0: 0, refresh: 16.667, stat: Stat::new(), started: Instant::now(),
         seek_i: 0, seek_next: Instant::now(), seek_outstanding: None, seek_rows: vec![], scrub_reqs: vec![], scrub_lag: vec![], scrub_behind: vec![], scrub_hits: 0, scrub_work: vec![], scrub_shown: 0, scrub_last_req: None,
         shuttle_rate: 2.0, shuttle_t: None, shuttle_frame: 0.0, shuttle_rows: vec![], shuttle_last_rate_change: None, done: false, seconds };
     let el = EventLoop::new().unwrap();
