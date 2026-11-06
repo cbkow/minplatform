@@ -11,8 +11,10 @@ func dump(_ e: AXUIElement, _ depth: Int, _ max: Int) {
     let role = str(e, kAXRoleAttribute); let sub = str(e, kAXSubroleAttribute); let desc = str(e, kAXDescriptionAttribute); let title = str(e, kAXTitleAttribute)
     var value = str(e, kAXValueAttribute); if value.count > 50 { value = String(value.prefix(50)) + "…" }
     let n = kids(e).count
-    print("\(pad)\(role) sub=\(sub) desc=\(desc) title=\(title) value=\(value.replacingOccurrences(of: "\n", with: "⏎")) kids=\(n)")
-    if depth < max { for k in kids(e).prefix(12) { dump(k, depth + 1, max) } }
+    var frame = ""
+    if let pv = attr(e, kAXPositionAttribute), let sv = attr(e, kAXSizeAttribute) { var p = CGPoint.zero; var sz = CGSize.zero; if AXValueGetValue(pv as! AXValue, .cgPoint, &p), AXValueGetValue(sv as! AXValue, .cgSize, &sz) { frame = " pos=\(Int(p.x)),\(Int(p.y)) size=\(Int(sz.width))x\(Int(sz.height))" } }
+    print("\(pad)\(role) sub=\(sub) desc=\(desc) title=\(title) value=\(value.replacingOccurrences(of: "\n", with: "⏎")) kids=\(n)\(frame)")
+    if depth < max { for k in kids(e).prefix(40) { dump(k, depth + 1, max) } }
 }
 let args = CommandLine.arguments
 guard args.count >= 2, let pid = Int32(args[1]) else { print("usage: axdump <pid> [select loc len]"); exit(2) }
@@ -21,7 +23,8 @@ print("trusted: \(AXIsProcessTrusted())")
 let windows = (attr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
 print("windows: \(windows.count)")
 guard let w = windows.first else { exit(1) }
-dump(w, 0, 3)
+let maxDepth = (args.count >= 3 && args[2] == "depth") ? Int(args[3])! : 3
+dump(w, 0, maxDepth)
 // find the text area
 func find(_ e: AXUIElement, _ role: String, _ depth: Int) -> AXUIElement? { if str(e, kAXRoleAttribute) == role { return e }; if depth > 4 { return nil }; for k in kids(e) { if let f = find(k, role, depth + 1) { return f } }; return nil }
 if let ta = find(w, kAXTextAreaRole as String, 0) {

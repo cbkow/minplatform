@@ -9,7 +9,7 @@ files lands in Finder; HiDPI scale is reported and honoured across a monitor cha
 fullscreen round-trips; a native menu bar with working items exists. Plus the S3 carry-over: does 0.31 fix the text-input
 client (it does not — `selectedRange` is still `{NSNotFound, 0}`, the `replacementRange` TODO stands), so the vendored patch
 moves forward with the pin or the port owns the view.
-**Time box:** 1 week from 2026-11-06. **Status: IN PROGRESS 2026-11-06 — windows / fullscreen / menu bar / clipboard / typed receive / single-file + text drag-out (a real file lands in Finder) / self-drop / actions verified by script; multi-file drag-out HANGS in the beta (two fixes tried); Finder → window owed; Windows owed.**
+**Time box:** 1 week from 2026-11-06. **Status: macOS DONE 2026-11-06 — VERDICT: GO on winit 0.31 as the window layer, with two native-layer items (multi-file drag-out until the beta's hang is fixed upstream; the menu bar) and S3's text-input patch carried to 0.31. Windows owed on the box.**
 
 ## Facts from reading winit 0.31.0-beta.4 (before running anything)
 - The API is split into `winit-core` / `winit-appkit` / `winit-win32` (Windows crate not in the local registry yet) with
@@ -52,12 +52,32 @@ the Desktop (a real file must appear), Finder → window.
 | Drop-onto-self | detected: the incoming transfer id equals our outgoing one (per app — a per-window check is the owner's) |
 | Actions at drop | the cell zone narrows to Copy on hover and the drop reports Copy; `proposed_action` arrives on every `DragPosition` |
 | **Drag-out of THREE files** | **HANGS in winit 0.31.0-beta.4**: `start_drag` → `beginDraggingSessionWithItems:` never returns (a nested loop runs until the deadline; no drag image), with injected events AND with the user's mouse ("nothing yet"). Two vendored fixes tried on the extra `NSDraggingItem`s (give each a dragging frame; write each as its own `public.file-url` `NSPasteboardItem` instead of winit's plain `NSString` writer — the latter is right for Finder regardless) — **neither resolved the hang**; the vendored copy was dropped again. Hypothesis left: the first item's custom `PasteboardWriter` mixed with further items. Single-item drags are unaffected. Upstream material; for the port, multi-file drag-out stays a native-layer item (§14.3's `NSDraggingSource` route) until winit has it. |
-| Drag-in from Finder (real `public.file-url` items, multi-select) | owed — by hand or a Finder-row scripted drag |
+| Drag-in from Finder (real items, two files selected) | **works**: `DragEntered` types `public.file-url` + the legacy `CorePasteboardFlavorType 'furl'` + more; the fetch returns the TWO URIs (`file:///Users/…/s5%20in%201.txt`, `…2.txt` — one item per file, §14.2's rule, through `readObjectsForClasses`); dropped on the panel with Copy (scripted: Finder list-view rows located through the AX tree, shift-selected, dragged) |
 | Press-start | the first scaffold started the drag on the press and AppKit's session never engaged; from the move past 6 px (§14.2) it does — the rule holds for winit too |
 **The hand test:** `cargo run --release -p s5-window -- --dual`, then drag the orange box (bottom-right of window A) into window B's green cell, then onto the Desktop (three `s5 drag N.txt` files must appear), then drag any two files from Finder into window A's blue panel. The log prints `s5: …` lines for every step: `drag-out started`, `DRAG ENTERED … types`, zone transitions, `DROPPED … zone … action`, `RECEIVED … N URIs`, `OUTGOING … dropped with action`, `[OUR OWN DRAG — drop-onto-self]` when it lands back on A.
 
+## Verdict (macOS, 2026-11-06) — GO: winit 0.31 is the window layer
+| §14.2 / §21 item | Result |
+|---|---|
+| multi-file drops arrive as one item per file | yes (Finder → window: 2 files → 2 `file:///` URIs, percent-encoded, three slashes) |
+| non-file URLs / text round-trip untouched | yes (`srt://…` inside text through the clipboard and a drag) |
+| refusals visible | by construction: not calling `set_valid_dnd_actions` = the OS shows "no drop" |
+| target recomputed at drop | from the last `DragPosition` (winit's `DragDropped` carries no point — the owner keeps the last position; noted) |
+| drop-onto-self detectable | yes (transfer id equality; per-window is the owner's check) |
+| actions follow modifiers at drop | `proposed_action` on every `DragPosition` and on `DragDropped`; per-zone narrowing works |
+| drag-out of real files lands in Finder | yes for one file (a 19-byte file copied into a Finder window); **three files hang the beta** → native layer |
+| HiDPI | scale reported + honoured; a mixed-scale monitor pair is not available here — `ScaleFactorChanged` across monitors unexercised |
+| two windows on one loop | yes |
+| fullscreen round-trips | yes (API and the native menu item) |
+| native menu bar with working items | yes, objc2 `NSMenu` (winit 0.31 has none of its own) |
+| the S3 text-input client | 0.31 still returns `{NSNotFound,0}` from `selectedRange` and ignores `replacementRange`: the vendored S3 patch moves to the 0.31 line with the pin |
+**What the GO rests on:** winit 0.31's typed data-transfer API (receive, clipboard, single-item drag-out) + its WindowDelegate
+drop target, with a native layer for: multi-file drag-out (`NSDraggingSource` with one `public.file-url` item per file —
+§14.3's own plan), the menu bar, and the text-input fixes. The press threshold rule (never press-start) holds for winit too.
+**Owed:** Windows on the box (the same list; `with_drag_and_drop` opt-out; OLE edges); the multi-file drag-out hang upstream.
+
 ## Remaining plan
 1. ~~Scaffold runs~~; the §14.2 list as a checklist with a result per item (macOS) — the drag items by hand.
-2. The HiDPI + monitor-change + two-window + fullscreen items; the menu bar.
+2. ~~The HiDPI + two-window + fullscreen items; the menu bar~~ DONE (monitor-change unexercised: no mixed-scale pair here).
 3. Windows on the box (the same list; `with_drag_and_drop` opt-out question; OLE edges).
 4. Verdict: winit (+ patches) vs own view/HWND for the port.
