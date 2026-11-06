@@ -1,0 +1,31 @@
+[package]
+name = "s4-ring"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform spike — dies after its verdict (docs/spikes/S4-ring.md)"
+
+[build-dependencies]
+cc = { workspace = true }
+
+[dependencies]
+wgpu = { workspace = true }
+winit = { workspace = true }
+raw-window-handle = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+anyhow = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSResponder"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
