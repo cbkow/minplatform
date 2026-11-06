@@ -959,7 +959,7 @@ surface, not a widget; rational time, `qcv-timeline` + one Sequencer, gapless pl
 passthrough as the display path, baked LUT as fallback; rows #91–94). Scopes + guides → §19 (two
 overlay classes: OUTPUT via a vello texture, UI as nodes; rows #95–100). The QCBRIDGE companions audited → §20
 (three byte-stable contracts to FREEZE; `qcv-ring` = QCView's end in Rust with cross-impl tests; companions
-untouched; rows #101–108). **108 rows, 7 ruled.** THE PATH FORWARD → §21 (2026-11-06): QCView-SHAPED spikes first (S1 present, S2 scrub, S4 ring, S5 window, S3 text in parallel; P0 = the perf baseline), ONE new workspace repo (`minplatform` [name]) with the canon in `docs/`, `min-ui` born inside a QCView-shaped reference app, minNotes the SECOND consumer, gates G1/G2; rows #109–118. **118 rows, 7 ruled; next = rulings on §21 (the first 'go' = repo + canon move + P0 + S1/S3 scaffolds), then #48–108.**
+untouched; rows #101–108). **108 rows, 7 ruled.** THE PATH FORWARD → §21 (2026-11-06): QCView-SHAPED spikes first (S1 present, S2 scrub, S4 ring, S5 window, S3 text in parallel; P0 = the perf baseline), ONE new workspace repo (`minplatform` [name]) with the canon in `docs/`, `min-ui` born inside a QCView-shaped reference app, minNotes the SECOND consumer, gates G1/G2; rows #109–118. **118 rows, 8 ruled. 2026-11-06 the first 'go' was GIVEN and DONE: this repo exists (private), the canon lives here, P0 is measured (`docs/spikes/P0-baseline.md`; Windows owed). Next = the next 'go' (S1 present + S3 text scaffolds) or rulings on #109–118 / #48–108.**
 
 **How to resume:** read §13, then §14 (DnD) + §15 (ufb), both awaiting rulings, then §10–12 for the
 family picture; the Decisions tables are the agenda (108 rows; §15.6 = the latest rulings; §16 widgets/panels; §17 the timeline; §18 OCIO; §19 scopes + guides; §20 the QCBridge contracts; **§21 THE PATH FORWARD — read this before any 'go'**). Memory file: `minnotes-rust-wgpu-port-discussion`.
@@ -2102,7 +2102,7 @@ of actual work; the §16 widget list is reconciled against what the slice needed
 | # | Decision | Proposed default | Status |
 |---|---|---|---|
 | 109 | What the first test is | QCView-SHAPED spikes + a QCView-shaped reference app; NOT porting QCView first; §12 parity bar stands; Qt QCView untouched throughout | open |
-| 110 | Repo | ONE new workspace repo (`minplatform` [name]) holding crates + spikes + apps + the canon in `docs/`; private until G1, public after | open |
+| 110 | Repo | ONE new workspace repo (`minplatform`) holding crates + spikes + apps + the canon in `docs/`; private until G1, public after | **RULED 2026-11-06 (created, private)** |
 | 111 | No `min-ui` repo, no per-app spike repos | `min-ui` grows inside `apps/qcv`; row 28 holds; spikes are per risk under `spikes/` | open |
 | 112 | Spike protocol | question / pass bar with a number / time box / written verdict in `docs/spikes/`; spikes die, never renamed into `crates/` | open |
 | 113 | Phase 1 set + gate | P0 baseline, then S1 present → S2 scrub → S4 ring → S5 window with S3 text in parallel; G1 = go / go-with-LUT / no-go→FFI-only fallback | open |
@@ -2112,6 +2112,9 @@ of actual work; the §16 widget list is reconciled against what the slice needed
 | 117 | Ecosystem pins | the workspace owns every pin in `[workspace.dependencies]`; one lockfile; winit by git rev until 0.31 ships | open |
 | 118 | `min-paths` now | crate #1, consumed by ufb via cxx-qt in parallel with Phase 1 (optional) | open |
 
-**The first "go" this section would ask for** (reversible, no Rust in it except the spike
-scaffolds): create the private repo, move the canon to `docs/`, run P0, scaffold S1 + S3.
-Nothing in this section is started without it.
+**The first "go" — GIVEN 2026-11-06:** "go ahead and create the minplatform repo, move the canon, run P0".
+DONE the same day: private repo `github.com/cbkow/minplatform` (workspace skeleton, `CLAUDE.md`, this canon in
+`docs/`), **P0 MEASURED on macOS → `docs/spikes/P0-baseline.md`** (decoder floor, QCView startup/pacing/seek/
+scrub/memory from Metal System Traces with no instrumentation, minNotes typing/startup; Windows owed; the one
+number P0 could not take = QCView's per-video-frame lateness → S2's harness). S1 + S3 scaffolds NOT started —
+they wait for the next "go". Row 110's name `minplatform` is thereby RULED; rows 109/111–118 still open.

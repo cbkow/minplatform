@@ -17,6 +17,9 @@ vendor/         byte-exact C++ reference copies for cross-implementation tests (
 tools/          CI checks: dependency direction, vendor stamps, per-crate licences
 ```
 
+Privacy: `fixtures/` is gitignored and holds client footage, derived fixtures, traces and logs; nothing
+tracked names a client or a source file. Spikes take media paths from `fixtures/sources.env` or argv.
+
 Rules (§21.2): spikes depend on crates, never the reverse; a spike that passes is never renamed
 into `crates/` — the crate is written fresh with the spike as its first integration test.
 

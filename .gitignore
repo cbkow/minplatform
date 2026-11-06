@@ -3,3 +3,11 @@
 .DS_Store
 *.swp
 /docs/spikes/**/out/
+/fixtures/
+# anything a spike or tool records: traces, logs, screenshots, media
+*.trace
+*.mov
+*.mp4
+*.mxf
+*.exr
+*.png

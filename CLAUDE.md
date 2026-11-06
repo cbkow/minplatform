@@ -9,3 +9,7 @@
 - Spike protocol (§21.3): one question, one pass bar with a number, one time box, one written
   verdict in `docs/spikes/`. No verdict = not done. Spikes die; they are never renamed into crates.
 - `docs/spikes/P0-baseline.md` holds the measured Qt numbers every pass bar is compared against.
+- PRIVACY: `fixtures/` (client footage, derived fixtures, traces, logs, `sources.env`) is gitignored and must
+  stay so; no tracked file names a client, a job, a source filename or a path under `~/Sync`. Spikes and tools
+  take media paths from `fixtures/sources.env` or the command line, never as literals. Traces/logs/screens go
+  under `fixtures/` or `docs/spikes/**/out/` (both ignored).
