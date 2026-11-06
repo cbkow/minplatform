@@ -106,8 +106,9 @@ pub fn resolve_ref(r: &Ref, os: Os, mappings: &[Mapping]) -> Option<String> {
     }
 }
 
-/// The user's home for `~` expansion in a mapping root — only for the CURRENT OS (never another machine's home).
-fn expand_home(prefix: &str) -> String {
+/// `~` / `~/…` expanded against THIS machine's home (`$HOME`, then `%USERPROFILE%`); anything else unchanged. `translate`
+/// applies it to a mapping root only when that root's OS is the current OS (never another machine's home).
+pub fn expand_home(prefix: &str) -> String {
     let rest = if let Some(r) = prefix.strip_prefix("~/") { r } else if prefix == "~" { "" } else { return prefix.to_string() };
     let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else { return prefix.to_string() };
     let home = home.to_string_lossy().trim_end_matches(['/', '\\']).to_string();
