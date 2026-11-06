@@ -1,9 +1,10 @@
-//! S1 present — step 1: a decoded video (software FFmpeg, planes uploaded by the CPU) on an HDR-capable wgpu
-//! surface; or `--ramp` for the EDR ramp. `--edr` / `--pq` pick the surface colour space (wgpu 30 configures
+//! S1 present — a decoded video on an HDR-capable wgpu surface: `--hw` = VideoToolbox + ZERO-COPY (CVPixelBuffer →
+//! Metal texture → wgpu via hal), default = software FFmpeg + CPU plane upload (the control); `--ramp` = the EDR ramp. `--edr` / `--pq` pick the surface colour space (wgpu 30 configures
 //! the CAMetalLayer / DXGI itself). Prints open→first-frame, decode fps, upload ms and present pacing.
 //! Verdict and pass bars: docs/spikes/S1-present.md. This binary dies with the spike.
 mod decode;
-use std::{sync::Arc, time::Instant};
+#[cfg(target_os = "macos")] mod vt;
+use std::{collections::VecDeque, sync::Arc, time::Instant};
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, EventLoop}, window::{Window, WindowId}};
 
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
@@ -15,14 +16,18 @@ struct Video {
     rx: crossbeam_channel::Receiver<decode::Frame>,
     textures: Vec<wgpu::Texture>, bind_group: Option<wgpu::BindGroup>, layout: wgpu::BindGroupLayout, sampler: wgpu::Sampler, ubuf: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline, size: (u32, u32), bps: u32,
+    bi_layout: wgpu::BindGroupLayout, bi_pipeline: wgpu::RenderPipeline, held: VecDeque<Held>, imported: u32,
+    #[cfg(target_os = "macos")] vt: Option<vt::VtImport>,
     t_open: Instant, clock0: Option<(Instant, f64)>, pending: Option<decode::Frame>, first_presented: bool,
-    shown: u32, upload_ms: Vec<f32>, decode_ms: Vec<f32>, presents: Vec<f32>, last_present: Option<Instant>, last_report: Instant, decoded: u32,
+    shown: u32, shown_total: u32, upload_ms: Vec<f32>, decode_ms: Vec<f32>, presents: Vec<f32>, last_present: Option<Instant>, last_report: Instant, decoded: u32,
 }
+
+struct Held { _frame: decode::VtFrame, #[cfg(target_os = "macos")] _imp: vt::Imported, bind_group: wgpu::BindGroup }
 
 struct Gpu { window: Arc<Window>, surface: wgpu::Surface<'static>, device: wgpu::Device, queue: wgpu::Queue, config: wgpu::SurfaceConfiguration, ramp: wgpu::RenderPipeline, video: Option<Video> }
 
 #[derive(Default)]
-struct App { gpu: Option<Gpu>, color_space: wgpu::SurfaceColorSpace, file: Option<String>, threads: i32, frames: u32 }
+struct App { gpu: Option<Gpu>, color_space: wgpu::SurfaceColorSpace, file: Option<String>, threads: i32, hw: bool, frames: u32, snap: Option<String>, snap_pipes: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)> }
 
 impl App {
     fn init(&mut self, el: &ActiveEventLoop) {
@@ -46,12 +51,12 @@ impl App {
         let ramp = {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("ramp"), source: wgpu::ShaderSource::Wgsl(include_str!("ramp.wgsl").into()) });
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[], immediate_size: 0 });
-            pipeline(&device, &shader, &layout, format)
+            make_pipeline(&device, &shader, &layout, format)
         };
         let video = self.file.as_ref().map(|path| {
             let t_open = Instant::now();
-            let mut dec = decode::Decoder::open(path, self.threads).expect("open");
-            println!("opened {} — {} {}x{} {:.3} fps {}  (open took {:.0} ms)", path, dec.codec, dec.width, dec.height, dec.fps, dec.pix_fmt, t_open.elapsed().as_secs_f32() * 1000.0);
+            let mut dec = decode::Decoder::open(path, self.threads, self.hw).expect("open");
+            println!("opened {} — {} {}x{} {:.3} fps {} {}  (open took {:.0} ms)", path, dec.codec, dec.width, dec.height, dec.fps, dec.pix_fmt, if self.hw { "VIDEOTOOLBOX zero-copy" } else { "software + CPU upload" }, t_open.elapsed().as_secs_f32() * 1000.0);
             let size = (dec.width, dec.height);
             let (tx, rx) = crossbeam_channel::bounded::<decode::Frame>(3);
             std::thread::Builder::new().name("decode".into()).spawn(move || { while let Some(f) = dec.next() { if tx.send(f).is_err() { break; } } }).unwrap();
@@ -62,10 +67,20 @@ impl App {
                 tex(1), tex(2), tex(3),
                 wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-            let pipeline = pipeline(&device, &shader, &pl, format);
+            let pipeline = make_pipeline(&device, &shader, &pl, format);
+            let bi_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("present_bi"), source: wgpu::ShaderSource::Wgsl(include_str!("present_bi.wgsl").into()) });
+            let bi_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("video_bi"), entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                tex(1), tex(2),
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
+            let bi_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&bi_layout)], immediate_size: 0 });
+            let bi_pipeline = make_pipeline(&device, &bi_shader, &bi_pl, format);
+            #[cfg(target_os = "macos")]
+            let vt = if self.hw { let v = vt::VtImport::new(&device); if v.is_none() { println!("zero-copy import unavailable (no Metal hal device)"); } v } else { None };
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
             let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            Video { rx, textures: vec![], bind_group: None, layout, sampler, ubuf, pipeline, size, bps: 0, t_open, clock0: None, pending: None, first_presented: false, shown: 0, upload_ms: vec![], decode_ms: vec![], presents: vec![], last_present: None, last_report: Instant::now(), decoded: 0 }
+            Video { rx, textures: vec![], bind_group: None, layout, sampler, ubuf, pipeline, size, bps: 0, bi_layout, bi_pipeline, held: VecDeque::new(), imported: 0,
+                #[cfg(target_os = "macos")] vt, t_open, clock0: None, pending: None, first_presented: false, shown: 0, shown_total: 0, upload_ms: vec![], decode_ms: vec![], presents: vec![], last_present: None, last_report: Instant::now(), decoded: 0 }
         });
         self.gpu = Some(Gpu { window, surface, device, queue, config, ramp, video });
     }
@@ -87,6 +102,31 @@ impl App {
             }
             if let Some(f) = due {
                 let t = Instant::now();
+                if f.vt.is_some() {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let vtf = f.vt.unwrap();
+                        let imp = v.vt.as_mut().expect("vt import").import(&g.device, vtf.pixel_buffer());
+                        if v.imported == 0 {
+                            let yscale = if imp.ten_bit { 65535.0 / 65472.0 } else { 1.0 };   // 10-bit left-justified in 16
+                            let (vw, vh, ww, wh) = (v.size.0 as f32, v.size.1 as f32, g.config.width as f32, g.config.height as f32);
+                            let fit = if vw / vh > ww / wh { [1.0, (ww / wh) / (vw / vh)] } else { [(vw / vh) / (ww / wh), 1.0] };
+                            g.queue.write_buffer(&v.ubuf, 0, bytemuck::bytes_of(&Uniforms { fit, yscale, full_range: if imp.full_range || f.full_range { 1.0 } else { 0.0 } }));
+                            println!("first VideoToolbox frame: fourcc {:?}, {} planes, {}-bit, full range {}", v.vt.as_ref().unwrap().last_fourcc.to_be_bytes().map(|b| b as char).iter().collect::<String>(), imp.textures.len(), if imp.ten_bit { 10 } else { 8 }, imp.full_range);
+                        }
+                        let views: Vec<_> = imp.textures.iter().map(|t| t.create_view(&Default::default())).collect();
+                        let bind_group = g.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("video_bi"), layout: &v.bi_layout, entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&v.sampler) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
+                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
+                            wgpu::BindGroupEntry { binding: 3, resource: v.ubuf.as_entire_binding() }] });
+                        v.held.push_back(Held { _frame: vtf, _imp: imp, bind_group });
+                        while v.held.len() > 3 { v.held.pop_front(); }   // the GPU is ≤ 2 frames behind (frame latency 2)
+                        v.imported += 1; if v.imported % 60 == 0 { v.vt.as_ref().unwrap().flush(); }
+                    }
+                    v.upload_ms.push(t.elapsed().as_secs_f32() * 1000.0);
+                    v.shown += 1; v.shown_total += 1; uploaded_new = true;
+                } else {
                 if v.textures.is_empty() {
                     v.bps = f.bytes_per_sample;
                     let fmt = if f.bytes_per_sample == 2 { wgpu::TextureFormat::R16Unorm } else { wgpu::TextureFormat::R8Unorm };
@@ -108,13 +148,14 @@ impl App {
                         wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
                 }
                 v.upload_ms.push(t.elapsed().as_secs_f32() * 1000.0);
-                v.shown += 1; uploaded_new = true;
+                v.shown += 1; v.shown_total += 1; uploaded_new = true;
+                }
             }
         }
         let mut enc = g.device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("present"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
-            match g.video.as_ref().and_then(|v| v.bind_group.as_ref().map(|b| (b, &v.pipeline))) {
+            match g.video.as_ref().and_then(|v| v.held.back().map(|h| (&h.bind_group, &v.bi_pipeline)).or_else(|| v.bind_group.as_ref().map(|b| (b, &v.pipeline)))) {
                 Some((bg, pl)) => { pass.set_pipeline(pl); pass.set_bind_group(0, bg, &[]); pass.draw(0..3, 0..1); }
                 None => { if g.video.is_none() { pass.set_pipeline(&g.ramp); pass.draw(0..3, 0..1); } }
             }
@@ -135,10 +176,55 @@ impl App {
                 v.decoded = 0; v.shown = 0; v.decode_ms.clear(); v.upload_ms.clear(); v.presents.clear(); v.last_report = now;
             }
         }
+        let snap_due = uploaded_new && self.gpu.as_ref().and_then(|g| g.video.as_ref()).map(|v| v.shown_total == 24).unwrap_or(false);
+        if let (Some(path), true) = (self.snap.clone(), snap_due) { self.snapshot(&path); }
     }
 }
 
-fn pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+impl App {
+    /// Render the current frame into an sRGB-encoded Rgba8 texture (linear light → sRGB happens in the ROP) and write a PNG.
+    fn snapshot(&mut self, path: &str) {
+        let Some(g) = self.gpu.as_ref() else { return };
+        let (w, h) = (g.config.width, g.config.height);
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let (vid_pipe, bi_pipe) = self.snap_pipes.get_or_insert_with(|| {
+            let v = g.video.as_ref().unwrap();
+            let sh = g.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()) });
+            let pl = g.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&v.layout)], immediate_size: 0 });
+            let sh2 = g.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("present_bi.wgsl").into()) });
+            let pl2 = g.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&v.bi_layout)], immediate_size: 0 });
+            (make_pipeline(&g.device, &sh, &pl, fmt), make_pipeline(&g.device, &sh2, &pl2, fmt))
+        });
+        let tex = g.device.create_texture(&wgpu::TextureDescriptor { label: Some("snap"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+        let view = tex.create_view(&Default::default());
+        let pitch = (w * 4).div_ceil(256) * 256;
+        let buf = g.device.create_buffer(&wgpu::BufferDescriptor { label: Some("snap"), size: (pitch * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("snap"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+            let v = g.video.as_ref().unwrap();
+            if let Some(hd) = v.held.back() { pass.set_pipeline(bi_pipe); pass.set_bind_group(0, &hd.bind_group, &[]); pass.draw(0..3, 0..1); }
+            else if let Some(bg) = v.bind_group.as_ref() { pass.set_pipeline(vid_pipe); pass.set_bind_group(0, bg, &[]); pass.draw(0..3, 0..1); }
+        }
+        enc.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pitch), rows_per_image: Some(h) } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+        g.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { tx.send(r).ok(); });
+        g.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        rx.recv().unwrap().expect("map");
+        let data = slice.get_mapped_range().expect("mapped range");
+        let mut rows = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h as usize { rows.extend_from_slice(&data[y * pitch as usize..y * pitch as usize + (w * 4) as usize]); }
+        drop(data); buf.unmap();
+        let file = std::fs::File::create(path).expect("png");
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h); enc.set_color(png::ColorType::Rgba); enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&rows).unwrap();
+        println!("snapshot written: {path} ({w}x{h})");
+    }
+}
+
+fn make_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: None, layout: Some(layout),
         vertex: wgpu::VertexState { module: shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
         fragment: Some(wgpu::FragmentState { module: shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
@@ -183,9 +269,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let color_space = if args.iter().any(|a| a == "--edr") { wgpu::SurfaceColorSpace::ExtendedSrgbLinear } else if args.iter().any(|a| a == "--pq") { wgpu::SurfaceColorSpace::Bt2100Pq } else { wgpu::SurfaceColorSpace::Auto };
     let file = if args.iter().any(|a| a == "--ramp") { None } else { Some(args.iter().position(|a| a == "--file").and_then(|i| args.get(i + 1).cloned()).unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/prores_4k.mov").to_string())) };
+    let hw = args.iter().any(|a| a == "--hw");
+    let snap = args.iter().position(|a| a == "--snap").and_then(|i| args.get(i + 1).cloned());
     let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).and_then(|t| t.parse().ok()).unwrap_or(0);
     let el = EventLoop::new().unwrap();
-    let mut app = App { color_space, file, threads, ..Default::default() };
+    let mut app = App { color_space, file, threads, hw, snap, ..Default::default() };
     el.run_app(&mut app).unwrap();
     println!("frames presented: {}", app.frames);
 }
