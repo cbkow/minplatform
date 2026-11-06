@@ -6,7 +6,7 @@ through OCIO's generated shader (native passthrough; baked LUT as the control) a
 gap > 1 refresh; GPU ≤ 1 ms p95 per frame at 4K 4:2:2; ≤ 0.25 core; footprint ≤ 1.4 GB at 4K; pixel-diff vs
 Qt QCView on the same frame within tolerance; EDR peak + PQ correct on both OSes; OCIO's shader compiles
 unmodified or with a documented patch.
-**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + zero-copy) next.**
+**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + zero-copy) next; FIRST re-run step 1 on a quiet machine.**
 
 ## What the scaffold is
 `spikes/s1-present`: winit 0.30 + wgpu 30 window drawing a linear-light ramp (0→1 left, 1→4 right; grey /
@@ -33,7 +33,8 @@ their colour spaces, and reads the CAMetalLayer back.
 to 256-byte pitches and uploaded with `write_texture` into R8Unorm / R16Unorm planes, WGSL does Y'CbCr → BT.709 →
 BT.1886 linear on the `Rgba16Float` + `ExtendedSrgbLinear` surface. Wall-clock pacing: the newest due frame is
 uploaded, the present loop runs every refresh (60 Hz here), like QCView's. Release build, window on the external
-60 Hz display:
+60 Hz display. **CAVEAT: taken while an unrelated heavy CPU task was running on the machine (the user's) — the
+upload/present SPIKES below may be contention, not the path; RE-RUN OWED on a quiet machine before any reading.**
 | Fixture (sw decode) | open → first frame | decoded fps | shown fps | upload ms p50 / max | present ms p50 / p95 / max |
 |---|---|---|---|---|---|
 | ProRes HQ 4K 4:2:2 10-bit | 231 ms | 24.0 | 20.5–24.0 | 4.5–6.2 / 58–191 | 16.5 / 26–83 / 75–203 |
