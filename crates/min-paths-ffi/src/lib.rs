@@ -149,6 +149,15 @@ mod tests {
         assert_eq!(s(mp_translate_with(c("win").as_ptr(), c("mac").as_ptr(), c("C:\\x").as_ptr(), c("[bad").as_ptr())), "C:/x");
         assert_eq!(s(mp_translate_with(c("??").as_ptr(), c("mac").as_ptr(), c("C:\\x").as_ptr(), rows.as_ptr())), "C:\\x");
     }
+    /// The committed header must list every exported function (regenerate with MIN_PATHS_REGEN_HEADER=1 when this fails).
+    #[test] fn committed_header_is_current() {
+        let header = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/include/min_paths.h")).unwrap();
+        let src = include_str!("lib.rs");
+        for line in src.lines().filter(|l| l.contains("extern \"C\" fn mp_")) {
+            let name = line.split("fn ").nth(1).unwrap().split('(').next().unwrap();
+            assert!(header.contains(&format!(" {name}(")), "{name} missing from include/min_paths.h — regenerate it");
+        }
+    }
     #[test] fn urls_links_names_through_the_abi() {
         assert_eq!(s(mp_file_url_to_path(c("file:///a%20b/c.png").as_ptr())), if Os::current().is_windows() { "\\a b\\c.png" } else { "/a b/c.png" });
         assert_eq!(s(mp_uri_list_decode_paths(c("file:///a\r\n# x\r\nhttps://q\r\n").as_ptr())), if Os::current().is_windows() { r#"["\\a"]"# } else { r#"["/a"]"# });
