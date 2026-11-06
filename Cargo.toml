@@ -1,16 +1,40 @@
-# minplatform — the shared Rust media platform for the min*/QCView family (THEORETICAL phase).
-# The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117). No members yet:
-# crates/ gains a member only when it has a consumer or a frozen contract; spikes/ when a spike starts.
+# minplatform — the shared Rust media platform for the min*/QCView family (spike phase).
+# The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"
-members = []
+members = ["spikes/s1-present", "spikes/s3-text"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98"
 authors = ["Chris Bialkowski"]
 repository = "https://github.com/cbkow/minplatform"
+publish = false
 
 [workspace.dependencies]
-# Pinned here once, consumed with `{ workspace = true }`. Filled in by the first spike (S1/S3),
-# not in advance — see docs/rust-wgpu-port.md §21.3.
+# GPU + window (pinned 2026-11-06; winit 0.31 is a beta — exact pin on purpose)
+wgpu = "30.0.1"
+winit = "0.30.13"   # accesskit_winit 0.34 is still on 0.30; the 0.31 beta (typed data transfer) waits for S5
+raw-window-handle = "0.6.2"
+pollster = "1.0.1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+# 2D + text (Linebender)
+vello = "0.11.0"
+parley = "0.12.0"
+peniko = "0.6"
+kurbo = "0.13"
+# accessibility
+accesskit = "0.25.2"
+accesskit_winit = "0.34.2"
+# platform
+objc2 = "0.6.5"
+objc2-metal = "0.3.2"
+objc2-quartz-core = "0.3"
+objc2-foundation = "0.3"
+# misc
+anyhow = "1"
+env_logger = "0.11"
+log = "0.4"
+
+[profile.release]
+debug = 1
