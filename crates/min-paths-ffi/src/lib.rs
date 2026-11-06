@@ -155,7 +155,7 @@ mod tests {
         let src = include_str!("lib.rs");
         for line in src.lines().filter(|l| l.contains("extern \"C\" fn mp_")) {
             let name = line.split("fn ").nth(1).unwrap().split('(').next().unwrap();
-            assert!(header.contains(&format!(" {name}(")), "{name} missing from include/min_paths.h — regenerate it");
+            assert!(header.contains(&format!("{name}(")), "{name} missing from include/min_paths.h — regenerate it");
         }
     }
     #[test] fn urls_links_names_through_the_abi() {
