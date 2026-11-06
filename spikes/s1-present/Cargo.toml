@@ -16,6 +16,9 @@ bytemuck = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
+ffmpeg-sys-next = { workspace = true }
+crossbeam-channel = { workspace = true }
+libc = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
