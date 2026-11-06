@@ -4,6 +4,7 @@
 //! Verdict and pass bars: docs/spikes/S1-present.md. This binary dies with the spike.
 mod decode;
 #[cfg(target_os = "macos")] mod vt;
+#[cfg(windows)] #[path = "d3d.rs"] mod vt;   // the DX12 analogue, same API shape
 #[cfg(feature = "ocio")] mod ocio;   // S1 step 2: --features ocio
 mod rb;
 use std::{collections::VecDeque, sync::Arc, time::Instant};
@@ -22,19 +23,19 @@ struct Video {
     trc: f32, mat: f32, white: f32, pq_surface: bool, snap_frame: u32, snap_out: Option<String>, verify_pq: bool,
     #[cfg(feature = "ocio")] ocio: Option<ocio::Stage>, ocio_verify: bool,
     bi_layout: wgpu::BindGroupLayout, bi_pipeline: wgpu::RenderPipeline, held: VecDeque<Held>, imported: u32,
-    #[cfg(target_os = "macos")] vt: Option<vt::VtImport>,
+    #[cfg(any(target_os = "macos", windows))] vt: Option<vt::VtImport>,
     t_open: Instant, clock0: Option<(Instant, f64)>, pending: Option<decode::Frame>, first_presented: bool,
     shown: u32, shown_total: u32, upload_ms: Vec<f32>, decode_ms: Vec<f32>, presents: Vec<f32>, last_present: Option<Instant>, last_report: Instant, decoded: u32,
 }
 
-struct Held { _frame: decode::VtFrame, #[cfg(target_os = "macos")] _imp: vt::Imported, bgs: [wgpu::BindGroup; 3] }   // 0 = display (fit, linear), 1 = encoded 1:1, 2 = linear 1:1
+struct Held { _frame: decode::VtFrame, #[cfg(any(target_os = "macos", windows))] _imp: vt::Imported, bgs: [wgpu::BindGroup; 3] }   // 0 = display (fit, linear), 1 = encoded 1:1, 2 = linear 1:1
 
 struct Gpu { window: Arc<Window>, surface: wgpu::Surface<'static>, device: wgpu::Device, queue: wgpu::Queue, config: wgpu::SurfaceConfiguration, ramp: wgpu::RenderPipeline, video: Option<Video> }
 
 #[derive(Default)]
 struct App { gpu: Option<Gpu>, color_space: wgpu::SurfaceColorSpace, file: Option<String>, threads: i32, hw: bool, frames: u32, snap: Option<String>, snap_pipes: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     #[cfg(feature = "ocio")] ocio_opts: Option<ocio::Opts>, snap_blit: Option<wgpu::RenderPipeline>, seconds: f32, t0: Option<Instant>, screen: Option<usize>,
-    src: Option<String>, white: f32, snap_frame: u32, snap_out: Option<String>, verify_pq: bool }
+    src: Option<String>, white: f32, snap_frame: u32, snap_out: Option<String>, verify_pq: bool, backend: Option<String> }
 
 impl App {
     fn init(&mut self, el: &ActiveEventLoop) {
@@ -43,11 +44,15 @@ impl App {
         let mut attrs = Window::default_attributes().with_title("S1 present").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         if let Some(m) = self.screen.and_then(|i| monitors.get(i)) { let p = m.position(); attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(p.x + 100, p.y + 100)); }
         let window = Arc::new(el.create_window(attrs).unwrap());
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // Windows: DX12 is the canon's backend (row 45: DX12 + d3d12va + DXIL passthrough); wgpu's default picks Vulkan on NVIDIA, whose
+        // swapchain offers only 8-bit sRGB here. `--backend vulkan` keeps the comparison available.
+        let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
+        if cfg!(windows) { idesc.backends = if self.backend.as_deref() == Some("vulkan") { wgpu::Backends::VULKAN } else { wgpu::Backends::DX12 }; }
+        let instance = wgpu::Instance::new(idesc);
         let surface = instance.create_surface(window.clone()).expect("surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false, apply_limit_buckets: false })).expect("adapter");
         let info = adapter.get_info();
-        println!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+        println!("adapter: {} ({:?}, {:?}, driver {} {})", info.name, info.backend, info.device_type, info.driver, info.driver_info);
         let caps = surface.get_capabilities(&adapter);
         for fc in &caps.format_capabilities { println!("  {:?} supports colour spaces {:?}", fc.format, fc.color_spaces); }
         let format = if caps.formats.contains(&wgpu::TextureFormat::Rgba16Float) { wgpu::TextureFormat::Rgba16Float } else { caps.formats[0] };
@@ -73,7 +78,7 @@ impl App {
         let video = self.file.as_ref().map(|path| {
             let t_open = Instant::now();
             let mut dec = decode::Decoder::open(path, self.threads, self.hw).expect("open");
-            println!("opened {} — {} {}x{} {:.3} fps {} {}  (open took {:.0} ms)", path, dec.codec, dec.width, dec.height, dec.fps, dec.pix_fmt, if self.hw { "VIDEOTOOLBOX zero-copy" } else { "software + CPU upload" }, t_open.elapsed().as_secs_f32() * 1000.0);
+            println!("opened {} — {} {}x{} {:.3} fps {} {}  (open took {:.0} ms)", path, dec.codec, dec.width, dec.height, dec.fps, dec.pix_fmt, if self.hw { "hw zero-copy (VideoToolbox / D3D12VA)" } else { "software + CPU upload" }, t_open.elapsed().as_secs_f32() * 1000.0);
             let size = (dec.width, dec.height);
             let pq_src = match self.src.as_deref() { Some("pq") => true, Some("709") => false, _ => dec.trc == 16 };
             let mat2020 = match self.src.as_deref() { Some("pq") => true, Some("709") => false, _ => dec.colorspace == 9 };
@@ -99,6 +104,8 @@ impl App {
             let bi_pipeline_inter = make_pipeline(&device, &bi_shader, &bi_pl, wgpu::TextureFormat::Rgba16Float);
             #[cfg(target_os = "macos")]
             let vt = if self.hw { let v = vt::VtImport::new(&device); if v.is_none() { println!("zero-copy import unavailable (no Metal hal device)"); } v } else { None };
+            #[cfg(windows)]
+            let vt = if self.hw { let v = vt::VtImport::new(&device, &queue); if v.is_none() { println!("zero-copy import unavailable (no DX12 hal device / d3d12va)"); } v } else { None };
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
             let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             let ubuf_enc = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u-enc"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -110,7 +117,7 @@ impl App {
             Video { rx, textures: vec![], bind_group: None, layout, sampler, ubuf, pipeline, size, bps: 0, bi_layout, bi_pipeline, held: VecDeque::new(), imported: 0,
                 ubuf_enc, ubuf_lin1, pipeline_inter, bi_pipeline_inter, #[cfg(feature = "ocio")] ocio, ocio_verify,
                 trc: pq_src as u8 as f32, mat: mat2020 as u8 as f32, white: self.white, pq_surface: self.color_space == wgpu::SurfaceColorSpace::Bt2100Pq, snap_frame: self.snap_frame, snap_out: self.snap_out.clone(), verify_pq: self.verify_pq,
-                #[cfg(target_os = "macos")] vt, t_open, clock0: None, pending: None, first_presented: false, shown: 0, shown_total: 0, upload_ms: vec![], decode_ms: vec![], presents: vec![], last_present: None, last_report: Instant::now(), decoded: 0 }
+                #[cfg(any(target_os = "macos", windows))] vt, t_open, clock0: None, pending: None, first_presented: false, shown: 0, shown_total: 0, upload_ms: vec![], decode_ms: vec![], presents: vec![], last_present: None, last_report: Instant::now(), decoded: 0 }
         });
         self.gpu = Some(Gpu { window, surface, device, queue, config, ramp, video });
     }
@@ -134,7 +141,7 @@ impl App {
             if let Some(f) = due {
                 let t = Instant::now();
                 if f.vt.is_some() {
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     {
                         let vtf = f.vt.unwrap();
                         let imp = v.vt.as_mut().expect("vt import").import(&g.device, vtf.pixel_buffer());
@@ -143,7 +150,7 @@ impl App {
                             let (vw, vh, ww, wh) = (v.size.0 as f32, v.size.1 as f32, g.config.width as f32, g.config.height as f32);
                             let fit = if vw / vh > ww / wh { [1.0, (ww / wh) / (vw / vh)] } else { [(vw / vh) / (ww / wh), 1.0] };
                             v.write_uniforms(&g.queue, fit, yscale, imp.full_range || f.full_range);
-                            println!("first VideoToolbox frame: fourcc {:?}, {} planes, {}-bit, full range {}", v.vt.as_ref().unwrap().last_fourcc.to_be_bytes().map(|b| b as char).iter().collect::<String>(), imp.textures.len(), if imp.ten_bit { 10 } else { 8 }, imp.full_range);
+                            println!("first hw zero-copy frame: fourcc {:?}, {} planes, {}-bit, full range {}", v.vt.as_ref().unwrap().last_fourcc.to_be_bytes().map(|b| b as char).iter().collect::<String>(), imp.textures.len(), if imp.ten_bit { 10 } else { 8 }, imp.full_range);
                         }
                         let views: Vec<_> = imp.textures.iter().map(|t| t.create_view(&Default::default())).collect();
                         let bgs = v.bgs3(&g.device, true, &views);
@@ -374,6 +381,8 @@ impl App {
     fn finish(&mut self) {
         #[cfg(feature = "ocio")]
         if let Some(g) = self.gpu.as_ref() { if let Some(st) = g.video.as_ref().and_then(|v| v.ocio.as_ref()) { println!("{}", st.report(&g.device, &g.queue)); } }
+        let wall = self.t0.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0); let cpu = decode::process_cpu_seconds();
+        if wall > 0.0 { println!("process CPU time {cpu:.2} s over {wall:.1} s = {:.0} % of one core (decode threads included)", 100.0 * cpu / wall); }
     }
 }
 
@@ -458,7 +467,7 @@ fn main() {
     let screen = arg("--screen").and_then(|v| v.parse().ok());
     let src = arg("--src"); let white = arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0);
     let snap_frame = arg("--snap-frame").and_then(|v| v.parse().ok()).unwrap_or(24); let snap_out = arg("--snap-out"); let verify_pq = args.iter().any(|a| a == "--verify-pq");
-    let mut app = App { color_space, file, threads, hw, snap, seconds, screen, src, white, snap_frame, snap_out, verify_pq, #[cfg(feature = "ocio")] ocio_opts, ..Default::default() };
+    let mut app = App { color_space, file, threads, hw, snap, seconds, screen, src, white, snap_frame, snap_out, verify_pq, backend: arg("--backend"), #[cfg(feature = "ocio")] ocio_opts, ..Default::default() };
     el.run_app(&mut app).unwrap();
     println!("frames presented: {}", app.frames);
 }

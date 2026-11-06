@@ -116,7 +116,42 @@ decoder's floor. Max RSS during seeks/scrubs: 366–500 MB.
 - **decode floor** is the ceiling for `min-image`/`qcv-player`'s FFmpeg binding: 250–270 fps 4K ProRes,
   ~200 fps 4K HEVC10, 98 fps EXR half ZIP16 (single process, all cores).
 
+## 5. Windows (rhombus, 2026-11-06) — decoder floor + QCView dev build; NO physical monitor
+**Machine:** Windows 11 Pro 25H2, i9-14900KF (32 threads), RTX 4090 (driver 32.0.16.2101), 128 GB; FFmpeg 9.0.1 (BtbN win64,
+QCView's `external\ffmpeg-win64`); QCView dev build `build-release\qcview.exe` (D3D11 + DComp path). **The box has no physical
+display attached: the desktop is a Parsec / Jump virtual display ("WinDisc" 1920×1080 @ 60 to the apps, the Parsec adapter at
+3840×2160).** Every present on it is throttled to ≈ 13 Hz (76 ms) — QCView's own `QCV_FPS_LOG` shows 12.3–13.9 new frames/s on all
+four fixtures, the S1/S2 spikes show the same 76-ms present interval. **So Windows PACING numbers do not exist yet; everything
+below that is not pacing is valid.** HDR/PQ on a Windows display waits for an HDR monitor too (the §12 EDR/PQ bar).
+Method: the same fixtures copied to `C:\qcb-lab\minplatform-fixtures\` (never into a repo); scripts under `C:\qcb-lab\`
+(`decode-floor.ps1`, `qcv-run.ps1` / `qcv-runs.ps1` — desktop launches via `run.ps1`, the process CPU time sampled every 50 ms as
+the seek/scrub BURST proxy, no xctrace there); logs under `C:\qcb-lab\minplatform-logs\`.
+
+**Decoder floor** (`ffmpeg -benchmark -f null`, all frames; the hwaccel columns INCLUDE the download to system memory, as on macOS):
+| Fixture | sw fps | d3d12va fps | d3d11va fps | sw maxrss | d3d12va maxrss | macOS sw / VT fps |
+|---|---|---|---|---|---|---|
+| ProRes HQ 1080p | 826 | 650 | 714 | 208 MB | 294 MB | 830 / 696 |
+| ProRes HQ 4K | 247 | 228 | 229 | 729 MB | 847 MB | 249 / 268 |
+| H.264 1080p | 1011 | 538 | 574 | 152 MB | 451 MB | 1194 / 225 |
+| H.264 4K | 385 | 191 | 174 | 481 MB | 946 MB | 466 / 99 |
+| HEVC Main10 4K | 194 | 145 | 143 | 1003 MB | 1288 MB | 200 / 193 |
+| EXR 4K half ZIP16 | 66.5 | — | — | 2107 MB | — | 98 / — |
+(ProRes has no hardware decoder on NVIDIA: the d3d12va/d3d11va ProRes rows are software with a hwaccel attached.) Seek floor
+(`-hwaccel d3d12va -ss T -frames:v 1`, 8 seeks, INCLUDES process start + avformat open + the D3D12 device creation ≈ 200 ms):
+ProRes 1080p 246 ms p50 · ProRes 4K 398 · H.264 4K 473 · HEVC10 4K 475 (macOS: 141 / 172 / 181 / 126, without a hw device to create).
+
+**QCView dev build, playback (`QCV_AUTOPLAY_SECONDS=2`, 14 s, `QCV_FPS_LOG`):** ProRes 4K via **Vulkan video zero-copy**
+(FFmpeg's vulkan hwaccel decodes ProRes on the GPU, bridged into D3D11), H.264 / HEVC10 via **D3D11VA zero-copy** (36-slot NV12 /
+P010 pools); new frames/s 12.3–13.9 on every fixture = the virtual display's cap, not the player's. Max working set: ProRes 4K
+443 MB · ProRes 1080p 371 · H.264 4K 702 · HEVC10 4K 942 (macOS footprint 1.07–1.81 GB).
+**Seeks (`QCV_START_SECONDS`, paused, ProRes 4K)** burst proxy at 50-ms CPU samples: wall 126 / 163 / 127 / 262 ms (p50 163) with
+31–172 CPU-ms inside; **scrubs (`QCV_SCRUB_FRAMES`)**: 128–391 ms (p50 159). The 50-ms sampler is coarse and the 13-Hz display
+adds up to 77 ms before anything shows, so these are upper bounds; macOS P0 (xctrace): seeks 60–130, scrubs 30–40.
+`QCV_CAPTURE_PNG` of frame 0 (the identity view) taken: `qcview_p4k_win.png` — QCView-Windows vs QCView-macOS 60.6 dB.
+**minNotes on Windows:** not measured (no Windows build of 2.0 on rhombus; the box recipe lives in minNotes' memory). Owed.
+
 ## Owed
-Windows numbers (same fixtures, the box); QCView per-frame video lateness (needs S2's harness or a renderer
+~~Windows numbers (same fixtures, the box)~~ taken on rhombus 2026-11-06 EXCEPT pacing (no physical display — needs a monitor,
+an HDR one for PQ) and minNotes typing; QCView per-frame video lateness (needs S2's harness or a renderer
 signpost); minNotes key→swap on a page under 2.0; a cold `.mnd` open; QCView on the built-in XDR with EDR on
 (the HDR path was not exercised — `EDR-supported=no` on the AW3225QF); EXR sequence playback in QCView.

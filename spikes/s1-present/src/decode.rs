@@ -9,7 +9,10 @@ pub struct Plane { pub data: Vec<u8>, pub width: u32, pub height: u32, pub pitch
 /// A VideoToolbox frame: an `av_frame_clone` reference that owns the CVPixelBuffer until dropped.
 pub struct VtFrame(pub *mut ff::AVFrame);
 unsafe impl Send for VtFrame {}
-impl VtFrame { pub fn pixel_buffer(&self) -> *mut std::ffi::c_void { unsafe { (*self.0).data[3] as *mut _ } } }
+impl VtFrame {
+    /// The platform frame handle: the CVPixelBuffer (`data[3]`) on macOS, the `AVD3D12VAFrame` (`data[0]`) on Windows.
+    pub fn pixel_buffer(&self) -> *mut std::ffi::c_void { unsafe { (*self.0).data[if cfg!(target_os = "macos") { 3 } else { 0 }] as *mut _ } }
+}
 impl Drop for VtFrame { fn drop(&mut self) { unsafe { ff::av_frame_free(&mut self.0) } } }
 unsafe impl Sync for VtFrame {}   // the AVFrame ref is only ever read (the pixel buffer) once cloned
 impl Clone for VtFrame { fn clone(&self) -> Self { VtFrame(unsafe { ff::av_frame_clone(self.0) }) } }   // a refcounted AVFrame ref (the CVPixelBuffer is shared)
@@ -50,10 +53,38 @@ unsafe impl Send for Decoder {}
 
 fn averror(e: i32) -> i32 { -e }
 
+/// This process's CPU time so far (user + kernel), seconds — the "cores used" number without a profiler.
+#[cfg(target_os = "macos")]
+pub fn process_cpu_seconds() -> f64 { unsafe { let mut r: libc::rusage = std::mem::zeroed(); libc::getrusage(libc::RUSAGE_SELF, &mut r); (r.ru_utime.tv_sec as f64 + r.ru_utime.tv_usec as f64 * 1e-6) + (r.ru_stime.tv_sec as f64 + r.ru_stime.tv_usec as f64 * 1e-6) } }
+#[cfg(windows)]
+pub fn process_cpu_seconds() -> f64 {
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    use windows::Win32::Foundation::FILETIME;
+    unsafe {
+        let (mut c, mut e, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        if GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u).is_err() { return 0.0 }
+        let ft = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 * 1e-7;
+        ft(k) + ft(u)
+    }
+}
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn process_cpu_seconds() -> f64 { 0.0 }
+
+/// The platform's zero-copy hwaccel: VideoToolbox on macOS, D3D12VA on Windows.
+#[cfg(target_os = "macos")] pub const HW_PIX_FMT: ff::AVPixelFormat = ff::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
+#[cfg(target_os = "macos")] pub const HW_DEVICE: ff::AVHWDeviceType = ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
+#[cfg(windows)] pub const HW_PIX_FMT: ff::AVPixelFormat = ff::AVPixelFormat::AV_PIX_FMT_D3D12;
+#[cfg(windows)] pub const HW_DEVICE: ff::AVHWDeviceType = ff::AVHWDeviceType::AV_HWDEVICE_TYPE_D3D12VA;
+#[cfg(not(any(target_os = "macos", windows)))] pub const HW_PIX_FMT: ff::AVPixelFormat = ff::AVPixelFormat::AV_PIX_FMT_NONE;
+#[cfg(not(any(target_os = "macos", windows)))] pub const HW_DEVICE: ff::AVHWDeviceType = ff::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE;
+/// An externally created hw device context (Windows: FFmpeg's D3D12VA context built on wgpu's own ID3D12Device), set before `open`;
+/// 0 = create our own. Stored as `*mut AVBufferRef as usize`.
+pub static HW_DEVICE_REF: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
 unsafe extern "C" fn pick_videotoolbox(_ctx: *mut ff::AVCodecContext, fmts: *const ff::AVPixelFormat) -> ff::AVPixelFormat {
     unsafe {
         let mut p = fmts;
-        while *p != ff::AVPixelFormat::AV_PIX_FMT_NONE { if *p == ff::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX { return *p; } p = p.add(1); }
+        while *p != ff::AVPixelFormat::AV_PIX_FMT_NONE { if *p == HW_PIX_FMT { return *p; } p = p.add(1); }
         *fmts
     }
 }
@@ -82,7 +113,9 @@ impl Decoder {
             if low_latency { (*ctx).thread_type = ff::FF_THREAD_SLICE as i32; }
             let mut hwref: *mut ff::AVBufferRef = ptr::null_mut();
             if hw {
-                if ff::av_hwdevice_ctx_create(&mut hwref, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, ptr::null(), ptr::null_mut(), 0) < 0 { return Err("av_hwdevice_ctx_create(videotoolbox)".into()); }
+                let shared = *HW_DEVICE_REF.lock().unwrap() as *mut ff::AVBufferRef;
+                if !shared.is_null() { hwref = ff::av_buffer_ref(shared); }
+                else if ff::av_hwdevice_ctx_create(&mut hwref, HW_DEVICE, ptr::null(), ptr::null_mut(), 0) < 0 { return Err(format!("av_hwdevice_ctx_create({HW_DEVICE:?})")); }
                 (*ctx).hw_device_ctx = ff::av_buffer_ref(hwref);
                 (*ctx).get_format = Some(pick_videotoolbox);
             }
@@ -143,7 +176,7 @@ impl Decoder {
         let full_range = f.color_range == ff::AVColorRange::AVCOL_RANGE_JPEG;
         let keyframe = (f.flags & ff::AV_FRAME_FLAG_KEY) != 0;
         let format = std::mem::transmute::<i32, ff::AVPixelFormat>(f.format);
-        if format == ff::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX {
+        if format == HW_PIX_FMT && format != ff::AVPixelFormat::AV_PIX_FMT_NONE {   // VideoToolbox (data[3] = CVPixelBuffer) or D3D12 (data[0] = AVD3D12VAFrame)
             let sw = (*self.ctx).sw_pix_fmt;
             let depth = match sw { ff::AVPixelFormat::AV_PIX_FMT_YUV420P10LE | ff::AVPixelFormat::AV_PIX_FMT_YUV422P10LE | ff::AVPixelFormat::AV_PIX_FMT_YUV444P10LE | ff::AVPixelFormat::AV_PIX_FMT_P010LE | ff::AVPixelFormat::AV_PIX_FMT_P210LE => 10, _ => 8 };
             return Frame { planes: vec![], vt: Some(VtFrame(ff::av_frame_clone(self.frame))), bytes_per_sample: if depth == 10 { 2 } else { 1 }, bit_depth: depth, full_range, pts, layout: Layout::Ycc, keyframe, decode_ms: t0.elapsed().as_secs_f32() * 1000.0 };

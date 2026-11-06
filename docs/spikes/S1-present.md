@@ -209,4 +209,67 @@ passthrough + PQ on the box — the other half of row 45's pair), the Knee split
 2. ~~OCIO~~ DONE as step 2 (macOS; Windows DXIL owed with the rest of Windows).
 3. ~~Pixel-diff against QCView; EDR on the XDR; PQ~~ step 3 above (macOS; the PQ-surface picture pending the screen; PQ on
    Windows owed with Windows).
-4. ~~Numbers per the pass bar, then the verdict~~ written above (GO on macOS, 2026-11-06). Windows owed.
+4. ~~Numbers per the pass bar, then the verdict~~ written above (GO on macOS, 2026-11-06). Windows: below.
+
+## Windows (rhombus: i9-14900KF, RTX 4090, Windows 11 25H2, 2026-11-06) — DX12 + D3D12VA zero-copy + OCIO HLSL passthrough
+**Build:** the same crate with `--features ocio` on MSVC (cargo 1.99, VS 18; `LIBCLANG_PATH` for ffmpeg-sys-next's bindgen — LLVM
+installed on the box for it; `FFMPEG_DIR` = QCView's BtbN FFmpeg 9.0.1; `OCIO_ROOT` = QCView's manifest `vcpkg_installed\x64-windows`,
+OpenColorIO 2.5.2). Builds clean first time; the FFmpeg + OCIO DLL dirs go on PATH at launch (`C:\qcb-lab\s1-runs.ps1` generates
+one `.cmd` per run and launches it on the logged-on desktop via `run.ps1`).
+**THE BOX HAS NO PHYSICAL DISPLAY** (a Parsec / Jump virtual display; see P0 §5): every present is throttled to ≈ 13 Hz (present
+interval 76 ms p50 / 79 p95 for the spike AND for QCView). **Pacing, EDR-on-a-display and PQ-on-a-display are therefore NOT
+measured on Windows yet**; first frame, decode, zero-copy import, OCIO exactness + GPU time, the PQ pipeline arithmetic and the
+pixel-diffs are, and they are the DX12 answers.
+**wgpu backend:** wgpu's default instance picked **Vulkan** on the RTX 4090, whose swapchain offers 8-bit sRGB only → `--edr` panicked.
+The spike now forces **DX12** on Windows (`--backend vulkan` to compare), the canon's row-45 pair. DX12's surface: `Rgba16Float` with
+EXTENDED_SRGB_LINEAR, `Rgb10a2Unorm` with BT2100_PQ (DXGI's own pairing: scRGB fp16, HDR10 = 10-bit), 8-bit formats SRGB; present
+modes Mailbox / Fifo / Immediate. All four wanted features present (16-bit norm, f32 filterable, timestamps, passthrough).
+
+| Run (4K, release) | open → first frame | import / upload ms p50 / max | present ms p50 / p95 (virtual display) | CPU (process, decode threads in) | max working set |
+|---|---|---|---|---|---|
+| ProRes 4K, software + upload (no hw ProRes on NVIDIA) | 118–169 ms | upload 2.3 / 5.5 | 77 / 82 | 161–168 % of a core | 1.0 GB |
+| H.264 4K, software + upload | 137 ms | 1.4 / 3.2 | 76 / 81 | — | — |
+| **H.264 4K, D3D12VA zero-copy (NV12)** | **136–139 ms** | **import 0.27 / 0.47** | 77 / 79 | **11 %** | **521 MB** |
+| **HEVC Main10 4K, D3D12VA zero-copy (P010)** | **101 ms** | **0.26 / 0.59** | 78 / 80 | — | — |
+| HEVC10 4K, software + upload | 165 ms | 1.9 / 4.0 | 77 / 83 | — | — |
+(macOS VideoToolbox: first frame 123–195 ms, import 0.1 ms; QCView-Windows working sets 371–942 MB.)
+
+**Zero-copy on DX12 — how (`d3d.rs`, the `vt.rs` analogue):** FFmpeg's D3D12VA device context is built ON wgpu's own `ID3D12Device`
+(`av_hwdevice_ctx_alloc` → `AVD3D12VADeviceContext.device` = `hal::dx12::Device::raw_device()` → `av_hwdevice_ctx_init`), so the
+decoder's NV12 / P010 `ID3D12Resource` needs no NT-handle sharing; each frame's resource becomes TWO single-plane wgpu textures
+through `hal::dx12::Device::texture_from_raw(..).with_plane_slice(0 | 1)` (R8 / RG8 or R16 / RG16 Unorm — the same biplanar shader
+as VideoToolbox), and the frame's fence is staged on wgpu's queue with `hal::dx12::Queue::add_wait_fence` before the submit. wgpu 30
+has both hooks for exactly this. ProRes stays software on NVIDIA (QCView uses FFmpeg's VULKAN hwaccel for ProRes there — a route
+the port can take too, through Vulkan→DX12 interop or by running the player on Vulkan for that codec; not measured here).
+
+**OCIO on DX12 (route A = OCIO's HLSL SM 5.0 through `ShaderModuleDescriptorPassthrough { hlsl }`, compiled by wgpu's DX12 backend
+— no dxcompiler.dll needed for SM5):** QCView's compute-kernel wrapper again, with OCIO's global texture / sampler declarations
+rewritten to explicit registers (`t1..` in space0; every OCIO sampler → the one shared `s0`), the same bind-group-entry order as
+Metal (SRV t0 = src, UAV u0 = dst, s0, LUTs t1..). ACES 1.3 Camera Rec.709 → sRGB / ACES 1.0 SDR Video on the H.264 4K frame:
+| Route | vs OCIO's CPU processor (4K) | GPU ms p50 / p95 / max (DX12 timestamp queries, 100 runs) | build |
+|---|---|---|---|
+| A native HLSL passthrough | **max 0.13/255 (0.51/1023), PSNR 79.4 dB, 0 % / 0.018 % off at 8 / 10 bit** | 2.29 / 3.25 / 3.55 | HLSL compiled + pipeline 65 ms |
+| B baked 65³ LUT (WGSL) | max 0.47/255 (1.90/1023), 77.2 dB, 0 % / 1.05 % | 2.22 / 2.48 / 3.67 | bake 21 ms + 34 ms |
+Route A is exact on DX12 as on Metal (the same 0.13/255 residual); route B stays 8-bit-exact only. **DX12 timestamp queries work**
+(p50 2.2–2.3 ms for the 4K pass on the RTX 4090 — ≈ 7× the Metal figure; the number includes wgpu's per-pass barriers and a UAV
+write of 4K fp16, and the virtual display may clock the GPU down between presents — treat it as an upper bound until a real
+display run). The LUT-bearing chains (Blender AgX / Filmic) were not run on Windows; the register rewrite covers them by
+construction (`Texture1D/2D/3D` declarations).
+
+**PQ:** the ramp fixture through D3D12VA (P010) + BT.2020 + PQ EOTF → extended linear: `--verify-pq` gives EXACTLY the macOS numbers
+(worst 7.198 % at code 0.065 — the fixture's own offset; 1895 of 3840 columns above 1.0), i.e. the decode + colour arithmetic is
+platform-independent. The `Bt2100Pq` surface configures on DX12 (wgpu-hal's DX12 `SetColorSpace1`; no crash — the Metal
+`lookup()` bug is Metal-only) and presents 117 frames; what the display does with it is unmeasurable here.
+
+**Pixel-diff, frame 1 of the 4K ProRes (software decode on Windows, VideoToolbox on macOS):**
+| Pair | PSNR | SSIM |
+|---|---|---|
+| spike-Windows vs spike-macOS | 59.6 dB | 0.9991 |
+| spike-Windows vs QCView-Windows (`QCV_CAPTURE_PNG`, identity view) | 56.4 dB (max ≈ 2/255) | 0.998 |
+| spike-Windows vs QCView-macOS | 55.7 dB | — |
+| QCView-Windows vs QCView-macOS | 60.6 dB | — |
+Same class on both OSes; the residual is chroma reconstruction again.
+
+**Verdict on Windows (partial): the DX12 half of row 45 holds** — zero-copy D3D12VA into wgpu, OCIO's HLSL through passthrough
+exact, fp16 scRGB + 10-bit PQ surfaces offered, 11 % of a core at 4K H.264. **Owed:** pacing, EDR, PQ on a REAL display (and an
+HDR one); the LUT chains on DX12; ProRes via Vulkan video; Vulkan-backend comparison; the fused-graph GPU figure.
