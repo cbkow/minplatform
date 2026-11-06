@@ -714,7 +714,7 @@ Cursory survey of `~/Documents/GitHub/*` (sizes = source lines, excluding extern
   a Rust host. Stays **GPL-3 (OpenDRT-derived)**, so only the GPL apps consume it. OCIO stays
   C++ (QCView-only; no Rust OCIO).
 - `min-present` — the wgpu video presenter incl. **HDR output**: Rgba16Float surfaces; EDR on
-  Metal needs the CAMetalLayer's extended-dynamic-range flag + colourspace set through objc2 on
+  Metal (**2026-11-06: wgpu 30 does this itself via `SurfaceColorSpace`, see S1 — the objc2 route below is OBSOLETE**) needs the CAMetalLayer's extended-dynamic-range flag + colourspace set through objc2 on
   the layer wgpu exposes via hal; HDR10 on DX12 needs the DXGI colour space + HDR10 metadata on
   the swapchain (hal access, possibly an own swapchain). **The hardest shared piece; QCView-only
   today; do not block minNotes on it.**
@@ -959,7 +959,7 @@ surface, not a widget; rational time, `qcv-timeline` + one Sequencer, gapless pl
 passthrough as the display path, baked LUT as fallback; rows #91–94). Scopes + guides → §19 (two
 overlay classes: OUTPUT via a vello texture, UI as nodes; rows #95–100). The QCBRIDGE companions audited → §20
 (three byte-stable contracts to FREEZE; `qcv-ring` = QCView's end in Rust with cross-impl tests; companions
-untouched; rows #101–108). **108 rows, 7 ruled.** THE PATH FORWARD → §21 (2026-11-06): QCView-SHAPED spikes first (S1 present, S2 scrub, S4 ring, S5 window, S3 text in parallel; P0 = the perf baseline), ONE new workspace repo (`minplatform` [name]) with the canon in `docs/`, `min-ui` born inside a QCView-shaped reference app, minNotes the SECOND consumer, gates G1/G2; rows #109–118. **118 rows, 8 ruled. 2026-11-06 the first 'go' was GIVEN and DONE: this repo exists (private), the canon lives here, P0 is measured (`docs/spikes/P0-baseline.md`; Windows owed). Next = the next 'go' (S1 present + S3 text scaffolds) or rulings on #109–118 / #48–108.**
+untouched; rows #101–108). **108 rows, 7 ruled.** THE PATH FORWARD → §21 (2026-11-06): QCView-SHAPED spikes first (S1 present, S2 scrub, S4 ring, S5 window, S3 text in parallel; P0 = the perf baseline), ONE new workspace repo (`minplatform` [name]) with the canon in `docs/`, `min-ui` born inside a QCView-shaped reference app, minNotes the SECOND consumer, gates G1/G2; rows #109–118. **118 rows, 8 ruled. 2026-11-06 the first 'go' was GIVEN and DONE: this repo exists (private), the canon lives here, P0 is measured (`docs/spikes/P0-baseline.md`; Windows owed). S1 + S3 SCAFFOLDED the same day (build + run; wgpu 30 HDR surfaces native — EDR-via-objc2 CLOSED). Next = the spikes proper (S1 step 1: decode one frame; S3 step 1: AccessKit) or rulings on #109–118 / #48–108.**
 
 **How to resume:** read §13, then §14 (DnD) + §15 (ufb), both awaiting rulings, then §10–12 for the
 family picture; the Decisions tables are the agenda (108 rows; §15.6 = the latest rulings; §16 widgets/panels; §17 the timeline; §18 OCIO; §19 scopes + guides; §20 the QCBridge contracts; **§21 THE PATH FORWARD — read this before any 'go'**). Memory file: `minnotes-rust-wgpu-port-discussion`.
@@ -2109,12 +2109,17 @@ of actual work; the §16 widget list is reconciled against what the slice needed
 | 114 | Reference-app scope | §21.4 in/out list; G2 = a week of real QC work side by side with Qt QCView | open |
 | 115 | Second consumer / first to ship | minNotes is the second consumer; which app ships first is decided at G2 | open |
 | 116 | Licences in the workspace | per-crate: shared crates MIT OR Apache-2.0, `qcv-ring` MIT, `apps/*` GPL-3.0-or-later; CI licence check | open |
-| 117 | Ecosystem pins | the workspace owns every pin in `[workspace.dependencies]`; one lockfile; winit by git rev until 0.31 ships | open |
+| 117 | Ecosystem pins | the workspace owns every pin in `[workspace.dependencies]`; one lockfile; **pinned 2026-11-06: wgpu 30.0.1, winit 0.30.13 (accesskit_winit 0.34 holds it; 0.31 beta for S5), vello 0.11, parley 0.12, accesskit 0.25** | open (pins taken) |
 | 118 | `min-paths` now | crate #1, consumed by ufb via cxx-qt in parallel with Phase 1 (optional) | open |
 
 **The first "go" — GIVEN 2026-11-06:** "go ahead and create the minplatform repo, move the canon, run P0".
 DONE the same day: private repo `github.com/cbkow/minplatform` (workspace skeleton, `CLAUDE.md`, this canon in
 `docs/`), **P0 MEASURED on macOS → `docs/spikes/P0-baseline.md`** (decoder floor, QCView startup/pacing/seek/
 scrub/memory from Metal System Traces with no instrumentation, minNotes typing/startup; Windows owed; the one
-number P0 could not take = QCView's per-video-frame lateness → S2's harness). S1 + S3 scaffolds NOT started —
-they wait for the next "go". Row 110's name `minplatform` is thereby RULED; rows 109/111–118 still open.
+number P0 could not take = QCView's per-video-frame lateness → S2's harness). **S1 + S3 SCAFFOLDED 2026-11-06** on "let's continue": `spikes/s1-present` (wgpu 30 window, Rgba16Float swapchain,
+EDR ramp, `--edr`/`--pq`) and `spikes/s3-text` (parley 0.12 `PlainEditor` drawn by vello 0.11 with IME hooks) build and
+run; verdict docs `docs/spikes/S1-present.md` + `S3-text.md` hold the pass bars and the remaining plan. Two facts fell
+out already: **wgpu 30 has HDR surfaces natively** (`SurfaceColorSpace::{ExtendedSrgbLinear, Bt2100Pq, Bt2100Hlg…}`;
+wgpu-hal sets the CAMetalLayer EDR flag + colourspace and DX12's `SetColorSpace1` itself → the §11/§12/§18 "EDR via
+objc2" item is CLOSED), and `accesskit_winit` 0.34 pins winit 0.30.13 (the 0.31 beta waits for S5). Row 110 RULED;
+rows 109/111–118 still open.

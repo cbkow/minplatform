@@ -99,7 +99,7 @@ mod mac {
         let Some(layer) = view.layer() else { println!("layer: view has no layer"); return };
         // wgpu adds its CAMetalLayer as a SUBLAYER of the view's backing layer (NSViewBackingLayer).
         let mut candidates = vec![layer.clone()];
-        if let Some(subs) = layer.sublayers() { candidates.extend(subs.iter().map(|l| l.clone())); }
+        if let Some(subs) = unsafe { layer.sublayers() } { candidates.extend(subs.iter().map(|l| l.clone())); }
         let Some(metal) = candidates.into_iter().find_map(|l| l.downcast::<CAMetalLayer>().ok()) else { println!("layer: no CAMetalLayer on the view or its sublayers"); return };
         let mtm = objc2::MainThreadMarker::new().unwrap();
         let screens: Vec<(f64, f64)> = NSScreen::screens(mtm).iter().map(|s| (s.maximumExtendedDynamicRangeColorComponentValue(), s.maximumPotentialExtendedDynamicRangeColorComponentValue())).collect();
