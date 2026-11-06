@@ -107,3 +107,35 @@ exercised only at equal rates).
 - Latest-wins must not starve: retarget forward within reach, finish the fill otherwise. QCView's literal rule starved at 60 Hz.
 - The rational-time Sequencer gives exact 3:2 cadence and zero drops on 23.976 content on a 60 Hz display with no special
   casing; lateness per frame is a one-line statistic once the clock is rational.
+
+## Windows (rhombus: i9-14900KF, RTX 4090, 2026-11-06) — D3D12VA slots + the software scrub decoder
+Same battery (`C:\qcb-lab\s2-runs.ps1`, desktop launches), DX12 backend, `--hw` = D3D12VA on wgpu's device (`d3d.rs`; the decoders
+open AFTER the GPU so the hw context is wgpu's `ID3D12Device`). **The box has no physical display (P0 §5): presents run at ≈ 13 Hz
+(72–77 ms), so every PACING statistic below (shown fps, lateness, cadence, "frames behind the pointer", shuttle frames/s) is
+the virtual display's, not the Sequencer's** — the macOS section is the pacing record. What IS valid here: decoder answer times,
+the two-slot cut running on two D3D12VA contexts, D3D12VA's behaviour after a flush, CPU.
+
+**Seeks (8 random targets; the scrub decoder answers, the slot resumes):**
+| File | scrub-decoder answer ms p50 / p95 | streaming slot resumes after ms p50 / p95 | macOS |
+|---|---|---|---|
+| ProRes 4K (software both; slice-threaded scrub) | 13.9 / 26.2 | 118 / 124 (frame-threaded software fill) | 15.9 / 17.8 · 68 / 73 |
+| H.264 4K (`--hw`: D3D12VA slots; software frame-threaded scrub) | 116 / 156 | **107 / 163** | 76 / 135 · 278 / 400 |
+**D3D12VA after `avcodec_flush_buffers` recovers in 42–149 ms on H.264** (VideoToolbox: 278–400 and nothing within a sweep) —
+§17.8's question, answered: the Windows hw decoder tolerates seeks. **And the hardware scrub decoder is viable on Windows:**
+`--scrub-hw` on H.264 4K answered in **7.5 ms p50 / 20 p95 / 34 max** at 41 % of a core, vs 42.8 / 53.9 / 61 for the software
+frame-threaded scrub (365 % of a core) — the opposite of Apple, where VideoToolbox is the one to avoid for inter codecs.
+
+**Scrub sweeps (one request per present → only ~40 requests in 2 s here):** ProRes 4K software 18.8 / 24 / 27 ms ready (macOS 5.6 /
+7.6 / 18 — the i9's slice-threaded ProRes decode is ~3× slower than the M5 Max's); H.264 forward 42.8 / 53.9 (each request lands 15
+frames ahead at 13 Hz → a 15-frame fill per request); backward 0.0 / 61 (GOP-wide LRU hits); EXR 28 / 43 / 53 (13 hits of 40).
+**Shuttle:** 13 frames/s at every rate = one per (virtual) refresh; lag = the clock's travel per 77 ms (4 / 7 / 14–15 / 28–30 frames) —
+consistent with "within one refresh", at this refresh.
+**Cut (two slots prewarmed, 200 frames):** ProRes 4K software; **H.264 4K and HEVC10 4K on TWO D3D12VA decoder contexts resident at
+once on the same ID3D12Device** (mid-GOP in-points, 18–20 % of a core): 0 black refreshes on all three; duplicates cannot be judged at
+13 Hz (the cadence histogram is {1, 2} because frames are SKIPPED by the display, not repeated). Two hw contexts at 4K: fine on the
+RTX 4090 (§17.8's VRAM / session question — no limit hit).
+**Play** (same caveat): ProRes 4K software 373 % of a core (frame-threaded decode), H.264 D3D12VA 19 %, HEVC10 D3D12VA 29 %, EXR 386 %.
+
+**Verdict on Windows (partial):** the Sequencer + slots + scrub decoder run unchanged on DX12 / D3D12VA; the decoder-side numbers
+match or beat macOS where the hardware applies (H.264 seeks 107 vs 278 ms on the stream, 7.5 ms hw scrubs) and lag where the CPU
+is slower (software ProRes); **pacing owed on a real display.**
