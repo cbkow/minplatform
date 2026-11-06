@@ -34,7 +34,10 @@ HDR/present story does not hold on wgpu → §10's FFI media platform without a 
 | QCVO zero-copy out, DX12 one-copy out | no | belongs to the output pass (row 105) in Phase 2 |
 | The wgpu-hal PQ-surface bug upstream | no | worked around; the user chose not to post |
 
-## Proposed ruling [proposed]
+## Ruling — GO (the user, 2026-11-06)
+Ruled as proposed below, with rows 109–117 taken as discussed and row 118 REVERSED: `min-paths` is crate #1 now, not parked, because every app in the family uses it.
+
+### The proposal as it was put
 **GO**, with one condition carried into Phase 2: the Windows display numbers (pacing / EDR / PQ) are measured on a real HDR
 monitor before the presenter in `apps/qcv` is called done on Windows. Route A (native passthrough) is the display path; route B stays
 as a test control. The crates to shape from the spikes' findings (the spikes themselves die, row 112): `qcv-ring` (S4: layouts,
