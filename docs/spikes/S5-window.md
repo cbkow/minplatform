@@ -9,7 +9,7 @@ files lands in Finder; HiDPI scale is reported and honoured across a monitor cha
 fullscreen round-trips; a native menu bar with working items exists. Plus the S3 carry-over: does 0.31 fix the text-input
 client (it does not — `selectedRange` is still `{NSNotFound, 0}`, the `replacementRange` TODO stands), so the vendored patch
 moves forward with the pin or the port owns the view.
-**Time box:** 1 week from 2026-11-06. **Status: IN PROGRESS 2026-11-06 — windows / fullscreen / menu bar / clipboard / receive-side types verified by script; drag-out needs a real mouse (AppKit's drag session does not complete on injected events); Windows owed.**
+**Time box:** 1 week from 2026-11-06. **Status: IN PROGRESS 2026-11-06 — windows / fullscreen / menu bar / clipboard / typed receive / single-file + text drag-out (a real file lands in Finder) / self-drop / actions verified by script; multi-file drag-out HANGS in the beta (two fixes tried); Finder → window owed; Windows owed.**
 
 ## Facts from reading winit 0.31.0-beta.4 (before running anything)
 - The API is split into `winit-core` / `winit-appkit` / `winit-win32` (Windows crate not in the local registry yet) with
@@ -48,8 +48,12 @@ the Desktop (a real file must appear), Finder → window.
 | Clipboard | `set_clipboard` + `clipboard()` + fetch round-trip; the type surface for text = `public.utf8-plain-text` + legacy `NSStringPboardType`; an `srt://` URL inside the text survives untouched |
 | Receive-side type names (from the backend source) | file URLs → `TypeHint::UriList` via `readObjectsForClasses` NSURL (+ legacy `NSFilenamesPboardType`), String → Plaintext, HTML → Html; refusal = not calling `set_valid_dnd_actions` (default reject) |
 | Innermost-zone hit test | presses land in window / panel / cell / source as designed (the §14.4 rule in 6 lines) |
-| **Drag-out (`start_drag`)** | the call enters AppKit's `beginDraggingSessionWithItems:event:source:` and **never returns under injected mouse events** (a modal drag loop runs until the deadline; no drag image appears); winit's plumbing is inline on the main thread, so this is AppKit's session not engaging with synthetic HID events. **Needs the real mouse** — the hand test below. |
-| Drag-in from Finder, multi-file, drop-onto-self, actions at drop | pending the same hand test (window A → window B, A → Desktop, Finder → A) |
+| **Drag-out of TEXT or ONE file (`start_drag`)** | works end to end: the OS drag runs (the control — winit's own `dnd` example — behaves the same), window B gets `DragEntered` with types `public.file-url` / `public.utf8-plain-text`, the fetch returns `file:///var/folders/…/s5%20drag%200.txt` (three slashes, percent-encoded), `DragDropped` on the cell with action Copy, `OutgoingDragDropped { Copy }`; **a real file lands in a Finder window** (19 bytes in ~/Downloads, then removed) |
+| Drop-onto-self | detected: the incoming transfer id equals our outgoing one (per app — a per-window check is the owner's) |
+| Actions at drop | the cell zone narrows to Copy on hover and the drop reports Copy; `proposed_action` arrives on every `DragPosition` |
+| **Drag-out of THREE files** | **HANGS in winit 0.31.0-beta.4**: `start_drag` → `beginDraggingSessionWithItems:` never returns (a nested loop runs until the deadline; no drag image), with injected events AND with the user's mouse ("nothing yet"). Two vendored fixes tried on the extra `NSDraggingItem`s (give each a dragging frame; write each as its own `public.file-url` `NSPasteboardItem` instead of winit's plain `NSString` writer — the latter is right for Finder regardless) — **neither resolved the hang**; the vendored copy was dropped again. Hypothesis left: the first item's custom `PasteboardWriter` mixed with further items. Single-item drags are unaffected. Upstream material; for the port, multi-file drag-out stays a native-layer item (§14.3's `NSDraggingSource` route) until winit has it. |
+| Drag-in from Finder (real `public.file-url` items, multi-select) | owed — by hand or a Finder-row scripted drag |
+| Press-start | the first scaffold started the drag on the press and AppKit's session never engaged; from the move past 6 px (§14.2) it does — the rule holds for winit too |
 **The hand test:** `cargo run --release -p s5-window -- --dual`, then drag the orange box (bottom-right of window A) into window B's green cell, then onto the Desktop (three `s5 drag N.txt` files must appear), then drag any two files from Finder into window A's blue panel. The log prints `s5: …` lines for every step: `drag-out started`, `DRAG ENTERED … types`, zone transitions, `DROPPED … zone … action`, `RECEIVED … N URIs`, `OUTGOING … dropped with action`, `[OUR OWN DRAG — drop-onto-self]` when it lands back on A.
 
 ## Remaining plan

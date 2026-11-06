@@ -53,6 +53,9 @@ struct App {
     gpu: Option<Gpu>, wins: HashMap<WindowId, Win>, dual: bool, seconds: f32, t0: Option<Instant>,
     fetches: HashMap<AsyncRequestSerial, (WindowId, DataTransferId, &'static str)>, outgoing: Option<DataTransferId>, incoming: Option<DataTransferId>,
     temp_files: Vec<std::path::PathBuf>, drags_in: u32, drops: u32, received: u32,
+    press: Option<(WindowId, PhysicalPosition<f64>)>,
+    finished: bool,
+    payload: String,   // text | one | three — what the outgoing drag carries (isolating the file-URL path)   // a press in the source zone; the drag starts on movement past 6 px (§14.2: never press-start)
 }
 
 impl App {
@@ -96,10 +99,11 @@ impl App {
         self.temp_files = files;
         let icon: Vec<u8> = (0..32 * 32).flat_map(|_| [230u8, 140, 60, 255]).collect();
         let icon = RgbaIcon::new(icon, 32, 32).unwrap().into();
-        let send = DataTransferSendBuilder::new(uris.clone())
-            .with_type(TypeHint::UriList, |u: &Vec<String>, _| Some(SendData::Uris(u.clone())))
-            .with_type(TypeHint::Plaintext, |u, _| Some(format!("minplatform://s5?files={}", u.len())))
-            .build();
+        let uris: Vec<String> = match self.payload.as_str() { "text" => vec![], "one" => uris[..1].to_vec(), _ => uris };
+        let mut b = DataTransferSendBuilder::new(uris.clone());
+        if !uris.is_empty() { b = b.with_type(TypeHint::UriList, |u: &Vec<String>, _| Some(SendData::Uris(u.clone()))); }
+        let send = b.with_type(TypeHint::Plaintext, |u, _| Some(format!("minplatform://s5?files={}", u.len()))).build();
+        println!("s5: payload '{}' = {} URIs + text", self.payload, uris.len());
         eprintln!("s5: calling start_drag…"); let t = Instant::now();
         let r = el.start_drag(id, send, &[DndAction::Copy], Some(DragIcon { icon, offset_x: -16, offset_y: -16 }));
         eprintln!("s5: start_drag returned after {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
@@ -110,7 +114,7 @@ impl App {
     }
 }
 
-impl App { fn finish(&self) { println!("s5: done — drags in {} drops {} received {}; temp files {}", self.drags_in, self.drops, self.received, self.temp_files.len()); } }
+impl App { fn finish(&mut self) { if self.finished { return } self.finished = true; println!("s5: done — drags in {} drops {} received {}; temp files {}", self.drags_in, self.drops, self.received, self.temp_files.len()); } }
 
 impl ApplicationHandler for App {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
@@ -134,12 +138,16 @@ impl ApplicationHandler for App {
             WindowEvent::Moved(p) => if let Some(w) = self.wins.get(&id) { println!("s5: '{}' moved to {:?} on {:?} scale {}", w.label, p, w.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())), w.window.scale_factor()); },
             WindowEvent::RedrawRequested => if let Some(w) = self.wins.get_mut(&id) { w.draw(device, queue, pipeline); },
             WindowEvent::Focused(f) => { if let Some(w) = self.wins.get(&id) { println!("s5: '{}' focused {f}{}", w.label, if !f && self.outgoing.is_some() { " (during an outgoing drag)" } else { "" }); } }
-            WindowEvent::PointerMoved { position, .. } => if let Some(w) = self.wins.get_mut(&id) { w.pointer = position; let z = w.zone_at(position).map(|z| z as i32).unwrap_or(-1); if z != w.hot { w.hot = z; w.window.request_redraw(); } },
+            WindowEvent::PointerMoved { position, .. } => {
+                if let Some(w) = self.wins.get_mut(&id) { w.pointer = position; let z = w.zone_at(position).map(|z| z as i32).unwrap_or(-1); if z != w.hot { w.hot = z; w.window.request_redraw(); } }
+                if let Some((pid, p0)) = self.press { if pid == id { let scale = self.wins[&id].window.scale_factor(); let d = ((position.x - p0.x).powi(2) + (position.y - p0.y).powi(2)).sqrt(); if d > 6.0 * scale { self.press = None; println!("s5: drag threshold passed ({d:.0} px) — starting the OS drag from the move, not the press"); self.start_drag_out(el, id); } } }
+            }
             WindowEvent::PointerButton { state: ElementState::Pressed, button: ButtonSource::Mouse(MouseButton::Left), position, .. } => {
                 let zone = self.wins.get(&id).and_then(|w| w.zone_at(position));
                 println!("s5: press in '{}' at {:?} → zone {:?}", self.wins[&id].label, position, zone.map(|z| ZONES[z].0));
-                if zone == Some(3) { self.start_drag_out(el, id); }
+                if zone == Some(3) { self.press = Some((id, position)); }
             }
+            WindowEvent::PointerButton { state: ElementState::Released, .. } => { self.press = None; }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => match &event.logical_key {
                 Key::Named(NamedKey::Escape) => { self.finish(); el.exit() }
                 Key::Character(c) if c == "f" => { let w = &self.wins[&id]; let fs = w.window.fullscreen(); println!("s5: fullscreen {} → {}", fs.is_some(), fs.is_none()); w.window.set_fullscreen(if fs.is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
@@ -223,6 +231,6 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let el = EventLoop::new().unwrap();
-    let app = App { dual: args.iter().any(|a| a == "--dual"), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), ..Default::default() };
+    let app = App { dual: args.iter().any(|a| a == "--dual"), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), payload: arg("--payload").unwrap_or_else(|| "three".into()), ..Default::default() };
     el.run_app(app).unwrap();
 }
