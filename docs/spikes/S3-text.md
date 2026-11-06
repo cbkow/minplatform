@@ -5,7 +5,7 @@ OSes, accessibility, selection/clipboard/undo — at minNotes' numbers, so `min-
 **Pass bar (vs P0):** CJK IME commits correctly on macOS (marked text) and Windows (TSF); VoiceOver and
 Narrator read the text and caret; per-key ≤ 1 ms p95 in paragraphs (minNotes 2.0.6: 0.98 ms); key→swap p50
 ≤ 3.4 ms; 60 fps at 10k lines.
-**Time box:** runs the whole of Phase 1 (starts day 1). **Status: IN PROGRESS — step 1 (AccessKit) DONE 2026-11-06 on macOS; step 2 (IME) started; Windows owed.**
+**Time box:** runs the whole of Phase 1 (starts day 1). **Status: IN PROGRESS — step 1 (AccessKit) DONE 2026-11-06; step 2 (IME): press-and-hold DONE with a vendored winit patch (the user confirmed the symptom on a real keyboard, the fix is verified by injected events), CJK + dictation owed by hand; Windows owed.**
 
 ## What the scaffold is
 `spikes/s3-text`: a parley 0.12 `PlainEditor<Brush>` drawn by vello 0.11 in a winit 0.30 window (vello's
@@ -36,18 +36,32 @@ action and selects " Shif" in parley** (the VoiceOver caret-move path). A tree b
 2-paragraph text (per-character caret geometry; a 10k-line document will need visible-range runs — step 3). The
 AppleScript `System Events` route is too slow for a walk (minutes) and chokes on the window buttons; the AX C API is instant.
 
-## Step 2 — IME (started 2026-11-06; needs a real keyboard)
-The editor logs every `Ime` event (`ime: Preedit/Commit`). Two automated attempts: AppleScript `keystroke` and a CGEvent
-injector with autorepeat (`tools/s3/keys.swift`). Holding "e" produced "eeee…" with NO popover and NO `Ime` event through
-either — the press-and-hold popover never engaged for synthetic input, which does not separate "winit's NSView lacks the
-press-and-hold hooks" from "the system ignores synthetic repeats for it". This Mac has only U.S. + the character palette
-enabled, so a CJK composition could not be driven at all. **Owed, by hand:** (1) hold a vowel in the spike window and pick an
-accent; (2) enable Japanese (Hiragana) in System Settings → Keyboard → Input Sources, type `nihongo`, space, return — the
-log shows the `Preedit` sequence and the `Commit`, the window shows the candidate list at the caret; (3) dictation. Then
-Windows TSF on the box. The marked-text plumbing itself (`set_compose` / `ime_cursor_area`) is in place from the scaffold.
+## Step 2 — IME: press-and-hold (2026-11-06) — a winit 0.30 gap, FIXED by a vendored patch
+**The symptom (the user, real keyboard; reproduced by `tools/s3/keys.swift`, a CGEvent injector with autorepeat — TextEdit
+gives "kéy" from the same events, so the injection is valid):** holding "e" in a winit window prints "eeee…"; with a partial
+fix the accent popover appears but the repeats still print and the digit that picks the accent prints "2".
+**Root cause, five winit 0.30.13 behaviours in `platform_impl/macos/view.rs`:** (1) `selectedRange` returns `{NSNotFound, 0}`
+— AppKit never shows the popover then (GTK's macOS backend found the same, gtk!532); (2) `attributedSubstringForProposedRange`
+returns nil — the popover needs the held character; (3) repeating letter keyDowns are delivered to the app as text although
+AppKit consumed them for the popover; (4) the accent arrives as `insertText:` with a REPLACEMENT RANGE of length 1 and no marked
+text, which winit drops (its own TODO: "Use _replacement_range"); (5) a commit that arrives outside a keyDown (the popover's own
+window answered the digit) must not set `ImeState::Committed`, or the next ordinary key is swallowed as "IME-related".
+**The patch (`vendor/winit`, `[patch.crates-io]` in the workspace, every change marked "minplatform PATCH"):** track the last
+typed character; `selectedRange` = a caret after it; `attributedSubstringForProposedRange` = that character; a repeating
+letter → `interpretKeyEvents` only; the digit while a letter is held → swallowed (the popover answers it asynchronously); an
+`insertText:` with a replacement range → a synthetic Backspace key event + `Ime::Commit` (the spike's stand-in for the
+`Ime::Replace` event winit lacks); Escape clears the held letter. The zapfast #723 swizzle was the recipe. The app also sets
+`ApplePressAndHoldEnabled` in its own `NSUserDefaults` domain (an unbundled binary; not isolated as necessary).
+**Result:** `k`, hold `e`, `2`, `y`, a typed `é`, Escape → final text `kéyé`, the log shows the synthetic Backspace and
+`Commit("é")`, and the key after the commit flows. Two harness flakes to know: the injected keys go to whatever is frontmost
+(`set frontmost` races — a run that shows only "k" is the harness), and the Japanese-input test cannot be driven here.
+**For the canon:** winit's macOS text-input client is incomplete for a real editor; the port carries this patch (or its own
+NSView, S5's question) until upstream has `Ime::Replace` + the press-and-hold answers. **Owed by hand:** CJK (enable Japanese
+Hiragana in System Settings → Keyboard → Input Sources; type `nihongo`, space, return; the log shows `Preedit` then `Commit`),
+dictation, then Windows TSF.
 
 ## Remaining plan
 1. ~~AccessKit~~ DONE (step 1 above).
-2. IME proof — by hand (step 2 above); Windows TSF on the box.
+2. IME: ~~press-and-hold~~ DONE (patched); CJK + dictation by hand; Windows TSF on the box.
 3. Clipboard (plain + the block MIME later), undo as ops (§17's op model), a 10k-line document, the timing
    harness (per-key and key→swap, mirroring minNotes' probes) → numbers → verdict here.

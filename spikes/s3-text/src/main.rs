@@ -144,7 +144,8 @@ impl ApplicationHandler<AkEvent> for App {
                     Ime::Enabled | Ime::Disabled => {}
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } if event.state.is_pressed() => {
+                println!("key: {:?} text {:?} repeat {} synthetic {}", event.logical_key, event.text, event.repeat, is_synthetic);
                 let shift = self.shift;
                 let mut d = self.editor.driver(&mut self.font_cx, &mut self.layout_cx);
                 match &event.logical_key {
@@ -177,6 +178,9 @@ fn main() {
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let seconds = arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let select = arg("--select").and_then(|v| v.split_once('-').map(|(a, b)| (a.parse().unwrap(), b.parse().unwrap())));
+    // macOS press-and-hold: an app without a bundle (this spike) must opt in through its own NSUserDefaults domain (zapfast #723)
+    #[cfg(target_os = "macos")]
+    unsafe { objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(true, objc2_foundation::ns_string!("ApplePressAndHoldEnabled")); }
     let el = EventLoop::<AkEvent>::with_user_event().build().unwrap();
     let proxy = el.create_proxy();
     let mut app = App { rc: RenderContext::new(), ctx: None, font_cx: FontContext::new(), layout_cx: LayoutContext::new(), editor, shift: false, cursor: (0.0, 0.0), frames: 0, proxy: Some(proxy), seconds, t0: Instant::now(), select, ax_updates: 0, ax_update_us: vec![] };

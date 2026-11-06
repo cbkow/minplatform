@@ -47,3 +47,8 @@ log = "0.4"
 
 [profile.release]
 debug = 1
+
+# S3 (2026-11-06): winit 0.30.13 + ONE patch — `selectedRange` returns a real (empty) range so AppKit's press-and-hold
+# accent popover works (see vendor/winit/src/platform_impl/macos/view.rs, "minplatform PATCH"). Drop when upstream has it.
+[patch.crates-io]
+winit = { path = "vendor/winit" }

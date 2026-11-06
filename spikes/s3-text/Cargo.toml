@@ -22,3 +22,6 @@ peniko = { workspace = true }
 kurbo = { workspace = true }
 accesskit = { workspace = true }
 accesskit_winit = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { workspace = true, features = ["NSUserDefaults", "NSString"] }
