@@ -8,10 +8,16 @@ use std::path::{Path, PathBuf};
 /// Filesystem type substrings that mean "a network share" (minNotes' list; matched against the lowercased type name).
 pub const NETWORK_FS_TYPES: [&str; 7] = ["smb", "afp", "nfs", "cifs", "dav", "sshfs", "ftp"];
 
+/// `QFileInfo::absoluteFilePath` + `QDir::cleanPath`: relative → under the cwd; on Windows a rooted drive-less path
+/// (`/x/y`) gets the cwd's drive, a UNC path stays.
 fn absolute(path: &str) -> String {
+    let os = Os::current();
     let p = Path::new(path);
-    let abs = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir().map(|c| c.join(p)).unwrap_or(p.to_path_buf()) };
-    clean_path(&abs.to_string_lossy(), Os::current())
+    let cwd = || std::env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+    let abs = if p.is_absolute() { path.to_string() }
+        else if os.is_windows() && (path.starts_with('/') || path.starts_with('\\')) && !path.starts_with("//") && !path.starts_with("\\\\") { let c = cwd(); if crate::has_drive(&c) { format!("{}{}", &c[..2], path) } else { path.to_string() } }
+        else { let c = cwd(); if c.is_empty() { path.to_string() } else { format!("{c}/{path}") } };
+    clean_path(&abs, os)
 }
 
 /// The filesystem type name of the mount holding `path` (its nearest existing ancestor), lowercased: `apfs`, `smbfs`,
@@ -158,9 +164,13 @@ mod tests {
         let t = std::env::temp_dir().join("x.png");
         assert!(is_volatile_source(&t.to_string_lossy(), &[]));
         assert!(is_volatile_source("/tmp/x.png", &[]) || cfg!(windows));
-        let extra = PathBuf::from("/some/scratch");
-        assert!(is_volatile_source("/some/scratch/a/b.png", &[extra.clone()]));
-        assert!(!is_volatile_source("/some/scratch-not/a.png", &[extra]));
+        let scratch = std::env::temp_dir().join("mp-scratch");   // an absolute root on either OS
+        let (inside, beside) = (scratch.join("a/b.png"), std::env::temp_dir().join("mp-scratch-not/a.png"));
+        assert!(is_volatile_source(&inside.to_string_lossy(), &[scratch.clone()]));
+        assert!(is_volatile_source(&beside.to_string_lossy(), &[]) );   // under temp anyway
+        let home_root = PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default()).join("mp-vol-x");
+        assert!(is_volatile_source(&home_root.join("f.png").to_string_lossy(), &[home_root.clone()]));
+        assert!(!is_volatile_source(&format!("{}-not/f.png", home_root.to_string_lossy()), &[home_root]));   // the boundary
         if let Some(h) = std::env::var_os("HOME") { assert!(!is_volatile_source(&format!("{}/Documents/x.png", h.to_string_lossy()), &[])); }
     }
     #[test] fn local_volume_is_not_a_share() { assert!(!is_network_source(&std::env::temp_dir().to_string_lossy())); #[cfg(target_os = "macos")] assert_eq!(fs_type_name(Path::new("/")).as_deref(), Some("apfs")); }
