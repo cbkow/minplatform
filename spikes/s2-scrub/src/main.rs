@@ -205,7 +205,9 @@ impl App {
         let mut attrs = Window::default_attributes().with_title("S2 scrub").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         if let Some(m) = self.screen.and_then(|i| monitors.get(i)) { let p = m.position(); attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(p.x + 100, p.y + 100)); self.h.refresh = 1000.0 / (m.refresh_rate_millihertz().unwrap_or(60000) as f32 / 1000.0); }
         let window = Arc::new(el.create_window(attrs).unwrap());
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
+        if cfg!(windows) { idesc.backends = wgpu::Backends::DX12; }   // the canon's Windows backend (and the one d3d12va imports need)
+        let instance = wgpu::Instance::new(idesc);
         let surface = instance.create_surface(window.clone()).expect("surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false, apply_limit_buckets: false })).expect("adapter");
         let caps = surface.get_capabilities(&adapter);

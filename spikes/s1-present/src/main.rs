@@ -35,7 +35,7 @@ struct Gpu { window: Arc<Window>, surface: wgpu::Surface<'static>, device: wgpu:
 #[derive(Default)]
 struct App { gpu: Option<Gpu>, color_space: wgpu::SurfaceColorSpace, file: Option<String>, threads: i32, hw: bool, frames: u32, snap: Option<String>, snap_pipes: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     #[cfg(feature = "ocio")] ocio_opts: Option<ocio::Opts>, snap_blit: Option<wgpu::RenderPipeline>, seconds: f32, t0: Option<Instant>, screen: Option<usize>,
-    src: Option<String>, white: f32, snap_frame: u32, snap_out: Option<String>, verify_pq: bool }
+    src: Option<String>, white: f32, snap_frame: u32, snap_out: Option<String>, verify_pq: bool, backend: Option<String> }
 
 impl App {
     fn init(&mut self, el: &ActiveEventLoop) {
@@ -44,11 +44,15 @@ impl App {
         let mut attrs = Window::default_attributes().with_title("S1 present").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         if let Some(m) = self.screen.and_then(|i| monitors.get(i)) { let p = m.position(); attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(p.x + 100, p.y + 100)); }
         let window = Arc::new(el.create_window(attrs).unwrap());
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // Windows: DX12 is the canon's backend (row 45: DX12 + d3d12va + DXIL passthrough); wgpu's default picks Vulkan on NVIDIA, whose
+        // swapchain offers only 8-bit sRGB here. `--backend vulkan` keeps the comparison available.
+        let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
+        if cfg!(windows) { idesc.backends = if self.backend.as_deref() == Some("vulkan") { wgpu::Backends::VULKAN } else { wgpu::Backends::DX12 }; }
+        let instance = wgpu::Instance::new(idesc);
         let surface = instance.create_surface(window.clone()).expect("surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false, apply_limit_buckets: false })).expect("adapter");
         let info = adapter.get_info();
-        println!("adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+        println!("adapter: {} ({:?}, {:?}, driver {} {})", info.name, info.backend, info.device_type, info.driver, info.driver_info);
         let caps = surface.get_capabilities(&adapter);
         for fc in &caps.format_capabilities { println!("  {:?} supports colour spaces {:?}", fc.format, fc.color_spaces); }
         let format = if caps.formats.contains(&wgpu::TextureFormat::Rgba16Float) { wgpu::TextureFormat::Rgba16Float } else { caps.formats[0] };
@@ -461,7 +465,7 @@ fn main() {
     let screen = arg("--screen").and_then(|v| v.parse().ok());
     let src = arg("--src"); let white = arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0);
     let snap_frame = arg("--snap-frame").and_then(|v| v.parse().ok()).unwrap_or(24); let snap_out = arg("--snap-out"); let verify_pq = args.iter().any(|a| a == "--verify-pq");
-    let mut app = App { color_space, file, threads, hw, snap, seconds, screen, src, white, snap_frame, snap_out, verify_pq, #[cfg(feature = "ocio")] ocio_opts, ..Default::default() };
+    let mut app = App { color_space, file, threads, hw, snap, seconds, screen, src, white, snap_frame, snap_out, verify_pq, backend: arg("--backend"), #[cfg(feature = "ocio")] ocio_opts, ..Default::default() };
     el.run_app(&mut app).unwrap();
     println!("frames presented: {}", app.frames);
 }
