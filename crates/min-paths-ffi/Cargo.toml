@@ -1,0 +1,22 @@
+[package]
+name = "min-paths-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The C ABI of min-paths for the Qt apps (minNotes first): UTF-8 in, Rust-allocated strings out, freed with mp_free. Header: include/min_paths.h (cbindgen)."
+
+[lib]
+name = "min_paths_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+min-paths = { path = "../min-paths", features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+cbindgen = { workspace = true }
