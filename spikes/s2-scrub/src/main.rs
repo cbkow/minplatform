@@ -327,6 +327,8 @@ impl App {
             Mode::Shuttle => { for (rate, shown, lag) in &h.shuttle_rows { let mut l: Vec<f32> = lag.iter().map(|x| *x as f32).collect(); println!("  shuttle {rate:>4.0}×: {shown} frames shown in 1 s, lag behind the clock (frames) p50 {:.0} p95 {:.0} max {:.0}", pct(&mut l, 50.0), pct(&mut l, 95.0), pct(&mut l, 100.0)); } }
         }
         let mut iv = h.stat.present_iv.clone(); println!("present interval ms p50 {:.1} p95 {:.1} max {:.1} over {} presents", pct(&mut iv, 50.0), pct(&mut iv, 95.0), pct(&mut iv, 100.0), iv.len());
+        let wall = h.started.elapsed().as_secs_f64(); let cpu = decode::process_cpu_seconds();
+        println!("process CPU time {cpu:.2} s over {wall:.1} s = {:.0} % of one core (decode threads included)", 100.0 * cpu / wall);
     }
 }
 

@@ -53,6 +53,23 @@ unsafe impl Send for Decoder {}
 
 fn averror(e: i32) -> i32 { -e }
 
+/// This process's CPU time so far (user + kernel), seconds — the "cores used" number without a profiler.
+#[cfg(target_os = "macos")]
+pub fn process_cpu_seconds() -> f64 { unsafe { let mut r: libc::rusage = std::mem::zeroed(); libc::getrusage(libc::RUSAGE_SELF, &mut r); (r.ru_utime.tv_sec as f64 + r.ru_utime.tv_usec as f64 * 1e-6) + (r.ru_stime.tv_sec as f64 + r.ru_stime.tv_usec as f64 * 1e-6) } }
+#[cfg(windows)]
+pub fn process_cpu_seconds() -> f64 {
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    use windows::Win32::Foundation::FILETIME;
+    unsafe {
+        let (mut c, mut e, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        if GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u).is_err() { return 0.0 }
+        let ft = |f: FILETIME| ((f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64) as f64 * 1e-7;
+        ft(k) + ft(u)
+    }
+}
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn process_cpu_seconds() -> f64 { 0.0 }
+
 /// The platform's zero-copy hwaccel: VideoToolbox on macOS, D3D12VA on Windows.
 #[cfg(target_os = "macos")] pub const HW_PIX_FMT: ff::AVPixelFormat = ff::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX;
 #[cfg(target_os = "macos")] pub const HW_DEVICE: ff::AVHWDeviceType = ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX;

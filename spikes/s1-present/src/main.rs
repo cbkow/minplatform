@@ -381,6 +381,8 @@ impl App {
     fn finish(&mut self) {
         #[cfg(feature = "ocio")]
         if let Some(g) = self.gpu.as_ref() { if let Some(st) = g.video.as_ref().and_then(|v| v.ocio.as_ref()) { println!("{}", st.report(&g.device, &g.queue)); } }
+        let wall = self.t0.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0); let cpu = decode::process_cpu_seconds();
+        if wall > 0.0 { println!("process CPU time {cpu:.2} s over {wall:.1} s = {:.0} % of one core (decode threads included)", 100.0 * cpu / wall); }
     }
 }
 
