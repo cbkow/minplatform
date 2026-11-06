@@ -24,4 +24,4 @@ objc2-foundation = { workspace = true, features = ["NSURL", "NSString", "NSArray
 objc2-app-kit = { workspace = true, features = ["NSPasteboard", "NSPasteboardItem"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_NetworkManagement_WNet", "Win32_System_Ole"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Shell", "Win32_NetworkManagement_WNet", "Win32_System_Ole"] }

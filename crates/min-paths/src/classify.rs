@@ -59,7 +59,8 @@ pub fn is_network_source(path: &str) -> bool {
         if p.starts_with("//") || p.starts_with("\\\\") { return true }
         #[cfg(windows)]
         if crate::has_drive(&p) {
-            use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, DRIVE_REMOTE};
+            use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+            const DRIVE_REMOTE: u32 = 4;   // winbase.h; windows-sys 0.60 keeps the constant elsewhere
             let root: Vec<u16> = format!("{}\\", &p[..2]).encode_utf16().chain(std::iter::once(0)).collect();
             return unsafe { GetDriveTypeW(root.as_ptr()) } == DRIVE_REMOTE;
         }
@@ -138,7 +139,7 @@ pub fn share_host_for_path(path: &str) -> Option<String> {
             if libc::statfs(c.as_ptr(), &mut sf) != 0 { return None }
             let from = std::ffi::CStr::from_ptr(sf.f_mntfromname.as_ptr()).to_string_lossy().into_owned();
             if from.starts_with("//") { return share_host_for_path(&from) }
-            if let Some(colon) = from.find(":/") { if from.find('/') > Some(colon) { return Some(from[..colon].to_string()) } }
+            if let Some(colon) = from.find(":/") && from.find('/') > Some(colon) { return Some(from[..colon].to_string()) }
         }
     }
     None

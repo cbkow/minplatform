@@ -1,0 +1,29 @@
+# input ; siblings created in the case directory (the input need not be among them). Row 120's differential test.
+shot_001.png ; shot_001.png shot_002.png shot_003.png
+shot_001.png ; shot_001.png
+shot_001.png ; shot_001.png shot_1.png shot_02.png
+shot_001.png ; shot_001.png shot_0002.png shot_003.png
+A.0001.exr ; A.0001.exr A.0002.exr A.0004.exr notes.txt
+logo_v2.png ; logo_v1.png logo_v2.png logo_v3.png
+shot1.png ; shot1.png shot2.png
+a_00_1.png ; a_00_1.png a_00_2.png a_00_003.png
+image0001.jpg ; image0001.jpg image0002.jpg image_0003.jpg
+0001.exr ; 0001.exr 0002.exr
+_001.png ; _001.png _002.png
+a_001_002.tif ; a_001_002.tif a_001_003.tif a_002_002.tif
+Shot_001.PNG ; shot_002.png SHOT_001.PNG Shot_003.Png
+a_005.tif ; a_001.tif a_002.tif
+50%_001.png ; 50%_001.png 50%_002.png
+x*_0001.png ; x*_0001.png x*_0002.png xy_0003.png
+x?_0001.png ; x?_0001.png x?_0002.png xy_0003.png xyz_0004.png
+noext_001 ; noext_001 noext_002
+a_001.exr ; a_001.exr a_002.exr.bak
+frame-0010.dpx ; frame-0010.dpx frame-0011.dpx frame-0009.dpx frame-0012.dpx frame-00013.dpx
+b.c_100.jpg ; b.c_100.jpg b.c_101.jpg b_102.jpg
+é_001.png ; é_001.png é_002.png É_003.png
+f_001.png ; f_001.png f_002.PNG f_003.Png other_001.png
+v2_0001.png ; v2_0001.png v2_0002.png v2_0003.png
+a-0001-0002.png ; a-0001-0002.png a-0001-0003.png
+pct_%03d_001.png ; pct_%03d_001.png pct_%03d_002.png
+digits_99999999999.png ; digits_99999999999.png digits_99999999998.png
+z_001.png ; z_001.png z_002.png .z_003.png

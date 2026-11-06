@@ -51,7 +51,7 @@ pub fn cut_paths(paths: &[String]) -> Result<(), String> {
 /// Paths on the clipboard: the native file list first, then path-looking lines of plain text.
 pub fn paste_paths() -> Result<Vec<String>, String> {
     #[cfg(windows)] if let Ok(p) = win::get_paths() { if !p.is_empty() { return Ok(p) } }
-    #[cfg(target_os = "macos")] if let Ok(p) = mac::paste_paths() { if !p.is_empty() { return Ok(p) } }
+    #[cfg(target_os = "macos")] if let Ok(p) = mac::paste_paths() && !p.is_empty() { return Ok(p) }
     let text = text::clipboard_text();
     Ok(text.lines().map(str::trim).filter(|l| !l.is_empty() && looks_like_path(l)).map(str::to_string).collect())
 }
@@ -60,7 +60,7 @@ pub fn paste_paths() -> Result<Vec<String>, String> {
 /// is absent; macOS: `Move` only when WE cut these exact paths and nothing wrote since; text: always `Copy`).
 pub fn paste_intent() -> Result<PasteIntent, String> {
     #[cfg(windows)] if let Ok(i) = win::paste_intent() { if !i.paths.is_empty() { return Ok(i) } }
-    #[cfg(target_os = "macos")] if let Ok(paths) = mac::paste_paths() { if !paths.is_empty() { let effect = if registry_matches(&paths) { PasteEffect::Move } else { PasteEffect::Copy }; return Ok(PasteIntent { paths, effect }) } }
+    #[cfg(target_os = "macos")] if let Ok(paths) = mac::paste_paths() && !paths.is_empty() { let effect = if registry_matches(&paths) { PasteEffect::Move } else { PasteEffect::Copy }; return Ok(PasteIntent { paths, effect }) }
     Ok(PasteIntent { paths: paste_paths()?, effect: PasteEffect::Copy })
 }
 
@@ -106,7 +106,7 @@ mod mac {
         let mut out = Vec::new();
         if let Some(objects) = objects {
             for obj in objects.iter() {
-                if let Some(url) = obj.downcast_ref::<NSURL>() { if url.isFileURL() { if let Some(p) = url.path() { out.push(p.to_string()); } } }
+                if let Some(url) = obj.downcast_ref::<NSURL>() && url.isFileURL() && let Some(p) = url.path() { out.push(p.to_string()); }
             }
         }
         Ok(out)
