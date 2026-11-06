@@ -14,5 +14,5 @@ fn main() {
     cc::Build::new().cpp(true).std("c++17").file("src/ocio_shim.cpp").include(&inc).warnings(false).compile("ocio_shim");
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=OpenColorIO");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+    if !cfg!(windows) { println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display()); }   // Windows: the OCIO DLL dir goes on PATH at launch
 }
