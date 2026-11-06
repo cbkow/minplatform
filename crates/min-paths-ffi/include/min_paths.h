@@ -59,6 +59,16 @@ char *mp_translate(const char *src_os,
                    const char *path);
 
 /**
+ * The stateless form (MinRender passes its table on every call): translate `path` between OS tags over a JSON array of
+ * mapping rows — the active table is not touched. Bad JSON → an empty table → separators swapped only.
+ */
+
+char *mp_translate_with(const char *src_os,
+                        const char *dst_os,
+                        const char *path,
+                        const char *json_rows);
+
+/**
  * 1 when the path lives on a network share (UNC / DRIVE_REMOTE / smb-afp-nfs-cifs-dav-sshfs-ftp mount); cannot tell → 0.
  */
 

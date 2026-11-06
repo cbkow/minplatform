@@ -52,6 +52,14 @@ fn json<T: serde::Serialize>(v: &T) -> *mut c_char { out(serde_json::to_string(v
     match (Os::from_tag(&s), Os::from_tag(&d)) { (Some(a), Some(b)) => out(min_paths::map::translate(a, b, &p, &MAPPINGS.lock().unwrap())), _ => out(p) }
 }
 
+/// The stateless form (MinRender passes its table on every call): translate `path` between OS tags over a JSON array of
+/// mapping rows — the active table is not touched. Bad JSON → an empty table → separators swapped only.
+#[unsafe(no_mangle)] pub extern "C" fn mp_translate_with(src_os: *const c_char, dst_os: *const c_char, path: *const c_char, json_rows: *const c_char) -> *mut c_char {
+    let (s, d, p) = (arg(src_os), arg(dst_os), arg(path));
+    let rows: Vec<Mapping> = serde_json::from_str(&arg(json_rows)).unwrap_or_default();
+    match (Os::from_tag(&s), Os::from_tag(&d)) { (Some(a), Some(b)) => out(min_paths::map::translate(a, b, &p, &rows)), _ => out(p) }
+}
+
 // ── classifiers (minNotes' MediaStore) ──
 /// 1 when the path lives on a network share (UNC / DRIVE_REMOTE / smb-afp-nfs-cifs-dav-sshfs-ftp mount); cannot tell → 0.
 #[unsafe(no_mangle)] pub extern "C" fn mp_is_network_source(path: *const c_char) -> c_int { min_paths::classify::is_network_source(&arg(path)) as c_int }
@@ -132,6 +140,14 @@ mod tests {
         assert_eq!(s(mp_resolve_ref(c("not json").as_ptr())), "");
         assert_eq!(mp_mappings_set(c("[not json").as_ptr()), -1);
         assert_eq!(s(mp_to_ref(abs.as_ptr())), r#"{"vol":"01J","rel":["2026","a.png"]}"#);   // table unchanged after bad JSON
+    }
+    #[test] fn stateless_translate_through_the_abi() {
+        let rows = c(r#"[{"win":"Z:\\jobs","mac":"/Volumes/jobs","lin":"/mnt/jobs","enabled":true,"label":"jobs"}]"#);   // MinRender's rows: no id
+        assert_eq!(s(mp_translate_with(c("mac").as_ptr(), c("win").as_ptr(), c("/Volumes/jobs/a/b.exr").as_ptr(), rows.as_ptr())), "Z:\\jobs\\a\\b.exr");
+        assert_eq!(s(mp_translate_with(c("mac").as_ptr(), c("win").as_ptr(), c("/Volumes/jobs-extra/a").as_ptr(), rows.as_ptr())), "\\Volumes\\jobs-extra\\a");   // the boundary check MinRender lacked
+        assert_eq!(s(mp_translate_with(c("win").as_ptr(), c("lin").as_ptr(), c("z:\\JOBS\\x").as_ptr(), rows.as_ptr())), "/mnt/jobs/x");
+        assert_eq!(s(mp_translate_with(c("win").as_ptr(), c("mac").as_ptr(), c("C:\\x").as_ptr(), c("[bad").as_ptr())), "C:/x");
+        assert_eq!(s(mp_translate_with(c("??").as_ptr(), c("mac").as_ptr(), c("C:\\x").as_ptr(), rows.as_ptr())), "C:\\x");
     }
     #[test] fn urls_links_names_through_the_abi() {
         assert_eq!(s(mp_file_url_to_path(c("file:///a%20b/c.png").as_ptr())), if Os::current().is_windows() { "\\a b\\c.png" } else { "/a b/c.png" });
