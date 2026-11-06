@@ -23,6 +23,8 @@ vello = "0.11.0"
 parley = "0.12.0"
 peniko = "0.6"
 kurbo = "0.13"
+# clipboard (S3)
+arboard = { version = "3.6.1", default-features = false }
 # accessibility
 accesskit = "0.25.2"
 accesskit_winit = "0.34.2"

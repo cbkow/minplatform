@@ -7,7 +7,7 @@ commits correctly on macOS — dead keys (Option+e, e → é: marked text then c
 through TSF on Windows; CJK rides the same `setMarkedText` / `firstRectForCharacterRange` path and is chased only on a user
 report; VoiceOver and Narrator read the text and caret; per-key ≤ 1 ms p95 in paragraphs (minNotes 2.0.6: 0.98 ms); key→swap p50
 ≤ 3.4 ms; 60 fps at 10k lines.
-**Time box:** runs the whole of Phase 1 (starts day 1). **Status: IN PROGRESS — step 1 (AccessKit) DONE 2026-11-06; step 2 (IME): press-and-hold DONE with a vendored winit patch (the user confirmed the symptom on a real keyboard, the fix is verified by injected events), CJK + dictation owed by hand; Windows owed.**
+**Time box:** runs the whole of Phase 1 (starts day 1). **Status: steps 1–3 DONE on macOS 2026-11-06 — VERDICT: GO, with ONE ARCHITECTURE RULING (one parley editor per block, never one over the document) and the vendored winit patch. Owed: dictation (by hand), Windows (TSF, Narrator, the numbers on the box).**
 
 ## What the scaffold is
 `spikes/s3-text`: a parley 0.12 `PlainEditor<Brush>` drawn by vello 0.11 in a winit 0.30 window (vello's
@@ -62,8 +62,55 @@ NSView, S5's question) until upstream has `Ime::Replace` + the press-and-hold an
 is marked text (`Preedit`), the second keystroke commits — the same path a CJK composition uses. **Owed by hand:** dictation;
 then Windows TSF on the box. CJK: on report only (the bar above).
 
+## Step 3 — clipboard, undo as ops, a 10k-line document, the timing harness (macOS, 2026-11-06)
+The editor became BLOCKS: one `PlainEditor` per paragraph stacked by the app (Enter splits, Backspace at a block start joins,
+arrows cross blocks, wheel scrolls, the caret is kept in view, only blocks in the viewport are drawn), with `--single` as the
+control (one editor over the whole text). Clipboard = `arboard` (Cmd+C/X/V, Cmd+A); undo = ops derived from the edit (common
+prefix/suffix diff of the block → `{block, at, removed, inserted}`, Cmd+Z / Shift+Cmd+Z, redo cleared on edit) — §8.2's
+op-based undo in 20 lines. The AccessKit tree covers the VISIBLE lines (+ the focused block) with the whole-document value
+cached, and is built only inside `update_if_active` (zero cost with no assistive client). Rendering is ON DEMAND (a frame per
+change; continuous only while the internal probe runs) — the shape minNotes' key→swap number assumes.
+**The harness:** `--lines N` (generated paragraphs), `--probe N` (N keys typed from inside, then undone: per-key = edit +
+relayout; undo cost), injected keys via `tools/s3/keys.swift` (key→present = the `KeyboardInput` receipt → `present()`),
+frame CPU ms (scene build + vello render + present), AccessKit build µs (only when a client is attached).
+
+| Document | Shape | per-key µs p50 / p95 (edit + relayout) | undo µs p50 | frame CPU ms p50 / p95 | scene build ms | AccessKit build µs p50 / p95 |
+|---|---|---|---|---|---|---|
+| 100 lines (7.5k chars) | blocks | **24 / 34** | 23 | 16.5 / 16.9 (continuous, vsync-bound) | 0.10 | 964 / 1084 (old whole-tree build) |
+| 100 lines | ONE editor | 725 / 793 | 713 | 16.6 / 17.0 | 0.18 | 5122 / 5277 |
+| 1 000 lines (75k chars) | blocks | **23 / 32** | 20 | 16.6 / 17.0 | 0.09 | 993 / 1104 |
+| 1 000 lines | ONE editor | **7 012 / 7 259** | 6 987 | 16.6 / 17.0 | 0.89 | 50 866 / 51 119 |
+| 10 000 lines (750k chars) | blocks | **24 / 35** | 24 | 16.6 / 17.0 | 0.22 | 1632 / 1820 |
+| 10 000 lines | ONE editor | the 30-key probe did not finish in 40 s (80 ms initial layout; every key relayouts 750k chars, every frame draws them, every tree walks them) | | | | |
+| **10 000 lines, blocks, on demand, 84 INJECTED keys, AX client active** | blocks | 77 / 110 (the whole key path) | — | **1.33 / 1.96** | 0.10 | **730 / 1017** (visible lines + the cached value) |
+**key→present (injected keys, 10k lines, blocks, on-demand rendering): p50 2.34 ms, p95 3.21 ms** (continuous rendering had
+read 16.4 ms — a key waited for the in-flight frame; the first on-demand run read 5.2 ms with the old whole-document AccessKit
+build in the key path, 3.5 ms of it).
+
+**Reading, against the bar:** per-key ≤ 1 ms p95 → **35 µs** at 10k lines in blocks (minNotes 2.0.6: 984 µs); key→swap p50 ≤
+3.4 ms → **2.3 ms** with VoiceOver-grade accessibility live; 60 fps at 10k lines → **1.3 ms of CPU per frame** (only visible
+blocks are drawn; vello does the rest). **The architecture ruling the control forces: parley's `PlainEditor` relayouts its
+whole buffer on every edit (`update_layout` → `ranged_builder` over `self.buffer`), so one editor over a document costs
+O(document) per key — 7 ms at 1k lines, unusable at 10k. The text node is one editor per block, stacked by the owner, exactly
+minNotes' block model and what §16 already assumed; `min-ui` never gets a "document editor" widget.** Initial layout of 10k
+blocks: 95 ms (lazy layout of off-screen blocks would remove it; not needed for the bar).
+
+## Verdict (macOS, 2026-11-06) — GO
+| Pass bar | Result | |
+|---|---|---|
+| composition commits (dead keys, press-and-hold, dictation) | dead keys + press-and-hold confirmed on the user's keyboard, with the vendored winit patch; dictation owed | met (dictation owed) |
+| VoiceOver reads the text and caret | the AX tree carries value, lines, per-character geometry, selection; selection set from outside round-trips | met (a VoiceOver walk by the user is optional) |
+| per-key ≤ 1 ms p95 in paragraphs | 35 µs (blocks) | met, 28× |
+| key→swap p50 ≤ 3.4 ms | 2.3 ms p50 / 3.2 p95 with AX active | met |
+| 60 fps at 10k lines | 1.3 ms CPU per frame, on demand | met |
+| Windows: TSF, Narrator, the numbers | — | owed on the box |
+**What the GO rests on:** parley 0.12 + vello 0.11 for layout and glyphs (no Masonry), one editor per block, AccessKit 0.25
+through `accesskit_winit` with a full tree per update, the vendored winit 0.30.13 with the five text-input fixes (carried until
+upstream has them, or S5 writes the port's own NSView), `arboard` for plain text. **Not covered:** rich spans and inline
+objects (§16's text node must still host them — parley's `RangedBuilder` styles and `InlineBox` exist, untested here), the
+block MIME on the clipboard, selection across blocks (today a selection lives in one block), RTL and bidi, Windows.
+
 ## Remaining plan
 1. ~~AccessKit~~ DONE (step 1 above).
 2. IME: ~~press-and-hold, dead-key composition~~ DONE on macOS; dictation by hand; Windows TSF on the box.
-3. Clipboard (plain + the block MIME later), undo as ops (§17's op model), a 10k-line document, the timing
-   harness (per-key and key→swap, mirroring minNotes' probes) → numbers → verdict here.
+3. ~~Clipboard, undo as ops, a 10k-line document, the timing harness~~ DONE (step 3 above). Owed: dictation, Windows.

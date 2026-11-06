@@ -14,6 +14,10 @@ for arg in CommandLine.arguments.dropFirst() {
     switch parts[0] {
     case "type": typeText(parts.count > 1 ? parts[1] : "")
     case "key": let c = CGKeyCode(parts[1])!; post(c, down: true); usleep(30_000); post(c, down: false)
+    case "cmd":   // cmd:<keycode> — a Command-modified key press
+        let c = CGKeyCode(parts[1])!
+        let d = CGEvent(keyboardEventSource: nil, virtualKey: c, keyDown: true)!; d.flags = .maskCommand; d.post(tap: .cghidEventTap); usleep(30_000)
+        let u = CGEvent(keyboardEventSource: nil, virtualKey: c, keyDown: false)!; u.flags = .maskCommand; u.post(tap: .cghidEventTap)
     case "hold":
         let c = CGKeyCode(parts[1])!; let ms = Int(parts[2])!
         post(c, down: true); usleep(500_000)
