@@ -93,7 +93,7 @@ const QSLOTS: u32 = 1024;   // timestamp pairs kept (each resolved into its own 
 impl Stage {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, opts: Opts, size: (u32, u32), surface_format: wgpu::TextureFormat, window: (u32, u32), f32_filterable: bool) -> anyhow::Result<Stage> {
         let t0 = std::time::Instant::now();
-        let chain = Chain::open(&opts, false)?;
+        let chain = Chain::open(&opts, cfg!(windows))?;   // MSL 2.0 on Metal, HLSL SM 5.0 on DX12
         let shader = chain.shader();
         let luts = chain.luts();
         println!("OCIO {}: chain '{}' → '{}' / '{}' built in {:.0} ms: shader {} lines, {} uniforms, LUTs: {}", version(), opts.cs, opts.display, opts.view, t0.elapsed().as_secs_f32() * 1000.0, shader.lines().count(), chain.num_uniforms(),
@@ -126,21 +126,44 @@ impl Stage {
                 }
                 call3.sort_by_key(|c| c.0); call2.sort_by_key(|c| c.0);
                 let call: String = call3.iter().chain(call2.iter()).map(|(_, n)| format!("{n}, src_smp, ")).collect();
-                let kernel = format!("#include <metal_stdlib>\nusing namespace metal;\n\n{shader}\nkernel void ocio_apply(\n    texture2d<float, access::sample> src [[texture(0)]],\n    texture2d<float, access::write> dst [[texture(1)]],\n    sampler src_smp [[sampler(0)]],\n{args}    uint2 gid [[thread_position_in_grid]])\n{{\n    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;\n    float4 color = src.read(gid);\n    color = OCIODisplay({call}color);\n    dst.write(color, gid);\n}}\n");
-                let dump = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spikes/s1/out/ocio-kernel.metal");
+                #[cfg(not(windows))]
+                let (kernel, dump) = (format!("#include <metal_stdlib>\nusing namespace metal;\n\n{shader}\nkernel void ocio_apply(\n    texture2d<float, access::sample> src [[texture(0)]],\n    texture2d<float, access::write> dst [[texture(1)]],\n    sampler src_smp [[sampler(0)]],\n{args}    uint2 gid [[thread_position_in_grid]])\n{{\n    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;\n    float4 color = src.read(gid);\n    color = OCIODisplay({call}color);\n    dst.write(color, gid);\n}}\n"), concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spikes/s1/out/ocio-kernel.metal"));
+                #[cfg(windows)]
+                let (kernel, dump) = {
+                    // DX12: OCIO's HLSL SM5 declares its LUT textures + samplers as globals and OCIODisplay(inPixel) reads them. wgpu's DX12
+                    // backend numbers each register class in bind-group-entry order in space0 (SRV t0 = src, t1.. = LUTs; UAV u0 = dst;
+                    // sampler s0), so the declarations get explicit registers and every OCIO sampler becomes the one shared src_smp.
+                    let _ = (&args, &call);
+                    let mut body = String::new();
+                    let mut samplers: Vec<String> = vec![];
+                    for line in shader.lines() {
+                        let t = line.trim();
+                        if t.starts_with("SamplerState") { if let Some(n) = t.strip_prefix("SamplerState").map(|s| s.trim().trim_end_matches(';').trim().to_string()) { samplers.push(n); } continue; }
+                        let mut l = line.to_string();
+                        for (i, lu) in luts.iter().enumerate() { let decl = format!(" {};", lu.name); if t.starts_with("Texture") && t.ends_with(decl.trim_start()) { l = l.replace(&decl, &format!(" {} : register(t{});", lu.name, 1 + i)); } }
+                        body.push_str(&l); body.push('\n');
+                    }
+                    for s in &samplers { body = body.replace(s.as_str(), "src_smp"); }
+                    (format!("Texture2D<float4> src : register(t0);\nRWTexture2D<float4> dst : register(u0);\nSamplerState src_smp : register(s0);\n\n{body}\n[numthreads(16, 16, 1)]\nvoid ocio_apply(uint3 gid : SV_DispatchThreadID)\n{{\n    uint w, h; dst.GetDimensions(w, h);\n    if (gid.x >= w || gid.y >= h) return;\n    float4 color = src.Load(int3(gid.xy, 0));\n    color = OCIODisplay(color);\n    dst[gid.xy] = color;\n}}\n"), concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spikes/s1/out/ocio-kernel.hlsl"))
+                };
+                std::fs::create_dir_all(std::path::Path::new(dump).parent().unwrap()).ok();
                 std::fs::write(dump, &kernel).ok();
                 let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-                // SAFETY: the kernel is OCIO's own MSL plus QCView's shipping wrapper; the bind group layout below is what it declares.
-                let module = unsafe { device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough { label: Some("ocio-msl"), entry_points: Cow::Owned(vec![wgpu::PassthroughShaderEntryPoint { name: "ocio_apply".into(), workgroup_size: (16, 16, 1) }]), msl: Some(Cow::Owned(kernel)), ..Default::default() }) };
+                // SAFETY: the kernel is OCIO's own MSL / HLSL plus QCView's shipping wrapper; the bind group layout below is what it declares.
+                let entry_points = Cow::Owned(vec![wgpu::PassthroughShaderEntryPoint { name: "ocio_apply".into(), workgroup_size: (16, 16, 1) }]);
+                #[cfg(not(windows))]
+                let module = unsafe { device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough { label: Some("ocio-msl"), entry_points, msl: Some(Cow::Owned(kernel)), ..Default::default() }) };
+                #[cfg(windows)]
+                let module = unsafe { device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough { label: Some("ocio-hlsl"), entry_points, hlsl: Some(Cow::Owned(kernel)), ..Default::default() }) };
                 let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("ocio-native"), entries: &entries });
                 let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
                 let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("ocio-native"), layout: Some(&pl), module: &module, entry_point: Some("ocio_apply"), compilation_options: Default::default(), cache: None });
-                if let Some(e) = pollster::block_on(scope.pop()) { anyhow::bail!("passthrough MSL failed (kernel dumped to {dump}): {e}"); }
+                if let Some(e) = pollster::block_on(scope.pop()) { anyhow::bail!("passthrough shader failed (kernel dumped to {dump}): {e}"); }
                 let views: Vec<_> = textures.iter().map(|t| t.create_view(&Default::default())).collect();
                 let mut bes = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&inter_view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&out_view) }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) }];
                 for (i, v) in views.iter().enumerate() { bes.push(wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(v) }); }
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("ocio-native"), layout: &layout, entries: &bes });
-                println!("route A (native passthrough): MSL compiled + pipeline built in {:.0} ms, {} LUT textures bound", t1.elapsed().as_secs_f32() * 1000.0, textures.len());
+                println!("route A (native passthrough): {} compiled + pipeline built in {:.0} ms, {} LUT textures bound", if cfg!(windows) { "HLSL" } else { "MSL" }, t1.elapsed().as_secs_f32() * 1000.0, textures.len());
                 Pass::Native { pipeline, bind, _luts: textures }
             }
             Route::Lut => {
