@@ -26,6 +26,11 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   var o: VsOut; o.pos = vec4(p[i] * u.fit, 0.0, 1.0); o.uv = vec2((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5); return o;
 }
 @fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
+  if (u.mat > 1.5) {   // planar RGB half (EXR, FFmpeg gbrp order G, B, R), linear light already
+    let lin = vec3(textureSample(tv, samp, in.uv).r, textureSample(ty, samp, in.uv).r, textureSample(tu, samp, in.uv).r);
+    if (u.mode > 0.5) { return vec4(clamp(lin, vec3(0.0), vec3(1.0)), 1.0); }
+    return vec4(max(lin, vec3(0.0)), 1.0);
+  }
   var y = textureSample(ty, samp, in.uv).r * u.yscale;
   var cb = textureSample(tu, samp, in.uv).r * u.yscale - 0.5;
   var cr = textureSample(tv, samp, in.uv).r * u.yscale - 0.5;
