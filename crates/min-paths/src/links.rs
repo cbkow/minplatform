@@ -3,14 +3,23 @@
 use crate::url::{file_url_to_path_for, path_to_file_url_for, percent_decode};
 use crate::Os;
 
-/// `ufb:///win/C:/Users/x` · `ufb:///mac/%2FVolumes%2Fjobs%2F%C3%A9` — ufb and minNotes agree on the shape and disagree on
-/// whether `/` is encoded (ufb's `urlencoding::encode` encodes it, minNotes' `toPercentEncoding(norm, "/")` keeps it). Both
-/// parsers decode either. We emit minNotes' readable form (`/` literal); the OS tag is `win` or `mac` (minNotes tags Linux
-/// as `mac` too, since ufb only knows the two).
+/// `ufb:///win/C%3A/Users/x` · `ufb:///mac//Volumes/jobs/%C3%A9` — ufb and minNotes agree on the shape and the strict
+/// codec (`:` → `%3A`) and disagree only on `/` (ufb's `urlencoding::encode` encodes it, minNotes keeps it). Both parsers
+/// decode either; we emit minNotes' readable form (`/` literal). The OS tag is `win` or `mac` (minNotes tags Linux as
+/// `mac` too, since ufb only knows the two).
 pub fn ufb_link_for(path: &str, os: Os) -> String {
     if path.is_empty() { return String::new() }
     let norm = path.replace('\\', "/");
-    format!("ufb:///{}/{}", if os.is_windows() { "win" } else { "mac" }, crate::url::percent_encode_path(&norm))
+    format!("ufb:///{}/{}", if os.is_windows() { "win" } else { "mac" }, encode_link(&norm))
+}
+/// The link codec both older apps use (minNotes `toPercentEncoding(norm, "/")`, ufb `urlencoding::encode`): only the RFC
+/// 3986 unreserved set and `/` stay literal — a drive colon becomes `%3A`, unlike the file-URL codec.
+fn encode_link(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~') { out.push(b as char) } else { out.push_str(&format!("%{b:02X}")) }
+    }
+    out
 }
 pub fn ufb_link(path: &str) -> String { ufb_link_for(path, Os::current()) }
 
@@ -70,7 +79,7 @@ pub fn parse_qcview_link(uri: &str) -> Option<QcviewLink> {
 mod tests {
     use super::*;
     #[test] fn ufb_links_match_minnotes_regression_129() {
-        assert_eq!(ufb_link_for("C:\\a b\\c.mov", Os::Win), "ufb:///win/C:/a%20b/c.mov");
+        assert_eq!(ufb_link_for("C:\\a b\\c.mov", Os::Win), "ufb:///win/C%3A/a%20b/c.mov");   // minNotes regression [129]
         assert_eq!(ufb_link_for("/Volumes/jobs/é/#1.png", Os::Mac), "ufb:///mac//Volumes/jobs/%C3%A9/%231.png");
         assert_eq!(ufb_link_for("", Os::Mac), "");
     }
