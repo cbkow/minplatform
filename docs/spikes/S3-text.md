@@ -2,8 +2,10 @@
 
 **Question (§21.3, §3, §16):** can a from-scratch editor on parley/vello handle real text input — IME on both
 OSes, accessibility, selection/clipboard/undo — at minNotes' numbers, so `min-ui`'s text node is viable?
-**Pass bar (vs P0):** CJK IME commits correctly on macOS (marked text) and Windows (TSF); VoiceOver and
-Narrator read the text and caret; per-key ≤ 1 ms p95 in paragraphs (minNotes 2.0.6: 0.98 ms); key→swap p50
+**Pass bar (vs P0; the IME line REWRITTEN 2026-11-06 — the user types neither CJK nor needs it in the apps):** composition
+commits correctly on macOS — dead keys (Option+e, e → é: marked text then commit), press-and-hold accents, dictation — and
+through TSF on Windows; CJK rides the same `setMarkedText` / `firstRectForCharacterRange` path and is chased only on a user
+report; VoiceOver and Narrator read the text and caret; per-key ≤ 1 ms p95 in paragraphs (minNotes 2.0.6: 0.98 ms); key→swap p50
 ≤ 3.4 ms; 60 fps at 10k lines.
 **Time box:** runs the whole of Phase 1 (starts day 1). **Status: IN PROGRESS — step 1 (AccessKit) DONE 2026-11-06; step 2 (IME): press-and-hold DONE with a vendored winit patch (the user confirmed the symptom on a real keyboard, the fix is verified by injected events), CJK + dictation owed by hand; Windows owed.**
 
@@ -56,12 +58,12 @@ letter → `interpretKeyEvents` only; the digit while a letter is held → swall
 `Commit("é")`, and the key after the commit flows. Two harness flakes to know: the injected keys go to whatever is frontmost
 (`set frontmost` races — a run that shows only "k" is the harness), and the Japanese-input test cannot be driven here.
 **For the canon:** winit's macOS text-input client is incomplete for a real editor; the port carries this patch (or its own
-NSView, S5's question) until upstream has `Ime::Replace` + the press-and-hold answers. **Owed by hand:** CJK (enable Japanese
-Hiragana in System Settings → Keyboard → Input Sources; type `nihongo`, space, return; the log shows `Preedit` then `Commit`),
-dictation, then Windows TSF.
+NSView, S5's question) until upstream has `Ime::Replace` + the press-and-hold answers. **Composition confirmed by the user on a real keyboard (2026-11-06):** Option+e, e prints é in the editor — the dead key
+is marked text (`Preedit`), the second keystroke commits — the same path a CJK composition uses. **Owed by hand:** dictation;
+then Windows TSF on the box. CJK: on report only (the bar above).
 
 ## Remaining plan
 1. ~~AccessKit~~ DONE (step 1 above).
-2. IME: ~~press-and-hold~~ DONE (patched); CJK + dictation by hand; Windows TSF on the box.
+2. IME: ~~press-and-hold, dead-key composition~~ DONE on macOS; dictation by hand; Windows TSF on the box.
 3. Clipboard (plain + the block MIME later), undo as ops (§17's op model), a 10k-line document, the timing
    harness (per-key and key→swap, mirroring minNotes' probes) → numbers → verdict here.
