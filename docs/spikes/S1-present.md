@@ -6,7 +6,7 @@ through OCIO's generated shader (native passthrough; baked LUT as the control) a
 gap > 1 refresh; GPU ≤ 1 ms p95 per frame at 4K 4:2:2; ≤ 0.25 core; footprint ≤ 1.4 GB at 4K; pixel-diff vs
 Qt QCView on the same frame within tolerance; EDR peak + PQ correct on both OSes; OCIO's shader compiles
 unmodified or with a documented patch.
-**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + ZERO-COPY into wgpu) DONE 2026-11-06, picture verified; step 2 (OCIO: native MSL passthrough = EXACT, baked LUT = 8-bit-exact only) DONE 2026-11-06 (per-frame GPU traced); step 3 (pixel-diff vs QCView = 55.9 dB, EDR on the XDR engages, PQ decode exact to the file; the PQ SURFACE found a wgpu-hal 30.0.1 CRASH, worked around) IN PROGRESS 2026-11-06 — the PQ-surface picture + software-decode PQ check wait for an unlocked screen; Windows owed.**
+**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + ZERO-COPY into wgpu) DONE 2026-11-06, picture verified; step 2 (OCIO: native MSL passthrough = EXACT, baked LUT = 8-bit-exact only) DONE 2026-11-06 (per-frame GPU traced); step 3 (pixel-diff vs QCView = 55.9 dB, EDR on the XDR engages, PQ decode exact to the file on both decoders, the PQ surface shown on the XDR after working around a wgpu-hal 30.0.1 CRASH) DONE 2026-11-06. **VERDICT (macOS): GO — see "Verdict" below. Windows numbers owed before gate G1.**
 
 ## What the scaffold is
 `spikes/s1-present`: winit 0.30 + wgpu 30 window drawing a linear-light ramp (0→1 left, 1→4 right; grey /
@@ -172,8 +172,33 @@ symbol's ADDRESS as the CFString (the fault address is the global + 16; ctypes r
 `ExtendedDisplayP3` take the same path. The spike's workaround: configure as `ExtendedSrgbLinear` (wgpu still sets wantsEDR and the
 fp16 drawable) and set the layer's colour space ourselves by name after every configure (`mac::set_layer_colorspace`); the PQ
 source is then passed through encoded (BT.2020 matrix, no EOTF). **The upstream report is owed (a one-line fix: read the pointer
-stored at the symbol, not the symbol's address).** The PQ-surface picture on the XDR and the software-decode PQ check wait for an
-unlocked screen.
+stored at the symbol, not the symbol's address).**
+
+**The PQ-surface picture (screen unlocked, 2026-11-06):** the ramp + the 100 / 1000 / 4000-nit bands displayed on the XDR
+through the BT.2100 PQ layer (481 frames, p95 17.1–17.3 ms, the XDR's EDR headroom 1.0 → 8.8 while up), and the software-decode
+`--verify-pq` numbers are identical to VideoToolbox's — the PQ path is decoder-independent and exact to the file.
+
+**Footprint (4K ProRes, zero-copy, 10 s, `footprint` mid-run / max RSS):** no OCIO 397 MB / 272 MB; OCIO route A 655 MB / 270 MB.
+QCView on the same fixture in P0: 1362 MB / 546 MB. Bar ≤ 1.4 GB: met with room (the OCIO stage's two 4K fp16 textures cost
+~130 MB; the rest is the VideoToolbox pool + Metal).
+
+## Verdict (macOS, 2026-11-06) — GO
+| Pass bar (§21.3 / P0) | S1 result | |
+|---|---|---|
+| open → first frame ≤ 500 ms (QCView 385–500) | 108–195 ms (zero-copy), 40–105 (software) | met |
+| steady present p95 ≤ 20 ms at 60 Hz, no gap > 1 refresh (QCView 17.4–20.5) | 16.9–17.7 ms p95, max ≤ 18.3, with OCIO on | met |
+| GPU ≤ 1 ms p95 per frame at 4K 4:2:2 (QCView per-frame 1.10) | colour pass 0.3–0.5 ms; the UNFUSED spike frame 1.9 ms p95 (two extra passes the presenter graph fuses) | stage cost met; frame cost needs the fused graph — not a wgpu limit |
+| ≤ 0.25 core | 10 % of a core mean | met |
+| footprint ≤ 1.4 GB at 4K (QCView 1.36 GB) | 0.40–0.66 GB | met |
+| pixel-diff vs QCView on the same frame within tolerance | 55.9 dB, max 2/255 (identity view; non-trivial chains proved against OCIO's CPU processor instead) | met |
+| EDR peak + PQ correct on both OSes | macOS: EDR engages on the XDR (headroom 1.0 → 8.5–8.8), PQ decode exact to the file, PQ surface works with the wgpu-hal workaround; **Windows owed** | met on macOS |
+| OCIO's shader compiles unmodified or with a documented patch | unmodified, through wgpu's passthrough, exact | met |
+**What the GO rests on:** wgpu 30's native HDR surfaces (extended-linear unpatched; PQ/HLG need the one-line wgpu-hal fix or
+the layer workaround), VideoToolbox zero-copy through wgpu's hal (§4 / §11 as designed), OCIO route A as the display path with
+route B as the 8-bit fallback (§18 rows 91/92 — evidence in), and a presenter graph that reads the planes inside the first colour
+stage (the only bar the spike itself misses, by construction). **What it does not cover:** Windows (DX12 + D3D12VA + DXIL
+passthrough + PQ on the box — the other half of row 45's pair), the Knee split, dynamic OCIO uniforms, 3:2-aware scheduling
+(player work, S2's territory), audio. Gate G1 waits for S2 (scrub) + S4 (ring) + S5 (window) and the Windows numbers.
 
 ## Remaining plan (in order)
 1. ~~Decode one frame~~ DONE as step 1 + 1b. Formerly: **1b:** VideoToolbox hwaccel in `decode.rs` (`av_hwdevice_ctx_create`, the
@@ -184,4 +209,4 @@ unlocked screen.
 2. ~~OCIO~~ DONE as step 2 (macOS; Windows DXIL owed with the rest of Windows).
 3. ~~Pixel-diff against QCView; EDR on the XDR; PQ~~ step 3 above (macOS; the PQ-surface picture pending the screen; PQ on
    Windows owed with Windows).
-4. Numbers per the pass bar, then the verdict (go / go-with-LUT / no-go) written here.
+4. ~~Numbers per the pass bar, then the verdict~~ written above (GO on macOS, 2026-11-06). Windows owed.
