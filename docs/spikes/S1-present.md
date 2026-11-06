@@ -6,7 +6,7 @@ through OCIO's generated shader (native passthrough; baked LUT as the control) a
 gap > 1 refresh; GPU ≤ 1 ms p95 per frame at 4K 4:2:2; ≤ 0.25 core; footprint ≤ 1.4 GB at 4K; pixel-diff vs
 Qt QCView on the same frame within tolerance; EDR peak + PQ correct on both OSes; OCIO's shader compiles
 unmodified or with a documented patch.
-**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + zero-copy) next; FIRST re-run step 1 on a quiet machine.**
+**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + zero-copy) IN PROGRESS.**
 
 ## What the scaffold is
 `spikes/s1-present`: winit 0.30 + wgpu 30 window drawing a linear-light ramp (0→1 left, 1→4 right; grey /
@@ -32,21 +32,21 @@ their colour spaces, and reads the CAMetalLayer back.
 `ffmpeg-sys-next` with thin RAII (`decode.rs`), decode on its own thread (bounded channel of 3), planes repacked
 to 256-byte pitches and uploaded with `write_texture` into R8Unorm / R16Unorm planes, WGSL does Y'CbCr → BT.709 →
 BT.1886 linear on the `Rgba16Float` + `ExtendedSrgbLinear` surface. Wall-clock pacing: the newest due frame is
-uploaded, the present loop runs every refresh (60 Hz here), like QCView's. Release build, window on the external
-60 Hz display. **CAVEAT: taken while an unrelated heavy CPU task was running on the machine (the user's) — the
-upload/present SPIKES below may be contention, not the path; RE-RUN OWED on a quiet machine before any reading.**
+uploaded, the present loop runs every refresh (60 Hz here), like QCView's. Release build, window on the external 60 Hz display, machine quiet (a first run under an unrelated heavy CPU
+task showed upload spikes of 60–190 ms and present gaps of 75–200 ms at 4K — contention, gone on the re-run):
 | Fixture (sw decode) | open → first frame | decoded fps | shown fps | upload ms p50 / max | present ms p50 / p95 / max |
 |---|---|---|---|---|---|
-| ProRes HQ 4K 4:2:2 10-bit | 231 ms | 24.0 | 20.5–24.0 | 4.5–6.2 / 58–191 | 16.5 / 26–83 / 75–203 |
-| ProRes HQ 1080p | 351 ms | 23.8–24.0 | 23.8–24.0 | 1.2–1.6 / 2–68 | 16.6 / 18.1 / 19–60 |
-| HEVC Main10 4K 4:2:0 | 91 ms | 24.0 | 23.5–24.0 | 3.9–4.1 / 5–42 | 16.6 / 21–22 / 21–62 |
-| H.264 4K 4:2:0 8-bit | 102 ms | 23.9–24.3 | 23.3–23.4 | 2.1–2.4 / 5–83 | 16.7 / 19–50 / 22–100 |
-Reading: open → first frame already beats P0's 385–500 ms. Decode keeps up on every codec (FFmpeg frame threads).
-The CPU path's problem is the UPLOAD: 33 MB per 4K 4:2:2 frame through `write_texture` (wgpu's internal staging)
-spikes to 60–190 ms and drops frames; 4:2:0 and 1080p sit near the pacing bar but still spike. This is the
-expected shape of the control path, not the verdict: the real path is 1b. If the CPU path is ever needed
-(DX12 fallback), the fixes are known — persistent mapped staging ring + `copy_buffer_to_texture`, no repack when
-`linesize % 256 == 0` (true for 4K planes), upload off the render thread.
+| ProRes HQ 4K 4:2:2 10-bit | 105 ms | 23.4–24.3 | 22.9–24.3 | 3.1 / 4.6 | 16.6 / 20.1 / 21.8 |
+| ProRes HQ 1080p | 40 ms | 23.8–24.5 | 23.8–24.0 | 0.95 / 1.4 | 16.6 / 17.7 / 18.2 |
+| HEVC Main10 4K 4:2:0 | 59 ms | 24.0–24.3 | 23.5–24.3 | 2.45 / 3.3 | 16.6 / 19.3 / 20.2 |
+| H.264 4K 4:2:0 8-bit | 59 ms | 23.8–24.5 | 23.8–24.0 | 1.44 / 2.0 | 16.6 / 18.2 / 18.5 |
+Reading, against the P0 bars: open → first frame 40–105 ms vs QCView's 385–500 (the CPU path, no hwaccel yet);
+present p95 ≤ 20.1 ms (bar: ≤ 20) and no interval longer than one refresh (max 21.8 ms; bar: no gap > 1 refresh)
+— the pacing bar is MET by the control path; decode keeps up on every codec (FFmpeg frame threads); the 4K 4:2:2
+CPU upload costs 3.1 ms of the 16.6 ms budget (33 MB per frame through `write_texture`), which is the cost 1b
+removes. The frame loses ~1 fps of "shown" against 23.976 at 4K in some windows: the wall-clock scheduler
+presents the newest DUE frame per refresh and 24-on-60 cadence drops one when a frame lands late by < 1 ms;
+a proper 3:2-aware scheduler (QCView's audio-master servo, §4) is the fix, not the upload.
 Also noted: `TEXTURE_FORMAT_16BIT_NORM` must be requested for R16Unorm planes (present on Metal/DX12).
 
 ## Remaining plan (in order)
