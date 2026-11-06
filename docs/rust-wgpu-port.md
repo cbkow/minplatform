@@ -959,7 +959,7 @@ surface, not a widget; rational time, `qcv-timeline` + one Sequencer, gapless pl
 passthrough as the display path, baked LUT as fallback; rows #91–94). Scopes + guides → §19 (two
 overlay classes: OUTPUT via a vello texture, UI as nodes; rows #95–100). The QCBRIDGE companions audited → §20
 (three byte-stable contracts to FREEZE; `qcv-ring` = QCView's end in Rust with cross-impl tests; companions
-untouched; rows #101–108). **108 rows, 7 ruled.** THE PATH FORWARD → §21 (2026-11-06): QCView-SHAPED spikes first (S1 present, S2 scrub, S4 ring, S5 window, S3 text in parallel; P0 = the perf baseline), ONE new workspace repo (`minplatform` [name]) with the canon in `docs/`, `min-ui` born inside a QCView-shaped reference app, minNotes the SECOND consumer, gates G1/G2; rows #109–118. **118 rows, 8 ruled. 2026-11-06 the first 'go' was GIVEN and DONE: this repo exists (private), the canon lives here, P0 is measured (`docs/spikes/P0-baseline.md`; Windows owed). S1 + S3 SCAFFOLDED the same day (wgpu 30 HDR surfaces native — EDR-via-objc2 CLOSED). **S1 steps 1 + 1b DONE 2026-11-06:** real video (ProRes 4K/1080p, HEVC10 4K, H.264 4K) on the EDR surface, software+CPU-upload control AND VideoToolbox ZERO-COPY into wgpu via hal (`docs/spikes/S1-present.md`): open→first frame 123–195 ms vs P0 385–500, present p95 17 ms vs QCView's 17–20, 0.1 ms/frame on the render thread, picture verified (snapshot; zero-copy vs control PSNR 58.7 dB). Next = S1 step 2 (OCIO passthrough vs baked LUT) + S3 step 1 (AccessKit), or rulings on #109–118 / #48–108.**
+untouched; rows #101–108). **108 rows, 7 ruled.** THE PATH FORWARD → §21 (2026-11-06): QCView-SHAPED spikes first (S1 present, S2 scrub, S4 ring, S5 window, S3 text in parallel; P0 = the perf baseline), ONE new workspace repo (`minplatform` [name]) with the canon in `docs/`, `min-ui` born inside a QCView-shaped reference app, minNotes the SECOND consumer, gates G1/G2; rows #109–118. **118 rows, 8 ruled. 2026-11-06 the first 'go' was GIVEN and DONE: this repo exists (private), the canon lives here, P0 is measured (`docs/spikes/P0-baseline.md`; Windows owed). S1 + S3 SCAFFOLDED the same day (wgpu 30 HDR surfaces native — EDR-via-objc2 CLOSED). **S1 steps 1 + 1b DONE 2026-11-06:** real video (ProRes 4K/1080p, HEVC10 4K, H.264 4K) on the EDR surface, software+CPU-upload control AND VideoToolbox ZERO-COPY into wgpu via hal (`docs/spikes/S1-present.md`): open→first frame 123–195 ms vs P0 385–500, present p95 17 ms vs QCView's 17–20, 0.1 ms/frame on the render thread, picture verified (snapshot; zero-copy vs control PSNR 58.7 dB). **S1 step 2 DONE 2026-11-06:** OCIO 2.5's generated MSL runs through wgpu 30's `PASSTHROUGH_SHADERS` path in QCView's own kernel wrapper, LUTs as wgpu textures, and is EXACT vs OCIO's CPU processor (≤ 0.13/255 on ACES 1.3, Blender AgX 3D-LUT, Blender Filmic 1D+3D-LUT chains at 4K); the baked 65³ LUT (route B) is 8-bit-exact only (worst 1.7/255, ~1 % of samples off at 10-bit); the colour pass costs 0.3–0.5 ms at 4K either way, pacing unchanged (`docs/spikes/S1-present.md`). Rows #91/#92 now have their evidence (A = display path, B = fallback/export). Next = S1 step 3 (pixel-diff vs QCView, EDR on the XDR, PQ) + S3 step 1 (AccessKit), or rulings on #109–118 / #48–108.**
 
 **How to resume:** read §13, then §14 (DnD) + §15 (ufb), both awaiting rulings, then §10–12 for the
 family picture; the Decisions tables are the agenda (108 rows; §15.6 = the latest rulings; §16 widgets/panels; §17 the timeline; §18 OCIO; §19 scopes + guides; §20 the QCBridge contracts; **§21 THE PATH FORWARD — read this before any 'go'**). Memory file: `minnotes-rust-wgpu-port-discussion`.
@@ -1714,19 +1714,24 @@ the pair; Vulkan would be SPIR-V passthrough (OCIO GLSL → glslang → SPIR-V),
 ### 18.4 Added decisions
 | # | Decision | Proposed default | Status |
 |---|---|---|---|
-| 91 | OCIO display path | **A: native passthrough** (MSL / DXIL) inside `min-present`'s opaque-native-pass slot; QCView's wrapper code ported | open |
-| 92 | OCIO fallback + export | **B: baked shaper + 3D LUT** as a WGSL stage; also the export baker | open |
+| 91 | OCIO display path | **A: native passthrough** (MSL / DXIL) inside `min-present`'s opaque-native-pass slot; QCView's wrapper code ported | open — **evidence in (S1 step 2, 2026-11-06): exact on Metal, 0.3–0.5 ms at 4K; DXIL owed with Windows** |
+| 92 | OCIO fallback + export | **B: baked shaper + 3D LUT** as a WGSL stage; also the export baker | open — **evidence in (S1 step 2): 65³ = 8-bit-exact, NOT 10-bit-exact (worst 1.7/255) — a fallback, never the display path for 10-bit review** |
 | 93 | Presenter graph shape | 5 stages with the Knee linear stage between two OCIO halves; minColor = WGSL stage; engine switch = graph re-plumb | open (refines §11.2) |
 | 94 | OCIO stays C++ via FFI | yes (restated from §10.3): `ocio-sys`-style bindings owned by us; configs bundled as today | open |
 
 ### 18.5 Verify
-- The exact wgpu feature + descriptor names at the pinned version (25 → 30 moved them twice); the
-  `unsafe` experimental gate is acceptable for a shipping app (it is a compile-time opt-in, not UB).
-- Metal: can the passthrough MSL be a compute kernel bound to wgpu-created textures/buffers with
-  wgpu's argument layout (binding slot mapping between wgpu's bind groups and raw MSL `[[texture(n)]]`).
+- ~~The exact wgpu feature + descriptor names at the pinned version~~ **CLOSED by S1 step 2 (2026-11-06):** wgpu 30 =
+  `Features::PASSTHROUGH_SHADERS` + `Device::create_shader_module_passthrough(ShaderModuleDescriptorPassthrough { msl | hlsl |
+  dxil | spirv, entry_points: [{ name, workgroup_size }] })`; the gate is an `unsafe fn`, not a cargo feature — fine for shipping.
+- ~~Metal: can the passthrough MSL be a compute kernel bound to wgpu-created textures~~ **CLOSED, YES (S1 step 2):** wgpu's Metal
+  backend numbers buffers / textures / samplers sequentially per stage in bind-group-entry order, so QCView's wrapper
+  (`src texture(0), dst texture(1), src_smp sampler(0), LUTs texture(2..)`) is reproduced by listing the entries in that order;
+  no reflection → explicit pipeline layout, no binding validation. 1D LUTs arrive as `texture2d` 4096×2 R, 3D as `texture3d`;
+  exact vs the CPU processor on ACES 1.3 / Blender AgX / Blender Filmic. Route B measured: 8-bit-exact, not 10-bit-exact.
 - DX12: dxc availability on the box (ship `dxcompiler.dll`), DXIL signing, one entry point per
   module, async compile pipeline (QCView's "seconds" compile).
-- OCIO 2.5's MSL 1D-LUT channel bug (issue #2272) — does QCView's current pin hit it.
+- ~~OCIO 2.5's MSL 1D-LUT channel bug (issue #2272) — does QCView's current pin hit it.~~ **Not on this pin (2.5.0, S1 step 2):**
+  Filmic's red-only 4096-entry 1D LUT through the native path matched the CPU processor at every sample.
 - Route B's error vs route A on the ACES 2.0 display transforms at PQ 1000 nits (a measured
   comparison before calling B a "fallback" for HDR).
 

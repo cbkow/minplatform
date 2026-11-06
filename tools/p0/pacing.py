@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""P0 playback pacing. Usage: pacing.py <trace> [window-start-ms window-end-ms]"""
-import sys
+"""P0 playback pacing. Usage: [PROC=qcview] pacing.py <trace> [window-start-ms window-end-ms]"""
+import os, sys
 from qcv_trace import load, pct
 trace = sys.argv[1]; lo = float(sys.argv[2]) if len(sys.argv) > 2 else 0; hi = float(sys.argv[3]) if len(sys.argv) > 3 else 1e12
-req, comp, gpu, cpu = load(trace)
+req, comp, gpu, cpu = load(trace, os.environ.get("PROC", "qcview"))
 period = 1000 / 23.976
 def report(name, d):
     for wh, ts in sorted(d.items(), key=lambda kv: -len(kv[1])):

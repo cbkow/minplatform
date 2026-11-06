@@ -7,16 +7,16 @@ the native player layer, whose cadence is the video's."""
 import collections
 from xctrace_tables import table, num
 
-def load(trace):
+def load(trace, proc="qcview"):
     size, ws_reads = {}, collections.defaultdict(list)
     qsurf = set()
     for r in table(trace, "metal-io-surface-access"):
         sid = r["surface-id"][0]
         if not sid: continue
         if r["width"][0]: size[sid] = (int(r["width"][0]), int(r["height"][0]))
-        if "qcview" in (r["process"][1] or ""): qsurf.add(sid)
+        if proc in (r["process"][1] or ""): qsurf.add(sid)
         elif "WindowServer" in (r["process"][1] or ""): ws_reads[sid].append(num(r["timestamp"]) / 1e6)
-    qcb = {r["cmdbuffer-id"][0] for r in table(trace, "metal-application-intervals") if "qcview" in (r["process"][1] or "")}
+    qcb = {r["cmdbuffer-id"][0] for r in table(trace, "metal-application-intervals") if proc in (r["process"][1] or "")}
     req = collections.defaultdict(list)       # (w,h) -> [t_ms] present requests
     for r in table(trace, "ca-client-present-request"):
         if r["cmdbuffer-id"][0] in qcb and r["surface-id"][0]:
@@ -27,10 +27,10 @@ def load(trace):
     for d in (req, comp):
         for k in d: d[k].sort()
     gpu = [num(r["duration"]) / 1e6 for r in table(trace, "metal-application-intervals")
-           if "qcview" in (r["process"][1] or "") and r["event-depth"][0] in ("0", None)
+           if proc in (r["process"][1] or "") and r["event-depth"][0] in ("0", None)
            and (r["event-label"][1] or "").startswith("Command Buffer") and num(r["duration"])]
     cpu = sorted((num(r["start"]) / 1e6, num(r["cpu-usage"])) for r in table(trace, "ProcessCPUUsage")
-                 if "qcview" in (r["process"][1] or ""))
+                 if proc in (r["process"][1] or ""))
     return req, comp, gpu, cpu
 
 def pct(v, p):

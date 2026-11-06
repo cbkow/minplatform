@@ -7,6 +7,12 @@ publish = false
 license = "MIT OR Apache-2.0"
 description = "minplatform spike — dies after its verdict (docs/spikes/)"
 
+[features]
+ocio = []   # S1 step 2: needs an installed OpenColorIO 2.5 (build.rs)
+
+[build-dependencies]
+cc = { workspace = true }
+
 [dependencies]
 wgpu = { workspace = true }
 winit = { workspace = true }

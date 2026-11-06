@@ -1,5 +1,5 @@
 // Biplanar (VideoToolbox) Y + CbCr → BT.709 R'G'B' → BT.1886 linear on an extended-linear surface.
-struct U { fit: vec2<f32>, yscale: f32, full_range: f32 };
+struct U { fit: vec2<f32>, yscale: f32, full_range: f32, mode: f32, p0: f32, p1: f32, p2: f32 };   // mode 1 = encoded R'G'B' out (the OCIO input), 0 = BT.1886 linear out
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var ty: texture_2d<f32>;
 @group(0) @binding(2) var tuv: texture_2d<f32>;
@@ -15,5 +15,6 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   var cb = c.x; var cr = c.y;
   if (u.full_range < 0.5) { y = (y - 16.0 / 255.0) * (255.0 / 219.0); cb = cb * (255.0 / 224.0); cr = cr * (255.0 / 224.0); }
   let rgb = clamp(vec3(y + 1.5748 * cr, y - 0.1873 * cb - 0.4681 * cr, y + 1.8556 * cb), vec3(0.0), vec3(1.0));
+  if (u.mode > 0.5) { return vec4(rgb, 1.0); }
   return vec4(pow(rgb, vec3(2.4)), 1.0);
 }

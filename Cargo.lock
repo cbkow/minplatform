@@ -2725,6 +2725,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "cc",
  "crossbeam-channel",
  "env_logger",
  "ffmpeg-sys-next",

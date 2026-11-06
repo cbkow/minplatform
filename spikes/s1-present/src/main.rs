@@ -4,18 +4,21 @@
 //! Verdict and pass bars: docs/spikes/S1-present.md. This binary dies with the spike.
 mod decode;
 #[cfg(target_os = "macos")] mod vt;
+#[cfg(feature = "ocio")] mod ocio;   // S1 step 2: --features ocio
 use std::{collections::VecDeque, sync::Arc, time::Instant};
 use winit::{application::ApplicationHandler, event::WindowEvent, event_loop::{ActiveEventLoop, EventLoop}, window::{Window, WindowId}};
 
-fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
+pub fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
 
 #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms { fit: [f32; 2], yscale: f32, full_range: f32 }
+struct Uniforms { fit: [f32; 2], yscale: f32, full_range: f32, mode: f32, _pad: [f32; 3] }   // mode 1 = encoded R'G'B' out (OCIO input)
 
 struct Video {
     rx: crossbeam_channel::Receiver<decode::Frame>,
     textures: Vec<wgpu::Texture>, bind_group: Option<wgpu::BindGroup>, layout: wgpu::BindGroupLayout, sampler: wgpu::Sampler, ubuf: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline, size: (u32, u32), bps: u32,
+    ubuf_enc: wgpu::Buffer, pipeline_inter: wgpu::RenderPipeline, bi_pipeline_inter: wgpu::RenderPipeline, encoded: bool,
+    #[cfg(feature = "ocio")] ocio: Option<ocio::Stage>, ocio_verify: bool,
     bi_layout: wgpu::BindGroupLayout, bi_pipeline: wgpu::RenderPipeline, held: VecDeque<Held>, imported: u32,
     #[cfg(target_os = "macos")] vt: Option<vt::VtImport>,
     t_open: Instant, clock0: Option<(Instant, f64)>, pending: Option<decode::Frame>, first_presented: bool,
@@ -27,11 +30,16 @@ struct Held { _frame: decode::VtFrame, #[cfg(target_os = "macos")] _imp: vt::Imp
 struct Gpu { window: Arc<Window>, surface: wgpu::Surface<'static>, device: wgpu::Device, queue: wgpu::Queue, config: wgpu::SurfaceConfiguration, ramp: wgpu::RenderPipeline, video: Option<Video> }
 
 #[derive(Default)]
-struct App { gpu: Option<Gpu>, color_space: wgpu::SurfaceColorSpace, file: Option<String>, threads: i32, hw: bool, frames: u32, snap: Option<String>, snap_pipes: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)> }
+struct App { gpu: Option<Gpu>, color_space: wgpu::SurfaceColorSpace, file: Option<String>, threads: i32, hw: bool, frames: u32, snap: Option<String>, snap_pipes: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    #[cfg(feature = "ocio")] ocio_opts: Option<ocio::Opts>, snap_blit: Option<wgpu::RenderPipeline>, seconds: f32, t0: Option<Instant>, screen: Option<usize> }
 
 impl App {
     fn init(&mut self, el: &ActiveEventLoop) {
-        let window = Arc::new(el.create_window(Window::default_attributes().with_title("S1 present").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))).unwrap());
+        let monitors: Vec<_> = el.available_monitors().collect();
+        for (i, m) in monitors.iter().enumerate() { println!("monitor {i}: {:?} {:?} @ {:?} mHz, origin {:?}", m.name(), m.size(), m.refresh_rate_millihertz(), m.position()); }
+        let mut attrs = Window::default_attributes().with_title("S1 present").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
+        if let Some(m) = self.screen.and_then(|i| monitors.get(i)) { let p = m.position(); attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(p.x + 100, p.y + 100)); }
+        let window = Arc::new(el.create_window(attrs).unwrap());
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone()).expect("surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false, apply_limit_buckets: false })).expect("adapter");
@@ -41,7 +49,9 @@ impl App {
         for fc in &caps.format_capabilities { println!("  {:?} supports colour spaces {:?}", fc.format, fc.color_spaces); }
         let format = if caps.formats.contains(&wgpu::TextureFormat::Rgba16Float) { wgpu::TextureFormat::Rgba16Float } else { caps.formats[0] };
         println!("using format:    {:?}  colour space {:?}  scale factor {}  present modes {:?}", format, self.color_space, window.scale_factor(), caps.present_modes);
-        let required_features = adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;   // R16Unorm planes for 10-bit
+        let wanted = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::PASSTHROUGH_SHADERS;   // R16Unorm planes; OCIO f32 LUTs; GPU timing; OCIO MSL
+        let required_features = adapter.features() & wanted;
+        println!("features: wanted {:?}, missing {:?}", wanted, wanted - required_features);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("s1"), required_features, ..Default::default() })).expect("device");
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration { usage: wgpu::TextureUsages::RENDER_ATTACHMENT, format, color_space: self.color_space, width: size.width.max(1), height: size.height.max(1), present_mode: wgpu::PresentMode::AutoVsync, alpha_mode: caps.alpha_modes[0], view_formats: vec![], desired_maximum_frame_latency: 2 };
@@ -75,11 +85,21 @@ impl App {
                 wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
             let bi_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&bi_layout)], immediate_size: 0 });
             let bi_pipeline = make_pipeline(&device, &bi_shader, &bi_pl, format);
+            let pipeline_inter = make_pipeline(&device, &shader, &pl, wgpu::TextureFormat::Rgba16Float);   // the OCIO input pass
+            let bi_pipeline_inter = make_pipeline(&device, &bi_shader, &bi_pl, wgpu::TextureFormat::Rgba16Float);
             #[cfg(target_os = "macos")]
             let vt = if self.hw { let v = vt::VtImport::new(&device); if v.is_none() { println!("zero-copy import unavailable (no Metal hal device)"); } v } else { None };
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-            let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let ubuf_enc = device.create_buffer(&wgpu::BufferDescriptor { label: Some("u-enc"), size: 32, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            #[cfg(feature = "ocio")]
+            let ocio = self.ocio_opts.clone().map(|o| ocio::Stage::new(&device, &queue, o, size, format, (config.width, config.height), required_features.contains(wgpu::Features::FLOAT32_FILTERABLE)).expect("OCIO stage"));
+            #[cfg(feature = "ocio")] let encoded = ocio.is_some();
+            #[cfg(not(feature = "ocio"))] let encoded = false;
+            #[cfg(feature = "ocio")] let ocio_verify = self.ocio_opts.as_ref().map(|o| o.verify).unwrap_or(false);
+            #[cfg(not(feature = "ocio"))] let ocio_verify = false;
             Video { rx, textures: vec![], bind_group: None, layout, sampler, ubuf, pipeline, size, bps: 0, bi_layout, bi_pipeline, held: VecDeque::new(), imported: 0,
+                ubuf_enc, pipeline_inter, bi_pipeline_inter, encoded, #[cfg(feature = "ocio")] ocio, ocio_verify,
                 #[cfg(target_os = "macos")] vt, t_open, clock0: None, pending: None, first_presented: false, shown: 0, shown_total: 0, upload_ms: vec![], decode_ms: vec![], presents: vec![], last_present: None, last_report: Instant::now(), decoded: 0 }
         });
         self.gpu = Some(Gpu { window, surface, device, queue, config, ramp, video });
@@ -87,7 +107,8 @@ impl App {
 
     fn draw(&mut self) {
         let Some(g) = self.gpu.as_mut() else { return };
-        let frame = match g.surface.get_current_texture() { wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f, other => { log::warn!("get_current_texture: {other:?}"); g.surface.configure(&g.device, &g.config); return; } };
+        let frame = match g.surface.get_current_texture() { wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f, wgpu::CurrentSurfaceTexture::Occluded => { std::thread::sleep(std::time::Duration::from_millis(16)); return; }   // display asleep / covered: no frame to draw, do not spin
+            other => { log::warn!("get_current_texture: {other:?}"); g.surface.configure(&g.device, &g.config); return; } };
         let view = frame.texture.create_view(&Default::default());
         let mut uploaded_new = false;
         if let Some(v) = g.video.as_mut() {
@@ -111,7 +132,9 @@ impl App {
                             let yscale = if imp.ten_bit { 65535.0 / 65472.0 } else { 1.0 };   // 10-bit left-justified in 16
                             let (vw, vh, ww, wh) = (v.size.0 as f32, v.size.1 as f32, g.config.width as f32, g.config.height as f32);
                             let fit = if vw / vh > ww / wh { [1.0, (ww / wh) / (vw / vh)] } else { [(vw / vh) / (ww / wh), 1.0] };
-                            g.queue.write_buffer(&v.ubuf, 0, bytemuck::bytes_of(&Uniforms { fit, yscale, full_range: if imp.full_range || f.full_range { 1.0 } else { 0.0 } }));
+                            let fr = if imp.full_range || f.full_range { 1.0 } else { 0.0 };
+                            g.queue.write_buffer(&v.ubuf, 0, bytemuck::bytes_of(&Uniforms { fit, yscale, full_range: fr, mode: 0.0, _pad: [0.0; 3] }));
+                            g.queue.write_buffer(&v.ubuf_enc, 0, bytemuck::bytes_of(&Uniforms { fit: [1.0, 1.0], yscale, full_range: fr, mode: 1.0, _pad: [0.0; 3] }));
                             println!("first VideoToolbox frame: fourcc {:?}, {} planes, {}-bit, full range {}", v.vt.as_ref().unwrap().last_fourcc.to_be_bytes().map(|b| b as char).iter().collect::<String>(), imp.textures.len(), if imp.ten_bit { 10 } else { 8 }, imp.full_range);
                         }
                         let views: Vec<_> = imp.textures.iter().map(|t| t.create_view(&Default::default())).collect();
@@ -119,7 +142,7 @@ impl App {
                             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&v.sampler) },
                             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
                             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
-                            wgpu::BindGroupEntry { binding: 3, resource: v.ubuf.as_entire_binding() }] });
+                            wgpu::BindGroupEntry { binding: 3, resource: if v.encoded { v.ubuf_enc.as_entire_binding() } else { v.ubuf.as_entire_binding() } }] });
                         v.held.push_back(Held { _frame: vtf, _imp: imp, bind_group });
                         while v.held.len() > 3 { v.held.pop_front(); }   // the GPU is ≤ 2 frames behind (frame latency 2)
                         v.imported += 1; if v.imported % 60 == 0 { v.vt.as_ref().unwrap().flush(); }
@@ -137,11 +160,13 @@ impl App {
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&views[0]) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&views[1]) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&views[2]) },
-                        wgpu::BindGroupEntry { binding: 4, resource: v.ubuf.as_entire_binding() }] }));
+                        wgpu::BindGroupEntry { binding: 4, resource: if v.encoded { v.ubuf_enc.as_entire_binding() } else { v.ubuf.as_entire_binding() } }] }));
                     let yscale = if f.bit_depth == 10 { 65535.0 / 1023.0 } else { 1.0 };
                     let (vw, vh, ww, wh) = (v.size.0 as f32, v.size.1 as f32, g.config.width as f32, g.config.height as f32);
                     let fit = if vw / vh > ww / wh { [1.0, (ww / wh) / (vw / vh)] } else { [(vw / vh) / (ww / wh), 1.0] };
-                    g.queue.write_buffer(&v.ubuf, 0, bytemuck::bytes_of(&Uniforms { fit, yscale, full_range: if f.full_range { 1.0 } else { 0.0 } }));
+                    let fr = if f.full_range { 1.0 } else { 0.0 };
+                    g.queue.write_buffer(&v.ubuf, 0, bytemuck::bytes_of(&Uniforms { fit, yscale, full_range: fr, mode: 0.0, _pad: [0.0; 3] }));
+                    g.queue.write_buffer(&v.ubuf_enc, 0, bytemuck::bytes_of(&Uniforms { fit: [1.0, 1.0], yscale, full_range: fr, mode: 1.0, _pad: [0.0; 3] }));
                 }
                 for (tex, p) in v.textures.iter().zip(&f.planes) {
                     g.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &p.data,
@@ -153,8 +178,28 @@ impl App {
             }
         }
         let mut enc = g.device.create_command_encoder(&Default::default());
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("present"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+        #[cfg(feature = "ocio")]
+        let ocio_on = g.video.as_ref().map(|v| v.ocio.is_some()).unwrap_or(false);
+        #[cfg(not(feature = "ocio"))]
+        let ocio_on = false;
+        if ocio_on {
+            #[cfg(feature = "ocio")]
+            {
+                let v = g.video.as_mut().unwrap();
+                let cur = v.held.back().map(|h| (&h.bind_group, &v.bi_pipeline_inter)).or_else(|| v.bind_group.as_ref().map(|b| (b, &v.pipeline_inter)));
+                let st = v.ocio.as_mut().unwrap();
+                if uploaded_new { if let Some((bg, pl)) = cur {
+                    // A: planes → encoded R'G'B' at the video size (the OCIO input), B: the colour pass
+                    { let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("ocio-in"), color_attachments: &[Some(attach(&st.inter_view))], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+                      pass.set_pipeline(pl); pass.set_bind_group(0, bg, &[]); pass.draw(0..3, 0..1); }
+                    st.run(&mut enc);
+                } }
+                // C: post-OCIO → the surface (fit + EOTF)
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("present"), color_attachments: &[Some(attach(&view))], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+                pass.set_pipeline(&st.blit_pipeline); pass.set_bind_group(0, &st.blit_bind, &[]); pass.draw(0..3, 0..1);
+            }
+        } else {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("present"), color_attachments: &[Some(attach(&view))], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
             match g.video.as_ref().and_then(|v| v.held.back().map(|h| (&h.bind_group, &v.bi_pipeline)).or_else(|| v.bind_group.as_ref().map(|b| (b, &v.pipeline)))) {
                 Some((bg, pl)) => { pass.set_pipeline(pl); pass.set_bind_group(0, bg, &[]); pass.draw(0..3, 0..1); }
                 None => { if g.video.is_none() { pass.set_pipeline(&g.ramp); pass.draw(0..3, 0..1); } }
@@ -177,6 +222,8 @@ impl App {
             }
         }
         let snap_due = uploaded_new && self.gpu.as_ref().and_then(|g| g.video.as_ref()).map(|v| v.shown_total == 24).unwrap_or(false);
+        #[cfg(feature = "ocio")]
+        if snap_due { if let Some(g) = self.gpu.as_ref() { if let Some(v) = g.video.as_ref() { if v.ocio_verify { if let Some(st) = v.ocio.as_ref() { println!("{}", st.verify(&g.device, &g.queue)); } } } } }
         if let (Some(path), true) = (self.snap.clone(), snap_due) { self.snapshot(&path); }
     }
 }
@@ -203,7 +250,16 @@ impl App {
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("snap"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
             let v = g.video.as_ref().unwrap();
-            if let Some(hd) = v.held.back() { pass.set_pipeline(bi_pipe); pass.set_bind_group(0, &hd.bind_group, &[]); pass.draw(0..3, 0..1); }
+            #[cfg(feature = "ocio")]
+            let ocio_st = v.ocio.as_ref();
+            #[cfg(not(feature = "ocio"))]
+            let ocio_st: Option<&()> = None;
+            if let Some(st) = ocio_st {
+                #[cfg(feature = "ocio")]
+                { let bp = self.snap_blit.get_or_insert_with(|| st.snapshot_pipeline(&g.device, fmt)); pass.set_pipeline(bp); pass.set_bind_group(0, &st.blit_bind, &[]); pass.draw(0..3, 0..1); }
+                #[cfg(not(feature = "ocio"))] let _ = st;
+            }
+            else if let Some(hd) = v.held.back() { pass.set_pipeline(bi_pipe); pass.set_bind_group(0, &hd.bind_group, &[]); pass.draw(0..3, 0..1); }
             else if let Some(bg) = v.bind_group.as_ref() { pass.set_pipeline(vid_pipe); pass.set_bind_group(0, bg, &[]); pass.draw(0..3, 0..1); }
         }
         enc.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pitch), rows_per_image: Some(h) } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
@@ -224,21 +280,31 @@ impl App {
     }
 }
 
-fn make_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+fn attach(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> { wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } } }
+
+pub fn make_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: None, layout: Some(layout),
         vertex: wgpu::VertexState { module: shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
         fragment: Some(wgpu::FragmentState { module: shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
         primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None })
 }
 
+impl App {
+    fn finish(&mut self) {
+        #[cfg(feature = "ocio")]
+        if let Some(g) = self.gpu.as_ref() { if let Some(st) = g.video.as_ref().and_then(|v| v.ocio.as_ref()) { println!("{}", st.report(&g.device, &g.queue)); } }
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) { if self.gpu.is_none() { self.init(el); } }
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Resized(s) => if let Some(g) = self.gpu.as_mut() { g.config.width = s.width.max(1); g.config.height = s.height.max(1); g.surface.configure(&g.device, &g.config); if let Some(v) = g.video.as_mut() { v.textures.clear(); v.bind_group = None; } },
-            WindowEvent::RedrawRequested => { self.draw(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) = event.logical_key { el.exit(); } }
+            WindowEvent::CloseRequested => { self.finish(); el.exit() }
+            WindowEvent::Resized(s) => if let Some(g) = self.gpu.as_mut() { g.config.width = s.width.max(1); g.config.height = s.height.max(1); g.surface.configure(&g.device, &g.config); if let Some(v) = g.video.as_mut() { v.textures.clear(); v.bind_group = None;
+                #[cfg(feature = "ocio")] if let Some(st) = v.ocio.as_mut() { st.set_fit(&g.queue, (g.config.width, g.config.height)); } } },
+            WindowEvent::RedrawRequested => { self.draw(); if self.seconds > 0.0 && self.t0.get_or_insert_with(Instant::now).elapsed().as_secs_f32() >= self.seconds { self.finish(); el.exit(); return; } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) = event.logical_key { self.finish(); el.exit(); } }
             _ => {}
         }
     }
@@ -272,8 +338,20 @@ fn main() {
     let hw = args.iter().any(|a| a == "--hw");
     let snap = args.iter().position(|a| a == "--snap").and_then(|i| args.get(i + 1).cloned());
     let threads = args.iter().position(|a| a == "--threads").and_then(|i| args.get(i + 1)).and_then(|t| t.parse().ok()).unwrap_or(0);
+    let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
+    #[cfg(feature = "ocio")]
+    let ocio_opts = arg("--ocio").map(|config| {
+        let display = arg("--display").unwrap_or_else(|| "sRGB - Display".into());
+        let eotf = match arg("--eotf").as_deref() { Some("srgb") => 0, Some("2.4") => 1, Some("pq") => 2, Some("none") => 3, _ => if display.contains("PQ") || display.contains("2084") { 2 } else if display.contains("1886") { 1 } else { 0 } };
+        ocio::Opts { config, cs: arg("--cs").unwrap_or_else(|| "Camera Rec.709".into()), display, view: arg("--view").unwrap_or_else(|| "ACES 1.0 - SDR Video".into()),
+            route: if arg("--route").as_deref() == Some("lut") { ocio::Route::Lut } else { ocio::Route::Native }, eotf, verify: args.iter().any(|a| a == "--ocio-verify"), edge: arg("--lut-edge").and_then(|e| e.parse().ok()).unwrap_or(65), gpu_ts: args.iter().any(|a| a == "--gpu-ts") }
+    });
+    #[cfg(not(feature = "ocio"))]
+    if arg("--ocio").is_some() { eprintln!("built without --features ocio"); std::process::exit(2); }
     let el = EventLoop::new().unwrap();
-    let mut app = App { color_space, file, threads, hw, snap, ..Default::default() };
+    let seconds = arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0);   // 0 = until Esc / close
+    let screen = arg("--screen").and_then(|v| v.parse().ok());
+    let mut app = App { color_space, file, threads, hw, snap, seconds, screen, #[cfg(feature = "ocio")] ocio_opts, ..Default::default() };
     el.run_app(&mut app).unwrap();
     println!("frames presented: {}", app.frames);
 }
