@@ -6,7 +6,7 @@ through OCIO's generated shader (native passthrough; baked LUT as the control) a
 gap > 1 refresh; GPU ≤ 1 ms p95 per frame at 4K 4:2:2; ≤ 0.25 core; footprint ≤ 1.4 GB at 4K; pixel-diff vs
 Qt QCView on the same frame within tolerance; EDR peak + PQ correct on both OSes; OCIO's shader compiles
 unmodified or with a documented patch.
-**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + ZERO-COPY into wgpu) DONE 2026-11-06, picture verified; step 2 (OCIO: native MSL passthrough = EXACT, baked LUT = 8-bit-exact only) DONE 2026-11-06 — one clean per-frame GPU trace owed (display locked); step 3 (pixel-diff vs QCView, EDR, PQ) next.**
+**Time box:** 2 weeks from 2026-11-06. **Status: IN PROGRESS — step 1 (software decode, CPU upload = the control) DONE 2026-11-06; step 1b (VideoToolbox + ZERO-COPY into wgpu) DONE 2026-11-06, picture verified; step 2 (OCIO: native MSL passthrough = EXACT, baked LUT = 8-bit-exact only) DONE 2026-11-06 (per-frame GPU traced); step 3 (pixel-diff vs QCView = 55.9 dB, EDR on the XDR engages, PQ decode exact to the file; the PQ SURFACE found a wgpu-hal 30.0.1 CRASH, worked around) IN PROGRESS 2026-11-06 — the PQ-surface picture + software-decode PQ check wait for an unlocked screen; Windows owed.**
 
 ## What the scaffold is
 `spikes/s1-present`: winit 0.30 + wgpu 30 window drawing a linear-light ramp (0→1 left, 1→4 right; grey /
@@ -126,12 +126,54 @@ which the separate planes→RGB pass (0.45 ms) is a spike artefact — the real 
 stage, as QCView's compositeRaw does. The bar "GPU ≤ 1 ms p95 at 4K" is met by the colour pass with room; the whole-frame
 figure needs the fused graph. For the record: QCView's own P0 trace, the same per-frame script (`tools/s1/gpu.py`): 4K ProRes
 p50 0.315 / p95 1.10 ms; this spike without OCIO 0.32 / 0.46 ms.
-**Owed:** one clean traced run per variant with the wgpu timestamp machinery off (`--gpu-ts` now defaults off) — the three
-re-runs hit a locked screen (every frame `Occluded`; the spike now sleeps instead of spinning on it). wgpu's `TIMESTAMP_QUERY`
-on Metal read 0 for about half the compute-pass pairs here, so the trace is the figure of record, as in P0.
+**Per-frame GPU sum (the clean traced runs, timestamp machinery off, `tools/s1/gpu.py` = every command buffer of the frame):**
+no OCIO p50 0.34 / p95 0.48 / max 0.60 ms; ACES route A 0.43 / 1.89 / 2.15; ACES route B 0.41 / 1.73 / 2.11; Filmic route A
+0.42 / 1.89 / 2.17 — p50 is the refresh-only frame, p95 is the frame that runs the colour chain (24 of 60 do). QCView's own P0
+trace through the same script: 0.315 / 1.10 / 428 ms. **So the unfused spike frame costs ~1.9 ms where QCView's costs ~1.1 — over
+the 1 ms bar by the two extra passes (planes→RGB 0.45 + wgpu's pre-pass 0.24) the fused presenter graph removes; the OCIO pass
+itself (0.3–0.5) fits.** wgpu's `TIMESTAMP_QUERY` on Metal read 0 for about half the compute-pass pairs here, so the trace is
+the figure of record, as in P0 (`--gpu-ts` opts the queries back in). The spike sleeps instead of spinning on an `Occluded`
+surface (a locked screen returns that for every frame — check `ioreg -n Root -d1 | grep CGSSessionScreenIsLocked` first).
 **Not covered:** Windows (HLSL SM5 → DXIL through the same shim; the shim already takes the language); dynamic-property
 uniforms (static chains emit none); the Knee split (two OCIO halves around a WGSL stage — the same mechanism twice);
 route B's error on the PQ 1000-nit ACES views (§18.5's last item; the HDR check is step 3's).
+
+## Step 3 — pixel-diff vs QCView, EDR on the built-in XDR, PQ (2026-11-06)
+**Pixel-diff vs QCView's own capture.** QCView: `QCV_CAPTURE_PNG=<png>@6` on the 4K ProRes fixture, paused at frame 0 (its
+default open state), engine OCIO, config Blender 5.2, input pin `sRGB`, display `sRGB` / default view `Standard` (an identity
+chain) — `captureScreenshot()` composites the post-chain frame onto an RGBA8 canvas at the drawable size capped at 4K, 3840×2160
+here. Spike: `--snap-frame 1 --snap-out <png>` = the display-encoded frame at the video size, 8-bit, no OCIO; and the same chain
+through OCIO route A (`--cs sRGB --display sRGB --view Standard`). ffmpeg `psnr` / `ssim` / difference stats on the two PNGs:
+| Spike variant vs QCView | PSNR (R / G / B / avg) | SSIM | max |diff| | mean |diff| |
+|---|---|---|---|---|
+| no OCIO (BT.709 matrix, limited range, bilinear chroma) | 56.2 / 52.8 / 55.8 / **55.9 dB** | 0.9978 | 2 / 255 | 0.24 / 255 |
+| OCIO identity chain, route A | bit-identical to the row above | | | |
+Reading: the two players agree to within 2 codes everywhere (the residual is a fine, picture-wide texture — chroma
+reconstruction, not a colour or range error) — the §21 "pixel-diff within tolerance" bar is met; and OCIO's identity chain is
+exact through the passthrough path. Caveat: this is the IDENTITY view — QCView's active view is a UI setting, not an env var, so
+a non-trivial chain in both players is a hand-driven run (step 2 already proved route A against OCIO's CPU processor on three
+non-trivial chains).
+
+**PQ decode + EDR on the built-in XDR.** A synthetic fixture (`fixtures/pq_ramp_4k.mp4`, generic): a 16-bit PNG — grey ramp
+code = x/(W−1) over the top half, then bands at PQ code 0.5081 / 0.7518 / 0.9026 (100 / 1000 / 4000 nit) — encoded x265 Main10,
+BT.2020 NCL, SMPTE 2084, limited range (tags verified by ffprobe; the earlier `hevc10_pq_4k` fixture is a DECODE fixture whose
+PQ tags VideoToolbox's encoder dropped, so it is not HDR truth). The spike now reads the decoder's colour tags (`--src` overrides):
+BT.2020 matrix + PQ EOTF → extended linear with 1.0 = 100 nit (`--white`), BT.2020 → BT.709 primaries. `--verify-pq` renders the
+linear frame 1:1 and compares to the EOTF: worst relative error 7 % at code 0.065, ~2 % elsewhere, **all of it in the fixture**
+(ffmpeg's own luma at x = 1920 is code 504, 2–3 codes above the intended 502; the spike's 94.19 nit there is PQ(0.5023) exactly).
+1895 of 3840 columns land above 1.0 — real EDR values on the surface — and **the XDR's `maximumExtendedDynamicRangeColorComponentValue`
+rose from 1.0 to 8.5 while the window was up** (the OS engaged EDR for our layer; potential 16). Pacing on the XDR at 60 Hz: p50
+16.7 / p95 17.3 ms. The ramp fixture loops every 3 s, which confuses the spike's wall-clock scheduler at the seam (shown fps
+climbs) — a spike artefact, not a decode one.
+
+**PQ surface — a wgpu-hal bug.** `SurfaceColorSpace::Bt2100Pq` crashes in `Surface::configure` on Metal (SIGBUS in
+`CGColorSpaceCreateWithName`, macOS 26.7.1, wgpu-hal 30.0.1): its dynamic lookup of `kCGColorSpaceITUR_2100_PQ` passes the
+symbol's ADDRESS as the CFString (the fault address is the global + 16; ctypes reading the global's VALUE works). `Bt2100Hlg` and
+`ExtendedDisplayP3` take the same path. The spike's workaround: configure as `ExtendedSrgbLinear` (wgpu still sets wantsEDR and the
+fp16 drawable) and set the layer's colour space ourselves by name after every configure (`mac::set_layer_colorspace`); the PQ
+source is then passed through encoded (BT.2020 matrix, no EOTF). **The upstream report is owed (a one-line fix: read the pointer
+stored at the symbol, not the symbol's address).** The PQ-surface picture on the XDR and the software-decode PQ check wait for an
+unlocked screen.
 
 ## Remaining plan (in order)
 1. ~~Decode one frame~~ DONE as step 1 + 1b. Formerly: **1b:** VideoToolbox hwaccel in `decode.rs` (`av_hwdevice_ctx_create`, the
@@ -140,6 +182,6 @@ route B's error on the PQ 1000-nit ACES views (§18.5's last item; the HDR check
    Then the same table as above. Formerly: `min-image`-shaped FFmpeg binding (raw `ffmpeg-sys-next` 9 + thin RAII, §4) → upload
    (zero-copy CVPixelBuffer → Metal texture via wgpu-hal on macOS; CPU upload first as the control).
 2. ~~OCIO~~ DONE as step 2 (macOS; Windows DXIL owed with the rest of Windows).
-3. Pixel-diff against Qt QCView's `QCV_CAPTURE_PNG` of the same frame; EDR check on the built-in XDR
-   (P0 ran on the external AW3225QF with EDR off), PQ on Windows.
+3. ~~Pixel-diff against QCView; EDR on the XDR; PQ~~ step 3 above (macOS; the PQ-surface picture pending the screen; PQ on
+   Windows owed with Windows).
 4. Numbers per the pass bar, then the verdict (go / go-with-LUT / no-go) written here.

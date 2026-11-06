@@ -34,6 +34,8 @@ pub struct Decoder {
     pub codec: String,
     pub pix_fmt: String,
     pub fps: f64,
+    pub trc: i32,          // AVColorTransferCharacteristic (16 = SMPTE 2084 PQ)
+    pub colorspace: i32,   // AVColorSpace (9 = BT.2020 NCL)
 }
 unsafe impl Send for Decoder {}
 
@@ -73,7 +75,8 @@ impl Decoder {
             let pf = ff::av_get_pix_fmt_name(std::mem::transmute::<i32, ff::AVPixelFormat>((*(*st).codecpar).format));
             let pix_fmt = if pf.is_null() { "?".into() } else { std::ffi::CStr::from_ptr(pf).to_string_lossy().into_owned() };
             Ok(Decoder { fmt, ctx, pkt: ff::av_packet_alloc(), frame: ff::av_frame_alloc(), hw: hwref, stream, time_base: ff::av_q2d((*st).time_base),
-                width: (*ctx).width as u32, height: (*ctx).height as u32, codec, pix_fmt, fps: if fr.den != 0 { fr.num as f64 / fr.den as f64 } else { 0.0 } })
+                width: (*ctx).width as u32, height: (*ctx).height as u32, codec, pix_fmt, fps: if fr.den != 0 { fr.num as f64 / fr.den as f64 } else { 0.0 },
+                trc: (*ctx).color_trc as i32, colorspace: (*ctx).colorspace as i32 })
         }
     }
     /// Next decoded frame; loops to the start at EOF (returns None only on a hard error).
