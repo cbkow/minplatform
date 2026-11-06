@@ -55,7 +55,9 @@ impl Consumer {
         let mut attrs = Window::default_attributes().with_title(format!("S4 ring — {} ({})", self.name, if self.copy { "CPU copy" } else { "zero-copy" })).with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         if let Some(m) = self.screen.and_then(|i| monitors.get(i)) { let p = m.position(); attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(p.x + 100, p.y + 100)); }
         let window = Arc::new(el.create_window(attrs).unwrap());
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
+        if cfg!(windows) { idesc.backends = wgpu::Backends::DX12; }   // row 45: DX12 (wgpu's default picks Vulkan on NVIDIA)
+        let instance = wgpu::Instance::new(idesc);
         let surface = instance.create_surface(window.clone()).expect("surface");
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: Some(&surface), force_fallback_adapter: false, apply_limit_buckets: false })).expect("adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("s4"), ..Default::default() })).expect("device");
@@ -73,7 +75,7 @@ impl Consumer {
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: None, layout: Some(&pl), vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() }, fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }), primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        println!("s4 consumer: {} on {}; polling {} every 2 ms", if self.copy { "CPU copy (control)" } else { "ZERO-COPY (Metal no-copy buffer → linear texture → wgpu hal)" }, adapter.get_info().name, self.name);
+        println!("s4 consumer: {} on {}; polling {} every 2 ms", if self.copy { if cfg!(target_os = "macos") { "CPU copy (control)" } else { "ONE COPY (write_texture from the section — row 104's DX12 answer)" } } else { "ZERO-COPY (Metal no-copy buffer → linear texture → wgpu hal)" }, adapter.get_info().name, self.name);
         self.gpu = Some(Gpu { window, surface, device, queue, config, pipeline, layout, sampler, ubuf });
     }
     fn try_open(&mut self) {
@@ -234,7 +236,7 @@ fn main() {
     if let Some(id) = arg("--output") { output(&id, seconds, !has("--no-launch")); return }
     if let Some(name) = arg("--consume") {
         let el = EventLoop::new().unwrap();
-        let mut app = Consumer { name, copy: has("--copy"), seconds, screen: arg("--screen").and_then(|v| v.parse().ok()), gpu: None, ring: None, #[cfg(target_os = "macos")] slots: None, shown: None, cpu_tex: None, t0: Instant::now(), first: None, frames: 0, import_ms: vec![], latency_ms: vec![], gaps: 0, last_seq: 0, last_report: Instant::now(), polls: 0, opened_at: None };
+        let mut app = Consumer { name, copy: has("--copy") || !cfg!(target_os = "macos"), seconds, screen: arg("--screen").and_then(|v| v.parse().ok()), gpu: None, ring: None, #[cfg(target_os = "macos")] slots: None, shown: None, cpu_tex: None, t0: Instant::now(), first: None, frames: 0, import_ms: vec![], latency_ms: vec![], gaps: 0, last_seq: 0, last_report: Instant::now(), polls: 0, opened_at: None };
         el.run_app(&mut app).unwrap();
         println!("s4 consumer: done — {} frames shown, {} latest-wins skips", app.frames, app.gaps);
         return

@@ -28,4 +28,4 @@ objc2-foundation = { workspace = true }
 objc2-app-kit = { version = "0.3", features = ["NSView", "NSResponder"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60", features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Threading", "Win32_Security"] }
+windows-sys = { version = "0.60", features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Performance"] }

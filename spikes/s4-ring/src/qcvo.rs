@@ -15,7 +15,15 @@ pub fn now_ns() -> i64 {
         let (n, d) = *TB.get_or_init(|| { let mut t = libc::mach_timebase_info { numer: 0, denom: 0 }; libc::mach_timebase_info(&mut t); (t.numer, t.denom) });
         (libc::mach_absolute_time() as u128 * n as u128 / d as u128) as i64
     }
-    #[cfg(not(target_os = "macos"))] { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64 }
+    #[cfg(windows)] unsafe {
+        // QPC in ns — exactly what MSVC's steady_clock::now() is, so a C++ producer's time_value compares to ours.
+        use windows_sys::Win32::System::Performance::*;
+        static F: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+        let f = *F.get_or_init(|| { let mut f = 0i64; QueryPerformanceFrequency(&mut f); f });
+        let mut c = 0i64; QueryPerformanceCounter(&mut c);
+        ((c as i128 * 1_000_000_000) / f as i128) as i64
+    }
+    #[cfg(not(any(target_os = "macos", windows)))] { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64 }
 }
 pub fn name_for(id: &str) -> String { format!("{OUTPUT_RING_PREFIX}{id}") }
 
