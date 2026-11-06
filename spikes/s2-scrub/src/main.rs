@@ -352,7 +352,9 @@ fn main() {
     let has = |k: &str| args.iter().any(|a| a == k);
     let hw = has("--hw");
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
-    let file = arg("--file").unwrap_or_else(|| format!("{fixtures}/prores_4k.mov"));
+    // --cut names its own clips; otherwise --file (default: the 4K ProRes fixture). A clip path is absolute when it has a separator or a drive.
+    let abs = |p: &str| if p.contains('/') || p.contains('\\') || p.contains(':') { p.to_string() } else { format!("{fixtures}/{p}") };
+    let file = arg("--file").unwrap_or_else(|| arg("--cut").and_then(|c| c.split(',').next().map(|part| abs(part.split('@').next().unwrap()))).unwrap_or_else(|| format!("{fixtures}/prores_4k.mov")));
     // probe the file for its rate + length
     let probe = decode::Decoder::open(&file, 0, false).expect("open");
     let rate = Rate::from_f64(probe.fps); let frames = (probe.duration * probe.fps).round() as i64;
@@ -363,7 +365,7 @@ fn main() {
         else if has("--shuttle") { Mode::Shuttle } else if arg("--cut").is_some() { Mode::Cut } else { Mode::Play };
     let tl = if let Some(c) = arg("--cut") {
         // A@in-out,B@in-out (source frames; a path without @ = the whole file)
-        let clips = c.split(',').map(|part| { let (p, r) = part.split_once('@').unwrap_or((part, "")); let (i, o) = r.split_once('-').map(|(i, o)| (i.parse().unwrap(), o.parse().unwrap())).unwrap_or((0, frames)); let path = if p.contains('/') { p.to_string() } else { format!("{fixtures}/{p}") }; Clip { path, src_rate: rate, src_in: i, src_out: o, start: 0 } }).collect();
+        let clips = c.split(',').map(|part| { let (p, r) = part.split_once('@').unwrap_or((part, "")); let (i, o) = r.split_once('-').map(|(i, o)| (i.parse().unwrap(), o.parse().unwrap())).unwrap_or((0, frames)); Clip { path: abs(p), src_rate: rate, src_in: i, src_out: o, start: 0 } }).collect();
         Timeline::playlist(rate, clips)
     } else { Timeline::playlist(rate, vec![Clip { path: file.clone(), src_rate: rate, src_in: 0, src_out: frames, start: 0 }]) };
     let scrub_hw = has("--scrub-hw");   // default SOFTWARE for the scrub decoder — QCView's choice on Apple (VideoToolbox pays a flush/re-prime per seek)
