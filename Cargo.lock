@@ -2804,6 +2804,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "wgpu",
+ "windows",
  "winit",
 ]
 
