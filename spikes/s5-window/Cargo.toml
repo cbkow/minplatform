@@ -1,0 +1,24 @@
+[package]
+name = "s5-window"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform spike — dies after its verdict (docs/spikes/S5-window.md)"
+
+[dependencies]
+# S5 is the workspace's ONLY winit 0.31 user (row 117: the move to 0.31 happens for everyone at once, after S5's verdict).
+winit = { version = "=0.31.0-beta.4", default-features = false }
+wgpu = { workspace = true }
+raw-window-handle = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+anyhow = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSString"] }
+objc2-app-kit = { version = "0.3", features = ["NSMenu", "NSMenuItem", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
