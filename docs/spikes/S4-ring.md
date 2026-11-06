@@ -8,7 +8,7 @@ C++ and the Rust); the REAL After Effects Transmit device shows in the spike win
 frame measured zero-copy (Metal) vs CPU copy (the control; QCView today: 0.95 ms copy + 2.3 ms `replaceRegion` at 4K, parked);
 the QCVO producer is consumed by the real QCBridgeN sink (attach, request/reply, heartbeat, frames taken); DX12 = one copy each
 way, measured (the box). Audio rings: layouts only (no audio in Phase 1 spikes).
-**Time box:** 1 week from 2026-11-06. **Status: IN PROGRESS 2026-11-06 — layouts byte-exact, Rust↔Rust and C++→Rust two-process tests green with ZERO-COPY, the QCVO producer accepted by the real QCBridgeN sink; the AE Transmit device run next; Windows owed.**
+**Time box:** 1 week from 2026-11-06. **Status: VERDICT GO on macOS 2026-11-06 — layouts byte-exact, Rust↔Rust and C++→Rust two-process tests green with ZERO-COPY, the REAL AE Transmit device shown zero-copy at 0.08 ms/frame, the QCVO producer accepted by the real QCBridgeN sink; Windows owed.**
 
 ## What the spike is
 `spikes/s4-ring`: `layout.rs` (RingHeader / SlotHeader / FrameDesc, OutputRingHeader / OutputSlotHeader / OutputFrameDesc /
@@ -51,16 +51,38 @@ the sink reported status `"NDI 'QCView': starting"` → `"0 receivers"`, heartbe
 tracked `published − 1` for 20 s (442 frames), and the sink exited 0 when the ring was retired. **Contract B works end to end
 with an unmodified shipped companion.**
 
-**The real AE Transmit device (in progress):** After Effects 2026 launched by script; a comp with an animated solid created and
-scrubbed through `DoScript` (AppleScript: read the .jsx with `as «class utf8»` and pass the TEXT — the `DoScript "/path"` form
-returns 1 and does nothing; `alert()` blocks the call on a modal). The QCBridgeAE device is enabled in AE's MC prefs
-(`…QCBridgeAE-Transmit.bundle0EnabledVideo true`) **but Mercury Transmit itself is OFF (`TransmitEnabledKey false`)** — AE ›
-Settings › Video Preview › "Enable Mercury Transmit" is a UI preference; once on, scrubbing / preview pushes frames into
-`/qcbae-ae` and `--consume /qcbae-ae` shows them. Owed until that box is ticked.
+**The real AE Transmit device — DONE.** After Effects 2026 with a 1920×1080 comp (an animated solid), "Enable Mercury Transmit"
+ticked by the user, the QCBridgeAE device enabled; the comp scrubbed by script (one `DoScript` per step — a `$.sleep` loop inside
+ONE DoScript blocks AE's UI, so the viewer pushes only ~1 frame/s; one call per step gives ~10 steps/s, osascript-bound).
+AppleScript recipe: read the .jsx with `as «class utf8»` and pass the TEXT — the `DoScript "/path"` form returns 1 and does nothing;
+`alert()` blocks the call on a modal.
+| AE Transmit → Rust consumer (1920×1080, 15 MB slots) | import ms p50 / p95 / max | frames in a 120-step scrub |
+|---|---|---|
+| **zero-copy** (slot → no-copy Metal buffer → linear texture → wgpu hal) | **0.08 / 0.09 / 0.15** | 90 (one per viewer refresh, 0 skips) |
+| CPU copy (`write_texture`, the control) | 1.6 / 2.1 / 2.5 | 59 (70 steps) |
+First frame 0 ms after the ring opened (AE's slots already held frames). What AE's plugin writes into FrameDesc v3: `pixel_format`
+1 = RGBA16F, `source_tier` 3 = Float32, `channel_order` 1 = RGBA, `flags` 0 (not premultiplied), `graphics_white` 0, `value_scale` 1,
+`comp_name` **"After Effects"** (the app name, not the comp), `time_value` −1 over `time_scale` 254016000000 (AE ticks; −1 = unknown).
+So the consumer cannot measure commit→import latency on AE frames — QCAE v3 carries no wall-clock stamp (only this spike's own
+producers put `now_ns` into `time_value`); the measured latency with those producers = the 2-ms poll. The picture: the consumer
+window shows the orange solid moving with the scrub, screenshot `fixtures/s4-ae-live.png`. (The spike blits the RGBA16F values
+straight onto an extended-linear surface, so the solid reads paler than AE's viewer — AE hands display-referred values and the
+presenter's transfer handling is S1's job, not the ring's.)
 
 ## Remaining plan
 1. ~~Layouts + the C++ check~~ green.
 2. ~~Two processes~~ green (Rust→Rust, C++→Rust).
-3. The real AE Transmit device — blocked on AE's "Enable Mercury Transmit" preference (see above); then zero-copy vs copy on AE's frames.
+3. ~~The real AE Transmit device~~ green (zero-copy 0.08 ms vs copy 1.6 ms at 1080p).
 4. ~~The QCVO producer + the real QCBridgeN sink~~ green.
-5. Windows on the box (layouts, `Local\` sections, one-copy DX12). Verdict.
+5. Windows on the box (layouts, `Local\` sections, one-copy DX12) — owed, runs after the macOS verdict.
+
+## Verdict (macOS) — GO, 2026-11-06
+Every macOS line of the pass bar is met: layouts byte-exact (106 checks, 0 mismatches); the REAL After Effects Transmit device shows
+in the spike window with zero-copy import at 0.08 ms per 1080p frame (0.2 ms at 4K from the C++ producer) against 1.6 ms (7 ms at 4K)
+for the copy control and QCView's parked 0.95 + 2.3 ms; the QCVO producer drives the unmodified shipped QCBridgeN sink end to end
+(attach, request/reply, heartbeat, frames taken, clean exit); the ringslot discipline shows no torn frames and no skips.
+`qcv-ring` is therefore shaped: the three `#[repr(C)]` layouts + `ringslot` + `Mapping` + the per-platform zero-copy import, QCView's
+end only; the companions stay untouched (row 103) and the contracts stay frozen (row 101).
+What stays owed before gate G1: Windows (layouts under MSVC, `Local\` sections, DX12 one-copy in + out — row 104's second half);
+audio rings = layouts only in Phase 1 (as the bar said). Contract facts for the port: QCAE v3 has no wall-clock stamp (latency is the
+poll, by design); AE's `comp_name` is the app name; the transfer of AE's RGBA16F values is the presenter's business.

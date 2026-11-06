@@ -121,6 +121,7 @@ impl Consumer {
                 self.import_ms.push(ms(t.elapsed()));
                 if f.desc.time_scale == 1_000_000_000 { let lat = (now_ns() - f.desc.time_value) as f32 / 1e6; if lat.abs() < 10_000.0 { self.latency_ms.push(lat); } }
                 let prev = self.shown.replace((tex, bind, f.slot));
+                if self.frames <= 3 || self.frames % 50 == 0 { eprintln!("s4 consumer: frame {} seq {} time {}/{} fmt {} tier {} order {} flags {:#x} white {} scale {}", self.frames, self.last_seq, f.desc.time_value, f.desc.time_scale, f.desc.pixel_format, f.desc.source_tier, f.desc.channel_order, f.desc.flags, f.desc.graphics_white, f.desc.value_scale); }
                 if self.first.is_none() { self.first = Some(Instant::now()); let name = String::from_utf8_lossy(&f.desc.comp_name[..f.desc.comp_name.iter().position(|&c| c == 0).unwrap_or(0)]).into_owned(); println!("s4 consumer: FIRST FRAME {}x{} rows {} B seq {} comp {:?} flags {:#x} value_scale {} — {:.0} ms after the ring opened", f.desc.width, f.desc.height, f.desc.bytes_per_row, self.last_seq, name, f.desc.flags, f.desc.value_scale, ms(self.opened_at.map(|o| f.t_acquired - o).unwrap_or_default())); }
                 self.frames += 1;
                 self.draw();
