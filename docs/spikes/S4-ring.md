@@ -74,7 +74,7 @@ presenter's transfer handling is S1's job, not the ring's.)
 2. ~~Two processes~~ green (Rust→Rust, C++→Rust).
 3. ~~The real AE Transmit device~~ green (zero-copy 0.08 ms vs copy 1.6 ms at 1080p).
 4. ~~The QCVO producer + the real QCBridgeN sink~~ green.
-5. Windows on the box (layouts, `Local\` sections, one-copy DX12) — owed, runs after the macOS verdict.
+5. ~~Windows on the box (layouts, `Local\` sections, one-copy DX12)~~ green (below); the real companions on Windows (AE Transmit, QCBridgeN) are not installed on rhombus — the contract is the same bytes, covered on macOS.
 
 ## Verdict (macOS) — GO, 2026-11-06
 Every macOS line of the pass bar is met: layouts byte-exact (106 checks, 0 mismatches); the REAL After Effects Transmit device shows
@@ -86,3 +86,31 @@ end only; the companions stay untouched (row 103) and the contracts stay frozen 
 What stays owed before gate G1: Windows (layouts under MSVC, `Local\` sections, DX12 one-copy in + out — row 104's second half);
 audio rings = layouts only in Phase 1 (as the bar said). Contract facts for the port: QCAE v3 has no wall-clock stamp (latency is the
 poll, by design); AE's `comp_name` is the app name; the transfer of AE's RGBA16F values is the presenter's business.
+
+## Windows (rhombus: i9-14900KF, RTX 4090, Windows 11, MSVC 18, 2026-11-06) — layouts, `Local\` sections, one-copy DX12
+Built from a git bundle (`build-spike.ps1 -Pkg s4-ring -NoFeatures`; scripts need `-ExecutionPolicy Bypass` in that ssh shell);
+the C++ producer built with `cl` from `tools/s4/build-cxx.ps1` (vendor/qcbae unmodified); runs on the logged-on desktop via
+`tools/s4/s4-runs.ps1` (a .cmd per run through `C:\qcb-lab\run.ps1`). The Rust end mirrors `ring_mapping.cpp` exactly: `Local\`+name
+(no leading slash) on the pagefile, create = `CreateFileMappingW` with the C++'s 60 × 25 ms wait on `ERROR_ALREADY_EXISTS`, open =
+header view → magic / exact version / `total_size` → full view (a view past the section fails with `ERROR_ACCESS_DENIED` = the
+fstat check), liveness = `OpenProcess` + `GetExitCodeProcess` (access denied counts as alive, like EPERM); the bus clock = QPC in ns,
+which is MSVC's `steady_clock`, so the C++ producer's `time_value` compares to ours. The consumer forces DX12 (row 45).
+**Layouts under MSVC — byte-exact:** `--layout` 106 checks, 0 mismatches (the same `#[repr(C)]` Rust against cl's sizeof/offsetof).
+| Producer → consumer (4K RGBA16F, 3 × 63 MB slots, 24 fps) | import ms p50 / p95 / max | commit → import ms p50 / p95 | frames in 10 s / latest-wins skips |
+|---|---|---|---|
+| Rust producer → Rust consumer, **ONE COPY** (`write_texture` from the section into an RGBA16F texture on DX12) | 5.4–6.2 / 11–17 / 29 | 7–16 / 40–46 | 240 / 43 |
+| **QCBridgeAE's own C++ `SharedRing` (MSVC) → Rust consumer, one copy** | 4.6–6.6 / 7–17 / 28 | 6–19 / 8–52 | 244 / 36 |
+Reading: the sections, the discipline and the cross-implementation test hold on Windows exactly as on macOS — the consumer even
+walked the hand-over correctly (it first found the previous Rust producer's section in state Retired, closed it, then opened the
+C++ producer's fresh one by the same name: a retired section lingers while a handle is open, as `ring_mapping.cpp` says). The
+import number is the one-copy answer row 104 expected: ≈ 5 ms p50 per 4K frame = a 66 MB single-thread memcpy into wgpu's staging
+belt plus the GPU copy (vs 0.2 ms zero-copy on Metal, 7 ms the Metal CPU-copy control). The latency p95 (40–50 ms) and the
+latest-wins skips are the display's: rhombus has only the Parsec/Jump virtual display (≈ 13 Hz, 76 ms per present), so the
+consumer's present blocks and frames pile up — not a ring effect (0 skips on macOS at the same rate). A later refinement for the
+port, not for this spike: a multi-threaded memcpy into a persistently mapped upload buffer + `copy_buffer_to_texture` would cut the
+5 ms to ≈ 1.5 ms; still one copy.
+**QCVO on Windows:** `--output ndi --no-launch` creates `Local\qcview-out-ndi` (94 MB, 3 slots) and retires it cleanly; no sink is
+installed on rhombus (QCBridgeN needs the NDI SDK; After Effects is not on the box), so the real-companion runs stay macOS-only —
+the bytes are the same (layouts byte-exact under MSVC) and the macOS runs covered both companions.
+**Verdict addendum (Windows) — GO for the ring layer:** layouts byte-exact, sections + discipline + liveness proven in two processes
+against the unmodified C++, one-copy DX12 import measured. What Windows still owes is not S4's: pacing on a real display.
