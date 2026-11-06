@@ -36,9 +36,18 @@ action and selects " Shif" in parley** (the VoiceOver caret-move path). A tree b
 2-paragraph text (per-character caret geometry; a 10k-line document will need visible-range runs — step 3). The
 AppleScript `System Events` route is too slow for a walk (minutes) and chokes on the window buttons; the AX C API is instant.
 
-1. AccessKit: `accesskit_winit::Adapter` + a two-node tree (document + text run) with the caret/selection
-   reported; VoiceOver walk.
-2. IME proof: macOS Japanese/Chinese input with candidate window placement; the press-and-hold accent
-   popover; dictation. Windows TSF on the box.
+## Step 2 — IME (started 2026-11-06; needs a real keyboard)
+The editor logs every `Ime` event (`ime: Preedit/Commit`). Two automated attempts: AppleScript `keystroke` and a CGEvent
+injector with autorepeat (`tools/s3/keys.swift`). Holding "e" produced "eeee…" with NO popover and NO `Ime` event through
+either — the press-and-hold popover never engaged for synthetic input, which does not separate "winit's NSView lacks the
+press-and-hold hooks" from "the system ignores synthetic repeats for it". This Mac has only U.S. + the character palette
+enabled, so a CJK composition could not be driven at all. **Owed, by hand:** (1) hold a vowel in the spike window and pick an
+accent; (2) enable Japanese (Hiragana) in System Settings → Keyboard → Input Sources, type `nihongo`, space, return — the
+log shows the `Preedit` sequence and the `Commit`, the window shows the candidate list at the caret; (3) dictation. Then
+Windows TSF on the box. The marked-text plumbing itself (`set_compose` / `ime_cursor_area`) is in place from the scaffold.
+
+## Remaining plan
+1. ~~AccessKit~~ DONE (step 1 above).
+2. IME proof — by hand (step 2 above); Windows TSF on the box.
 3. Clipboard (plain + the block MIME later), undo as ops (§17's op model), a 10k-line document, the timing
    harness (per-key and key→swap, mirroring minNotes' probes) → numbers → verdict here.
