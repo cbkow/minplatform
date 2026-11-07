@@ -46,7 +46,7 @@ impl App {
         match Transport::open(&src, TransportOptions { hw, threads: self.o.threads, loop_enabled: self.o.looping, refresh_ms: self.o.refresh_ms, ..Default::default() }) {
             Ok(mut p) => {
                 // audio first, so the harness's play below starts it too (the player's hooks run inside Transport::play)
-                if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {}", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }); } Err(e) => println!("audio: {e}") } }
+                if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {} (device latency {:.1} ms)", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }, p.audio.device_latency_ms()); } Err(e) => println!("audio: {e}") } }
                 p.play();   // the harness plays on open (QCView opens paused; the shell decides)
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
                 self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p);

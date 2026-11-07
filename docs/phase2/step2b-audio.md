@@ -61,6 +61,21 @@ until the first space), and `--play` exists for unattended measurement. The deco
 process ≈ 60 % of one core during 1080p playback with audio (decode threads included). Waveform: 2 528 columns of an
 11-s window probed in < 3 s on open (the linear regime).
 
+## Found by listening with the real device (2026-11-07, the user's walks + traces)
+- **`AudioOutputUnitStart` blocks the UI thread ~105 ms** on this Mac (`Stop` 2–7 ms). QCView starts the unit on play and
+  stops it 30 ms after pause; with a user pausing every few seconds that was a 128-ms present stall and a burst of
+  dropped frames at every play. **Divergence:** the unit starts once at file open and stays running, rendering silence
+  while paused (the drain's hold path); the deferred stop remains behind `STOP_DEVICE_WHEN_IDLE`.
+- **QCView's `PlaybackTimer` loses one refresh at every play and seek landing**: `m_firstUpdate` made the next update
+  only re-base the delta, so the clock skipped the time between the landing and that update — ~50 ms here, and the
+  audio ran that far ahead of the picture from the first frame until the servo ground it out at ±0.2 %. **Divergence:**
+  `play` / `seek` take the base NOW; no tick is skipped and no stale delta can land. (Also filed in canon §17.6.)
+- **`releaseHold` ignored the device latency**: audio resumed one playout latency behind the picture (+11 ms on
+  CoreAudio, +20 on some devices) at the quiet band's edge. **Divergence:** the skip includes the latency.
+- After the three: a cold start reads −12 … +19 ms over the first frames and settles to 0 ± 10 within ~8 s; unattended
+  steady state −8 … +7 ms p50, p95 ≤ 16, no re-seeks, no underruns, no dropped frames.
+`QCV_AUDIO_TRACE=1` (with `RUST_LOG=info`) prints the servo's inputs for the first 60 updates and the timer around play.
+
 ## Not yet (the next slices)
 - **Tempo** (SoundTouch WSOLA, LGPL-2.1 via the `soundtouch` crate's bundled C++): review speeds play silent until it lands.
 - **Multi-stream** (≥ 2 audio streams → the avfilter merge / pan graph, `avfilter` feature): a file with several mono

@@ -63,6 +63,7 @@ pub trait AudioHooks {
     fn tick(&mut self, _now: Instant) {}
     fn is_muted(&self) -> bool { false }
     fn volume(&self) -> f32 { 1.0 }
+    fn device_latency_ms(&self) -> f64 { 0.0 }
     fn stats(&mut self) -> Option<crate::audio::AudioStats> { None }
     /// Drain the drift samples gathered since the last call (the stats line).
     fn take_drift(&mut self) -> Vec<f32> { vec![] }
@@ -123,6 +124,7 @@ pub struct Transport {
     pub stats: Stats, last_shown: Option<i64>, refreshes_on_current: i64, pub refresh_ms: f32, current: Option<FrameHandle>, first_landed: bool,
     /// `play` held the audio until the next picture lands (QCView releases on the first frame published after play)
     audio_hold_pending: bool,
+    trace_play: Option<Instant>, trace_n: u32,
 }
 
 impl Transport {
@@ -163,7 +165,7 @@ impl Transport {
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
-            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false }
+            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false, trace_play: None, trace_n: 0 }
     }
     /// The timeline changed under us (an edit): durations re-seat; the active clip index is re-found by id order.
     pub fn set_timeline(&mut self, timeline: Timeline) {
@@ -224,6 +226,7 @@ impl Transport {
         self.user_wants_playback = true;
         if self.at_end() { self.seek_to_frame(0); }   // play from the end restarts (the timer clamps at duration)
         self.timer.play(); self.slots[self.active].decoder.play();
+        if std::env::var_os("QCV_AUDIO_TRACE").is_some() { self.trace_play = Some(Instant::now()); self.trace_n = 12; log::info!("trace: play() at timer {:.4}", self.timer.position()); }
         if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); self.audio.set_hold(true); self.audio.play(); self.audio_hold_pending = true; }
     }
     pub fn pause(&mut self) {
@@ -496,7 +499,7 @@ impl Transport {
             self.stats.seek_land_ms.push((now - issued).as_secs_f32() * 1000.0);
             let tl = self.tl_frame_of(&self.slots[a], h.frame_no as i64);
             if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); }
-            if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.release_hold(p); self.audio_hold_pending = false; }
+            if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); if let Some(t0) = self.trace_play { log::info!("trace: hold released at the seek landing, master {p:.4}, timer {:.4}, frame {}, {:.1} ms after play()", self.timer.position(), h.frame_no, t0.elapsed().as_secs_f32() * 1000.0); } self.audio.release_hold(p); self.audio_hold_pending = false; }
             return self.show(h, now);
         }
         if self.fast.is_some() || self.scrubbing.is_some() { let (h, _) = self.slots[self.active].decoder.fetch_due(i32::MAX); return self.show(h?, now) }   // the gesture drives the clock; frames land whenever
@@ -519,7 +522,7 @@ impl Transport {
             self.timer.advance_by_frame();
             if !self.timer.looping() && self.timer.current_frame() >= self.frames { self.timer.pause(); self.slots[self.active].decoder.pause(); }
         }
-        if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.update(p); }
+        if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); if self.trace_n > 0 { self.trace_n -= 1; if let Some(t0) = self.trace_play { log::info!("trace: update master {p:.4} timer {:.4} frame {} wall since play {:.1} ms", self.timer.position(), self.timer.current_frame(), t0.elapsed().as_secs_f32() * 1000.0); } } self.audio.update(p); }
         self.show(h, now)
     }
     /// The timer wrapped (the whole timeline or [in, out]): re-seat the decoder at the wrap frame (swapping clips when the
@@ -544,7 +547,7 @@ impl Transport {
     }
     fn show(&mut self, h: FrameHandle, now: Instant) -> Option<&FrameHandle> {
         if h.frame_no >= 0 {
-            if self.audio_hold_pending && self.audio.has_audio() && self.is_playing() { self.audio_hold_pending = false; let p = self.audio_position(); self.audio.release_hold(p); }
+            if self.audio_hold_pending && self.audio.has_audio() && self.is_playing() { self.audio_hold_pending = false; let p = self.audio_position(); if let Some(t0) = self.trace_play { log::info!("trace: hold released in show() at master {p:.4}, timer {:.4}, frame {}, {:.1} ms after play()", self.timer.position(), h.frame_no, t0.elapsed().as_secs_f32() * 1000.0); } self.audio.release_hold(p); }
             let k = self.tl_frame_of(&self.slots[self.active], h.frame_no as i64);
             // a gap counts as dropped only while the clock runs it: a scrub / seek / shuttle jump is not a drop
             let continuous = self.timer.is_playing() && self.scrubbing.is_none() && self.fast.is_none() && self.seek_gate.is_none();

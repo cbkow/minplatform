@@ -24,6 +24,11 @@ const OUT_OF_BAND_TICKS_TO_SEEK: i32 = 4;
 const SKIP_MAX_SECONDS: f64 = 0.400;
 const DEADBAND_SECONDS: f64 = 0.004;
 const DEFERRED_STOP_MS: u64 = 30;
+/// QCView stops the output unit 30 ms after a pause and starts it on play. On this Mac `AudioOutputUnitStart` / `Stop`
+/// block the calling (UI) thread for ~120 ms each (the user's attended walks showed a 128-ms present stall and a burst
+/// of dropped frames at every pause / play, 2026-11-07). The unit therefore stays running once started and renders
+/// silence while paused (the drain's hold path); the deferred stop remains behind this switch.
+const STOP_DEVICE_WHEN_IDLE: bool = false;
 
 /// What the device callback reads (lock-free) and the UI thread writes.
 struct CbShared {
@@ -52,6 +57,7 @@ pub struct AudioPlayer {
     tempo: f64,
     servo_log: u32,
     stats: AudioStats,
+    trace: u32,
 }
 
 fn soft_limit(x: f32) -> f32 {
@@ -72,7 +78,7 @@ impl AudioPlayer {
         // the scratch sized once from the device's real buffer count (+16; WASAPI can ask for the whole buffer in one callback)
         let frames = device.buffer_frame_count() as usize + 16;
         cb.drain.lock().unwrap().1 = vec![0.0; frames * 2 * 2];
-        Ok(AudioPlayer { device, cb, decoder: None, routing: RoutingMode::Auto, anchor_src_sec: 0.0, servo: AudioSyncServo::new(), out_of_band_ticks: 0, pause_gen: 0, stop_due: None, last_servo_update: None, sync_offset_ms: 0, tempo: 1.0, servo_log: 0, stats: AudioStats::default() })
+        Ok(AudioPlayer { device, cb, decoder: None, routing: RoutingMode::Auto, anchor_src_sec: 0.0, servo: AudioSyncServo::new(), out_of_band_ticks: 0, pause_gen: 0, stop_due: None, last_servo_update: None, sync_offset_ms: 0, tempo: 1.0, servo_log: 0, stats: AudioStats::default(), trace: if std::env::var_os("QCV_AUDIO_TRACE").is_some() { 60 } else { 0 } })
     }
     /// The render callback (QCView `processAudio`): the drain at the servo ratio, then mute / volume / the soft limiter.
     fn process_audio(c: &CbShared, out: &mut [f32]) {
@@ -112,7 +118,7 @@ impl AudioHooks for AudioPlayer {
     fn open(&mut self, path: &str) -> bool {
         self.close();
         match AudioDecoder::open(path, self.routing) {
-            Ok(Some(d)) => { d.start(); let d = Arc::new(d); *self.cb.source.lock().unwrap() = Some(d.clone()); self.decoder = Some(d); true }
+            Ok(Some(d)) => { d.start(); let d = Arc::new(d); *self.cb.source.lock().unwrap() = Some(d.clone()); self.decoder = Some(d); if !STOP_DEVICE_WHEN_IDLE { self.device.start(); } true }
             Ok(None) => false,
             Err(e) => { log::warn!("audio open: {e}"); false }
         }
@@ -135,7 +141,7 @@ impl AudioHooks for AudioPlayer {
         if !self.cb.playing.swap(false, AcqRel) { return }
         self.cb.req.hold.store(false, Release); self.cb.req.skip_frames.store(0, Release);
         self.pause_gen = self.pause_gen.wrapping_add(1);
-        self.stop_due = Some((self.pause_gen, Instant::now() + Duration::from_millis(DEFERRED_STOP_MS)));
+        if STOP_DEVICE_WHEN_IDLE { self.stop_due = Some((self.pause_gen, Instant::now() + Duration::from_millis(DEFERRED_STOP_MS))); }
     }
     fn tick(&mut self, now: Instant) {
         if let Some((g, due)) = self.stop_due { if now >= due { self.stop_due = None; if g == self.pause_gen && !self.cb.playing.load(Acquire) { self.device.stop(); } } }
@@ -155,11 +161,16 @@ impl AudioHooks for AudioPlayer {
         if !self.cb.req.hold.load(Acquire) { return }
         let Some(_) = &self.decoder else { self.cb.req.hold.store(false, Release); return };
         let off = self.sync_offset_ms as f64 / 1000.0;
-        let delta = (master_seconds - off) - (self.anchor_src_sec + self.consumed_sec());
+        // Divergence from QCView's `releaseHold` (reason): it compares the master to anchor + consumed WITHOUT the
+        // device latency, so audio resumes one playout latency behind the picture and the servo grinds that out at
+        // ±0.2 % — a +20 ms step on CoreAudio (10-ms buffer + unit latency) that sat at the quiet band's edge in the
+        // attended walks. Skipping the latency as well lands the first audible sample on the picture.
+        let latency = self.device.buffer_latency_seconds() * self.tempo;
+        let delta = (master_seconds - off) - (self.anchor_src_sec + self.consumed_sec()) + latency;
         if delta > DEADBAND_SECONDS && delta <= SKIP_MAX_SECONDS {
             self.cb.req.skip_frames.store((delta / self.tempo * self.device.sample_rate() as f64).round() as u32, Release);
             self.stats.skips += 1;
-            log::info!("AudioPlayer: hold released, skipping {:+.0} ms to the landed frame", delta * 1000.0);
+            log::info!("AudioPlayer: hold released, skipping {:+.0} ms to the landed frame (device latency {:.1} ms, master {:.3}, anchor {:.3}, consumed {:.3})", delta * 1000.0, latency * 1000.0, master_seconds, self.anchor_src_sec, self.consumed_sec());
         } else if delta < -DEADBAND_SECONDS || delta > SKIP_MAX_SECONDS {
             log::info!("AudioPlayer: hold released, re-seeking ({:+.0} ms)", delta * 1000.0);
             self.seek(master_seconds); self.stats.reseeks += 1;
@@ -177,6 +188,7 @@ impl AudioHooks for AudioPlayer {
         let audio_src_pos = self.playout_position();
         let drift = target - audio_src_pos;
         self.stats.drift_ms.push((drift * 1000.0) as f32);
+        if self.trace > 0 { self.trace -= 1; log::info!("servo: master {:.4} playout {:.4} drift {:+.1} ms  anchor {:.4} consumed {:.4} latency {:.4} ratio {:.5}", target, audio_src_pos, drift * 1000.0, self.anchor_src_sec, self.consumed_sec(), self.device.buffer_latency_seconds(), f32::from_bits(self.cb.servo_ratio.load(Relaxed))); }
         if drift.abs() > SERVO_BAND_SECONDS {
             let discontinuity = drift.abs() > DISCONTINUITY_SECONDS;
             self.out_of_band_ticks += 1;
@@ -209,13 +221,14 @@ impl AudioHooks for AudioPlayer {
     fn shuttle_target(&mut self, path: &str, source_sec: f64, signed_speed: f64) { self.cb.shuttle.update_target(path, source_sec, signed_speed); }
     fn end_shuttle(&mut self) {
         self.cb.shuttle.end();
-        if !self.cb.playing.load(Acquire) { self.pause_gen = self.pause_gen.wrapping_add(1); self.stop_due = Some((self.pause_gen, Instant::now() + Duration::from_millis(DEFERRED_STOP_MS))); }
+        if STOP_DEVICE_WHEN_IDLE && !self.cb.playing.load(Acquire) { self.pause_gen = self.pause_gen.wrapping_add(1); self.stop_due = Some((self.pause_gen, Instant::now() + Duration::from_millis(DEFERRED_STOP_MS))); }
     }
     fn shuttle_active(&self) -> bool { self.cb.shuttle.active() }
     fn set_volume(&mut self, v: f32) { self.cb.volume.store(v.clamp(0.0, 1.0).to_bits(), Relaxed); }
     fn toggle_mute(&mut self) { let m = !self.cb.muted.load(Relaxed); self.cb.muted.store(m, Relaxed); }
     fn volume_step(&mut self, delta: f32) { let v = (f32::from_bits(self.cb.volume.load(Relaxed)) + delta).clamp(0.0, 1.0); self.cb.volume.store(v.to_bits(), Relaxed); }
     fn is_muted(&self) -> bool { self.cb.muted.load(Relaxed) }
+    fn device_latency_ms(&self) -> f64 { self.device.buffer_latency_seconds() * 1000.0 }
     fn volume(&self) -> f32 { f32::from_bits(self.cb.volume.load(Relaxed)) }
     fn stats(&mut self) -> Option<AudioStats> {
         let (u, f) = { let dr = self.cb.drain.lock().unwrap(); (dr.0.underruns, dr.0.fades) };

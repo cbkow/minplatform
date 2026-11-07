@@ -1630,6 +1630,7 @@ page-turn follow at a 20-px margin. Rows 34 px, ruler 20, overview 14. **This is
    Not v1: multi-select, roll, overwrite, user markers, per-clip transforms in the timeline.
 
 ### 17.6 QCView issues found (fix in C++ regardless of any port)
+**2026-11-07, from the audio step:** `PlaybackTimer::seek` / `play` set `m_firstUpdate`, so the next update only re-bases the delta and the clock loses one refresh (~16–50 ms) at every play and seek landing — audible as audio ~50 ms ahead until the servo grinds it out; the port takes the base at the call instead. `AudioPlayer::releaseHold` compares the master to anchor + consumed without the device latency (audio resumes one playout latency late). `AudioOutputUnitStart` on the UI thread blocks ~105 ms per play.
 Undo stack never cleared across loads; trim-tail/slip have no upper clamp to `sourceDuration`;
 edits commit un-snapped seconds; `clipToMap` drops sequence fields + `audioMuted` (lossy restore);
 `locked` unenforced; dual allows overlaps against its own policy; playlist fps/gap hard-coded 24/0

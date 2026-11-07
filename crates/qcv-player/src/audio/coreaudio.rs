@@ -58,9 +58,11 @@ impl CoreAudioDevice {
 impl AudioDevice for CoreAudioDevice {
     fn start(&mut self) {
         if self.running { return }
+        let t = std::time::Instant::now();
         unsafe { (*self.ctx).should_play.store(true, Release); let s = AudioOutputUnitStart(self.unit); if s == 0 { self.running = true; } else { log::warn!("CoreAudioDevice: AudioOutputUnitStart failed ({s})"); } }
+        log::info!("CoreAudioDevice: start took {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
     }
-    fn stop(&mut self) { if !self.running { return } unsafe { (*self.ctx).should_play.store(false, Release); AudioOutputUnitStop(self.unit); } self.running = false; }
+    fn stop(&mut self) { if !self.running { return } let t = std::time::Instant::now(); unsafe { (*self.ctx).should_play.store(false, Release); AudioOutputUnitStop(self.unit); } self.running = false; log::info!("CoreAudioDevice: stop took {:.1} ms", t.elapsed().as_secs_f32() * 1000.0); }
     fn is_running(&self) -> bool { self.running }
     fn sample_rate(&self) -> i32 { self.sample_rate }
     fn buffer_frame_count(&self) -> u32 { self.buffer_frames }

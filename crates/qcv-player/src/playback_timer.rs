@@ -53,7 +53,11 @@ impl PlaybackTimer {
         self.clamp_position();
         self.notify_frame_crossed(old);
     }
-    pub fn play(&mut self) { if self.playing { return } self.playing = true; self.first_update = true; }
+    /// Divergence from QCView's PlaybackTimer (reason): it set `m_firstUpdate` on play and on seek so the NEXT update only
+    /// re-based the delta — which drops one whole refresh of time from the clock at every play / seek landing (measured
+    /// 2026-11-07: the audio ran ~50 ms ahead of the picture from the first frame until the servo ground it out). The
+    /// base is taken NOW instead: no tick is skipped and no stale delta can land either.
+    pub fn play(&mut self) { if self.playing { return } self.playing = true; self.last_update = Some(Instant::now()); self.first_update = false; }
     pub fn pause(&mut self) { self.playing = false; }
     pub fn toggle_play_pause(&mut self) { if self.playing { self.pause() } else { self.play() } }
     /// Absolute seek in seconds; pauses the integrator for one tick so no stale delta lands after it.
@@ -62,7 +66,7 @@ impl PlaybackTimer {
         let mut s = seconds.max(0.0);
         if self.duration > 0.0 && s > self.duration { s = self.duration; }
         if (self.position - s).abs() < 1e-12 { return }
-        self.position = s; self.first_update = true;
+        self.position = s; self.last_update = Some(Instant::now()); self.first_update = false;   // see `play`
         self.notify_frame_crossed(old);
     }
     pub fn seek_relative(&mut self, delta: f64) { self.seek(self.position + delta) }
