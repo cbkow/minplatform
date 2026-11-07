@@ -1799,14 +1799,20 @@ EOTF for every path" is the deviation; the parked question was whether to carry 
 6. **The gate is row 130** (the Windows float-surface check on a real HDR monitor): HDR off → DWM converts the fp16 surface
    (banding?); HDR on → 1.0 follows the user's SDR-brightness slider, so our `white` must track the reported SDR white level
    for HDR views to land at their nits. Until it runs, Windows stays measured only on a virtual display.
-7. **Worms left in the can (named, not solved):** an HDR view on an SDR panel clips at 1.0 (Knee / Rendering territory);
+7. **The Inspector's Transfer row is QCView's, not a new chip set** (the user asked whether as-stored needs a BT.1886 / sRGB / linear
+   override): Auto · SDR 709 · PQ 2020 · PQ P3 · HLG · Linear, per clip, persisted as `transferOverride` — "how the scopes read this clip
+   when its tags are missing or wrong"; there is deliberately NO 2.2-vs-2.4 chip because bypass applies neither curve, and with a
+   chain the clip's Input decides. WIRED 2026-11-07 night (engine-level `TransferChoice`; the chips label Auto with the tags'
+   resolution). The line beside the code: matrix · range · transfer tag · aspect · rotation are DECODE facts (Inspector); curves ·
+   gamuts · renderings are INTERPRETATION (the chain).
+8. **Worms left in the can (named, not solved):** an HDR view on an SDR panel clips at 1.0 (Knee / Rendering territory);
    LUT precision for 10-bit review (row 92); the per-config patch upkeep when configs upgrade (§18.1's checklist); scopes keep
    tapping the working buffer after the chain (unchanged).
 
 | # | Decision | Proposed default | Status |
 |---|---|---|---|
 | 179 | The surface | ONE linear-light float surface always (EDR extended-linear sRGB / scRGB fp16), 1.0 = SDR white; the output-mode picker retires; `Output::Auto` → always linear; stage-3 encodes kept for captures only | **BANKED 2026-11-07 night** (the user: "ok. lets bank this") — RULE after row 130 |
-| 180 | Bypass semantics | no chain = AS STORED on every surface (sRGB EOTF only undoes the OS encode); never a default transfer opinion | banked — the ONE part that can land now (the §18.7 interim) |
+| 180 | Bypass semantics | no chain = AS STORED on every surface (sRGB EOTF only undoes the OS encode); never a default transfer opinion | **LANDED as the interim 2026-11-07 night** (the user: "got it and agreed"): the no-chain display set selects the sRGB EOTF for sRGB / BT.1886 tags; the chain-in set keeps the tagged transfer; `Snapshot::Display` + `--snap-display` read the screen path (the 1080p master now matches FFmpeg ±2 through it); PQ / HLG still decode to nits in bypass (open) |
 | 181 | minColor's halves | Rendering kept (Knee / AgX / OpenDRT, target gamut + nits); Display half removed | banked |
 | 182 | OCIO's role | a LUT SOURCE: `ociobakelut` out of process → float shaper + 3D LUT node in minColor; no OCIO in-process (supersedes 91 / 93 / 94) | banked — re-measure row 92 at 65³ / 129³ float first |
 | 183 | OCIO's display | ONE patched "Linear sRGB EDR" display per bundled config (the existing EDR patch promoted); the user picks config · input · view · look | banked |

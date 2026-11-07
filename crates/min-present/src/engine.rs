@@ -46,12 +46,18 @@ impl Default for DisplayMode { fn default() -> Self { DisplayMode { out: OutMode
 
 #[derive(Clone, Copy, Debug)] pub enum Snapshot { /// the source's R'G'B' after the matrix and range only — QCView's `QCV_CAPTURE_PNG` equivalent (identity chain)
     Encoded, /// linear BT.709, 1.0 = white nits
-    Linear }
+    Linear, /// what the screen gets: the display path 1:1 (the transfer override, bypass-as-stored and stage 3 applied) in the surface's encoding
+    Display }
+
+/// QCView's per-clip `TransferOverride` (the Inspector's Transfer chips): how the clip is READ when its tags are missing or wrong.
+/// A decode-level fact, not an interpretation — in bypass it only decides SDR vs PQ / HLG / linear decoding (and the scopes); the
+/// curve question (sRGB 2.2 vs BT.1886 2.4) belongs to the chain's Input (canon §18.6, 2026-11-07 night).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)] pub enum TransferChoice { #[default] Auto, Sdr709, Pq2020, PqP3, Hlg, Linear }
 
 /// The stage-1 pipelines: QCView's three kernels (planar, biplanar, packed 4444) plus the alpha-plane planar form.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)] enum Variant { Planar3, Planar4, Biplanar, Packed }
 impl Variant { fn textures(self) -> u32 { match self { Variant::Planar3 => 3, Variant::Planar4 => 4, Variant::Biplanar => 2, Variant::Packed => 1 } } }
-const N_U: usize = 4;   // 0 display · 1 chain-in (1:1) · 2 encoded 1:1 · 3 linear 1:1
+const N_U: usize = 5;   // 0 display · 1 chain-in (1:1) · 2 encoded 1:1 · 3 linear 1:1 · 4 display 1:1 (the display snapshot)
 
 /// QCView's `YuvPlanarDesc` constants for the shader: levels in code values for any depth / alignment, the matrix as Kr / Kb.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -84,6 +90,7 @@ pub struct Engine {
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32,
     geometry: Geometry,
+    transfer_override: TransferChoice,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
     /// Where the video fits inside the viewport (physical px; `None` = the whole viewport): the shell's bands take the rest.
     content: Option<(u32, u32, u32, u32)>,
@@ -194,7 +201,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, geometry: Geometry::default(),
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -230,6 +237,20 @@ impl Engine {
     pub fn has_overlay(&self) -> bool { self.overlay.is_some() }
     /// The clip's geometry choices (QCView's Aspect + Rotation pills).
     pub fn set_geometry(&mut self, g: Geometry) { if self.geometry != g { self.geometry = g; self.write_uniforms(); } }
+    /// The clip's Transfer override (QCView's chips). `Sdr709` reads the pixels as display-referred SDR in 709; the PQ / HLG choices
+    /// carry their primaries; `Linear` keeps the tagged primaries.
+    pub fn set_transfer_override(&mut self, t: TransferChoice) { if self.transfer_override != t { self.transfer_override = t; self.write_uniforms(); } }
+    pub fn transfer_override(&self) -> TransferChoice { self.transfer_override }
+    fn effective_meta(&self, m: ColorMeta) -> ColorMeta {
+        match self.transfer_override {
+            TransferChoice::Auto => m,
+            TransferChoice::Sdr709 => ColorMeta { transfer: Transfer::Bt1886, primaries: Primaries::Bt709, ..m },
+            TransferChoice::Pq2020 => ColorMeta { transfer: Transfer::Pq, primaries: Primaries::Bt2020, ..m },
+            TransferChoice::PqP3 => ColorMeta { transfer: Transfer::Pq, primaries: Primaries::P3D65, ..m },
+            TransferChoice::Hlg => ColorMeta { transfer: Transfer::Hlg, primaries: Primaries::Bt2020, ..m },
+            TransferChoice::Linear => ColorMeta { transfer: Transfer::Linear, ..m },
+        }
+    }
     pub fn geometry(&self) -> Geometry { self.geometry }
     /// The rotation in quarter turns CW that applies now (forced, else the frame's display matrix).
     pub fn rotation_quarters(&self) -> u8 {
@@ -340,15 +361,21 @@ impl Engine {
     fn write_uniforms(&self) {
         self.write_overlay_uniform(); self.write_bg_uniform();
         let Some(b) = self.base else { return };
-        let (trc, _, prim) = b.meta.selectors();
+        let meta = self.effective_meta(b.meta);
+        let (trc, _, prim) = meta.selectors();
         let l = b.levels;
         let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
-        let display_out = if self.display.out == OutMode::Pq && b.meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
+        let display_out = if self.display.out == OutMode::Pq && meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
         let rot = self.rotation_quarters() as f32;
-        let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear)];
+        let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear), u([1.0, 1.0], [0.0, 0.0], display_out)];
         sets[0].rot = rot;
+        // BYPASS = AS STORED (canon row 180, QCView's rule): with no chain engaged, display-referred SDR (sRGB / BT.1886 tags) is
+        // linearised with the sRGB EOTF so the surface's encode is a no-op and the screen shows the stored values — on the EDR
+        // layer as on an 8-bit sRGB surface. NOT a transfer opinion: the 2.2-vs-2.4 question is the chain's Input, which still
+        // receives the tagged transfer (set 1). PQ / HLG / linear sources decode to nits as before (the open point, §18.6).
+        if self.color_pass.is_none() && matches!(meta.transfer, Transfer::Srgb | Transfer::Bt1886) { sets[0].src_transfer = 0.0; sets[4].src_transfer = 0.0; }
         for (buf, v) in self.ubufs.iter().zip(sets.iter()) { self.queue.write_buffer(buf, 0, bytemuck::bytes_of(v)); }
         // the blit reads the chain's output space (linear, or encoded with a transfer)
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
@@ -407,7 +434,7 @@ impl Engine {
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("snapshot"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = tex.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
-        { let mut p = pass(&mut enc, "snapshot", &view); p.set_pipeline(self.inter_pipeline(shown.variant)); p.set_bind_group(0, &shown.binds[match which { Snapshot::Encoded => 2, Snapshot::Linear => 3 }], &[]); p.draw(0..6, 0..1); }
+        { let mut p = pass(&mut enc, "snapshot", &view); p.set_pipeline(self.inter_pipeline(shown.variant)); p.set_bind_group(0, &shown.binds[match which { Snapshot::Encoded => 2, Snapshot::Linear => 3, Snapshot::Display => 4 }], &[]); p.draw(0..6, 0..1); }
         self.queue.submit([enc.finish()]);
         Ok((readback::read_rgba16f(&self.device, &self.queue, &tex, w, h), w, h))
     }
@@ -544,7 +571,9 @@ mod tests {
     #[test]
     fn identity_chain_matches_the_fused_route() {
         let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
-        let f = ramp_frame(256, 16);
+        // an sRGB-tagged source: bypass (as stored = the sRGB EOTF) and the chain's input (the tagged transfer) agree, so the two
+        // routes must be the same plumbing to within fp16
+        let mut f = ramp_frame(256, 16); f.meta.transfer = Transfer::Srgb;
         e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
         e.show(&f).unwrap();
         let fused = e.render_offscreen(256, 16).unwrap();
@@ -553,6 +582,12 @@ mod tests {
         // the working texture is fp16: ≤ 1 code at 8 bit after the sRGB encode, and ≤ 1/2048 in linear
         let worst = fused.iter().zip(&chained).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
         assert!(worst <= 1.0 / 2048.0, "fused vs chained worst diff {worst}");
+        // a BT.1886-tagged source DIFFERS by design (canon row 180): bypass shows it as stored, an engaged chain receives gamma 2.4
+        e.set_color_pass(None); let f2 = ramp_frame(256, 16); e.show(&f2).unwrap();
+        let bypass = e.render_offscreen(256, 16).unwrap();
+        e.set_color_pass(Some(Box::new(IdentityColorPass))); let via_chain = e.render_offscreen(256, 16).unwrap();
+        let mid = 128 * 4; assert!(bypass[mid] > via_chain[mid] + 0.02, "bypass {} should sit above the 2.4 read {}", bypass[mid], via_chain[mid]);
+        e.set_color_pass(None); e.show(&f).unwrap();
         // the ramp is a ramp: linear light rises monotonically with x, black at code 16, 1.0 at code 235
         let row: Vec<f32> = (0..256).map(|x| fused[x * 4]).collect();
         assert!(row.windows(2).all(|p| p[1] >= p[0] - 1e-4), "not monotonic");
@@ -594,5 +629,39 @@ mod tests {
         // sRGB-encoded ≥ linear everywhere in (0, 1); both end at 1.0
         for x in 1..63 { assert!(encoded[x * 4] >= linear[x * 4] - 1e-3); }
         assert!((encoded[63 * 4] - 1.0).abs() < 2e-3 && (linear[63 * 4] - 1.0).abs() < 2e-3);
+    }
+
+    fn oetf(x: f32) -> f32 { let x = x.clamp(0.0, 1.0); if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 } }
+    #[test]
+    fn bypass_shows_sdr_as_stored_on_the_linear_surface() {
+        // canon row 180: no chain → the EDR layer receives sRGB-EOTF-linearised values, so the OS's sRGB encode returns the stored code values
+        let mut e = Engine::headless(wgpu::TextureFormat::Rgba16Float).unwrap();
+        let f = ramp_frame(256, 1);
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 }); e.show(&f).unwrap();
+        let (enc, _, _) = e.snapshot(Snapshot::Encoded).unwrap();
+        let (disp, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        for x in 0..256 { let back = oetf(disp[x * 4]); assert!((back - enc[x * 4]).abs() < 1.0 / 255.0, "code {x}: stored {} → screen {}", enc[x * 4], back); }
+        // the chain-in set still carries the tagged transfer (BT.1886 → gamma 2.4), so an engaged chain is not affected
+        let (lin, _, _) = e.snapshot(Snapshot::Linear).unwrap();
+        let mid = enc[128 * 4]; assert!((lin[128 * 4] - mid.powf(2.4)).abs() < 4e-3, "linear set at mid: {} vs {}", lin[128 * 4], mid.powf(2.4));
+    }
+    #[test]
+    fn the_transfer_override_changes_how_the_clip_is_read() {
+        let mut e = Engine::headless(wgpu::TextureFormat::Rgba16Float).unwrap();
+        let f = ramp_frame(256, 1);
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 }); e.show(&f).unwrap();
+        let (enc, _, _) = e.snapshot(Snapshot::Encoded).unwrap();
+        let (auto, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        // SDR 709 reads as the tagged SDR did (as stored)
+        e.set_transfer_override(TransferChoice::Sdr709); let (sdr, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        assert!((sdr[128 * 4] - auto[128 * 4]).abs() < 1e-3);
+        // PQ P3 decodes the same code values to nits / 100 — far brighter at mid-ramp than the sRGB read — and converts P3 → 709 (grey stays grey)
+        e.set_transfer_override(TransferChoice::PqP3); let (pq, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        assert!(pq[128 * 4] > auto[128 * 4] * 2.0, "pq {} vs auto {}", pq[128 * 4], auto[128 * 4]);
+        let p = &pq[128 * 4..128 * 4 + 3]; assert!((p[0] - p[1]).abs() < 3e-3 && (p[1] - p[2]).abs() < 3e-3, "tint {p:?}");
+        // Linear passes the stored values straight to the linear surface
+        e.set_transfer_override(TransferChoice::Linear); let (linr, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        for x in (0..256).step_by(17) { assert!((linr[x * 4] - enc[x * 4]).abs() < 2e-3, "linear override at {x}: {} vs {}", linr[x * 4], enc[x * 4]); }
+        e.set_transfer_override(TransferChoice::Auto); assert_eq!(e.transfer_override(), TransferChoice::Auto);
     }
 }

@@ -13,11 +13,12 @@ use min_ui::{paint, ActionButton, ActionGroup, Event, Family, FieldResponse, Fon
 use qcv_meta::{AdobeMetadata, VideoMetadata};
 use min_present::engine::{Geometry, Par};
 use qcv_player::{audio::RoutingMode, RangeOverride, Transport};
+use qcv_project::TransferOverride;
 use std::time::Instant;
 use vello::Scene;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Range(RangeOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
+pub enum Cmd { Range(RangeOverride), Transfer(TransferOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
 
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
@@ -38,7 +39,7 @@ pub struct InspectorPanel {
     /// results keyed by the path they describe — kept until the panel is on that path (they land before the first layout at startup)
     pending_v: Option<(String, VideoMetadata)>, pending_a: Option<(String, AdobeMetadata)>,
     peaks: [f32; 16], channels: usize,
-    range: RangeOverride, routing: RoutingMode, origin: Option<String>,
+    range: RangeOverride, transfer: TransferOverride, routing: RoutingMode, origin: Option<String>,
     /// the presenter's geometry choices + the dims it fits with (the Display row tracks what the viewport shows)
     geometry: Geometry, display_dims: (u32, u32),
     /// the stored dims (the DAR ↔ PAR conversion needs them)
@@ -87,7 +88,7 @@ impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![] };
         InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode")], path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
-            range: RangeOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
+            range: RangeOverride::Auto, transfer: TransferOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
     pub fn set_video_meta(&mut self, path: &str, m: VideoMetadata) { self.pending_v = Some((path.to_string(), m)); self.dirty_model = true; }
@@ -95,6 +96,8 @@ impl InspectorPanel {
     /// The presenter's geometry state (for the pickers' selection and the Display row).
     pub fn set_geometry(&mut self, g: Geometry, display_dims: (u32, u32)) { if g != self.geometry || display_dims != self.display_dims { self.geometry = g; self.display_dims = display_dims; self.dirty_model = true; } }
     /// Refill from the Transport when something it shows changed; the meters read every frame.
+    /// The loaded clip's Transfer override (engine-level; the shell sets it from the project item and from the chips).
+    pub fn set_transfer(&mut self, t: TransferOverride) { if t != self.transfer { self.transfer = t; self.dirty_model = true; } }
     pub fn sync(&mut self, p: Option<&Transport>) -> bool {
         let Some(p) = p else { if !self.path.is_empty() { self.path.clear(); self.vmeta = None; self.ameta = None; for g in &mut self.groups { g.items.clear(); } self.dirty_model = false; return true } return false };
         let path = p.path().to_string();
@@ -194,6 +197,15 @@ impl InspectorPanel {
         // the Range picker: Auto labels itself with the detected range (QCView's rule)
         let detected = v.map(|m| if m.color_range == "full" { "Auto (Full)" } else if m.color_range == "limited" { "Auto (Limited)" } else if m.container_range_tag == "full" { "Auto (Full)" } else if m.container_range_tag == "limited" { "Auto (Limited)" } else if m.is_rgb { "Auto (Full, assumed)" } else { "Auto (Limited, assumed)" }).unwrap_or("Auto");
         color.push(chips("Range", &[("auto", detected), ("full", "Full"), ("limited", "Limited")], match self.range { RangeOverride::Auto => "auto", RangeOverride::Full => "full", RangeOverride::Limited => "limited" }));
+        // the Transfer override (QCView InspectorPanel.qml "Transfer / encoding override"): how the clip is READ when its tags are
+        // missing or wrong (an untagged PQ export); Auto labels itself with the tags' resolution. A decode fact, not a curve choice —
+        // sRGB 2.2 vs BT.1886 2.4 is the chain's Input (canon §18.6).
+        let detected_t = v.map(|m| { let t = m.color_transfer.to_lowercase(); let p = m.color_primaries.to_lowercase();
+            if t == "smpte2084" || t.contains("pq") { if p.contains("432") || p.contains("431") || p.contains("p3") { "Auto (PQ P3)" } else { "Auto (PQ 2020)" } }
+            else if t.contains("arib") || t.contains("hlg") { "Auto (HLG)" }
+            else if t.is_empty() || t == "unknown" || t == "unspecified" { "Auto (SDR, untagged)" } else { "Auto (SDR)" } }).unwrap_or("Auto");
+        color.push(chips("Transfer", &[("auto", detected_t), ("sdr", "SDR 709"), ("pq2020", "PQ 2020"), ("pqp3", "PQ P3"), ("hlg", "HLG"), ("linear", "Linear")],
+            match self.transfer { TransferOverride::Auto => "auto", TransferOverride::SdrRec709 => "sdr", TransferOverride::Pq2020 => "pq2020", TransferOverride::PqP3D65 => "pqp3", TransferOverride::Hlg => "hlg", TransferOverride::Linear => "linear" }));
         // ---- Audio ----
         let mut audio = vec![];
         let has_audio = p.audio.has_audio() || v.is_some_and(|m| !m.audio_codec.is_empty());
@@ -299,6 +311,7 @@ impl InspectorPanel {
                     let key = c.keys[i].as_str();
                     match c.label.as_str() {
                         "Range" => cmds.push(Cmd::Range(match key { "full" => RangeOverride::Full, "limited" => RangeOverride::Limited, _ => RangeOverride::Auto })),
+                        "Transfer" => { let t = match key { "sdr" => TransferOverride::SdrRec709, "pq2020" => TransferOverride::Pq2020, "pqp3" => TransferOverride::PqP3D65, "hlg" => TransferOverride::Hlg, "linear" => TransferOverride::Linear, _ => TransferOverride::Auto }; self.transfer = t; cmds.push(Cmd::Transfer(t)); }
                         "Mix" => cmds.push(Cmd::Routing(match key { "5.1" => RoutingMode::Downmix5_1, "7-8" => RoutingMode::Stereo7_8, _ => RoutingMode::Auto })),
                         "Origin" => { self.origin = Some(key.to_string()); cmds.push(Cmd::Origin(key.to_string())); }
                         "Aspect" => cmds.push(Cmd::Par(match key { "detected" => Par::Detected, "custom" => match self.geometry.par { Par::Custom(n, d) => Par::Custom(n, d), _ => Par::Custom(1, 1) }, _ => Par::Square })),

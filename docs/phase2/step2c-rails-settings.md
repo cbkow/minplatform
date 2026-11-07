@@ -167,3 +167,20 @@ Settings panel has.
   was behind `has_audio`). QCView's loader goes inactive without audio and draws nothing; the peaks and the request now
   clear in that case. Audio → audio was already right: the request is keyed by path, columns fill as peaks land, the old
   clip stays in the probe engine's small LRU so switching back is instant.
+
+### Bypass as stored + the Transfer override (2026-11-07 night; canon §18.6 rows 179–184 banked, row 180 landed)
+- The "Auto range is wrong for ProRes" chase ended elsewhere: the range rules are QCView's verbatim and the code values match FFmpeg;
+  the bug was the no-chain display path linearising BT.1886 with gamma 2.4 on the EDR layer, which macOS then re-encodes with the
+  sRGB curve — every SDR clip crushed (stored 20 → 7, 71 → 61). `Snapshot::Encoded` (matrix + range only, QCView's PNG-capture
+  equivalent) could not see it. Now: with no chain the display set selects the sRGB EOTF for sRGB / BT.1886 tags (QCView's bypass =
+  as stored; its compositor's `srgbToLinearSrc`), the chain-in set keeps the tagged transfer, and `Snapshot::Display` /
+  `--snap-display path@N` read the screen path encoded as the OS would. Measured on the 1080p master at frame 24: display path vs
+  FFmpeg rgb24 within ±2 at every probe point (it was −11 at code 71 before). Engine tests: `bypass_shows_sdr_as_stored_on_the_linear_surface`,
+  `the_transfer_override_changes_how_the_clip_is_read`; `identity_chain_matches_the_fused_route` now runs on an sRGB-tagged ramp
+  and asserts the BT.1886 ramp DIFFERS between bypass and an engaged chain by design.
+- The Inspector's Transfer chips are QCView's six (Auto · SDR 709 · PQ 2020 · PQ P3 · HLG · Linear; Auto labels itself
+  "Auto (SDR)" / "Auto (PQ 2020)" / "Auto (PQ P3)" / "Auto (HLG)" / "Auto (SDR, untagged)" from the tags, as QCView's `detectedLabel`).
+  Engine-level (`Engine::set_transfer_override(TransferChoice)` → the effective meta's transfer + primaries), per clip on the project
+  item (`transferOverride`, persisted), reapplied on load, reset on open. No 2.2-vs-2.4 chip on purpose (see canon §18.6 ¶7).
+- Open: PQ / HLG in bypass decode to nits (the linear surface's literal "as stored for the display"); QCView's SDR-surface bypass showed
+  the code values flat. Carried into the §18.6 ruling.
