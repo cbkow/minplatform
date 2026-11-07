@@ -92,8 +92,8 @@ impl Rail {
         let scale = self.scale;
         let th = t::SCROLLBAR_THICKNESS as f64 * scale * (1.0 + self.sb_ramp.value(now) as f64); let pad = t::SPACING_50 as f64 * scale;
         let body_top = self.rect.y0 + self.header_height();
-        // the thumb sits one hot zone plus 4 px in from the splitter so the two never share a pixel column
-        let inset = (t::SPLITTER_HOT_ZONE + t::SPACING_75) as f64 * scale;
+        // the thumb sits just past the splitter's hot zone (one hairline clear of it) so the two never share a pixel column
+        let inset = (t::SPLITTER_HOT_ZONE + t::HAIRLINE) as f64 * scale;
         let track_h = self.rect.y1 - body_top - 2.0 * pad;
         let bar_h = (track_h * self.body_height() / self.content_height).max(t::COMPONENT_HEIGHT_75 as f64 * scale).min(track_h);
         let y = body_top + pad + (track_h - bar_h) * (self.scroll / max);
