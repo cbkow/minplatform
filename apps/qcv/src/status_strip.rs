@@ -1,5 +1,5 @@
-//! The status strip as nodes (QCView's `TimelineStatus.qml` carried): the frame well and the SMPTE well as recessed
-//! readouts with a border that steps up on hover, fps on the right; a click on a well opens the go-to popover — frame
+//! The status strip as nodes (QCView's `TimelineStatus.qml` carried): the frame and SMPTE readouts as QUIET text on the
+//! band (QCView's are recessed wells; the user asked for the quiet form 2026-11-07) with a hover fill, fps on the right; a click on a well opens the go-to popover — frame
 //! entry, or timecode entry with Resolve-style digit padding ("1000" → 00:00:10:00), warn-toned digits on a bad entry
 //! until the next edit, Enter commits, Escape / a press outside / focus loss closes and discards.
 //! Divergence (reason): QCView opened the popup DOWNWARD because an in-scene popup could not rise over the native
@@ -165,9 +165,11 @@ impl StatusStrip {
         let pad = t::FIELD_EDGE_TO_TEXT as f64 * scale;
         let drop = self.drop_frame;
         for (i, w) in [&self.frame, &self.tc].into_iter().enumerate() {
-            let border = mix(t::FIELD_BORDER_COLOR, t::FIELD_BORDER_COLOR_HOVER, w.hover.value(now));
-            paint::rounded(scene, w.rect, r, border);
-            paint::rounded(scene, w.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR);
+            // quiet readouts (the user 2026-11-07: "let that info exist on the app background, but still keep their clickability"):
+            // no well at rest, the hover fill rises under the pointer so the click reads as a click
+            let _ = bw;
+            let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, w.hover.value(now));
+            if bg.a > 0.0 { paint::rounded(scene, w.rect, r, bg); }
             let color = if i == 1 && drop { t::TIMECODE_DROP_FRAME_COLOR } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
             let l = fonts.layout(&w.text, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(color));
             min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((w.rect.x0 + pad, w.rect.y0 + (w.rect.height() - l.height() as f64) / 2.0)));
