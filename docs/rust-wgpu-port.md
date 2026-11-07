@@ -1762,6 +1762,56 @@ the pair; Vulkan would be SPIR-V passthrough (OCIO GLSL → glslang → SPIR-V),
 - Route B's error vs route A on the ACES 2.0 display transforms at PQ 1000 nits (a measured
   comparison before calling B a "fallback" for HDR).
 
+### 18.6 The colour architecture, revisited (2026-11-07 night) — BANKED, not yet ruled
+**How it surfaced.** Chasing "Auto range is wrong for ProRes": the range rules are QCView's verbatim (untagged YCbCr →
+limited, RGB → full — `effectiveSourceRange`; every ProRes fixture is tagged tv; our code values match FFmpeg within ±2).
+The real finding: `Output::Auto` takes the EDR layer and the NO-CHAIN display path linearises BT.1886 with gamma 2.4, which
+macOS then re-encodes with the sRGB curve — shadows crushed for EVERY SDR clip (stored 20 → 7 on screen, 71 → 61, 128 → 121).
+The headless `Snapshot::Encoded` probe is blind to it by design (QCView's PNG-capture equivalent: matrix + range only).
+QCView: the swapchain defaults to SDR sRGB (BGRA8, a Color-panel picker 0..4, not persisted); with no chain the view is in
+BYPASS = as stored, and on a linear drawable the compositor's `srgbToLinearSrc` only undoes the OS encode; Rec.1886 lives in
+the chain's INPUT half alone (`MinColorInput.transfer` default, the OCIO presets' named input). So the S1 presenter's "one
+EOTF for every path" is the deviation; the parked question was whether to carry QCView's picker and SDR default.
+
+**The user's proposal (2026-11-07 night), assessed and shaped:**
+1. **One linear-light surface, always** — Apple EDR extended-linear sRGB / Windows scRGB fp16, 1.0 = SDR white. The OS owns
+   the display encode, the panel's gamut and the HDR mapping (both vendors' recommended path). SDR does not break: a 709 clip
+   lands where it does on an 8-bit sRGB surface, at 16-bit precision. The output-mode PICKER RETIRES (the decision the user did
+   not want to hand to users). Captures (frame grabs, thumbnails, the review PNG, a QCBridge feed) still need OUR encode —
+   stage 3's sRGB / PQ encodes stay for files only.
+2. **minColor is the only engine; its Display half goes, its Rendering half stays** (Knee / AgX / OpenDRT + the target gamut +
+   nits), because the OS only CLIPS: an HDR or wide-gamut source on an SDR panel still needs tone + gamut mapping. The
+   Rendering target is the one view-like decision minColor retains.
+3. **OCIO is NOT ripped out — it becomes a LUT source.** Ripping it out loses what client pipelines dictate (ACES 1.3 / 2.0
+   output transforms, Blender's AgX config, studio configs via `$OCIO`, the camera-log inputs, looks, CDLs) — the biggest
+   "deciding for the user" of all. Instead each preset is baked OUT OF PROCESS with `ociobakelut` (OCIO's own CLI, shipped):
+   input space + look + VIEW against ONE patched display, a log shaper for scene-linear inputs, FLOAT output (values > 1.0 and
+   negative components survive), applied as one float-LUT node inside minColor's pipeline. No OCIO in the Rust process, no
+   OCIO GPU shader generation, no vcpkg build on Windows (rows 91 / 93 / 94 are superseded if this is ruled; row 92's
+   8-bit-exactness finding stands and is the known cost — re-measure at 65³ vs 129³ float before ruling).
+4. **OCIO needs one display, not the user.** A view is defined against a display colorspace; ours is fixed: QCView's EDR patch
+   ("Linear sRGB EDR" at 1.0 = 100 nits, today one of five) becomes the ONLY display in every bundled config; the P3 twin goes
+   (extended-linear sRGB carries P3 through out-of-range components). The user picks config · input colorspace · view · look.
+   An "ACES 2.0 SDR 100 nits" view peaks at 1.0, an "HDR 1000 nits" view at 10.0; the OS does the rest on an HDR panel.
+5. **Bypass = as stored, on every surface.** With no chain, display-referred SDR (sRGB / BT.1886 tags) is linearised with the
+   sRGB EOTF so the OS encode is a no-op — QCView's rule, not a colour opinion. NOT "BT.1886 → sRGB by default": the
+   declaration of what the file is happens when the user engages a chain (minColor's Input default = Rec.1886, as QCView).
+6. **The gate is row 130** (the Windows float-surface check on a real HDR monitor): HDR off → DWM converts the fp16 surface
+   (banding?); HDR on → 1.0 follows the user's SDR-brightness slider, so our `white` must track the reported SDR white level
+   for HDR views to land at their nits. Until it runs, Windows stays measured only on a virtual display.
+7. **Worms left in the can (named, not solved):** an HDR view on an SDR panel clips at 1.0 (Knee / Rendering territory);
+   LUT precision for 10-bit review (row 92); the per-config patch upkeep when configs upgrade (§18.1's checklist); scopes keep
+   tapping the working buffer after the chain (unchanged).
+
+| # | Decision | Proposed default | Status |
+|---|---|---|---|
+| 179 | The surface | ONE linear-light float surface always (EDR extended-linear sRGB / scRGB fp16), 1.0 = SDR white; the output-mode picker retires; `Output::Auto` → always linear; stage-3 encodes kept for captures only | **BANKED 2026-11-07 night** (the user: "ok. lets bank this") — RULE after row 130 |
+| 180 | Bypass semantics | no chain = AS STORED on every surface (sRGB EOTF only undoes the OS encode); never a default transfer opinion | banked — the ONE part that can land now (the §18.7 interim) |
+| 181 | minColor's halves | Rendering kept (Knee / AgX / OpenDRT, target gamut + nits); Display half removed | banked |
+| 182 | OCIO's role | a LUT SOURCE: `ociobakelut` out of process → float shaper + 3D LUT node in minColor; no OCIO in-process (supersedes 91 / 93 / 94) | banked — re-measure row 92 at 65³ / 129³ float first |
+| 183 | OCIO's display | ONE patched "Linear sRGB EDR" display per bundled config (the existing EDR patch promoted); the user picks config · input · view · look | banked |
+| 184 | The gate | row 130's Windows HDR-monitor session: fp16 with HDR off (banding), SDR white level with HDR on | banked |
+
 ## 19. Scopes + title-safe guides: viewport overlays in the port (2026-11-06)
 
 From the QCView read (§16 report §3–4); no new survey.
