@@ -220,3 +220,15 @@ Settings panel has.
 - Still owed from the QCView read: the timer is seeked per move here (QCView seeks it once, on release, the playhead following
   the cursor visually) and QCView's scrub SKIM AUDIO (`beginScrubAudio` → the shuttle grain engine at a velocity-EMA speed).
   Windows has its own list (software ProRes at 6.7K + CPU upload, a 1.7 s first frame, a present stall) — separate.
+
+### FFmpeg upgrade + API assessment (2026-11-07 night; the user: "upgrade to the latest ffmpeg and assess both OSes for any API changes")
+- LATEST = FFmpeg 9.0.2 (ffmpeg.org's download page; no 9.1). macOS already builds and links Homebrew 9.0.2 (libavcodec 63.1.102)
+  through `ffmpeg-sys-next` 9.0.1 (the latest crate; bindgen at build time via pkg-config). Windows was BtbN n9.0.1-27 (2026-09-08)
+  in QCView's `external/ffmpeg-win64`; the port now has its OWN copy — BtbN `ffmpeg-n9.0-latest-win64-gpl-shared-9.0` =
+  n9.0.2-48 (2026-11-07) at `C:\qcb-lab\ffmpeg-9.0.2` (QCView's folder untouched); `build-2d.ps1` and both launchers point at it.
+- API CHANGES: 9.0.1 → 9.0.2 is a point release (none). The port calls 123 libav* symbols; the 9.0.2 headers mark NONE of them
+  deprecated; the FF_API gates that flip at the next majors (avcodec 64, avutil 62) name nothing we touch (`FF_API_INIT_PACKET`
+  unused). The only struct field we poke that is deprecation-prone is `thread_type` (still live).
+- VULKAN PRORES IS IN THE BOX'S BUILD: `ffmpeg -h decoder=prores` → "Supported hardware devices: vulkan" (prores_raw too), in
+  both the old and the new build (BtbN gpl-shared ships `--enable-vulkan --enable-libplacebo`). On the 1080p ProRes fixture:
+  software utime 11.7 s / rtime 0.84 s vs `-hwaccel vulkan` utime 1.1 s at 456 fps. HEVC lists dxva2 d3d11va d3d12va cuda vulkan.
