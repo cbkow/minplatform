@@ -203,6 +203,7 @@
   "scrubber-tick-minor-length": { "value": "4px" },
   "scrubber-tick-major-length": { "value": "8px" },
   "scrubber-tick-label-color":  { "value": "{neutral-subdued-content-color-default}" },
+  "scrubber-frame-label-color": { "value": "{gray-400}" },
   "scrubber-tick-label-size":   { "value": "{detail-size-s}" },
   "scrubber-tick-min-spacing":  { "value": "80px" },
   "scrubber-frame-tick-min-px-per-frame": { "value": "6px" },
