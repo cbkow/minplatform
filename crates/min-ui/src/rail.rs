@@ -6,7 +6,7 @@
 //! tab at the window's edge with a caret reopens it (QCView's `ViewportOverlay` chevrons); the content scrolls with the
 //! wheel and shows Spectrum 2's 3-px overlay scrollbar at the inner edge while hovered. The rail paints its backdrop,
 //! clips its content (`push_clip` / `pop_clip`) and paints the splitter, tab and scrollbar; the panel paints the rest.
-use crate::{anim::{mix, Ramp}, input::{Button, Event}, paint, Fonts};
+use crate::{anim::{mix, Ramp}, input::{Button, Event}, paint, Fonts, Tooltips};
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
 use std::time::Instant;
@@ -34,6 +34,8 @@ pub struct Rail {
     sb_hover: bool, sb_drag: Option<(f64, f64)>, sb_ramp: Ramp,
     /// QCView's collapse arrow at the top inner corner of the rail (its header row); the reopen half is the edge tab
     collapse: Rect, collapse_hover: bool, collapse_ramp: Ramp,
+    /// the arrow's tooltip (the shell's shortcut text goes in `shortcut`, e.g. "⌘1" / "Ctrl+1")
+    pub tooltips: Tooltips, pub shortcut: String,
     splitter_ramp: Ramp, tab_ramp: Ramp,
     scale: f64,
 }
@@ -41,7 +43,7 @@ pub struct Rail {
 impl Rail {
     pub fn new(side: Side, width: f64, collapsed: bool) -> Rail {
         Rail { side, width: width.clamp(t::RAIL_WIDTH_MIN as f64, t::RAIL_WIDTH_MAX as f64), collapsed, open: Ramp::new(if collapsed { 0.0 } else { 1.0 }, t::RAIL_COLLAPSE_DURATION), scroll: 0.0, content_height: 0.0, rect: Rect::ZERO,
-            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
+            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
     }
     pub fn set_collapsed(&mut self, c: bool, now: Instant) { if self.collapsed != c { self.collapsed = c; self.open.set_target(if c { 0.0 } else { 1.0 }, now); } }
     pub fn toggle(&mut self, now: Instant) { let c = !self.collapsed; self.set_collapsed(c, now); }
@@ -172,6 +174,12 @@ impl Rail {
         self.tab_ramp.set_target(if self.tab_hover { 1.0 } else { 0.0 }, now);
         self.sb_ramp.set_target(if self.sb_hover || self.sb_drag.is_some() { 1.0 } else { 0.0 }, now);
         self.collapse_ramp.set_target(if self.collapse_hover { 1.0 } else { 0.0 }, now);
+        // the arrow's tooltip: hide when open, show when collapsed
+        if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
+        let side = match self.side { Side::Left => "left", Side::Right => "right" };
+        let key = if self.shortcut.is_empty() { String::new() } else { format!(" ({})", self.shortcut) };
+        let over = if self.collapse_hover { Some((1u64, self.collapse, format!("Hide the {side} rail{key}"))) } else if self.tab_hover { Some((2u64, self.tab, format!("Show the {side} rail{key}"))) } else { None };
+        if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { r.dirty = true; }
         r.dirty = was != (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some(), self.sb_hover, self.sb_drag.is_some(), self.collapse_hover) || r.width_changed || r.toggled;
         r
     }
@@ -182,6 +190,9 @@ impl Rail {
         self.last_scroll = Some(now);
         if s != self.scroll { self.scroll = s; true } else { false }
     }
+    /// Per frame: the tooltip's delay / timeout; true when a redraw is needed now.
+    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
+    pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }
     pub fn animating(&self, now: Instant) -> bool { self.open.animating(now) || self.splitter_ramp.animating(now) || self.tab_ramp.animating(now) || self.sb_ramp.animating(now) || self.collapse_ramp.animating(now) || self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + t::ANIMATION_DURATION_HOVER) }
     pub fn paint_background(&self, scene: &mut Scene, now: Instant) {
         if self.rect.width() > 0.0 { paint::rect(scene, self.rect, t::RAIL_BACKGROUND_COLOR); }
