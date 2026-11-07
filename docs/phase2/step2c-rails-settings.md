@@ -94,3 +94,19 @@ order) as a fused 2 × 2 block of size-S action buttons (`ActionButton::size_s`:
 row of four did not fit a 280-px rail; the user: "interface is quite large text"); the bar's Background button reveals it
 and Ctrl+, reveals Settings (QCView's `revealSection`: open the rail, expand that section alone, scroll to the top).
 
+## Compact mode (row 172, BUILT 2026-11-07 pm; 8f1f1df) + the shell's shortcuts (919662c)
+`apps/qcv/src/compact_strip.rs` + `Scrubber::compact`. QCView's `CompactStrip.qml` read first: a 22-px band under the
+viewport — play / pause and the timecode on the left (the timecode is the move handle: `startSystemMove`), a 2-px scrub
+line with the playhead and the in / out marks through the middle, the pin and the exit on the right; the window drops
+its title bar (`setCompactBorderless`); fullscreen stays on F. Ours: 32 px (the family's band), `drag_window()` on the
+timecode, `set_decorations(false)`, the rails and every band gone (QCView's `chromeless`), Escape leaves compact before
+fullscreen, entering compact leaves fullscreen first (QCView refuses the window style while fullscreen). The pin is real
+now: `set_window_level(AlwaysOnTop)` + `ui/alwaysOnTop`, Ctrl+Alt+T, selected state on both pins.
+Shortcuts carried after the user's note ("remember to check shortcuts as we go along"): B cycles the background (the
+ported key map already returned `CycleBackground`; the shell now acts on it), Ctrl+0 Minimal Mode (both rails collapsed),
+Ctrl+9 Show All Panels, Ctrl+L loop, Ctrl+Q quit, Ctrl+= / Ctrl+- zoom the timeline about the playhead, Ctrl+, Settings,
+Ctrl+Shift+C compact, Ctrl+Alt+T pin. Not yet: Ctrl+R Default Size & Position, Ctrl+3 / 4 / 5 (panels not built),
+Ctrl+Shift+O, Open / Save (the project crate), Ctrl+/ (the shortcuts sheet).
+The rail reopen tabs are overlays on the picture: shown while the pointer is in the window, faded out (160 ms) when
+it leaves or the window loses focus (the user: "I quite like them as overlays on the viewport, but not always").
+
