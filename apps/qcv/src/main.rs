@@ -402,18 +402,21 @@ impl App {
         let cpu = qcv_player::process_cpu_seconds();
         if wall > 0.0 { println!("process CPU time {cpu:.2} s over {wall:.1} s = {:.0} % of one core (decode threads included); max RSS {:.0} MB; frames presented {}; EDR headroom seen {:.1}", 100.0 * cpu / wall, qcv_player::max_rss_mb(), self.frames_presented, self.edr_seen); }
         if let Some(g) = self.gpu.as_ref() { let r = g.presenter.layer_report(); if !r.is_empty() { println!("{r}"); } }
-        // the teardown, timed stage by stage (the user 2026-11-07: "it takes a bit to close" on Windows)
+        // the teardown, timed stage by stage (the user 2026-11-07: "it takes a bit to close" on Windows). Order: the player
+        // (its decoders hold hw frames), then the hw device context WHILE the GPU device is alive, then the presenter, then the window.
         let t_all = Instant::now();
         let t = Instant::now(); if let Some(mut p) = self.player.take() { p.audio.close(); let audio_ms = t.elapsed().as_secs_f32() * 1000.0; let t2 = Instant::now(); drop(p); println!("close: audio {audio_ms:.0} ms · player (decoders, scrub session, index) {:.0} ms", t2.elapsed().as_secs_f32() * 1000.0); }
+        eprintln!("close: dropping the hw device context…");
+        let t = Instant::now(); let had_hw = self.hw.take().is_some(); println!("close: hw device {} {:.0} ms", if had_hw { "dropped" } else { "none" }, t.elapsed().as_secs_f32() * 1000.0);
         if let Some(g) = self.gpu.take() {
             let t = Instant::now(); drop(g.waveform); let wave_ms = t.elapsed().as_secs_f32() * 1000.0;
             let t = Instant::now(); drop(g.thumbs); let thumbs_ms = t.elapsed().as_secs_f32() * 1000.0;
+            eprintln!("close: dropping the presenter…");
             let t = Instant::now(); drop(g.ui); drop(g.presenter); let gpu_ms = t.elapsed().as_secs_f32() * 1000.0;
             let t = Instant::now(); drop(g.window); let win_ms = t.elapsed().as_secs_f32() * 1000.0;
-            println!("close: waveform {wave_ms:.0} ms · thumbnails {thumbs_ms:.0} ms · gpu {gpu_ms:.0} ms · window {win_ms:.0} ms", );
+            println!("close: waveform {wave_ms:.0} ms · thumbnails {thumbs_ms:.0} ms · gpu {gpu_ms:.0} ms · window {win_ms:.0} ms");
         }
-        let t = Instant::now(); let had_hw = self.hw.take().is_some(); let hw_ms = t.elapsed().as_secs_f32() * 1000.0;   // the D3D12VA / VideoToolbox device context (av_buffer_unref → device destruction)
-        println!("close: hw device {} {hw_ms:.0} ms · total {:.0} ms · wall {}", if had_hw { "dropped" } else { "none" }, t_all.elapsed().as_secs_f32() * 1000.0, unix_ms());
+        println!("close: total {:.0} ms · wall {}", t_all.elapsed().as_secs_f32() * 1000.0, unix_ms());
     }
 }
 
