@@ -125,6 +125,18 @@ char *mp_file_url_to_path(const char *url);
  char *mp_parse_minnotes_link(const char *uri);
 
 /**
+ * `qcview://<uuid>/<mediaId>` ("Copy Project Link"); "" when either part is empty.
+ */
+ char *mp_qcview_project_link(const char *uuid, const char *media_id);
+
+/**
+ * QCView's deep-link parse (`openProjectLink` without the project lookup): JSON `{"kind":"project","uuid","media_id"}` or
+ * `{"kind":"stream","url","name","query":[[k,v],…]}` (every pair decoded, in order, for the chain keys); "" when it is neither.
+ */
+
+char *mp_parse_qcview_link(const char *uri);
+
+/**
  * A file name safe on every OS in the family (separators and control characters → "-", trailing dots trimmed, Windows
  * reserved names suffixed with "_").
  */

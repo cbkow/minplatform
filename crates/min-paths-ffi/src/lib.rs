@@ -93,6 +93,21 @@ fn json<T: serde::Serialize>(v: &T) -> *mut c_char { out(serde_json::to_string(v
 #[unsafe(no_mangle)] pub extern "C" fn mp_minnotes_link(path: *const c_char) -> *mut c_char { out(min_paths::links::minnotes_link(&arg(path)).unwrap_or_default()) }
 /// A `minnotes:` link → native path ("" when it is not one).
 #[unsafe(no_mangle)] pub extern "C" fn mp_parse_minnotes_link(uri: *const c_char) -> *mut c_char { out(min_paths::links::parse_minnotes_link(&arg(uri)).unwrap_or_default()) }
+/// `qcview://<uuid>/<mediaId>` ("Copy Project Link"); "" when either part is empty.
+#[unsafe(no_mangle)] pub extern "C" fn mp_qcview_project_link(uuid: *const c_char, media_id: *const c_char) -> *mut c_char { out(min_paths::links::qcview_project_link(&arg(uuid), &arg(media_id)).unwrap_or_default()) }
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum QcviewLinkOut { Project { uuid: String, media_id: String }, Stream { url: String, name: String, query: Vec<(String, String)> } }
+/// QCView's deep-link parse (`openProjectLink` without the project lookup): JSON `{"kind":"project","uuid","media_id"}` or
+/// `{"kind":"stream","url","name","query":[[k,v],…]}` (every pair decoded, in order, for the chain keys); "" when it is neither.
+#[unsafe(no_mangle)] pub extern "C" fn mp_parse_qcview_link(uri: *const c_char) -> *mut c_char {
+    use min_paths::links::QcviewLink as L;
+    match min_paths::links::parse_qcview_link(&arg(uri)) {
+        Some(L::Project { uuid, media_id }) => json(&QcviewLinkOut::Project { uuid, media_id: media_id.unwrap_or_default() }),
+        Some(L::Stream { url, name, query }) => json(&QcviewLinkOut::Stream { url, name: name.unwrap_or_default(), query }),
+        None => out(String::new()),
+    }
+}
 
 // ── names ──
 /// A file name safe on every OS in the family (separators and control characters → "-", trailing dots trimmed, Windows
@@ -148,6 +163,16 @@ mod tests {
         assert_eq!(s(mp_translate_with(c("win").as_ptr(), c("lin").as_ptr(), c("z:\\JOBS\\x").as_ptr(), rows.as_ptr())), "/mnt/jobs/x");
         assert_eq!(s(mp_translate_with(c("win").as_ptr(), c("mac").as_ptr(), c("C:\\x").as_ptr(), c("[bad").as_ptr())), "C:/x");
         assert_eq!(s(mp_translate_with(c("??").as_ptr(), c("mac").as_ptr(), c("C:\\x").as_ptr(), rows.as_ptr())), "C:\\x");
+    }
+    #[test] fn qcview_links_through_the_abi() {
+        assert_eq!(s(mp_qcview_project_link(c("u1").as_ptr(), c("m2").as_ptr())), "qcview://u1/m2");
+        assert_eq!(s(mp_qcview_project_link(c("u1").as_ptr(), c("").as_ptr())), "");
+        assert_eq!(s(mp_parse_qcview_link(c("qcview://u1/m2").as_ptr())), r#"{"kind":"project","uuid":"u1","media_id":"m2"}"#);
+        assert_eq!(s(mp_parse_qcview_link(c("u1").as_ptr())), r#"{"kind":"project","uuid":"u1","media_id":""}"#);
+        assert_eq!(s(mp_parse_qcview_link(c("qcview://stream?url=srt%3A%2F%2Fh%3A9000&name=Cam+A&view=AgX").as_ptr())),
+                   r#"{"kind":"stream","url":"srt://h:9000","name":"Cam A","query":[["url","srt://h:9000"],["name","Cam A"],["view","AgX"]]}"#);
+        assert_eq!(s(mp_parse_qcview_link(c("qcview://stream?name=x").as_ptr())), "");
+        assert_eq!(s(mp_parse_qcview_link(c("  ").as_ptr())), "");
     }
     /// The committed header must list every exported function (regenerate with MIN_PATHS_REGEN_HEADER=1 when this fails).
     #[test] fn committed_header_is_current() {
