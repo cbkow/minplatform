@@ -113,7 +113,7 @@ impl App {
                 g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
-                g.thumbs.paint(scene, content, scale);
+                g.thumbs.paint(scene, content, scale, Some(g.pointer.0));
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.ui_shown_frame = key; g.ui_dirty = false;
@@ -509,7 +509,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
         scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });
-        thumbs.paint(scene, content, scale);
+        thumbs.paint(scene, content, scale, Some(w as f64 * 0.62));
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);

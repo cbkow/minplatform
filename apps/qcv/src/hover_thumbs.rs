@@ -1,6 +1,9 @@
 //! The hover thumbnail as a UI node over the viewport (canon §17.5 item 5, row 170): QCView's cache + loader
-//! (`qcv-player`'s `TimelineThumbnailCache`, the GOP-cache peek first) feeding a vello image drawn bottom-left of the
-//! content rect at 0.18 of its width — display-referred, no longer composited into the frame before the colour chain.
+//! (`qcv-player`'s `TimelineThumbnailCache`, the GOP-cache peek first) feeding a vello image at 0.18 of the content
+//! rect's width — display-referred, no longer composited into the frame before the colour chain. In a solo view it
+//! FOLLOWS the pointer horizontally, sitting just above the bands and clamped to the content rect (the user 2026-11-07:
+//! QCView parked it bottom-left only because of the Qt render-thread split; "this might be more ergonomic"); dual keeps
+//! QCView's parking, A bottom-left and B bottom-right.
 //! Requests are throttled at QCView's 16 ms; playback drops the loader to one worker; the strip precaches on open.
 use kurbo::Rect;
 use min_theme::tokens as t;
@@ -54,12 +57,14 @@ impl HoverThumbs {
         }
         changed
     }
-    pub fn paint(&self, scene: &mut Scene, content: Rect, scale: f64) {
+    /// `anchor_x` = the pointer's x to centre on (solo); `None` parks bottom-left (dual's A side).
+    pub fn paint(&self, scene: &mut Scene, content: Rect, scale: f64, anchor_x: Option<f64>) {
         let Some((h, w, hh)) = self.shown else { return };
         let imgs = self.images.borrow(); let Some(img) = imgs.get(&h) else { return };
         let dw = content.width() * t::HOVER_THUMBNAIL_FRAME_RATIO; let dh = dw * hh as f64 / w.max(1) as f64;
         let pad = t::SPACING_100 as f64 * scale; let bw = t::BORDER_WIDTH_100 as f64 * scale;
-        let r = Rect::new(content.x0 + pad, content.y1 - pad - dh, content.x0 + pad + dw, content.y1 - pad);
+        let x0 = match anchor_x { Some(ax) => (ax - dw / 2.0).clamp(content.x0 + pad, (content.x1 - pad - dw).max(content.x0 + pad)), None => content.x0 + pad };
+        let r = Rect::new(x0, content.y1 - pad - dh, x0 + dw, content.y1 - pad);
         paint::rounded(scene, r.inflate(bw, bw), t::HOVER_THUMBNAIL_CORNER_RADIUS as f64 * scale + bw, t::HOVER_THUMBNAIL_BORDER_COLOR);
         paint::image(scene, img, r);
     }
