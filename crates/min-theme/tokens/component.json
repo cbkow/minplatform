@@ -185,7 +185,7 @@
   "band-background-color": { "value": "{background-layer-1-color}" },
   "timecode-well-width":  { "value": "160px" },
   "timecode-well-height": { "value": "{component-height-50}" },
-  "timecode-well-corner-radius": { "value": "{corner-radius-small-default}" },
+  "timecode-well-corner-radius": { "value": "{corner-radius-medium-size-extra-small}" },
   "timecode-well-font-size": { "value": "{code-size-s}" },
   "timecode-drop-frame-color": { "value": "{notice-visual-color}" },
   "$review-speed": "QCView's chip lit ACCENT off 1×; row 162 rations the accent, so the chip goes bold + content colour instead, in the wells' recessed look.",
