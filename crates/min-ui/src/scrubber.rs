@@ -30,6 +30,9 @@ const PPS_MAX: f64 = 200.0;           // QCView's kPpsMax (logical px/s)
 const DOUBLE_PRESS_MS: u64 = 350;
 
 pub struct Scrubber {
+    /// Compact mode's line state (canon row 172; QCView's CompactStrip): a 2-px scrub line through the band's middle with the
+    /// playhead and the in / out marks — no ruler, no labels, no waveform. The same gesture, the same camera.
+    pub compact: bool,
     pub rect: Rect,
     /// px per second (physical); `None` = fit the whole duration to the track.
     pps: Option<f64>,
@@ -45,7 +48,7 @@ pub struct Scrubber {
 impl Default for Scrubber { fn default() -> Self { Scrubber::new() } }
 
 impl Scrubber {
-    pub fn new() -> Scrubber { Scrubber { rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None } }
+    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn is_fit(&self) -> bool { self.pps.is_none() }
@@ -129,6 +132,17 @@ impl Scrubber {
         let pps = self.pps(s);
         let (tx0, tx1) = (r.x0 + self.pad(scale), r.x0 + self.pad(scale) + self.track_w);
         let top = r.y0 + hair;
+        if self.compact {
+            // the line through the middle (brighter while hovered or pressed), the in / out marks, the playhead
+            let cy = (r.y0 + r.y1) / 2.0; let lh = 2.0 * scale;
+            paint::rect(scene, Rect::new(tx0, cy - lh / 2.0, tx1, cy + lh / 2.0), if self.hover_x.is_some() || self.pressed { t::BORDER_COLOR_HOVER } else { t::DIVIDER_COLOR });
+            let mark_h = 10.0 * scale;
+            if s.in_point >= 0 { let a = self.x_of_time(s.in_point as f64 / s.fps, s, scale); if a >= tx0 - 1.0 && a <= tx1 + 1.0 { paint::rect(scene, Rect::new(a, cy - mark_h / 2.0, a + lh, cy + mark_h / 2.0), t::SCRUBBER_IN_POINT_COLOR); } }
+            if s.out_point >= 0 { let b = self.x_of_time((s.out_point + 1) as f64 / s.fps, s, scale); if b >= tx0 - 1.0 && b <= tx1 + 1.0 { paint::rect(scene, Rect::new(b - lh, cy - mark_h / 2.0, b, cy + mark_h / 2.0), t::SCRUBBER_OUT_POINT_COLOR); } }
+            let px = self.x_of_time(s.current as f64 / s.fps, s, scale); let ph = 12.0 * scale;
+            if px >= tx0 - 1.0 && px <= tx1 + 1.0 { paint::rect(scene, Rect::new(px - 1.5 * scale, cy - ph / 2.0, px + 1.5 * scale, cy + ph / 2.0), t::SCRUBBER_PLAYHEAD_COLOR); }
+            return
+        }
         // the waveform as the band's quiet background (the probe's peaks, when there are any)
         if let Some(pk) = peaks {
             let wave_h = r.height() * t::SCRUBBER_WAVEFORM_HEIGHT_RATIO; let base = r.y1;

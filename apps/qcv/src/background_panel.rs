@@ -47,9 +47,10 @@ impl BackgroundPanel {
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
         self.section.paint(scene, fonts, scale, now, first);
         if !self.section.expanded { return }
-        // the fused block's seams (the compact group's hairlines), then the four cells
+        // the block's raised backing (one layer up from the rail — the reference's raised chips; the user 2026-11-07), its seams, then the four cells
         let th = t::HAIRLINE as f64 * scale; let b = &self.buttons;
         let (l, r_, t_, b_) = (b[0].rect.x0, b[1].rect.x1, b[0].rect.y0, b[2].rect.y1); let mx = b[0].rect.x1; let my = b[0].rect.y1;
+        paint::rounded(scene, Rect::new(l, t_, r_, b_), t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, t::RAIL_CARD_BACKGROUND_COLOR);
         paint::rect(scene, Rect::new(mx - th / 2.0, t_ + th * 6.0, mx + th / 2.0, b_ - th * 6.0), t::DIVIDER_COLOR);
         paint::rect(scene, Rect::new(l + th * 6.0, my - th / 2.0, r_ - th * 6.0, my + th / 2.0), t::DIVIDER_COLOR);
         for b in &self.buttons { b.paint(scene, fonts, scale, now); }

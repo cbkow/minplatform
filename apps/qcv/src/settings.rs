@@ -1,8 +1,7 @@
 //! The player's settings schema (canon row 142; the 2026-11-07 rails ruling): QCView's keys VERBATIM — the same
 //! `group/name` spellings, the same defaults, the same ranges — so a preference means the same thing in both players.
 //! Keys whose feature has not landed here are in the schema already (the panel shows them greyed): the shape is final.
-//! Two deviations, written: `display/backgroundMode` defaults to DarkGray (QCView: Black) so the viewport reads apart from
-//! the chrome; `performance/hwScrubInterCodecs` keeps QCView's default (off, "experimental") on both OSes
+//! One deviation, written: `performance/hwScrubInterCodecs` keeps QCView's default (off, "experimental") on both OSes
 //! where `ScrubOptions::default()` had turned it on for Windows — the D3D12VA scrub check (row 149) is still owed.
 use min_settings::{Key, Schema, Settings};
 
@@ -57,7 +56,7 @@ static KEYS: &[Key] = &[
     Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200),
     Key::int(k::LIVE_BUFFER_MS, 60, 20, 200),
     Key::bool(k::BLENDER_SESSIONS, false),
-    Key::int(k::BACKGROUND_MODE, 1, 0, 3),   // DarkGray by default — QCView stores Black; the user (2026-11-07): the default should differ slightly from the app's background (#1f1f1f under the picture, #161616 outside vs the chrome's #1b1b1b)
+    Key::int(k::BACKGROUND_MODE, 0, 0, 3),
     Key::float(k::BRIGHTNESS, 1.0, 0.0, 4.0),
     Key::str(k::SCREENSHOT_FORMAT, "png"),
     Key::bool(k::LOOP_ENABLED, true),
