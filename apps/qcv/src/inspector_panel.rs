@@ -9,7 +9,7 @@
 //! (written in the Owed list). Linked Projects / Playlist Contents arrive with the project crate.
 use kurbo::Rect;
 use min_theme::tokens as t;
-use min_ui::{paint, ActionButton, ActionGroup, Event, Family, Fonts, Response, Section};
+use min_ui::{paint, ActionButton, ActionGroup, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Section, TextField};
 use qcv_meta::{AdobeMetadata, VideoMetadata};
 use min_present::engine::{Geometry, Par};
 use qcv_player::{audio::RoutingMode, RangeOverride, Transport};
@@ -23,7 +23,12 @@ struct Row { label: String, value: String, note: String, mono: bool, warn: bool 
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
 struct Chips { label: String, group: ActionGroup, keys: Vec<String>, selected: usize, rect: Rect, /// the fused rows' rects (one per wrapped line) for the backing
     rows: Vec<Rect> }
-enum Item { Row(Row), Chips(Chips), Meters }
+/// QCView's Custom aspect fields: Pixel aspect (a scalar, clamped 0.05–20, rationalised at 1e4) and Display aspect (a single
+/// decimal ": 1"; PAR = DAR × storageH / storageW, rationalised at 1e3) — either round-trips to the same ratio.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldKind { Par, Dar }
+struct Field { label: String, kind: FieldKind, field: TextField, suffix: String, rect: Rect }
+enum Item { Row(Row), Chips(Chips), Field(Field), Meters }
 struct Group { section: Section, items: Vec<Item>, rects: Vec<Rect> }
 
 pub struct InspectorPanel {
@@ -36,6 +41,8 @@ pub struct InspectorPanel {
     range: RangeOverride, routing: RoutingMode, origin: Option<String>,
     /// the presenter's geometry choices + the dims it fits with (the Display row tracks what the viewport shows)
     geometry: Geometry, display_dims: (u32, u32),
+    /// the stored dims (the DAR ↔ PAR conversion needs them)
+    storage: (u32, u32),
     height: f64, dirty_model: bool,
 }
 
@@ -80,7 +87,7 @@ impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![] };
         InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode")], path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
-            range: RangeOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), height: 0.0, dirty_model: true }
+            range: RangeOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
     pub fn set_video_meta(&mut self, path: &str, m: VideoMetadata) { self.pending_v = Some((path.to_string(), m)); self.dirty_model = true; }
@@ -154,7 +161,14 @@ impl InspectorPanel {
         let rot = v.map(|m| m.rotation_deg).unwrap_or(i.meta.rotation as i32);
         // QCView's Aspect pill: Square (stored pixels untouched, the default) / Detected n:d / Custom (the custom fields wait)
         let detected_label = if anam && sd > 0 { format!("Detected {sn}:{sd}") } else { "Detected".to_string() };
-        let mut geometry = vec![chips("Aspect", &[("square", "Square"), ("detected", detected_label.as_str())], match self.geometry.par { Par::Square => "square", _ => "detected" })];
+        self.storage = (w, h);
+        let mut geometry = vec![chips("Aspect", &[("square", "Square"), ("detected", detected_label.as_str()), ("custom", "Custom")], match self.geometry.par { Par::Square => "square", Par::Detected => "detected", Par::Custom(..) => "custom" })];
+        if let Par::Custom(n, d) = self.geometry.par {
+            let par = if d > 0 { n as f64 / d as f64 } else { 1.0 }; let dar = if h > 0 && d > 0 { (w as f64 * n as f64) / (h as f64 * d as f64) } else { 0.0 };
+            let mk = |label: &str, kind, text: String, suffix: &str| { let mut f = TextField::new(Family::Mono, t::CODE_SIZE_S); f.set_text(&text); Item::Field(Field { label: label.into(), kind, field: f, suffix: suffix.into(), rect: Rect::ZERO }) };
+            geometry.push(mk("Pixel aspect", FieldKind::Par, format!("{par:.4}"), ""));
+            geometry.push(mk("Display aspect", FieldKind::Dar, if dar > 0.0 { format!("{dar:.4}") } else { String::new() }, ": 1"));
+        }
         geometry.push(row("Detected", if anam && sd > 0 { format!("{sn}:{sd} (non-square)") } else { "1:1 (square)".into() }, true));
         let (dw, dh) = if self.display_dims.0 > 0 { self.display_dims } else { (w, h) };
         if dw > 0 && dh > 0 { geometry.push(row("Display", format!("{:.3}:1   ({dw} × {dh})", dw as f64 / dh as f64), true)); }   // what the viewport shows (rotation swapped, PAR applied)
@@ -232,6 +246,7 @@ impl InspectorPanel {
                 let h = match it {
                     Item::Row(_) => row_h,
                     Item::Chips(c) => { let h = layout_chips(c, fonts, x0 + pad, x1 - pad, cy, scale); h + gap }
+                    Item::Field(f) => { let fw = 90.0 * scale; let fh = t::FIELD_HEIGHT_S as f64 * scale; let sw = if f.suffix.is_empty() { 0.0 } else { fonts.layout(&f.suffix, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 + t::SPACING_75 as f64 * scale }; let x1f = x1 - pad - sw; f.rect = Rect::new(x1f - fw, cy + (row_h - fh) / 2.0, x1f, cy + (row_h + fh) / 2.0); f.field.layout(fonts, f.rect, scale); row_h }
                     Item::Meters => 6.0 * scale * self.channels.max(1) as f64 + gap,
                 };
                 g.rects.push(Rect::new(x0 + pad, cy, x1 - pad, cy + h)); cy += h + gap;
@@ -241,9 +256,38 @@ impl InspectorPanel {
         self.height = cy - y;
         self.height
     }
+    fn commit_field(storage: (u32, u32), f: &mut Field) -> Option<Cmd> {
+        let v: f64 = f.field.text().trim().parse().ok()?;
+        if !(v > 0.0) { return None }
+        let v = v.clamp(0.05, 20.0);
+        let (w, h) = storage;
+        match f.kind {
+            FieldKind::Par => Some(Cmd::Par(Par::Custom((v * 10000.0).round() as u32, 10000))),
+            FieldKind::Dar => if w > 0 && h > 0 { Some(Cmd::Par(Par::Custom((v * h as f64 * 1000.0).round() as u32, w * 1000))) } else { None },
+        }
+    }
+    pub fn has_focus(&self) -> bool { self.groups.iter().flat_map(|g| g.items.iter()).any(|it| matches!(it, Item::Field(f) if f.field.focused)) }
+    /// Keys to the focused field; Enter commits, Escape reverts (the model rebuilds from the presenter's state).
+    pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Vec<Cmd> {
+        let storage = self.storage; let mut cmds = vec![];
+        for g in &mut self.groups { for it in g.items.iter_mut() { if let Item::Field(f) = it { if f.field.focused {
+            match f.field.key(k, fonts) { FieldResponse::Accepted => { f.field.focused = false; if let Some(c) = Self::commit_field(storage, f) { cmds.push(c); } self.dirty_model = true; } FieldResponse::Cancelled => { f.field.focused = false; self.dirty_model = true; } _ => {} }
+        } } } }
+        cmds
+    }
+    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { for g in &mut self.groups { for it in g.items.iter_mut() { if let Item::Field(f) = it { if f.field.focused { f.field.ime(e, fonts); } } } } }
+    /// Focus lost (a press elsewhere, the window): commit a typed value.
+    pub fn blur(&mut self) -> Vec<Cmd> {
+        let storage = self.storage; let mut cmds = vec![];
+        for g in &mut self.groups { for it in g.items.iter_mut() { if let Item::Field(f) = it { if f.field.focused { f.field.focused = false; if let Some(c) = Self::commit_field(storage, f) { cmds.push(c); } self.dirty_model = true; } } } }
+        cmds
+    }
     /// Returns (commands, redraw needed).
-    pub fn event(&mut self, e: &Event, now: Instant) -> (Vec<Cmd>, bool) {
+    pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts) -> (Vec<Cmd>, bool) {
         let mut dirty = false; let mut cmds = vec![];
+        // a press outside a focused field commits it
+        if let Event::Down { x, y, .. } = *e { let on_field = self.groups.iter().flat_map(|g| g.items.iter()).any(|it| matches!(it, Item::Field(f) if f.field.hit(x, y))); if !on_field && self.has_focus() { cmds.extend(self.blur()); dirty = true; } }
+        for g in &mut self.groups { if g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { let was = f.field.focused; if f.field.pointer(e, fonts) { dirty = true; } if f.field.focused && !was { f.field.select_all(fonts); } } } } }
         for g in &mut self.groups {
             let (_, d) = g.section.event(e, now); dirty |= d;
             if !g.section.expanded { continue }
@@ -255,7 +299,7 @@ impl InspectorPanel {
                         "Range" => cmds.push(Cmd::Range(match key { "full" => RangeOverride::Full, "limited" => RangeOverride::Limited, _ => RangeOverride::Auto })),
                         "Mix" => cmds.push(Cmd::Routing(match key { "5.1" => RoutingMode::Downmix5_1, "7-8" => RoutingMode::Stereo7_8, _ => RoutingMode::Auto })),
                         "Origin" => { self.origin = Some(key.to_string()); cmds.push(Cmd::Origin(key.to_string())); }
-                        "Aspect" => cmds.push(Cmd::Par(if key == "detected" { Par::Detected } else { Par::Square })),
+                        "Aspect" => cmds.push(Cmd::Par(match key { "detected" => Par::Detected, "custom" => match self.geometry.par { Par::Custom(n, d) => Par::Custom(n, d), _ => Par::Custom(1, 1) }, _ => Par::Square })),
                         "Rotation" => cmds.push(Cmd::Rotation(match key { "0" => Some(0), "90" => Some(90), "180" => Some(180), "270" => Some(270), _ => None })),
                         _ => {}
                     }
@@ -268,7 +312,8 @@ impl InspectorPanel {
     /// The harness: a chip's rect by its row label and index.
     pub fn chip_rect(&self, label: &str, i: usize) -> Option<Rect> { self.groups.iter().flat_map(|g| g.items.iter()).find_map(|it| match it { Item::Chips(c) if c.label == label => c.group.buttons.get(i).map(|b| b.rect), _ => None }) }
     pub fn animating(&self, now: Instant) -> bool { self.groups.iter().any(|g| g.section.animating(now) || g.items.iter().any(|it| matches!(it, Item::Chips(c) if c.group.animating(now)))) }
-    pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
+        for g in self.groups.iter_mut() { if g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { f.field.paint(scene, fonts, scale); } } } }
         for (gi, g) in self.groups.iter().enumerate() {
             g.section.paint(scene, fonts, scale, now, gi == 0);
             if !g.section.expanded { continue }
@@ -299,6 +344,12 @@ impl InspectorPanel {
                         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, c.group.rect.y0 + (bh - l.height() as f64) / 2.0)));
                         for row in &c.rows { paint::rounded(scene, *row, t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, t::RAIL_CARD_BACKGROUND_COLOR); }
                         for b in &c.group.buttons { b.paint(scene, fonts, scale, now); }
+                    }
+                    Item::Field(f) => {
+                        let l = fonts.layout(&f.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR));
+                        min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y0 + (r.height() - l.height() as f64) / 2.0)));
+                        // the field paints its own well; the editor's `paint` wants &mut, so the panel's paint takes the item through a cell below
+                        if !f.suffix.is_empty() { let sfx = fonts.layout(&f.suffix, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR)); min_ui::fonts::draw_layout(scene, &sfx, kurbo::Affine::translate((f.rect.x1 + t::SPACING_75 as f64 * scale, r.y0 + (r.height() - sfx.height() as f64) / 2.0))); }
                     }
                     Item::Meters => {
                         // QCView's per-channel peak meters: one 4-px bar per source channel, the track in the card colour, the fill in the content grey, over 0.9 in the notice colour

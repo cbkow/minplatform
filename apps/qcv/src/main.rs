@@ -250,6 +250,7 @@ impl App {
             let mut cmds = vec![];
             // a press on a rail's own control (the collapse arrow, the scrollbar) is the rail's, not the panel's
             let rail_ctl = matches!(e, min_ui::Event::Down { .. }) && e.pos().is_some_and(|(x, y)| g.left.over_control(x, y, now) || g.right.over_control(x, y, now));
+            if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.inspector.has_focus() { let cmds = g.inspector.blur(); set_ime(&**g.window, false); g.ui_dirty = true; for c in cmds { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } } }
             if !rail_ctl && (modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus()) {
                 // a press outside the settings' fields commits a typed number
                 if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
@@ -258,7 +259,9 @@ impl App {
             }
             if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
             if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) {
-                let (icmds, d) = g.inspector.event(&e, now); if d { g.ui_dirty = true; }
+                let had = g.inspector.has_focus();
+                let (icmds, d) = g.inspector.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
+                if g.inspector.has_focus() != had { set_ime(&**g.window, g.inspector.has_focus()); }
                 for c in icmds { match c {
                     inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } }
@@ -544,11 +547,18 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
             WindowEvent::Focused(f) => { log::info!("focused {f}"); if let Some(g) = self.gpu.as_mut() { let now = Instant::now(); if !f { if g.strip.is_open() { g.strip.close(); } g.left.set_pointer_present(false, now); g.right.set_pointer_present(false, now); } else if g.pointer.0 >= 0.0 { g.left.set_pointer_present(true, now); g.right.set_pointer_present(true, now); } g.ui_dirty = true; } }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.inspector.has_focus() {
+                    let k = to_key_event(&event, self.mods);
+                    let cmds = g.inspector.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.inspector.has_focus() { set_ime(&**g.window, false); }
+                    for c in cmds { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } }
+                    return
+                } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && (g.settings_panel.has_focus() || g.settings_panel.is_modal() || g.settings_panel.menu_open()) {
                     let k = to_key_event(&event, self.mods);
                     let had_focus = g.settings_panel.has_focus();
@@ -779,8 +789,8 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         let before = engine.render_offscreen(w, h).expect("composite");
         if let Some(r) = inspector.chip_rect("Range", 1) {
             let c = r.center();
-            let _ = inspector.event(&min_ui::Event::Down { x: c.x, y: c.y, button: min_ui::Button::Primary }, t0);
-            let (cmds, _) = inspector.event(&min_ui::Event::Up { x: c.x, y: c.y, button: min_ui::Button::Primary }, t0);
+            let _ = inspector.event(&min_ui::Event::Down { x: c.x, y: c.y, button: min_ui::Button::Primary }, t0, &mut fonts);
+            let (cmds, _) = inspector.event(&min_ui::Event::Up { x: c.x, y: c.y, button: min_ui::Button::Primary }, t0, &mut fonts);
             println!("range probe: chip at {:?} → {:?}", r, cmds);
             for c in cmds { if let inspector_panel::Cmd::Range(ro) = c { p.set_range_override(ro); } }
             println!("range probe: transport override now {:?}", p.range_override());
