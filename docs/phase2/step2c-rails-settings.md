@@ -156,8 +156,9 @@ Settings panel has.
   deviation, not the token: the loaded row drew the name in blue-900 over the grey hover / selection fill (3.3–3.7:1,
   under the 4.5:1 text floor) with an invented 2-px left bar. QCView's `LeftRail.qml` never puts accent text on grey:
   priority active → selected → hover, the loaded row = a muted cobalt fill (`Theme.rowActive`) + a 1-px accent border +
-  the name in `textBright`, "no left rule". Carried: tokens `rail-row-active-fill` (blue-400) / `-border`
-  (accent-visual-color) / `-label` (gray-900); the accent tokens themselves are unchanged (Spectrum 2 dark blue-900; QCView's
+  the name in `textBright`, "no left rule". Carried: tokens `rail-row-active-fill` (blue-400) / `-label` (gray-900); the 1-px border was tried and
+  REMOVED the same night (the user: "the outline is not very Adobe Spectrum" — a ring means keyboard focus there; Spectrum 2 marks
+  the current item with fill + weight, so the loaded name is BOLD); the accent tokens themselves are unchanged (Spectrum 2 dark blue-900; QCView's
   own accent is cobalt #0189f1 on a Display-P3-tagged Qt swapchain, which is why the same hex reads more vivid there — noted,
   not carried).
 - The user: "move the icons from the media items to the bins too, we don't need so many icons" — the type glyph is drawn once

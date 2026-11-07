@@ -2,8 +2,8 @@
 //! "Media" list grouped by QCView's section labels (Videos · Audio · Images · Image Sequences · Playlists · Dual Views ·
 //! Live) with the type glyph + a count on the bin header (the user 2026-11-07: "move the icons from the media items to the
 //! bins too, we don't need so many icons"), rows = the name elided in the middle; the LOADED row carries QCView's treatment
-//! (LeftRail.qml: a muted cobalt fill, a 1-px accent border, the name bright — never accent text on grey, which sat under
-//! 4.5:1; one of the four blue uses, canon row 162), selected rows in the deliberate grey; single click selects (Ctrl / Cmd
+//! (LeftRail.qml's muted cobalt fill — one of the four blue uses, canon row 162 — with the name BOLD in gray-900, Spectrum 2's
+//! current-item treatment: fill + weight, no outline, since a ring means keyboard focus there; QCView's 1-px border not carried), selected rows in the deliberate grey; single click selects (Ctrl / Cmd
 //! toggles, Shift extends a range), double-click LOADS (QCView: "activation moved to double-click"), an empty list reads
 //! "Drop media here to add to the project". An "Add Media…" pill opens the file dialog. Context menus and drag-to-playlist
 //! wait for the menu node and DnD slice.
@@ -129,18 +129,15 @@ impl ProjectPanel {
                 let radius = t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale;
                 let bg = if active { t::RAIL_ROW_ACTIVE_FILL } else if selected { t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT } else { mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, r.hover.value(now)) };
                 if bg.a > 0.0 { paint::rounded(scene, r.rect, radius, bg); }
-                if active {   // QCView LeftRail.qml: the loaded row's 1-px accent border (no left rule)
-                    let bw = 1.0 * scale; let ring = kurbo::RoundedRect::from_rect(r.rect.inset(-bw / 2.0 + bw), radius - bw / 2.0);
-                    scene.stroke(&kurbo::Stroke::new(bw), kurbo::Affine::IDENTITY, paint::color(t::RAIL_ROW_ACTIVE_BORDER), None, &ring);
-                }
                 let c = if r.failed { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
                 let x = r.rect.x0 + pad;
                 let avail = (r.rect.x1 - pad - x).max(20.0);
-                let mut l = fonts.layout(&r.name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
+                let weight = if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32;   // Spectrum 2 marks the current item with fill + weight, never an outline (a ring = keyboard focus)
+                let mut l = fonts.layout(&r.name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c));
                 if l.width() as f64 > avail {
                     // ElideMiddle: keep the head and the tail
                     let chars: Vec<char> = r.name.chars().collect(); let mut keep = chars.len();
-                    while keep > 2 { keep -= 1; let head = keep / 2; let tail = keep - head; let s: String = format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>()); l = fonts.layout(&s, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c)); if l.width() as f64 <= avail { break } }
+                    while keep > 2 { keep -= 1; let head = keep / 2; let tail = keep - head; let s: String = format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>()); l = fonts.layout(&s, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c)); if l.width() as f64 <= avail { break } }
                 }
                 min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((x, r.rect.y0 + (r.rect.height() - l.height() as f64) / 2.0)));
             }
