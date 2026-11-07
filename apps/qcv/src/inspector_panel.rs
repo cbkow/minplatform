@@ -287,6 +287,8 @@ impl InspectorPanel {
         let mut dirty = false; let mut cmds = vec![];
         // a press outside a focused field commits it
         if let Event::Down { x, y, .. } = *e { let on_field = self.groups.iter().flat_map(|g| g.items.iter()).any(|it| matches!(it, Item::Field(f) if f.field.hit(x, y))); if !on_field && self.has_focus() { cmds.extend(self.blur()); dirty = true; } }
+        // a press on one field commits any other (focus moves field to field without Enter)
+        if let Event::Down { x, y, .. } = *e { let storage = self.storage; for g in &mut self.groups { for it in g.items.iter_mut() { if let Item::Field(f) = it { if f.field.focused && !f.field.hit(x, y) { f.field.focused = false; if let Some(c) = Self::commit_field(storage, f) { cmds.push(c); } self.dirty_model = true; dirty = true; } } } } }
         for g in &mut self.groups { if g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { let was = f.field.focused; if f.field.pointer(e, fonts) { dirty = true; } if f.field.focused && !was { f.field.select_all(fonts); } } } } }
         for g in &mut self.groups {
             let (_, d) = g.section.event(e, now); dirty |= d;

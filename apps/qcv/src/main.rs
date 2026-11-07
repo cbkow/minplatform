@@ -546,7 +546,23 @@ impl ApplicationHandler for App {
         if *TRACE_INPUT { match &event { WindowEvent::PointerMoved { .. } | WindowEvent::PointerButton { .. } | WindowEvent::PointerLeft { .. } | WindowEvent::PointerEntered { .. } | WindowEvent::Focused(_) | WindowEvent::MouseWheel { .. } => println!("input: {event:?}"), _ => {} } }
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
-            WindowEvent::Focused(f) => { log::info!("focused {f}"); if let Some(g) = self.gpu.as_mut() { let now = Instant::now(); if !f { if g.strip.is_open() { g.strip.close(); } g.left.set_pointer_present(false, now); g.right.set_pointer_present(false, now); } else if g.pointer.0 >= 0.0 { g.left.set_pointer_present(true, now); g.right.set_pointer_present(true, now); } g.ui_dirty = true; } }
+            WindowEvent::Focused(f) => {
+                log::info!("focused {f}");
+                let mut pending: Vec<settings_panel::Cmd> = vec![];
+                if let Some(g) = self.gpu.as_mut() {
+                    let now = Instant::now();
+                    if !f {
+                        if g.strip.is_open() { g.strip.close(); }
+                        // the window lost focus: every typed field commits (QCView's editingFinished)
+                        pending = g.settings_panel.blur(&mut self.settings);
+                        for c in g.inspector.blur() { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } }
+                        set_ime(&**g.window, false);
+                        g.left.set_pointer_present(false, now); g.right.set_pointer_present(false, now);
+                    } else if g.pointer.0 >= 0.0 { g.left.set_pointer_present(true, now); g.right.set_pointer_present(true, now); }
+                    g.ui_dirty = true;
+                }
+                for c in pending { self.apply_setting(c); }
+            }
             WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
