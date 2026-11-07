@@ -43,6 +43,7 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
+    scrub_last_req: Option<(i32, Instant)>,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, WindowId>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
     settings: min_settings::Settings,
@@ -135,7 +136,7 @@ impl App {
         let hw_ok = !cfg!(windows) || st.bool(settings::k::HW_DECODE);
         let hw = if self.o.sw || !hw_ok { None } else { self.hw.clone() };
         let threads = if self.o.threads != 0 { self.o.threads } else { st.int(settings::k::FFMPEG_THREADS) as i32 };
-        let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), ..Default::default() });
+        let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), stats: *TRACE_SCRUB, ..Default::default() });
         let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
         match Transport::open(&src, TransportOptions { hw, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }) {
             Ok(mut p) => {
@@ -160,7 +161,14 @@ impl App {
         let now = Instant::now();
         let mut shown_new = false; let mut reopen = false;
         if let Some(p) = self.player.as_mut() {
-            if let Some(d) = p.tick(now) {
+            if *TRACE_SCRUB { if let Some(sd) = p.scrub() { if let Some(rx) = sd.served.clone() { while let Ok(sv) = rx.try_recv() { println!("scrub: served {} at {:.1} ms — request → ready {:.1} ms, decoded {}, hit {}, seeked {}", sv.target, trace_ms(), (sv.done - sv.issued).as_secs_f32() * 1000.0, sv.decoded, sv.hit, sv.seeked); } } } }
+            let idx = if *TRACE_SCRUB { Some(p.frame_index().clone()) } else { None };
+            let scrub_tick = *TRACE_SCRUB && p.is_scrubbing();
+            if scrub_tick { println!("scrub: tick at {:.1} ms — queued {} (front external {}), seek in flight {}, decoder playing {}", trace_ms(), p.decoder().queued(), p.decoder().front_is_external(), p.seek_in_flight(), p.decoder().is_playing()); }
+            let ticked = p.tick(now);
+            if scrub_tick { println!("scrub: tick → {}", ticked.as_ref().map(|d| if d.frame_no < 0 { "a preview".to_string() } else { format!("stream frame {}", d.frame_no) }).unwrap_or_else(|| "nothing".to_string())); }
+            if let Some(d) = ticked {
+                if let (true, Some(idx)) = (d.frame_no < 0, idx.as_ref()) { let shown_f = idx.frame_for_pts(d.pts); let (lf, since) = self.scrub_last_req.map(|(f, t)| (f, t.elapsed().as_secs_f32() * 1000.0)).unwrap_or((-1, 0.0)); println!("scrub: shown preview frame {shown_f} at {:.1} ms — latest request {lf} ({} frames behind, {since:.1} ms after it)", trace_ms(), lf - shown_f); }
                 match g.presenter.engine.show(&d.frame) {
                     Ok(()) => { shown_new = true; self.show_ms.push(g.presenter.engine.last_show_ms); self.shown_in_window += 1; }
                     Err(e) => { println!("show: {e} — reopening in software"); reopen = true; }
@@ -330,7 +338,7 @@ impl App {
             if consumed && !(g.scrubber.is_pressed() && matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. })) { return }
             let st = scrub_state(self.player.as_ref());
             let (scmds, sd) = g.scrubber.event(&e, now, &st, scale); if sd { g.ui_dirty = true; }
-            if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => p.begin_scrub(), min_ui::ScrubCmd::To(f) => p.scrub_to_frame(f), min_ui::ScrubCmd::End => p.end_scrub() } } }
+            if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
             return
         }
         // THE POINTER GRAB: a press on a band node (the scrubber, a transport button, the volume slider) owns Move / Up until the
@@ -390,7 +398,7 @@ impl App {
         let st = scrub_state(self.player.as_ref());
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
         if sd { g.ui_dirty = true; }
-        if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => p.begin_scrub(), min_ui::ScrubCmd::To(f) => p.scrub_to_frame(f), min_ui::ScrubCmd::End => p.end_scrub() } } }
+        if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
         if g.fullscreen { let want = if st.frames > 0 && e.pos().is_some_and(|(x, y)| g.scrubber.hit(x, y)) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default }; if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); } }
         for c in cmds {
             match c {
@@ -796,6 +804,10 @@ impl ApplicationHandler for App {
 }
 
 static TRACE_INPUT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("QCV_TRACE_INPUT").is_some());
+/// `QCV_TRACE_SCRUB=1`: every scrub request (target, wall ms), every served preview (target, request → ready ms, decoded, hit) and every
+/// preview SHOWN (frame, how far behind the latest request) — the windowed app's own scrub latency, which the headless bench cannot see.
+static TRACE_SCRUB: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("QCV_TRACE_SCRUB").is_some());
+fn trace_ms() -> f64 { static T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now); T0.elapsed().as_secs_f64() * 1000.0 }
 
 fn main() {
     env_logger::init();
@@ -813,7 +825,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -1133,6 +1145,7 @@ fn run_scrub_bench(o: Opts) {
         let period = std::time::Duration::from_secs_f32(ms / 1000.0);
         let sweep = std::time::Duration::from_secs(2); let t = Instant::now();
         let (mut ready, mut behind, mut reqs, mut hits, mut shown_n, mut retargets) = (vec![], vec![], 0u32, 0u32, 0u32, 0u32);
+        let mut stream_shown = 0u32;   // frames the STREAM decoder slipped onto the screen mid-drag: must be 0 (the 2026-11-07 "plays toward the pointer" bug)
         let mut tick = t;
         while t.elapsed() < sweep {
             let frac = (t.elapsed().as_secs_f32() / sweep.as_secs_f32()).min(1.0);
@@ -1140,13 +1153,14 @@ fn run_scrub_bench(o: Opts) {
             p.scrub_to_frame(pointer); reqs += 1;
             tick += period; let now = Instant::now(); if tick > now { std::thread::sleep(tick - now); }
             while let Ok(s) = served.try_recv() { ready.push((s.done - s.issued).as_secs_f32() * 1000.0); if s.hit { hits += 1 } if s.retargeted { retargets += 1 } }
-            if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); shown_n += 1; }
+            if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); shown_n += 1; if h.frame_no >= 0 { stream_shown += 1; } }
             behind.push((pointer - p.scrub().unwrap().last_shown()).abs() as f32);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
         while let Ok(s) = served.try_recv() { ready.push((s.done - s.issued).as_secs_f32() * 1000.0); if s.hit { hits += 1 } }
-        println!("scrub {a}→{b} @ {ms:.1} ms: {reqs} requests → {} served ({hits} cache hits, {retargets} retargets), {shown_n} shown; request → ready ms p50 {:.1} p95 {:.1} max {:.1}; frames behind the pointer p50 {:.0} p95 {:.0} max {:.0}",
+        println!("scrub {a}→{b} @ {ms:.1} ms: {reqs} requests → {} served ({hits} cache hits, {retargets} retargets), {shown_n} shown ({stream_shown} of them STREAM frames — must be 0); request → ready ms p50 {:.1} p95 {:.1} max {:.1}; frames behind the pointer p50 {:.0} p95 {:.0} max {:.0}",
             ready.len(), pct(&mut ready, 50.0), pct(&mut ready, 95.0), pct(&mut ready, 100.0), pct(&mut behind, 50.0), pct(&mut behind, 95.0), pct(&mut behind, 100.0));
+        if stream_shown > 0 { println!("FAIL: {stream_shown} stream frames reached the screen during the scrub — the streaming decoder was not paused"); }
     }
     println!("CPU {:.0} % of one core over the run; max RSS {:.0} MB", 100.0 * qcv_player::process_cpu_seconds() / t_open.elapsed().as_secs_f64(), qcv_player::max_rss_mb());
     p.end_scrub();

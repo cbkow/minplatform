@@ -360,7 +360,12 @@ impl Transport {
     pub fn begin_scrub(&mut self) {
         if self.scrubbing.is_some() { return }
         let was_playing = self.is_playing();
-        if was_playing { self.timer.pause(); self.slots[self.active].decoder.pause(); self.audio.pause(); }
+        if was_playing { self.timer.pause(); self.audio.pause(); }
+        // QCView's press pauses the STREAMING decoder unconditionally (TimelinePanel.qml pressAt: `videoDecoder.pause()`), not
+        // only when the clock ran: the decoder opens in its decoding state to prefill the clocked lookahead while the timer is
+        // paused, and a live decoder refills the slot behind every scrub preview the moment the preview clears it — the tick
+        // then shows ITS frames (the clip "plays" toward the pointer; 398 stream frames vs 132 previews in the 2026-11-07 trace).
+        self.slots[self.active].decoder.pause();
         self.scrubbing = Some(was_playing);
     }
     /// `frame` is a TIMELINE frame; a cross-clip drag swaps first (QCView pays the open there too).
@@ -444,7 +449,8 @@ impl Transport {
         let direction = direction.signum();
         if let Some(f) = &self.fast { if f.dir == direction { return } }   // re-press / repeat: no-op; opposite: restart snappy
         if self.review_speed != 1.0 { self.set_review_speed(1.0); }        // shuttle and review speed are mutually exclusive
-        if self.is_playing() { self.timer.pause(); self.slots[self.active].decoder.pause(); self.audio.pause(); }
+        if self.is_playing() { self.timer.pause(); self.audio.pause(); }
+        self.slots[self.active].decoder.pause();   // unconditional, as the scrub press (a live decoder would refill the slot behind the shuttle's seeks)
         let position_sec = if self.fps > 0.0 { self.current_frame().max(0) as f64 / self.fps } else { 0.0 };
         self.seek_gate = None;   // the gesture drives the clock; no in-flight landing may drag it back
         let signed = direction as f64 * FAST_SEEK_INITIAL_SPEED;

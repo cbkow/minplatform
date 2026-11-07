@@ -199,3 +199,24 @@ Settings panel has.
 - Seen in the live store while looking: `playback/loopEnabled = false` and `performance/hwScrubInterCodecs = true` — both QCView
   defaults inverted, left by the stale binary earlier; with loop off a resumed playback stops at the end rather than wrapping,
   which made the overrun read as "to the end". Flagged to the user (L toggles loop; the Settings rail shows both) — not edited.
+
+### "Scrubbing plays toward the pointer" (2026-11-07 night) — the live decoder behind the scrub slot
+- The user, on 6.7K ProRes from the NAS: "it doesn't even feel like the scrub decoder is working … it looks like it's just
+  playing back every frame until it gets to its destination." Everything upstream was at parity and FAST: the scrub decoder
+  (QCView's, latest-wins, VideoToolbox for intra) answered cold NAS frames in 10–12 ms, the warmer and its QoS matched
+  QCView, the slot is a slot of one, the shell ticks at the refresh rate. `QCV_TRACE_SCRUB=1` (new: every request, every
+  served preview with request → ready, every preview shown with its lag, and per tick the slot's contents) showed the truth:
+  the STREAM decoder reported `playing` while the clip was paused; each scrub publish cleared the slot and the live decoder
+  refilled it behind the preview with the frames after its own position; the tick took the newest of those. 398 stream frames
+  reached the screen against 132 previews.
+- Two deviations from QCView, both carried now: (1) QCView's `VideoDecoder::open` "Open paused. Autoplay-on-open was
+  disorienting in QC review" — ours opened in the decoding state to prefill the clocked lookahead beside a paused timer
+  (the first frame comes through the seek gate either way; the lookahead fills on the first play); (2) QCView's press pauses
+  the streaming decoder UNCONDITIONALLY (`videoDecoder.pause()` in TimelinePanel.qml pressAt) — ours only when the timer
+  ran; now `begin_scrub` and `start_fast_seek` pause it regardless.
+- The scrub bench counts stream frames shown mid-sweep and prints FAIL above 0 (49 previews shown, 0 stream frames after the
+  fix on the 4K fixture). The cold-NAS sweeps on two untouched 6.7K clips: request → ready p50 12.0 / 10.4 ms (warmer on / off),
+  0 frames behind — the link and the warmer were never the limit.
+- Still owed from the QCView read: the timer is seeked per move here (QCView seeks it once, on release, the playhead following
+  the cursor visually) and QCView's scrub SKIM AUDIO (`beginScrubAudio` → the shuttle grain engine at a velocity-EMA speed).
+  Windows has its own list (software ProRes at 6.7K + CPU upload, a 1.7 s first frame, a present stall) — separate.

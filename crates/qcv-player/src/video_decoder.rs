@@ -72,7 +72,10 @@ impl VideoDecoder {
         self.info = Some(session.info.clone()); self.index = Some(index.clone()); self.source_path = path.to_string();
         let sh = self.shared.clone();
         sh.stop.store(false, Ordering::Release); sh.published_seq.store(0, Ordering::Release); sh.last_fetched_seq.store(0, Ordering::Relaxed); sh.pending_seek.store(-1, Ordering::Release); sh.current_frame.store(-1, Ordering::Release);
-        sh.is_playing.store(true, Ordering::Release);
+        // QCView's VideoDecoder::open: "Open paused. Autoplay-on-open was disorienting in QC review" — the first frame lands through
+        // the Transport's seek gate (a pending seek runs whatever the play state), the lookahead fills on the first play(). Opening
+        // in the decoding state left a LIVE decoder beside a paused timer, which refilled the slot behind every scrub preview (2026-11-07).
+        sh.is_playing.store(false, Ordering::Release);
         self.shared.set_state(State::Decoding);
         self.thread = Some(thread::Builder::new().name("qcv-decode".into()).spawn(move || decode_loop(session, sh, index)).map_err(|e| Error::Open(e.to_string()))?);
         Ok(())
