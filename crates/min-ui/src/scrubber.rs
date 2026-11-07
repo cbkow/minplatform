@@ -67,6 +67,8 @@ impl Scrubber {
     fn time_at_x(&self, x: f64, s: &ScrubState, scale: f64) -> f64 { let p = self.pps(s); if p > 0.0 { ((x - self.rect.x0 - self.pad(scale)).clamp(0.0, self.track_w) + self.scroll_x) / p } else { 0.0 } }
     pub fn frame_at_x(&self, x: f64, s: &ScrubState, scale: f64) -> i32 { ((self.time_at_x(x, s, scale) * s.fps).round() as i64).clamp(0, (s.frames as i64 - 1).max(0)) as i32 }
     pub fn fit(&mut self) { self.pps = None; self.scroll_x = 0.0; }
+    /// The playhead's x (the keyboard zoom's anchor — QCView's Ctrl+= / Ctrl+-).
+    pub fn playhead_x(&self, s: &ScrubState, scale: f64) -> f64 { if s.fps > 0.0 { self.x_of_time(s.current as f64 / s.fps, s, scale) } else { self.rect.x0 + self.pad(scale) } }
     /// The visible time window (seconds) and the track's width in whole pixel columns — the waveform probe's request.
     pub fn visible_window(&self, s: &ScrubState) -> (f64, f64) { let p = self.pps(s); if p <= 0.0 { return (0.0, 0.0) } (self.scroll_x / p, (self.scroll_x + self.track_w) / p) }
     pub fn track_columns(&self) -> usize { self.track_w.max(1.0) as usize }

@@ -214,6 +214,7 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let (w, h) = g.ui.as_ref().map(|u| u.size()).unwrap_or((1, 1)); let scale = g.window.scale_factor();
         if let Some((x, y)) = e.pos() { g.pointer = (x, y); } else { g.pointer = (-1.0, -1.0); }
+        { let present = e.pos().is_some(); g.left.set_pointer_present(present, now); g.right.set_pointer_present(present, now); }
         let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
         if g.compact {
             let (cmds, dirty, consumed) = g.compact_strip.event(&e, now); if dirty { g.ui_dirty = true; }
@@ -275,6 +276,7 @@ impl App {
                 transport_bar::Cmd::Act(a) => {
                     let handled = self.player.as_mut().map(|p| p.apply(a, now)).unwrap_or(false);
                     if !handled && a == Action::ToggleFullscreen { self.toggle_fullscreen(); return }
+                    else if !handled && a == Action::CycleBackground { self.cycle_background(); }
                     else if !handled { log::info!("{a:?}: nothing to apply it to"); }
                 }
                 transport_bar::Cmd::Open => println!("open: the file dialog arrives with the shell step (drop a file on the window meanwhile)"),
@@ -322,6 +324,8 @@ impl App {
         let s = g.window.surface_size(); let sc = g.window.scale_factor();
         g.presenter.engine.set_content_rect(Some(content_rect(s.width, s.height, sc)));
     }
+    /// QCView's `cycleBackgroundMode` (B): the next of the four fills.
+    fn cycle_background(&mut self) { let m = (self.settings.int(settings::k::BACKGROUND_MODE) + 1) % 4; self.settings.set_int(settings::k::BACKGROUND_MODE, m); self.apply_setting(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); }
     /// Always on Top (QCView's pin; `ui/alwaysOnTop`): the OS window level.
     fn toggle_pin(&mut self) { let on = !self.settings.bool(settings::k::ALWAYS_ON_TOP); self.settings.set_bool(settings::k::ALWAYS_ON_TOP, on); self.apply_pin(); }
     fn apply_pin(&mut self) {
@@ -510,7 +514,7 @@ impl ApplicationHandler for App {
         if *TRACE_INPUT { match &event { WindowEvent::PointerMoved { .. } | WindowEvent::PointerButton { .. } | WindowEvent::PointerLeft { .. } | WindowEvent::PointerEntered { .. } | WindowEvent::Focused(_) | WindowEvent::MouseWheel { .. } => println!("input: {event:?}"), _ => {} } }
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
-            WindowEvent::Focused(f) => { log::info!("focused {f}"); if !f { if let Some(g) = self.gpu.as_mut() { if g.strip.is_open() { g.strip.close(); g.ui_dirty = true; } } } }
+            WindowEvent::Focused(f) => { log::info!("focused {f}"); if let Some(g) = self.gpu.as_mut() { let now = Instant::now(); if !f { if g.strip.is_open() { g.strip.close(); } g.left.set_pointer_present(false, now); g.right.set_pointer_present(false, now); } else if g.pointer.0 >= 0.0 { g.left.set_pointer_present(true, now); g.right.set_pointer_present(true, now); } g.ui_dirty = true; } }
             WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -527,6 +531,17 @@ impl ApplicationHandler for App {
                 } } }
                 // QCView: Ctrl+Shift+C toggles Compact Mode; Ctrl+Alt+T the pin
                 if pressed && self.mods.ctrl && !event.repeat { if let Key::Character(c) = &event.logical_key { if self.mods.shift && (c == "c" || c == "C") { self.toggle_compact(); return } if self.mods.alt && (c == "t" || c == "T" || c == "†") { self.toggle_pin(); return } } }
+                if pressed && self.mods.ctrl && !self.mods.shift && !self.mods.alt && !event.repeat { if let Key::Character(c) = &event.logical_key {
+                    let now = Instant::now();
+                    match c.as_str() {
+                        "0" => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.left.set_collapsed(true, now); g.right.set_collapsed(true, now); g.ui_dirty = true; } } return }   // Minimal Mode
+                        "9" => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.left.set_collapsed(false, now); g.right.set_collapsed(false, now); g.ui_dirty = true; } } return }  // Show All Panels
+                        "l" | "L" => { if let Some(p) = self.player.as_mut() { p.apply(Action::ToggleLoop, now); } return }
+                        "q" | "Q" => { self.finish(); el.exit(); return }
+                        "=" | "+" | "-" | "_" => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == "-" || c == "_" { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } return }
+                        _ => {}
+                    }
+                } }
                 // QCView's Tools ▸ Settings… (Ctrl+,)
                 if pressed && self.mods.ctrl && !event.repeat && matches!(&event.logical_key, Key::Character(c) if c == ",") { self.reveal(Reveal::Settings); return }
                 // QCView's View menu: Ctrl+1 / Ctrl+2 toggle the rails
@@ -554,6 +569,7 @@ impl ApplicationHandler for App {
                     let handled = self.player.as_mut().map(|p| p.apply(a, Instant::now())).unwrap_or(false);
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
+                    else if a == Action::CycleBackground { self.cycle_background(); }
                 }
             }
             WindowEvent::PointerMoved { position, .. } => self.pointer(min_ui::Event::Move { x: position.x, y: position.y }),

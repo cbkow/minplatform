@@ -36,6 +36,8 @@ pub struct Rail {
     collapse: Rect, collapse_hover: bool, collapse_ramp: Ramp,
     /// the arrow's tooltip (the shell's shortcut text goes in `shortcut`, e.g. "⌘1" / "Ctrl+1")
     pub tooltips: Tooltips, pub shortcut: String,
+    /// the reopen tab is an overlay on the picture: shown while the pointer is in the window, faded away when it is not (the user 2026-11-07: "I quite like them as overlays on the viewport, but not always")
+    present: Ramp,
     splitter_ramp: Ramp, tab_ramp: Ramp,
     scale: f64,
 }
@@ -43,7 +45,7 @@ pub struct Rail {
 impl Rail {
     pub fn new(side: Side, width: f64, collapsed: bool) -> Rail {
         Rail { side, width: width.clamp(t::RAIL_WIDTH_MIN as f64, t::RAIL_WIDTH_MAX as f64), collapsed, open: Ramp::new(if collapsed { 0.0 } else { 1.0 }, t::RAIL_COLLAPSE_DURATION), scroll: 0.0, content_height: 0.0, rect: Rect::ZERO,
-            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
+            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
     }
     pub fn set_collapsed(&mut self, c: bool, now: Instant) { if self.collapsed != c { self.collapsed = c; self.open.set_target(if c { 0.0 } else { 1.0 }, now); } }
     pub fn toggle(&mut self, now: Instant) { let c = !self.collapsed; self.set_collapsed(c, now); }
@@ -150,7 +152,7 @@ impl Rail {
             }
         } else if matches!(e, Event::Leave) { self.sb_hover = false; }
         let on_splitter = self.fully_open(now) && pos.is_some_and(|(x, y)| self.hot.contains(kurbo::Point::new(x, y)));
-        let on_tab = self.fully_collapsed(now) && pos.is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
+        let on_tab = self.fully_collapsed(now) && self.present.value(now) > 0.5 && pos.is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
         match *e {
             Event::Move { x, .. } => {
                 if let Some((x0, w0)) = self.drag {
@@ -190,16 +192,18 @@ impl Rail {
         self.last_scroll = Some(now);
         if s != self.scroll { self.scroll = s; true } else { false }
     }
+    /// The pointer is in the window (and the window has focus): the reopen tab shows; otherwise it fades away.
+    pub fn set_pointer_present(&mut self, on: bool, now: Instant) { if on { if self.present.target() < 0.5 || self.present.value(now) < 0.999 { self.present = Ramp::new(1.0, t::ANIMATION_DURATION_SLIDE); } } else { self.present.set_target(0.0, now); } }   // shows at once, fades away
     /// Per frame: the tooltip's delay / timeout; true when a redraw is needed now.
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
     pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }
-    pub fn animating(&self, now: Instant) -> bool { self.open.animating(now) || self.splitter_ramp.animating(now) || self.tab_ramp.animating(now) || self.sb_ramp.animating(now) || self.collapse_ramp.animating(now) || self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + t::ANIMATION_DURATION_HOVER) }
+    pub fn animating(&self, now: Instant) -> bool { self.open.animating(now) || self.splitter_ramp.animating(now) || self.tab_ramp.animating(now) || self.sb_ramp.animating(now) || self.collapse_ramp.animating(now) || self.present.animating(now) || self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + t::ANIMATION_DURATION_HOVER) }
     pub fn paint_background(&self, scene: &mut Scene, now: Instant) {
         if self.rect.width() > 0.0 { paint::rect(scene, self.rect, t::RAIL_BACKGROUND_COLOR); }
         if self.fully_collapsed(now) {
-            // the open tab: a quiet caret at the window's edge, brighter on hover
-            let a = self.tab_ramp.value(now);
-            let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a);
+            // the open tab: a quiet caret at the window's edge, brighter on hover, faded out while the pointer is away
+            let a = self.tab_ramp.value(now); let p = self.present.value(now);
+            let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a).with_alpha(mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a).a * p);
             if bg.a > 0.0 { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * self.scale, bg); }
         }
     }
@@ -227,7 +231,8 @@ impl Rail {
             }
         }
         if self.fully_collapsed(now) {
-            let c = mix(t::RAIL_OPEN_TAB_COLOR, t::NEUTRAL_CONTENT_COLOR_HOVER, self.tab_ramp.value(now));
+            let p = self.present.value(now); if p <= 0.001 { return }
+            let c = mix(t::RAIL_OPEN_TAB_COLOR, t::NEUTRAL_CONTENT_COLOR_HOVER, self.tab_ramp.value(now)); let c = c.with_alpha(c.a * p);
             let slug = match self.side { Side::Left => "caret-right", Side::Right => "caret-left" };
             if let Some(g) = fonts.icon(slug, t::ICON_SIZE_SMALL * scale as f32, paint::color(c)) { crate::fonts::draw_layout(scene, &g, Affine::translate((self.tab.x0 + (self.tab.width() - g.width() as f64) / 2.0, self.tab.y0 + (self.tab.height() - g.height() as f64) / 2.0))); }
         }
@@ -249,7 +254,7 @@ mod tests {
         assert!(e.width_changed && r.width == 600.0, "clamped at the max");
         r.event(&Event::Up { x: 1561.0, y: 400.0, button: Button::Primary }, now);
         assert!(!r.is_dragging());
-        r.set_collapsed(true, now); r.settle(); r.layout(0.0, 0.0, 800.0, 2.0, now);
+        r.set_collapsed(true, now); r.settle(); r.layout(0.0, 0.0, 800.0, 2.0, now); r.set_pointer_present(true, now);
         assert_eq!(r.visible_width(now, 2.0), 0.0);
         let e = r.event(&Event::Down { x: 8.0, y: 20.0, button: Button::Primary }, now);
         assert!(e.toggled && !r.collapsed);
