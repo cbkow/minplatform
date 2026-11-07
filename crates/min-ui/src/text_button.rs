@@ -11,16 +11,20 @@ use vello::Scene;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant { Primary, Secondary, Negative }
 
-pub struct TextButton { pub label: String, pub variant: Variant, pub enabled: bool, pub rect: Rect, hovered: bool, pressed: bool, hover: Ramp }
+pub struct TextButton { pub label: String, pub variant: Variant, pub enabled: bool, pub rect: Rect, /// size S: 24 px, bold 12 — the rail's size (the user 2026-11-07: match the chips)
+    pub size_s: bool, hovered: bool, pressed: bool, hover: Ramp }
 
 impl TextButton {
-    pub fn new(label: &str, variant: Variant) -> TextButton { TextButton { label: label.to_string(), variant, enabled: true, rect: Rect::ZERO, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } }
+    pub fn new(label: &str, variant: Variant) -> TextButton { TextButton { label: label.to_string(), variant, enabled: true, rect: Rect::ZERO, size_s: false, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } }
+    pub fn size_s(mut self) -> TextButton { self.size_s = true; self }
+    fn font(&self) -> f32 { if self.size_s { t::BODY_SIZE_S } else { t::BODY_SIZE_M } }
     pub fn hovered(&self) -> bool { self.hovered }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     /// The natural size at `scale`: label width plus the pill's edge insets, height M.
     pub fn measure(&self, fonts: &mut Fonts, scale: f64) -> (f64, f64) {
-        let l = fonts.layout(&self.label, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE);
-        (l.width() as f64 + 2.0 * t::BUTTON_PILL_EDGE_TO_TEXT_M as f64 * scale, t::BUTTON_HEIGHT_M as f64 * scale)
+        let l = fonts.layout(&self.label, Family::Sans, self.font() * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE);
+        let (edge, h) = if self.size_s { (t::COMPONENT_PILL_EDGE_TO_TEXT_75, t::COMPONENT_HEIGHT_75) } else { (t::BUTTON_PILL_EDGE_TO_TEXT_M, t::BUTTON_HEIGHT_M) };
+        (l.width() as f64 + 2.0 * edge as f64 * scale, h as f64 * scale)
     }
     /// True on a click (press and release inside); the second value = redraw needed.
     pub fn event(&mut self, e: &Event, now: Instant) -> (bool, bool) {
@@ -48,7 +52,7 @@ impl TextButton {
             Variant::Negative => (if self.pressed { t::NEGATIVE_BACKGROUND_COLOR_HOVER } else { mix(t::BUTTON_NEGATIVE_BACKGROUND_COLOR, t::BUTTON_NEGATIVE_BACKGROUND_COLOR_HOVER, hv) }, t::BUTTON_NEGATIVE_CONTENT_COLOR),
         } };
         paint::rounded(scene, self.rect, paint::radius(t::BUTTON_CORNER_RADIUS, scale, self.rect), bg);
-        let l = fonts.layout(&self.label, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(fg));
+        let l = fonts.layout(&self.label, Family::Sans, self.font() * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(fg));
         crate::fonts::draw_layout(scene, &l, Affine::translate((self.rect.x0 + (self.rect.width() - l.width() as f64) / 2.0, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
     }
 }

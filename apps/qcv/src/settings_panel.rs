@@ -71,7 +71,7 @@ impl SettingsPanel {
             ] },
         ];
         SettingsPanel {
-            section: Section::new("Settings", true), groups, reset: TextButton::new("Reset all preferences…", Variant::Secondary),
+            section: Section::new("Settings", true), groups, reset: TextButton::new("Reset all preferences…", Variant::Secondary).size_s(),
             dialog: Dialog::new("Reset all preferences?", "Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open.", vec![("Cancel", Variant::Secondary), ("Reset", Variant::Negative)]),
             tooltips: Tooltips::default(), seen: u64::MAX, height: 0.0, scale: 1.0,
         }

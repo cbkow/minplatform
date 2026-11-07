@@ -18,7 +18,7 @@ impl Dialog {
         let w = t::DIALOG_WIDTH_S as f64 * scale; let pad = t::DIALOG_PADDING as f64 * scale; let gap = t::SPACING_200 as f64 * scale;
         let title = fonts.layout(&self.title, Family::Sans, t::DIALOG_TITLE_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE);
         let body = fonts.layout_width(&self.body, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some((w - 2.0 * pad) as f32));
-        let bh = t::BUTTON_HEIGHT_M as f64 * scale;
+        let bh = t::BUTTON_HEIGHT_M as f64 * scale;   // the dialog's buttons stay size M
         let h = pad + title.height() as f64 + gap + body.height() as f64 + gap * 1.5 + bh + pad;
         let x0 = bounds.x0 + (bounds.width() - w) / 2.0; let y0 = bounds.y0 + (bounds.height() - h) / 2.0;
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
