@@ -43,3 +43,25 @@ authority (QCView adds the host-bridge labels for `qcbae://`).
 Wire it into the shell: the left rail's Add Media section (the six bins as QCView's tree, drop to add, click to load), the
 per-clip pickers reading and writing the active media item (Range / Mix / Origin / Aspect / Rotation persist), Open / Save /
 Save As with QCView's shortcuts, Recents.
+
+## The shell wiring (2026-11-07 night)
+`apps/qcv/src/project_panel.rs` + `main.rs`. QCView's `LeftRail.qml` media card read first (the Project header, the Media
+card with its count, the ListView grouped by `sectionLabel`, rows = type glyph + name elided in the middle + badges;
+single click selects, Ctrl / Cmd toggles, Shift extends a range, double-click activates — "activation moved to
+double-click in prep for drag-and-drop into playlists"; the drop hint "Drop media here to add to the project"). Ours: the
+Add Media section at the top of the left rail (QCView's order: Add Media · … · Background · … · Settings), the project's
+name with a dot while unsaved, an "Add Media…" size-S pill, the groups Videos · Audio · Images · Image Sequences ·
+Playlists · Dual Views · Live with counts in the detail style, the LOADED row in the accent (row 162's "loaded-media
+row": a 2-px accent bar + the accent name), selected rows in gray-300. Keys: Ctrl+O / Ctrl+Shift+O / Ctrl+S / Ctrl+Shift+S
+(QCView's), Ctrl+N for New Project (no QCView shortcut; stands in for the menu), Delete / Backspace removes the selection,
+Ctrl+Z restores the batch while the annotation undo has no owner (QCView: a toast's Undo — ours when toasts land).
+Dialogs: `rfd` 0.18 with QCView's `nameFilters` (All media / Video / Audio / Image & sequence). Drops and the command line
+go through `add_media_file` → load; a `.qcvproj` drop or argument opens the project. Load (`load_item`, QCView's
+`loadRequested` handler): Video / Audio open in the Transport, then the item's range → the decoders, aspect + rotation →
+the presenter, routing → the audio; sequences, playlists, dual views and live streams select only until their steps. The
+Inspector's Range / Mix / Aspect / Rotation choices write the active item (Origin is per session in QCView too). The
+metadata service is keyed by the media id; results feed the manager's cache and the Inspector; the open-time probes run.
+Recents: `recents/media` + `recents/projects` in the store (newline-joined, 10) — shown once there is a menu. Owed: the
+row context menu (Create Playlist from Selection, Input, Delete), rename, drag-to-playlist, "Can't be played here" badge
++ toast, New playlist, the unsupported-codec gate at load.
+
