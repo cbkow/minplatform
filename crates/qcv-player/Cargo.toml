@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 description = "minplatform — QCView's player carried by crate (canon §4): FFmpeg 9 behind thin RAII, hardware decode shared with the presenter, the streaming slot, the rational clock (born in Phase 2 step 1)"
 
 [dependencies]

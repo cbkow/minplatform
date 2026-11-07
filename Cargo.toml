@@ -1,4 +1,4 @@
-# minplatform — the shared Rust media platform for the min*/QCView family (spike phase).
+# minplatform — the shared Rust media platform for the min*/QCView family. GPL-3.0-or-later (LICENSE.md); min-paths is MIT OR Apache-2.0.
 # The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"

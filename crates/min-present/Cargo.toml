@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 description = "minplatform — the wgpu video presenter: colour metadata on every frame, the fused four-stage graph with the stage-2 slot, zero-copy imports, SDR / EDR / PQ output (canon §11, rows 39–43, 46; born in Phase 2 step 1)"
 
 [dependencies]
