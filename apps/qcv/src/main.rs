@@ -327,14 +327,21 @@ impl App {
                 compact_strip::Cmd::DragWindow => { if let Some(g) = self.gpu.as_ref() { if let Err(e) = g.window.drag_window() { log::debug!("drag_window: {e}"); } } }
             } }
             let Some(g) = self.gpu.as_mut() else { return };
-            if consumed { return }
+            if consumed && !(g.scrubber.is_pressed() && matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. })) { return }
             let st = scrub_state(self.player.as_ref());
             let (scmds, sd) = g.scrubber.event(&e, now, &st, scale); if sd { g.ui_dirty = true; }
             if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => p.begin_scrub(), min_ui::ScrubCmd::To(f) => p.scrub_to_frame(f), min_ui::ScrubCmd::End => p.end_scrub() } } }
             return
         }
+        // THE POINTER GRAB: a press on a band node (the scrubber, a transport button, the volume slider) owns Move / Up until the
+        // release, wherever the pointer went — Qt's MouseArea grab, which QCView relied on. Without it a release with the pointer
+        // over a rail was swallowed by the hit-tested routing below: the scrubber stayed pressed and every later move dragged the
+        // playhead (to the end of the clip when the mouse went right), a held fast-forward never saw its release-on-leave and
+        // shuttled to the end — the user's "scrubbing overruns until the end" (2026-11-07 night), and the parked Windows
+        // "clicks lost after leaving and returning" is the same swallow.
+        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed());
         // the rails first (a modal dialog or an open menu in the settings panel takes everything)
-        if !g.fullscreen {
+        if !g.fullscreen && !grabbed {
             let had_focus = g.settings_panel.has_focus();
             let modal = g.settings_panel.is_modal() || g.settings_panel.menu_open();
             let lr = g.left.event(&e, now); let rr = g.right.event(&e, now);
@@ -374,7 +381,7 @@ impl App {
         }
         let g = self.gpu.as_mut().unwrap();
         let was_open = g.strip.is_open();
-        let (sd, consumed) = g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
+        let (sd, consumed) = if grabbed { (false, false) } else { g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale) };
         if sd { g.ui_dirty = true; }
         if g.strip.is_open() != was_open { set_ime(&**g.window, g.strip.is_open()); }
         if consumed { return }

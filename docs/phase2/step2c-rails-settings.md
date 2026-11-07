@@ -184,3 +184,18 @@ Settings panel has.
   item (`transferOverride`, persisted), reapplied on load, reset on open. No 2.2-vs-2.4 chip on purpose (see canon §18.6 ¶7).
 - Open: PQ / HLG in bypass decode to nits (the linear surface's literal "as stored for the display"); QCView's SDR-surface bypass showed
   the code values flat. Carried into the §18.6 ruling.
+
+### The pointer grab (2026-11-07 night) — "scrubbing overruns until the end of the clip"
+- The user: scrubbing with the mouse sometimes ran the playhead on to the end. The logs held nothing (the manual launches run
+  without `QCV_TRACE_INPUT`); the router did. The shell hit-tests the rails first and RETURNED for any event with the pointer
+  over a rail — including the primary RELEASE. A scrub drag whose release landed with the pointer drifted up into a rail never
+  reached the scrubber, which stayed pressed; every later Move over the viewport then drove the playhead to the pointer's x, so
+  moving right ran it to the end. A held fast-forward had the same hole: its release-on-leave never arrived and the shuttle ran
+  to the end on its own. The user: "that is exactly what it is. its our leave window boundary and return fix" — the parked
+  Windows "clicks lost after leaving and returning" (2026-11-07 pm) is the same swallow.
+- Fix: THE POINTER GRAB — while a band node is pressed (`Scrubber::is_pressed`, `TransportBar::is_pressed` = any button down or
+  the volume slider dragging), Move / Up skip the rails and the status strip and go to the bands; the compact strip's
+  consumption yields to a pressed scrubber the same way. Qt's MouseArea grab, which QCView relied on without writing it down.
+- Seen in the live store while looking: `playback/loopEnabled = false` and `performance/hwScrubInterCodecs = true` — both QCView
+  defaults inverted, left by the stale binary earlier; with loop off a resumed playback stops at the end rather than wrapping,
+  which made the overrun read as "to the end". Flagged to the user (L toggles loop; the Settings rail shows both) — not edited.

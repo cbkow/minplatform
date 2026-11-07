@@ -43,6 +43,8 @@ impl ActionButton {
         ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, size_s: false, rect: Rect::ZERO, corners: Corners::all(0.0), hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
     }
     pub fn hold(mut self) -> ActionButton { self.hold = true; self }
+    /// The primary button is down on this node (a hold in progress, or a click not yet released).
+    pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn enabled(mut self, on: bool) -> ActionButton { self.enabled = on; self }
     pub fn size_s(mut self) -> ActionButton { self.size_s = true; self }
     fn label_font(&self) -> (f32, f32) { if self.size_s { (t::BODY_SIZE_S, t::FONT_WEIGHT_BOLD as f32) } else { (t::BODY_SIZE_M, t::FONT_WEIGHT_REGULAR as f32) } }

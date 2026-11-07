@@ -138,6 +138,9 @@ impl TransportBar {
     }
 
     /// Route a pointer event; the commands it produced. Also feeds the tooltip with what the pointer rests on.
+    /// Some node of the bar holds the pointer (a held shuttle button, an unreleased click, the volume slider's drag): the
+    /// shell must route Move / Up here before any hit-tested panel, or a release over a rail is lost and a hold runs on.
+    pub fn is_pressed(&self) -> bool { self.groups.iter().chain(std::iter::once(&self.pin)).any(|g| g.buttons.iter().any(|b| b.is_pressed())) || self.volume.dragging() }
     pub fn event(&mut self, e: &Event, now: Instant) -> (Vec<Cmd>, bool) {
         let mut cmds = vec![]; let mut dirty = false;
         for (gi, g) in self.groups.iter_mut().enumerate() {
