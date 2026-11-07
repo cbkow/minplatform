@@ -232,3 +232,12 @@ Settings panel has.
 - VULKAN PRORES IS IN THE BOX'S BUILD: `ffmpeg -h decoder=prores` → "Supported hardware devices: vulkan" (prores_raw too), in
   both the old and the new build (BtbN gpl-shared ships `--enable-vulkan --enable-libplacebo`). On the 1080p ProRes fixture:
   software utime 11.7 s / rtime 0.84 s vs `-hwaccel vulkan` utime 1.1 s at 456 fps. HEVC lists dxva2 d3d11va d3d12va cuda vulkan.
+
+### `min-ffmpeg` lifted out of the player (2026-11-07 night; canon row 188)
+- The cut: everything FFmpeg-generic — `ffmpeg` (Session + the frame wrap), `frame_index`, `frame_handle`, `hw` + `hw_routing`,
+  `read_ahead`, `thread_policy`, `rgb_range`, `yuv_planar`, `seek_compat`, `source`, `decoder_cleanup`, the `Error` enum — moved
+  by `git mv` into `crates/min-ffmpeg` (MIT OR Apache-2.0). The player keeps the clocks, slots, scrub, thumbnails and audio and
+  re-exports the substrate (`pub use min_ffmpeg::{...}`), so `crate::ffmpeg::…` inside it and `qcv_player::HwDevice` in the
+  apps compile unchanged. One added dependency surfaced (`min-paths` for the sequence detector in `source`); nothing else.
+- Verified: min-ffmpeg 3 tests, qcv-player 15, min-present 11; `cargo build --workspace`; headless 30 frames on two fixtures,
+  the scrub bench (0 stream frames), 12 random seeks, the UI bench — all as before. Windows build follows by bundle.

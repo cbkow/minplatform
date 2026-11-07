@@ -11,6 +11,7 @@ description = "minplatform — QCView's player carried by crate (canon §4): FFm
 
 [dependencies]
 min-present = { path = "../min-present" }
+min-ffmpeg = { path = "../min-ffmpeg" }
 qcv-timeline = { path = "../qcv-timeline" }
 qcv-meta = { path = "../qcv-meta" }
 min-paths = { path = "../min-paths" }

@@ -5,26 +5,16 @@
 //! pieces: `hw` (the device shared with the presenter), `source` (the image-sequence open through `min-paths`), and
 //! `player` (the rational clock over the decoder — the documented divergence, see `video_decoder::Policy`).
 //! Step 2 adds the scrub decoder + cache, the Transport, the timecode formatter and audio.
-pub mod ffmpeg;
-pub mod frame_handle;
-pub mod frame_index;
-pub mod hw;
-pub mod hw_routing;
-pub mod read_ahead;
+// the FFmpeg substrate lives in `min-ffmpeg` (canon row 188); re-exported here so the player's paths and the apps' imports stay
+pub use min_ffmpeg::{ffmpeg, frame_handle, frame_index, hw, hw_routing, read_ahead, rgb_range, seek_compat, source, thread_policy, yuv_planar, decoder_cleanup, Error};
 pub mod playback_timer;
 pub mod key_map;
 pub mod transport;
 pub mod thumbnail_cache;
-pub mod rgb_range;
 pub mod scrub_decoder;
 pub mod scrub_frame_cache;
 pub mod simple_lru;
-pub mod seek_compat;
-pub mod source;
-pub mod thread_policy;
 pub mod video_decoder;
-pub mod yuv_planar;
-pub mod decoder_cleanup;
 pub mod audio;
 pub use ffmpeg::{OpenOptions, SeqOptions, Session, SessionInfo};
 pub use frame_handle::FrameHandle;
@@ -41,12 +31,6 @@ pub use thumbnail_cache::{TimelineThumbnailCache, ThumbConfig, ThumbKey, ThumbEn
 pub use source::Source;
 pub use video_decoder::{Policy, State, VideoDecoder};
 
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("{0}")] Open(String),
-    #[error("no video stream")] NoVideo,
-    #[error("unsupported pixel format {0}")] PixFmt(String),
-}
 
 /// This process's CPU time so far (user + kernel), seconds — "cores used" without a profiler.
 #[cfg(unix)]
