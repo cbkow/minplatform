@@ -23,8 +23,9 @@ struct Opts { cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: 
 mod ui_sketch;
 mod transport_bar;
 mod status_strip;
+mod hover_thumbs;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, ui_dirty: bool }
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), cursor_pointer: bool, ui_dirty: bool }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -43,7 +44,7 @@ impl App {
             Ok(mut p) => {
                 p.play();   // the harness plays on open (QCView opens paused; the shell decides)
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
-                self.source_label = src.display(); self.source_path = path.to_string(); self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
+                self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p); self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
                 g.window.set_title(&format!("qcv — {}", self.source_label));
             }
             Err(e) => println!("open {path}: {e}"),
@@ -68,16 +69,25 @@ impl App {
             let key = frame.map(|(c, n, _)| (c, n));
             g.bar.sync(self.player.as_ref(), now);
             if g.bar.tick(now) || g.strip.animating(now) { g.ui_dirty = true; }
+            let (w, h) = u.size(); let scale = g.window.scale_factor();
+            let st = scrub_state(self.player.as_ref());
+            let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale;
+            g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, h as f64), scale);
+            if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
+            if g.thumbs.tick(self.player.as_mut(), g.scrubber.hover_frame, now) { g.ui_dirty = true; }
+            let _ = frame;
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
-                let (w, h) = u.size(); let scale = g.window.scale_factor();
-                let bands_y = h as f64 - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + t::STATUS_STRIP_HEIGHT as f64 * scale;
+                let bands_y = scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale;
                 g.bar.layout(&mut g.fonts, w as f64, bands_y, scale);
                 g.strip.sync(self.player.as_ref());
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
+                let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
                 let scene = u.scene_mut();
-                ui_sketch::draw(scene, &mut g.fonts, w, h, scale, frame);
+                ui_sketch::bands(scene, w, h, scale);
                 g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
+                g.scrubber.paint(scene, &mut g.fonts, scale, &st, None);
+                g.thumbs.paint(scene, content, scale);
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.ui_shown_frame = key; g.ui_dirty = false;
@@ -114,8 +124,15 @@ impl App {
         if sd { g.ui_dirty = true; }
         if g.strip.is_open() != was_open { set_ime(&**g.window, g.strip.is_open()); }
         if consumed { return }
+        if let Some((x, y)) = e.pos() { g.pointer = (x, y); }
         let (cmds, dirty) = g.bar.event(&e, now);
         if dirty { g.ui_dirty = true; }
+        let st = scrub_state(self.player.as_ref());
+        let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
+        if sd { g.ui_dirty = true; }
+        if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => p.begin_scrub(), min_ui::ScrubCmd::To(f) => p.scrub_to_frame(f), min_ui::ScrubCmd::End => p.end_scrub() } } }
+        let want_pointer = st.frames > 0 && e.pos().is_some_and(|(x, y)| g.scrubber.hit(x, y));
+        if want_pointer != g.cursor_pointer { g.cursor_pointer = want_pointer; g.window.set_cursor(winit::cursor::Cursor::Icon(if want_pointer { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default })); }
         for c in cmds {
             match c {
                 transport_bar::Cmd::Act(a) => {
@@ -150,6 +167,7 @@ impl App {
         println!("verify-pq (row {row}, {} nits = 1.0): worst relative error {:.3} % at x={worst_x} (code {:.3}); {} of {} samples above 1.0 (EDR range)\n  {}", self.o.white, worst * 100.0, worst_x as f64 / (w - 1) as f64, over1, w, bands.join("\n  "));
     }
     fn finish(&mut self) {
+        if let Some(g) = self.gpu.as_mut() { g.thumbs.shutdown(); }
         if self.finished { return } self.finished = true;
         let wall = self.t0.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         if let Some(p) = self.player.as_mut() {
@@ -176,6 +194,12 @@ fn set_ime(window: &dyn Window, on: bool) {
     use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
     let req = if on { match ImeEnableRequest::new(ImeCapabilities::new(), ImeRequestData::default()) { Some(r) => ImeRequest::Enable(r), None => return } } else { ImeRequest::Disable };
     if let Err(e) = window.request_ime_update(req) { log::debug!("ime {on}: {e}"); }
+}
+
+/// The scrubber's view of the Transport.
+fn scrub_state(p: Option<&Transport>) -> min_ui::ScrubState {
+    let Some(p) = p else { return Default::default() };
+    min_ui::ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached: None }
 }
 
 /// The video's rect: everything above the three bottom bands (canon §25 row 169).
@@ -224,7 +248,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), ui_dirty: true });
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), cursor_pointer: false, ui_dirty: true });
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -275,6 +299,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::PointerMoved { position, .. } => self.pointer(min_ui::Event::Move { x: position.x, y: position.y }),
             WindowEvent::PointerLeft { .. } => self.pointer(min_ui::Event::Leave),
+            WindowEvent::MouseWheel { delta, .. } => {
+                let alt = self.mods.alt;
+                // Qt angle units (120 per notch): lines → notches; pixel deltas (trackpads) at 2 units per px; Alt+wheel folds x into y (QCView's Windows rule)
+                let dy = match delta { winit::event::MouseScrollDelta::LineDelta(x, y) => (if alt && y == 0.0 { x } else { y }) as f64 * 120.0, winit::event::MouseScrollDelta::PixelDelta(p) => (if alt && p.y == 0.0 { p.x } else { p.y }) * 2.0, _ => 0.0 };
+                if let Some(g) = self.gpu.as_mut() { let (x, y) = g.pointer; if g.scrubber.hit(x, y) { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); if g.scrubber.wheel(x, dy, alt, &st, scale) { g.ui_dirty = true; } } }
+            }
             WindowEvent::PointerButton { state, position, button, .. } => {
                 let b = match button.mouse_button() { Some(winit::event::MouseButton::Left) => min_ui::Button::Primary, Some(winit::event::MouseButton::Right) => min_ui::Button::Secondary, Some(winit::event::MouseButton::Middle) => min_ui::Button::Middle, _ => return };
                 let (x, y) = (position.x, position.y);
@@ -362,14 +392,25 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
     strip.sync(player.as_ref());
     strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
     strip.stage(status_strip::Mode::Timecode, "1000", &mut fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
+    let mut scrubber = min_ui::Scrubber::new();
+    let mut thumbs = hover_thumbs::HoverThumbs::new();
+    let st = scrub_state(player.as_ref());
+    scrubber.layout(kurbo::Rect::new(0.0, h as f64 - t::SCRUBBER_HEIGHT as f64 * scale, w as f64, h as f64), scale);
+    scrubber.wheel(w as f64 * 0.4, 600.0, false, &st, scale);   // zoomed in about 40 % — frame ticks + the extent marker
+    scrubber.event(&min_ui::Event::Move { x: w as f64 * 0.62, y: h as f64 - 10.0 }, t0, &st, scale);
+    if let Some(p) = player.as_mut() { thumbs.on_open(p); let deadline = Instant::now() + std::time::Duration::from_millis(1500); while Instant::now() < deadline { thumbs.tick(Some(p), scrubber.hover_frame, Instant::now()); if thumbs_shown(&thumbs) { break } std::thread::sleep(std::time::Duration::from_millis(20)); } }
+    let content = engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap();
     let (mut build_ms, mut render_ms) = (vec![], vec![]);
     for i in 0..n.max(1) {
         let fi = frame_info.map(|(_, c, f)| ((i as i32 * 7) % c.max(1), c, f)).or(Some((i as i32, 240, 24.0)));
         let t = Instant::now();
         let scene = ui.scene_mut();
-        ui_sketch::draw(scene, &mut fonts, w, h, scale, fi);
+        let _ = fi;
+        ui_sketch::bands(scene, w, h, scale);
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
+        scrubber.paint(scene, &mut fonts, scale, &st, None);
+        thumbs.paint(scene, content, scale);
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
@@ -383,8 +424,11 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
     let px = engine.render_offscreen(w, h).expect("composite");
     println!("composite {w}x{h} render + readback {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
     if let Some(path) = snap { write_png_rgb8(&path, &px, w, h); println!("ui snap written: {path}"); }
+    println!("hover thumbnail staged: {}", if thumbs_shown(&thumbs) { "shown" } else { "none" });
+    thumbs.shutdown();
     println!("max RSS {:.0} MB", qcv_player::max_rss_mb());
 }
+fn thumbs_shown(t: &hover_thumbs::HoverThumbs) -> bool { t.is_shown() }
 
 fn run_headless(o: Opts) {
     if o.cut.is_some() { return run_cut_bench(o) }

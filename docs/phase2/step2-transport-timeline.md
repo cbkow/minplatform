@@ -396,3 +396,27 @@ past hover (gray-300; S2 has no pressed step — a written deviation, §16.4's c
 - **Seen in the snap:** the video now sits above the bands in its own letterbox; the popover rises over it from the SMPTE
   well with "GO TO TIMECODE" in tracked capitals and the accent-bordered field.
 
+#### 6e · the scrubber node and the hover thumbnail over the viewport (landed 2026-11-07)
+- **`min-ui::Scrubber`** — the timeline surface as ONE node drawing from a `ScrubState` each frame (§17.5 item 4,
+  row 166): the 32-px band is the ruler. QCView's camera (`pps` + `scrollX`; wheel zooms about the cursor by
+  `1.0015^dy` between fit and max(200 px/s, fit × 50); Alt-wheel pans; a resize keeps the visible range; the 20-px
+  page-turn follow while playing) and QCView's gesture (press → `Begin` + `To`, move → `To`, release → `To` + `End`,
+  leaving ends it; the playhead follows the cursor, not the decode) through the Transport's `begin_scrub` /
+  `scrub_to_frame` / `end_scrub`. Ticks for the VISIBLE range only (QCView's ≥ 80-px rule; frame ticks at ≥ 6 px per
+  frame, frame numbers at ≥ 24 px), the in / out zone and flags (in → out + 1), a cache underline when coverage is known,
+  a 2-px extent marker when zoomed, the hover line, the near-white playhead. Double-click fits (ours: QCView's overview
+  bar carried that). The waveform draws from `peaks` only — the synthetic fill of the sketch is gone; the audio probe
+  (step 2b) fills it. 2 tests (zoom about the cursor / snap to fit / pan; press-move-release and the double-press).
+- **Wheel**: winit's `LineDelta` as notches (× 120, Qt's angle units) and `PixelDelta` at 2 units per px; Alt folds x
+  into y (QCView's Windows rule). The cursor is the pointing hand over a loaded scrubber (QCView's `cursorShape`).
+- **The hover thumbnail** (`apps/qcv/src/hover_thumbs.rs`, row 170 BUILT): `qcv-player`'s cache + `VideoThumbLoader`
+  with the GOP-cache peek, requests at the 16-ms throttle, playback drops the loader to one worker, the strip
+  precaches on open; the pixels become a vello image (`paint::image_rgba8`) drawn bottom-left of the CONTENT rect at
+  0.18 of its width with a 1-px border — a UI node, display-referred, no longer composited into the frame before the
+  colour chain (§17.5 item 5). The eviction callback drops the image.
+- **Numbers (2560×1440 @2):** scene build 0.14 ms p50 (the ticks and labels), vello 0.35 ms p50 headless; in the
+  window 0.7–1.3 ms p50 during playback, present 16.7 p50, 0 dropped. The strip precache costs ~100 % of one core
+  for its first seconds after open (3 workers × 8 threads — the hover pass's known one-time burst).
+- **Seen in the snap:** zoomed to ~160 px/s with 1-s ticks, the extent marker along the bottom, the hover line at
+  62 %, the thumbnail of that frame in the viewport's corner; the playhead at frame 0 correctly out of view.
+

@@ -17,3 +17,13 @@ pub fn rounded(scene: &mut Scene, r: Rect, radius: f64, c: min_theme::Color) {
 
 /// A horizontal hairline `thickness` px tall along the top edge of `y`.
 pub fn hline(scene: &mut Scene, x0: f64, x1: f64, y: f64, thickness: f64, c: min_theme::Color) { rect(scene, Rect::new(x0, y, x1, y + thickness), c); }
+
+/// An RGBA8 (straight alpha) bitmap as a vello image brush — the hover thumbnail's pixels, kept across frames.
+pub fn image_rgba8(width: u32, height: u32, rgba: Vec<u8>) -> peniko::ImageBrush {
+    peniko::ImageBrush::new(peniko::ImageData { data: peniko::Blob::new(std::sync::Arc::new(rgba)), format: peniko::ImageFormat::Rgba8, alpha_type: peniko::ImageAlphaType::Alpha, width, height })
+}
+/// Draw `img` scaled into `dst`.
+pub fn image(scene: &mut Scene, img: &peniko::ImageBrush, dst: Rect) {
+    let (w, h) = (img.image.width.max(1) as f64, img.image.height.max(1) as f64);
+    scene.draw_image(img, Affine::translate((dst.x0, dst.y0)) * Affine::scale_non_uniform(dst.width() / w, dst.height() / h));
+}
