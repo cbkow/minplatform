@@ -763,11 +763,32 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut inspector = inspector_panel::InspectorPanel::new(); let _ = inspector.sync(player.as_ref());
     if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
     let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih;
+    // the snap shows the Inspector's lower half (Color / Audio / Timecode with their pickers): scroll the rail
+    if std::env::var_os("QCV_SNAP_SCROLL").is_some() { right.wheel(ih, t0); right.layout(w as f64, 0.0, rails_bottom, scale, t0); let rc = right.content_rect(); inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); }
     { let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
       // hover the "Timeline hover thumbnails" switch's label (its help tooltip) and press the scrub-cache field
       let _ = panel.event(&min_ui::Event::Move { x: lc.x0 + 20.0 * scale, y: lc.y0 + 330.0 * scale }, t0, &mut fonts, &mut store, bounds, scale);
       let _ = panel.event(&min_ui::Event::Down { x: lc.x1 - 60.0 * scale, y: lc.y0 + 215.0 * scale, button: min_ui::Button::Primary }, t0, &mut fonts, &mut store, bounds, scale); }
     println!("settings panel: {} px tall at {scale}× ({} rows); inspector {} px", ph.round(), settings::SCHEMA.keys.len(), ih.round());
+    // probe: the Range picker's Full chip → the Transport's override (the user 2026-11-07: "Range is def not affecting image")
+    if let Some(p) = player.as_mut() {
+        let before = engine.render_offscreen(w, h).expect("composite");
+        if let Some(r) = inspector.chip_rect("Range", 1) {
+            let c = r.center();
+            let _ = inspector.event(&min_ui::Event::Down { x: c.x, y: c.y, button: min_ui::Button::Primary }, t0);
+            let (cmds, _) = inspector.event(&min_ui::Event::Up { x: c.x, y: c.y, button: min_ui::Button::Primary }, t0);
+            println!("range probe: chip at {:?} → {:?}", r, cmds);
+            for c in cmds { if let inspector_panel::Cmd::Range(ro) = c { p.set_range_override(ro); } }
+            println!("range probe: transport override now {:?}", p.range_override());
+            // re-decode the current frame and compare a mid-grey pixel
+            let f = p.current_frame(); p.seek_to_frame(f);
+            let deadline = Instant::now() + std::time::Duration::from_secs(3); let mut shown = false;
+            while Instant::now() < deadline { if let Some(d) = p.tick(Instant::now()) { engine.show(&d.frame).expect("show"); shown = true; break } p.idle_refresh(); std::thread::sleep(std::time::Duration::from_millis(2)); }
+            let after = engine.render_offscreen(w, h).expect("composite");
+            let idx = ((h / 2) as usize * w as usize + (w / 2) as usize) * 4;
+            println!("range probe: re-decoded {shown}; centre pixel before {:.4} after {:.4} (meta range of the shown frame: {:?})", before[idx], after[idx], p.current().map(|h| h.frame.meta.range));
+        } else { println!("range probe: no Range chips in the panel"); }
+    }
     bar.sync(player.as_ref(), t0);
     bar.layout(&mut fonts, w as f64, bands_y, scale);
     let (hover, press) = (bar.rect_of("caret-right").unwrap().center(), bar.rect_of("sign-out").unwrap().center());

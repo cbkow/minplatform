@@ -20,6 +20,9 @@ impl Matrix {
 pub struct ColorMeta {
     pub matrix: Matrix, pub range: Range, pub transfer: Transfer, pub primaries: Primaries,
     pub bit_depth: u32, pub chroma: Chroma,
+    /// `range` was set by the user's Range override, not detected: the import's own attachment (a CVPixelBuffer's
+    /// range key) must not overrule it (the Inspector's Range pill had no effect on zero-copy frames, 2026-11-07).
+    pub range_forced: bool,
     /// Quarter-turn rotation in degrees (0 / 90 / 180 / 270) from the container's display matrix.
     pub rotation: u16,
     /// Sample aspect ratio; (1, 1) for square pixels.

@@ -255,7 +255,7 @@ impl Engine {
                 let mut meta = frame.meta;
                 if let Some(m) = imp.matrix { meta.matrix = m; }   // the buffer's attachments win over the stream tags (QCView's bridge)
                 if let Some(t) = imp.transfer { meta.transfer = t; }
-                let full_range = imp.full_range.unwrap_or(frame.meta.range == Range::Full);
+                let full_range = if frame.meta.range_forced { frame.meta.range == Range::Full } else { imp.full_range.unwrap_or(frame.meta.range == Range::Full) };
                 self.set_base(Base { levels: Levels::new(imp.code_bits, if imp.code_bits > 8 { 2 } else { 1 }, full_range, meta.matrix), meta });
                 let variant = if imp.packed { Variant::Packed } else { Variant::Biplanar };
                 let views: Vec<_> = imp.textures.iter().map(|t| t.create_view(&Default::default())).collect();

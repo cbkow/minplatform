@@ -68,7 +68,7 @@ fn meta_from(ctx: &ff::AVCodecContext, format: ff::AVPixelFormat, over: RangeOve
     let primaries = match ctx.color_primaries { P::AVCOL_PRI_BT2020 => Primaries::Bt2020, P::AVCOL_PRI_SMPTE432 | P::AVCOL_PRI_SMPTE431 => Primaries::P3D65, _ => Primaries::Bt709 };
     let chroma = if rgb { Chroma::Rgb } else { match (cw, ch) { (1, 1) => Chroma::C420, (1, 0) => Chroma::C422, _ => Chroma::C444 } };
     let sar = if ctx.sample_aspect_ratio.num > 0 && ctx.sample_aspect_ratio.den > 0 { (ctx.sample_aspect_ratio.num as u32, ctx.sample_aspect_ratio.den as u32) } else { (1, 1) };
-    ColorMeta { matrix, range: yuv_planar::effective_source_range(ctx.color_range, rgb, over), transfer, primaries, bit_depth: depth, chroma, rotation: 0, sar, mastering: None }
+    ColorMeta { matrix, range: yuv_planar::effective_source_range(ctx.color_range, rgb, over), range_forced: over != RangeOverride::Auto, transfer, primaries, bit_depth: depth, chroma, rotation: 0, sar, mastering: None }
 }
 
 impl Session {
@@ -214,6 +214,7 @@ impl Session {
         let (w, h) = (f.width as u32, f.height as u32);
         let mut meta = self.info.meta;
         meta.range = yuv_planar::effective_source_range(f.color_range, meta.matrix == Matrix::Identity, self.range_override);
+        meta.range_forced = self.range_override != RangeOverride::Auto;
         let fin = |frame: Frame, s: &Session| FrameHandle { frame, pts, pts_us: s.pts_to_us(pts), frame_no: index.frame_for_pts(pts), keyframe, decode_ms: t0.elapsed().as_secs_f32() * 1000.0 };
         if format == HW_PIX_FMT && format != ff::AVPixelFormat::AV_PIX_FMT_NONE {
             #[cfg(target_os = "macos")]

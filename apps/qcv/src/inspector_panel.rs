@@ -20,7 +20,8 @@ pub enum Cmd { Range(RangeOverride), Routing(RoutingMode), Origin(String) }
 
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
-struct Chips { label: String, group: ActionGroup, keys: Vec<String>, selected: usize, rect: Rect }
+struct Chips { label: String, group: ActionGroup, keys: Vec<String>, selected: usize, rect: Rect, /// the fused rows' rects (one per wrapped line) for the backing
+    rows: Vec<Rect> }
 enum Item { Row(Row), Chips(Chips), Meters }
 struct Group { section: Section, items: Vec<Item>, rects: Vec<Rect> }
 
@@ -36,6 +37,36 @@ pub struct InspectorPanel {
 }
 
 const LABEL_W: f64 = 96.0;   // QCView's labelColWidth (logical)
+
+/// QCView's `KvChipRow` is a Flow: the chips wrap. Here: on the label's line when they fit beside it, else on their own
+/// line(s) below it, each line a fused run (radius on the run's ends). Returns the item's height.
+fn layout_chips(c: &mut Chips, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
+    let r = t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale; let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * scale; let line_gap = t::SPACING_75 as f64 * scale;
+    let widths: Vec<f64> = c.group.buttons.iter().map(|b| b.measure(fonts, scale).0).collect();
+    let total: f64 = widths.iter().sum();
+    let label_w = LABEL_W * scale * 0.6;
+    let (start_x, mut cy, avail) = if total <= x1 - x0 - label_w - t::SPACING_200 as f64 * scale { (x1 - total, y, x1 - x0) } else { (x0, y + bh + line_gap, x1 - x0) };
+    c.rows.clear();
+    let mut i = 0; let n = c.group.buttons.len();
+    while i < n {
+        // the run that fits this line (at least one chip)
+        let mut j = i; let mut run_w = 0.0;
+        while j < n && (j == i || run_w + widths[j] <= avail) { run_w += widths[j]; j += 1; }
+        let rx = if cy == y { start_x } else { x0 };
+        let mut cx = rx;
+        for k in i..j {
+            let b = &mut c.group.buttons[k];
+            b.rect = Rect::new(cx, cy, cx + widths[k], cy + bh);
+            b.corners = min_ui::action_button::Corners { tl: if k == i { r } else { 0.0 }, bl: if k == i { r } else { 0.0 }, tr: if k + 1 == j { r } else { 0.0 }, br: if k + 1 == j { r } else { 0.0 } };
+            cx += widths[k];
+        }
+        c.rows.push(Rect::new(rx, cy, cx, cy + bh));
+        cy += bh + line_gap; i = j;
+    }
+    c.group.rect = Rect::new(x0, y, x1, cy - line_gap);
+    c.rect = c.group.rect;
+    c.group.rect.height()
+}
 
 fn fmt_bytes(b: u64) -> String { if b >= 1 << 30 { format!("{:.2} GB", b as f64 / (1u64 << 30) as f64) } else if b >= 1 << 20 { format!("{:.1} MB", b as f64 / (1u64 << 20) as f64) } else { format!("{} KB", b / 1024) } }
 fn fmt_dur(s: f64) -> String { let ms = (s * 1000.0).round() as i64; format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000) }
@@ -77,7 +108,7 @@ impl InspectorPanel {
             let buttons = opts.iter().map(|(_, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect();
             let keys: Vec<String> = opts.iter().map(|(k, _)| k.to_string()).collect();
             let selected = keys.iter().position(|k| k == selected_key).unwrap_or(0);
-            Item::Chips(Chips { label: label.into(), group: ActionGroup::new(buttons).compact(), keys, selected, rect: Rect::ZERO })
+            Item::Chips(Chips { label: label.into(), group: ActionGroup::new(buttons).compact(), keys, selected, rect: Rect::ZERO, rows: vec![] })
         };
         let pb = std::path::Path::new(&self.path);
         let name = pb.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.path.clone());
@@ -194,7 +225,7 @@ impl InspectorPanel {
             for it in g.items.iter_mut() {
                 let h = match it {
                     Item::Row(_) => row_h,
-                    Item::Chips(c) => { let gw = c.group.layout(fonts, 0.0, 0.0, scale); let cx = (x1 - pad - gw).max(x0 + pad + LABEL_W * scale); c.group.layout(fonts, cx, cy, scale); c.rect = Rect::new(x0 + pad, cy, x1 - pad, cy + c.group.rect.height()); c.group.rect.height() + gap }
+                    Item::Chips(c) => { let h = layout_chips(c, fonts, x0 + pad, x1 - pad, cy, scale); h + gap }
                     Item::Meters => 6.0 * scale * self.channels.max(1) as f64 + gap,
                 };
                 g.rects.push(Rect::new(x0 + pad, cy, x1 - pad, cy + h)); cy += h + gap;
@@ -226,6 +257,8 @@ impl InspectorPanel {
         }
         (cmds, dirty)
     }
+    /// The harness: a chip's rect by its row label and index.
+    pub fn chip_rect(&self, label: &str, i: usize) -> Option<Rect> { self.groups.iter().flat_map(|g| g.items.iter()).find_map(|it| match it { Item::Chips(c) if c.label == label => c.group.buttons.get(i).map(|b| b.rect), _ => None }) }
     pub fn animating(&self, now: Instant) -> bool { self.groups.iter().any(|g| g.section.animating(now) || g.items.iter().any(|it| matches!(it, Item::Chips(c) if c.group.animating(now)))) }
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
         for (gi, g) in self.groups.iter().enumerate() {
@@ -254,9 +287,10 @@ impl InspectorPanel {
                     }
                     Item::Chips(c) => {
                         let l = fonts.layout(&c.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR));
-                        min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, c.group.rect.y0 + (c.group.rect.height() - l.height() as f64) / 2.0)));
-                        paint::rounded(scene, c.group.rect, t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, t::RAIL_CARD_BACKGROUND_COLOR);
-                        c.group.paint(scene, fonts, scale, now);
+                        let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * scale;
+                        min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, c.group.rect.y0 + (bh - l.height() as f64) / 2.0)));
+                        for row in &c.rows { paint::rounded(scene, *row, t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, t::RAIL_CARD_BACKGROUND_COLOR); }
+                        for b in &c.group.buttons { b.paint(scene, fonts, scale, now); }
                     }
                     Item::Meters => {
                         // QCView's per-channel peak meters: one 4-px bar per source channel, the track in the card colour, the fill in the content grey, over 0.9 in the notice colour
