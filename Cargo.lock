@@ -1789,6 +1789,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-present"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "pollster",
+ "thiserror 2.0.21",
+ "wgpu",
+ "windows",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2686,6 +2706,44 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "qcv"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "min-paths",
+ "min-present",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "png 0.17.16",
+ "qcv-player",
+ "qcv-timeline",
+ "raw-window-handle",
+ "wgpu",
+ "winit 0.31.0-beta.4",
+]
+
+[[package]]
+name = "qcv-player"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "ffmpeg-sys-next",
+ "libc",
+ "log",
+ "min-paths",
+ "min-present",
+ "qcv-timeline",
+ "thiserror 2.0.21",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "qcv-timeline"
+version = "0.1.0"
 
 [[package]]
 name = "quick-xml"

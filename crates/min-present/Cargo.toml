@@ -1,0 +1,30 @@
+[package]
+name = "min-present"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform — the wgpu video presenter: colour metadata on every frame, the fused four-stage graph with the stage-2 slot, zero-copy imports, SDR / EDR / PQ output (canon §11, rows 39–43, 46; born in Phase 2 step 1)"
+
+[dependencies]
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+pollster = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true }
+objc2-quartz-core = { workspace = true, features = ["CAMetalLayer", "CALayer", "objc2-metal", "objc2-core-graphics"] }
+objc2-core-graphics = { workspace = true, features = ["CGColorSpace"] }
+objc2-foundation = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-core-video = { workspace = true }
+objc2-app-kit = { workspace = true, features = ["NSView", "NSResponder", "NSScreen"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Foundation"] }

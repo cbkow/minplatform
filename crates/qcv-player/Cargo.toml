@@ -1,0 +1,23 @@
+[package]
+name = "qcv-player"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform — QCView's player carried by crate (canon §4): FFmpeg 9 behind thin RAII, hardware decode shared with the presenter, the streaming slot, the rational clock (born in Phase 2 step 1)"
+
+[dependencies]
+min-present = { path = "../min-present" }
+qcv-timeline = { path = "../qcv-timeline" }
+min-paths = { path = "../min-paths" }
+ffmpeg-sys-next = { workspace = true }
+crossbeam-channel = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Threading", "Win32_Foundation", "Win32_System_ProcessStatus"] }

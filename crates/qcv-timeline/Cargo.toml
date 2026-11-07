@@ -1,0 +1,12 @@
+[package]
+name = "qcv-timeline"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform — rational time, clips and the playlist resolve (canon §17, row 83; born in Phase 2 step 1)"
+
+[dependencies]

@@ -2,7 +2,7 @@
 # The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"
-members = ["crates/min-paths", "crates/min-paths-ffi", "spikes/s1-present", "spikes/s2-scrub", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
+members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s2-scrub", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
 
 [workspace.package]
 edition = "2024"
@@ -14,7 +14,8 @@ publish = false
 [workspace.dependencies]
 # GPU + window (pinned 2026-11-06; winit 0.31 is a beta — exact pin on purpose)
 wgpu = "30.0.1"
-winit = "0.30.13"   # accesskit_winit 0.34 is still on 0.30; the 0.31 beta (typed data transfer) waits for S5
+winit = "0.30.13"   # the TEXT layer's winit (accesskit_winit 0.34 holds it; the vendored patch below) — row 117 / 129
+winit31 = { package = "winit", version = "=0.31.0-beta.4", default-features = false }   # the WINDOW layer (row 129, Phase 2): `use winit31 as winit;` until the split ends
 raw-window-handle = "0.6.2"
 pollster = "1.0.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
@@ -38,6 +39,7 @@ objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3.2"   # S1 step 3: the PQ-layer workaround for wgpu-hal 30.0.1's BT.2100 crash
 objc2-app-kit = "0.3"            # features per crate (NSPasteboard for min-paths, NSView for the spikes)
 windows-sys = "0.60"             # features per crate
+windows = { version = "0.62", default-features = false }   # the version wgpu-hal 30 uses: raw ID3D12 handles cross the hal boundary (min-present)
 serde = { version = "1", features = ["derive"] }   # optional in min-paths (the {vol,rel} ref shape)
 serde_json = "1"
 cbindgen = "0.29"
@@ -47,6 +49,7 @@ crossbeam-channel = "0.5"
 libc = "0.2"
 # misc
 cc = "1.2"   # the OCIO shim (S1 step 2); later any `*-sys` crate we own
+thiserror = "2"
 anyhow = "1"
 png = "0.17"
 env_logger = "0.11"
