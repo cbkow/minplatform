@@ -1,8 +1,13 @@
 //! The decoded-frame type and its colour metadata (canon §11.1, row 39: carried end to end from day one).
 use std::{any::Any, ffi::c_void, sync::Arc};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)] pub enum Matrix { Bt601, #[default] Bt709, Bt2020, /// RGB sources (EXR, planar RGB): no matrix
+/// The YUV→RGB matrix (swscale's `SWS_CS_*` table, as QCView's `yuv_planar.h` carries it: Kr / Kb).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)] pub enum Matrix { Bt601, #[default] Bt709, Bt2020, Smpte240m, Fcc, /// RGB sources (EXR, planar RGB): no matrix
     Identity }
+impl Matrix {
+    /// Kr / Kb — `R = Y + 2(1−Kr)·Cr, B = Y + 2(1−Kb)·Cb, G = (Y − Kr·R − Kb·B) / (1−Kr−Kb)`; 601 / 709 / 2020 / 240M / FCC decode as swscale did.
+    pub fn kr_kb(self) -> (f32, f32) { match self { Matrix::Bt601 => (0.299, 0.114), Matrix::Smpte240m => (0.212, 0.087), Matrix::Fcc => (0.30, 0.11), Matrix::Bt2020 => (0.2627, 0.0593), Matrix::Bt709 | Matrix::Identity => (0.2126, 0.0722) } }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)] pub enum Range { #[default] Limited, Full }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)] pub enum Transfer { Srgb, #[default] Bt1886, Pq, Hlg, Linear }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)] pub enum Primaries { #[default] Bt709, P3D65, Bt2020 }
@@ -25,7 +30,7 @@ impl ColorMeta {
     /// The shader's transfer / matrix / primaries selectors (one float each — the uniform block is tiny and proven).
     pub(crate) fn selectors(&self) -> (f32, f32, f32) {
         (match self.transfer { Transfer::Srgb => 0.0, Transfer::Bt1886 => 1.0, Transfer::Pq => 2.0, Transfer::Hlg => 3.0, Transfer::Linear => 4.0 },
-         match self.matrix { Matrix::Bt601 => 0.0, Matrix::Bt709 => 1.0, Matrix::Bt2020 => 2.0, Matrix::Identity => 3.0 },
+         match self.matrix { Matrix::Bt601 | Matrix::Smpte240m | Matrix::Fcc => 0.0, Matrix::Bt709 => 1.0, Matrix::Bt2020 => 2.0, Matrix::Identity => 3.0 },   // the shader takes Kr / Kb, not this selector
          match self.primaries { Primaries::Bt709 => 0.0, Primaries::P3D65 => 1.0, Primaries::Bt2020 => 2.0 })
     }
 }
@@ -33,12 +38,15 @@ impl ColorMeta {
 /// One CPU plane, rows padded to a 256-byte pitch (wgpu's `write_texture` requirement) by whoever decoded it.
 pub struct Plane { pub data: Vec<u8>, pub width: u32, pub height: u32, pub pitch: u32 }
 
+/// Plane layouts (QCView's `YuvPlanarDesc`): levels are computed in CODE values — `code_bits` = depth + shift (10 for
+/// LSB-aligned yuv422p10le, 16 for MSB-aligned P010 / VideoToolbox 10-bit), `bytes_per_sample` 1 or 2 (R8 / R16 textures).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanarLayout {
-    /// Y, Cb, Cr planes; `bytes_per_sample` 1 (8-bit) or 2 (10/12-bit, right-justified in 16 — the shader rescales).
-    Ycc { bytes_per_sample: u32 },
-    /// Planar RGB half floats in FFmpeg's `gbrp` order (G, B, R), linear light (EXR); the matrix is `Identity`.
-    RgbF16,
+    /// Y, Cb, Cr [, A] planes — or Y, interleaved CbCr [, A] (`interleaved_chroma`: NV12 / P010 style, U first).
+    Ycc { bytes_per_sample: u32, code_bits: u32, interleaved_chroma: bool, alpha: bool },
+    /// Planar RGB in FFmpeg's `gbrp` order (G, B, R [, A]); `float` = half floats, linear light (EXR); `legal_expand` =
+    /// `rgb_range`'s 16–235 → 0–255 rule for legal-range RGB masters. The matrix is `Identity`.
+    Rgb { bytes_per_sample: u32, code_bits: u32, float: bool, alpha: bool, legal_expand: bool },
 }
 
 /// A platform frame the GPU can sample without a copy. `handle` is the OS object (macOS: `CVPixelBufferRef`;

@@ -17,7 +17,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition};
 
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
 
-struct Opts { headless: Option<u32>, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
+struct Opts { headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter }
 
@@ -36,9 +36,8 @@ impl App {
         let hw = if self.o.sw { None } else { self.hw.clone() };
         match Player::open(&src, hw, self.o.threads) {
             Ok(mut p) => {
-                p.refresh_ms = self.o.refresh_ms;
-                let i = p.info();
-                println!("opened {} — {} {}x{} {} fps ({} frames) {} {:?} {:?} {:?} {}-bit  decode {}  (open took {:.0} ms)", src.display(), i.codec, i.width, i.height, i.rate, i.frames, i.pix_fmt, i.meta.matrix, i.meta.transfer, i.meta.range, i.meta.bit_depth, if i.hw_active { "hw zero-copy" } else { "software + upload" }, t.elapsed().as_secs_f32() * 1000.0);
+                p.refresh_ms = self.o.refresh_ms; p.looping = self.o.looping;
+                println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
                 self.source_label = src.display(); self.source_path = path.to_string(); self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
                 g.window.set_title(&format!("qcv — {}", self.source_label));
             }
@@ -58,6 +57,7 @@ impl App {
             }
         }
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); self.open(&path); return }
+        if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
         let presented = g.presenter.draw(|| g.window.pre_present_notify());
         if presented {
             self.frames_presented += 1;
@@ -104,10 +104,17 @@ impl App {
             println!("play: shown {} frames, dropped {}, late (> 1 refresh) {}, black refreshes {}, loops {}; lateness ms vs the ideal clock p50 {:.1} p95 {:.1} max {:.1} min {:.1}; cadence (refreshes per frame → count) {:?}; decode ms p50 {:.1} max {:.1}",
                 s.shown, s.dropped, s.late, s.black, s.loops, pct(&mut s.lateness_ms, 50.0), pct(&mut s.lateness_ms, 95.0), pct(&mut s.lateness_ms, 100.0), pct(&mut s.lateness_ms, 0.0), s.cadence, pct(&mut s.decode_ms, 50.0), pct(&mut s.decode_ms, 100.0));
         }
+        if let Some(p) = self.player.as_ref() { if let Some(idx) = p.decoder.frame_index() { println!("frame index: tier 2 {:?} ({} frames, {} keyframes); decode errors {}{}", idx.scan_state(), idx.scan_frames_built(), idx.keyframe_count(), p.decoder.decode_error_count(), if p.decoder.decode_error_count() > 0 { format!(" (last: {})", p.decoder.last_decode_error()) } else { String::new() }); } }
         let cpu = qcv_player::process_cpu_seconds();
         if wall > 0.0 { println!("process CPU time {cpu:.2} s over {wall:.1} s = {:.0} % of one core (decode threads included); max RSS {:.0} MB; frames presented {}; EDR headroom seen {:.1}", 100.0 * cpu / wall, qcv_player::max_rss_mb(), self.frames_presented, self.edr_seen); }
         if let Some(g) = self.gpu.as_ref() { let r = g.presenter.layer_report(); if !r.is_empty() { println!("{r}"); } }
     }
+}
+
+fn describe(p: &Player) -> String {
+    let i = p.info();
+    format!("{} {}x{} {} fps ({} frames) {} {:?} {:?} {:?} {:?} {}-bit  decode {}{}", i.codec_short, i.width, i.height, i.rate(), i.frame_count, i.pix_fmt, i.meta.matrix, i.meta.transfer, i.meta.primaries, i.meta.range, i.meta.bit_depth,
+        if i.hw_accel.is_empty() { "software + upload".to_string() } else { format!("{} (zero-copy when the layout is bridged)", i.hw_accel) }, i.source_timecode.as_ref().map(|t| format!("  TC {t}")).unwrap_or_default())
 }
 
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {
@@ -186,7 +193,7 @@ fn main() {
     let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
-    let o = Opts { headless: arg("--headless").and_then(|v| v.parse().ok()), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
+    let o = Opts { headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), finished: false, frames_presented: 0, edr_seen: 0.0 };
@@ -209,13 +216,13 @@ fn run_headless(o: Opts) {
     let src = Source::from_path(&file, None);
     let t = Instant::now();
     let mut p = match Player::open(&src, hw, o.threads) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
-    { let i = p.info(); println!("opened {} — {} {}x{} {} fps ({} frames) {} {:?} {:?} {:?} {:?} {}-bit  decode {}  (open took {:.0} ms)", src.display(), i.codec, i.width, i.height, i.rate, i.frames, i.pix_fmt, i.meta.matrix, i.meta.transfer, i.meta.primaries, i.meta.range, i.meta.bit_depth, if i.hw_active { "hw zero-copy" } else { "software + upload" }, t.elapsed().as_secs_f32() * 1000.0); }
+    println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
     p.looping = false;
     let mut first: Option<f32> = None; let mut show_ms = vec![];
     let deadline = Instant::now() + std::time::Duration::from_secs(60);
     while p.stats.shown < n && Instant::now() < deadline {
         let now = Instant::now();
-        let Some(d) = p.tick(now) else { std::thread::sleep(std::time::Duration::from_micros(500)); continue };
+        let Some(d) = p.tick(now) else { p.idle_refresh(); std::thread::sleep(std::time::Duration::from_micros(500)); continue };
         match engine.show(&d.frame) { Ok(()) => { show_ms.push(engine.last_show_ms); if first.is_none() { first = Some(t.elapsed().as_secs_f32() * 1000.0); } } Err(e) => { println!("show: {e}"); return } }
         let shown = p.stats.shown;
         if let Some((path, k)) = &o.snap_out { if shown == *k { match engine.snapshot(Snapshot::Encoded) { Ok((px, w, h)) => { write_png_rgb8(path, &px, w, h); println!("snap-out written: {path} ({w}x{h}, display-encoded 8-bit, frame {k})"); } Err(e) => println!("snap-out: {e}") } } }
@@ -228,6 +235,18 @@ fn run_headless(o: Opts) {
             let bands: Vec<String> = [0.5081f64, 0.7518, 0.9026].iter().enumerate().map(|(i, code)| { let y = (h / 2 + (h / 6) * i as u32 + h / 12) as usize; let got = px[(y * w as usize + w as usize / 2) * 4] as f64; format!("band {code:.4} → expect {:.4} ({:.0} nit) got {:.4} ({:.0} nit)", pq(*code) / white, pq(*code), got, got * white) }).collect();
             println!("verify-pq (row {row}, {} nits = 1.0): worst relative error {:.3} % at x={worst_x} (code {:.3}); {} of {} samples above 1.0 (EDR range)\n  {}", o.white, worst * 100.0, worst_x as f64 / (w - 1) as f64, over1, w, bands.join("\n  "));
         }
+    }
+    // the FrameIndex report: tier 2 vs tier 1 on every frame, the keyframe table, the read-ahead pages touched
+    if let Some(idx) = p.decoder.frame_index() {
+        let t1 = Instant::now(); while idx.scan_state() == qcv_player::frame_index::ScanState::Building && t1.elapsed().as_secs() < 30 { std::thread::sleep(std::time::Duration::from_millis(20)); }
+        let n = idx.total_frames();
+        let (mut mism, mut worst) = (0, 0i64);
+        if idx.has_exact_mapping() {
+            let f1 = qcv_player::FrameIndex::new(idx.time_base().0, idx.time_base().1, idx.frame_rate().0, idx.frame_rate().1, n, idx.is_intra_only());
+            for k in 0..n { let d = (idx.pts_for_frame(k) - f1.pts_for_frame(k)).abs(); if d != 0 { mism += 1; worst = worst.max(d); } }
+        }
+        println!("frame index: tier 2 {:?} ({} frames built), keyframes {}, tier-1 formula disagrees on {mism} of {n} frames (worst {worst} ticks); keyframe before frame {} = pts {}; read-ahead pages touched {}",
+            idx.scan_state(), idx.scan_frames_built(), idx.keyframe_count(), n / 2, idx.keyframe_pts_before(n / 2), qcv_player::read_ahead::ReadAhead::instance().touched_pages.load(std::sync::atomic::Ordering::Relaxed));
     }
     let s = &mut p.stats;
     println!("headless: {} frames shown (open → first frame on the engine {:.0} ms), show ms p50 {:.2} max {:.2}, decode ms p50 {:.1} max {:.1}, dropped {}; CPU {:.0} % of one core; max RSS {:.0} MB",

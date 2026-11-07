@@ -4,7 +4,7 @@ use crate::{frame::*, import::{Imported, Imports}, readback, Error};
 use std::{any::Any, collections::VecDeque, sync::Arc, time::Instant};
 
 #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct U { fit: [f32; 2], yscale: f32, black: f32, lscale: f32, czero: f32, cscale: f32, src_transfer: f32, src_matrix: f32, src_primaries: f32, out_mode: f32, white: f32 }
+struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, pad0: f32 }
 
 /// What a colour chain consumes and produces: linear BT.709 working RGB, or display-encoded RGB with a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,17 +45,24 @@ impl Default for DisplayMode { fn default() -> Self { DisplayMode { out: OutMode
     Encoded, /// linear BT.709, 1.0 = white nits
     Linear }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)] enum Variant { Planar, Biplanar }
+/// The stage-1 pipelines: QCView's three kernels (planar, biplanar, packed 4444) plus the alpha-plane planar form.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)] enum Variant { Planar3, Planar4, Biplanar, Packed }
+impl Variant { fn textures(self) -> u32 { match self { Variant::Planar3 => 3, Variant::Planar4 => 4, Variant::Biplanar => 2, Variant::Packed => 1 } } }
 const N_U: usize = 4;   // 0 display · 1 chain-in (1:1) · 2 encoded 1:1 · 3 linear 1:1
 
-#[derive(Clone, Copy, PartialEq)] struct Base { yscale: f32, full_range: bool, /// the bit depth of the SAMPLES (the buffer's, not the codec's)
-    depth: u32, meta: ColorMeta }
-/// Exact range constants for `d`-bit codes sampled as code/(2^d−1): (black, luma scale, chroma neutral, chroma scale).
-fn range_constants(d: u32, full_range: bool) -> (f32, f32, f32, f32) {
-    let m = ((1u64 << d) - 1) as f64; let k = (1u64 << (d - 8).max(0)) as f64;   // d ≥ 8
-    let czero = ((1u64 << (d - 1)) as f64 / m) as f32;
-    if full_range { (0.0, 1.0, czero, 1.0) } else { ((16.0 * k / m) as f32, (m / (219.0 * k)) as f32, czero, (m / (224.0 * k)) as f32) }
+/// QCView's `YuvPlanarDesc` constants for the shader: levels in code values for any depth / alignment, the matrix as Kr / Kb.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Levels { pub code_max: f32, pub level_k: f32, pub full_max: f32, pub chroma_mid: f32, pub full_range: bool, pub kr: f32, pub kb: f32, pub is_rgb: bool, pub rgb_expand: bool }
+impl Levels {
+    /// `code_bits` = depth + shift (8, 10, 12, 16 …); `bytes` 1 or 2 selects the texture's code_max (255 / 65535).
+    pub fn new(code_bits: u32, bytes: u32, full_range: bool, matrix: Matrix) -> Levels {
+        let (kr, kb) = matrix.kr_kb();
+        Levels { code_max: if bytes == 2 { 65535.0 } else { 255.0 }, level_k: (1u32 << code_bits.saturating_sub(8)) as f32, full_max: ((1u64 << code_bits) - 1) as f32, chroma_mid: (1u32 << (code_bits - 1)) as f32, full_range, kr, kb, is_rgb: matrix == Matrix::Identity, rgb_expand: false }
+    }
+    /// Float planar RGB (EXR): the samples are already 0..1-ish linear values.
+    pub fn float_rgb() -> Levels { Levels { code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: true, kr: 0.2126, kb: 0.0722, is_rgb: true, rgb_expand: false } }
 }
+#[derive(Clone, Copy, PartialEq)] struct Base { levels: Levels, meta: ColorMeta }
 struct Shown { variant: Variant, binds: Vec<wgpu::BindGroup> }
 struct Held { _imp: Imported, _keep: Arc<dyn Any + Send + Sync> }
 struct Inter { a: wgpu::Texture, b: wgpu::Texture, bind: wgpu::BindGroup, size: (u32, u32) }
@@ -64,8 +71,8 @@ pub struct Engine {
     pub device: wgpu::Device, pub queue: wgpu::Queue,
     pub target_format: wgpu::TextureFormat,
     sampler: wgpu::Sampler,
-    planar_layout: wgpu::BindGroupLayout, biplanar_layout: wgpu::BindGroupLayout, blit_layout: wgpu::BindGroupLayout,
-    planar_target: wgpu::RenderPipeline, biplanar_target: wgpu::RenderPipeline, planar_inter: wgpu::RenderPipeline, biplanar_inter: wgpu::RenderPipeline, blit_target: wgpu::RenderPipeline,
+    layouts: Vec<wgpu::BindGroupLayout>, blit_layout: wgpu::BindGroupLayout,   // per Variant
+    targets: Vec<wgpu::RenderPipeline>, inters: Vec<wgpu::RenderPipeline>, blit_target: wgpu::RenderPipeline,
     ubufs: Vec<wgpu::Buffer>, blit_ubuf: wgpu::Buffer,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
     planar_tex: Vec<wgpu::Texture>,
@@ -103,29 +110,33 @@ impl Engine {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, target_format: wgpu::TextureFormat) -> Engine {
         let stages = include_str!("shaders/stages.wgsl");
         let module = |label: &str, body: &str| device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(format!("{stages}\n{body}").into()) });
-        let planar = module("planar", include_str!("shaders/planar.wgsl"));
-        let biplanar = module("biplanar", include_str!("shaders/biplanar.wgsl"));
-        let blit = module("blit", include_str!("shaders/blit.wgsl"));
+        let bodies = [include_str!("shaders/planar3.wgsl"), include_str!("shaders/planar4.wgsl"), include_str!("shaders/biplanar.wgsl"), include_str!("shaders/packed.wgsl")];
+        let variants = [Variant::Planar3, Variant::Planar4, Variant::Biplanar, Variant::Packed];
         let tex = |b| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
         let smp = wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None };
         let ub = |b| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None };
-        let planar_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("planar"), entries: &[smp, tex(1), tex(2), tex(3), ub(4)] });
-        let biplanar_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("biplanar"), entries: &[smp, tex(1), tex(2), ub(3)] });
-        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("blit"), entries: &[smp, tex(1), ub(2)] });
-        let pl = |l: &wgpu::BindGroupLayout| device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(l)], immediate_size: 0 });
-        let (ppl, bpl, lpl) = (pl(&planar_layout), pl(&biplanar_layout), pl(&blit_layout));
         let inter_fmt = wgpu::TextureFormat::Rgba16Float;
-        let planar_target = make_pipeline(&device, &planar, &ppl, target_format, "planar→target");
-        let biplanar_target = make_pipeline(&device, &biplanar, &bpl, target_format, "biplanar→target");
-        let planar_inter = make_pipeline(&device, &planar, &ppl, inter_fmt, "planar→working");
-        let biplanar_inter = make_pipeline(&device, &biplanar, &bpl, inter_fmt, "biplanar→working");
+        let (mut layouts, mut targets, mut inters) = (vec![], vec![], vec![]);
+        for (v, body) in variants.iter().zip(bodies) {
+            let n = v.textures();
+            let mut entries = vec![smp]; for i in 0..n { entries.push(tex(1 + i)); } entries.push(ub(1 + n));
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("stage 1"), entries: &entries });
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+            let sh = module(&format!("{v:?}"), body);
+            targets.push(make_pipeline(&device, &sh, &pl, target_format, "stage 1+3 → target"));
+            inters.push(make_pipeline(&device, &sh, &pl, inter_fmt, "stage 1 → working"));
+            layouts.push(layout);
+        }
+        let blit = module("blit", include_str!("shaders/blit.wgsl"));
+        let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("blit"), entries: &[smp, tex(1), ub(2)] });
+        let lpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&blit_layout)], immediate_size: 0 });
         let blit_target = make_pipeline(&device, &blit, &lpl, target_format, "blit→target");
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("video"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let ubuf = |label: &str| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<U>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let ubufs = (0..N_U).map(|i| ubuf(&format!("u{i}"))).collect();
         let blit_ubuf = ubuf("u-blit");
         let imports = Imports::new(&device, &queue);
-        Engine { device, queue, target_format, sampler, planar_layout, biplanar_layout, blit_layout, planar_target, biplanar_target, planar_inter, biplanar_inter, blit_target, ubufs, blit_ubuf,
+        Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0 }
     }
     /// An engine with no surface (tests, offscreen renders): the first high-performance adapter.
@@ -154,35 +165,47 @@ impl Engine {
         match &frame.pixels {
             Pixels::Native(nf) => {
                 let imp = self.imports.import(&self.device, nf.handle)?;
-                let yscale = if imp.ten_bit { 65535.0 / 65472.0 } else { 1.0 };   // 10-bit left-justified in 16
+                let mut meta = frame.meta;
+                if let Some(m) = imp.matrix { meta.matrix = m; }   // the buffer's attachments win over the stream tags (QCView's bridge)
+                if let Some(t) = imp.transfer { meta.transfer = t; }
                 let full_range = imp.full_range.unwrap_or(frame.meta.range == Range::Full);
-                self.set_base(Base { yscale, full_range, depth: if imp.ten_bit { 10 } else { 8 }, meta: frame.meta });
+                self.set_base(Base { levels: Levels::new(imp.code_bits, if imp.code_bits > 8 { 2 } else { 1 }, full_range, meta.matrix), meta });
+                let variant = if imp.packed { Variant::Packed } else { Variant::Biplanar };
                 let views: Vec<_> = imp.textures.iter().map(|t| t.create_view(&Default::default())).collect();
-                let binds = self.binds(Variant::Biplanar, &views);
-                self.shown = Some(Shown { variant: Variant::Biplanar, binds });
+                let binds = self.binds(variant, &views);
+                self.shown = Some(Shown { variant, binds });
                 self.held.push_back(Held { _imp: imp, _keep: nf.keep.clone() });
                 while self.held.len() > HELD { self.held.pop_front(); }
                 self.imports_n += 1; if self.imports_n % 60 == 0 { self.imports.flush(); }
             }
             Pixels::Planar { planes, layout } => {
-                let (fmt, yscale) = match layout {
-                    PlanarLayout::RgbF16 => (wgpu::TextureFormat::R16Float, 1.0),
-                    PlanarLayout::Ycc { bytes_per_sample: 2 } => (wgpu::TextureFormat::R16Unorm, if frame.meta.bit_depth >= 9 && frame.meta.bit_depth <= 16 { 65535.0 / ((1u32 << frame.meta.bit_depth) - 1) as f32 } else { 1.0 }),
-                    PlanarLayout::Ycc { .. } => (wgpu::TextureFormat::R8Unorm, 1.0),
+                let (levels, variant, fmts): (Levels, Variant, Vec<wgpu::TextureFormat>) = match *layout {
+                    PlanarLayout::Rgb { bytes_per_sample, code_bits, float, alpha, legal_expand } => {
+                        let mut l = if float { Levels::float_rgb() } else { Levels::new(code_bits, bytes_per_sample, true, Matrix::Identity) };
+                        l.rgb_expand = legal_expand && !float;
+                        let f = if float { wgpu::TextureFormat::R16Float } else if bytes_per_sample == 2 { wgpu::TextureFormat::R16Unorm } else { wgpu::TextureFormat::R8Unorm };
+                        (l, if alpha { Variant::Planar4 } else { Variant::Planar3 }, vec![f; if alpha { 4 } else { 3 }])
+                    }
+                    PlanarLayout::Ycc { bytes_per_sample, code_bits, interleaved_chroma, alpha } => {
+                        let l = Levels::new(code_bits, bytes_per_sample, frame.meta.range == Range::Full, frame.meta.matrix);
+                        let (one, two) = if bytes_per_sample == 2 { (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm) } else { (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm) };
+                        if interleaved_chroma { (l, Variant::Biplanar, vec![one, two]) }   // an alpha plane with interleaved chroma has no FFmpeg format
+                        else if alpha { (l, Variant::Planar4, vec![one; 4]) } else { (l, Variant::Planar3, vec![one; 3]) }
+                    }
                 };
-                let same = self.planar_tex.len() == planes.len() && self.planar_tex.iter().zip(planes).all(|(t, p)| t.format() == fmt && t.width() == p.width && t.height() == p.height);
+                if planes.len() != fmts.len() { return Err(Error::Import(format!("{} planes for {variant:?}", planes.len()))) }
+                let same = self.planar_tex.len() == planes.len() && self.planar_tex.iter().zip(planes).zip(&fmts).all(|((t, p), f)| t.format() == *f && t.width() == p.width && t.height() == p.height);
                 if !same {
-                    self.planar_tex = planes.iter().map(|p| self.device.create_texture(&wgpu::TextureDescriptor { label: Some("plane"), size: wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] })).collect();
+                    self.planar_tex = planes.iter().zip(&fmts).map(|(p, f)| self.device.create_texture(&wgpu::TextureDescriptor { label: Some("plane"), size: wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: *f, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] })).collect();
                 }
                 for (tex, p) in self.planar_tex.iter().zip(planes) {
                     self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &p.data, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
                 }
-                let depth = match layout { PlanarLayout::RgbF16 => 16, PlanarLayout::Ycc { bytes_per_sample: 2 } => frame.meta.bit_depth.clamp(9, 16), _ => 8 };
-                self.set_base(Base { yscale, full_range: frame.meta.range == Range::Full, depth, meta: frame.meta });
-                if !same || self.shown.as_ref().map(|s| s.variant != Variant::Planar).unwrap_or(true) {
+                self.set_base(Base { levels, meta: frame.meta });
+                if !same || self.shown.as_ref().map(|s| s.variant != variant).unwrap_or(true) {
                     let views: Vec<_> = self.planar_tex.iter().map(|t| t.create_view(&Default::default())).collect();
-                    let binds = self.binds(Variant::Planar, &views);
-                    self.shown = Some(Shown { variant: Variant::Planar, binds });
+                    let binds = self.binds(variant, &views);
+                    self.shown = Some(Shown { variant, binds });
                 }
             }
         }
@@ -200,21 +223,21 @@ impl Engine {
     }
     fn write_uniforms(&self) {
         let Some(b) = self.base else { return };
-        let (trc, mat, prim) = b.meta.selectors();
-        let (black, lscale, czero, cscale) = range_constants(b.depth.max(8), b.full_range);
-        let u = |fit: [f32; 2], out: OutMode| U { fit, yscale: b.yscale, black, lscale, czero, cscale, src_transfer: trc, src_matrix: mat, src_primaries: prim, out_mode: out.sel(), white: self.display.white };
+        let (trc, _, prim) = b.meta.selectors();
+        let l = b.levels;
+        let u = |fit: [f32; 2], out: OutMode| U { fit, code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, pad0: 0.0 };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && b.meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
         let sets = [u(self.fit(), display_out), u([1.0, 1.0], chain_in), u([1.0, 1.0], OutMode::Encoded), u([1.0, 1.0], OutMode::Linear)];
         for (buf, v) in self.ubufs.iter().zip(sets.iter()) { self.queue.write_buffer(buf, 0, bytemuck::bytes_of(v)); }
-        // the blit reads the chain's output space; `src_matrix` 3 = RGB, no range expansion
+        // the blit reads the chain's output space (linear, or encoded with a transfer)
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), yscale: 1.0, black: 0.0, lscale: 1.0, czero: 0.0, cscale: 1.0, src_transfer: in_trc, src_matrix: 3.0, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, pad0: 0.0 }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
-        let (layout, ub) = match variant { Variant::Planar => (&self.planar_layout, 4u32), Variant::Biplanar => (&self.biplanar_layout, 3u32) };
+        let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
         self.ubufs.iter().map(|u| {
             let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) }];
             for (i, v) in views.iter().enumerate() { e.push(wgpu::BindGroupEntry { binding: 1 + i as u32, resource: wgpu::BindingResource::TextureView(v) }); }
@@ -222,8 +245,8 @@ impl Engine {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("video"), layout, entries: &e })
         }).collect()
     }
-    fn target_pipeline(&self, v: Variant) -> &wgpu::RenderPipeline { match v { Variant::Planar => &self.planar_target, Variant::Biplanar => &self.biplanar_target } }
-    fn inter_pipeline(&self, v: Variant) -> &wgpu::RenderPipeline { match v { Variant::Planar => &self.planar_inter, Variant::Biplanar => &self.biplanar_inter } }
+    fn target_pipeline(&self, v: Variant) -> &wgpu::RenderPipeline { &self.targets[v as usize] }
+    fn inter_pipeline(&self, v: Variant) -> &wgpu::RenderPipeline { &self.inters[v as usize] }
     fn ensure_inter(&mut self) {
         if self.inter.as_ref().map(|i| i.size == self.video).unwrap_or(false) { return }
         let mk = |label: &str| self.device.create_texture(&wgpu::TextureDescriptor { label: Some(label), size: wgpu::Extent3d { width: self.video.0.max(1), height: self.video.1.max(1), depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST, view_formats: &[] });
@@ -281,7 +304,7 @@ mod tests {
     fn ramp_frame(w: u32, h: u32) -> Frame {
         let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane { data, width: pw, height: ph, pitch } };
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128)];
-        Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1 } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+        Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
     }
     #[test]
     fn identity_chain_matches_the_fused_route() {
@@ -306,14 +329,24 @@ mod tests {
         for x in 0..256 { let p = &enc[x * 4..x * 4 + 3]; assert!((p[0] - p[1]).abs() < 1.5e-3 && (p[1] - p[2]).abs() < 1.5e-3, "tint at {x}: {p:?}"); }
     }
     #[test]
-    fn ten_bit_range_is_exact() {
-        // 10-bit limited: code 64 → 0, 940 → 1, chroma 512 neutral — the constants S1 approximated with 8-bit numbers
-        let (black, lscale, czero, cscale) = range_constants(10, false);
-        let s = |v: f32| v / 1023.0;
-        assert!(((s(64.0) - black) * lscale).abs() < 1e-6 && (((s(940.0) - black) * lscale) - 1.0).abs() < 1e-6);
-        assert!((s(512.0) - czero).abs() < 1e-7 && (((s(960.0) - czero) * cscale) - 0.5).abs() < 1e-6, "chroma {} {}", s(512.0) - czero, (s(960.0) - czero) * cscale);
-        let (b8, l8, c8, _) = range_constants(8, false);
-        assert!(((16.0 / 255.0 - b8) * l8).abs() < 1e-6 && (((235.0 / 255.0 - b8) * l8) - 1.0).abs() < 1e-6 && (c8 - 128.0 / 255.0).abs() < 1e-7);
+    fn levels_match_qcview_constants() {
+        // 10-bit LSB-aligned: 64 → 0, 940 → 1, chroma 512 neutral; 16-bit MSB-aligned (P010 / x422): 4096 / 60160 / 32768 — QCView's biplanar kernel constants
+        let l = Levels::new(10, 2, false, Matrix::Bt709);
+        assert!((l.level_k - 4.0).abs() < 1e-6 && (l.full_max - 1023.0).abs() < 1e-6 && (l.chroma_mid - 512.0).abs() < 1e-6 && (l.code_max - 65535.0).abs() < 1e-3);
+        let l = Levels::new(16, 2, false, Matrix::Bt2020);
+        assert!((l.level_k - 256.0).abs() < 1e-6 && (l.chroma_mid - 32768.0).abs() < 1e-6 && (l.kr - 0.2627).abs() < 1e-6);
+        assert!(((16.0 * 256.0 - 4096.0f32).abs()) < 1e-3 && (((219.0 * 256.0) - 56064.0f32).abs()) < 1e-3 && (((224.0 * 256.0) - 57344.0f32).abs()) < 1e-3);
+        let l = Levels::new(8, 1, false, Matrix::Bt601); assert!((l.kr - 0.299).abs() < 1e-6 && (l.chroma_mid - 128.0).abs() < 1e-6);
+    }
+    #[test]
+    fn stage1_is_unclamped() {
+        // code 250 luma in 8-bit limited = 1.07 encoded: survives into the linear snapshot (QCView: a range chart reads 109 %, not 100 %)
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { return };
+        let plane = |pw: u32, ph: u32, v: u8| { let pitch = pw.div_ceil(256) * 256; Plane { data: vec![v; (pitch * ph) as usize], width: pw, height: ph, pitch } };
+        let f = Frame { width: 64, height: 4, pixels: Pixels::Planar { planes: vec![plane(64, 4, 250), plane(32, 4, 128), plane(32, 4, 128)], layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } };
+        e.show(&f).unwrap();
+        let (enc, _, _) = e.snapshot(Snapshot::Encoded).unwrap(); assert!(enc[0] > 1.05, "encoded {}", enc[0]);
+        let (lin, _, _) = e.snapshot(Snapshot::Linear).unwrap(); assert!(lin[0] > 1.1, "linear {}", lin[0]);
     }
     #[test]
     fn sdr_modes_clip_and_encode() {

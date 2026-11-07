@@ -6,6 +6,6 @@
 @fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
   let c = textureSample(tex, samp, in.uv).rgb;
   var lin = c;
-  if (u.src_transfer < 3.5) { lin = eotf(clamp(c, vec3(0.0), vec3(1.0)), u.src_transfer, u.white); }
+  if (u.src_transfer < 3.5) { lin = eotf(c, u.src_transfer, u.white); }
   return stage3(lin, u.out_mode, u.white);
 }

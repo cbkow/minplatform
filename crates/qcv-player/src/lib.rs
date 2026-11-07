@@ -1,17 +1,33 @@
-//! `qcv-player` — the family's player (canon §4): FFmpeg 9 through raw bindings + thin RAII (no safe wrapper covers
-//! hwaccel / zero-copy), a hardware device shared between the decoders and the presenter, the streaming decoder slot
-//! on its own thread, and the rational clock that decides which frame each refresh shows (S2's rules). Step 2 adds the
-//! scrub decoder, the second slot, the Transport and audio.
+//! `qcv-player` — QCView's player carried by crate (canon §4, row 131: QCView is the reference base). Module by module
+//! after `QCView-Player/src/decode`: `video_decoder` (the streaming decoder, the publish slot, seeks, pause, EOF),
+//! `frame_handle`, `frame_index` (two tiers), `read_ahead`, `thread_policy`, `hw_routing`, `rgb_range`, `yuv_planar`,
+//! `seek_compat`, `stream_extent`, `decoder_cleanup`; `ffmpeg` is the session helper those share. The platform's own
+//! pieces: `hw` (the device shared with the presenter), `source` (the image-sequence open through `min-paths`), and
+//! `player` (the rational clock over the decoder — the documented divergence, see `video_decoder::Policy`).
+//! Step 2 adds the scrub decoder + cache, the Transport, the timecode formatter and audio.
 pub mod ffmpeg;
+pub mod frame_handle;
+pub mod frame_index;
 pub mod hw;
-pub mod slot;
+pub mod hw_routing;
 pub mod player;
+pub mod read_ahead;
+pub mod rgb_range;
+pub mod seek_compat;
 pub mod source;
-pub use ffmpeg::{Decoded, Decoder, OpenOptions, SeqOptions};
+pub mod stream_extent;
+pub mod thread_policy;
+pub mod video_decoder;
+pub mod yuv_planar;
+pub mod decoder_cleanup;
+pub use ffmpeg::{OpenOptions, SeqOptions, Session, SessionInfo};
+pub use frame_handle::FrameHandle;
+pub use frame_index::FrameIndex;
 pub use hw::HwDevice;
 pub use player::{Player, Stats};
-pub use slot::Slot;
+pub use rgb_range::RangeOverride;
 pub use source::Source;
+pub use video_decoder::{Policy, State, VideoDecoder};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

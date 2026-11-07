@@ -45,6 +45,6 @@ impl Dx12Import {
             let tex = unsafe { device.create_texture_from_hal::<wgpu::hal::api::Dx12>(hal_tex, &wgpu::TextureDescriptor { label: Some("d3d12va plane"), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }, wgpu::wgt::TextureUses::RESOURCE) };
             textures.push(tex);
         }
-        Ok(Imported { textures, ten_bit, full_range: None, _keep: Box::new(res) })
+        Ok(Imported { textures, code_bits: if ten_bit { 16 } else { 8 }, packed: false, alpha: false, full_range: None, matrix: None, transfer: None, _keep: Box::new(res) })   // P010 is MSB-aligned: 16-bit levels
     }
 }
