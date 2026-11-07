@@ -10,7 +10,7 @@ QCVIEW=${QCVIEW_SRC:-$HOME/Documents/GitHub/QCView-Player}
 REF=${QCVIEW_REF:-cb890143}
 OUT=${1:-$ROOT/target/seqdiff}; mkdir -p $OUT/scratch-cpp $OUT/scratch-rs
 # Slice the function verbatim: from its definition line to the first line that is exactly "}".
-git -C $QCVIEW show $REF:src/project/project_manager.cpp \
+git -C $QCVIEW show "${REF}:src/project/project_manager.cpp" \
   | awk '/^bool ProjectManager::detectImageSequence\(/{p=1} p{print} p&&/^}$/{exit}' > $OUT/qcview_detect.inc
 test -s $OUT/qcview_detect.inc || { echo "could not slice detectImageSequence from $QCVIEW @ $REF"; exit 1 }
 echo "sliced $(wc -l < $OUT/qcview_detect.inc) lines of QCView's detector (unmodified, @ $REF)"
