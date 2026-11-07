@@ -1,0 +1,17 @@
+[package]
+name = "qcv-project"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "QCView's project file as a FROZEN contract (canon row 141): `.qcvproj` v2 read and written byte-for-byte (Qt's indented JSON), `${PROJECT_DIR}`, the six bins, the migrations, the media pool with QCView's add / dedupe / remove-and-restore rules"
+
+[dependencies]
+serde_json = { workspace = true }
+log = { workspace = true }
+uuid = { workspace = true }
+qcv-meta = { path = "../qcv-meta" }
+min-paths = { path = "../min-paths" }

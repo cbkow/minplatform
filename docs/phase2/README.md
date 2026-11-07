@@ -15,6 +15,7 @@ spike is deleted when its crate meets the spike's own numbers — every number, 
 | 2b | [step2b-audio.md](step2b-audio.md) — audio: QCView's design whole (servo, drain, ring, decoder, CoreAudio, shuttle grains, waveform probe) | `qcv-player::audio`, `min-ui::Slider` | slices 1–3 BUILT 2026-11-07 (drift p50 ≈ 6 ms, 0 underruns); tempo / multi-stream / WASAPI next |
 | 2b | audio — QCView's chain whole (row 139) | `qcv-player` (audio) | — |
 | 7 | [step2c-rails-settings.md](step2c-rails-settings.md) — the rails, `min-settings`, the Settings panel, the Inspector (rows 174–177) | `min-settings`, `min-ui::{Rail, Section, Switch, NumberField, Picker, TextButton, Dialog}`, `apps/qcv` | BUILT 2026-11-07 |
+| 141 | [step-project-crate.md](step-project-crate.md) — `qcv-project`: `.qcvproj` v2 byte-for-byte, the model, the manager's rules | `qcv-project`, `qcv-meta` (+ `cache_stride`), `min-paths` (sequences) | BUILT 2026-11-07 (33 / 33 real projects identical) |
 | 2c | image sequences — `min-image` pulled forward (row 148) | `min-image`, `qcv-player` (the sequence cache, the upload thread) | — |
 | 2d | the MXF scanner (row 137) | `qcv-meta` | — |
 | 3 | rails / panels / popups / shortcut registry / focus model (§16) | `min-ui` | — |

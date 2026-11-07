@@ -1,0 +1,45 @@
+# The project crate — `qcv-project` (canon row 141, BUILT 2026-11-07 night)
+
+QCView's `project/` read first (`media_item.h`, `project_io.cpp`, `project_manager.cpp` 1.7 k, `media_extensions.h`),
+then the crate written as a frozen contract: nothing here invents, every rule names its QCView line.
+
+## What it is
+- `model.rs` — `media_item.h` field for field: `MediaType` (7), `TransferOverride`, `VideoRange` (string form `auto / full /
+  limited`), `AudioRoutingMode`, `PixelAspectMode`, `InOutRange` (−1 / −1), `PlaylistEntry` / `PlaylistData` (24 fps, 1920 × 1080,
+  gap 10), `DualPairData` (clip maps opaque), `MediaItem` with its overrides (rotation −1 = Auto, custom PAR 1:1), `ProjectBin`,
+  `seed_bins()` = the six (Videos open · Audio · Images · Playlists · Dual Views · Live). `VideoMetadata` / `AdobeMetadata` /
+  `ImageSequenceData` are `qcv-meta`'s — the sequence data gained `cache_stride` (persisted) + `missing_frames` (memory only),
+  and `VideoMetadata::default()` now carries QCView's struct defaults (bitDepth 8, SAR 1:1) so an unprobed item serialises alike.
+- `extensions.rs` — the one table: 32 video (webp / gif / dpx in), 13 audio, 6 image; `.r3d / .braw / .ari` absent on purpose.
+- `io.rs` — `.qcvproj` v2 BYTE-FOR-BYTE. Qt's `QJsonDocument::toJson(Indented)` as QCView's files show it: keys sorted, ONE
+  space of indentation per level, `"key": value`, empty containers inline, integral doubles as integers, no trailing newline.
+  `${PROJECT_DIR}` collapse (prefix + separator, `://` untouched) / expand. Save = temp + rename (QSaveFile's commit). Load:
+  the schema check (`qcview.project.v2`), the migrations (no bins → the six; pre-2.2.3 → the Live bin appended; dangling
+  `ui_state` ids cleared), the sanitising defaults (rotation −1 off the quarter set, SAR ≤ 0 → 1:1 with `isAnamorphic`
+  recomputed, `isRgb` re-derived from the pixel-format name for pre-field caches, `transferOverride` absent = Auto).
+- `manager.rs` — `ProjectManager` without signals (`revision()` instead): `new_project` keeps the bin shells; `add_media_file`
+  = the extension gate, the Recents bump (also on a dedupe hit), images through `min-paths`' sequence detector (dedupe by
+  folder + pattern; a lone still = a 1-frame sequence with `%` doubled), dedupe by absolute path, default name = the file
+  name, routing to the bin that accepts the type (ImageSequence → Images); `add_live_stream` (dedupe by exact URL; host:port
+  name); `create_playlist` (`Playlist-yyyyMMdd-HHmmss`, clips through `add_media_file`, audio skipped); `next_playlist_auto_name`
+  (`Playlist_NN`); `add_dual_pair`; `remove_media_items` + `restore_last_removed` (a one-step undo in exact pool and bin
+  positions, back to front); the override setters; the metadata results (`on_video_metadata` whole, `on_rotation_probed` /
+  `on_container_probed` field patches that do NOT dirty — a migration on open must not read as an edit); the open-time
+  probe schedule (`Probe::Rotation` for −1, `Container` for an empty container, `FullVideo` for old ProRes RAW caches).
+
+## Tests
+Unit: the `${PROJECT_DIR}` rules, the writer's shape, a round trip with the migrations and remove / restore. The real one:
+`QCV_PROJECT_FIXTURES_DIR=<dir> cargo test -p qcv-project real_projects` loads every `.qcvproj` under the directory, writes
+it back and compares bytes — **33 of 33 of the user's projects byte-identical** (2026-11-07). The fixtures stay on the
+machine (the env var, never a path in the repo).
+
+## Deviations, written
+No signals (the shell polls `revision()`); timestamps from `std::time` (Qt's ISODate UTC form, `yyyyMMdd-HHmmss` local with
+the caller's offset); `.lnk` shortcut resolution waits for a Windows session (QCView: `QFileInfo::symLinkTarget`); EXR layer
+discovery at import (`populateExrImportMetadata`) waits for `min-image` (2c); the live-stream display name uses the URL's
+authority (QCView adds the host-bridge labels for `qcbae://`).
+
+## Next
+Wire it into the shell: the left rail's Add Media section (the six bins as QCView's tree, drop to add, click to load), the
+per-clip pickers reading and writing the active media item (Range / Mix / Origin / Aspect / Rotation persist), Open / Save /
+Save As with QCView's shortcuts, Recents.

@@ -22,7 +22,7 @@ pub use service::{MetadataService, MetadataEvent};
 pub use stream_extent::{scan_stream_extent, StreamExtent};
 
 /// QCView's `VideoMetadata`: what the Inspector, the bins and the Transport read.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VideoMetadata {
     /// true after an extract / probe populated it
     pub loaded: bool,
@@ -43,7 +43,9 @@ pub struct VideoMetadata {
     pub unsupported_codec: bool, pub camera_vendor: String, pub camera_model: String,
     pub container_format: String, pub mxf_operational_pattern: String, pub encoder_tool: String, pub container_bitrate: i64, pub video_bitrate: i64,
 }
-impl VideoMetadata { fn fresh() -> VideoMetadata { VideoMetadata { bit_depth: 8, sar_num: 1, sar_den: 1, ..Default::default() } } }
+/// QCView's `VideoMetadata` struct defaults: bitDepth 8, SAR 1:1 (the `.qcvproj` writer sees these for an unprobed item).
+impl Default for VideoMetadata { fn default() -> Self { VideoMetadata { loaded: false, file_size: 0, width: 0, height: 0, frame_rate: 0.0, total_frames: 0, duration: 0.0, video_codec: String::new(), codec_profile: String::new(), pixel_format: String::new(), bit_depth: 8, has_alpha: false, is_rgb: false, sar_num: 1, sar_den: 1, is_anamorphic: false, rotation_deg: 0, colorspace: String::new(), color_primaries: String::new(), color_transfer: String::new(), color_range: String::new(), nclc_tag: String::new(), container_range_tag: String::new(), is_hdr_content: false, max_cll: 0, max_fall: 0, mastering_max_nits: 0.0, has_embedded_timecode: false, embedded_timecode: String::new(), audio_codec: String::new(), audio_sample_rate: 0, audio_channels: 0, audio_stream_count: 0, audio_channel_layout_name: String::new(), unsupported_codec: false, camera_vendor: String::new(), camera_model: String::new(), container_format: String::new(), mxf_operational_pattern: String::new(), encoder_tool: String::new(), container_bitrate: 0, video_bitrate: 0 } } }
+impl VideoMetadata { fn fresh() -> VideoMetadata { VideoMetadata::default() } }
 
 /// QCView's `AdobeMetadata`: the project links and the timecodes exiftool used to read (row 134: from FFmpeg now).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -68,8 +70,12 @@ pub struct ImageSequenceData {
     pub format: String, /// the selected EXR layer
     pub layer: String, pub available_layers: Vec<String>, pub compression: String, /// an optional companion .wav
     pub audio_file: String,
+    /// frames absent on disk (0-based offsets from `start_frame`; in memory only — QCView does not persist them)
+    pub missing_frames: Vec<i32>,
+    /// the per-clip cache stride (QCView: persisted so "downshift this 4K seq to 3×" survives a reopen); 1 = every frame
+    pub cache_stride: i32,
 }
-impl Default for ImageSequenceData { fn default() -> Self { ImageSequenceData { pattern: String::new(), ffmpeg_pattern: String::new(), directory: String::new(), frame_count: 0, start_frame: 1, end_frame: 1, frame_rate: 23.976, duration: 0.0, width: 0, height: 0, format: String::new(), layer: String::new(), available_layers: vec![], compression: String::new(), audio_file: String::new() } } }
+impl Default for ImageSequenceData { fn default() -> Self { ImageSequenceData { pattern: String::new(), ffmpeg_pattern: String::new(), directory: String::new(), frame_count: 0, start_frame: 1, end_frame: 1, frame_rate: 23.976, duration: 0.0, width: 0, height: 0, format: String::new(), layer: String::new(), available_layers: vec![], compression: String::new(), audio_file: String::new(), missing_frames: vec![], cache_stride: 1 } } }
 
 // ---- the name tables -----------------------------------------------------------------------------------------------
 pub fn colorspace_name(cs: ff::AVColorSpace) -> &'static str {

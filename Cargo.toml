@@ -2,7 +2,7 @@
 # The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"
-members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/min-theme", "crates/min-settings", "crates/min-ui", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
+members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/qcv-project", "crates/min-theme", "crates/min-settings", "crates/min-ui", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
 
 [workspace.package]
 edition = "2024"
@@ -44,6 +44,7 @@ windows-sys = "0.60"             # features per crate
 windows = { version = "0.62", default-features = false }   # the version wgpu-hal 30 uses: raw ID3D12 handles cross the hal boundary (min-present)
 serde = { version = "1", features = ["derive"] }   # optional in min-paths (the {vol,rel} ref shape)
 serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
 cbindgen = "0.29"
 # media (FFmpeg 9 via raw bindings + thin RAII, canon §4; system FFmpeg through pkg-config)
 ffmpeg-sys-next = { version = "9.0.1", default-features = false, features = ["avcodec", "avformat", "swscale", "swresample", "avfilter"] }   # swresample + avfilter: step 2b audio
