@@ -29,6 +29,8 @@ pub struct ActionButton {
     /// Press-and-hold: `PressBegan` on the press, `PressEnded` on release anywhere or when the pointer leaves.
     pub hold: bool,
     pub focused: bool,
+    /// Size S (24 px, a bold 12 label — the reference's "Auto / B&W / HDR" chips) for buttons that live inside a rail.
+    pub size_s: bool,
     pub rect: Rect,
     pub corners: Corners,
     hovered: bool,
@@ -38,20 +40,23 @@ pub struct ActionButton {
 
 impl ActionButton {
     pub fn new(icon: &'static str, tooltip: &str) -> ActionButton {
-        ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, rect: Rect::ZERO, corners: Corners::all(0.0), hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
+        ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, size_s: false, rect: Rect::ZERO, corners: Corners::all(0.0), hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
     }
     pub fn hold(mut self) -> ActionButton { self.hold = true; self }
     pub fn enabled(mut self, on: bool) -> ActionButton { self.enabled = on; self }
+    pub fn size_s(mut self) -> ActionButton { self.size_s = true; self }
+    fn label_font(&self) -> (f32, f32) { if self.size_s { (t::BODY_SIZE_S, t::FONT_WEIGHT_BOLD as f32) } else { (t::BODY_SIZE_M, t::FONT_WEIGHT_REGULAR as f32) } }
     pub fn hovered(&self) -> bool { self.hovered }
     pub fn pressed(&self) -> bool { self.pressed }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     /// The natural size at `scale`: a square for an icon alone; a label adds its width plus the edge insets.
     pub fn measure(&self, fonts: &mut Fonts, scale: f64) -> (f64, f64) {
-        let h = t::ACTION_BUTTON_HEIGHT_M as f64 * scale;
+        let h = (if self.size_s { t::ACTION_BUTTON_HEIGHT_S } else { t::ACTION_BUTTON_HEIGHT_M }) as f64 * scale;
         match &self.label {
             None => (h, h),
             Some(l) => {
-                let lay = fonts.layout(l, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE);
+                let (fs, fw) = self.label_font();
+                let lay = fonts.layout(l, Family::Sans, fs * scale as f32, fw, peniko::Color::WHITE);
                 let icon_w = if self.icon.is_empty() { 0.0 } else { t::ICON_SIZE_TOOLBAR as f64 * scale + t::ACTION_BUTTON_TEXT_TO_VISUAL_M as f64 * scale };
                 (2.0 * t::ACTION_BUTTON_EDGE_TO_TEXT_M as f64 * scale + icon_w + lay.width() as f64, h)
             }
@@ -110,7 +115,8 @@ impl ActionButton {
             }
         }
         if let Some(label) = &self.label {
-            let l = fonts.layout(label, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(fg));
+            let (fs, fw) = self.label_font();
+            let l = fonts.layout(label, Family::Sans, fs * scale as f32, fw, paint::color(fg));
             crate::fonts::draw_layout(scene, &l, Affine::translate((x, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
         }
     }
