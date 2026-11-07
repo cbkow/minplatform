@@ -68,6 +68,8 @@ struct Held { _imp: Imported, _keep: Arc<dyn Any + Send + Sync> }
 struct Inter { a: wgpu::Texture, b: wgpu::Texture, bind: wgpu::BindGroup, size: (u32, u32) }
 
 pub struct Engine {
+    /// No presenter will submit after `show` (a headless engine): flush + maintain per show.
+    pub standalone: bool,
     pub device: wgpu::Device, pub queue: wgpu::Queue,
     pub target_format: wgpu::TextureFormat,
     sampler: wgpu::Sampler,
@@ -137,13 +139,14 @@ impl Engine {
         let blit_ubuf = ubuf("u-blit");
         let imports = Imports::new(&device, &queue);
         Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf,
-            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0 }
+            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false }
     }
     /// An engine with no surface (tests, offscreen renders): the first high-performance adapter.
     pub fn headless(target_format: wgpu::TextureFormat) -> Result<Engine, Error> {
         let instance = crate::presenter::Presenter::instance();   // DX12 on Windows (the hal the zero-copy import needs), the platform default elsewhere
         let (_, device, queue) = request(&instance, None)?;
-        Ok(Engine::new(device, queue, target_format))
+        let mut e = Engine::new(device, queue, target_format); e.standalone = true;
+        Ok(e)
     }
     pub fn zero_copy_available(&self) -> bool { self.imports.available() }
     pub fn set_viewport(&mut self, w: u32, h: u32) { self.viewport = (w.max(1), h.max(1)); self.write_uniforms(); }
@@ -209,6 +212,10 @@ impl Engine {
                 }
             }
         }
+        // `write_texture` queues its copy (and a wgpu-owned staging buffer) on the queue's pending-writes encoder, which only a
+        // `submit` flushes and only a maintain reclaims. A window's draw submits every refresh; a headless engine showing
+        // without drawing never did (4 GB after 120 software 4K shows). An empty submit + poll here keeps staging at one frame.
+        if self.standalone { self.queue.submit(std::iter::empty()); let _ = self.device.poll(wgpu::PollType::Poll); }
         self.frames_shown += 1;
         self.last_show_ms = t.elapsed().as_secs_f32() * 1000.0;
         Ok(())

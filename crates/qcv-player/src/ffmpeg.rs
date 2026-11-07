@@ -44,6 +44,8 @@ impl SessionInfo { pub fn rate(&self) -> Rate { Rate::from_rational(self.frame_r
 
 pub enum Read { Sent, Eof, Error(i32) }
 pub enum Recv { Frame(FrameHandle), Again, Eof, Error(i32) }
+/// The scrub decoder's raw receive: the session's own frame, valid until `release_raw` / the next receive.
+pub enum RecvRaw { Frame(*mut ff::AVFrame), Again, Eof, Error(i32) }
 
 pub struct Session {
     fmt: *mut ff::AVFormatContext, cctx: *mut ff::AVCodecContext, pkt: *mut ff::AVPacket, frame: *mut ff::AVFrame, sw_frame: *mut ff::AVFrame,
@@ -169,13 +171,37 @@ impl Session {
             if r == averror(libc::EAGAIN) { return Recv::Again }
             if r == ff::AVERROR_EOF { return Recv::Eof }
             if r < 0 { return Recv::Error(r) }
-            let out = self.wrap(index, t0);
+            let out = self.wrap(self.frame, index, t0);
             ff::av_frame_unref(self.frame);
             match out { Ok(h) => Recv::Frame(h), Err(e) => { log::warn!("{e}"); Recv::Again } }
         }
     }
-    unsafe fn wrap(&mut self, index: &FrameIndex, t0: Instant) -> Result<FrameHandle, Error> { unsafe {
-        let f = &*self.frame;
+    /// The raw form for the scrub decoder: the frame stays referenced until `release_raw` (or the next receive).
+    pub fn receive_raw(&mut self) -> RecvRaw {
+        unsafe {
+            ff::av_frame_unref(self.frame);
+            let r = ff::avcodec_receive_frame(self.cctx, self.frame);
+            if r == averror(libc::EAGAIN) { return RecvRaw::Again }
+            if r == ff::AVERROR_EOF { return RecvRaw::Eof }
+            if r < 0 { return RecvRaw::Error(r) }
+            RecvRaw::Frame(self.frame)
+        }
+    }
+    pub fn release_raw(&mut self) { unsafe { ff::av_frame_unref(self.frame) } }
+    /// `av_hwframe_transfer_data` of a hardware frame into the session's software landing frame (valid until the next call).
+    pub fn hw_readback(&mut self, f: *mut ff::AVFrame) -> Option<*mut ff::AVFrame> {
+        unsafe {
+            ff::av_frame_unref(self.sw_frame);
+            if ff::av_hwframe_transfer_data(self.sw_frame, f, 0) < 0 { return None }
+            (*self.sw_frame).pts = (*f).pts; (*self.sw_frame).best_effort_timestamp = (*f).best_effort_timestamp;
+            (*self.sw_frame).colorspace = (*f).colorspace; (*self.sw_frame).color_range = (*f).color_range; (*self.sw_frame).color_primaries = (*f).color_primaries; (*self.sw_frame).color_trc = (*f).color_trc;
+            Some(self.sw_frame)
+        }
+    }
+    /// A `FrameHandle` from any AVFrame of this session's stream (the scrub cache's entries).
+    pub unsafe fn handle_from_avframe(&mut self, f: *mut ff::AVFrame, index: &FrameIndex) -> Result<FrameHandle, Error> { unsafe { self.wrap(f, index, Instant::now()) } }
+    unsafe fn wrap(&mut self, frame: *mut ff::AVFrame, index: &FrameIndex, t0: Instant) -> Result<FrameHandle, Error> { unsafe {
+        let f = &*frame;
         let pts = if f.best_effort_timestamp != ff::AV_NOPTS_VALUE { f.best_effort_timestamp } else { f.pts };
         let keyframe = (f.flags & ff::AV_FRAME_FLAG_KEY) != 0;
         let format = std::mem::transmute::<i32, ff::AVPixelFormat>(f.format);
@@ -189,12 +215,12 @@ impl Session {
                 let pix = f.data[3] as *mut std::ffi::c_void;
                 if !pix.is_null() && min_present::import::metal::zero_copy_supported(pix) {
                     if !self.logged_native { log::info!("METAL zero-copy publish — '{}' ({w}x{h})", min_present::import::metal::fourcc_name(pix)); self.logged_native = true; }
-                    let hwf = HwFrame(ff::av_frame_clone(self.frame));
+                    let hwf = HwFrame(ff::av_frame_clone(frame));
                     return Ok(fin(Frame { width: w, height: h, pixels: Pixels::Native(NativeFrame { handle: pix, keep: std::sync::Arc::new(hwf) }), meta }, self));
                 }
                 // VideoToolbox emits a layout the bridge doesn't wrap: hwframe_transfer + planes — still Media-Engine decoded
                 if !self.logged_hw_fallback { log::info!("VT decoded, but '{}' is not in the zero-copy list — hwframe_transfer + planes", if pix.is_null() { "null".into() } else { min_present::import::metal::fourcc_name(pix) }); self.logged_hw_fallback = true; }
-                let r = ff::av_hwframe_transfer_data(self.sw_frame, self.frame, 0);
+                let r = ff::av_hwframe_transfer_data(self.sw_frame, frame, 0);
                 if r < 0 { return Err(Error::Open(format!("hwframe_transfer_data: {}", av_err(r)))) }
                 let out = self.planes_from(&*self.sw_frame, meta, index, t0, pts, keyframe);
                 ff::av_frame_unref(self.sw_frame);
@@ -202,8 +228,8 @@ impl Session {
             }
             #[cfg(windows)]
             {
-                let af = &*((*self.frame).data[0] as *const crate::hw::AVD3D12VAFrame);
-                let hwf = HwFrame(ff::av_frame_clone(self.frame));
+                let af = &*((*frame).data[0] as *const crate::hw::AVD3D12VAFrame);
+                let hwf = HwFrame(ff::av_frame_clone(frame));
                 let handle = Box::new(min_present::Dx12FrameHandle { resource: af.texture, fence: af.sync_ctx.fence, fence_value: af.sync_ctx.fence_value });
                 let p = &*handle as *const _ as *mut std::ffi::c_void;
                 if !self.logged_native { log::info!("D3D12VA zero-copy publish ({w}x{h})"); self.logged_native = true; }

@@ -1,4 +1,4 @@
-# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rulings 154–159 proposed in the canon)
+# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder LANDED 2026-11-07)
 
 **Question.** Does QCView's Transport — J / K / L, seeks, scrubs, the two-slot playlist cut, shuttle, loop, in / out,
 review speeds — run on `qcv-player` with S2's numbers, driven by `min-ui`'s FIRST nodes (the transport bar and the
@@ -50,4 +50,67 @@ OUT: audio (2b), image-sequence layers (2c), the rails and the Inspector (3), th
 the evidence note fills as each lands. **Spikes retired by step 2:** `s2-scrub` (once the scrub + cut numbers hold).
 
 ## Evidence
+
+### 2a · the scrub decoder + GOP cache (landed 2026-11-07)
+
+**What landed** (`crates/qcv-player`): `scrub_decoder.rs` ← QCView's `scrub_decoder.{h,cpp}` (own `Session` + hwaccel,
+the intra-only hw gate with `hw_inter_scrub` lifting it, `intra_direct` for intra codecs, thread policy auto — never the
+user's knob —, the worker's latest-wins target + condvar, skip-if-already-shown, the cache-invalidate flag the Range pill
+sets, the three-way decision cache hit → forward-no-reseek within 90 → keyframe seek BACKWARD + flush, every decoded
+frame cached, the target keyed exactly, `publishEntry` → `VideoDecoder::publish_external` through an `ExternalSink`);
+`scrub_frame_cache.rs` ← `scrub_frame_cache.{h,cpp}` (Planar entries = one `av_frame_clone` ref, the plane repack
+deferred to show time; Native entries = a VideoToolbox ref; pool backends read back to planes before caching);
+`simple_lru.rs` ← `simple_lru.h` (byte budget, `get` touches / `peek` does not, never evicts the only entry; 1 test).
+The one divergence, row 155's RETARGET: a newer target ahead within reach retargets the running fill (QCView finishes
+the fill, then takes the latest). `Session` grew `receive_raw` / `release_raw` / `hw_readback` / `handle_from_avframe`
+for it. The harness: `qcv --seeks N [--seek-gap ms]` (random targets, request → served → shown) and `--scrub a-b:ms`
+(a pointer sweep, one request per refresh for 2 s, the slot drained each refresh; the sweep positions on `a` first);
+`--scrub-hw` lifts the gate; measurement knobs `QCV_SCRUB_THREADS` / `QCV_SCRUB_CACHE_MB` / `QCV_SCRUB_SETTLE_MS` /
+`QCV_SCRUB_ROWS` (per-seek rows + the fill's phase timers). Log: `fixtures/phase2/step2-scrub.log`.
+
+**Numbers (macOS, headless engine, the stream decoder paused on VideoToolbox; 40 random seeks spaced 300 ms; the sweep
+20→200 at 16.7 ms):**
+
+| File | scrub decoder | seeks request → ready ms p50 / p95 (bar) | sweep request → ready p50 / p95, frames behind p95 (bar) | first frame via the scrub decoder (bar) |
+|---|---|---|---|---|
+| 4K ProRes 422 | VideoToolbox, intra-direct | **5.5 / 7.9** (≤ 20; S2 15.9) | **4.1 / 5.5**, 0 (≤ 8; S2 5.6) | 104 ms (VT's first-seek prime; the stream's own is 133) |
+| 1080p ProRes 422 | VideoToolbox, intra-direct | **2.8 / 3.3** (≤ 10; S2 7.4) | **2.3 / 2.8**, 0 (≤ 5; S2 3.5) | 98 ms |
+| 1080p ProRes, 5-min (7,343 frames) | VideoToolbox, intra-direct | **2.7 / 3.3** | **2.1 / 2.6**, 0 | 100 ms |
+| 1080p ProRes 4444 + alpha (48 frames) | VideoToolbox, intra-direct | 4.8 / 6.1 | (the clip is shorter than the sweep) | 108 ms |
+| 4K H.264 GOP 48 | software, frame threads | 106 / 166 (no bar; the software bound — see below) | **0.3 / 0.9**, 0 forward; backward 0.4 / 89, 16 behind (75 of 120 cache hits) | **17.5 ms** (≤ 60; step 1 carried 229) |
+| 1080p H.264 GOP 48 | software | 53 / 79 | 0.1 / 0.2 forward; backward 0.3 / 6.8, 5 behind (104 hits) | 5.5 ms |
+| 4K HEVC 10-bit PQ | software | 193 / 335 | 0.5 / 0.8, 0 | 41 ms |
+| 4K H.264 with `--scrub-hw` (VideoToolbox for an inter codec) | VideoToolbox | 384 / 578 | 20 / 1,739 — 11 of 120 served, 314 frames behind | 175 ms |
+
+Every ProRes bar is met with 2–4× to spare; the H.264 first frame is answered at 17.5 ms against the 60 ms bar (the stream's
+VideoToolbox pipeline fill was step 1's 229). Forward sweeps on inter codecs are decode-once-per-GOP at 0.1–0.5 ms per request
+(the frame-threaded decoder is already a frame ahead); backward sweeps are cache hits inside the GOP and a keyframe re-fill at
+each GOP boundary (89 ms p95 on 4K — QCView's behaviour, S2's 13.5 p95 was on 1080p). `--scrub-hw` on H.264 proves QCView's
+gate: VideoToolbox pays a flush + re-prime per seek (384 ms) and a 60 Hz sweep starves — `hwScrubInterCodecs` stays OFF on
+Apple; Windows D3D12VA (S2: 7.5 ms) is the per-OS default and is owed its headless run.
+
+**What the measurements found (the notes beside the code):**
+- **H.264 random seeks are the software bound, not a regression.** Per seek: ~55 ms of frame-thread pipeline fill (a 2-frame
+  prefix costs 59 ms) + ~3 ms per frame of GOP prefix at 16 threads; every ms is inside `avcodec_send_packet` (the fill's phase
+  timers: receive / cache / publish ≈ 0). S2's spike on the same 40 targets today reads 72 ms p50 — but its H.264 rows go
+  stale after the second seek (`answered in 0.0 ms (shown +1515)`: a previous round's result consumed 1.5 s later), so its
+  statistic and the note's "76 / 135" are polluted; its two honest rows (51, 137 ms) match the port's (60, 110). The
+  harness here is the reference from now on.
+- **Back-to-back seeks pay the previous fill's in-flight frames**: `avcodec_flush_buffers` waits for all 16 frame threads
+  (113 ms p50 at gap 0 vs 106 spaced). QCView has the same; a user's seeks are spaced. Not changed.
+- **The cache is bounded as designed** (43 entries = 510 MB of 512 on 4K 8-bit — under a GOP; QCView's reality too). Holding
+  pool frames grows FFmpeg's frame pool to cache + DPB + in-flight (≈ 1.0–1.3 GB RSS on 4K H.264 at 16 threads; 0.6 GB with
+  the cache at 0); not the leak below.
+- **A headless-engine leak, fixed in `min-present`**: `queue.write_texture` parks its copy + staging on the queue's
+  pending-writes encoder, which only a `submit` flushes and a maintain reclaims; the windowed presenter submits every refresh,
+  a headless engine showing without drawing never did → 4.1 GB after 120 software 4K shows (every earlier headless software
+  number carried it). `Engine::headless` now sets `standalone`, and `show` ends with an empty submit + poll on that path:
+  370 MB. The windowed path is untouched.
+- **The feed's shape is QCView's** (`av_read_frame` → `avcodec_send_packet` → drain `avcodec_receive_frame` until EAGAIN;
+  the send's return is not consulted in either). Kept as is (row 131).
+
+**Owed from 2a**: the Windows headless run (D3D12VA scrub for inter codecs + the readback-to-planes entries), the stream's
+resume-after-seek measurement (that is the Transport's `seekToTime` shape — it lands with 2b's Transport port), and the
+S2 spike's retirement once the cut numbers hold.
+
 (as it lands)

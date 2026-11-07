@@ -1,7 +1,7 @@
 //! `qcv-player` — QCView's player carried by crate (canon §4, row 131: QCView is the reference base). Module by module
 //! after `QCView-Player/src/decode`: `video_decoder` (the streaming decoder, the publish slot, seeks, pause, EOF),
 //! `frame_handle`, `frame_index` (two tiers), `read_ahead`, `thread_policy`, `hw_routing`, `rgb_range`, `yuv_planar`,
-//! `seek_compat`, `stream_extent`, `decoder_cleanup`; `ffmpeg` is the session helper those share. The platform's own
+//! `seek_compat`, `stream_extent`, `decoder_cleanup`, `scrub_decoder` + `scrub_frame_cache` + `simple_lru` (step 2); `ffmpeg` is the session helper those share. The platform's own
 //! pieces: `hw` (the device shared with the presenter), `source` (the image-sequence open through `min-paths`), and
 //! `player` (the rational clock over the decoder — the documented divergence, see `video_decoder::Policy`).
 //! Step 2 adds the scrub decoder + cache, the Transport, the timecode formatter and audio.
@@ -13,6 +13,9 @@ pub mod hw_routing;
 pub mod player;
 pub mod read_ahead;
 pub mod rgb_range;
+pub mod scrub_decoder;
+pub mod scrub_frame_cache;
+pub mod simple_lru;
 pub mod seek_compat;
 pub mod source;
 pub mod stream_extent;
@@ -26,6 +29,7 @@ pub use frame_index::FrameIndex;
 pub use hw::HwDevice;
 pub use player::{Player, Stats};
 pub use rgb_range::RangeOverride;
+pub use scrub_decoder::{ScrubDecoder, ScrubOptions, Served};
 pub use source::Source;
 pub use video_decoder::{Policy, State, VideoDecoder};
 

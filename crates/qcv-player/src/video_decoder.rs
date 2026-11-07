@@ -37,6 +37,17 @@ impl Shared {
     fn range_override(&self) -> RangeOverride { match self.range_override.load(Ordering::Acquire) { 1 => RangeOverride::Full, 2 => RangeOverride::Limited, _ => RangeOverride::Auto } }
 }
 
+/// The streaming decoder's slot as seen by an external publisher (the scrub decoder): QCView's `publishExternalFrame`.
+#[derive(Clone)]
+pub struct ExternalSink(Arc<Shared>);
+impl ExternalSink {
+    pub fn publish(&self, mut handle: FrameHandle) {
+        handle.frame_no = -1;   // due now, whatever the clock says
+        let mut q = self.0.queue.lock().unwrap(); q.clear(); q.push_back(handle); drop(q);
+        self.0.published_seq.fetch_add(1, Ordering::AcqRel); self.0.pace_dirty.store(true, Ordering::Release); self.0.cv.notify_all();
+    }
+}
+
 pub struct VideoDecoder {
     shared: Arc<Shared>, thread: Option<thread::JoinHandle<()>>,
     pub info: Option<SessionInfo>, index: Option<Arc<FrameIndex>>, pub source_path: String,
@@ -121,12 +132,9 @@ impl VideoDecoder {
         (taken, dropped)
     }
     /// External publish entry (the scrub decoder): bypasses pacing, replaces whatever is queued, marks the frame due now.
-    pub fn publish_external(&self, mut handle: FrameHandle) {
-        handle.frame_no = -1;
-        let mut q = self.shared.queue.lock().unwrap(); q.clear(); q.push_back(handle); drop(q);
-        self.shared.published_seq.fetch_add(1, Ordering::AcqRel); self.shared.pace_dirty.store(true, Ordering::Release); self.shared.cv.notify_all();
-    }
+    pub fn publish_external(&self, handle: FrameHandle) { self.external_sink().publish(handle) }
     pub fn queued(&self) -> usize { self.shared.queue.lock().unwrap().len() }
+    pub fn external_sink(&self) -> ExternalSink { ExternalSink(self.shared.clone()) }
 }
 impl Drop for VideoDecoder { fn drop(&mut self) { self.close(); } }
 
