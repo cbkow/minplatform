@@ -86,7 +86,10 @@ fn finish(rgb: vec3<f32>) -> vec4<f32> {
   return stage3(to_709(eotf(rgb, u.src_transfer, u.white), u.src_primaries), u.out_mode, u.white);
 }
 struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+// The picture as a QUAD (two triangles, 6 vertices), not the fullscreen triangle: once the fit scales the triangle
+// below the viewport its overhang lands INSIDE the window and smears the texture's edge diagonally into the
+// letterbox (seen 2026-11-07 at odd window aspects). A quad covers exactly the fit rect.
 fn fullscreen(i: u32, fit: vec2<f32>, off: vec2<f32>) -> VsOut {
-  var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  var p = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
   var o: VsOut; o.pos = vec4(p[i] * fit + off, 0.0, 1.0); o.uv = vec2((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5); return o;
 }

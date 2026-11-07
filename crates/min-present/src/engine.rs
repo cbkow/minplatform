@@ -317,7 +317,7 @@ impl Engine {
     pub fn encode(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         self.encode_video(enc, target);
         if let Some(bg) = &self.overlay {
-            let mut p = pass_load(enc, "stage 4 overlay", target); p.set_pipeline(&self.overlay_pipeline); p.set_bind_group(0, bg, &[]); p.draw(0..3, 0..1);
+            let mut p = pass_load(enc, "stage 4 overlay", target); p.set_pipeline(&self.overlay_pipeline); p.set_bind_group(0, bg, &[]); p.draw(0..6, 0..1);
         }
     }
     fn encode_video(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
@@ -326,13 +326,13 @@ impl Engine {
             self.ensure_inter();
             let shown = self.shown.as_ref().unwrap(); let inter = self.inter.as_ref().unwrap();
             let av = inter.a.create_view(&Default::default());
-            { let mut p = pass(enc, "stage 1", &av); p.set_pipeline(self.inter_pipeline(variant)); p.set_bind_group(0, &shown.binds[1], &[]); p.draw(0..3, 0..1); }
+            { let mut p = pass(enc, "stage 1", &av); p.set_pipeline(self.inter_pipeline(variant)); p.set_bind_group(0, &shown.binds[1], &[]); p.draw(0..6, 0..1); }
             let Inter { a, b, bind, .. } = self.inter.as_ref().unwrap();
             self.color_pass.as_mut().unwrap().run(enc, a, b);
-            let mut p = pass(enc, "stage 3", target); p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..3, 0..1);
+            let mut p = pass(enc, "stage 3", target); p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..6, 0..1);
         } else {
             let shown = self.shown.as_ref().unwrap();
-            let mut p = pass(enc, "present", target); p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..3, 0..1);
+            let mut p = pass(enc, "present", target); p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..6, 0..1);
         }
     }
     /// Render the shown frame 1:1 at the video size into an `Rgba16Float` texture and read it back (RGBA f32).
@@ -342,7 +342,7 @@ impl Engine {
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("snapshot"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = tex.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
-        { let mut p = pass(&mut enc, "snapshot", &view); p.set_pipeline(self.inter_pipeline(shown.variant)); p.set_bind_group(0, &shown.binds[match which { Snapshot::Encoded => 2, Snapshot::Linear => 3 }], &[]); p.draw(0..3, 0..1); }
+        { let mut p = pass(&mut enc, "snapshot", &view); p.set_pipeline(self.inter_pipeline(shown.variant)); p.set_bind_group(0, &shown.binds[match which { Snapshot::Encoded => 2, Snapshot::Linear => 3 }], &[]); p.draw(0..6, 0..1); }
         self.queue.submit([enc.finish()]);
         Ok((readback::read_rgba16f(&self.device, &self.queue, &tex, w, h), w, h))
     }
@@ -381,6 +381,25 @@ mod tests {
         // a pillarboxed 4:3 video in the whole viewport: width scales, no offset
         let (s, o) = fit_in((1440, 1080), (1920, 1080), None);
         assert!(near(s, [0.75, 1.0]) && near(o, [0.0, 0.0]));
+    }
+    #[test]
+    fn the_letterbox_stays_black_at_odd_aspects() {
+        // A 16×16 picture in a 64×16 target: the pillarbox on both sides must be black and the picture centred — the
+        // fullscreen triangle's overhang used to smear the edge column diagonally into the box.
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        e.show(&ramp_frame(16, 16)).unwrap();
+        let out = e.render_offscreen(64, 16).unwrap();
+        let px = |x: usize, y: usize| out[(y * 64 + x) * 4];
+        for y in [0, 8, 15] {
+            assert!(px(2, y) == 0.0 && px(22, y) == 0.0 && px(41, y) == 0.0 && px(61, y) == 0.0, "black outside the picture at row {y}: {} {} {} {}", px(2, y), px(22, y), px(41, y), px(61, y));
+            assert!(px(25, y) > 0.0 && px(38, y) > 0.0, "picture inside at row {y}");
+        }
+        // and with a content rect taking the right half: the picture centres in that half
+        e.set_content_rect(Some((32, 0, 32, 16)));
+        let out = e.render_offscreen(64, 16).unwrap();
+        let px = |x: usize| out[(8 * 64 + x) * 4];
+        assert!(px(16) == 0.0 && px(38) == 0.0 && px(57) == 0.0 && px(47) > 0.0, "{} {} {} {}", px(16), px(38), px(47), px(57));
     }
     #[test]
     fn overlay_composites_at_sdr_white_in_linear_light() {
