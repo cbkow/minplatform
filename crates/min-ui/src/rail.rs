@@ -64,34 +64,40 @@ impl Rail {
             Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x, y0, edge_x + tw, y0 + tab_h); }
             Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - tw, y0, edge_x, y0 + tab_h); }
         }
-        let max = (self.content_height - self.rect.height()).max(0.0);
+        let max = (self.content_height - self.body_height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
-        // the collapse arrow: a 24-px square in the first header row, at the inner end
-        let pad = t::RAIL_PADDING as f64 * scale; let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let hh = t::RAIL_SECTION_HEADER_HEIGHT as f64 * scale;
-        let cy = y0 + pad + (hh - sz) / 2.0;
+        // the collapse arrow: a 24-px square in the header strip, at the inner end
+        let pad = t::RAIL_PADDING as f64 * scale; let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let hh = self.header_height();
+        let cy = y0 + (hh - sz) / 2.0;
         self.collapse = match self.side { Side::Left => Rect::new(self.rect.x1 - pad - sz, cy, self.rect.x1 - pad, cy + sz), Side::Right => Rect::new(self.rect.x0 + pad, cy, self.rect.x0 + pad + sz, cy + sz) };
     }
     /// The pointer is over one of the rail's own controls (the collapse arrow, the scrollbar) — the panel should not see the press.
     pub fn over_control(&self, x: f64, y: f64, now: Instant) -> bool { self.fully_open(now) && (self.collapse.contains(kurbo::Point::new(x, y)) || self.scrollbar_hit(x, y, now).is_some()) }
-    /// Where the panel lays its content: the rail inset by the padding, its top shifted by the scroll.
+    /// The fixed header strip above the scrolling body (QCView's rail header row): it holds the collapse arrow, so
+    /// nothing scrolls under the arrow and no section needs to make room for it.
+    pub fn header_height(&self) -> f64 { t::COMPONENT_HEIGHT_100 as f64 * self.scale }
+    /// Where the panel lays its content: below the header strip, inset by the padding, its top shifted by the scroll.
     pub fn content_rect(&self) -> Rect {
         let pad = t::RAIL_PADDING as f64 * self.scale;
-        Rect::new(self.rect.x0 + pad, self.rect.y0 + pad - self.scroll, self.rect.x1 - pad, self.rect.y1 - pad)
+        Rect::new(self.rect.x0 + pad, self.rect.y0 + self.header_height() - self.scroll, self.rect.x1 - pad, self.rect.y1 - pad)
     }
+    /// The body's height (what the content can fill without scrolling).
+    pub fn body_height(&self) -> f64 { (self.rect.height() - self.header_height() - t::RAIL_PADDING as f64 * self.scale).max(0.0) }
     /// The overlay scrollbar's track and thumb (physical px) when the content overflows; the thumb is drawn
     /// `scrollbar-thickness` wide, twice that while hovered or dragged, and hit in a 12-px band along the inner edge.
     pub fn scrollbar(&self, now: Instant) -> Option<(Rect, Rect)> {
-        let max = (self.content_height - self.rect.height()).max(0.0);
+        let max = (self.content_height - self.body_height()).max(0.0);
         if max <= 0.0 || self.rect.width() <= 0.0 { return None }
         let scale = self.scale;
         let th = t::SCROLLBAR_THICKNESS as f64 * scale * (1.0 + self.sb_ramp.value(now) as f64); let pad = t::SPACING_50 as f64 * scale;
+        let body_top = self.rect.y0 + self.header_height();
         // the thumb sits one hot zone plus 4 px in from the splitter so the two never share a pixel column
         let inset = (t::SPLITTER_HOT_ZONE + t::SPACING_75) as f64 * scale;
-        let track_h = self.rect.height() - 2.0 * pad;
-        let bar_h = (track_h * self.rect.height() / self.content_height).max(t::COMPONENT_HEIGHT_75 as f64 * scale).min(track_h);
-        let y = self.rect.y0 + pad + (track_h - bar_h) * (self.scroll / max);
+        let track_h = self.rect.y1 - body_top - 2.0 * pad;
+        let bar_h = (track_h * self.body_height() / self.content_height).max(t::COMPONENT_HEIGHT_75 as f64 * scale).min(track_h);
+        let y = body_top + pad + (track_h - bar_h) * (self.scroll / max);
         let x = match self.side { Side::Left => self.rect.x1 - inset - th, Side::Right => self.rect.x0 + inset };
-        Some((Rect::new(x, self.rect.y0 + pad, x + th, self.rect.y1 - pad), Rect::new(x, y, x + th, y + bar_h)))
+        Some((Rect::new(x, body_top + pad, x + th, self.rect.y1 - pad), Rect::new(x, y, x + th, y + bar_h)))
     }
     fn scrollbar_hit(&self, x: f64, y: f64, now: Instant) -> Option<(Rect, Rect, bool)> {
         let (track, thumb) = self.scrollbar(now)?;
@@ -113,7 +119,7 @@ impl Rail {
         // the scrollbar first: a thumb drag owns the pointer; a press on the track jumps there
         if let Some((y0, s0)) = self.sb_drag {
             match *e {
-                Event::Move { y, .. } => { if let Some((track, thumb)) = self.scrollbar(now) { let max = (self.content_height - self.rect.height()).max(0.0); let run = (track.height() - thumb.height()).max(1.0); let s = (s0 + (y - y0) * max / run).clamp(0.0, max); if s != self.scroll { self.scroll = s; self.last_scroll = Some(now); } } r.consumed = true; r.dirty = true; return r }
+                Event::Move { y, .. } => { if let Some((track, thumb)) = self.scrollbar(now) { let max = (self.content_height - self.body_height()).max(0.0); let run = (track.height() - thumb.height()).max(1.0); let s = (s0 + (y - y0) * max / run).clamp(0.0, max); if s != self.scroll { self.scroll = s; self.last_scroll = Some(now); } } r.consumed = true; r.dirty = true; return r }
                 Event::Up { button: Button::Primary, .. } => { self.sb_drag = None; r.consumed = true; r.dirty = true; return r }
                 Event::Leave => { self.sb_drag = None; }
                 _ => {}
@@ -133,7 +139,7 @@ impl Rail {
                 (Event::Move { .. }, hit) => { self.sb_hover = hit.is_some(); }
                 (Event::Down { button: Button::Primary, .. }, Some((track, thumb, on_thumb))) => {
                     if on_thumb { self.sb_drag = Some((y, self.scroll)); }
-                    else { let max = (self.content_height - self.rect.height()).max(0.0); let run = (track.height() - thumb.height()).max(1.0); let s = ((y - track.y0 - thumb.height() / 2.0) / run * max).clamp(0.0, max); self.scroll = s; self.last_scroll = Some(now); self.sb_drag = Some((y, s)); }
+                    else { let max = (self.content_height - self.body_height()).max(0.0); let run = (track.height() - thumb.height()).max(1.0); let s = ((y - track.y0 - thumb.height() / 2.0) / run * max).clamp(0.0, max); self.scroll = s; self.last_scroll = Some(now); self.sb_drag = Some((y, s)); }
                     self.sb_ramp.set_target(1.0, now);
                     r.consumed = true; r.dirty = true; return r
                 }
@@ -170,7 +176,7 @@ impl Rail {
     }
     /// Scroll the content by `dy` physical px (positive = down); true when it moved.
     pub fn wheel(&mut self, dy: f64, now: Instant) -> bool {
-        let max = (self.content_height - self.rect.height()).max(0.0);
+        let max = (self.content_height - self.body_height()).max(0.0);
         let s = (self.scroll + dy).clamp(0.0, max);
         self.last_scroll = Some(now);
         if s != self.scroll { self.scroll = s; true } else { false }
@@ -186,7 +192,7 @@ impl Rail {
         }
     }
     /// Clip to the rail for the panel's content.
-    pub fn push_clip(&self, scene: &mut Scene) { let pad = t::RAIL_PADDING as f64 * self.scale; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &Rect::new(self.rect.x0, self.rect.y0 + pad, self.rect.x1, self.rect.y1 - pad)); }
+    pub fn push_clip(&self, scene: &mut Scene) { let pad = t::RAIL_PADDING as f64 * self.scale; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &Rect::new(self.rect.x0, self.rect.y0 + self.header_height(), self.rect.x1, self.rect.y1 - pad)); }
     pub fn pop_clip(&self, scene: &mut Scene) { scene.pop_layer(); }
     /// The splitter, the open tab's caret and the overlay scrollbar, over the content.
     pub fn paint_foreground(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
@@ -245,7 +251,7 @@ mod tests {
         rr.event(&Event::Move { x: 1181.0, y: 10.0 }, now);
         assert_eq!(rr.width, 420.0, "dragging a right rail's splitter left widens it");
         rr.content_height = 2000.0; rr.layout(1600.0, 0.0, 800.0, 1.0, now);
-        assert!(rr.wheel(5000.0, now)); assert_eq!(rr.scroll, 1200.0, "scroll clamps to the overflow");
+        assert!(rr.wheel(5000.0, now)); assert_eq!(rr.scroll, 2000.0 - rr.body_height(), "scroll clamps to the overflow of the body");
         // the scrollbar: a press on the track's top jumps there, then a drag down follows the pointer
         rr.wheel(-5000.0, now); rr.layout(1600.0, 0.0, 800.0, 1.0, now);
         let (track, thumb) = rr.scrollbar(now).unwrap();

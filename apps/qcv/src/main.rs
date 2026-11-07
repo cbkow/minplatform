@@ -115,9 +115,9 @@ impl App {
             g.settings_panel.sync(&self.settings, now);
             if g.settings_panel.tick(now) || g.inspector.animating(now) { g.ui_dirty = true; }
             if !g.fullscreen {
-                let lc = g.left.content_rect(); let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale); g.left.content_height = lh + 2.0 * t::RAIL_PADDING as f64 * scale;
+                let lc = g.left.content_rect(); let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale); g.left.content_height = lh;
                 g.inspector.sync(self.player.as_ref());
-                let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh + 2.0 * t::RAIL_PADDING as f64 * scale;
+                let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
             // the bar's volume / mute / loop and the keys write the store back (QCView persists them on change)
             if let Some(p) = self.player.as_ref() { if p.audio.has_audio() { self.settings.set_float(settings::k::VOLUME, p.audio.volume() as f64); self.settings.set_bool(settings::k::MUTED, p.audio.is_muted()); } self.settings.set_bool(settings::k::LOOP_ENABLED, p.loop_enabled()); }
@@ -629,9 +629,9 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     left.layout(0.0, 0.0, rails_bottom, scale, t0); right.layout(w as f64, 0.0, rails_bottom, scale, t0);
     engine.set_content_rect(Some((left.visible_width(t0, scale) as u32, 0, (w as f64 - left.visible_width(t0, scale) - right.visible_width(t0, scale)) as u32, rails_bottom as u32)));
     let mut panel = settings_panel::SettingsPanel::new(); panel.sync(&store, t0);
-    let lc = left.content_rect(); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); left.content_height = ph + 2.0 * t::RAIL_PADDING as f64 * scale;
+    let lc = left.content_rect(); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); left.content_height = ph;
     let mut inspector = inspector_panel::InspectorPanel::new(); inspector.sync(player.as_ref());
-    let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih + 2.0 * t::RAIL_PADDING as f64 * scale;
+    let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih;
     { let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
       // hover the "Timeline hover thumbnails" switch's label (its help tooltip) and press the scrub-cache field
       let _ = panel.event(&min_ui::Event::Move { x: lc.x0 + 20.0 * scale, y: lc.y0 + 330.0 * scale }, t0, &mut fonts, &mut store, bounds, scale);
