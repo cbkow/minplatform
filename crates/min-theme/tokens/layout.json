@@ -56,11 +56,11 @@
 
   "workflow-icon-size-50":  { "value": "14px" },
   "workflow-icon-size-75":  { "value": "16px" },
-  "workflow-icon-size-100": { "value": "18px" },
-  "workflow-icon-size-200": { "value": "20px" },
-  "workflow-icon-size-300": { "value": "22px" },
+  "workflow-icon-size-100": { "value": "20px" },
+  "workflow-icon-size-200": { "value": "22px" },
+  "workflow-icon-size-300": { "value": "26px" },
   "icon-size-small":   { "value": "{workflow-icon-size-75}" },
-  "icon-size-toolbar": { "value": "{workflow-icon-size-200}" },
+  "icon-size-toolbar": { "value": "{workflow-icon-size-100}" },
   "icon-size-large":   { "value": "24px" },
 
   "border-width-100": { "value": "1px" },

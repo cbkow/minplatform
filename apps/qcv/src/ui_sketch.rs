@@ -1,5 +1,5 @@
-//! A SKETCH of the bottom bands drawn straight from `min-theme`'s tokens — the status strip, the transport row and the
-//! scrubber (canon §25 rows 166 / 169) — to prove the UI layer end to end: fonts, glyphs, rounded fills, hairlines,
+//! A SKETCH of the bottom bands drawn straight from `min-theme`'s tokens — the status strip and the scrubber (the transport
+//! row's buttons are real nodes, `transport_bar.rs`) (canon §25 rows 166 / 169) — to prove the UI layer end to end: fonts, glyphs, rounded fills, hairlines,
 //! the faded waveform, the composite over video at SDR white. Replaced by `min-ui`'s nodes in piece 6b; nothing here
 //! is interactive, and every number is a token so the look already is the ruled one.
 use kurbo::{Affine, Rect};
@@ -37,39 +37,9 @@ pub fn draw(scene: &mut Scene, fonts: &mut Fonts, w: u32, h: u32, scale: f64, fr
         min_ui::fonts::draw_layout(scene, &l, Affine::translate((w - pad - l.width() as f64, well_y + (well_h - l.height() as f64) / 2.0)));
     }
 
-    // ---- transport row: QCView's cluster as 32-px action buttons, 20-px glyphs, spacing not dividers; loop shown selected ----
+    // ---- transport row: the band + hairline only — the buttons are `transport_bar.rs`'s nodes ----
     let y1 = y0 + status_h;
     paint::hline(scene, 0.0, w, y1, hair, t::DIVIDER_COLOR);
-    let btn = t::ACTION_BUTTON_HEIGHT_M as f64 * s; let gap = t::ACTION_GROUP_GAP as f64 * s; let cluster = t::ACTION_GROUP_CLUSTER_GAP as f64 * s;
-    let icon = t::ICON_SIZE_TOOLBAR * s as f32;
-    let groups: &[&[(&str, bool, bool)]] = &[
-        &[("folder-simple", true, false)],
-        &[("arrow-line-left", false, false), ("skip-back", true, false), ("rewind", true, false), ("caret-left", true, false), ("play", true, false), ("caret-right", true, false), ("fast-forward", true, false), ("skip-forward", true, false), ("arrow-line-right", false, false)],
-        &[("sign-out", true, false), ("sign-in", true, false)],
-        &[("repeat", true, true), ("frame-corners", true, false), ("arrows-in-simple", true, false)],
-        &[("file-image", false, false), ("file-arrow-down", false, false)],
-        &[("rectangle-dashed", false, false), ("checkerboard", false, false), ("image-square", false, false)],
-        &[("palette", false, false), ("note-pencil", false, false)],
-        &[("speaker-high", false, false)],
-    ];
-    let mut x = pad;
-    let by = y1 + (transport_h - btn) / 2.0;
-    for (gi, g) in groups.iter().enumerate() {
-        if gi > 0 { x += cluster; }
-        for (slug, enabled, selected) in g.iter() {
-            let r = Rect::new(x, by, x + btn, by + btn);
-            let fg = if *selected { paint::rounded(scene, r, t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s, t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED); t::ACTION_BUTTON_CONTENT_COLOR_SELECTED }
-                     else if *enabled { t::ACTION_BUTTON_CONTENT_COLOR } else { t::ACTION_BUTTON_CONTENT_COLOR_DISABLED };
-            if let Some(l) = fonts.icon(slug, icon, paint::color(fg)) {
-                min_ui::fonts::draw_layout(scene, &l, Affine::translate((x + (btn - l.width() as f64) / 2.0, by + (btn - l.height() as f64) / 2.0)));
-            }
-            x += btn + gap;
-        }
-    }
-    // the pin, flush right
-    if let Some(l) = fonts.icon("push-pin", icon, paint::color(t::ACTION_BUTTON_CONTENT_COLOR)) {
-        min_ui::fonts::draw_layout(scene, &l, Affine::translate((w - pad - btn + (btn - l.width() as f64) / 2.0, by + (btn - l.height() as f64) / 2.0)));
-    }
 
     // ---- scrubber: ticks + labels, the faded waveform fill, in / out, the playhead ----
     let y2 = y1 + transport_h;

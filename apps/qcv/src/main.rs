@@ -3,6 +3,7 @@
 //!      [--identity-chain] [--refresh ms] [--screen i]`. Space = play / pause · F = fullscreen · Esc = quit · drop a file to open it.
 use winit31 as winit;
 use min_present::{Output, Presenter, Snapshot};
+use min_theme::tokens as t;
 use qcv_player::{HwDevice, Transport, TransportOptions, Source, Action};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use winit::application::ApplicationHandler;
@@ -20,8 +21,9 @@ fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.
 struct Opts { cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
 
 mod ui_sketch;
+mod transport_bar;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)> }
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, ui_dirty: bool }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -63,10 +65,17 @@ impl App {
         if let Some(u) = g.ui.as_mut() {
             let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
             let key = frame.map(|(c, n, _)| (c, n));
-            if u.is_dirty() || key != g.ui_shown_frame {
+            g.bar.sync(self.player.as_ref(), now);
+            if g.bar.tick(now) { g.ui_dirty = true; }
+            if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
                 let (w, h) = u.size(); let scale = g.window.scale_factor();
-                ui_sketch::draw(u.scene_mut(), &mut g.fonts, w, h, scale, frame);
-                g.ui_shown_frame = key;
+                let bands_y = h as f64 - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + t::STATUS_STRIP_HEIGHT as f64 * scale;
+                g.bar.layout(&mut g.fonts, w as f64, bands_y, scale);
+                let scene = u.scene_mut();
+                ui_sketch::draw(scene, &mut g.fonts, w, h, scale, frame);
+                g.bar.paint(scene, &mut g.fonts, scale, now);
+                g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
+                g.ui_shown_frame = key; g.ui_dirty = false;
             }
             if let Some(ms) = u.render(&g.presenter.engine.device, &g.presenter.engine.queue) { g.ui_ms.push(ms); }
         }
@@ -88,6 +97,24 @@ impl App {
                 self.t0.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0), self.shown_in_window as f32 / dt, pct(&mut self.show_ms, 50.0), pct(&mut self.show_ms, 100.0), pct(&mut self.presents, 50.0), pct(&mut self.presents, 95.0), pct(&mut self.presents, 100.0), lat_p95, edr);
             g.ui_ms.clear();
             self.shown_in_window = 0; self.show_ms.clear(); self.presents.clear(); self.last_report = now;
+        }
+    }
+    /// One pointer event through the UI's router: the transport bar's commands go the keys' way (`Transport::apply`).
+    fn pointer(&mut self, e: min_ui::Event) {
+        let now = Instant::now();
+        let Some(g) = self.gpu.as_mut() else { return };
+        let (cmds, dirty) = g.bar.event(&e, now);
+        if dirty { g.ui_dirty = true; }
+        for c in cmds {
+            match c {
+                transport_bar::Cmd::Act(a) => {
+                    let handled = self.player.as_mut().map(|p| p.apply(a, now)).unwrap_or(false);
+                    if !handled && a == Action::ToggleFullscreen { let fs = g.window.fullscreen(); g.window.set_fullscreen(if fs.is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
+                    else if !handled { log::info!("{a:?}: nothing to apply it to"); }
+                }
+                transport_bar::Cmd::Open => println!("open: the file dialog arrives with the shell step (drop a file on the window meanwhile)"),
+                transport_bar::Cmd::Pin => {}
+            }
         }
     }
     fn after_show(&mut self) {
@@ -172,7 +199,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None });
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), ui_dirty: true });
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -201,6 +228,13 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { if let Some(g) = &self.gpu { let fs = g.window.fullscreen(); g.window.set_fullscreen(if fs.is_some() { None } else { Some(Fullscreen::Borderless(None)) }); } }
                 }
+            }
+            WindowEvent::PointerMoved { position, .. } => self.pointer(min_ui::Event::Move { x: position.x, y: position.y }),
+            WindowEvent::PointerLeft { .. } => self.pointer(min_ui::Event::Leave),
+            WindowEvent::PointerButton { state, position, button, .. } => {
+                let b = match button.mouse_button() { Some(winit::event::MouseButton::Left) => min_ui::Button::Primary, Some(winit::event::MouseButton::Right) => min_ui::Button::Secondary, Some(winit::event::MouseButton::Middle) => min_ui::Button::Middle, _ => return };
+                let (x, y) = (position.x, position.y);
+                self.pointer(if state == ElementState::Pressed { min_ui::Event::Down { x, y, button: b } } else { min_ui::Event::Up { x, y, button: b } });
             }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = qcv_player::Mods { shift: st.shift_key(), ctrl: st.control_key() || st.meta_key(), alt: st.alt_key(), keypad: false }; }
             WindowEvent::DragEntered { id: tid, .. } => {
@@ -246,15 +280,18 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
     engine.set_display(DisplayMode { out: OutMode::SdrEncode, white: o.white });
     engine.set_viewport(w, h);
     let mut frame_info: Option<(i32, i32, f64)> = None;
+    let mut player: Option<Transport> = None;
     if let Some(file) = o.file.clone() {
         let src = Source::from_path(&file, None);
-        match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) {
+        match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: true, scrub: None, ..Default::default() }) {
             Ok(mut p) => {
                 p.play();
                 let deadline = Instant::now() + std::time::Duration::from_secs(10);
                 while p.current().is_none() && Instant::now() < deadline { if let Some(d) = p.tick(Instant::now()) { engine.show(&d.frame).expect("show"); break } p.idle_refresh(); std::thread::sleep(std::time::Duration::from_micros(500)); }
+                p.pause();
                 frame_info = Some((p.current_frame(), p.frame_count(), p.rate().as_f64()));
                 println!("opened {} — {}", src.display(), describe(&p));
+                player = Some(p);
             }
             Err(e) => println!("open {file}: {e} — the sketch over black"),
         }
@@ -264,11 +301,26 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
     println!("fonts registered in {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
     let mut ui = min_ui::UiLayer::new(&engine.device, w, h).expect("ui layer");
     engine.set_overlay(Some(ui.view()));
+    // the transport bar in every state the snap can show: hover (step forward, with its tooltip), pressed (set in),
+    // selected (loop), disabled (the unbacked buttons)
+    let mut bar = transport_bar::TransportBar::new();
+    let bands_y = h as f64 - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + t::STATUS_STRIP_HEIGHT as f64 * scale;
+    let t0 = Instant::now();
+    bar.sync(player.as_ref(), t0);
+    bar.layout(&mut fonts, w as f64, bands_y, scale);
+    let (hover, press) = (bar.rect_of("caret-right").unwrap().center(), bar.rect_of("sign-out").unwrap().center());
+    bar.event(&min_ui::Event::Down { x: press.x, y: press.y, button: min_ui::Button::Primary }, t0);
+    bar.event(&min_ui::Event::Move { x: hover.x, y: hover.y }, t0);
+    let shown_at = t0 + std::time::Duration::from_millis(t::TOOLTIP_DELAY as u64 + 100);   // the hover ramp done, the tooltip up
+    bar.sync(player.as_ref(), shown_at); bar.tick(shown_at);
     let (mut build_ms, mut render_ms) = (vec![], vec![]);
     for i in 0..n.max(1) {
         let fi = frame_info.map(|(_, c, f)| ((i as i32 * 7) % c.max(1), c, f)).or(Some((i as i32, 240, 24.0)));
         let t = Instant::now();
-        ui_sketch::draw(ui.scene_mut(), &mut fonts, w, h, scale, fi);
+        let scene = ui.scene_mut();
+        ui_sketch::draw(scene, &mut fonts, w, h, scale, fi);
+        bar.paint(scene, &mut fonts, scale, shown_at);
+        bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
         if let Some(ms) = ui.render(&engine.device, &engine.queue) { render_ms.push(ms); }
         let _ = engine.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });

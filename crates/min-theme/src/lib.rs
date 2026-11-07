@@ -116,8 +116,10 @@ mod tests {
     fn accent_and_fills_carry_their_text() {
         // Row 162: white on the accent fill meets 4.5:1 (cobalt did not, 3.6:1); inverted text on a selected neutral fill is strong.
         assert!(ACCENT_CONTENT_COLOR_ON_FILL.contrast(ACCENT_BACKGROUND_COLOR_DEFAULT) >= 4.5);
-        assert!(ACTION_BUTTON_CONTENT_COLOR_SELECTED.contrast(ACTION_BUTTON_BACKGROUND_COLOR_SELECTED) >= 10.0);
-        assert!(TOOLTIP_CONTENT_COLOR.contrast(TOOLTIP_BACKGROUND_COLOR) >= 10.0);
+        // the deliberate-grey selected state and Spectrum's softer tooltip still carry their text at AA (4.5:1)
+        assert!(ACTION_BUTTON_CONTENT_COLOR_SELECTED.contrast(ACTION_BUTTON_BACKGROUND_COLOR_SELECTED) >= 4.5);
+        assert!(ACTION_BUTTON_CONTENT_COLOR_SELECTED.contrast(ACTION_BUTTON_BACKGROUND_COLOR_SELECTED_DOWN) >= 4.5);
+        assert!(TOOLTIP_CONTENT_COLOR.contrast(TOOLTIP_BACKGROUND_COLOR) >= 4.5);
         assert!(BUTTON_NEGATIVE_CONTENT_COLOR.contrast(BUTTON_NEGATIVE_BACKGROUND_COLOR) >= 4.0);
     }
 
@@ -145,6 +147,8 @@ mod tests {
         assert_eq!([SPACING_50, SPACING_75, SPACING_85, SPACING_100, SPACING_200, SPACING_300, SPACING_400, SPACING_500], [2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0]);
         assert_eq!([BODY_SIZE_S, BODY_SIZE_M, BODY_SIZE_L, HEADING_SIZE_M], [12.0, 14.0, 16.0, 18.0]);
         assert_eq!(ICON_SIZE_TOOLBAR, 20.0);
+        assert_eq!([WORKFLOW_ICON_SIZE_75, WORKFLOW_ICON_SIZE_100, WORKFLOW_ICON_SIZE_200, WORKFLOW_ICON_SIZE_300], [16.0, 20.0, 22.0, 26.0]);
+        assert_eq!((ACTION_GROUP_GAP, ACTION_GROUP_GAP_COMPACT, ACTION_GROUP_CLUSTER_GAP), (8.0, 0.0, 16.0));
     }
 
     #[test]

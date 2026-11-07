@@ -344,3 +344,31 @@ cyan-900, side B = cinnamon-900; note marker purple-900; waveform gray-800 at 0.
   green / amber flags, the white playhead. **Known gap:** the video still fits the WHOLE viewport, so the bands cover
   its bottom 88 px — the engine's fit needs a content rect (the shell's job in piece 6c, with the first real layout).
 
+#### 6c · the first nodes: ActionButton, ActionGroup, Tooltip — the transport bar live (landed 2026-11-07)
+The transport row was held against Spectrum CSS's `spectrum-two` action-button theme and the S2 token data (fetched, not
+remembered): 32 / icon 20 (`workflow-icon-size-100` — my ramp had 18, corrected to S2's 16 / 20 / 22 / 26) / edge 6 /
+radius 8 / no border matched; the gaps did not (2 → 8 in a group, 12 → 16 between clusters) nor hover (gray-100 →
+gray-200). The user's rulings on top: the transport cluster as a COMPACT fused group (gap 0, the radius only on the two
+ends), the tooltip in S2's softer gray-500 with white text, and **"more deliberate greys than inverts"** — the selected
+state is gray-300 with a gray-900 glyph (hover gray-400, down gray-500), not S2's inverted gray-800. Down stays one step
+past hover (gray-300; S2 has no pressed step — a written deviation, §16.4's contract).
+- **`min-ui`**: `input::Event` (Move / Down / Up / Leave in physical px), `anim::Ramp` (ease-out toward a target over
+  the token duration, reversals start where they are) + `mix`, `ActionButton` (icon, optional label, tooltip, enabled /
+  selected / emphasized / hold / focused; per-corner radii; click = release inside, a `hold` button reports press begin /
+  end and ends on leaving — QCView's shuttle rule; the focus ring 2 px + 2 px gap), `ActionGroup` (regular or compact;
+  layout returns its width; a hairline seam between fused cells), `Tooltips` (QCView's 600 / 5000 ms, hidden by a
+  press until the pointer moves on, above the anchor or below when there is no room, clamped, with the tip). 4 tests.
+- **`apps/qcv`**: `transport_bar.rs` = QCView's `TransportBar.qml` order and tooltips as nodes; backed buttons emit the
+  keys' `Action` through `Transport::apply` (start / end, step, play-pause with the icon mirrored, rewind / fast-forward
+  as hold → `ShuttleBegin` / `ShuttleEnd`, in / out selected while set, clear enabled while either is set, loop selected,
+  fullscreen through the shell path); the unbacked ones (clip step, compact, screenshots, guides, background, hover
+  thumbs, colour, notes, mute, pin) drawn disabled. winit 0.31's `PointerMoved` / `PointerButton` / `PointerLeft` →
+  one `App::pointer` router. The layer re-renders when a pointer event changed a node, while a ramp runs, when the
+  tooltip's visibility changes, or when the frame number changes. `--ui-bench` now stages hover (+ tooltip), pressed,
+  selected and disabled in the snap.
+- **Numbers (M5 Max, 2560×1440 @2):** scene build 0.07 ms p50, vello render 0.15 ms p50 headless; in the window during
+  1080p playback 0.6–1.3 ms p50 (unchanged by the nodes), present 16.7 p50, 0 dropped, 20 % of one core with decode.
+- **Seen in the snap:** the fused cluster with its seams, the hovered step-forward cell squared between its neighbours
+  with the tooltip above it, set-in pressed, loop selected in the deliberate grey, the disabled glyphs, the pin.
+  Open question kept for the user: the hairline seams between fused cells (S2's quiet compact group has none).
+
