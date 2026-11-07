@@ -19,7 +19,7 @@ impl BackgroundPanel {
         BackgroundPanel { section: Section::new("Background", true), buttons, mode: 0, height: 0.0 }
     }
     pub fn sync(&mut self, mode: u8) { self.mode = mode.min(3); for (i, b) in self.buttons.iter_mut().enumerate() { b.selected = i as u8 == self.mode; } }
-    pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
+    pub fn layout(&mut self, _fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
         if !self.section.expanded { self.height = hh; return hh }

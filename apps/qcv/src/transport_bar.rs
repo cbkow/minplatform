@@ -12,16 +12,15 @@ use std::time::Instant;
 use vello::Scene;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(dead_code)]   // Pin arrives with the window-state step
 pub enum Cmd { Open, Act(Action), Pin, Volume(f32), /// QCView's Tools ▸ Background: open the left rail on the Background section
-    RevealBackground }
+    RevealBackground, ToggleCompact }
 
 /// QCView's review-speed chip: "1×" at rest, cycles the ring on click (R), snaps to 1× on Shift-click (⇧R).
 struct SpeedChip { rect: Rect, text: String, off_unity: bool, hovered: bool, hover: Ramp, enabled: bool }
 
 /// Which button does what; `None` = not backed yet (drawn disabled).
 #[derive(Clone, Copy)]
-enum Bind { Open, Act(Action), Hold(i32), Pin, RevealBackground, Later }
+enum Bind { Open, Act(Action), Hold(i32), RevealBackground, ToggleCompact, Later }
 
 /// The window scale the bar was laid out at (its height is 32 logical px).
 fn scale_of(bar: &Rect, _: Rect) -> f64 { (bar.height() / t::TRANSPORT_BAR_HEIGHT as f64).max(0.5) }
@@ -61,7 +60,7 @@ impl TransportBar {
             (true, vec![
                 (b("repeat", "Loop (V)"), Bind::Act(Action::ToggleLoop)),
                 (b("frame-corners", "Fullscreen (F)"), Bind::Act(Action::ToggleFullscreen)),
-                (b("arrows-in-simple", "Compact Mode (Ctrl+Shift+C)"), Bind::Later),
+                (b("arrows-in-simple", "Compact Mode (Ctrl+Shift+C)"), Bind::ToggleCompact),
             ]),
             (true, vec![
                 (b("file-image", "Screenshot to clipboard (⌥T)"), Bind::Later),
@@ -118,7 +117,7 @@ impl TransportBar {
         let has = p.is_some();
         for (g, binds) in self.groups.iter_mut().zip(&self.binds) {
             for (b, bind) in g.buttons.iter_mut().zip(binds) {
-                let enabled = match bind { Bind::Open | Bind::RevealBackground => true, Bind::Later | Bind::Pin => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.audio.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
+                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::ToggleCompact => true, Bind::Later => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.audio.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
                 if b.enabled != enabled { b.enabled = enabled; if !enabled { b.reset(now); } }
                 if let (Some(p), Bind::Act(a)) = (p, bind) {
                     match a {
@@ -133,7 +132,7 @@ impl TransportBar {
                 } else if let Bind::Act(Action::ToggleLoop) = bind { b.selected = true; }   // loop defaults ON before media opens (QCView)
             }
         }
-        self.pin.buttons[0].enabled = false;
+        self.pin.buttons[0].enabled = true;
         if let Some(p) = p { let sp = p.review_speed(); let mut txt = format!("{sp:.2}"); while txt.ends_with('0') { txt.pop(); } if txt.ends_with('.') { txt.pop(); } self.speed.text = format!("{txt}×"); self.speed.off_unity = (sp - 1.0).abs() > 0.001; self.speed.enabled = true; } else { self.speed.enabled = false; }
         if let Some(p) = p { let on = p.audio.has_audio() && !p.audio.is_muted(); self.volume.enabled = on; if !self.volume.dragging() { self.volume.value = p.audio.volume(); } self.volume.tooltip = format!("Volume — {}%", (p.audio.volume() * 100.0).round() as i32); } else { self.volume.enabled = false; }
     }
@@ -149,8 +148,8 @@ impl TransportBar {
                     (Bind::Act(a), Response::Clicked) => cmds.push(Cmd::Act(a)),
                     (Bind::Hold(d), Response::PressBegan) => cmds.push(Cmd::Act(Action::ShuttleBegin(d))),
                     (Bind::Hold(_), Response::PressEnded) => cmds.push(Cmd::Act(Action::ShuttleEnd)),
-                    (Bind::Pin, Response::Clicked) => cmds.push(Cmd::Pin),
                     (Bind::RevealBackground, Response::Clicked) => cmds.push(Cmd::RevealBackground),
+                    (Bind::ToggleCompact, Response::Clicked) => cmds.push(Cmd::ToggleCompact),
                     _ => {}
                 }
             }
@@ -169,6 +168,8 @@ impl TransportBar {
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         (cmds, dirty)
     }
+    /// Always on Top's state (the pin reads selected while the window floats).
+    pub fn set_pinned(&mut self, on: bool) { self.pin.buttons[0].selected = on; }
     /// The shell's modifier state (Shift-click on the chip snaps to 1×).
     pub fn set_shift(&mut self, on: bool) { self.shift = on; }
     fn hovered(&self) -> Option<(u64, Rect, &str)> {

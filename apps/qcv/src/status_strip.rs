@@ -42,6 +42,8 @@ impl StatusStrip {
         StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, rect: Rect::ZERO, popover: Popover::new("Go to frame"), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
     }
     pub fn is_open(&self) -> bool { self.popover.open }
+    /// The SMPTE readout's text (compact mode shows it in its own band).
+    pub fn timecode_text(&self) -> &str { &self.tc.text }
     /// QCView's bindings: the frame well = the active clock's frame, the SMPTE well = the formatter at the source's start timecode.
     pub fn sync(&mut self, p: Option<&Transport>) {
         let Some(p) = p else { self.frame.text = "Frame —".into(); self.tc.text = "—".into(); self.fps.clear(); self.fmt = None; self.frame_count = 0; return };
