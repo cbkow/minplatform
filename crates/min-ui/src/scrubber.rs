@@ -167,7 +167,8 @@ impl Scrubber {
             for f in f0..=f1 {
                 let x = self.x_of_time(f as f64 / s.fps, s, scale);
                 paint::rect(scene, Rect::new(x, top, x + hair, top + minor), t::SCRUBBER_TICK_COLOR);
-                if frame_labels { let l = fonts.layout(&f.to_string(), Family::Mono, label_px, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::SCRUBBER_FRAME_LABEL_COLOR));   // the per-frame numbers sit behind the band's content: a step dimmer than the ticks (the user 2026-11-07: "not so bright") crate::fonts::draw_layout(scene, &l, Affine::translate((x + t::SPACING_50 as f64 * scale, top + minor))); }
+                // the per-frame numbers sit behind the band's content: a step dimmer than the ticks (the user 2026-11-07: "not so bright")
+                if frame_labels { let l = fonts.layout(&f.to_string(), Family::Mono, label_px, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::SCRUBBER_FRAME_LABEL_COLOR)); crate::fonts::draw_layout(scene, &l, Affine::translate((x + t::SPACING_50 as f64 * scale, top + minor))); }
             }
         }
         let mut ts = (t_start / tick_s).floor() * tick_s;
