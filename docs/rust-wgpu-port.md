@@ -2439,8 +2439,8 @@ shows, as rules for `min-ui`:
 - **Type in the rail**: body 14 for headers and values, 12 for labels; the 2017 panel's tracked tiny capitals
   ("TOOLS", "HISTOGRAM") are the detail style the go-to popover's title already uses.
 
-**Build order (row 156, revised by §25):** `min-theme` (**BUILT 2026-11-07** — the S2-shaped tokens, JSON source + build.rs → typed consts; the Qt `Theme.qml` generator later, row 37) → the UI layer in `min-present` (vello into an Rgba8 overlay
-at window size, composited premultiplied after the video pass, UI white = SDR reference white, redrawn on dirty only)
+**Build order (row 156, revised by §25):** `min-theme` (**BUILT 2026-11-07** — the S2-shaped tokens, JSON source + build.rs → typed consts; the Qt `Theme.qml` generator later, row 37) → the UI layer (**BUILT 2026-11-07** — `min-present` stage 4 `set_overlay` + `crates/min-ui` `UiLayer` / `Fonts`: vello into an Rgba8 overlay
+at window size, composited premultiplied after the video pass, UI white = SDR reference white, redrawn on dirty only; the token sketch of the bands in `apps/qcv` is the first picture of §25)
 → Tooltip + ActionButton → the transport bar → the timecode strip + go-to popover (S3's parley editor as a
 single-line TextField; the AccessKit adapter attaches when `accesskit_winit` reaches winit 0.31 — the one written
 row-79 deviation) → the scrubber node → the dual bars + popover. Harness: headless UI-layer renders to PNG goldens

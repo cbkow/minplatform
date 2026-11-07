@@ -11,6 +11,11 @@ description = "minplatform — the QCView-shaped reference app where min-ui is b
 
 [dependencies]
 min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+vello = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
 qcv-player = { path = "../../crates/qcv-player" }
 qcv-timeline = { path = "../../crates/qcv-timeline" }
 min-paths = { path = "../../crates/min-paths" }

@@ -76,6 +76,8 @@ pub struct Engine {
     layouts: Vec<wgpu::BindGroupLayout>, blit_layout: wgpu::BindGroupLayout,   // per Variant
     targets: Vec<wgpu::RenderPipeline>, inters: Vec<wgpu::RenderPipeline>, blit_target: wgpu::RenderPipeline,
     ubufs: Vec<wgpu::Buffer>, blit_ubuf: wgpu::Buffer,
+    /// Stage 4: the UI layer's pipeline (blended), its uniform, and the bind group for the overlay texture when one is set.
+    overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
     planar_tex: Vec<wgpu::Texture>,
     shown: Option<Shown>, held: VecDeque<Held>,
@@ -93,6 +95,18 @@ fn make_pipeline(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wg
         vertex: wgpu::VertexState { module: shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
         fragment: Some(wgpu::FragmentState { module: shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
         primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None })
+}
+fn make_pipeline_blended(device: &wgpu::Device, shader: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat, label: &str) -> wgpu::RenderPipeline {
+    // premultiplied source over: out = src + dst × (1 − src.a)
+    let blend = wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add } };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some(label), layout: Some(layout),
+        vertex: wgpu::VertexState { module: shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState { module: shader, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
+        primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None })
+}
+fn pass_load<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &'a wgpu::TextureView) -> wgpu::RenderPass<'a> {
+    let att = wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } };
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some(label), color_attachments: &[Some(att)], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None })
 }
 fn attach(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> { wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } } }
 fn pass<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &'a wgpu::TextureView) -> wgpu::RenderPass<'a> {
@@ -133,13 +147,18 @@ impl Engine {
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("blit"), entries: &[smp, tex(1), ub(2)] });
         let lpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&blit_layout)], immediate_size: 0 });
         let blit_target = make_pipeline(&device, &blit, &lpl, target_format, "blit→target");
+        let overlay_sh = module("overlay", include_str!("shaders/overlay.wgsl"));
+        let overlay_pipeline = make_pipeline_blended(&device, &overlay_sh, &lpl, target_format, "overlay→target");   // the blit's layout: sampler, one texture, U
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("video"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let ubuf = |label: &str| device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: std::mem::size_of::<U>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let ubufs = (0..N_U).map(|i| ubuf(&format!("u{i}"))).collect();
         let blit_ubuf = ubuf("u-blit");
+        let overlay_ubuf = ubuf("u-overlay");
         let imports = Imports::new(&device, &queue);
-        Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf,
-            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false }
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None,
+            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
+        e.write_overlay_uniform();
+        e
     }
     /// An engine with no surface (tests, offscreen renders): the first high-performance adapter.
     pub fn headless(target_format: wgpu::TextureFormat) -> Result<Engine, Error> {
@@ -157,6 +176,21 @@ impl Engine {
     pub fn set_color_pass(&mut self, cp: Option<Box<dyn ColorPass>>) { self.color_pass = cp; self.inter = None; self.write_uniforms(); }
     pub fn has_color_pass(&self) -> bool { self.color_pass.is_some() }
     pub fn has_frame(&self) -> bool { self.shown.is_some() }
+    /// Stage 4: composite `view` (an `Rgba8Unorm` texture at the viewport size — vello's output: sRGB-encoded, straight
+    /// alpha) over every `encode` until the next call; `None` removes it. UI white lands on the display's SDR reference
+    /// white in every output mode. Call again after the texture is re-created (a resize).
+    pub fn set_overlay(&mut self, view: Option<&wgpu::TextureView>) {
+        self.overlay = view.map(|v| self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("overlay"), layout: &self.blit_layout, entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(v) },
+            wgpu::BindGroupEntry { binding: 2, resource: self.overlay_ubuf.as_entire_binding() }] }));
+    }
+    pub fn has_overlay(&self) -> bool { self.overlay.is_some() }
+    fn write_overlay_uniform(&self) {
+        // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
+        let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0 }));
+    }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
     pub fn dx12_device_raw(&self) -> Option<*mut std::ffi::c_void> { crate::import::dx12::Dx12Import::raw_device(&self.device) }
@@ -229,6 +263,7 @@ impl Engine {
         if vw / vh > ww / wh { [1.0, (ww / wh) / (vw / vh)] } else { [(vw / vh) / (ww / wh), 1.0] }
     }
     fn write_uniforms(&self) {
+        self.write_overlay_uniform();
         let Some(b) = self.base else { return };
         let (trc, _, prim) = b.meta.selectors();
         let l = b.levels;
@@ -265,6 +300,12 @@ impl Engine {
     /// Draw the shown frame into `target` (the surface or any `target_format` texture): one fused pass, or stage 1 →
     /// the chain → the blit when a `ColorPass` is bound. Black when nothing is shown.
     pub fn encode(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+        self.encode_video(enc, target);
+        if let Some(bg) = &self.overlay {
+            let mut p = pass_load(enc, "stage 4 overlay", target); p.set_pipeline(&self.overlay_pipeline); p.set_bind_group(0, bg, &[]); p.draw(0..3, 0..1);
+        }
+    }
+    fn encode_video(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         let Some(variant) = self.shown.as_ref().map(|s| s.variant) else { drop(pass(enc, "clear", target)); return };
         if self.color_pass.is_some() {
             self.ensure_inter();
@@ -312,6 +353,31 @@ mod tests {
         let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane { data, width: pw, height: ph, pitch } };
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128)];
         Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+    }
+    #[test]
+    fn overlay_composites_at_sdr_white_in_linear_light() {
+        // Stage 4 over a cleared (black) target: a straight-alpha sRGB texel lands as linear light × alpha in EDR-linear
+        // output, and as its own encoding in SDR-encoded output.
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        let tex = e.device.create_texture(&wgpu::TextureDescriptor { label: Some("ui"), size: wgpu::Extent3d { width: 4, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] });
+        let px: [u8; 16] = [255, 255, 255, 128,  128, 128, 128, 255,  255, 0, 0, 0,  0, 0, 0, 255];
+        e.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &px, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(16), rows_per_image: None }, tex.size());
+        let view = tex.create_view(&Default::default());
+        e.set_overlay(Some(&view));
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        let out = e.render_offscreen(4, 1).unwrap();
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(near(out[0], 128.0 / 255.0) && near(out[1], 128.0 / 255.0), "white at α .5 over black → .502 linear: {:?}", &out[0..4]);
+        assert!(near(out[4], 0.2140), "sRGB 128 → linear .214: {:?}", &out[4..8]);
+        assert!(near(out[8], 0.0) && near(out[9], 0.0), "α 0 → nothing: {:?}", &out[8..12]);
+        assert!(near(out[12], 0.0), "black: {:?}", &out[12..16]);
+        e.set_display(DisplayMode { out: OutMode::SdrEncode, white: 100.0 });
+        let out = e.render_offscreen(4, 1).unwrap();
+        assert!(near(out[0], 128.0 / 255.0), "encoded: white × α: {:?}", &out[0..4]);
+        assert!(near(out[4], 128.0 / 255.0), "encoded: sRGB 128 stays 128: {:?}", &out[4..8]);
+        e.set_overlay(None);
+        let out = e.render_offscreen(4, 1).unwrap();
+        assert!(near(out[0], 0.0), "overlay removed");
     }
     #[test]
     fn identity_chain_matches_the_fused_route() {

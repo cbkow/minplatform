@@ -1816,6 +1816,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-ui"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "log",
+ "min-theme",
+ "parley",
+ "peniko",
+ "vello",
+ "wgpu",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2719,16 +2732,21 @@ name = "qcv"
 version = "0.1.0"
 dependencies = [
  "env_logger",
+ "kurbo",
  "log",
  "min-paths",
  "min-present",
+ "min-theme",
+ "min-ui",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "peniko",
  "png 0.17.16",
  "qcv-player",
  "qcv-timeline",
  "raw-window-handle",
+ "vello",
  "wgpu",
  "winit 0.31.0-beta.4",
 ]

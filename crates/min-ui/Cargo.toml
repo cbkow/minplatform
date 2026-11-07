@@ -1,0 +1,19 @@
+[package]
+name = "min-ui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform — the family's UI toolkit (canon §8.9, §16, §25): one vello scene over the presenter's composite, parley text, the theme from min-theme; born in apps/qcv (row 156)"
+
+[dependencies]
+min-theme = { path = "../min-theme" }
+vello = { workspace = true }
+parley = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+log = { workspace = true }

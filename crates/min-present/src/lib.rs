@@ -6,7 +6,8 @@
 //! ```
 //! Stages 1 + 3 are FUSED into one fragment pass when no chain is bound (the YUV fast path — the SDR apps never pay for
 //! a working buffer, row 40); with a chain, stage 1 renders into an `Rgba16Float` working texture at the video size,
-//! the chain runs, and a blit applies stage 3 with the fit. Stage 4 (the UI layer) arrives with `min-ui`.
+//! the chain runs, and a blit applies stage 3 with the fit. Stage 4 composites the UI layer (`Engine::set_overlay`: vello's
+//! `Rgba8Unorm` output, decoded and placed at SDR reference white, blended premultiplied over the finished video).
 //! No FFmpeg and no window toolkit in here: a `Frame` is planes or a platform handle, and the app owns the surface.
 pub mod frame;
 pub mod engine;

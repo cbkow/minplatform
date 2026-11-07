@@ -306,3 +306,41 @@ Spectrum's desktop scales, colour maths, the icon table, the font files. Values 
 blue-800 #4069fd / blue-900 #5681ff; playhead gray-900; in = green-900, out = orange-900, failed = red-900; side A =
 cyan-900, side B = cinnamon-900; note marker purple-900; waveform gray-800 at 0.12; in/out zone white at 0.06.
 
+#### 6b · the UI layer: stage 4 in `min-present`, `min-ui`'s `UiLayer` + `Fonts`, the token sketch (landed 2026-11-07)
+- **Stage 4** (`engine.rs` `set_overlay`, `shaders/overlay.wgsl`): the overlay is vello's output — an `Rgba8Unorm`
+  texture at the viewport size, sRGB-encoded with STRAIGHT alpha (vello's fine stage stores separated alpha; read in
+  `fine.wgsl`). Each texel is decoded to linear light, placed at the display's SDR reference white (UI white = 1.0 =
+  `white` nits, so chrome never blazes on an EDR / PQ surface), encoded as stage 3 encoded the video (EDR linear, PQ,
+  SDR linear, sRGB), premultiplied, and blended One / OneMinusSrcAlpha over the finished video in a `LoadOp::Load`
+  pass. Exact where alpha is 0 or 1; anti-aliased edges over a non-linear target blend in the encoded space, as every
+  UI toolkit does. The engine's `encode` is now video → overlay; the headless `render_offscreen` composites too.
+  **Test** `overlay_composites_at_sdr_white_in_linear_light`: white at α .5 → .502 linear, sRGB 128 → .214 linear,
+  α 0 → nothing, and the same texels pass through unchanged in `SdrEncode`.
+- **`crates/min-ui`** (GPL, like the apps): `UiLayer` (vello 0.11 `Renderer`, area AA only, one `Scene`, the target
+  texture with STORAGE | TEXTURE | COPY_SRC, `resize`, `scene_mut` marks dirty, `render` only when dirty and returns
+  the CPU ms), `Fonts` (parley 0.12 `FontContext` with min-theme's six faces registered from bytes; the family names
+  read back from fontique equal `min_theme::fonts::FAMILY_*` — tested; `layout` / `layout_width` single-style layouts
+  at line-height 1.3, `icon(slug)` through the Phosphor table, `draw_layout` = S3's glyph loop with hinting), `paint`
+  (rect / rounded / hline in theme colours; `corner-radius-full`'s 0.5 → half the short side).
+- **`apps/qcv`**: the layer at the surface's physical size on the presenter's device, handed to `set_overlay` (again
+  after a resize); `ui_sketch.rs` draws the three bands STRAIGHT FROM THE TOKENS — status strip 24 (the two recessed
+  wells in Geist Mono 12, fps right), transport row 32 (QCView's button order as 32-px action buttons with 20-px
+  Phosphor glyphs, spacing instead of dividers, loop shown in the neutral selected state, unbacked buttons disabled,
+  the pin flush right), scrubber 32 (ticks at QCView's ≥ 80-px rule with mono 11 labels, frame ticks at ≥ 6 px/frame,
+  the waveform as a faded gray fill — synthetic until piece 6c reads the probe memo — a sample in/out zone with the
+  positive / notice flags, the 2-px cache underline, the near-white playhead at the current frame). Rebuilt when the
+  frame number or the size changes. `QCV_NO_UI=1` leaves the layer out. **`--ui-bench N [--ui-snap PATH] [file]`** is
+  the harness: headless engine + layer at 2560×1440 @2, N rebuilds at a moving frame, the composite as an sRGB PNG.
+- **Numbers (M5 Max):** headless — scene build 0.06 ms p50 / 0.08 p95 (5.6 on the first build: font loading), vello
+  render 0.14 ms p50 / 0.24 p95 (CPU, encode + submit), a clean layer renders nothing (asserted), fonts register in
+  25 ms, composite + readback 24 ms, RSS 209 MB. In the window during 1080p ProRes playback (the timecode changes every
+  frame, so the layer re-renders every frame): ui render 0.8–1.3 ms p50 / 2.2 max against the shared queue; present
+  cadence unchanged (16.7 p50, 0 dropped), process 19 % of one core with decode. **The bar (≤ 1 ms when the layer
+  changes, nothing when it doesn't) is met headless and borderline in-window; the per-frame cost is vello's fixed
+  submit on a busy queue, not the scene — piece 6c will measure whether re-rendering only every other frame during
+  playback is needed, or the readouts should live in a smaller layer.**
+- **Seen in the snap** (`fixtures/phase2/ui-layer.png`, client footage, gitignored): the bands read as §25 ruled them —
+  layer-1 bands over the base, hairlines, soft wells, 20-px glyphs, the gray selected loop, the faded waveform, the
+  green / amber flags, the white playhead. **Known gap:** the video still fits the WHOLE viewport, so the bands cover
+  its bottom 88 px — the engine's fit needs a content rect (the shell's job in piece 6c, with the first real layout).
+

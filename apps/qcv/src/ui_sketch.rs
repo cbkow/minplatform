@@ -1,0 +1,125 @@
+//! A SKETCH of the bottom bands drawn straight from `min-theme`'s tokens — the status strip, the transport row and the
+//! scrubber (canon §25 rows 166 / 169) — to prove the UI layer end to end: fonts, glyphs, rounded fills, hairlines,
+//! the faded waveform, the composite over video at SDR white. Replaced by `min-ui`'s nodes in piece 6b; nothing here
+//! is interactive, and every number is a token so the look already is the ruled one.
+use kurbo::{Affine, Rect};
+use min_theme::tokens as t;
+use min_ui::{paint, Family, Fonts};
+use vello::Scene;
+
+/// `frame` = (current, count, fps) when media is open.
+pub fn draw(scene: &mut Scene, fonts: &mut Fonts, w: u32, h: u32, scale: f64, frame: Option<(i32, i32, f64)>) {
+    scene.reset();
+    let s = scale;
+    let (w, h) = (w as f64, h as f64);
+    let (status_h, transport_h, scrub_h) = (t::STATUS_STRIP_HEIGHT as f64 * s, t::TRANSPORT_BAR_HEIGHT as f64 * s, t::SCRUBBER_HEIGHT as f64 * s);
+    let bands_top = h - status_h - transport_h - scrub_h;
+    paint::rect(scene, Rect::new(0.0, bands_top, w, h), t::BAND_BACKGROUND_COLOR);
+    let hair = t::DIVIDER_THICKNESS as f64 * s;
+    let pad = t::SPACING_100 as f64 * s;
+
+    // ---- status strip: the two wells (recessed, radius small) + fps, mono 12 ----
+    let y0 = bands_top;
+    paint::hline(scene, 0.0, w, y0, hair, t::DIVIDER_COLOR);
+    let well_w = t::TIMECODE_WELL_WIDTH as f64 * s; let well_h = t::TIMECODE_WELL_HEIGHT as f64 * s;
+    let well_y = y0 + (status_h - well_h) / 2.0;
+    let (cur, count, fps) = frame.unwrap_or((0, 0, 0.0));
+    let texts = [if count > 0 { format!("Frame {cur} / {}", count - 1) } else { "Frame —".to_string() }, if fps > 0.0 { timecode(cur, fps) } else { "—:—:—:—".to_string() }];
+    let mut x = pad;
+    for txt in &texts {
+        paint::rounded(scene, Rect::new(x, well_y, x + well_w, well_y + well_h), t::TIMECODE_WELL_CORNER_RADIUS as f64 * s, t::FIELD_BACKGROUND_COLOR);
+        let l = fonts.layout(txt, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
+        min_ui::fonts::draw_layout(scene, &l, Affine::translate((x + t::FIELD_EDGE_TO_TEXT as f64 * s, well_y + (well_h - l.height() as f64) / 2.0)));
+        x += well_w + pad;
+    }
+    if fps > 0.0 {
+        let l = fonts.layout(&format!("{fps:.2} fps"), Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
+        min_ui::fonts::draw_layout(scene, &l, Affine::translate((w - pad - l.width() as f64, well_y + (well_h - l.height() as f64) / 2.0)));
+    }
+
+    // ---- transport row: QCView's cluster as 32-px action buttons, 20-px glyphs, spacing not dividers; loop shown selected ----
+    let y1 = y0 + status_h;
+    paint::hline(scene, 0.0, w, y1, hair, t::DIVIDER_COLOR);
+    let btn = t::ACTION_BUTTON_HEIGHT_M as f64 * s; let gap = t::ACTION_GROUP_GAP as f64 * s; let cluster = t::ACTION_GROUP_CLUSTER_GAP as f64 * s;
+    let icon = t::ICON_SIZE_TOOLBAR * s as f32;
+    let groups: &[&[(&str, bool, bool)]] = &[
+        &[("folder-simple", true, false)],
+        &[("arrow-line-left", false, false), ("skip-back", true, false), ("rewind", true, false), ("caret-left", true, false), ("play", true, false), ("caret-right", true, false), ("fast-forward", true, false), ("skip-forward", true, false), ("arrow-line-right", false, false)],
+        &[("sign-out", true, false), ("sign-in", true, false)],
+        &[("repeat", true, true), ("frame-corners", true, false), ("arrows-in-simple", true, false)],
+        &[("file-image", false, false), ("file-arrow-down", false, false)],
+        &[("rectangle-dashed", false, false), ("checkerboard", false, false), ("image-square", false, false)],
+        &[("palette", false, false), ("note-pencil", false, false)],
+        &[("speaker-high", false, false)],
+    ];
+    let mut x = pad;
+    let by = y1 + (transport_h - btn) / 2.0;
+    for (gi, g) in groups.iter().enumerate() {
+        if gi > 0 { x += cluster; }
+        for (slug, enabled, selected) in g.iter() {
+            let r = Rect::new(x, by, x + btn, by + btn);
+            let fg = if *selected { paint::rounded(scene, r, t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s, t::ACTION_BUTTON_BACKGROUND_COLOR_SELECTED); t::ACTION_BUTTON_CONTENT_COLOR_SELECTED }
+                     else if *enabled { t::ACTION_BUTTON_CONTENT_COLOR } else { t::ACTION_BUTTON_CONTENT_COLOR_DISABLED };
+            if let Some(l) = fonts.icon(slug, icon, paint::color(fg)) {
+                min_ui::fonts::draw_layout(scene, &l, Affine::translate((x + (btn - l.width() as f64) / 2.0, by + (btn - l.height() as f64) / 2.0)));
+            }
+            x += btn + gap;
+        }
+    }
+    // the pin, flush right
+    if let Some(l) = fonts.icon("push-pin", icon, paint::color(t::ACTION_BUTTON_CONTENT_COLOR)) {
+        min_ui::fonts::draw_layout(scene, &l, Affine::translate((w - pad - btn + (btn - l.width() as f64) / 2.0, by + (btn - l.height() as f64) / 2.0)));
+    }
+
+    // ---- scrubber: ticks + labels, the faded waveform fill, in / out, the playhead ----
+    let y2 = y1 + transport_h;
+    paint::hline(scene, 0.0, w, y2, hair, t::DIVIDER_COLOR);
+    let (sx0, sx1) = (pad, w - pad);
+    let span = sx1 - sx0;
+    let dur_s = if count > 0 && fps > 0.0 { count as f64 / fps } else { 60.0 };
+    let pps = span / dur_s;
+    // the waveform as the band's quiet background: a synthetic envelope until piece 6c reads the probe memo
+    let wave_h = scrub_h * t::SCRUBBER_WAVEFORM_HEIGHT_RATIO;
+    let mut path = kurbo::BezPath::new();
+    path.move_to((sx0, y2 + scrub_h));
+    let n = (span / (2.0 * s)).max(2.0) as usize;
+    for i in 0..=n {
+        let u = i as f64 / n as f64; let x = sx0 + u * span;
+        let env = (0.55 + 0.45 * (u * 37.0).sin() * (u * 5.3).cos()).abs() * (1.0 - (u * 2.0 - 1.0).powi(8));
+        path.line_to((x, y2 + scrub_h - env * wave_h));
+    }
+    path.line_to((sx1, y2 + scrub_h)); path.close_path();
+    scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(t::SCRUBBER_WAVEFORM_COLOR), None, &path);
+    // ticks: the largest interval that keeps ≥ tick-min-spacing px (QCView's rule); frame ticks when a frame is ≥ 6 px
+    let candidates = [1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0];
+    let tick_s = candidates.iter().cloned().find(|c| c * pps >= t::SCRUBBER_TICK_MIN_SPACING as f64 * s).unwrap_or(600.0);
+    let mut ts = 0.0;
+    while ts <= dur_s + 1e-9 {
+        let x = sx0 + ts * pps;
+        paint::rect(scene, Rect::new(x, y2 + hair, x + hair, y2 + hair + t::SCRUBBER_TICK_MAJOR_LENGTH as f64 * s), t::SCRUBBER_TICK_COLOR);
+        let l = fonts.layout(&ruler_label(ts), Family::Mono, t::SCRUBBER_TICK_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::SCRUBBER_TICK_LABEL_COLOR));
+        min_ui::fonts::draw_layout(scene, &l, Affine::translate((x + t::SPACING_75 as f64 * s, y2 + t::SPACING_50 as f64 * s)));
+        ts += tick_s;
+    }
+    if fps > 0.0 && pps / fps >= t::SCRUBBER_FRAME_TICK_MIN_PX_PER_FRAME as f64 * s {
+        let mut f = 0.0; while f < dur_s * fps { let x = sx0 + f / fps * pps; paint::rect(scene, Rect::new(x, y2 + hair, x + hair, y2 + hair + t::SCRUBBER_TICK_MINOR_LENGTH as f64 * s), t::SCRUBBER_TICK_COLOR); f += 1.0; }
+    }
+    // a sample in / out zone at 20 %–55 % (the flags: positive / notice)
+    let (ix, ox) = (sx0 + 0.20 * span, sx0 + 0.55 * span);
+    paint::rect(scene, Rect::new(ix, y2 + hair, ox, y2 + scrub_h), t::SCRUBBER_IN_OUT_ZONE_COLOR);
+    paint::rect(scene, Rect::new(ix, y2 + hair, ix + hair, y2 + scrub_h), t::SCRUBBER_IN_POINT_COLOR);
+    paint::rect(scene, Rect::new(ox - hair, y2 + hair, ox, y2 + scrub_h), t::SCRUBBER_OUT_POINT_COLOR);
+    let (fw, fh) = (t::SCRUBBER_FLAG_WIDTH as f64 * s, t::SCRUBBER_FLAG_HEIGHT as f64 * s);
+    paint::rect(scene, Rect::new(ix, y2 + scrub_h - fh, ix + fw, y2 + scrub_h), t::SCRUBBER_IN_POINT_COLOR);
+    paint::rect(scene, Rect::new(ox - fw, y2 + scrub_h - fh, ox, y2 + scrub_h), t::SCRUBBER_OUT_POINT_COLOR);
+    // the cache underline (2 px) and the playhead
+    paint::rect(scene, Rect::new(sx0, y2 + scrub_h - t::SCRUBBER_CACHE_BAND_THICKNESS as f64 * s, sx0 + 0.35 * span, y2 + scrub_h), t::SCRUBBER_CACHE_AHEAD_COLOR);
+    let px = if count > 0 { sx0 + cur as f64 / count as f64 * span } else { sx0 + 0.30 * span };
+    paint::rect(scene, Rect::new(px, y2 + hair, px + t::SCRUBBER_PLAYHEAD_WIDTH as f64 * s, y2 + scrub_h), t::SCRUBBER_PLAYHEAD_COLOR);
+}
+
+fn ruler_label(secs: f64) -> String { let m = (secs / 60.0).floor() as i64; let s = secs - m as f64 * 60.0; if secs.fract() > 1e-6 { format!("{m}:{s:04.1}") } else { format!("{m}:{:02}", s as i64) } }
+fn timecode(frame: i32, fps: f64) -> String {
+    let fpsi = fps.round().max(1.0) as i32; let f = frame.max(0);
+    format!("{:02}:{:02}:{:02}:{:02}", f / (fpsi * 3600), (f / (fpsi * 60)) % 60, (f / fpsi) % 60, f % fpsi)
+}

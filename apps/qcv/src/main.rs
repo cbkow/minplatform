@@ -19,7 +19,9 @@ fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.
 
 struct Opts { cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter }
+mod ui_sketch;
+
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)> }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -58,6 +60,16 @@ impl App {
         }
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
+        if let Some(u) = g.ui.as_mut() {
+            let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
+            let key = frame.map(|(c, n, _)| (c, n));
+            if u.is_dirty() || key != g.ui_shown_frame {
+                let (w, h) = u.size(); let scale = g.window.scale_factor();
+                ui_sketch::draw(u.scene_mut(), &mut g.fonts, w, h, scale, frame);
+                g.ui_shown_frame = key;
+            }
+            if let Some(ms) = u.render(&g.presenter.engine.device, &g.presenter.engine.queue) { g.ui_ms.push(ms); }
+        }
         let presented = g.presenter.draw(|| g.window.pre_present_notify());
         if presented {
             self.frames_presented += 1;
@@ -70,8 +82,11 @@ impl App {
             let dt = now.duration_since(self.last_report).as_secs_f32();
             let edr = Presenter::edr_headroom(); let edr_max = edr.iter().cloned().fold(0.0, f64::max); if edr_max > self.edr_seen { self.edr_seen = edr_max; }
             let (lat_p95, dropped, late) = self.player.as_mut().map(|p| (pct(&mut p.stats.lateness_ms.clone(), 95.0), p.stats.dropped, p.stats.late)).unwrap_or((f32::NAN, 0, 0));
-            println!("{:>5.1} s  shown {:>5.1} fps  show ms p50 {:.2} max {:.2}  present ms p50 {:.1} p95 {:.1} max {:.1}  lateness p95 {:.1}  dropped {dropped} late {late}  EDR now {:?}",
+            let g = self.gpu.as_mut().unwrap();
+            let ui = if g.ui_ms.is_empty() { String::new() } else { format!("  ui renders {} ms p50 {:.2} max {:.2}", g.ui_ms.len(), pct(&mut g.ui_ms, 50.0), pct(&mut g.ui_ms, 100.0)) };
+            println!("{:>5.1} s  shown {:>5.1} fps  show ms p50 {:.2} max {:.2}  present ms p50 {:.1} p95 {:.1} max {:.1}  lateness p95 {:.1}  dropped {dropped} late {late}  EDR now {:?}{ui}",
                 self.t0.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0), self.shown_in_window as f32 / dt, pct(&mut self.show_ms, 50.0), pct(&mut self.show_ms, 100.0), pct(&mut self.presents, 50.0), pct(&mut self.presents, 95.0), pct(&mut self.presents, 100.0), lat_p95, edr);
+            g.ui_ms.clear();
             self.shown_in_window = 0; self.show_ms.clear(); self.presents.clear(); self.last_report = now;
         }
     }
@@ -154,7 +169,10 @@ impl ApplicationHandler for App {
         window.focus_window();
         println!("window: surface {:?} scale {} visible {:?} monitor {:?}", window.surface_size(), window.scale_factor(), window.is_visible(), window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())));
         window.request_redraw();
-        self.gpu = Some(Gpu { window, presenter });
+        // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
+        let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
+        if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None });
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -165,7 +183,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
             WindowEvent::Focused(f) => { log::info!("focused {f}"); }
-            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); g.window.request_redraw(); },
+            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
@@ -203,11 +221,12 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
-    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
+    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let scrub = arg("--scrub").and_then(|v| { let (r, ms) = v.rsplit_once(':')?; let (a, b) = r.split_once('-')?; Some((a.parse().ok()?, b.parse().ok()?, ms.parse().ok()?)) });
     let o = Opts { cut: arg("--cut"), hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
+    if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap")); return }
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
@@ -216,6 +235,54 @@ fn main() {
 
 /// `--headless N`: no window — decode N frames through the player, show each on a headless engine (the same zero-copy
 /// import and stage graph), write `--snap-out` / run `--verify-pq`. The evidence that needs no display.
+/// `--ui-bench N [--ui-snap PATH] [file]`: no window — the UI layer at 2560×1440 (scale 2) over a headless engine; the
+/// token sketch is rebuilt + rendered N times at a moving frame (scene-build ms and vello render ms apart), then the
+/// composite (over the file's first frame when one is given) is written as an sRGB PNG. The piece-6 harness: the bar is
+/// ≤ 1 ms of CPU when the layer changes, nothing when it doesn't.
+fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
+    use min_present::engine::{DisplayMode, Engine, OutMode};
+    let (w, h, scale) = (2560u32, 1440u32, 2.0f64);
+    let mut engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
+    engine.set_display(DisplayMode { out: OutMode::SdrEncode, white: o.white });
+    engine.set_viewport(w, h);
+    let mut frame_info: Option<(i32, i32, f64)> = None;
+    if let Some(file) = o.file.clone() {
+        let src = Source::from_path(&file, None);
+        match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) {
+            Ok(mut p) => {
+                p.play();
+                let deadline = Instant::now() + std::time::Duration::from_secs(10);
+                while p.current().is_none() && Instant::now() < deadline { if let Some(d) = p.tick(Instant::now()) { engine.show(&d.frame).expect("show"); break } p.idle_refresh(); std::thread::sleep(std::time::Duration::from_micros(500)); }
+                frame_info = Some((p.current_frame(), p.frame_count(), p.rate().as_f64()));
+                println!("opened {} — {}", src.display(), describe(&p));
+            }
+            Err(e) => println!("open {file}: {e} — the sketch over black"),
+        }
+    }
+    let t = Instant::now();
+    let mut fonts = min_ui::Fonts::new();
+    println!("fonts registered in {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
+    let mut ui = min_ui::UiLayer::new(&engine.device, w, h).expect("ui layer");
+    engine.set_overlay(Some(ui.view()));
+    let (mut build_ms, mut render_ms) = (vec![], vec![]);
+    for i in 0..n.max(1) {
+        let fi = frame_info.map(|(_, c, f)| ((i as i32 * 7) % c.max(1), c, f)).or(Some((i as i32, 240, 24.0)));
+        let t = Instant::now();
+        ui_sketch::draw(ui.scene_mut(), &mut fonts, w, h, scale, fi);
+        build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
+        if let Some(ms) = ui.render(&engine.device, &engine.queue) { render_ms.push(ms); }
+        let _ = engine.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    }
+    assert!(ui.render(&engine.device, &engine.queue).is_none(), "a clean layer renders nothing");
+    println!("ui layer {w}x{h} @{scale}: {} builds — scene build ms p50 {:.2} p95 {:.2} max {:.2}; vello render (CPU, encode+submit) ms p50 {:.2} p95 {:.2} max {:.2}; clean layer: no render",
+        n, pct(&mut build_ms, 50.0), pct(&mut build_ms, 95.0), pct(&mut build_ms, 100.0), pct(&mut render_ms, 50.0), pct(&mut render_ms, 95.0), pct(&mut render_ms, 100.0));
+    let t = Instant::now();
+    let px = engine.render_offscreen(w, h).expect("composite");
+    println!("composite {w}x{h} render + readback {:.1} ms", t.elapsed().as_secs_f32() * 1000.0);
+    if let Some(path) = snap { write_png_rgb8(&path, &px, w, h); println!("ui snap written: {path}"); }
+    println!("max RSS {:.0} MB", qcv_player::max_rss_mb());
+}
+
 fn run_headless(o: Opts) {
     if o.cut.is_some() { return run_cut_bench(o) }
     if o.hover.is_some() { return run_hover_bench(o) }

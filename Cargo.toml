@@ -2,7 +2,7 @@
 # The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"
-members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/min-theme", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
+members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/min-theme", "crates/min-ui", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
 
 [workspace.package]
 edition = "2024"
