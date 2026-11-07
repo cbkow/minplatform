@@ -78,5 +78,5 @@ none); the A/V sync help texts carried in full; the app OPENS PAUSED like QCView
 waveform probe suspends during playback by design, so play-on-open had left the strip empty until the first pause;
 fullscreen's bands POP like the rails (row 171 revised; the 160-ms slide retired). OPEN: on Windows "not accepting
 mouse clicks after leaving the window and coming back" — winit-win32's leave / enter path read, nothing found; the
-Windows build carries `QCV_TRACE_INPUT=1` and the instance on rhombus runs with it, awaiting a reproduction.
+Windows build carries `QCV_TRACE_INPUT=1`; the user could not reproduce it on the second session (2026-11-07 pm) — parked, the trace flag stays.
 
