@@ -11,3 +11,6 @@
 *.mxf
 *.exr
 *.png
+
+# the pinned FFmpeg binaries (tools/ffmpeg/fetch-win64.ps1) — never committed
+external/ffmpeg/

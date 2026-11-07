@@ -1,0 +1,12 @@
+# The ONE FFmpeg every app in the family builds against (canon row 187). Point releases move by editing this file;
+# a major moves by ruling (the API assessment of 2026-11-07: 123 symbols in use, none deprecated in 9.0.2).
+FFMPEG_VERSION=9.0.2
+# macOS: Homebrew `ffmpeg` (pkg-config; ffmpeg-sys-next finds it) — `brew list --versions ffmpeg` must read 9.0.2.
+MACOS_SOURCE=homebrew
+# Windows: BtbN's gpl-shared build (Vulkan + libplacebo on, so the ProRes Vulkan hwaccel is present; d3d12va too).
+# Pinned to the DATED release asset — BtbN's `latest` asset is re-zipped daily and its sha256 drifts.
+WIN64_BUILD=n9.0.2-48-gd4070a14ce-20261107
+WIN64_TAG=autobuild-2026-11-07-12-47
+WIN64_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-07-12-47/ffmpeg-n9.0.2-48-gd4070a14ce-win64-gpl-shared-9.0.zip
+WIN64_SHA256=43F3DA864A1BDFC89926FA250183593C301CED599F22AD5BFCB3D18D45CAEB3F
+WIN64_BYTES=85978068
