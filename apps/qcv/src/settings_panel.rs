@@ -1,0 +1,223 @@
+//! The Settings section of the left rail (the 2026-11-07 rails ruling: QCView's `LeftRail.qml` Settings section carried
+//! row for row, with its own GroupHeaders — Performance / Interface / Audio — as sub-headers; "Updates" is macOS-only
+//! in QCView and this app has no updater yet, so the group waits). Rows whose feature has not landed here are drawn
+//! disabled; the shape of the panel is final. A row = a label (wrapping to two lines, its help as a tooltip — QCView's
+//! `RowLabel`) and a control at the right: Switch, NumberField or Picker. "Reset all preferences…" asks first (QCView's
+//! confirm) and then resets the store; the owner applies the result.
+use crate::settings::k;
+use kurbo::Rect;
+use min_settings::Settings;
+use min_theme::tokens as t;
+use min_ui::{paint, Dialog, Event, Family, Fonts, KeyEvent, NumberField, Picker, Section, Switch, TextButton, Tooltips, Variant};
+use std::time::Instant;
+use vello::Scene;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cmd { Changed(&'static str), ResetAll }
+
+enum Ctl { Switch(Switch), Number(NumberField), Picker(Picker, &'static [&'static str]) }
+
+struct Row { key: &'static str, label: &'static str, help: &'static str, backed: bool, windows_only: bool, ctl: Ctl, rect: Rect, label_rect: Rect, label_hover: bool }
+struct Group { title: &'static str, rows: Vec<Row>, header: Rect }
+
+pub struct SettingsPanel {
+    pub section: Section,
+    groups: Vec<Group>,
+    reset: TextButton,
+    dialog: Dialog,
+    pub tooltips: Tooltips,
+    seen: u64,
+    height: f64,
+    scale: f64,
+}
+
+/// QCView's control column (Layout.preferredWidth: 110), logical px.
+const CONTROL_W: f64 = 110.0;
+
+impl SettingsPanel {
+    pub fn new() -> SettingsPanel {
+        let sw = |key, label, help, backed| Row { key, label, help, backed, windows_only: false, ctl: Ctl::Switch(Switch::new(false)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let num = |key, label, help, backed, min, max, step| Row { key, label, help, backed, windows_only: false, ctl: Ctl::Number(NumberField::new(0, min, max, step)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label, help, backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| s.to_string()).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let mut threads = num(k::FFMPEG_THREADS, "Video decode threads", "0 = Auto. Single-video playback only; applies on the next open.", true, 0, 32, 1);
+        if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label("Auto"); }
+        let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (D3D12VA) when the format allows; applies on the next open.", true);
+        hw.windows_only = true;   // QCView: `visible: Qt.platform.os === "windows"` (VideoToolbox is always on where it applies)
+        let groups = vec![
+            Group { title: "Performance", header: Rect::ZERO, rows: vec![
+                num(k::IMAGE_SEQ_THREADS, "Image-seq decode threads", "Applies on the next sequence load.", false, 1, 64, 1),
+                num(k::IMAGE_SEQ_READ_AHEAD, "Image-seq cache window", "Frames cached ahead of the playhead for image sequences.", false, 24, 240, 6),
+                threads,
+                hw,
+                num(k::SCRUB_CACHE_MB, "Scrub cache size (MB)", "Decoded frames kept near the playhead while scrubbing; applies on the next open.", true, 128, 4096, 128),
+                sw(k::HW_SCRUB_INTER, "Hardware scrub for h264/h265 (experimental)", "GPU decode while scrubbing h264/h265; applies on the next open.", true),
+            ] },
+            Group { title: "Interface", header: Rect::ZERO, rows: vec![
+                pick(k::LANGUAGE, "Language", "Language of the interface. System follows the OS.", false, &["System"], &[""]),
+                sw(k::ALWAYS_OPEN_MINIMAL, "Always open in minimal mode", "Launch with the rails collapsed.", true),
+                sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
+                sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", false),
+                sw(k::TIMELINE_WAVEFORMS, "Timeline audio waveforms", "Draw the audio waveform in the scrubber. Peaks decode lazily in the background.", true),
+                pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", false, &["PNG", "JPEG", "TIFF"], &["png", "jpeg", "tiff"]),
+            ] },
+            Group { title: "Audio", header: Rect::ZERO, rows: vec![
+                num(k::SYNC_OFFSET_MS, "A/V sync (Single)", "Positive values delay audio to offset a late picture; in milliseconds.", true, -100, 100, 1),
+                num(k::DUAL_SYNC_OFFSET_MS, "A/V sync (Dual)", "Positive values delay audio in dual view; in milliseconds.", false, -100, 100, 1),
+                sw(k::SCRUB_MUTED, "Mute scrub audio", "Silence the audio feedback while scrubbing and shuttling.", true),
+                sw(k::LIVE_PLAYDOWN, "Listen to live audio", "Play audio pushed by Premiere Pro over the bridge.", false),
+                sw(k::BLENDER_SESSIONS, "Blender sessions", "Off at every launch. On: listen for a Blender bridge session.", false),
+                num(k::LIVE_SYNC_OFFSET_MS, "A/V sync (Live)", "Positive values delay the bridge audio; in milliseconds.", false, -200, 200, 1),
+                num(k::LIVE_BUFFER_MS, "Live audio buffer", "How much bridge audio is queued before it plays; in milliseconds.", false, 20, 200, 10),
+            ] },
+        ];
+        SettingsPanel {
+            section: Section::new("Settings", true), groups, reset: TextButton::new("Reset all preferences…", Variant::Secondary),
+            dialog: Dialog::new("Reset all preferences?", "Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open.", vec![("Cancel", Variant::Secondary), ("Reset", Variant::Negative)]),
+            tooltips: Tooltips::default(), seen: u64::MAX, height: 0.0, scale: 1.0,
+        }
+    }
+    fn rows_mut(&mut self) -> impl Iterator<Item = &mut Row> { self.groups.iter_mut().flat_map(|g| g.rows.iter_mut()).filter(|r| !r.windows_only || cfg!(windows)) }
+    fn rows(&self) -> impl Iterator<Item = &Row> { self.groups.iter().flat_map(|g| g.rows.iter()).filter(|r| !r.windows_only || cfg!(windows)) }
+    /// Mirror the store into the controls when it changed (another path wrote it: a key, a reset).
+    pub fn sync(&mut self, s: &Settings, now: Instant) {
+        if s.generation() == self.seen { return }
+        self.seen = s.generation();
+        for r in self.rows_mut() {
+            match &mut r.ctl {
+                Ctl::Switch(sw) => { sw.set(s.bool(r.key), now); sw.enabled = r.backed; }
+                Ctl::Number(n) => { n.set(s.int(r.key)); n.enabled = r.backed; }
+                Ctl::Picker(p, values) => { let v = s.string(r.key); if let Some(i) = values.iter().position(|x| *x == v) { p.selected = i; } p.enabled = r.backed; }
+            }
+        }
+    }
+    pub fn is_modal(&self) -> bool { self.dialog.open }
+    pub fn has_focus(&self) -> bool { self.rows().any(|r| matches!(&r.ctl, Ctl::Number(n) if n.focused())) }
+    pub fn menu_open(&self) -> bool { self.rows().any(|r| matches!(&r.ctl, Ctl::Picker(p, _) if p.is_open())) }
+    /// Lay the section out at `(x0..x1, y)`; returns the height used (the header alone when collapsed).
+    pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
+        self.scale = scale;
+        let hh = Section::height(scale);
+        self.section.rect = Rect::new(x0, y, x1, y + hh);
+        let mut cy = y + hh;
+        if !self.section.expanded { self.height = hh; return hh }
+        let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale;
+        let cw = CONTROL_W * scale; let row_h = t::RAIL_ROW_HEIGHT as f64 * scale;
+        let label_w = (x1 - x0 - 2.0 * pad - cw - pad).max(40.0);
+        let group_top = t::SPACING_200 as f64 * scale;
+        for g in self.groups.iter_mut() {
+            cy += group_top;
+            let gh = fonts.detail(g.title, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64;
+            g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + pad;
+            for r in g.rows.iter_mut().filter(|r| !r.windows_only || cfg!(windows)) {
+                let lh = fonts.layout_width(r.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some(label_w as f32)).height() as f64;
+                let h = row_h.max(lh + 2.0 * gap);
+                r.rect = Rect::new(x0 + pad, cy, x1 - pad, cy + h);
+                r.label_rect = Rect::new(x0 + pad, cy, x0 + pad + label_w, cy + h);
+                let right = x1 - pad;
+                match &mut r.ctl {
+                    Ctl::Switch(sw) => { let (w, hgt) = Switch::size(scale); sw.rect = Rect::new(right - w, cy + (h - hgt) / 2.0, right, cy + (h + hgt) / 2.0); }
+                    Ctl::Number(n) => { let fh = t::FIELD_HEIGHT_S as f64 * scale; n.layout(fonts, Rect::new(right - cw, cy + (h - fh) / 2.0, right, cy + (h + fh) / 2.0), scale); }
+                    Ctl::Picker(p, _) => { let (pw, ph) = p.measure(fonts, scale); let pw = pw.min(cw); p.rect = Rect::new(right - pw, cy + (h - ph) / 2.0, right, cy + (h + ph) / 2.0); }
+                }
+                cy += h + gap;
+            }
+        }
+        cy += group_top;
+        let (bw, bh) = self.reset.measure(fonts, scale);
+        self.reset.rect = Rect::new(x0 + pad, cy, x0 + pad + bw, cy + bh); cy += bh + t::SPACING_200 as f64 * scale;
+        self.height = cy - y;
+        self.height
+    }
+    /// Returns (dirty, consumed, commands). A modal dialog or an open menu takes every event first.
+    pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts, s: &mut Settings, bounds: Rect, scale: f64) -> (bool, bool, Vec<Cmd>) {
+        let mut dirty = false; let mut cmds = vec![];
+        if self.dialog.open {
+            let (clicked, d) = self.dialog.event(e, now);
+            if clicked == Some(1) { s.reset_all(); cmds.push(Cmd::ResetAll); }
+            return (d || clicked.is_some(), true, cmds)
+        }
+        let mut consumed = false;
+        // an open picker menu first (it consumes everything while open)
+        let mut menu_took = false;
+        for r in self.rows_mut() { if let Ctl::Picker(p, values) = &mut r.ctl { if p.is_open() {
+            let (chosen, d, c) = p.event(e, now, fonts, bounds, scale); dirty |= d; consumed |= c; menu_took = true;
+            if let Some(i) = chosen { if s.set_str(r.key, values[i]) { cmds.push(Cmd::Changed(r.key)); } }
+        } } }
+        if menu_took { return (dirty, true, cmds) }
+        let (toggled, d) = self.section.event(e, now); dirty |= d; if toggled { dirty = true; }
+        if self.section.expanded {
+            let mut over: Option<(u64, Rect, String)> = None;
+            let mut idx = 0u64;
+            for r in self.rows_mut() {
+                idx += 1;
+                let (lx, ly) = e.pos().unwrap_or((-1.0, -1.0));
+                let was = r.label_hover; r.label_hover = !matches!(e, Event::Leave) && r.label_rect.contains(kurbo::Point::new(lx, ly)); if was != r.label_hover { dirty = true; }
+                if r.label_hover && !r.help.is_empty() { over = Some((idx, r.label_rect, r.help.to_string())); }
+                match &mut r.ctl {
+                    Ctl::Switch(sw) => { let (t, d) = sw.event(e, now); dirty |= d; if let Some(on) = t { if s.set_bool(r.key, on) { cmds.push(Cmd::Changed(r.key)); } } }
+                    Ctl::Number(n) => { let (v, d) = n.event(e, fonts); dirty |= d; if let Some(v) = v { if s.set_int(r.key, v) { cmds.push(Cmd::Changed(r.key)); } n.set(s.int(r.key)); } }
+                    Ctl::Picker(p, values) => { let (chosen, d, c) = p.event(e, now, fonts, bounds, scale); dirty |= d; consumed |= c; if let Some(i) = chosen { if s.set_str(r.key, values[i]) { cmds.push(Cmd::Changed(r.key)); } } }
+                }
+            }
+            let (clicked, d) = self.reset.event(e, now); dirty |= d;
+            if clicked { self.dialog.show(); self.dialog.layout(fonts, bounds, scale); dirty = true; consumed = true; }
+            if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
+            if self.tooltips.hover(over.as_ref().map(|(i, r, s)| (*i, *r, s.as_str())), now) { dirty = true; }
+        }
+        (dirty, consumed, cmds)
+    }
+    /// Keys go to the focused number field; Escape closes a menu or the dialog. Returns (handled, commands).
+    pub fn key(&mut self, kev: &KeyEvent, fonts: &mut Fonts, s: &mut Settings) -> (bool, Vec<Cmd>) {
+        let mut cmds = vec![];
+        if self.dialog.open { if matches!(kev.key, min_ui::Key::Named(min_ui::Named::Escape)) { self.dialog.cancel(); } return (true, cmds) }
+        let mut handled = false;
+        for r in self.rows_mut() {
+            match &mut r.ctl {
+                Ctl::Picker(p, _) if p.is_open() => { if matches!(kev.key, min_ui::Key::Named(min_ui::Named::Escape)) { p.close(); } handled = true; }
+                Ctl::Number(n) if n.focused() => { if let Some(v) = n.key(kev, fonts) { if s.set_int(r.key, v) { cmds.push(Cmd::Changed(r.key)); } n.set(s.int(r.key)); } handled = true; }
+                _ => {}
+            }
+        }
+        (handled, cmds)
+    }
+    /// The wheel over a number field steps it (QCView's spin boxes); returns the commands.
+    pub fn wheel(&mut self, x: f64, y: f64, dy: f64, s: &mut Settings) -> Option<Vec<Cmd>> {
+        for r in self.rows_mut() { if let Ctl::Number(n) = &mut r.ctl { if n.hit(x, y) && n.enabled { let mut cmds = vec![]; if let Some(v) = n.wheel(dy) { if s.set_int(r.key, v) { cmds.push(Cmd::Changed(r.key)); } n.set(s.int(r.key)); } return Some(cmds) } } }
+        None
+    }
+    /// Focus lost (a press elsewhere, the window): commit any typed number.
+    pub fn blur(&mut self, s: &mut Settings) -> Vec<Cmd> {
+        let mut cmds = vec![];
+        for r in self.rows_mut() { if let Ctl::Number(n) = &mut r.ctl { if let Some(v) = n.blur() { if s.set_int(r.key, v) { cmds.push(Cmd::Changed(r.key)); } n.set(s.int(r.key)); } } }
+        cmds
+    }
+    /// Per frame: tooltip timing and the ramps; true when a redraw is needed now.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        self.tooltips.tick(now) || self.section.animating(now) || self.reset.animating(now) || self.dialog.animating(now)
+            || self.rows().any(|r| match &r.ctl { Ctl::Switch(sw) => sw.animating(now), Ctl::Picker(p, _) => p.animating(now), Ctl::Number(_) => false })
+    }
+    /// IME composition to the focused number field.
+    pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) { for r in self.rows_mut() { if let Ctl::Number(n) = &mut r.ctl { if n.focused() { n.field.ime(e, fonts); } } } }
+
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
+        self.section.paint(scene, fonts, scale, now, first);
+        if !self.section.expanded { return }
+        for g in &mut self.groups {
+            let l = fonts.detail(g.title, t::RAIL_GROUP_HEADER_SIZE * scale as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
+            min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((g.header.x0, g.header.y0)));
+            for r in g.rows.iter_mut().filter(|r| !r.windows_only || cfg!(windows)) {
+                let c = if r.backed { t::RAIL_LABEL_COLOR } else { t::DISABLED_CONTENT_COLOR };
+                let l = fonts.layout_width(r.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c), Some(r.label_rect.width() as f32));
+                min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.label_rect.x0, r.rect.y0 + (r.rect.height() - l.height() as f64) / 2.0)));
+                match &mut r.ctl { Ctl::Switch(sw) => sw.paint(scene, scale, now), Ctl::Number(n) => n.paint(scene, fonts, scale), Ctl::Picker(p, _) => p.paint(scene, fonts, scale, now) }
+            }
+        }
+        self.reset.paint(scene, fonts, scale, now);
+    }
+    /// Menus, the tooltip and the dialog, over everything.
+    pub fn paint_overlays(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) {
+        for r in self.rows_mut() { if let Ctl::Picker(p, _) = &r.ctl { p.paint_menu(scene, fonts, scale); } }
+        self.tooltips.paint(scene, fonts, scale, bounds, now);
+        self.dialog.paint(scene, fonts, scale, bounds, now);
+    }
+}

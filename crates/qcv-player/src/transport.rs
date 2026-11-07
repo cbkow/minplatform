@@ -56,6 +56,12 @@ pub trait AudioHooks {
     fn toggle_mute(&mut self) {}
     fn volume_step(&mut self, _delta: f32) {}
     fn set_volume(&mut self, _v: f32) {}
+    /// The shell's persisted mute (QCView `audio/muted`), as against the M key's toggle.
+    fn set_muted(&mut self, _m: bool) {}
+    /// QCView `audio/syncOffsetMs`: positive delays the audio.
+    fn set_sync_offset_ms(&mut self, _ms: i32) {}
+    /// QCView `audio/scrubMuted`: no shuttle / scrub grains while set.
+    fn set_scrub_muted(&mut self, _m: bool) {}
     /// Open the file's audio (false = none); the Transport calls it per clip.
     fn open(&mut self, _path: &str) -> bool { false }
     fn close(&mut self) {}

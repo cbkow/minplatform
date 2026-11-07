@@ -22,6 +22,8 @@ pub struct HoverThumbs {
     pending_frame: Option<i32>,
     shown: Option<(u64, u32, u32)>,
     playing: bool,
+    /// QCView `ui/timelineHoverThumbs`
+    pub enabled: bool,
 }
 
 impl HoverThumbs {
@@ -29,7 +31,7 @@ impl HoverThumbs {
         let images: Images = Default::default();
         let ev = images.clone();
         let cache = TimelineThumbnailCache::new(ThumbConfig::default(), VideoThumbLoader::factory(), Box::new(move |h| { ev.borrow_mut().remove(&h); }));
-        HoverThumbs { cache, images, next: 0, last_request: None, pending_frame: None, shown: None, playing: false }
+        HoverThumbs { cache, images, next: 0, last_request: None, pending_frame: None, shown: None, playing: false, enabled: true }
     }
     pub fn on_open(&mut self, p: &Transport) { self.cache.clear(); self.images.borrow_mut().clear(); self.shown = None; let path = p.path().to_string(); if !path.is_empty() { self.cache.precache_strip(&path, p.frame_count(), p.current_frame()); } }
     #[allow(dead_code)]
@@ -42,7 +44,7 @@ impl HoverThumbs {
         let (images, next) = (self.images.clone(), &mut self.next);
         let n = self.cache.process_pending_uploads(|_: &ThumbKey, px: &ThumbPixels| { *next += 1; images.borrow_mut().insert(*next, paint::image_rgba8(px.width, px.height, px.rgba.clone())); *next });
         if n > 0 { changed = true; }
-        match (hover, p) {
+        match (hover.filter(|_| self.enabled), p) {
             (Some(f), Some(p)) => {
                 self.pending_frame = Some(f);
                 let due = self.last_request.is_none_or(|t0| now.duration_since(t0) >= Duration::from_millis(HOVER_REQUEST_THROTTLE_MS));

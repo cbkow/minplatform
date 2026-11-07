@@ -1844,6 +1844,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-settings"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "min-theme"
 version = "0.1.0"
 dependencies = [
@@ -2803,6 +2811,7 @@ dependencies = [
  "log",
  "min-paths",
  "min-present",
+ "min-settings",
  "min-theme",
  "min-ui",
  "objc2 0.6.5",
@@ -2845,6 +2854,7 @@ dependencies = [
  "qcv-timeline",
  "soundtouch",
  "thiserror 2.0.21",
+ "windows",
  "windows-sys 0.60.2",
 ]
 

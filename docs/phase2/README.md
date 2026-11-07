@@ -14,6 +14,7 @@ spike is deleted when its crate meets the spike's own numbers — every number, 
 | 2 · 6a | [step2-transport-timeline.md](step2-transport-timeline.md) §6a — `min-theme`: the tokens as data (canon §25) | `min-theme` | BUILT 2026-11-07 (396 tokens, 7 tests) |
 | 2b | [step2b-audio.md](step2b-audio.md) — audio: QCView's design whole (servo, drain, ring, decoder, CoreAudio, shuttle grains, waveform probe) | `qcv-player::audio`, `min-ui::Slider` | slices 1–3 BUILT 2026-11-07 (drift p50 ≈ 6 ms, 0 underruns); tempo / multi-stream / WASAPI next |
 | 2b | audio — QCView's chain whole (row 139) | `qcv-player` (audio) | — |
+| 7 | [step2c-rails-settings.md](step2c-rails-settings.md) — the rails, `min-settings`, the Settings panel, the Inspector (rows 174–177) | `min-settings`, `min-ui::{Rail, Section, Switch, NumberField, Picker, TextButton, Dialog}`, `apps/qcv` | BUILT 2026-11-07 |
 | 2c | image sequences — `min-image` pulled forward (row 148) | `min-image`, `qcv-player` (the sequence cache, the upload thread) | — |
 | 2d | the MXF scanner (row 137) | `qcv-meta` | — |
 | 3 | rails / panels / popups / shortcut registry / focus model (§16) | `min-ui` | — |

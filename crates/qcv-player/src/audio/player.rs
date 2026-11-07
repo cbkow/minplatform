@@ -57,6 +57,7 @@ pub struct AudioPlayer {
     pause_gen: u32, stop_due: Option<(u32, Instant)>,
     last_servo_update: Option<Instant>,
     sync_offset_ms: i32,
+    scrub_muted: bool,
     tempo: f64,
     servo_log: u32,
     stats: AudioStats,
@@ -81,7 +82,7 @@ impl AudioPlayer {
         // the scratch sized once from the device's real buffer count (+16; WASAPI can ask for the whole buffer in one callback)
         let frames = device.buffer_frame_count() as usize + 16;
         cb.drain.lock().unwrap().1 = vec![0.0; frames * 2 * 2];
-        Ok(AudioPlayer { device, cb, decoder: None, routing: RoutingMode::Auto, anchor_src_sec: 0.0, servo: AudioSyncServo::new(), out_of_band_ticks: 0, pause_gen: 0, stop_due: None, last_servo_update: None, sync_offset_ms: 0, tempo: 1.0, servo_log: 0, stats: AudioStats::default(), trace: if std::env::var_os("QCV_AUDIO_TRACE").is_some() { 60 } else { 0 }, released_at: None })
+        Ok(AudioPlayer { device, cb, decoder: None, routing: RoutingMode::Auto, scrub_muted: false, anchor_src_sec: 0.0, servo: AudioSyncServo::new(), out_of_band_ticks: 0, pause_gen: 0, stop_due: None, last_servo_update: None, sync_offset_ms: 0, tempo: 1.0, servo_log: 0, stats: AudioStats::default(), trace: if std::env::var_os("QCV_AUDIO_TRACE").is_some() { 60 } else { 0 }, released_at: None })
     }
     /// The render callback (QCView `processAudio`): the drain at the servo ratio, then mute / volume / the soft limiter.
     fn process_audio(c: &CbShared, out: &mut [f32]) {
@@ -225,12 +226,16 @@ impl AudioHooks for AudioPlayer {
         self.tempo = t;
         if let Some(d) = &self.decoder { d.set_tempo(t); }
     }
+    fn set_muted(&mut self, m: bool) { self.cb.muted.store(m, Relaxed); }
+    fn set_sync_offset_ms(&mut self, ms: i32) { self.sync_offset_ms = ms; }
+    fn set_scrub_muted(&mut self, m: bool) { self.scrub_muted = m; if m { self.cb.shuttle.end(); } }
     fn begin_shuttle(&mut self, path: &str, source_sec: f64, signed_speed: f64) {
+        if self.scrub_muted { return }   // QCView `audio/scrubMuted`: silence while shuttling / scrubbing
         self.pause_gen = self.pause_gen.wrapping_add(1); self.stop_due = None;   // the device stays up for the grains
         self.device.start();
         self.cb.shuttle.begin(path, source_sec, signed_speed, self.routing);
     }
-    fn shuttle_target(&mut self, path: &str, source_sec: f64, signed_speed: f64) { self.cb.shuttle.update_target(path, source_sec, signed_speed); }
+    fn shuttle_target(&mut self, path: &str, source_sec: f64, signed_speed: f64) { if self.scrub_muted { return } self.cb.shuttle.update_target(path, source_sec, signed_speed); }
     fn end_shuttle(&mut self) {
         self.cb.shuttle.end();
         if STOP_DEVICE_WHEN_IDLE && !self.cb.playing.load(Acquire) { self.pause_gen = self.pause_gen.wrapping_add(1); self.stop_due = Some((self.pause_gen, Instant::now() + Duration::from_millis(DEFERRED_STOP_MS))); }

@@ -37,6 +37,7 @@ impl TextField {
     /// Set the text with the caret at its end (a staged or restored entry).
     pub fn set_text_end(&mut self, s: &str, fonts: &mut Fonts) { self.editor.set_text(s); let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_text_end(); }
     pub fn clear(&mut self) { self.editor.set_text(""); }
+    pub fn select_all(&mut self, fonts: &mut Fonts) { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.select_all(); }
     pub fn hovered(&self) -> bool { self.hovered }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     fn style(&mut self, fonts: &mut Fonts, color: peniko::Color) {

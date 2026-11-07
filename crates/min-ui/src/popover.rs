@@ -19,11 +19,14 @@ impl Popover {
         if self.title.is_empty() { 0.0 } else { fonts.detail(&self.title, t::DETAIL_SIZE_S * scale as f32, peniko::Color::WHITE).height() as f64 + t::SPACING_75 as f64 * scale }
     }
     /// Open with a content area of `content_w × content_h` logical px, anchored to `anchor` (window px), inside `bounds`.
-    pub fn open_at(&mut self, fonts: &mut Fonts, anchor: Rect, content_w: f64, content_h: f64, bounds: Rect, scale: f64) {
+    pub fn open_at(&mut self, fonts: &mut Fonts, anchor: Rect, content_w: f64, content_h: f64, bounds: Rect, scale: f64) { self.open_at_prefer(fonts, anchor, content_w, content_h, bounds, scale, Placement::Above) }
+    /// As `open_at`, preferring `prefer` (a picker's menu opens below its field) and falling back when there is no room.
+    pub fn open_at_prefer(&mut self, fonts: &mut Fonts, anchor: Rect, content_w: f64, content_h: f64, bounds: Rect, scale: f64, prefer: Placement) {
         let pad = t::POPOVER_PADDING as f64 * scale; let off = t::POPOVER_OFFSET as f64 * scale;
         let th = self.title_height(fonts, scale);
         let (w, h) = (content_w * scale + 2.0 * pad, content_h * scale + th + 2.0 * pad);
-        self.placement = if anchor.y0 - off - h >= bounds.y0 { Placement::Above } else { Placement::Below };
+        let room_above = anchor.y0 - off - h >= bounds.y0; let room_below = anchor.y1 + off + h <= bounds.y1;
+        self.placement = match prefer { Placement::Above => if room_above || !room_below { Placement::Above } else { Placement::Below }, Placement::Below => if room_below || !room_above { Placement::Below } else { Placement::Above } };
         let y0 = match self.placement { Placement::Above => anchor.y0 - off - h, Placement::Below => anchor.y1 + off };
         let x0 = anchor.x0.clamp(bounds.x0 + pad, (bounds.x1 - w - pad).max(bounds.x0));
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);

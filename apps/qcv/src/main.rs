@@ -24,17 +24,23 @@ mod ui_sketch;
 mod transport_bar;
 mod status_strip;
 mod hover_thumbs;
+mod settings;
+mod settings_panel;
+mod inspector_panel;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), cursor_pointer: bool, ui_dirty: bool,
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
-    waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)> }
+    waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
+    /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
+    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, WindowId>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
+    settings: min_settings::Settings,
 }
 
 impl App {
@@ -42,11 +48,18 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let src = Source::from_path(path, None);
         let t = Instant::now();
-        let hw = if self.o.sw { None } else { self.hw.clone() };
-        match Transport::open(&src, TransportOptions { hw, threads: self.o.threads, loop_enabled: self.o.looping, refresh_ms: self.o.refresh_ms, ..Default::default() }) {
+        // QCView's performance settings apply at open: threads, hardware decode (its row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate
+        let st = &self.settings;
+        let hw_ok = !cfg!(windows) || st.bool(settings::k::HW_DECODE);
+        let hw = if self.o.sw || !hw_ok { None } else { self.hw.clone() };
+        let threads = if self.o.threads != 0 { self.o.threads } else { st.int(settings::k::FFMPEG_THREADS) as i32 };
+        let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), ..Default::default() });
+        let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
+        match Transport::open(&src, TransportOptions { hw, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }) {
             Ok(mut p) => {
                 // audio first, so the harness's play below starts it too (the player's hooks run inside Transport::play)
                 if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {} (device latency {:.1} ms)", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }, p.audio.device_latency_ms()); } Err(e) => println!("audio: {e}") } }
+                if p.audio.has_audio() { p.audio.set_volume(st.float(settings::k::VOLUME) as f32); p.audio.set_muted(st.bool(settings::k::MUTED)); p.audio.set_sync_offset_ms(st.int(settings::k::SYNC_OFFSET_MS) as i32); p.audio.set_scrub_muted(st.bool(settings::k::SCRUB_MUTED)); }
                 p.play();   // the harness plays on open (QCView opens paused; the shell decides)
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
                 self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p);
@@ -89,10 +102,31 @@ impl App {
             if g.bands.animating(now) { g.ui_dirty = true; }
             let slide = bands_h * (1.0 - g.bands.value(now) as f64);
             let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale + slide;
+            // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
+            let rails_bottom = scrub_y - (t::TRANSPORT_BAR_HEIGHT + t::STATUS_STRIP_HEIGHT) as f64 * scale;
+            let (lw, rw) = if g.fullscreen { (0.0, 0.0) } else {
+                g.left.layout(0.0, 0.0, rails_bottom, scale, now); g.right.layout(w as f64, 0.0, rails_bottom, scale, now);
+                (g.left.visible_width(now, scale), g.right.visible_width(now, scale))
+            };
+            if g.left.animating(now) || g.right.animating(now) { g.ui_dirty = true; }
+            let content = if g.fullscreen { (0, 0, w, h) } else { let x0 = lw.round() as u32; let x1 = (w as f64 - rw).round() as u32; (x0, 0, x1.saturating_sub(x0).max(1), (rails_bottom.round() as u32).max(1)) };
+            if g.content_set != Some(content) { g.content_set = Some(content); g.presenter.engine.set_content_rect(Some(content)); g.ui_dirty = true; }
+            // the panels: the settings mirror the store; the inspector mirrors the Transport
+            g.settings_panel.sync(&self.settings, now);
+            if g.settings_panel.tick(now) || g.inspector.animating(now) { g.ui_dirty = true; }
+            if !g.fullscreen {
+                let lc = g.left.content_rect(); let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale); g.left.content_height = lh + 2.0 * t::RAIL_PADDING as f64 * scale;
+                g.inspector.sync(self.player.as_ref());
+                let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh + 2.0 * t::RAIL_PADDING as f64 * scale;
+            }
+            // the bar's volume / mute / loop and the keys write the store back (QCView persists them on change)
+            if let Some(p) = self.player.as_ref() { if p.audio.has_audio() { self.settings.set_float(settings::k::VOLUME, p.audio.volume() as f64); self.settings.set_bool(settings::k::MUTED, p.audio.is_muted()); } self.settings.set_bool(settings::k::LOOP_ENABLED, p.loop_enabled()); }
+            if !g.fullscreen { self.settings.set_int(settings::k::LEFT_RAIL_WIDTH, g.left.width.round() as i64); self.settings.set_int(settings::k::RIGHT_RAIL_WIDTH, g.right.width.round() as i64); self.settings.set_bool(settings::k::LEFT_RAIL_COLLAPSED, g.left.collapsed); self.settings.set_bool(settings::k::RIGHT_RAIL_COLLAPSED, g.right.collapsed); }
+            if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
             g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, h as f64), scale);
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
-            if let Some(p) = self.player.as_ref() { if p.audio.has_audio() {
+            if let Some(p) = self.player.as_ref() { if p.audio.has_audio() && g.waveform_enabled {
                 g.waveform.set_playback_active(p.is_playing() || p.is_scrubbing());
                 let (t0, t1) = g.scrubber.visible_window(&st); let cols = g.scrubber.track_columns();
                 let req = (p.path().to_string(), t0, t1, cols);
@@ -110,12 +144,24 @@ impl App {
                 let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
                 let scene = u.scene_mut();
                 ui_sketch::bands(scene, w, h, scale, slide);
+                if !g.fullscreen {
+                    for (rail, is_left) in [(&g.left, true), (&g.right, false)] {
+                        rail.paint_background(scene, now);
+                        if rail.rect.width() > 0.0 {
+                            rail.push_clip(scene);
+                            if is_left { g.settings_panel.paint(scene, &mut g.fonts, scale, now, true); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); }
+                            rail.pop_clip(scene);
+                        }
+                        rail.paint_foreground(scene, &mut g.fonts, scale, now);
+                    }
+                }
                 g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 g.thumbs.paint(scene, content, scale, Some(g.pointer.0));
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
+                if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.ui_shown_frame = key; g.ui_dirty = false;
             }
             if let Some(ms) = u.render(&g.presenter.engine.device, &g.presenter.engine.queue) { g.ui_ms.push(ms); }
@@ -147,6 +193,30 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let (w, h) = g.ui.as_ref().map(|u| u.size()).unwrap_or((1, 1)); let scale = g.window.scale_factor();
         if let Some((x, y)) = e.pos() { g.pointer = (x, y); } else { g.pointer = (-1.0, -1.0); }
+        let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+        // the rails first (a modal dialog or an open menu in the settings panel takes everything)
+        if !g.fullscreen {
+            let had_focus = g.settings_panel.has_focus();
+            let modal = g.settings_panel.is_modal() || g.settings_panel.menu_open();
+            let lr = g.left.event(&e, now); let rr = g.right.event(&e, now);
+            if lr.dirty || rr.dirty { g.ui_dirty = true; }
+            let over_left = e.pos().is_some_and(|(x, y)| g.left.hit(x, y)); let over_right = e.pos().is_some_and(|(x, y)| g.right.hit(x, y));
+            let want = if g.left.is_dragging() || g.right.is_dragging() || (lr.consumed && !over_left) || (rr.consumed && !over_right) { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
+            if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
+            let mut cmds = vec![];
+            if modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus() {
+                // a press outside the settings' fields commits a typed number
+                if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
+                let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more);
+            }
+            if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
+            if over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) { if g.inspector.event(&e, now) { g.ui_dirty = true; } }
+            let _ = g; for c in cmds { self.apply_setting(c); }
+            let g = self.gpu.as_mut().unwrap();
+            if modal || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
+            let _ = g;
+        }
+        let g = self.gpu.as_mut().unwrap();
         let was_open = g.strip.is_open();
         let (sd, consumed) = g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
         if sd { g.ui_dirty = true; }
@@ -158,8 +228,7 @@ impl App {
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
         if sd { g.ui_dirty = true; }
         if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => p.begin_scrub(), min_ui::ScrubCmd::To(f) => p.scrub_to_frame(f), min_ui::ScrubCmd::End => p.end_scrub() } } }
-        let want_pointer = st.frames > 0 && e.pos().is_some_and(|(x, y)| g.scrubber.hit(x, y));
-        if want_pointer != g.cursor_pointer { g.cursor_pointer = want_pointer; g.window.set_cursor(winit::cursor::Cursor::Icon(if want_pointer { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default })); }
+        if g.fullscreen { let want = if st.frames > 0 && e.pos().is_some_and(|(x, y)| g.scrubber.hit(x, y)) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default }; if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); } }
         for c in cmds {
             match c {
                 transport_bar::Cmd::Act(a) => {
@@ -170,6 +239,29 @@ impl App {
                 transport_bar::Cmd::Open => println!("open: the file dialog arrives with the shell step (drop a file on the window meanwhile)"),
                 transport_bar::Cmd::Pin => {}
                 transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } }
+            }
+        }
+    }
+    /// A settings change took: push it to whatever it drives (QCView's `WindowManager` setters, one by one).
+    fn apply_setting(&mut self, c: settings_panel::Cmd) {
+        use settings::k;
+        let keys: Vec<&'static str> = match c { settings_panel::Cmd::Changed(k) => vec![k], settings_panel::Cmd::ResetAll => vec![k::TIMELINE_HOVER_THUMBS, k::TIMELINE_WAVEFORMS, k::VOLUME, k::MUTED, k::SYNC_OFFSET_MS, k::SCRUB_MUTED, k::LOOP_ENABLED, k::LEFT_RAIL_WIDTH, k::RIGHT_RAIL_WIDTH, k::LEFT_RAIL_COLLAPSED, k::RIGHT_RAIL_COLLAPSED] };
+        let now = Instant::now();
+        for key in keys {
+            let Some(g) = self.gpu.as_mut() else { return };
+            match key {
+                k::TIMELINE_HOVER_THUMBS => { g.thumbs.enabled = self.settings.bool(key); g.ui_dirty = true; }
+                k::TIMELINE_WAVEFORMS => { g.waveform_enabled = self.settings.bool(key); if !g.waveform_enabled { g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); } g.ui_dirty = true; }
+                k::VOLUME => if let Some(p) = self.player.as_mut() { p.audio.set_volume(self.settings.float(key) as f32); },
+                k::MUTED => if let Some(p) = self.player.as_mut() { p.audio.set_muted(self.settings.bool(key)); },
+                k::SYNC_OFFSET_MS => if let Some(p) = self.player.as_mut() { p.audio.set_sync_offset_ms(self.settings.int(key) as i32); },
+                k::SCRUB_MUTED => if let Some(p) = self.player.as_mut() { p.audio.set_scrub_muted(self.settings.bool(key)); },
+                k::LOOP_ENABLED => if let Some(p) = self.player.as_mut() { p.set_loop_enabled(self.settings.bool(key)); },
+                k::LEFT_RAIL_WIDTH => { g.left.width = self.settings.int(key) as f64; g.ui_dirty = true; }
+                k::RIGHT_RAIL_WIDTH => { g.right.width = self.settings.int(key) as f64; g.ui_dirty = true; }
+                k::LEFT_RAIL_COLLAPSED => { g.left.set_collapsed(self.settings.bool(key), now); g.ui_dirty = true; }
+                k::RIGHT_RAIL_COLLAPSED => { g.right.set_collapsed(self.settings.bool(key), now); g.ui_dirty = true; }
+                _ => {}   // applies at the next open (performance/*) or has no consumer yet
             }
         }
     }
@@ -204,11 +296,20 @@ impl App {
         let now = Instant::now();
         g.bands.set_target(if entering { 0.0 } else { 1.0 }, now); g.bands_leave = None;
         let s = g.window.surface_size(); let sc = g.window.scale_factor();
+        g.content_set = None;
         g.presenter.engine.set_content_rect(Some(if entering { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) }));
         g.ui_dirty = true;
     }
     fn finish(&mut self) {
-        if let Some(g) = self.gpu.as_mut() { g.thumbs.shutdown(); }
+        if let Some(g) = self.gpu.as_mut() {
+            g.thumbs.shutdown();
+            if !g.fullscreen {
+                let maximized = g.window.is_maximized();
+                self.settings.set_bool(settings::k::WINDOW_MAXIMIZED, maximized);
+                if !maximized { if let Ok(p) = g.window.outer_position() { self.settings.set_int(settings::k::WINDOW_X, p.x as i64); self.settings.set_int(settings::k::WINDOW_Y, p.y as i64); } let s = g.window.surface_size(); self.settings.set_int(settings::k::WINDOW_WIDTH, s.width as i64); self.settings.set_int(settings::k::WINDOW_HEIGHT, s.height as i64); }
+            }
+        }
+        if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
         if self.finished { return } self.finished = true;
         let wall = self.t0.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
         if let Some(p) = self.player.as_mut() {
@@ -237,6 +338,20 @@ fn set_ime(window: &dyn Window, on: bool) {
     if let Err(e) = window.request_ime_update(req) { log::debug!("ime {on}: {e}"); }
 }
 
+/// winit's key to the UI's (S3's table; the strip and the settings fields share it).
+fn to_key_event(event: &winit::event::KeyEvent, mods: qcv_player::Mods) -> min_ui::KeyEvent {
+    let key = match &event.logical_key {
+        Key::Named(NamedKey::Escape) => min_ui::Key::Named(min_ui::Named::Escape), Key::Named(NamedKey::Enter) => min_ui::Key::Named(min_ui::Named::Enter), Key::Named(NamedKey::Tab) => min_ui::Key::Named(min_ui::Named::Tab),
+        Key::Named(NamedKey::Backspace) => min_ui::Key::Named(min_ui::Named::Backspace), Key::Named(NamedKey::Delete) => min_ui::Key::Named(min_ui::Named::Delete),
+        Key::Named(NamedKey::ArrowLeft) => min_ui::Key::Named(min_ui::Named::Left), Key::Named(NamedKey::ArrowRight) => min_ui::Key::Named(min_ui::Named::Right),
+        Key::Named(NamedKey::ArrowUp) => min_ui::Key::Named(min_ui::Named::Up), Key::Named(NamedKey::ArrowDown) => min_ui::Key::Named(min_ui::Named::Down),
+        Key::Named(NamedKey::Home) => min_ui::Key::Named(min_ui::Named::Home), Key::Named(NamedKey::End) => min_ui::Key::Named(min_ui::Named::End),
+        Key::Character(c) => min_ui::Key::Char(c.to_string()), _ => min_ui::Key::Char(String::new()),
+    };
+    min_ui::KeyEvent { key, text: event.text.as_ref().map(|t| t.to_string()), shift: mods.shift, cmd: mods.ctrl }
+}
+fn st_hit(p: Option<&Transport>, sc: &min_ui::Scrubber, pos: Option<(f64, f64)>) -> bool { p.is_some_and(|p| p.frame_count() > 0) && pos.is_some_and(|(x, y)| sc.hit(x, y)) }
+
 /// The scrubber's view of the Transport.
 fn scrub_state(p: Option<&Transport>) -> min_ui::ScrubState {
     let Some(p) = p else { return Default::default() };
@@ -261,6 +376,11 @@ impl ApplicationHandler for App {
         if self.gpu.is_some() { return }
         for (i, m) in el.available_monitors().enumerate() { println!("monitor {i}: {:?} at {:?} scale {}", m.name(), m.position(), m.scale_factor()); }
         let mut attrs = WindowAttributes::default().with_title("qcv").with_surface_size(LogicalSize::new(1280.0, 720.0));
+        // QCView's `window/*` restore: the saved physical size and position when there is one (first run: 1280 × 720, the OS places it)
+        { let st = &self.settings; use settings::k;
+          if st.is_set(k::WINDOW_WIDTH) && st.int(k::WINDOW_WIDTH) >= 320 && st.int(k::WINDOW_HEIGHT) >= 200 { attrs = attrs.with_surface_size(winit::dpi::PhysicalSize::new(st.int(k::WINDOW_WIDTH) as u32, st.int(k::WINDOW_HEIGHT) as u32)); }
+          if st.is_set(k::WINDOW_X) && st.is_set(k::WINDOW_Y) && self.o.screen.is_none() { attrs = attrs.with_position(PhysicalPosition::new(st.int(k::WINDOW_X) as i32, st.int(k::WINDOW_Y) as i32)); }
+          if st.bool(k::WINDOW_MAXIMIZED) { attrs = attrs.with_maximized(true); } }
         if let Some(i) = self.o.screen { if let Some(m) = el.available_monitors().nth(i) { if let Some(p) = m.position() { attrs = attrs.with_position(PhysicalPosition::new(p.x + 100, p.y + 100)); } } }
         let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(attrs).expect("window"));
         let instance = Presenter::instance();
@@ -286,10 +406,17 @@ impl ApplicationHandler for App {
         window.focus_window();
         println!("window: surface {:?} scale {} visible {:?} monitor {:?}", window.surface_size(), window.scale_factor(), window.is_visible(), window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())));
         window.request_redraw();
+        // the rails from the store (QCView `ui.layout/*`; "Always open in minimal mode" collapses both at launch)
+        let (left, right, waveform_enabled, thumbs_enabled) = { let st = &self.settings; use settings::k; let minimal = st.bool(k::ALWAYS_OPEN_MINIMAL);
+            let mut l = min_ui::Rail::new(min_ui::Side::Left, st.int(k::LEFT_RAIL_WIDTH) as f64, minimal || st.bool(k::LEFT_RAIL_COLLAPSED)); l.settle();
+            let mut r = min_ui::Rail::new(min_ui::Side::Right, st.int(k::RIGHT_RAIL_WIDTH) as f64, minimal || st.bool(k::RIGHT_RAIL_COLLAPSED)); r.settle();
+            (l, r, st.bool(k::TIMELINE_WAVEFORMS), st.bool(k::TIMELINE_HOVER_THUMBS)) };
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), cursor_pointer: false, ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, t::BANDS_SLIDE_DURATION), bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![] });
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, t::BANDS_SLIDE_DURATION), bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+            left, right, settings_panel: settings_panel::SettingsPanel::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
+        if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -300,22 +427,25 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
             WindowEvent::Focused(f) => { log::info!("focused {f}"); if !f { if let Some(g) = self.gpu.as_mut() { if g.strip.is_open() { g.strip.close(); g.ui_dirty = true; } } } }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { g.strip.ime(&e, &mut g.fonts); g.ui_dirty = true; } } }
-            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && (g.settings_panel.has_focus() || g.settings_panel.is_modal() || g.settings_panel.menu_open()) {
+                    let k = to_key_event(&event, self.mods);
+                    let had_focus = g.settings_panel.has_focus();
+                    let (handled, cmds) = g.settings_panel.key(&k, &mut g.fonts, &mut self.settings);
+                    g.ui_dirty = true;
+                    if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
+                    for c in cmds { self.apply_setting(c); }
+                    if handled { return }
+                } } }
+                // QCView's View menu: Ctrl+1 / Ctrl+2 toggle the rails
+                if pressed && self.mods.ctrl && !event.repeat { if let Key::Character(c) = &event.logical_key { if c == "1" || c == "2" { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen { let now = Instant::now(); if c == "1" { g.left.toggle(now); } else { g.right.toggle(now); } g.ui_dirty = true; } } return } } }
                 if let Some(g) = self.gpu.as_mut() { if g.strip.is_open() {
                     if pressed {
-                        let key = match &event.logical_key {
-                            Key::Named(NamedKey::Escape) => min_ui::Key::Named(min_ui::Named::Escape), Key::Named(NamedKey::Enter) => min_ui::Key::Named(min_ui::Named::Enter), Key::Named(NamedKey::Tab) => min_ui::Key::Named(min_ui::Named::Tab),
-                            Key::Named(NamedKey::Backspace) => min_ui::Key::Named(min_ui::Named::Backspace), Key::Named(NamedKey::Delete) => min_ui::Key::Named(min_ui::Named::Delete),
-                            Key::Named(NamedKey::ArrowLeft) => min_ui::Key::Named(min_ui::Named::Left), Key::Named(NamedKey::ArrowRight) => min_ui::Key::Named(min_ui::Named::Right),
-                            Key::Named(NamedKey::ArrowUp) => min_ui::Key::Named(min_ui::Named::Up), Key::Named(NamedKey::ArrowDown) => min_ui::Key::Named(min_ui::Named::Down),
-                            Key::Named(NamedKey::Home) => min_ui::Key::Named(min_ui::Named::Home), Key::Named(NamedKey::End) => min_ui::Key::Named(min_ui::Named::End),
-                            Key::Character(c) => min_ui::Key::Char(c.to_string()), _ => min_ui::Key::Char(String::new()),
-                        };
-                        let k = min_ui::KeyEvent { key, text: event.text.as_ref().map(|t| t.to_string()), shift: self.mods.shift, cmd: self.mods.ctrl };
+                        let k = to_key_event(&event, self.mods);
                         let commit = g.strip.key(&k, &mut g.fonts);
                         g.ui_dirty = true;
                         if !g.strip.is_open() { set_ime(&**g.window, false); }
@@ -344,7 +474,13 @@ impl ApplicationHandler for App {
                 let alt = self.mods.alt;
                 // Qt angle units (120 per notch): lines → notches; pixel deltas (trackpads) at 2 units per px; Alt+wheel folds x into y (QCView's Windows rule)
                 let dy = match delta { winit::event::MouseScrollDelta::LineDelta(x, y) => (if alt && y == 0.0 { x } else { y }) as f64 * 120.0, winit::event::MouseScrollDelta::PixelDelta(p) => (if alt && p.y == 0.0 { p.x } else { p.y }) * 2.0, _ => 0.0 };
-                if let Some(g) = self.gpu.as_mut() { let (x, y) = g.pointer; if g.scrubber.hit(x, y) { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); if g.scrubber.wheel(x, dy, alt, &st, scale) { g.ui_dirty = true; } } }
+                if let Some(g) = self.gpu.as_mut() { let (x, y) = g.pointer; let now = Instant::now(); let scale = g.window.scale_factor();
+                    if !g.fullscreen && g.left.hit(x, y) {
+                        if let Some(cmds) = g.settings_panel.wheel(x, y, dy, &mut self.settings) { g.ui_dirty = true; for c in cmds { self.apply_setting(c); } return }
+                        if g.left.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return
+                    }
+                    if !g.fullscreen && g.right.hit(x, y) { if g.right.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return }
+                    if g.scrubber.hit(x, y) { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); if g.scrubber.wheel(x, dy, alt, &st, scale) { g.ui_dirty = true; } } }
             }
             WindowEvent::PointerButton { state, position, button, .. } => {
                 let b = match button.mouse_button() { Some(winit::event::MouseButton::Left) => min_ui::Button::Primary, Some(winit::event::MouseButton::Right) => min_ui::Button::Secondary, Some(winit::event::MouseButton::Middle) => min_ui::Button::Middle, _ => return };
@@ -379,7 +515,8 @@ fn main() {
     if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap"), arg("--ui-size").and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))); return }
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
-    let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let settings = settings::open();
+    let app = App { o, gpu: None, player: None, hw: None, settings, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
 }
 
@@ -478,6 +615,22 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut bar = transport_bar::TransportBar::new();
     let bands_y = h as f64 - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + t::STATUS_STRIP_HEIGHT as f64 * scale;
     let t0 = Instant::now();
+    // the rails: the left open on Settings (a switch hovered, a number field focused), the right open on the Inspector so the snap shows both
+    let mut store = min_settings::Settings::in_memory(&settings::SCHEMA);
+    let mut left = min_ui::Rail::new(min_ui::Side::Left, 280.0, false); left.settle();
+    let mut right = min_ui::Rail::new(min_ui::Side::Right, 320.0, false); right.settle();
+    let rails_bottom = bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale;
+    left.layout(0.0, 0.0, rails_bottom, scale, t0); right.layout(w as f64, 0.0, rails_bottom, scale, t0);
+    engine.set_content_rect(Some((left.visible_width(t0, scale) as u32, 0, (w as f64 - left.visible_width(t0, scale) - right.visible_width(t0, scale)) as u32, rails_bottom as u32)));
+    let mut panel = settings_panel::SettingsPanel::new(); panel.sync(&store, t0);
+    let lc = left.content_rect(); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); left.content_height = ph + 2.0 * t::RAIL_PADDING as f64 * scale;
+    let mut inspector = inspector_panel::InspectorPanel::new(); inspector.sync(player.as_ref());
+    let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih + 2.0 * t::RAIL_PADDING as f64 * scale;
+    { let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+      // hover the "Timeline hover thumbnails" switch's label (its help tooltip) and press the scrub-cache field
+      let _ = panel.event(&min_ui::Event::Move { x: lc.x0 + 20.0 * scale, y: lc.y0 + 330.0 * scale }, t0, &mut fonts, &mut store, bounds, scale);
+      let _ = panel.event(&min_ui::Event::Down { x: lc.x1 - 60.0 * scale, y: lc.y0 + 215.0 * scale, button: min_ui::Button::Primary }, t0, &mut fonts, &mut store, bounds, scale); }
+    println!("settings panel: {} px tall at {scale}× ({} rows); inspector {} px", ph.round(), settings::SCHEMA.keys.len(), ih.round());
     bar.sync(player.as_ref(), t0);
     bar.layout(&mut fonts, w as f64, bands_y, scale);
     let (hover, press) = (bar.rect_of("caret-right").unwrap().center(), bar.rect_of("sign-out").unwrap().center());
@@ -512,12 +665,14 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         let scene = ui.scene_mut();
         let _ = fi;
         ui_sketch::bands(scene, w, h, scale, 0.0);
+        for (rail, is_left) in [(&left, true), (&right, false)] { rail.paint_background(scene, shown_at); rail.push_clip(scene); if is_left { panel.paint(scene, &mut fonts, scale, shown_at, true); } else { inspector.paint(scene, &mut fonts, scale, shown_at); } rail.pop_clip(scene); rail.paint_foreground(scene, &mut fonts, scale, shown_at); }
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
         scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });
         thumbs.paint(scene, content, scale, Some(w as f64 * 0.62));
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
+        panel.tick(shown_at); panel.paint_overlays(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
         if let Some(ms) = ui.render(&engine.device, &engine.queue) { render_ms.push(ms); }
         let _ = engine.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
