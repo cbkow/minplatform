@@ -5,9 +5,10 @@ use min_theme::tokens as t;
 use min_ui::paint;
 use vello::Scene;
 
-pub fn bands(scene: &mut Scene, w: u32, h: u32, scale: f64) {
+/// `slide` = how far the bands are pushed below the window (fullscreen's hidden state), physical px.
+pub fn bands(scene: &mut Scene, w: u32, h: u32, scale: f64, slide: f64) {
     scene.reset();
-    let (w, h) = (w as f64, h as f64);
+    let (w, h) = (w as f64, h as f64 + slide);
     let scrub_h = t::SCRUBBER_HEIGHT as f64 * scale;
     let top = h - scrub_h - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT) as f64 * scale;
     paint::rect(scene, Rect::new(0.0, top, w, h - scrub_h), t::BAND_BACKGROUND_COLOR);

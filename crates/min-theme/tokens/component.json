@@ -119,6 +119,10 @@
   "icon-rail-active-dot-color": { "value": "{accent-visual-color}" },
 
   "status-strip-height":  { "value": "{component-height-75}" },
+  "$fullscreen": "Fullscreen = the picture alone (QCView's chromeless rule); the three bands slide in from the bottom edge while the pointer rests there and slide away after it leaves (the user 2026-11-07: \"correct on assumptions for fullscreen\").",
+  "bands-reveal-zone":    { "value": "{spacing-400}" },
+  "bands-hide-delay":     { "value": "800ms" },
+  "bands-slide-duration": { "value": "{animation-duration-slide}" },
   "transport-bar-height": { "value": "{component-height-100}" },
   "band-background-color": { "value": "{background-layer-1-color}" },
   "timecode-well-width":  { "value": "160px" },

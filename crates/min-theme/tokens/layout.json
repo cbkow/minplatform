@@ -84,6 +84,7 @@
 
   "animation-duration-hover": { "value": "100ms" },
   "animation-duration-popup": { "value": "80ms" },
+  "animation-duration-slide": { "value": "160ms" },
   "tooltip-delay":   { "value": "600ms" },
   "tooltip-timeout": { "value": "5000ms" },
   "drag-threshold":  { "value": "{spacing-85}" },

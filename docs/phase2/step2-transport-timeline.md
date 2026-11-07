@@ -420,3 +420,15 @@ past hover (gray-300; S2 has no pressed step — a written deviation, §16.4's c
 - **Seen in the snap:** zoomed to ~160 px/s with 1-s ticks, the extent marker along the bottom, the hover line at
   62 %, the thumbnail of that frame in the viewport's corner; the playhead at frame 0 correctly out of view.
 
+#### 6f · the manual review's fixes and fullscreen (2026-11-07)
+- The user's walk ("fantastic", "perfect"): the scrub grab now survives the pointer leaving the window (Qt's MouseArea
+  kept it for QCView; winit sends `PointerLeft`, so the scrubber ignores it while pressed — 46152c3); the picture is
+  drawn as an exact QUAD — the fit-scaled fullscreen triangle's overhang had smeared the edge column diagonally into the
+  letterbox at odd window aspects, present since S1 and invisible while every window matched the video's aspect (a
+  headless test renders a square picture into a 64 × 16 target and checks both pillarbox sides; 972ca31); scrub / seek /
+  shuttle jumps no longer count as dropped frames.
+- **Fullscreen (row 171)**: the picture alone; the bands slide in from the bottom edge while the pointer rests in a
+  24-px zone (or on the shown bands) and slide away 800 ms after it leaves, over 160 ms; the content rect becomes the
+  whole window so the picture does not re-fit as the bands move; F, the transport button and Escape share one toggle
+  (Escape leaves fullscreen before it quits the harness). Compact (row 172) and dual (row 173) are proposed, not built.
+

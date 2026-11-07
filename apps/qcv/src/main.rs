@@ -25,7 +25,9 @@ mod transport_bar;
 mod status_strip;
 mod hover_thumbs;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), cursor_pointer: bool, ui_dirty: bool }
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), cursor_pointer: bool, ui_dirty: bool,
+    /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
+    fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant> }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -71,7 +73,18 @@ impl App {
             if g.bar.tick(now) || g.strip.animating(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
             let st = scrub_state(self.player.as_ref());
-            let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale;
+            let bands_h = (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale;
+            if g.fullscreen {
+                // the pointer at the bottom edge (or on the shown bands) reveals; leaving starts the hide delay
+                let (px, py) = g.pointer;
+                let shown_rect_top = h as f64 - bands_h * g.bands.value(now) as f64;
+                let near = px >= 0.0 && (py >= h as f64 - t::BANDS_REVEAL_ZONE as f64 * scale || (g.bands.target() > 0.5 && py >= shown_rect_top));
+                if near { g.bands_leave = None; g.bands.set_target(1.0, now); }
+                else if g.bands.target() > 0.5 { match g.bands_leave { None => g.bands_leave = Some(now), Some(t0) => if now.duration_since(t0).as_millis() as u32 >= t::BANDS_HIDE_DELAY { g.bands.set_target(0.0, now); g.bands_leave = None; } } }
+            }
+            if g.bands.animating(now) { g.ui_dirty = true; }
+            let slide = bands_h * (1.0 - g.bands.value(now) as f64);
+            let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale + slide;
             g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, h as f64), scale);
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             if g.thumbs.tick(self.player.as_mut(), g.scrubber.hover_frame, now) { g.ui_dirty = true; }
@@ -83,7 +96,7 @@ impl App {
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
                 let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
                 let scene = u.scene_mut();
-                ui_sketch::bands(scene, w, h, scale);
+                ui_sketch::bands(scene, w, h, scale, slide);
                 g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, None);
@@ -119,12 +132,12 @@ impl App {
         let now = Instant::now();
         let Some(g) = self.gpu.as_mut() else { return };
         let (w, h) = g.ui.as_ref().map(|u| u.size()).unwrap_or((1, 1)); let scale = g.window.scale_factor();
+        if let Some((x, y)) = e.pos() { g.pointer = (x, y); } else { g.pointer = (-1.0, -1.0); }
         let was_open = g.strip.is_open();
         let (sd, consumed) = g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
         if sd { g.ui_dirty = true; }
         if g.strip.is_open() != was_open { set_ime(&**g.window, g.strip.is_open()); }
         if consumed { return }
-        if let Some((x, y)) = e.pos() { g.pointer = (x, y); }
         let (cmds, dirty) = g.bar.event(&e, now);
         if dirty { g.ui_dirty = true; }
         let st = scrub_state(self.player.as_ref());
@@ -137,7 +150,7 @@ impl App {
             match c {
                 transport_bar::Cmd::Act(a) => {
                     let handled = self.player.as_mut().map(|p| p.apply(a, now)).unwrap_or(false);
-                    if !handled && a == Action::ToggleFullscreen { let fs = g.window.fullscreen(); g.window.set_fullscreen(if fs.is_some() { None } else { Some(Fullscreen::Borderless(None)) }); }
+                    if !handled && a == Action::ToggleFullscreen { self.toggle_fullscreen(); return }
                     else if !handled { log::info!("{a:?}: nothing to apply it to"); }
                 }
                 transport_bar::Cmd::Open => println!("open: the file dialog arrives with the shell step (drop a file on the window meanwhile)"),
@@ -165,6 +178,19 @@ impl App {
         }
         let bands: Vec<String> = [0.5081f64, 0.7518, 0.9026].iter().enumerate().map(|(i, code)| { let y = (h / 2 + (h / 6) * i as u32 + h / 12) as usize; let got = px[(y * w as usize + w as usize / 2) * 4] as f64; format!("band {code:.4} → expect {:.4} ({:.0} nit) got {:.4} ({:.0} nit)", pq(*code) / white, pq(*code), got, got * white) }).collect();
         println!("verify-pq (row {row}, {} nits = 1.0): worst relative error {:.3} % at x={worst_x} (code {:.3}); {} of {} samples above 1.0 (EDR range)\n  {}", self.o.white, worst * 100.0, worst_x as f64 / (w - 1) as f64, over1, w, bands.join("\n  "));
+    }
+    /// Enter / leave fullscreen (QCView's F): the content rect becomes the whole window, the bands hide until hovered.
+    fn toggle_fullscreen(&mut self) {
+        let Some(g) = self.gpu.as_mut() else { return };
+        let fs = g.window.fullscreen();
+        let entering = fs.is_none();
+        g.window.set_fullscreen(if entering { Some(Fullscreen::Borderless(None)) } else { None });
+        g.fullscreen = entering;
+        let now = Instant::now();
+        g.bands.set_target(if entering { 0.0 } else { 1.0 }, now); g.bands_leave = None;
+        let s = g.window.surface_size(); let sc = g.window.scale_factor();
+        g.presenter.engine.set_content_rect(Some(if entering { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) }));
+        g.ui_dirty = true;
     }
     fn finish(&mut self) {
         if let Some(g) = self.gpu.as_mut() { g.thumbs.shutdown(); }
@@ -248,7 +274,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), cursor_pointer: false, ui_dirty: true });
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), cursor_pointer: false, ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, t::BANDS_SLIDE_DURATION), bands_leave: None });
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -260,7 +286,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
             WindowEvent::Focused(f) => { log::info!("focused {f}"); if !f { if let Some(g) = self.gpu.as_mut() { if g.strip.is_open() { g.strip.close(); g.ui_dirty = true; } } } }
             WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { g.strip.ime(&e, &mut g.fonts); g.ui_dirty = true; } } }
-            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_content_rect(Some(content_rect(s.width, s.height, sc))); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
+            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
@@ -282,7 +308,7 @@ impl ApplicationHandler for App {
                     }
                     return
                 } }
-                if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { self.finish(); el.exit(); return }
+                if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); return } self.finish(); el.exit(); return }
                 let key = match &event.logical_key {
                     Key::Character(c) if c == " " => Some(qcv_player::Key::Space),
                     Key::Character(c) => c.chars().next().map(qcv_player::Key::Char),
@@ -294,7 +320,7 @@ impl ApplicationHandler for App {
                 if let Some(a) = key.and_then(|k| qcv_player::map_key(k, m, pressed, event.repeat)) {
                     let handled = self.player.as_mut().map(|p| p.apply(a, Instant::now())).unwrap_or(false);
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
-                    else if a == Action::ToggleFullscreen { if let Some(g) = &self.gpu { let fs = g.window.fullscreen(); g.window.set_fullscreen(if fs.is_some() { None } else { Some(Fullscreen::Borderless(None)) }); } }
+                    else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                 }
             }
             WindowEvent::PointerMoved { position, .. } => self.pointer(min_ui::Event::Move { x: position.x, y: position.y }),
@@ -407,7 +433,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         let t = Instant::now();
         let scene = ui.scene_mut();
         let _ = fi;
-        ui_sketch::bands(scene, w, h, scale);
+        ui_sketch::bands(scene, w, h, scale, 0.0);
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
         scrubber.paint(scene, &mut fonts, scale, &st, None);
