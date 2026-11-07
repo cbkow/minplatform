@@ -152,7 +152,11 @@ impl Transport {
         let first = t.timeline.tracks[0].clips[0].clone();
         let mut slot = slot; slot.clip = 0; slot.src_rate = first.source_rate; slot.src_in = first.source_in; slot.src_out = first.source_out;
         t.slots.push(slot); t.active = 0;
-        t.seek_gate = Some((0, t.slots[0].decoder.seeks_performed(), 0, Instant::now()));   // the open's first frame re-seats the clock at frame 0 (paused at open)
+        // QCView's open: the decoder opens PAUSED and WindowManager ends with seekToFrame(0) — the pending seek runs whatever the
+        // play state and publishes frame 0 through the seek gate; the gate captures the counts BEFORE the seek so the landing counts
+        let (seeks_before, seq_before) = (t.slots[0].decoder.seeks_performed(), t.slots[0].decoder.published_seq());
+        t.seek_gate = Some((0, seeks_before, seq_before, Instant::now()));
+        t.slots[0].decoder.seek_to_frame(0);
         Ok(t)
     }
     /// A playlist (`Editor::load_playlist`'s timeline): the first non-gap clip opens on slot A positioned at its in-point,
