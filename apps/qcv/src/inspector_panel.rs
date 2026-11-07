@@ -1,7 +1,7 @@
 //! The Inspector in the right rail (QCView's `InspectorPanel.qml` sections, the ones this player can fill today: File,
 //! Video, Audio, Timecode — Geometry, Color, Linked Projects and Playlist Contents arrive with their features). Each
-//! section is a flat header and label / value rows: label in the subdued colour at 12, value right-aligned at 14,
-//! the value in the mono face where it is a number.
+//! section is a flat header and label / value rows: label in the subdued colour at 12, value right-aligned at 12 too
+//! (§25.4's reference puts values at 14; the user found that too large here), the value in the mono face where it is a number.
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{paint, Event, Family, Fonts, Section};
@@ -87,7 +87,7 @@ impl InspectorPanel {
                 let l = fonts.layout(label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR));
                 min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y0 + (r.height() - l.height() as f64) / 2.0)));
                 let avail = (r.width() - l.width() as f64 - t::SPACING_200 as f64 * scale).max(40.0);
-                let fam = if *mono { Family::Mono } else { Family::Sans }; let size = if *mono { t::CODE_SIZE_M } else { t::BODY_SIZE_M };
+                let fam = if *mono { Family::Mono } else { Family::Sans }; let size = if *mono { t::CODE_SIZE_S } else { t::BODY_SIZE_S };   // 12, with the labels (the user 2026-11-07: 14 "too large of a font" for the values)
                 let mut v = fonts.layout(value, fam, size * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
                 if v.width() as f64 > avail {
                     // elide from the left for paths, from the right otherwise (QCView: folders show their tail)
