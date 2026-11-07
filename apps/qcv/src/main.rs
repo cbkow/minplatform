@@ -5,7 +5,7 @@ use winit31 as winit;
 use min_present::{Output, Presenter, Snapshot};
 use min_theme::tokens as t;
 use qcv_player::{HwDevice, Transport, TransportOptions, Source, Action};
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 use winit::application::ApplicationHandler;
 use winit::data_transfer::TypeHint;
 use winit::event::{ElementState, WindowEvent};
@@ -29,6 +29,7 @@ mod settings_panel;
 mod inspector_panel;
 mod background_panel;
 mod compact_strip;
+mod project_panel;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
@@ -37,7 +38,7 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_
     compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
-    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon }
+    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -47,11 +48,83 @@ struct App {
     settings: min_settings::Settings,
     /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
     meta: qcv_meta::MetadataService,
+    /// QCView's project (row 141): the media pool, the bins, the per-clip choices; `loaded_item` = the media id in the player.
+    project: qcv_project::ProjectManager, loaded_item: String,
 }
 
 impl App {
-    fn open(&mut self, path: &str) {
-        let Some(g) = self.gpu.as_mut() else { return };
+    /// A path from the command line, a drop or the Open dialog: QCView's `addMediaFile` (the extension gate, dedupe,
+    /// routing to its bin, the metadata requests) and then the load of that item. Returns the item id.
+    fn add_and_load(&mut self, path: &str, load: bool) -> Option<String> {
+        let (id, probes) = self.project.add_media_file(path);
+        self.schedule_probes(probes);
+        let id = id?;
+        self.note_recent_media(path);
+        if load { self.load_item(&id); }
+        Some(id)
+    }
+    fn schedule_probes(&self, probes: Vec<qcv_project::Probe>) {
+        for p in probes { match p {
+            qcv_project::Probe::Rotation(id, path) => self.meta.request_rotation_probe(&id, &path),
+            qcv_project::Probe::Container(id, path) => self.meta.request_container_probe(&id, &path),
+            qcv_project::Probe::FullVideo(id, path) => self.meta.request_video_extraction(&id, &path),
+            qcv_project::Probe::Adobe(id, path) => self.meta.request_adobe_extraction(&id, &path),
+        } }
+    }
+    /// QCView's `loadRequested` handler: close the current media, open by type, then apply the item's per-clip choices
+    /// (range → the decoders, aspect + rotation → the presenter, routing → the audio). Sequences, playlists, dual
+    /// views and live streams arrive with their steps (2c, Phase 4): they select but do not load yet.
+    fn load_item(&mut self, id: &str) {
+        let Some(item) = self.project.item(id).cloned() else { return };
+        self.project.set_active_item(id);
+        match item.media_type {
+            qcv_project::MediaType::Video | qcv_project::MediaType::Audio => {}
+            other => { log::info!("load: {other:?} items load with their step; selected only"); return }
+        }
+        let ok = self.open(&item.path);
+        self.project.set_load_failed(id, !ok);
+        if !ok { return }
+        self.loaded_item = id.to_string();
+        if let Some(p) = self.player.as_mut() {
+            p.set_range_override(match item.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto });
+            p.audio.set_routing_mode(match item.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto });
+        }
+        if let Some(g) = self.gpu.as_mut() {
+            let par = match item.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(item.custom_par_num.max(1) as u32, item.custom_par_den.max(1) as u32) };
+            let rotation = if item.rotation_override >= 0 { Some(item.rotation_override as u16) } else { None };
+            g.presenter.engine.set_geometry(min_present::engine::Geometry { par, rotation }); g.content_set = None; g.ui_dirty = true;
+        }
+    }
+    fn note_recent_media(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_MEDIA).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_MEDIA, &list.join("\n")); }
+    fn note_recent_project(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_PROJECTS).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_PROJECTS, &list.join("\n")); }
+    /// QCView's media file filters (`mediaext::nameFilters`).
+    fn open_media_dialog(&mut self) {
+        let all: Vec<&str> = qcv_project::extensions::VIDEO.iter().chain(qcv_project::extensions::AUDIO).chain(qcv_project::extensions::IMAGE).copied().collect();
+        let picked = rfd::FileDialog::new().set_title("Open Media").add_filter("All media", &all).add_filter("Video files", qcv_project::extensions::VIDEO).add_filter("Audio files", qcv_project::extensions::AUDIO).add_filter("Image / sequence files", qcv_project::extensions::IMAGE).pick_files();
+        let Some(paths) = picked else { return };
+        let mut first = true;
+        for p in paths { let p = p.to_string_lossy().to_string(); if self.add_and_load(&p, first).is_some() { first = false; } }
+    }
+    fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title("Open Project").add_filter("QCView Project", &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
+    fn open_project(&mut self, path: &str) {
+        match self.project.open_project(path) {
+            Ok(probes) => { self.schedule_probes(probes); self.note_recent_project(path); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            Err(e) => log::warn!("{e}"),
+        }
+    }
+    /// QCView `projectSave`: to the file it came from, else Save As.
+    fn save_project(&mut self) { if self.project.file_path().is_empty() { self.save_project_as(); } else { let p = self.project.file_path().to_string(); match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") } } }
+    fn save_project_as(&mut self) {
+        let suggested = if self.project.file_path().is_empty() { format!("{}.qcvproj", self.project.name()) } else { Path::new(self.project.file_path()).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() };
+        if let Some(p) = rfd::FileDialog::new().set_title("Save Project As").add_filter("QCView Project", &["qcvproj"]).set_file_name(&suggested).save_file() {
+            let mut p = p.to_string_lossy().to_string(); if !p.to_lowercase().ends_with(".qcvproj") { p.push_str(".qcvproj"); }
+            match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") }
+        }
+    }
+    fn new_project(&mut self) { self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } }
+    /// Open the file in the Transport (the raw open; the project paths above call it). True when it opened.
+    fn open(&mut self, path: &str) -> bool {
+        let Some(g) = self.gpu.as_mut() else { return false };
         let src = Source::from_path(path, None);
         let t = Instant::now();
         // QCView's performance settings apply at open: threads, hardware decode (its row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate
@@ -69,11 +142,14 @@ impl App {
                 if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
                 self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p); g.presenter.engine.set_geometry(Default::default());
-                self.meta.request_video_extraction(path, path); self.meta.request_adobe_extraction(path, path);   // QCView: both requests at open; the Inspector fills as they land
+                // QCView: both metadata requests at add; keyed by the media id when the file is in the project (the manager caches the result), else by path
+                let key = self.project.pool().iter().find(|m| m.path == path).map(|m| m.id.clone()).unwrap_or_else(|| path.to_string());
+                self.meta.request_video_extraction(&key, path); self.meta.request_adobe_extraction(&key, path);
                 self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
-                g.window.set_title(&format!("qcv — {}", self.source_label));
+                g.title_shown.clear();
+                true
             }
-            Err(e) => println!("open {path}: {e}"),
+            Err(e) => { println!("open {path}: {e}"); false }
         }
     }
     fn tick(&mut self) {
@@ -88,7 +164,7 @@ impl App {
                 }
             }
         }
-        if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); self.open(&path); return }
+        if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
         if let Some(u) = g.ui.as_mut() {
             let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
@@ -120,14 +196,27 @@ impl App {
             let content = if g.fullscreen { (0, 0, w, h) } else { let x0 = lw.round() as u32; let x1 = (w as f64 - rw).round() as u32; (x0, 0, x1.saturating_sub(x0).max(1), (rails_bottom.round() as u32).max(1)) };
             if g.content_set != Some(content) { g.content_set = Some(content); g.presenter.engine.set_content_rect(Some(content)); g.ui_dirty = true; }
             // the panels: the settings mirror the store; the inspector mirrors the Transport (+ the metadata service's results, drained every tick)
-            while let Some(ev) = self.meta.try_recv() { match ev { qcv_meta::MetadataEvent::Video(id, m) => g.inspector.set_video_meta(&id, m), qcv_meta::MetadataEvent::Adobe(id, m) => g.inspector.set_adobe_meta(&id, m), _ => {} } g.ui_dirty = true; }
+            while let Some(ev) = self.meta.try_recv() {
+                let path_of = |id: &str, project: &qcv_project::ProjectManager| project.item(id).map(|m| m.path.clone()).unwrap_or_else(|| id.to_string());
+                match ev {
+                    qcv_meta::MetadataEvent::Video(id, m) => { let path = path_of(&id, &self.project); g.inspector.set_video_meta(&path, m.clone()); if self.project.item(&id).is_some() { self.project.on_video_metadata(&id, m); } }
+                    qcv_meta::MetadataEvent::Adobe(id, m) => { let path = path_of(&id, &self.project); g.inspector.set_adobe_meta(&path, m.clone()); if self.project.item(&id).is_some() { self.project.on_adobe_metadata(&id, m); } }
+                    qcv_meta::MetadataEvent::Rotation(id, deg) => self.project.on_rotation_probed(&id, deg),
+                    qcv_meta::MetadataEvent::Container(id, m) => self.project.on_container_probed(&id, &m),
+                }
+                g.ui_dirty = true;
+            }
+            // the window title: QCView's "clip — project" with a dot while unsaved
+            { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("qcv — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("qcv — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
             g.settings_panel.sync(&self.settings, now);
-            if g.settings_panel.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) { g.ui_dirty = true; }
+            if g.settings_panel.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {
                 let lc = g.left.content_rect();
+                if g.project_panel.sync(&self.project, &self.loaded_item) { g.ui_dirty = true; }
+                let ph = g.project_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
-                let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
-                let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + bh, scale); g.left.content_height = bh + lh;
+                let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);
+                let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + bh, scale); g.left.content_height = ph + bh + lh;
                 g.inspector.set_geometry(g.presenter.engine.geometry(), g.presenter.engine.display_dims());
                 if g.inspector.sync(self.player.as_ref()) { g.ui_dirty = true; }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
@@ -172,7 +261,7 @@ impl App {
                         rail.paint_background(scene, now);
                         if rail.rect.width() > 0.0 {
                             rail.push_clip(scene);
-                            if is_left { g.background_panel.paint(scene, &mut g.fonts, scale, now, true); g.settings_panel.paint(scene, &mut g.fonts, scale, now, false); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); }
+                            if is_left { g.project_panel.paint(scene, &mut g.fonts, scale, now, true); g.background_panel.paint(scene, &mut g.fonts, scale, now, false); g.settings_panel.paint(scene, &mut g.fonts, scale, now, false); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); }
                             rail.pop_clip(scene);
                         }
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
@@ -247,7 +336,7 @@ impl App {
             let over_left = e.pos().is_some_and(|(x, y)| g.left.hit(x, y)); let over_right = e.pos().is_some_and(|(x, y)| g.right.hit(x, y));
             let want = if g.left.splitter_hovered() || g.right.splitter_hovered() { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
-            let mut cmds = vec![];
+            let mut cmds = vec![]; let mut pcmds: Vec<project_panel::Cmd> = vec![]; let mods = self.mods;
             // a press on a rail's own control (the collapse arrow, the scrollbar) is the rail's, not the panel's
             let rail_ctl = matches!(e, min_ui::Event::Down { .. }) && e.pos().is_some_and(|(x, y)| g.left.over_control(x, y, now) || g.right.over_control(x, y, now));
             if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.inspector.has_focus() { let cmds = g.inspector.blur(); set_ime(&**g.window, false); g.ui_dirty = true; for c in cmds { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } } }
@@ -256,6 +345,7 @@ impl App {
                 if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
                 let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more);
                 if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
+                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift); if d { g.ui_dirty = true; } pcmds.extend(p); }
             }
             if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
             if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) {
@@ -263,14 +353,14 @@ impl App {
                 let (icmds, d) = g.inspector.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
                 if g.inspector.has_focus() != had { set_ime(&**g.window, g.inspector.has_focus()); }
                 for c in icmds { match c {
-                    inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
-                    inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } }
+                    inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
+                    inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
                     inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(self.player.as_ref()); }
-                    inspector_panel::Cmd::Par(par) => { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; }
-                    inspector_panel::Cmd::Rotation(r) => { let mut geo = g.presenter.engine.geometry(); geo.rotation = r; g.presenter.engine.set_geometry(geo); g.content_set = None; }
+                    inspector_panel::Cmd::Par(par) => { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); let (mode, n, d) = match par { min_present::engine::Par::Square => (qcv_project::PixelAspectMode::Square, 1, 1), min_present::engine::Par::Detected => (qcv_project::PixelAspectMode::Detected, 1, 1), min_present::engine::Par::Custom(n, d) => (qcv_project::PixelAspectMode::Custom, n as i32, d as i32) }; self.project.set_pixel_aspect(&id, mode, n, d); } }
+                    inspector_panel::Cmd::Rotation(r) => { let mut geo = g.presenter.engine.geometry(); geo.rotation = r; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
                 } }
             }
-            let _ = g; for c in cmds { self.apply_setting(c); }
+            let _ = g; for c in cmds { self.apply_setting(c); } for c in pcmds { self.project_cmd(c); }
             let g = self.gpu.as_mut().unwrap();
             if modal || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
             let _ = g;
@@ -296,7 +386,7 @@ impl App {
                     else if !handled && a == Action::CycleBackground { self.cycle_background(); }
                     else if !handled { log::info!("{a:?}: nothing to apply it to"); }
                 }
-                transport_bar::Cmd::Open => println!("open: the file dialog arrives with the shell step (drop a file on the window meanwhile)"),
+                transport_bar::Cmd::Open => self.open_media_dialog(),
                 transport_bar::Cmd::Pin => self.toggle_pin(),
                 transport_bar::Cmd::ToggleCompact => { self.toggle_compact(); return }
                 transport_bar::Cmd::RevealBackground => self.reveal(Reveal::Background),
@@ -327,6 +417,13 @@ impl App {
                 k::ALWAYS_ON_TOP => { let _ = g; self.apply_pin(); }
                 _ => {}   // applies at the next open (performance/*) or has no consumer yet
             }
+        }
+    }
+    fn project_cmd(&mut self, c: project_panel::Cmd) {
+        match c {
+            project_panel::Cmd::Load(id) => self.load_item(&id),
+            project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let n = self.project.remove_media_items(&ids); if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            project_panel::Cmd::AddMedia => self.open_media_dialog(),
         }
     }
     /// Compact mode (QCView's `toggleCompact` / `exitCompact`): the window drops its title bar, every rail and band goes, one
@@ -532,11 +629,11 @@ impl ApplicationHandler for App {
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
-        if let Some(f) = self.o.file.clone() { self.open(&f); }
+        if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { self.add_and_load(&f, true); } }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
@@ -597,6 +694,15 @@ impl ApplicationHandler for App {
                         _ => {}
                     }
                 } }
+                // QCView's File menu: Ctrl+O Open Media…, Ctrl+Shift+O Open Project…, Ctrl+S Save, Ctrl+Shift+S Save As…
+                if pressed && self.mods.ctrl && !self.mods.alt && !event.repeat { if let Key::Character(c) = &event.logical_key { match (c.to_lowercase().as_str(), self.mods.shift) {
+                    ("o", false) => { self.open_media_dialog(); return } ("o", true) => { self.open_project_dialog(); return }
+                    ("s", false) => { self.save_project(); return } ("s", true) => { self.save_project_as(); return }
+                    ("n", false) => { self.new_project(); return }   // QCView's New Project has no shortcut (a menu item); Ctrl+N stands in until the menu bar exists
+                    _ => {}
+                } } }
+                // Delete / Backspace: remove the bin selection (QCView's Delete menu item); Ctrl+Z restores the last batch while the annotation undo has no owner
+                if pressed && !event.repeat && matches!(event.logical_key, Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace)) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && !g.settings_panel.has_focus() && !g.inspector.has_focus() { if let Some(c) = g.project_panel.remove_selection() { self.project_cmd(c); return } } } }
                 // QCView's Tools ▸ Settings… (Ctrl+,)
                 if pressed && self.mods.ctrl && !event.repeat && matches!(&event.logical_key, Key::Character(c) if c == ",") { self.reveal(Reveal::Settings); return }
                 // QCView's View menu: Ctrl+1 / Ctrl+2 toggle the rails
@@ -625,6 +731,7 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
+                    else if a == Action::AnnotationUndo { let names = self.project.restore_last_removed(); if !names.is_empty() { log::info!("restored {names:?}"); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
                 }
             }
             WindowEvent::PointerMoved { position, .. } => self.pointer(min_ui::Event::Move { x: position.x, y: position.y }),
@@ -654,7 +761,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::DragDropped { id: tid, .. } => { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, id); } }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if self.fetches.remove(&serial).is_some() { if let Ok(uris) = value.try_as_uris() { if let Some(p) = uris.iter().find_map(|u| min_paths::url::file_url_to_path(u)) { self.open(&p); } } }
+                if self.fetches.remove(&serial).is_some() { if let Ok(uris) = value.try_as_uris() { let mut first = true; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if p.to_lowercase().ends_with(".qcvproj") { self.open_project(&p); first = false; continue } if self.add_and_load(&p, first).is_some() { first = false; } } } }
             }
             _ => {}
         }
@@ -678,7 +785,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -787,8 +894,11 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     left.layout(0.0, 0.0, rails_bottom, scale, t0); right.layout(w as f64, 0.0, rails_bottom, scale, t0);
     engine.set_content_rect(Some((left.visible_width(t0, scale) as u32, 0, (w as f64 - left.visible_width(t0, scale) - right.visible_width(t0, scale)) as u32, rails_bottom as u32)));
     let mut panel = settings_panel::SettingsPanel::new(); panel.sync(&store, t0);
+    let mut project = qcv_project::ProjectManager::new(); let mut pp = project_panel::ProjectPanel::new();
+    let loaded = if let Some(p) = player.as_ref() { project.add_media_file(p.path()).0.unwrap_or_default() } else { String::new() };
+    let _ = pp.sync(&project, &loaded);
     let mut bgp = background_panel::BackgroundPanel::new(); bgp.sync(2); engine.set_background(2); engine.set_ui_scale(scale as f32);
-    let lc = left.content_rect(); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + bh, scale); left.content_height = bh + ph;
+    let lc = left.content_rect(); let pph = pp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph + bh, scale); left.content_height = pph + bh + ph;
     let mut inspector = inspector_panel::InspectorPanel::new(); let _ = inspector.sync(player.as_ref());
     if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
     let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih;
@@ -853,7 +963,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         let scene = ui.scene_mut();
         let _ = fi;
         ui_sketch::bands(scene, w, h, scale, 0.0);
-        for (rail, is_left) in [(&left, true), (&right, false)] { rail.paint_background(scene, shown_at); rail.push_clip(scene); if is_left { bgp.paint(scene, &mut fonts, scale, shown_at, true); panel.paint(scene, &mut fonts, scale, shown_at, false); } else { inspector.paint(scene, &mut fonts, scale, shown_at); } rail.pop_clip(scene); rail.paint_foreground(scene, &mut fonts, scale, shown_at); }
+        for (rail, is_left) in [(&left, true), (&right, false)] { rail.paint_background(scene, shown_at); rail.push_clip(scene); if is_left { pp.paint(scene, &mut fonts, scale, shown_at, true); bgp.paint(scene, &mut fonts, scale, shown_at, false); panel.paint(scene, &mut fonts, scale, shown_at, false); } else { inspector.paint(scene, &mut fonts, scale, shown_at); } rail.pop_clip(scene); rail.paint_foreground(scene, &mut fonts, scale, shown_at); }
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
         scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });

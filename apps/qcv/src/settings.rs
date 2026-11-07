@@ -44,6 +44,9 @@ pub mod k {
     pub const WINDOW_WIDTH: &str = "window/width";
     pub const WINDOW_HEIGHT: &str = "window/height";
     pub const WINDOW_MAXIMIZED: &str = "window/maximized";
+    /// QCView `recents/media` + `recents/projects`: most-recent-first, capped at 10 (stored newline-joined; QSettings held a list)
+    pub const RECENT_MEDIA: &str = "recents/media";
+    pub const RECENT_PROJECTS: &str = "recents/projects";
 }
 
 static KEYS: &[Key] = &[
@@ -82,6 +85,8 @@ static KEYS: &[Key] = &[
     Key::int(k::WINDOW_WIDTH, 0, 0, 32768),
     Key::int(k::WINDOW_HEIGHT, 0, 0, 32768),
     Key::bool(k::WINDOW_MAXIMIZED, false),
+    Key::str(k::RECENT_MEDIA, ""),
+    Key::str(k::RECENT_PROJECTS, ""),
 ];
 
 pub static SCHEMA: Schema = Schema { keys: KEYS };
