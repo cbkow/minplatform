@@ -7,7 +7,7 @@ spike is deleted when its crate meets the spike's own numbers — every number, 
 
 | Step | Note | Crates born / grown | Status |
 |---|---|---|---|
-| 1 | [step1-open-present.md](step1-open-present.md) — open a file or an image-sequence frame → the fused presenter at the display's cadence | `min-present`, `qcv-player`, `qcv-timeline` (rational time only), `apps/qcv` | in progress 2026-11-06 |
+| 1 | [step1-open-present.md](step1-open-present.md) — open a file or an image-sequence frame → the fused presenter at the display's cadence | `min-present`, `qcv-player`, `qcv-timeline` (rational time only), `apps/qcv` | **DONE 2026-11-07 — GO** (carried: H.264 first frame, the software upload's staging blit, the Windows display rows) |
 | 2 | transport + timeline surface (S2: the scrub decoder, two slots, the cut, shuttle, J/K/L) | `qcv-player` (Transport), `qcv-timeline`, `min-ui` (first nodes) | — |
 | 3 | rails / panels / popups / shortcut registry / focus model (§16) | `min-ui` | — |
 | 4 | scopes + guides (§19) | `min-present` (the working-buffer tap), `min-ui` overlays | — |

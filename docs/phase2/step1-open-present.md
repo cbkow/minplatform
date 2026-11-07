@@ -88,9 +88,60 @@ frame-threaded exr decode holds many 66 MB frames — 4.5 GB max RSS headless; t
 **Headless decode / show costs (48 frames, hw zero-copy):** show 0.13–0.23 ms p50 (S1 0.1), open → first frame on the engine
 97–185 ms, CPU 11–14 % of a core at 4K; max RSS 4K ProRes 404 MB, H.264 4K 265 MB, HEVC10 4K 535 MB, 1080p 101–173 MB.
 
-**Display rows (present pacing, lateness on the external display, the fused GPU figure, EDR engagement, the PQ surface):**
-NOT YET MEASURED — both displays were asleep when the build landed (wgpu-hal reports the surface occluded while the NSWindow
-is not visible, by design). The first windowed run before the screen slept showed the player side: 24.0 fps, cadence
-{2: 148, 3: 87}, 0 dropped, 10 % of a core, show 0.17 ms p50. The rows run on the next awake screen (`tools/phase2/trace.sh`).
+**A second defect found by the numbers and fixed:** the first windowed runs showed max RSS 532–607 MB at 4K (S1: 272) and
+**19.7 GB** on the software path — the player drained the slot's channel on every tick, so any decoder faster than real
+time (software ProRes at 250 fps, EXR) ran ahead without bound. `Player::LOOKAHEAD` = 3 decoded frames ahead of the
+clock (plus the slot's 3 and the presenter's ring of 3). After the fix the 4K ProRes zero-copy run sits at **272 MB max RSS
+— S1's number exactly**; software 4K ProRes 1.08 GB, the EXR sequence 1.96 GB (FFmpeg's own frame-thread pools).
 
-**Windows:** see below.
+**Display rows (the built-in XDR hosting the window at 60 Hz — the Alienware is the main display but the window landed on
+the XDR; `tools/phase2/step1-display.sh`, Metal System Traces via `tools/phase2/trace.sh`, 2026-11-07):**
+| Fixture (zero-copy unless noted) | open → first frame presented | present ms p50 / p95 / max (app) · trace p95 | lateness p50 / p95 / max · dropped · cadence | GPU ms per frame p50 / p95 / max | CPU | max RSS |
+|---|---|---|---|---|---|---|
+| **4K ProRes HQ 4:2:2** | **197 ms** | 16.7 / 17.0 / 19.4 · 17.0 | 8.4 / 15.7 / 18.9 · 0 · {2: 140, 3: 143} | **0.32 / 0.48 / 0.55** | 11 % | **272 MB** |
+| 4K ProRes, software + upload | 85 ms | 16.7 / 17.0 / 22.4 | 8.5 / 15.8 / 26.5 · 0 · {2, 3, one 4} | 0.19 / 16.7 (the 13.6-ms staging blit) | 176 % | 1 083 MB |
+| H.264 4K | 228 / 239 ms (two runs) | 16.7 / 17.2 / 19.3 · 17.1 | 8.5 / 16.4 / 30.3 · 0 · {2: 115, 3: 116, +3} | 0.35 / 0.48 / 0.58 | 10 % | 325 MB |
+| HEVC Main10 4K | 141 / 162 ms | 16.7 / 17.4 / 23.9 · 17.6 | 8.6 / 15.9 / 16.6 · 0 · {2: 93, 3: 95} | 0.42 / 0.57 / 0.72 | 11 % | 574 MB |
+| 1080p ProRes | 145 ms | 16.7 / 17.1 / 21.8 · 17.2 | 7.0 / 14.7 / 22.1 · 0 · 2/3 until the panel switched to 120 Hz mid-run (then 5) | 0.32 / 0.47 / 0.55 | 11 % | 190 MB |
+| EXR sequence from one frame (software) | 145 ms | 16.7-class at 60 Hz; 8.3 at 120 Hz | 8.2 / 16.5 / 16.7 · 0 · {2: 66, 3: 69} | 0.14 / 8.5 (the 6-ms staging blit at 4K fp16) | 304 % | 1 957 MB |
+| PQ ramp on the **PQ surface** (`--out pq`) | — | 8.3 / 8.6 / 16.2 (120 Hz) | 0 late | — | 16 % | 649 MB |
+| 4K ProRes on the **SDR surface** (`--out sdr`) | — | 8.3 / 8.5 / 19.0 (120 Hz) | 5.0 / 7.9 / 8.1 · 0 · {5: 139, 6: 1} | — | — | — |
+EDR: the XDR's headroom rose 1.0 → **9.31** while every EDR window was up (S1: 8.5–8.8); on the PQ surface the layer reports
+`Rec. ITU-R BT.2100 PQ` (set by name — S1's workaround — wgpu-hal 30.0.1 still crashes on `Bt2100Pq`), the ramp presents, and
+`--verify-pq` gives the headless numbers. The windowed `--snap-out` PNG is byte-identical to the headless one.
+
+**Pass bar, scored:**
+| Bar | Result | |
+|---|---|---|
+| open → first frame ≤ 215 ms hw / ≤ 120 software (4K ProRes) | 197 ms / 85 ms | met (H.264 228–239 vs S1's 195: see the carried items) |
+| present p95 ≤ 17.5 ms, max ≤ 2 refreshes | p95 17.0–17.4 app, 17.0–17.6 trace; max ≤ 23.9 | met |
+| lateness p95 ≤ 16.7 ms, 0 dropped, cadence ∈ {2, 3} | p95 14.7–16.5; 0 dropped on every run; 2/3 (a handful of 1/4 entries at the display's own 30-ms hiccups) | met |
+| **GPU ≤ 1.0 ms p95 per frame, 4K 4:2:2, no chain** | **0.48 ms p95** (0.32 p50, 0.55 max) — the fused pass; S1's unfused frame was 1.9 | **met — the bar S1 missed** |
+| render-thread cost ≤ 0.3 ms p50 | 0.09–0.23 ms (show) | met |
+| CPU ≤ 25 % of a core | 10–12 % zero-copy | met |
+| footprint ≤ 0.5 GB max RSS, 4K ProRes zero-copy | 272 MB (after the lookahead fix) | met |
+| picture: ≤ 2/255 vs QCView's PNG; vs S1 | 59.2 dB, 99.998 % of samples within 2; vs S1 ≤ 1/255 (the corrected constants) | met (better than the spike) |
+| EDR engages; the PQ ramp presents on the PQ surface; `--verify-pq` arithmetic | headroom 9.31; BT.2100 PQ layer; exact to the fixture's codes | met |
+| image sequence from one frame plays with the rows above | 0 dropped, cadence 2/3, 145 ms first frame | met |
+| the stage-2 slot: identity chain ≡ fused | byte-identical PNG; unit test ≤ 1/2048 linear | met |
+| Windows builds + plays | below | met for what a virtual display allows |
+
+**Windows (rhombus, DX12 + D3D12VA, 2026-11-07; `C:\qcb-lab\qcv-win*.ps1`):** builds on MSVC, the three crate test suites
+pass (the GPU test on DX12 too). Headless (the ssh session, after pointing the headless engine at DX12 — it had fallen to
+Vulkan, where no zero-copy import exists): H.264 4K D3D12VA zero-copy show 0.28 ms p50, HEVC Main10 0.29 ms, 96 frames each,
+0 dropped, 26 % of a core, 538 / 705 MB; the D3D12VA snapshot of frame 1 is **bit-identical** to the Windows software decode
+and within 1/255 of macOS VideoToolbox (1 559 of 6.2 M values); software 4K ProRes 3.9 ms show / 5.6 ms decode, 4.0 GB
+(FFmpeg's 24-thread pool); the EXR sequence opens and plays; `--verify-pq` identical to macOS. Windowed on the logged-on
+desktop: the EDR `Rgba16Float` surface configures on the RTX 4090, D3D12VA frames present. **The virtual display idles at
+≈ 4 Hz with no remote session attached today (261 ms present interval for the S1 spike AND qcv alike — S1's 77 ms was taken
+with a session up)**, so the pacing numbers there mean nothing; row 130 stands: the Windows display rows run on the user's
+monitor.
+
+## Verdict (2026-11-07) — GO
+Step 1 holds every row of its pass bar on macOS, including the one S1 could not meet (the fused presenter frame at 4K costs
+0.48 ms p95 against the 1.0 ms bar), with the picture closer to QCView than the spike's and two defects the numbers caught
+(the per-depth range constants, the unbounded lookahead) fixed in the crates. Carried into step 2: **(a)** H.264's first
+frame is 228–239 ms against S1's 195 — the step-2 open path answers the first frame from the scrub decoder (S2: 16 ms),
+which retires the question; **(b)** the software upload path (CPU planes → `write_texture`) costs a 6–14 ms staging blit at
+4K and is the one place the trace shows GPU time — row 46's no-copy wrap via hal is step 2's image-sequence work; **(c)** the
+Windows display rows wait for the monitor (row 130). The spikes stay (README).
