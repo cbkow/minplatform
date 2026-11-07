@@ -10,6 +10,15 @@
 //! `SWS_POINT` to RGBA8 fitting the max side, the legal-range expansion for RGB sources); stills (EXR / TIFF / PNG / JPEG,
 //! the `?layer=` key suffix) arrive with `min-image` (2c). Textures are the caller's: workers hand back pixels, the main
 //! thread's adopt closure makes the texture and returns its handle, `on_evict` releases it (QCView's 256 MB pools).
+//!
+//! Three measured additions for MOUSE hover (2026-11-07, the user's point: most hovering is far from the playhead):
+//! the hover miss is ONE latest-wins slot (QCView queued every miss at the front and never dropped one — a two-second
+//! sweep over a 4K H.264 timeline queued a hundred decodes the workers ground through for minutes); `precache_strip` on
+//! open gives the whole file a thumbnail every `frames / 400` frames (floor 6) so every hover shows the nearest one
+//! through QCView's own fallback while the exact one loads (the budget is 500 entries = 115 MB at 320 × 180, inside
+//! QCView's 256 MB pool; QCView's 100 never held a strip); the video loader runs slice threads for intra codecs and frame
+//! threads at half the cores for inter ones (QCView: one thread; 4K H.264 misses were 0.6 s). `offer` lets the scrub
+//! decoder's GOP cache answer first (`ScrubDecoder::peek_thumbnail`).
 use crate::ffmpeg::{OpenOptions, Read, RecvRaw, Session};
 use ffmpeg_sys_next as ff;
 use std::{collections::{BTreeMap, HashMap, HashSet, VecDeque}, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc, Condvar, Mutex}, thread};
@@ -28,7 +37,11 @@ const SWS_POINT: i32 = 0x10;
 pub struct ThumbKey { pub source_path: String, pub source_frame: i32 }
 #[derive(Clone, Copy, Debug)]
 pub struct ThumbConfig { pub width: u32, pub height: u32, pub cache_size: usize, pub enabled: bool }
-impl Default for ThumbConfig { fn default() -> Self { ThumbConfig { width: 320, height: 180, cache_size: 100, enabled: true } } }
+impl Default for ThumbConfig { fn default() -> Self { ThumbConfig { width: 320, height: 180, cache_size: 500, enabled: true } } }
+/// QCView's budget, kept for the comparison runs.
+pub const QCVIEW_CACHE_SIZE: usize = 100;
+/// The strip: about this many thumbnails across the file, never denser than `PREFETCH_STRIDE`.
+pub const STRIP_TARGET: i64 = 400;
 /// RGBA8, tightly packed.
 pub struct ThumbPixels { pub width: u32, pub height: u32, pub rgba: Vec<u8> }
 #[derive(Clone, Copy, Debug, Default)]
@@ -42,7 +55,8 @@ pub trait ThumbLoader: Send { fn load_thumbnail(&mut self, source_frame: i32, ma
 pub type LoaderFactory = Arc<dyn Fn(&str) -> Option<Box<dyn ThumbLoader>> + Send + Sync>;
 
 struct Request { key: ThumbKey, _high_priority: bool }
-struct Queue { requests: VecDeque<Request>, queued: HashSet<ThumbKey>, in_progress: HashSet<ThumbKey>, current: HashMap<usize, ThumbKey> }
+struct Queue { requests: VecDeque<Request>, queued: HashSet<ThumbKey>, in_progress: HashSet<ThumbKey>, current: HashMap<usize, ThumbKey>, /// the hover's latest-wins slot, served before the queue
+    hover: Option<ThumbKey> }
 struct PendingUpload { key: ThumbKey, pixels: ThumbPixels }
 struct Shared {
     queue: Mutex<Queue>, queue_cv: Condvar, worker_cv: Condvar, running: AtomicBool, is_playing: AtomicBool, clear_generation: AtomicU64,
@@ -59,7 +73,7 @@ pub struct TimelineThumbnailCache {
 impl TimelineThumbnailCache {
     /// `factory` makes the loaders (`VideoThumbLoader::factory()` for video); `on_evict` releases a texture handle.
     pub fn new(config: ThumbConfig, factory: LoaderFactory, on_evict: Box<dyn FnMut(u64)>) -> TimelineThumbnailCache {
-        let shared = Arc::new(Shared { queue: Mutex::new(Queue { requests: VecDeque::new(), queued: HashSet::new(), in_progress: HashSet::new(), current: HashMap::new() }), queue_cv: Condvar::new(), worker_cv: Condvar::new(), running: AtomicBool::new(true), is_playing: AtomicBool::new(false), clear_generation: AtomicU64::new(0), uploads: Mutex::new(VecDeque::new()), factory, max_thumb: config.width.max(config.height) });
+        let shared = Arc::new(Shared { queue: Mutex::new(Queue { requests: VecDeque::new(), queued: HashSet::new(), in_progress: HashSet::new(), current: HashMap::new(), hover: None }), queue_cv: Condvar::new(), worker_cv: Condvar::new(), running: AtomicBool::new(true), is_playing: AtomicBool::new(false), clear_generation: AtomicU64::new(0), uploads: Mutex::new(VecDeque::new()), factory, max_thumb: config.width.max(config.height) });
         let workers = (0..MAX_WORKER_THREADS).map(|id| { let sh = shared.clone(); thread::Builder::new().name(format!("qcv-thumb-{id}")).spawn(move || worker(sh, id)).expect("thumbnail worker") }).collect();
         log::info!("TimelineThumbnailCache: initialized workers={MAX_WORKER_THREADS}");
         TimelineThumbnailCache { config, shared, workers, cache: BTreeMap::new(), lru: VecDeque::new(), hits: 0, misses: 0, clear_pending: false, on_evict }
@@ -71,7 +85,7 @@ impl TimelineThumbnailCache {
         let key = ThumbKey { source_path: source_path.into(), source_frame };
         if let Some(e) = self.cache.get(&key).copied() { self.hits += 1; self.touch(&key); return e }
         self.misses += 1;
-        { let mut q = self.shared.queue.lock().unwrap(); if !q.in_progress.contains(&key) && !q.queued.contains(&key) { q.requests.push_front(Request { key: key.clone(), _high_priority: true }); q.queued.insert(key.clone()); self.shared.queue_cv.notify_one(); } }
+        { let mut q = self.shared.queue.lock().unwrap(); if !q.in_progress.contains(&key) && !q.queued.contains(&key) { q.hover = Some(key.clone()); self.shared.queue_cv.notify_one(); } }   // latest wins: a newer hover replaces this one before a worker starts it
         if allow_fallback {
             if let Some(near) = self.find_nearest_cached_frame(source_path, source_frame) { if let Some(e) = self.cache.get(&ThumbKey { source_path: source_path.into(), source_frame: near }) { return *e } }
             if let Some(sib) = self.find_nearest_sequence_sibling(source_path) { if let Some(e) = self.cache.get(&sib) { return *e } }
@@ -91,7 +105,15 @@ impl TimelineThumbnailCache {
         }
         self.shared.queue_cv.notify_one();
     }
-    pub fn cancel_pending_requests(&mut self) { let mut q = self.shared.queue.lock().unwrap(); q.requests.clear(); q.queued.clear(); }
+    pub fn cancel_pending_requests(&mut self) { let mut q = self.shared.queue.lock().unwrap(); q.requests.clear(); q.queued.clear(); q.hover = None; }
+    /// The strip: the whole file at a stride that scales with its length (`frames / STRIP_TARGET`, floor `PREFETCH_STRIDE`),
+    /// the playhead's frame first.
+    pub fn precache_strip(&mut self, source_path: &str, frames: i32, playhead: i32) { let stride = ((frames as i64 / STRIP_TARGET) as i32).max(PREFETCH_STRIDE); self.precache_range(source_path, 0, (frames - 1).max(0), playhead, stride); }
+    /// Pixels made elsewhere (the scrub decoder's GOP cache): they land on the next drain like a worker's.
+    pub fn offer(&mut self, key: ThumbKey, pixels: ThumbPixels) { if self.cache.contains_key(&key) { return } { let mut q = self.shared.queue.lock().unwrap(); if q.hover.as_ref() == Some(&key) { q.hover = None; } } self.shared.uploads.lock().unwrap().push_back(PendingUpload { key, pixels }); }
+    /// How far the nearest cached frame of this source is from `source_frame` (the fallback's distance); None = none cached.
+    pub fn nearest_cached_distance(&self, source_path: &str, source_frame: i32) -> Option<i32> { self.find_nearest_cached_frame(source_path, source_frame).map(|n| (n - source_frame).abs()) }
+    pub fn contains(&self, source_path: &str, source_frame: i32) -> bool { self.cache.contains_key(&ThumbKey { source_path: source_path.into(), source_frame }) }
     /// The main thread's per-tick adopt: ≤ 64 finished thumbs become textures through `adopt(key, pixels) -> handle`; the LRU
     /// evicts past the budget. Returns how many landed.
     pub fn process_pending_uploads(&mut self, mut adopt: impl FnMut(&ThumbKey, &ThumbPixels) -> u64) -> usize {
@@ -125,7 +147,7 @@ impl TimelineThumbnailCache {
         if playing != was { self.shared.queue_cv.notify_all(); self.shared.worker_cv.notify_all(); log::info!("TimelineThumbnailCache: {} → {} worker(s)", if playing { "playback" } else { "paused" }, if playing { PLAYBACK_WORKER_THREADS } else { MAX_WORKER_THREADS }); }
     }
     pub fn is_enabled(&self) -> bool { self.config.enabled }
-    pub fn stats(&self) -> ThumbStats { let q = self.shared.queue.lock().unwrap(); ThumbStats { total_cached: self.cache.len(), cache_hits: self.hits, cache_misses: self.misses, pending_requests: q.requests.len() + q.in_progress.len() } }
+    pub fn stats(&self) -> ThumbStats { let q = self.shared.queue.lock().unwrap(); ThumbStats { total_cached: self.cache.len(), cache_hits: self.hits, cache_misses: self.misses, pending_requests: q.requests.len() + q.in_progress.len() + q.hover.is_some() as usize } }
     pub fn shutdown(&mut self) {
         self.shared.running.store(false, Ordering::Release); self.shared.queue_cv.notify_all(); self.shared.worker_cv.notify_all();
         for w in self.workers.drain(..) { w.join().ok(); }
@@ -168,7 +190,7 @@ fn worker(sh: Arc<Shared>, id: usize) {
     while sh.running.load(Ordering::Acquire) {
         let req = {
             let mut q = sh.queue.lock().unwrap();
-            q = sh.queue_cv.wait_while(q, |q| sh.running.load(Ordering::Acquire) && (q.requests.is_empty() || !sh.should_worker_run(id))).unwrap();
+            q = sh.queue_cv.wait_while(q, |q| sh.running.load(Ordering::Acquire) && ((q.requests.is_empty() && q.hover.is_none()) || !sh.should_worker_run(id))).unwrap();
             if !sh.running.load(Ordering::Acquire) { break }
             if !sh.should_worker_run(id) {
                 // park for playback; our in-flight task (if any) goes back to the front
@@ -176,7 +198,7 @@ fn worker(sh: Arc<Shared>, id: usize) {
                 let _q = sh.worker_cv.wait_while(q, |_| sh.running.load(Ordering::Acquire) && !sh.should_worker_run(id)).unwrap();
                 continue;
             }
-            let Some(r) = q.requests.pop_front() else { continue };
+            let r = match q.hover.take() { Some(k) => Request { key: k, _high_priority: true }, None => match q.requests.pop_front() { Some(r) => r, None => continue } };
             q.queued.remove(&r.key); q.in_progress.insert(r.key.clone()); q.current.insert(id, r.key.clone());
             r
         };
@@ -198,7 +220,8 @@ pub struct VideoThumbLoader { session: Session, fps: f64, frames: i32, sws: *mut
 unsafe impl Send for VideoThumbLoader {}
 impl VideoThumbLoader {
     pub fn open(path: &str) -> Option<VideoThumbLoader> {
-        let session = Session::open(path, &OpenOptions { threads: 1, hw: None, seq: None, fast: true }).ok()?;
+        // slice threads for intra codecs, frame threads at half the cores for inter ones (QCView: one thread; see the module doc)
+        let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, seq: None, fast: true }).ok()?;
         let fps = session.info.rate().as_f64(); let frames = session.info.frame_count;
         Some(VideoThumbLoader { session, fps, frames, sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0) })
     }
@@ -233,12 +256,20 @@ impl ThumbLoader for VideoThumbLoader {
             }
         }
         if best.is_null() { return None }
-        let out = unsafe { self.convert(best, max_size) };
+        let out = unsafe { let mut c = VideoThumbLoaderSws { sws: self.sws, sws_key: self.sws_key }; let o = c.convert(best, max_size); self.sws = c.sws; self.sws_key = c.sws_key; o };
         unsafe { ff::av_frame_free(&mut best); }
         out
     }
 }
-impl VideoThumbLoader {
+/// An RGBA8 thumbnail from any planar AVFrame with a one-shot swscale context (the scrub cache's peek path).
+pub unsafe fn rgba_thumb_from_avframe(fr: *mut ff::AVFrame, max_size: u32) -> Option<ThumbPixels> { unsafe {
+    let mut tmp = VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0) };
+    let out = tmp.convert(fr, max_size);
+    if !tmp.sws.is_null() { ff::sws_freeContext(tmp.sws); }
+    out
+} }
+struct VideoThumbLoaderSws { sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32) }
+impl VideoThumbLoaderSws {
     unsafe fn convert(&mut self, fr: *mut ff::AVFrame, max_size: u32) -> Option<ThumbPixels> { unsafe {
         let (w, h) = ((*fr).width, (*fr).height);
         if w <= 0 || h <= 0 { return None }

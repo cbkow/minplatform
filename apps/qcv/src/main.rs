@@ -355,20 +355,22 @@ fn run_scrub_bench(o: Opts) {
 /// at the panel's 16 ms request throttle, the drain every 33 ms (textures made on the headless engine); then the same
 /// frames again (hits), then a prefetch of the whole file at stride 6. The bar: a hover answers within one refresh once
 /// cached, and a miss lands in the time one thumbnail decode takes.
+fn cache_size_for(_c: &qcv_player::TimelineThumbnailCache, qcview: bool) -> usize { if qcview { qcv_player::thumbnail_cache::QCVIEW_CACHE_SIZE } else { qcv_player::ThumbConfig::default().cache_size } }
 fn run_hover_bench(o: Opts) {
     use min_present::engine::Engine;
-    use qcv_player::{TimelineThumbnailCache, ThumbConfig, VideoThumbLoader, thumbnail_cache::{HOVER_REQUEST_THROTTLE_MS, UPLOAD_DRAIN_MS, PREFETCH_STRIDE}};
+    use qcv_player::{TimelineThumbnailCache, ThumbConfig, VideoThumbLoader, thumbnail_cache::{HOVER_REQUEST_THROTTLE_MS, UPLOAD_DRAIN_MS}};
     let n = o.hover.unwrap_or(20);
     let Some(file) = o.file.clone() else { println!("--hover needs a file"); return };
     let engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
     let src = Source::from_path(&file, None);
-    let p = match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let mut p = match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: false, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     let total = p.frame_count();
+    let qcview_budget = std::env::var_os("QCV_HOVER_QCVIEW").is_some();   // QCView's 100-entry budget, no strip, no peek: the comparison run
     println!("opened {} — {}", src.display(), describe(&p));
     let textures: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, wgpu::Texture>>> = Default::default();
     let released = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let (tx, rl) = (textures.clone(), released.clone());
-    let mut cache = TimelineThumbnailCache::new(ThumbConfig::default(), VideoThumbLoader::factory(), Box::new(move |h| { tx.borrow_mut().remove(&h); rl.set(rl.get() + 1); }));
+    let mut cache = TimelineThumbnailCache::new(ThumbConfig { cache_size: if qcview_budget { qcv_player::thumbnail_cache::QCVIEW_CACHE_SIZE } else { ThumbConfig::default().cache_size }, ..Default::default() }, VideoThumbLoader::factory(), Box::new(move |h| { tx.borrow_mut().remove(&h); rl.set(rl.get() + 1); }));
     let mut next_handle = 0u64;
     let mut adopt = |key: &qcv_player::ThumbKey, px: &qcv_player::ThumbPixels| -> u64 {
         let _ = key;
@@ -400,20 +402,54 @@ fn run_hover_bench(o: Opts) {
     for &f in &frames { let t = Instant::now(); let e = cache.get_thumbnail(&file, f, true); hit_ms.push(t.elapsed().as_secs_f32() * 1000.0); if e.texture == 0 { println!("  miss on a re-hover of frame {f}"); } }
     let s = cache.stats();
     println!("hover: {} random frames: miss → thumbnail landed ms p50 {:.1} p95 {:.1} max {:.1} (thumb {}x{}); re-hover hit ms p50 {:.3} max {:.3}; cached {} of {}; hits {} misses {}; the walk took {:.1} s",
-        frames.len(), pct(&mut land_ms, 50.0), pct(&mut land_ms, 95.0), pct(&mut land_ms, 100.0), sizes.0, sizes.1, pct(&mut hit_ms, 50.0), pct(&mut hit_ms, 100.0), s.total_cached, ThumbConfig::default().cache_size, s.cache_hits, s.cache_misses, fill);
-    // the whole file at stride 6 (QCView's precacheRange), the priority frame in the middle
-    let t = Instant::now(); cache.precache_range(&file, 0, total - 1, total / 2, PREFETCH_STRIDE);
-    let wanted = ((total + PREFETCH_STRIDE - 1) / PREFETCH_STRIDE) as usize;
+        frames.len(), pct(&mut land_ms, 50.0), pct(&mut land_ms, 95.0), pct(&mut land_ms, 100.0), sizes.0, sizes.1, pct(&mut hit_ms, 50.0), pct(&mut hit_ms, 100.0), s.total_cached, cache_size_for(&cache, qcview_budget), s.cache_hits, s.cache_misses, fill);
+    // the strip on open (frames / 400, floor 6), then a MOUSE SWEEP: the hover crosses the whole timeline in 2 s at the
+    // 16 ms throttle; every position asks for its thumbnail through the Transport (GOP-cache peek → cache → nearest cached)
+    cache.clear();
+    let t = Instant::now();
+    if !qcview_budget { cache.precache_strip(&file, total, 0); }
+    let wanted = if qcview_budget { 0 } else { ((total as i64 + (total as i64 / 400).max(6) - 1) / (total as i64 / 400).max(6)) as usize };
     let mut landed = 0usize;
-    while cache.stats().pending_requests > 0 && t.elapsed().as_secs() < 120 { landed += cache.process_pending_uploads(&mut adopt); std::thread::sleep(std::time::Duration::from_millis(UPLOAD_DRAIN_MS)); }
+    while !qcview_budget && cache.stats().pending_requests > 0 && t.elapsed().as_secs() < 180 { landed += cache.process_pending_uploads(&mut adopt); std::thread::sleep(std::time::Duration::from_millis(UPLOAD_DRAIN_MS)); }
     landed += cache.process_pending_uploads(&mut adopt);
+    println!("strip: {landed} of {wanted} thumbnails in {:.1} s ({:.0} ms each across 3 workers); cache holds {} of {}", t.elapsed().as_secs_f32(), t.elapsed().as_secs_f32() * 1000.0 / landed.max(1) as f32, cache.stats().total_cached, cache_size_for(&cache, qcview_budget));
+    let _ = &p;
+    let (mut answered, mut exact, mut nothing, mut off_by, mut last_f) = (0u32, 0u32, 0u32, vec![], 0i32);
+    let t = Instant::now(); let sweep = std::time::Duration::from_secs(2); let mut next_drain = t;
+    while t.elapsed() < sweep {
+        let frac = t.elapsed().as_secs_f32() / sweep.as_secs_f32(); let f = ((total - 1) as f32 * frac) as i32; last_f = f;
+        if Instant::now() >= next_drain { cache.process_pending_uploads(&mut adopt); next_drain += std::time::Duration::from_millis(UPLOAD_DRAIN_MS); }
+        let (e, peeked) = p.hover_thumbnail(&mut cache, f, 320);
+        if peeked { cache.process_pending_uploads(&mut adopt); }
+        let (e, _) = if peeked { p.hover_thumbnail(&mut cache, f, 320) } else { (e, false) };
+        if e.texture != 0 { answered += 1; if cache.contains(&file, f) { exact += 1; } else { off_by.push(cache.nearest_cached_distance(&file, f).unwrap_or(0) as f32); } } else { nothing += 1; }
+        std::thread::sleep(std::time::Duration::from_millis(HOVER_REQUEST_THROTTLE_MS));
+    }
+    // the mouse rests on the last position: how long until the exact frame lands?
+    let t2 = Instant::now(); let mut rest_ms = f32::NAN;
+    while t2.elapsed().as_secs() < 10 { cache.process_pending_uploads(&mut adopt); if cache.contains(&file, last_f) { rest_ms = t2.elapsed().as_secs_f32() * 1000.0; break } std::thread::sleep(std::time::Duration::from_millis(1)); }
     let s = cache.stats();
-    println!("prefetch: {} of {} frames (stride {PREFETCH_STRIDE}) landed in {:.1} s = {:.1} ms per thumbnail across 3 workers; cache holds {} (budget {}), {} textures released; peak RSS {:.0} MB", landed, wanted, t.elapsed().as_secs_f32(), t.elapsed().as_secs_f32() * 1000.0 / landed.max(1) as f32, s.total_cached, ThumbConfig::default().cache_size, released.get(), qcv_player::max_rss_mb());
-    // playback: one worker
+    println!("sweep: {} hovers over 2 s — answered with a picture {answered} (exact {exact}, nearest cached {} at p50 {:.0} / p95 {:.0} / max {:.0} frames away), nothing {nothing}; the exact frame landed {rest_ms:.0} ms after the mouse rested; backlog left {} requests; cache holds {} textures",
+        answered + nothing, answered - exact, pct(&mut off_by, 50.0), pct(&mut off_by, 95.0), pct(&mut off_by, 100.0), s.pending_requests, s.total_cached);
+    // a drag across frames 100–190 (the scrub decoder's GOP cache fills along it on inter codecs), then hovers over the same
+    // span: the GOP-cache peek answers exactly and at once where the cache holds the frame
+    if total > 200 {
+        p.begin_scrub(); let t = Instant::now(); let served = p.scrub().and_then(|s| s.served.clone());
+        for f in (100..190).step_by(2) { p.scrub_to_frame(f); if let Some(r) = &served { let _ = r.recv_timeout(std::time::Duration::from_millis(500)); } let _ = p.tick(Instant::now()); }
+        p.end_scrub(); while p.seek_in_flight() && t.elapsed().as_secs() < 5 { let _ = p.tick(Instant::now()); std::thread::sleep(std::time::Duration::from_micros(200)); }
+        let (mut peek_ms, mut exact_peek, mut via_loader) = (vec![], 0u32, 0u32);
+        for f in (101..189).step_by(3) {
+            let t = Instant::now(); let (e, peeked) = p.hover_thumbnail(&mut cache, f, 320);
+            if peeked { cache.process_pending_uploads(&mut adopt); let (e2, _) = p.hover_thumbnail(&mut cache, f, 320); if e2.texture != 0 && cache.contains(&file, f) { exact_peek += 1; peek_ms.push(t.elapsed().as_secs_f32() * 1000.0); } }
+            else { via_loader += 1; let _ = e; }
+        }
+        println!("after a drag over 100–190: {} hovers on that span — exact through the GOP-cache peek {exact_peek} (p50 {:.1} ms, max {:.1}), to the loader {via_loader} ({})", exact_peek + via_loader, pct(&mut peek_ms, 50.0), pct(&mut peek_ms, 100.0), if p.scrub().map(|s| s.intra_direct).unwrap_or(true) { "an intra codec: the scrub decoder caches nothing, by design" } else { "frames the GOP cache did not hold" });
+    }
+    // playing: one worker
     cache.notify_playback_state(true);
     let t = Instant::now(); cache.precache_range(&file, 0, (total - 1).min(120), 0, 1);
     while cache.stats().pending_requests > 0 && t.elapsed().as_secs() < 60 { cache.process_pending_uploads(&mut adopt); std::thread::sleep(std::time::Duration::from_millis(UPLOAD_DRAIN_MS)); }
-    println!("playing (one worker): 121 frames at stride 1 in {:.1} s", t.elapsed().as_secs_f32());
+    println!("playing (one worker): 121 frames at stride 1 in {:.1} s; peak RSS {:.0} MB", t.elapsed().as_secs_f32(), qcv_player::max_rss_mb());
     cache.shutdown();
 }
 

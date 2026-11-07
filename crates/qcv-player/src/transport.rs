@@ -538,6 +538,17 @@ impl Transport {
     /// A refresh that showed nothing new (cadence accounting).
     pub fn idle_refresh(&mut self) { if self.last_shown.is_none() { self.stats.black += 1; } else { self.refreshes_on_current += 1; } }
     pub fn decoder_state(&self) -> State { self.slots[self.active].decoder.state() }
+    /// The hover thumbnail for a TIMELINE frame: the clip's GOP cache first (exact, ~1 ms), else the thumbnail cache's
+    /// answer (the nearest cached through QCView's fallback while the exact one loads). Returns (entry, served by the peek).
+    pub fn hover_thumbnail(&mut self, cache: &mut crate::thumbnail_cache::TimelineThumbnailCache, tl_frame: i32, max_size: u32) -> (crate::thumbnail_cache::ThumbEntry, bool) {
+        let Some((clip, src)) = self.resolve(tl_frame as i64) else { return (Default::default(), false) };
+        let path = self.clip(clip).map(|c| c.media_path.clone()).unwrap_or_default();
+        let key = crate::thumbnail_cache::ThumbKey { source_path: path.clone(), source_frame: src as i32 };
+        if !cache.contains(&path, src as i32) {
+            if let Some(sd) = self.slots.iter().find(|s| s.clip == clip).and_then(|s| s.scrub.as_ref()) { if let Some(px) = sd.peek_thumbnail(src as i32, max_size) { cache.offer(key, px); return (cache.get_thumbnail(&path, src as i32, true), true) } }
+        }
+        (cache.get_thumbnail(&path, src as i32, true), false)
+    }
 }
 
 /// A playlist from `path@in-out,…` specs (the harness's `--cut`): trims in SOURCE frames, the master rate = the first clip's.

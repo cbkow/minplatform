@@ -250,6 +250,28 @@ the per-clip range override from the project (step 3), the playlist's audio thro
 **Owed from piece 4**: an After Effects render for `aeProjectLink:fullPath` (none among the local masters), the MXF scanner
 (2d), `qcv-meta-ffi`, the Transport's use of the timecode origin (the UI's timecode well, with `min-ui`).
 
+**Hover for the MOUSE (added 2026-11-07, after the user's point that most hovering is far from the playhead).** Four
+measured changes beside QCView's design, each with its reason in the code: the hover miss is ONE latest-wins slot (QCView
+queued every miss at the front and never dropped one); `precache_strip` on open thumbnails the whole file every
+`frames / 400` frames (floor 6) with the budget at 500 entries (115 MB, inside QCView's 256 MB pool) so every hover shows
+the nearest frame through QCView's own fallback while the exact one loads; the video loader runs slice threads for intra
+codecs and frame threads at half the cores for inter ones (QCView: one thread); and the Transport's `hover_thumbnail`
+asks the clip's scrub-decoder GOP cache first (`ScrubDecoder::peek_thumbnail`: a `peek`, never a decode, swscale on the
+caller's thread). `qcv --hover` now sweeps the whole timeline in 2 s at the 16 ms throttle, rests, and then drags 100–190
+and hovers the span. `QCV_HOVER_QCVIEW=1` runs QCView's budget without the strip for the comparison (the loader's threads
+are global, so its miss numbers are already the threaded ones; the earlier table has the one-thread figures).
+
+| File | miss → thumbnail, one thread → threaded | strip on open | sweep: nearest shown, frames away p50 / p95 (QCView's budget) | exact lands after the mouse rests | GOP-cache peek after a drag |
+|---|---|---|---|---|---|
+| 4K H.264 | 628 → **101 ms** | 114 thumbs in 7.6 s | **2 / 3** (73 / 109), 0 unanswered | 0 ms (141) | 0.4 ms where held (the cache keeps 43 frames of 4K) |
+| 4K ProRes | 132 → **34 ms** | 114 in 1.7 s | **2 / 3** (8 / 17) | 0 ms | none: intra-direct caches nothing, by design; the loader is 34 ms |
+| 1080p H.264 | 67 ms (threaded) | 120 in 3.0 s | **2 / 3** (19 / 33) | 6 ms | 0.2 ms where held |
+| 1080p ProRes, 5-min | 35 ms | 408 in 1.4 s | — | — | — |
+
+The cost: the threaded loaders' peak RSS during the strip (2.4 GB on 4K H.264 with three workers at eight threads, 0.6 GB
+for QCView's one-thread loader); a per-worker thread cap is the knob if that matters on the Windows box. Log:
+`fixtures/phase2/step2-hover.log`.
+
 **Owed from piece 3**: the playlist slot swap behind the Transport's debounce (rows 85 / 157: two decoder slots + the
 next-clip prewarm — the next piece after `qcv-meta`), the timeline SURFACE (`min-ui`, row 86), still-image loaders (2c).
 

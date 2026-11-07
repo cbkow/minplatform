@@ -42,7 +42,7 @@ pub struct Served { pub id: u64, pub target: i32, pub issued: Instant, pub done:
 struct Shared { pending: AtomicU64, stop: AtomicBool, cv: Condvar, lock: Mutex<()>, range_override: AtomicU8, cache_invalidate: AtomicBool, last_shown: AtomicI32, issued: Mutex<Vec<(u64, i32, Instant)>> }
 
 pub struct ScrubDecoder {
-    shared: Arc<Shared>, thread: Option<thread::JoinHandle<()>>, next_id: u64,
+    shared: Arc<Shared>, thread: Option<thread::JoinHandle<()>>, next_id: u64, cache: Arc<SimpleLru<i32, Arc<ScrubCacheEntry>>>,
     pub served: Option<crossbeam_channel::Receiver<Served>>, pub intra_direct: bool, pub hw_active: bool,
 }
 
@@ -64,9 +64,10 @@ impl ScrubDecoder {
         if hw_active && !probe_intra { log::info!("ScrubDecoder: hardware scrub enabled for an inter codec (hw_inter_scrub)"); }
         let shared = Arc::new(Shared { pending: AtomicU64::new(0), stop: AtomicBool::new(false), cv: Condvar::new(), lock: Mutex::new(()), range_override: AtomicU8::new(opts.range_override as u8), cache_invalidate: AtomicBool::new(false), last_shown: AtomicI32::new(-1), issued: Mutex::new(vec![]) });
         let (stx, srx) = if opts.stats { let (a, b) = crossbeam_channel::unbounded(); (Some(a), Some(b)) } else { (None, None) };
-        let (sh, budget, intra_direct) = (shared.clone(), opts.budget_bytes, probe_intra);
-        let thread = thread::Builder::new().name("qcv-scrub".into()).spawn(move || worker(session, sh, index, sink, budget, intra_direct, stx)).map_err(|e| Error::Open(e.to_string()))?;
-        Ok(ScrubDecoder { shared, thread: Some(thread), next_id: 0, served: srx, intra_direct, hw_active })
+        let cache: Arc<SimpleLru<i32, Arc<ScrubCacheEntry>>> = Arc::new(SimpleLru::new(opts.budget_bytes));
+        let (sh, c, intra_direct) = (shared.clone(), cache.clone(), probe_intra);
+        let thread = thread::Builder::new().name("qcv-scrub".into()).spawn(move || worker(session, sh, index, sink, c, intra_direct, stx)).map_err(|e| Error::Open(e.to_string()))?;
+        Ok(ScrubDecoder { shared, thread: Some(thread), next_id: 0, cache, served: srx, intra_direct, hw_active })
     }
     /// Latest target wins; cheap at slider-drag rate. Returns the request id (the harness matches `Served` on it).
     pub fn request_frame(&mut self, frame_no: i32) -> u64 {
@@ -77,6 +78,14 @@ impl ScrubDecoder {
         self.next_id
     }
     pub fn last_shown(&self) -> i32 { self.shared.last_shown.load(Ordering::Acquire) }
+    /// The hover thumbnail's first stop (the platform's addition beside QCView's loader): a frame already in the GOP cache
+    /// becomes an RGBA8 thumbnail on the calling thread (`peek`: never touches the LRU, never decodes; ~1–2 ms for 4K via
+    /// swscale). Only planar entries convert here; a VideoToolbox entry (and a miss) returns None and the loader answers.
+    pub fn peek_thumbnail(&self, frame: i32, max_size: u32) -> Option<crate::thumbnail_cache::ThumbPixels> {
+        let e = self.cache.peek(&frame)?;
+        if e.kind() != Kind::Planar { return None }
+        unsafe { crate::thumbnail_cache::rgba_thumb_from_avframe(e.avframe(), max_size) }
+    }
     /// The Range pill: CPU entries baked the old range into their levels and native ones snapshot it — the worker drops
     /// the cache before its next decode, and the held frame is re-requested so a paused scrub updates live.
     pub fn set_range_override(&mut self, r: RangeOverride) {
@@ -93,8 +102,7 @@ impl Drop for ScrubDecoder { fn drop(&mut self) { self.close(); } }
 fn pack(id: u64, target: i32) -> u64 { ((id & 0xffff_ffff) << 32) | (target as u64 + 1) }
 fn unpack(v: u64) -> Option<(u64, i32)> { if v == 0 { None } else { Some((v >> 32, (v & 0xffff_ffff) as i32 - 1)) } }
 
-fn worker(mut s: Session, sh: Arc<Shared>, index: Arc<FrameIndex>, sink: ExternalSink, budget: usize, intra_direct: bool, stats: Option<crossbeam_channel::Sender<Served>>) {
-    let cache: SimpleLru<i32, Arc<ScrubCacheEntry>> = SimpleLru::new(budget);
+fn worker(mut s: Session, sh: Arc<Shared>, index: Arc<FrameIndex>, sink: ExternalSink, cache: Arc<SimpleLru<i32, Arc<ScrubCacheEntry>>>, intra_direct: bool, stats: Option<crossbeam_channel::Sender<Served>>) {
     let mut pos: i32 = -1; let mut positioned = false;
     while !sh.stop.load(Ordering::Acquire) {
         let Some((id, target)) = unpack(sh.pending.swap(0, Ordering::AcqRel)) else {
