@@ -37,8 +37,12 @@ impl Player {
         if self.paused { if let (Some(p), Some((t0, f0))) = (self.paused_at.take(), self.clock) { self.clock = Some((t0 + (now - p), f0)); } self.paused = false; }
         else { self.paused = true; self.paused_at = Some(now); }
     }
+    /// Frames decoded ahead of the clock that the player holds; the slot's channel holds as many again, and the presenter's
+    /// ring three more. A decoder faster than real time (software ProRes at 250 fps, EXR) must block here, not fill memory.
+    pub const LOOKAHEAD: usize = 3;
     fn pump(&mut self) {
-        while let Ok(r) = self.slot.rx.try_recv() {
+        while self.ready.len() < Self::LOOKAHEAD {
+            let Ok(r) = self.slot.rx.try_recv() else { break };
             if r.serial != self.slot.serial { continue }
             self.stats.decode_ms.push(r.decoded.decode_ms);
             let n = self.slot.frame_no(r.decoded.pts);

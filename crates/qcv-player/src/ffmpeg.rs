@@ -22,7 +22,7 @@ unsafe impl Sync for HwFrame {}   // only ever read (the platform handle) once c
 impl Drop for HwFrame { fn drop(&mut self) { unsafe { ff::av_frame_free(&mut self.0) } } }
 impl Clone for HwFrame { fn clone(&self) -> Self { HwFrame(unsafe { ff::av_frame_clone(self.0) }) } }
 #[cfg(windows)]
-struct Dx12Keep { _frame: HwFrame, handle: Box<min_present::Dx12FrameHandle> }
+struct Dx12Keep { _frame: HwFrame, _handle: Box<min_present::Dx12FrameHandle> }
 #[cfg(windows)] unsafe impl Send for Dx12Keep {}
 #[cfg(windows)] unsafe impl Sync for Dx12Keep {}
 
@@ -160,7 +160,7 @@ impl Decoder {
                 let af = &*((*hwf.0).data[0] as *const crate::hw::AVD3D12VAFrame);
                 let handle = Box::new(min_present::Dx12FrameHandle { resource: af.texture, fence: af.sync_ctx.fence, fence_value: af.sync_ctx.fence_value });
                 let ptr = &*handle as *const _ as *mut std::ffi::c_void;
-                NativeFrame { handle: ptr, keep: std::sync::Arc::new(Dx12Keep { _frame: hwf, handle }) }
+                NativeFrame { handle: ptr, keep: std::sync::Arc::new(Dx12Keep { _frame: hwf, _handle: handle }) }
             };
             #[cfg(not(any(target_os = "macos", windows)))]
             let native = { let _ = hwf; unreachable!() };
