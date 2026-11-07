@@ -133,6 +133,14 @@ impl VideoDecoder {
     }
     /// External publish entry (the scrub decoder): bypasses pacing, replaces whatever is queued, marks the frame due now.
     pub fn publish_external(&self, handle: FrameHandle) { self.external_sink().publish(handle) }
+    /// The oldest queued frame, whatever the clock says (the Transport's seek landing: the queue holds only post-seek frames).
+    pub fn fetch_front(&self) -> Option<FrameHandle> {
+        let h = self.shared.queue.lock().unwrap().pop_front();
+        if h.is_some() { self.shared.cv.notify_all(); self.shared.last_fetched_seq.store(self.shared.published_seq.load(Ordering::Acquire), Ordering::Relaxed); }
+        h
+    }
+    /// Peek: is the oldest queued frame an external (scrub) one?
+    pub fn front_is_external(&self) -> bool { self.shared.queue.lock().unwrap().front().map(|h| h.frame_no < 0).unwrap_or(false) }
     pub fn queued(&self) -> usize { self.shared.queue.lock().unwrap().len() }
     pub fn external_sink(&self) -> ExternalSink { ExternalSink(self.shared.clone()) }
 }

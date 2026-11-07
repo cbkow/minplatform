@@ -1,4 +1,4 @@
-# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder LANDED 2026-11-07)
+# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport LANDED 2026-11-07)
 
 **Question.** Does QCView's Transport — J / K / L, seeks, scrubs, the two-slot playlist cut, shuttle, loop, in / out,
 review speeds — run on `qcv-player` with S2's numbers, driven by `min-ui`'s FIRST nodes (the transport bar and the
@@ -108,6 +108,44 @@ Apple; Windows D3D12VA (S2: 7.5 ms) is the per-OS default and is owed its headle
   370 MB. The windowed path is untouched.
 - **The feed's shape is QCView's** (`av_read_frame` → `avcodec_send_packet` → drain `avcodec_receive_frame` until EAGAIN;
   the send's return is not consulted in either). Kept as is (row 131).
+
+### 2b · the Transport (landed 2026-11-07)
+
+**What landed** (`crates/qcv-player`): `transport.rs` ← `WindowManager`'s transport slice (play / pause / toggle with the
+user-intent flag, `seekToTime` / `seekToFrame` / `…AndResume` with the 50 ms playlist debounce as the seam, `stepFrames`
+(pause first, clamp), start / end, the review speeds — ring 0.5 / 0.75 / 1 / 1.25 / 1.5 / 2, setter clamp 0.25–4,
+reset to 1× on shuttle start —, loop (default ON) + in / out with the "I clears O when they'd cross" rule, the auto-enable
+on a valid range, `pushInOutToTimer`'s out + 1 and the read-ahead hydrate rule, the fast-seek shuttle — 2× doubling per
+second to 32× on a 33 ms tick, hold at the edge, the final commit seek on release —, begin / endModal, the loop wrap with
+the 1-frame guard) plus `TimelinePanel.qml`'s scrub gesture (press pauses, moves preview through the scrub decoder, the
+heavy seek on release, resume if the press interrupted play); `playback_timer.rs` ← `PlaybackTimer` verbatim (WallClock /
+FrameLocked, fmod wraps inside [in, out) or the duration, speed clamp 0.0625–8, nearest-frame `currentFrame`; 2 tests);
+`key_map.rs` ← the event filter's transport table (A / J, D / L hold with repeat ignored; Q / ←, E / → step with repeat;
+Space / K / W / S; Home / End; I / O / ⇧I; V loop; R / ⇧R; M; ↑ / ↓; the shell's B / T / ⌘T / F / ⌘Z / ⌘⇧Z returned as
+actions; 1 test). `AudioHooks` is the audio player's call-site trait in QCView's shape (hold / release / update / tempo /
+shuttle grains / mute / volume) with `NoAudio` until 2b-audio. `Player` (step 1's thin clock) is retired; the qcv app's
+windowed, headless and harness paths all run on the Transport, and its keys go through the map.
+
+**The one structural note** (in the module doc): the streaming decoder is `Policy::Clocked` (step 1b), so the
+`PlaybackTimer` LEADS video playback — each refresh fetches the frame due at the timer's nearest frame; a seek while
+playing holds the integrator until the sought frame lands and re-seats the clock there (QCView's decoder re-baselines its
+pacing on that frame); the loop wrap is the timer's with the decoder re-seated at the wrap frame; FrameLocked advances one
+frame per refresh only when the decoder delivered it. QCView's single-video mode is decoder-leads with the timer mirrored;
+its shuttle / dual / image-sequence paths are timer-leads already.
+
+**Numbers (macOS; playback headless + windowed on the XDR, seeks via the harness with the stream's own landing now timed):**
+
+| Check | Result |
+|---|---|
+| 4K ProRes playback through the Transport, headless 120 frames | first frame 111 ms, 0 dropped, 176 MB (step 1b: 133 ms, 251 MB) |
+| 4K ProRes windowed 8 s | 24.3 fps shown, 0 dropped, 0 late, cadence {2: 118, 3: 70}, lateness vs the nearest-frame clock p95 −3.8 ms, 6 % CPU, 234 MB |
+| the stream's own seek landed (`seek_land_ms`) | 4K ProRes **5.9 / 8.6 ms** p50 / p95 (S2's stream: 67.6 / 72.8 — slice threads + VT seek-exact now); 4K H.264 **339 / 520** (VideoToolbox after a flush, S2: 278 / 400); 1080p H.264 194 / 242 |
+| the scrub decoder beside it | unchanged from 2a (ProRes 5.1 ms, H.264 97 ms, sweeps 0.3–4.3 ms) |
+| seek correctness | 0 mismatches over 90 random seeks on three files (the gate takes the OLDEST post-seek frame; the first cut took the newest and landed one frame late on ProRes) |
+
+**Owed from 2b**: the stream's resume on the playlist path (the timeline step brings the clip resolve + slot swap behind
+the debounce), the audio hooks' implementation (2b-audio), the shell's actions (B / T / F / ⌘Z) wired when the shell exists,
+`loopEnabled` persistence with the settings model (step 3), and a windowed key walk on the user's desk (the harness can't press keys).
 
 **Owed from 2a**: the Windows headless run (D3D12VA scrub for inter codecs + the readback-to-planes entries), the stream's
 resume-after-seek measurement (that is the Transport's `seekToTime` shape — it lands with 2b's Transport port), and the
