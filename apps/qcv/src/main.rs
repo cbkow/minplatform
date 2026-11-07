@@ -398,7 +398,7 @@ fn run_audio_bench(o: Opts, seconds: f32) {
     println!("opened {} — {}; audio: {}", src.display(), describe(&p), if p.audio.has_audio() { "open" } else { "NONE — the bench needs a file with an audio stream" });
     if !p.audio.has_audio() { return }
     let refresh = std::time::Duration::from_secs_f32(o.refresh_ms / 1000.0);
-    let mut run = |p: &mut Transport, secs: f32, label: &str| {
+    let run = |p: &mut Transport, secs: f32, label: &str| {
         let t0 = Instant::now(); let mut drift: Vec<(f32, f32)> = vec![];
         while t0.elapsed().as_secs_f32() < secs {
             let now = Instant::now(); let _ = p.tick(now); if p.current().is_none() { p.idle_refresh(); }
@@ -408,9 +408,10 @@ fn run_audio_bench(o: Opts, seconds: f32) {
         let settle = drift.iter().find(|(_, d)| d.abs() <= 20.0).map(|(t, _)| *t);
         let after: Vec<f32> = drift.iter().filter(|(t, _)| settle.is_some_and(|s| *t >= s + 0.5)).map(|(_, d)| *d).collect();
         let mut abs: Vec<f32> = after.iter().map(|v| v.abs()).collect();
+        let mut signed: Vec<f32> = after.clone();
         let a = p.audio.stats().unwrap_or_default();
-        println!("{label}: {} drift samples; first inside ±20 ms at {}; after settling: |drift| p50 {:.1} p95 {:.1} max {:.1} ms (n={}); re-seeks {} holds {} skips {} underruns {} fades {} callbacks {} contended {}",
-            drift.len(), settle.map(|s| format!("{s:.2} s")).unwrap_or("never".into()), pct(&mut abs, 50.0), pct(&mut abs, 95.0), pct(&mut abs, 100.0), after.len(), a.reseeks, a.holds, a.skips, a.underruns, a.fades, a.callbacks, a.contended);
+        println!("{label}: {} drift samples; first inside ±20 ms at {}; after settling: drift p50 {:+.1} |drift| p50 {:.1} p95 {:.1} max {:.1} ms (n={}); re-seeks {} holds {} skips {} underruns {} starved {} fades {} callbacks {} audible {} contended {}",
+            drift.len(), settle.map(|s| format!("{s:.2} s")).unwrap_or("never".into()), pct(&mut signed, 50.0), pct(&mut abs, 50.0), pct(&mut abs, 95.0), pct(&mut abs, 100.0), after.len(), a.reseeks, a.holds, a.skips, a.underruns, a.starved, a.fades, a.callbacks, a.audible, a.contended);
     };
     p.play();
     run(&mut p, seconds, "play from 0");
@@ -429,6 +430,11 @@ fn run_audio_bench(o: Opts, seconds: f32) {
     println!("shuttle: ff 1.5 s (active {active_ff}) + rw 1 s (active {active_rw}): {calls0} device callbacks fed by grains; after release the player is {} at frame {}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame());
     if !p.is_playing() { p.play(); }
     run(&mut p, 3.0, "play on after the shuttle");
+    // review speeds: 2× then 0.5× through the WSOLA stage (constant pitch), then back to 1×
+    p.set_review_speed(2.0); run(&mut p, 4.0, "review speed 2× (tempo)");
+    p.set_review_speed(0.5); run(&mut p, 3.0, "review speed 0.5× (tempo)");
+    p.set_review_speed(1.0); run(&mut p, 3.0, "back to 1×");
+    println!("source: {} channels ({})", p.audio.source_channels(), p.audio.layout_name());
     println!("process CPU {:.0} % of one core over the run; max RSS {:.0} MB", 0.0, qcv_player::max_rss_mb());
 }
 

@@ -76,10 +76,37 @@ process ≈ 60 % of one core during 1080p playback with audio (decode threads in
   steady state −8 … +7 ms p50, p95 ≤ 16, no re-seeks, no underruns, no dropped frames.
 `QCV_AUDIO_TRACE=1` (with `RUST_LOG=info`) prints the servo's inputs for the first 60 updates and the timer around play.
 
-## Not yet (the next slices)
-- **Tempo** (SoundTouch WSOLA, LGPL-2.1 via the `soundtouch` crate's bundled C++): review speeds play silent until it lands.
-- **Multi-stream** (≥ 2 audio streams → the avfilter merge / pan graph, `avfilter` feature): a file with several mono
-  tracks plays its best single stream for now.
-- **Routing UI**, the per-channel meters, the A/V sync-offset knob (the player carries them; no node yet).
+## Slices 4–5 (2026-11-07, later the same day): tempo and multi-stream
+- **`tempo.rs`** — `TempoStage` (QCView `tempo_stage.cpp`) over the `soundtouch` crate (SoundTouch 2.3.2 compiled in,
+  LGPL-2.1; QCView links 2.4.1): a producer-side WSOLA stage on each decode thread, 1.0 = byte-identical bypass,
+  0.25–4× constant pitch, a change applied lazily at the next `put` (state cleared), flushed on seek; the knobs are
+  shared atomics (`TempoControl`), the stretcher is thread-confined. Test: 2 s in at 2× → ≈ 1 s out. The Transport's
+  `set_review_speed` already called `set_tempo` + a re-anchor seek (QCView's rule); the player scales its
+  consumption-based position by the tempo. The "silent off 1×" stand-in is gone.
+- **`multi_decoder.rs`** — `MultiStreamAudioDecoder` (QCView `multi_stream_audio_decoder.cpp`): every decodable audio
+  stream gets a codec; an avfilter graph `abuffer`×N → `amerge` → `pan` → `aformat` (flt / 48 k / stereo) →
+  `abuffersink` is built from the routing plan (`resolveRouting` verbatim: Auto = channels 7–8 when ≥ 8, the BS.775
+  fold when ≥ 6, else the first pair; a pair across streams gets `pan=stereo|c0=cL|c1=cR`, a same-stream stereo pair
+  passes through; Downmix5_1 / Stereo7_8 with QCView's fallbacks) and rebuilt on a seek (`avformat_seek_file` over the
+  whole file, every codec flushed) or a routing change; peaks per real channel before the fold with a 16-channel cap;
+  the sink's constraints set through `av_opt_set` strings (FFmpeg ≥ 7.1 array options). `source.rs` = `IAudioSource`,
+  the trait both decoders implement so the player dispatches on `audio_stream_count(path) ≥ 2`. 5 routing-plan tests.
+- **Measured** (`--audio-bench`, the derived two-mono-track fixture): the graph builds ("merge 2 streams, pan (none)"),
+  plays, seeks and tempo-shifts like the single decoder. The 4K master turned out to carry ONE audio stream plus a data
+  track (`ffprobe -select_streams a` had printed an empty line I counted), so it takes the single decoder — correct.
+- **Tempo numbers**: 2× holds |drift| p50 ≈ 30 ms, 0.5× ≈ 4 ms, back to 1× re-anchors (QCView's structure: the position
+  estimate ignores WSOLA's input window, the servo trims against it; the same in C++).
+- **One more timer finding, from the bench's trace**: `PlaybackTimer::seek` returned early when the position was
+  unchanged (the open at 0; the landing confirming an immediate seek) WITHOUT re-basing — and the seek gate skips
+  `update` while a landing is in flight, so the first update after the gate integrated the whole landing time at once:
+  the clock 20–40 ms ahead of the audio after every seek. Re-basing before that return fixed it. Headless now: start
+  inside ±20 ms at 0.10 s (p50 +9 converging), seek 0.18 s, pause → play 0.06 s (p50 +1); the unattended window run
+  walks +11 → −1 ms over 15 s. The residual post-seek +10–20 ms that the servo then grinds out is QCView's own scheme
+  (pre-seek audio rolls uncounted until the decoder services the seek).
+- The bench's silent device repays starved sleeps instead of resyncing (a resync had read as servo drift).
+
+## Not yet
+- **Routing UI** (Auto / 5.1 / 7–8), the per-channel meters, the A/V sync-offset knob — the player and decoders carry them; no node yet.
+- **The review-speed chip** in the transport bar (R / ⇧R work from the keys).
 - **WASAPI** on rhombus (shared / event-driven / MMCSS); no Linux.
 - Dual's mixer, live audio (QCBridgeAE) — Phase 4.

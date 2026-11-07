@@ -23,11 +23,14 @@ impl Default for Request { fn default() -> Self { Request { hold: AtomicBool::ne
 /// 5 ms at 48 kHz: long enough to kill the click of a step, short enough to be a non-event.
 pub const FADE_FRAMES: usize = 240;
 
-pub struct AudioDrainStage { resampler: FractionalResampler, last_gen: u32, gen_valid: bool, live: bool, fade_in: usize, pub underruns: u64, pub fades: u64 }
+pub struct AudioDrainStage { resampler: FractionalResampler, last_gen: u32, gen_valid: bool, live: bool, fade_in: usize, pub underruns: u64, pub fades: u64,
+    /// Blocks that wanted audio and found an empty ring while NOT live (a seek still refilling): silent, uncounted, and
+    /// each one puts the playout one block behind the master until the servo pays it back.
+    pub starved: u64 }
 
 impl Default for AudioDrainStage { fn default() -> Self { Self::new() } }
 impl AudioDrainStage {
-    pub fn new() -> AudioDrainStage { AudioDrainStage { resampler: FractionalResampler::new(), last_gen: 0, gen_valid: false, live: false, fade_in: 0, underruns: 0, fades: 0 } }
+    pub fn new() -> AudioDrainStage { AudioDrainStage { resampler: FractionalResampler::new(), last_gen: 0, gen_valid: false, live: false, fade_in: 0, underruns: 0, fades: 0, starved: 0 } }
     pub fn live(&self) -> bool { self.live }
     fn silence(out: &mut [f32]) { out.fill(0.0); }
     /// Fill `out` (`frame_count` stereo frames) from `dec` at `ratio` source frames per output frame; `scratch` holds
@@ -74,7 +77,7 @@ impl AudioDrainStage {
         let got = if want > 0 { dec.read(&mut scratch[..want * 2]) } else { 0 };
         if got < src_needed { scratch[got * 2..src_needed * 2].fill(0.0); }
         if let Some(c) = counted { c.fetch_add(got as u64, Relaxed); }
-        if got == 0 { if self.live { self.underruns += 1; } Self::silence(out); self.live = false; return }
+        if got == 0 { if self.live { self.underruns += 1; } else if counted.is_some() { self.starved += 1; } Self::silence(out); self.live = false; return }
         if !self.live { self.fade_in = FADE_FRAMES; self.fades += 1; }
         let ends_silent = got < src_needed || force_fade_out;
         if ends_silent {

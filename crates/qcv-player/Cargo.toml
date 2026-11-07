@@ -19,6 +19,7 @@ crossbeam-channel = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+soundtouch = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-audio-toolbox = { workspace = true, features = ["std", "AUComponent", "AudioComponent", "AudioOutputUnit", "AudioUnitProperties", "objc2-core-audio-types"] }

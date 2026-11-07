@@ -65,8 +65,13 @@ impl PlaybackTimer {
         let old = self.current_frame();
         let mut s = seconds.max(0.0);
         if self.duration > 0.0 && s > self.duration { s = self.duration; }
+        // re-base BEFORE the unchanged-position return: the seek gate skips `update` while a landing is in flight, so a
+        // seek to the position already held (the open at 0; the landing confirming an immediate seek) would otherwise leave
+        // the old base and the first update after the gate would integrate the whole landing time at once (measured
+        // 2026-11-07: the clock 20–40 ms ahead of the audio after every seek)
+        self.last_update = Some(Instant::now()); self.first_update = false;   // see `play`
         if (self.position - s).abs() < 1e-12 { return }
-        self.position = s; self.last_update = Some(Instant::now()); self.first_update = false;   // see `play`
+        self.position = s;
         self.notify_frame_crossed(old);
     }
     pub fn seek_relative(&mut self, delta: f64) { self.seek(self.position + delta) }

@@ -36,9 +36,12 @@ impl AudioDevice for NullDevice {
         self.thread = Some(std::thread::Builder::new().name("qcv-audio-null".into()).spawn(move || {
             let period = Duration::from_secs_f64(frames as f64 / rate);
             let mut buf = vec![0.0f32; frames * 2]; let mut next = Instant::now();
+            // an absolute schedule: a starved sleep is repaid by running the callbacks it owes (a real device's clock never
+            // loses time; resyncing here made the bench's audio fall behind and read as servo drift)
             while !quit.load(Relaxed) {
-                next += period; let now = Instant::now(); if next > now { std::thread::sleep(next - now); } else if now - next > period * 4 { next = now; }
+                next += period; let now = Instant::now(); if next > now { std::thread::sleep(next - now); }
                 if play.load(Acquire) { if let Some(r) = render.lock().unwrap().as_mut() { r(&mut buf); rendered.fetch_add(frames as u64, Relaxed); } }
+                if Instant::now() - next > period * 50 { next = Instant::now(); }   // only a pathological stall (500 ms) resets the schedule
             }
         }).expect("null audio device"));
     }

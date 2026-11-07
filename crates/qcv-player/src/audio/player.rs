@@ -4,9 +4,10 @@
 //! ±1.5 %) — hard re-seeks only as escape tiers (a soft one when drift leaves the 100-ms band for 4 ticks past a 1-s
 //! cooldown, an immediate one above 1 s); the post-seek hold freezes audio until the picture lands and re-aligns by
 //! dropping ring frames (≤ 400 ms forward) or re-seeking; pause fades out and stops the device 30 ms later.
-//! Tempo (SoundTouch WSOLA) is the next slice: until it lands, review speeds other than 1× play SILENT — written here
-//! rather than letting the servo re-seek every second against a stretched clock.
+//! Tempo = the decoders' SoundTouch stage; the player scales its consumption-based position by the tempo (QCView).
 use super::decoder::AudioDecoder;
+use super::multi_decoder::{audio_stream_count, MultiStreamAudioDecoder};
+use super::source::AudioSourceCtl;
 use super::device::{default_device, AudioDevice, NullDevice, RenderFn};
 use super::drain::{AudioDrainStage, Request};
 use super::routing::RoutingMode;
@@ -32,21 +33,23 @@ const STOP_DEVICE_WHEN_IDLE: bool = false;
 
 /// What the device callback reads (lock-free) and the UI thread writes.
 struct CbShared {
-    playing: AtomicBool, volume: AtomicU32, muted: AtomicBool, tempo_silent: AtomicBool,
+    playing: AtomicBool, volume: AtomicU32, muted: AtomicBool,
     servo_ratio: AtomicU32, consumed: AtomicU64, req: Request,
-    source: Mutex<Option<Arc<AudioDecoder>>>,
+    source: Mutex<Option<Arc<dyn AudioSourceCtl>>>,
     drain: Mutex<(AudioDrainStage, Vec<f32>)>,
     shuttle: ShuttleAudioEngine,
     callbacks: AtomicU64, contended: AtomicU64,
+    /// Callbacks whose output block had signal (peak > −60 dBFS) — the bench's proof that audio actually flowed.
+    audible: AtomicU64,
 }
 
 #[derive(Default, Debug, Clone)]
-pub struct AudioStats { pub drift_ms: Vec<f32>, pub reseeks: u32, pub holds: u32, pub skips: u32, pub underruns: u64, pub fades: u64, pub callbacks: u64, pub contended: u64 }
+pub struct AudioStats { pub drift_ms: Vec<f32>, pub reseeks: u32, pub holds: u32, pub skips: u32, pub underruns: u64, pub fades: u64, pub starved: u64, pub callbacks: u64, pub contended: u64, pub audible: u64 }
 
 pub struct AudioPlayer {
     device: Box<dyn AudioDevice>,
     cb: Arc<CbShared>,
-    decoder: Option<Arc<AudioDecoder>>,
+    decoder: Option<Arc<dyn AudioSourceCtl>>,
     routing: RoutingMode,
     anchor_src_sec: f64,
     servo: AudioSyncServo,
@@ -57,7 +60,7 @@ pub struct AudioPlayer {
     tempo: f64,
     servo_log: u32,
     stats: AudioStats,
-    trace: u32,
+    trace: u32, released_at: Option<Instant>,
 }
 
 fn soft_limit(x: f32) -> f32 {
@@ -71,14 +74,14 @@ impl AudioPlayer {
     /// A silent, wall-paced device (headless benches).
     pub fn headless() -> Result<AudioPlayer, crate::Error> { Self::with_device(|r| Ok(Box::new(NullDevice::new(r, 48000, 10)) as Box<dyn AudioDevice>)) }
     fn with_device(make: impl FnOnce(RenderFn) -> Result<Box<dyn AudioDevice>, crate::Error>) -> Result<AudioPlayer, crate::Error> {
-        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), tempo_silent: AtomicBool::new(false), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0) });
+        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
         let c = cb.clone();
         let render: RenderFn = Box::new(move |out: &mut [f32]| Self::process_audio(&c, out));
         let device = make(render)?;
         // the scratch sized once from the device's real buffer count (+16; WASAPI can ask for the whole buffer in one callback)
         let frames = device.buffer_frame_count() as usize + 16;
         cb.drain.lock().unwrap().1 = vec![0.0; frames * 2 * 2];
-        Ok(AudioPlayer { device, cb, decoder: None, routing: RoutingMode::Auto, anchor_src_sec: 0.0, servo: AudioSyncServo::new(), out_of_band_ticks: 0, pause_gen: 0, stop_due: None, last_servo_update: None, sync_offset_ms: 0, tempo: 1.0, servo_log: 0, stats: AudioStats::default(), trace: if std::env::var_os("QCV_AUDIO_TRACE").is_some() { 60 } else { 0 } })
+        Ok(AudioPlayer { device, cb, decoder: None, routing: RoutingMode::Auto, anchor_src_sec: 0.0, servo: AudioSyncServo::new(), out_of_band_ticks: 0, pause_gen: 0, stop_due: None, last_servo_update: None, sync_offset_ms: 0, tempo: 1.0, servo_log: 0, stats: AudioStats::default(), trace: if std::env::var_os("QCV_AUDIO_TRACE").is_some() { 60 } else { 0 }, released_at: None })
     }
     /// The render callback (QCView `processAudio`): the drain at the servo ratio, then mute / volume / the soft limiter.
     fn process_audio(c: &CbShared, out: &mut [f32]) {
@@ -98,15 +101,16 @@ impl AudioPlayer {
         let ratio = f32::from_bits(c.servo_ratio.load(Relaxed)) as f64;
         let extra_hold = !c.playing.load(Acquire);
         drain.process(&**dec, out, frames, ratio, scratch, &c.consumed, &c.req, extra_hold);
-        if c.muted.load(Relaxed) || c.tempo_silent.load(Relaxed) { out.fill(0.0); return }
+        if c.muted.load(Relaxed) { out.fill(0.0); return }
         let vol = f32::from_bits(c.volume.load(Relaxed));
-        for v in out.iter_mut() { *v = soft_limit(*v * vol); }
+        let mut peak = 0.0f32;
+        for v in out.iter_mut() { *v = soft_limit(*v * vol); peak = peak.max(v.abs()); }
+        if peak > 0.001 { c.audible.fetch_add(1, Relaxed); }
     }
     fn consumed_sec(&self) -> f64 { self.cb.consumed.load(Relaxed) as f64 / self.device.sample_rate() as f64 * self.tempo }
     pub fn set_routing_mode(&mut self, mode: RoutingMode) { self.routing = mode; if let Some(d) = &self.decoder { d.set_routing_mode(mode); } }
     pub fn peak_levels(&self) -> [f32; 16] { self.decoder.as_ref().map(|d| d.peak_levels()).unwrap_or([0.0; 16]) }
-    pub fn source_channels(&self) -> usize { self.decoder.as_ref().map(|d| d.src_channels).unwrap_or(0) }
-    pub fn duration(&self) -> f64 { self.decoder.as_ref().map(|d| d.duration).unwrap_or(0.0) }
+    pub fn duration(&self) -> f64 { self.decoder.as_ref().map(|d| d.duration()).unwrap_or(0.0) }
     pub fn set_volume(&mut self, v: f32) { self.cb.volume.store(v.clamp(0.0, 1.0).to_bits(), Relaxed); }
     pub fn set_muted(&mut self, m: bool) { self.cb.muted.store(m, Relaxed); }
     pub fn set_sync_offset_ms(&mut self, ms: i32) { self.sync_offset_ms = ms; }
@@ -117,8 +121,16 @@ impl AudioPlayer {
 impl AudioHooks for AudioPlayer {
     fn open(&mut self, path: &str) -> bool {
         self.close();
-        match AudioDecoder::open(path, self.routing) {
-            Ok(Some(d)) => { d.start(); let d = Arc::new(d); *self.cb.source.lock().unwrap() = Some(d.clone()); self.decoder = Some(d); if !STOP_DEVICE_WHEN_IDLE { self.device.start(); } true }
+        // QCView's dispatch: ≥ 2 audio streams → the multi-stream decoder (one codec each + the merge / pan graph)
+        let n = audio_stream_count(path);
+        log::info!("audio: {n} audio stream(s) in the file → {}", if n >= 2 { "the multi-stream decoder" } else { "the single-stream decoder" });
+        let opened: Result<Option<Arc<dyn AudioSourceCtl>>, crate::Error> = if n >= 2 {
+            MultiStreamAudioDecoder::open(path, self.routing).map(|o| o.map(|d| Arc::new(d) as Arc<dyn AudioSourceCtl>))
+        } else {
+            AudioDecoder::open(path, self.routing).map(|o| o.map(|d| Arc::new(d) as Arc<dyn AudioSourceCtl>))
+        };
+        match opened {
+            Ok(Some(d)) => { d.start(); d.set_tempo(self.tempo); *self.cb.source.lock().unwrap() = Some(d.clone()); self.decoder = Some(d); if !STOP_DEVICE_WHEN_IDLE { self.device.start(); } true }
             Ok(None) => false,
             Err(e) => { log::warn!("audio open: {e}"); false }
         }
@@ -175,20 +187,20 @@ impl AudioHooks for AudioPlayer {
             log::info!("AudioPlayer: hold released, re-seeking ({:+.0} ms)", delta * 1000.0);
             self.seek(master_seconds); self.stats.reseeks += 1;
         } else { log::debug!("AudioPlayer: hold released in place ({:+.1} ms)", delta * 1000.0); }
-        self.cb.req.hold.store(false, Release); self.last_servo_update = None;
+        self.cb.req.hold.store(false, Release); self.last_servo_update = None; self.released_at = Some(Instant::now());
     }
     fn update(&mut self, video_position_seconds: f64) {
         let Some(d) = &self.decoder else { return };
         if !self.cb.playing.load(Acquire) || self.cb.req.hold.load(Acquire) { return }
-        if super::drain::AudioSource::seek_pending(&**d) { self.last_servo_update = None; return }
+        if d.seek_pending() { self.last_servo_update = None; return }
         let off = self.sync_offset_ms as f64 / 1000.0;
         let target = video_position_seconds - off;
-        let dur = d.duration;
+        let dur = d.duration();
         if dur > 0.0 && target > dur - 0.050 { self.cb.servo_ratio.store(1.0f32.to_bits(), Relaxed); self.last_servo_update = None; return }
         let audio_src_pos = self.playout_position();
         let drift = target - audio_src_pos;
         self.stats.drift_ms.push((drift * 1000.0) as f32);
-        if self.trace > 0 { self.trace -= 1; log::info!("servo: master {:.4} playout {:.4} drift {:+.1} ms  anchor {:.4} consumed {:.4} latency {:.4} ratio {:.5}", target, audio_src_pos, drift * 1000.0, self.anchor_src_sec, self.consumed_sec(), self.device.buffer_latency_seconds(), f32::from_bits(self.cb.servo_ratio.load(Relaxed))); }
+        if self.trace > 0 { self.trace -= 1; log::info!("servo: master {:.4} playout {:.4} drift {:+.1} ms  anchor {:.4} consumed {:.4} latency {:.4} ratio {:.5}  since release {:.4} s  callbacks {}", target, audio_src_pos, drift * 1000.0, self.anchor_src_sec, self.consumed_sec(), self.device.buffer_latency_seconds(), f32::from_bits(self.cb.servo_ratio.load(Relaxed)), self.released_at.map(|t| t.elapsed().as_secs_f64()).unwrap_or(-1.0), self.cb.callbacks.load(Relaxed)); }
         if drift.abs() > SERVO_BAND_SECONDS {
             let discontinuity = drift.abs() > DISCONTINUITY_SECONDS;
             self.out_of_band_ticks += 1;
@@ -208,10 +220,10 @@ impl AudioHooks for AudioPlayer {
         self.servo_log += 1; if self.servo_log >= 300 { self.servo_log = 0; log::debug!("AudioPlayer: servo drift {:+.1} ms  ratio {:.5}", drift * 1000.0, ratio); }
     }
     fn set_tempo(&mut self, speed: f64) {
+        // QCView `setPlaybackTempo`: the decoders' WSOLA stage; the owner re-anchors with a seek right after (Transport does)
         let t = speed.clamp(0.25, 4.0);
         self.tempo = t;
-        // slice 5 (SoundTouch WSOLA) replaces this: off 1× the audio is silent rather than re-seeking every second
-        self.cb.tempo_silent.store((t - 1.0).abs() > 1e-9, Relaxed);
+        if let Some(d) = &self.decoder { d.set_tempo(t); }
     }
     fn begin_shuttle(&mut self, path: &str, source_sec: f64, signed_speed: f64) {
         self.pause_gen = self.pause_gen.wrapping_add(1); self.stop_due = None;   // the device stays up for the grains
@@ -229,11 +241,13 @@ impl AudioHooks for AudioPlayer {
     fn volume_step(&mut self, delta: f32) { let v = (f32::from_bits(self.cb.volume.load(Relaxed)) + delta).clamp(0.0, 1.0); self.cb.volume.store(v.to_bits(), Relaxed); }
     fn is_muted(&self) -> bool { self.cb.muted.load(Relaxed) }
     fn device_latency_ms(&self) -> f64 { self.device.buffer_latency_seconds() * 1000.0 }
+    fn source_channels(&self) -> usize { self.decoder.as_ref().map(|d| d.source_channels()).unwrap_or(0) }
+    fn layout_name(&self) -> String { self.decoder.as_ref().map(|d| d.layout_name()).unwrap_or_default() }
     fn volume(&self) -> f32 { f32::from_bits(self.cb.volume.load(Relaxed)) }
     fn stats(&mut self) -> Option<AudioStats> {
-        let (u, f) = { let dr = self.cb.drain.lock().unwrap(); (dr.0.underruns, dr.0.fades) };
-        self.stats.underruns = u; self.stats.fades = f;
-        self.stats.callbacks = self.cb.callbacks.load(Relaxed); self.stats.contended = self.cb.contended.load(Relaxed);
+        let (u, f, st) = { let dr = self.cb.drain.lock().unwrap(); (dr.0.underruns, dr.0.fades, dr.0.starved) };
+        self.stats.underruns = u; self.stats.fades = f; self.stats.starved = st;
+        self.stats.callbacks = self.cb.callbacks.load(Relaxed); self.stats.contended = self.cb.contended.load(Relaxed); self.stats.audible = self.cb.audible.load(Relaxed);
         Some(self.stats.clone())
     }
     fn take_drift(&mut self) -> Vec<f32> { std::mem::take(&mut self.stats.drift_ms) }

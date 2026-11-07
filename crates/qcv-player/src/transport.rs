@@ -64,6 +64,8 @@ pub trait AudioHooks {
     fn is_muted(&self) -> bool { false }
     fn volume(&self) -> f32 { 1.0 }
     fn device_latency_ms(&self) -> f64 { 0.0 }
+    fn source_channels(&self) -> usize { 0 }
+    fn layout_name(&self) -> String { String::new() }
     fn stats(&mut self) -> Option<crate::audio::AudioStats> { None }
     /// Drain the drift samples gathered since the last call (the stats line).
     fn take_drift(&mut self) -> Vec<f32> { vec![] }
