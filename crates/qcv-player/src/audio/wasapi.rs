@@ -10,9 +10,8 @@ use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::*;
 use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
-use windows::Win32::Media::{AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
-use windows::Win32::System::Threading::{CreateEventW, SetEvent, SetThreadPriority, GetCurrentThread, WaitForSingleObject, THREAD_PRIORITY_TIME_CRITICAL};
+use windows::Win32::System::Threading::{AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, SetEvent, SetThreadPriority, GetCurrentThread, WaitForSingleObject, THREAD_PRIORITY_TIME_CRITICAL};   // windows 0.62: the MMCSS calls live in Threading
 
 struct Com { client: IAudioClient, render: IAudioRenderClient, event: HANDLE }
 unsafe impl Send for Com {}
