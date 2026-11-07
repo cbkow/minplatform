@@ -120,3 +120,15 @@ the GPU device is alive. Result on rhombus: teardown 22 ms, the event loop retur
 ~0.5 s after that (the launcher's own stamp costs most of that; DLL detach the rest) — the user: "much faster". The
 stage lines stay in the log under `close:`; the ordering is the fix, the timing the evidence.
 
+## The Inspector, refilled faithfully (2026-11-07 evening)
+The user: "look at the old inspector first and ensure we are faithfully porting over what we had for videos, some of
+those fields were specific user requests". `InspectorPanel.qml` read section by section (labels, value expressions,
+notes, visibility). Now on `qcv-meta` (the extractor + XMP reader QCView runs, through `MetadataService` at open —
+both requests, results drained in the tick; the decoder's facts fill in until they land): every row in canon row 177.
+Three pickers are live because the player backs them: Range (`Transport::set_range_override` → the stream + scrub
+decoders), Mix (`AudioHooks::set_routing_mode`), Origin (`StatusStrip.origin` → the timecode base; the compact strip
+follows). Meters: `AudioHooks::peak_levels` per source channel, 4-px bars, notice colour above 0.9. Pickers are the
+2 × 2 block's style laid in a row (size-S chips on the card colour). Panel height with the 1080p master: 2296 px at 2×
+(scrolls). Owed: Aspect + Rotation pickers (the presenter applies neither SAR nor rotation yet), the Transfer picker
+(the colour stage), Copy path / Reveal (clipboard + OS reveal), hero thumbnail, Linked Projects / Playlist Contents.
+

@@ -62,6 +62,11 @@ pub trait AudioHooks {
     fn set_sync_offset_ms(&mut self, _ms: i32) {}
     /// QCView `audio/scrubMuted`: no shuttle / scrub grains while set.
     fn set_scrub_muted(&mut self, _m: bool) {}
+    /// The Inspector's Mix picker (QCView's routing pill): Auto / 5.1 → 2 / channels 7-8.
+    fn set_routing_mode(&mut self, _m: crate::audio::RoutingMode) {}
+    fn routing_mode(&self) -> crate::audio::RoutingMode { crate::audio::RoutingMode::Auto }
+    /// Per-channel peak levels for the Inspector's meters (0..1, the decoder's frame peaks; 16 slots).
+    fn peak_levels(&self) -> [f32; 16] { [0.0; 16] }
     /// Open the file's audio (false = none); the Transport calls it per clip.
     fn open(&mut self, _path: &str) -> bool { false }
     fn close(&mut self) {}
@@ -118,7 +123,7 @@ impl Slot {
 struct FastSeek { dir: i32, speed: f64, started: Instant, last: Instant, last_tick: Instant, position_sec: f64 }
 
 pub struct Transport {
-    pub timeline: Timeline, pub timer: PlaybackTimer, pub audio: Box<dyn AudioHooks>, opts: TransportOptions,
+    pub timeline: Timeline, pub timer: PlaybackTimer, pub audio: Box<dyn AudioHooks>, opts: TransportOptions, range_override: crate::RangeOverride,
     slots: Vec<Slot>, active: usize, /// the spare slot's open in flight: (clip index, the receiver)
     prewarm: Option<(usize, mpsc::Receiver<Result<Slot, Error>>)>,
     rate: Rate, frames: i32, fps: f64,
@@ -168,7 +173,7 @@ impl Transport {
         let rate = timeline.rate; let fps = rate.as_f64(); let frames = timeline.duration as i32;
         let mut timer = PlaybackTimer::new();
         timer.set_frame_rate(fps); timer.set_duration(if fps > 0.0 { frames as f64 / fps } else { 0.0 }); timer.set_clock_policy(opts.clock_policy); timer.set_looping(opts.loop_enabled);
-        Transport { timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts,
+        Transport { timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts, range_override: crate::RangeOverride::Auto,
             slots: vec![], active: 0, prewarm: None, rate, frames, fps,
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, seek_gate: None,
@@ -204,6 +209,14 @@ impl Transport {
     pub fn current_frame(&self) -> i32 { self.timer.current_frame().clamp(0, (self.frames - 1).max(0)) }
     pub fn review_speed(&self) -> f64 { self.review_speed }
     pub fn loop_enabled(&self) -> bool { self.loop_enabled }
+    /// QCView's per-clip Range override (Inspector ▸ Color ▸ Range: Auto / Full / Limited) on the active clip's stream and scrub decoders.
+    pub fn set_range_override(&mut self, r: crate::RangeOverride) {
+        self.range_override = r;
+        let slot = &mut self.slots[self.active];
+        slot.decoder.set_range_override(r);
+        if let Some(sc) = slot.scrub.as_mut() { sc.set_range_override(r); }
+    }
+    pub fn range_override(&self) -> crate::RangeOverride { self.range_override }
     pub fn in_point(&self) -> i32 { self.in_point }
     pub fn out_point(&self) -> i32 { self.out_point }
     pub fn has_in_out_range(&self) -> bool { self.in_point >= 0 && self.out_point > self.in_point }

@@ -28,6 +28,8 @@ pub struct StatusStrip {
     frame: Well, tc: Well, fps: String,
     /// QCView's readouts carry no tooltips; ours name the well and its click (the user 2026-11-07: "double check the tooltips there")
     pub tooltips: Tooltips, fps_rect: Rect,
+    /// `Some("")` = from start; `Some(tc)` = that timecode as frame 0's label; `None` = the file's embedded timecode
+    pub origin: Option<String>,
     pub rect: Rect,
     popover: Popover, field: TextField, mode: Mode, error: bool,
     fmt: Option<TimecodeFormatter>, start: i32, frame_count: i32, duration_s: f64, drop_frame: bool,
@@ -39,7 +41,7 @@ impl StatusStrip {
     pub fn new() -> StatusStrip {
         let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S);
         field.placeholder = "frame number".into();
-        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, rect: Rect::ZERO, popover: Popover::new("Go to frame"), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
+        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, origin: None, rect: Rect::ZERO, popover: Popover::new("Go to frame"), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
     }
     pub fn is_open(&self) -> bool { self.popover.open }
     /// The SMPTE readout's text (compact mode shows it in its own band).
@@ -50,7 +52,9 @@ impl StatusStrip {
         let i = p.info();
         let (num, den) = i.frame_rate;
         let fmt = TimecodeFormatter::new(num, den, i.drop_frame);
-        self.start = i.source_timecode.as_deref().map(|tc| fmt.parse(tc).max(0)).unwrap_or(0);
+        // the timecode origin: the Inspector's Origin picker (QCView's: From start / Embedded / QT Start / QT TC / XMP Alt) or the embedded timecode
+        let origin = self.origin.as_deref().or(i.source_timecode.as_deref());
+        self.start = origin.filter(|o| !o.is_empty()).map(|tc| fmt.parse(tc).max(0)).unwrap_or(0);
         self.frame_count = p.frame_count(); self.duration_s = i.duration_secs; self.drop_frame = i.drop_frame;
         let cur = p.current_frame();
         self.frame.text = if self.frame_count > 0 { format!("Frame {cur} / {}", self.frame_count - 1) } else { "Frame —".into() };

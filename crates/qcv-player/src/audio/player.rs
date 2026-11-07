@@ -227,6 +227,9 @@ impl AudioHooks for AudioPlayer {
         if let Some(d) = &self.decoder { d.set_tempo(t); }
     }
     fn set_muted(&mut self, m: bool) { self.cb.muted.store(m, Relaxed); }
+    fn set_routing_mode(&mut self, m: RoutingMode) { AudioPlayer::set_routing_mode(self, m); }
+    fn routing_mode(&self) -> RoutingMode { self.routing }
+    fn peak_levels(&self) -> [f32; 16] { AudioPlayer::peak_levels(self) }
     fn set_sync_offset_ms(&mut self, ms: i32) { self.sync_offset_ms = ms; }
     fn set_scrub_muted(&mut self, m: bool) { self.scrub_muted = m; if m { self.cb.shuttle.end(); } }
     fn begin_shuttle(&mut self, path: &str, source_sec: f64, signed_speed: f64) {

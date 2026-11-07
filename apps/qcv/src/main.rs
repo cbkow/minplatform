@@ -45,6 +45,8 @@ struct App {
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, WindowId>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
     settings: min_settings::Settings,
+    /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
+    meta: qcv_meta::MetadataService,
 }
 
 impl App {
@@ -67,6 +69,7 @@ impl App {
                 if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
                 self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p);
+                self.meta.request_video_extraction(path, path); self.meta.request_adobe_extraction(path, path);   // QCView: both requests at open; the Inspector fills as they land
                 self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
                 g.window.set_title(&format!("qcv — {}", self.source_label));
             }
@@ -124,7 +127,8 @@ impl App {
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + bh, scale); g.left.content_height = bh + lh;
-                g.inspector.sync(self.player.as_ref());
+                while let Some(ev) = self.meta.try_recv() { match ev { qcv_meta::MetadataEvent::Video(id, m) => g.inspector.set_video_meta(&id, m), qcv_meta::MetadataEvent::Adobe(id, m) => g.inspector.set_adobe_meta(&id, m), _ => {} } }
+                if g.inspector.sync(self.player.as_ref()) { g.ui_dirty = true; }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
             // the bar's volume / mute / loop and the keys write the store back (QCView persists them on change)
@@ -252,7 +256,14 @@ impl App {
                 if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
             }
             if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
-            if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) { if g.inspector.event(&e, now) { g.ui_dirty = true; } }
+            if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) {
+                let (icmds, d) = g.inspector.event(&e, now); if d { g.ui_dirty = true; }
+                for c in icmds { match c {
+                    inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); } }
+                    inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } }
+                    inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(self.player.as_ref()); }
+                } }
+            }
             let _ = g; for c in cmds { self.apply_setting(c); }
             let g = self.gpu.as_mut().unwrap();
             if modal || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
@@ -638,7 +649,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { o, gpu: None, player: None, hw: None, settings, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -749,7 +760,8 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut panel = settings_panel::SettingsPanel::new(); panel.sync(&store, t0);
     let mut bgp = background_panel::BackgroundPanel::new(); bgp.sync(2); engine.set_background(2); engine.set_ui_scale(scale as f32);
     let lc = left.content_rect(); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + bh, scale); left.content_height = bh + ph;
-    let mut inspector = inspector_panel::InspectorPanel::new(); inspector.sync(player.as_ref());
+    let mut inspector = inspector_panel::InspectorPanel::new(); let _ = inspector.sync(player.as_ref());
+    if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
     let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih;
     { let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
       // hover the "Timeline hover thumbnails" switch's label (its help tooltip) and press the scrub-cache field
