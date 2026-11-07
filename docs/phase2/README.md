@@ -10,7 +10,10 @@ spike is deleted when its crate meets the spike's own numbers — every number, 
 | 1 | [step1-open-present.md](step1-open-present.md) — open a file or an image-sequence frame → the fused presenter at the display's cadence | `min-present`, `qcv-player`, `qcv-timeline` (rational time only), `apps/qcv` | **DONE 2026-11-07 — GO** (carried: H.264 first frame, the software upload's staging blit, the Windows display rows) |
 | 1a | [step1-qcview-audit.md](step1-qcview-audit.md) — row 131: step 1 held against QCView's player + renderer; the ports to make before step 2 | `qcv-player`, `min-present` | audit written 2026-11-07; ports DONE as step 1b |
 | 1b | [step1b-qcview-decoder.md](step1b-qcview-decoder.md) — `qcv-player` re-derived from QCView's `src/decode` file by file; stage 1 from `yuv_planar.h`; the CV bridge table | `qcv-player`, `min-present` | **DONE 2026-11-07 — GO** |
-| 2 | transport + timeline surface (S2: the scrub decoder, two slots, the cut, shuttle, J/K/L) | `qcv-player` (Transport), `qcv-timeline`, `min-ui` (first nodes) | — |
+| 2 | [step2-transport-timeline.md](step2-transport-timeline.md) — the scrub decoder + cache, QCView's Transport verbatim, the timeline edits + hover cache, `qcv-meta`, `min-ui`'s first nodes | `qcv-player`, `qcv-timeline`, `qcv-meta`, `min-ui`, `min-theme` | planned 2026-11-07; rows 154–159 proposed |
+| 2b | audio — QCView's chain whole (row 139) | `qcv-player` (audio) | — |
+| 2c | image sequences — `min-image` pulled forward (row 148) | `min-image`, `qcv-player` (the sequence cache, the upload thread) | — |
+| 2d | the MXF scanner (row 137) | `qcv-meta` | — |
 | 3 | rails / panels / popups / shortcut registry / focus model (§16) | `min-ui` | — |
 | 4 | scopes + guides (§19) | `min-present` (the working-buffer tap), `min-ui` overlays | — |
 | 5 | drag and drop (§14; S5's native layer items) | `min-ui`, `min-paths` | — |
