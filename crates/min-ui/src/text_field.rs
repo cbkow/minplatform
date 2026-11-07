@@ -20,6 +20,8 @@ pub struct TextField {
     pub rect: Rect,
     pub focused: bool,
     pub error: bool,
+    /// Paint the text alone: the owner draws the well (a NumberField's field sits inside one box with its steppers).
+    pub bare: bool,
     hovered: bool,
     family: Family,
     size: f32,
@@ -30,7 +32,7 @@ pub struct TextField {
 impl TextField {
     /// `size` in logical px (the editor scales it by the window's factor at layout).
     pub fn new(family: Family, size: f32) -> TextField {
-        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, hovered: false, family, size, scale: 1.0, styled: false }
+        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false }
     }
     pub fn text(&self) -> &str { self.editor.raw_text() }
     pub fn set_text(&mut self, s: &str) { self.editor.set_text(s); }
@@ -113,10 +115,13 @@ impl TextField {
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64) {
         let s = scale;
         let border = if self.error { t::FIELD_BORDER_COLOR_ERROR } else if self.focused { t::FIELD_BORDER_COLOR_FOCUS } else if self.hovered { t::FIELD_BORDER_COLOR_HOVER } else { t::FIELD_BORDER_COLOR };
-        let r = t::FIELD_CORNER_RADIUS_S as f64 * s;
-        paint::rounded(scene, self.rect, r, border);
-        let bw = t::BORDER_WIDTH_100 as f64 * s;
-        paint::rounded(scene, self.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR);
+        if !self.bare {
+            let r = t::FIELD_CORNER_RADIUS_S as f64 * s;
+            paint::rounded(scene, self.rect, r, border);
+            let bw = t::BORDER_WIDTH_100 as f64 * s;
+            paint::rounded(scene, self.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR);
+        }
+        let _ = border;
         if !self.styled { let c = paint::color(t::FIELD_CONTENT_COLOR); self.style(fonts, c); }
         let (ox, oy) = self.text_origin();
         let tr = Affine::translate((ox, oy));

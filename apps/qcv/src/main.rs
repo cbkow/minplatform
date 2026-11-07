@@ -201,7 +201,7 @@ impl App {
             let lr = g.left.event(&e, now); let rr = g.right.event(&e, now);
             if lr.dirty || rr.dirty { g.ui_dirty = true; }
             let over_left = e.pos().is_some_and(|(x, y)| g.left.hit(x, y)); let over_right = e.pos().is_some_and(|(x, y)| g.right.hit(x, y));
-            let want = if g.left.is_dragging() || g.right.is_dragging() || (lr.consumed && !over_left) || (rr.consumed && !over_right) { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
+            let want = if g.left.splitter_hovered() || g.right.splitter_hovered() { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
             let mut cmds = vec![];
             if modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus() {

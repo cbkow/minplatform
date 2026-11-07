@@ -48,6 +48,9 @@ impl Rail {
     /// The width the rail occupies now, physical px.
     pub fn visible_width(&self, now: Instant, scale: f64) -> f64 { (self.width * scale * self.open.value(now) as f64).round() }
     pub fn is_dragging(&self) -> bool { self.drag.is_some() }
+    /// The pointer rests in the splitter's hot zone (the shell shows the column-resize cursor).
+    pub fn splitter_hovered(&self) -> bool { self.splitter_hover || self.drag.is_some() }
+    pub fn scrollbar_hovered(&self) -> bool { self.sb_hover || self.sb_drag.is_some() }
     pub fn hovered(&self) -> bool { self.inside || self.splitter_hover || self.tab_hover }
     /// Lay the rail against the window edge `edge_x` between `y0` and `y1` (physical px).
     pub fn layout(&mut self, edge_x: f64, y0: f64, y1: f64, scale: f64, now: Instant) {
@@ -74,16 +77,19 @@ impl Rail {
         if max <= 0.0 || self.rect.width() <= 0.0 { return None }
         let scale = self.scale;
         let th = t::SCROLLBAR_THICKNESS as f64 * scale * (1.0 + self.sb_ramp.value(now) as f64); let pad = t::SPACING_50 as f64 * scale;
+        // the thumb sits one hot zone plus 4 px in from the splitter so the two never share a pixel column
+        let inset = (t::SPLITTER_HOT_ZONE + t::SPACING_75) as f64 * scale;
         let track_h = self.rect.height() - 2.0 * pad;
         let bar_h = (track_h * self.rect.height() / self.content_height).max(t::COMPONENT_HEIGHT_75 as f64 * scale).min(track_h);
         let y = self.rect.y0 + pad + (track_h - bar_h) * (self.scroll / max);
-        let x = match self.side { Side::Left => self.rect.x1 - th - pad - t::HAIRLINE as f64 * scale, Side::Right => self.rect.x0 + pad + t::HAIRLINE as f64 * scale };
+        let x = match self.side { Side::Left => self.rect.x1 - inset - th, Side::Right => self.rect.x0 + inset };
         Some((Rect::new(x, self.rect.y0 + pad, x + th, self.rect.y1 - pad), Rect::new(x, y, x + th, y + bar_h)))
     }
     fn scrollbar_hit(&self, x: f64, y: f64, now: Instant) -> Option<(Rect, Rect, bool)> {
         let (track, thumb) = self.scrollbar(now)?;
-        let band = t::SPACING_200 as f64 * self.scale;
-        let zone = match self.side { Side::Left => Rect::new(self.rect.x1 - band, track.y0, self.rect.x1, track.y1), Side::Right => Rect::new(self.rect.x0, track.y0, self.rect.x0 + band, track.y1) };
+        // the hit band: 12 px around the thumb's column, stopping at the splitter's hot zone (the splitter wins its own 3 px)
+        let band = t::SPACING_200 as f64 * self.scale; let hz = t::SPLITTER_HOT_ZONE as f64 * self.scale;
+        let zone = match self.side { Side::Left => Rect::new(self.rect.x1 - hz - band, track.y0, self.rect.x1 - hz, track.y1), Side::Right => Rect::new(self.rect.x0 + hz, track.y0, self.rect.x0 + hz + band, track.y1) };
         if !zone.contains(kurbo::Point::new(x, y)) { return None }
         Some((track, thumb, y >= thumb.y0 && y <= thumb.y1))
     }

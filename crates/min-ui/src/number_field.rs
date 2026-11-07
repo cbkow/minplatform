@@ -19,7 +19,8 @@ pub struct NumberField {
 
 impl NumberField {
     pub fn new(value: i64, min: i64, max: i64, step: i64) -> NumberField {
-        let mut f = NumberField { field: TextField::new(Family::Mono, t::CODE_SIZE_S), value: value.clamp(min, max), min, max, step: step.max(1), zero_label: None, enabled: true, rect: Rect::ZERO, up: Rect::ZERO, down: Rect::ZERO, hover_up: false, hover_down: false, scale: 1.0 };
+        let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S); field.bare = true;
+        let mut f = NumberField { field, value: value.clamp(min, max), min, max, step: step.max(1), zero_label: None, enabled: true, rect: Rect::ZERO, up: Rect::ZERO, down: Rect::ZERO, hover_up: false, hover_down: false, scale: 1.0 };
         f.show();
         f
     }
@@ -94,11 +95,7 @@ impl NumberField {
         paint::rounded(scene, self.rect, r, border);
         paint::rounded(scene, self.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR);
         if self.enabled {
-            // the editor paints its own well; draw it borderless by painting over with the same background first
-            let inner = self.field.rect;
-            self.field.paint(scene, fonts, scale);
-            paint::rect(scene, Rect::new(inner.x1 - bw, inner.y0 + bw, inner.x1 + bw, inner.y1 - bw), t::FIELD_BACKGROUND_COLOR);
-            paint::rounded(scene, self.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR.with_alpha(0.0));
+            self.field.paint(scene, fonts, scale);   // bare: the text alone inside this one well (no inner corners against the stepper seam — the user's nit, 2026-11-07)
         } else {
             let l = fonts.layout(&self.display(), Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
             crate::fonts::draw_layout(scene, &l, Affine::translate((self.rect.x0 + t::FIELD_EDGE_TO_TEXT as f64 * scale, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
