@@ -410,8 +410,10 @@ impl App {
             let t = Instant::now(); drop(g.thumbs); let thumbs_ms = t.elapsed().as_secs_f32() * 1000.0;
             let t = Instant::now(); drop(g.ui); drop(g.presenter); let gpu_ms = t.elapsed().as_secs_f32() * 1000.0;
             let t = Instant::now(); drop(g.window); let win_ms = t.elapsed().as_secs_f32() * 1000.0;
-            println!("close: waveform {wave_ms:.0} ms · thumbnails {thumbs_ms:.0} ms · gpu {gpu_ms:.0} ms · window {win_ms:.0} ms · total {:.0} ms", t_all.elapsed().as_secs_f32() * 1000.0);
+            println!("close: waveform {wave_ms:.0} ms · thumbnails {thumbs_ms:.0} ms · gpu {gpu_ms:.0} ms · window {win_ms:.0} ms", );
         }
+        let t = Instant::now(); let had_hw = self.hw.take().is_some(); let hw_ms = t.elapsed().as_secs_f32() * 1000.0;   // the D3D12VA / VideoToolbox device context (av_buffer_unref → device destruction)
+        println!("close: hw device {} {hw_ms:.0} ms · total {:.0} ms · wall {}", if had_hw { "dropped" } else { "none" }, t_all.elapsed().as_secs_f32() * 1000.0, unix_ms());
     }
 }
 
@@ -635,7 +637,9 @@ fn main() {
     let settings = settings::open();
     let app = App { o, gpu: None, player: None, hw: None, settings, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
+    println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
+fn unix_ms() -> u128 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) }
 
 /// `--headless N`: no window — decode N frames through the player, show each on a headless engine (the same zero-copy
 /// import and stage graph), write `--snap-out` / run `--verify-pq`. The evidence that needs no display.
