@@ -1,4 +1,4 @@
-# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport + the timeline edits + the hover cache LANDED 2026-11-07)
+# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport + the timeline edits + the hover cache + qcv-meta LANDED 2026-11-07)
 
 **Question.** Does QCView's Transport — J / K / L, seeks, scrubs, the two-slot playlist cut, shuttle, loop, in / out,
 review speeds — run on `qcv-player` with S2's numbers, driven by `min-ui`'s FIRST nodes (the transport bar and the
@@ -181,6 +181,36 @@ on QCView's loader design — single-threaded, seek-exact — which is 34 ms on 
 prefix at one thread). That is QCView's behaviour today; the obvious improvement — serve hover thumbnails from the scrub
 decoder's GOP cache (the frames are already decoded) or give the loader frame threads for inter codecs — is a discussion
 for the UI step, not a change here (row 131).
+
+### 2 · piece 4 — `qcv-meta` (landed 2026-11-07)
+
+**What landed.** `crates/qcv-meta` (MIT OR Apache-2.0, the family crate of row 132): `VideoMetadata` / `AdobeMetadata` /
+`ImageSequenceData` as QCView's `media_item.h` has them; `extract` / `probe_rotation` / `probe_container` /
+`probe_duration` ← `ffmpeg_metadata_extractor.cpp` verbatim (the colour-tag tables, depth / alpha from the pixel-format
+name, the display-matrix snap, the embedded-timecode walk over every stream, the ProRes fourcc → marketing names with the
+MXF profile fallback, the container family on `major_brand`, the MXF OP from the UL bytes, the authoring-tool assembly,
+the DNxHD / DNxHR CID tables and the fixed-frame bitrate, the all-streams audio rule with the "N mono tracks" label, HDR10
+side data, the container-range capture between open and find_stream_info, the packet-count extent for duration-less
+containers — `stream_extent` now lives here and `qcv-player` takes it from here); `xmp` ← `adobe_metadata_extractor.cpp`'s
+dozen keys read from FFmpeg (row 134: the `mov` demuxer's `export_xmp` packet through a quick-xml walk — Adobe writes the
+structs as EMPTY elements with attribute-form fields, the Premiere link under `creatorAtom:windowsAtom`, the Pantry /
+History / Ingredients copies skipped, first wins — plus the container's `creation_time` in exiftool's date form and the
+tmcd / MXF `timecode`); `timecode` ← `TimecodeFormatter` verbatim (row 136; here so ufb / minNotes get it, re-exported by
+`qcv-player`; drop-frame round-trips tested across the 10-minute cycle); `service` ← `MetadataService` on a thread pool
+with row 132's latest-wins generations; `probe-metadata` (the bin) prints every field and runs exiftool beside it.
+Tests: 4 (tables + DNx header, XMP shapes, timecode, service compiles). The C ABI arrives with the first non-Rust consumer.
+
+**Parity.** Fixtures: `VideoMetadata` agrees with ffprobe's raw facts on 4K ProRes (profile HQ → "ProRes 422 HQ",
+bt709 × 3, limited, 683 frames, the stream and container bitrates, the tmcd timecode, "stereo" PCM), 1080p H.264 ("High",
+container range limited), 4K HEVC 10-bit ("Main 10", bt2020nc), ProRes 4444 + alpha ("ProRes 4444", yuva444p12le, 12-bit,
+alpha). The three client masters (local only), our reader vs exiftool's `-s` output for `AdobeMetadataExtractor`'s tag list:
+**every key exiftool finds, we find EQUAL** — WindowsAtomUncProjectPath + StartTimecode + MediaCreateDate on the two
+Premiere renders, MediaCreateDate alone on the third (no XMP there, as exiftool agrees); we additionally read the tmcd
+timecode and `altTimecode` exiftool's tag list left out. The Perl bundle can go for MOV / MP4 (it stays as the MXF oracle,
+row 137). Logs under `fixtures/phase2/step2-meta-*.log` (gitignored: project paths are client data).
+
+**Owed from piece 4**: an After Effects render for `aeProjectLink:fullPath` (none among the local masters), the MXF scanner
+(2d), `qcv-meta-ffi`, the Transport's use of the timecode origin (the UI's timecode well, with `min-ui`).
 
 **Owed from piece 3**: the playlist slot swap behind the Transport's debounce (rows 85 / 157: two decoder slots + the
 next-clip prewarm — the next piece after `qcv-meta`), the timeline SURFACE (`min-ui`, row 86), still-image loaders (2c).

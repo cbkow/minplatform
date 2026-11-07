@@ -5,7 +5,8 @@
 //! packet / frame primitives, and the publish rules per frame kind (VideoToolbox zero-copy when the pixel buffer's
 //! layout is bridged, else `av_hwframe_transfer_data` to planes; D3D12VA native; software planes through
 //! `yuv_planar`). Raw bindings + thin RAII (canon §4.3): no safe wrapper covers hwaccel / zero-copy.
-use crate::{frame_handle::FrameHandle, frame_index::FrameIndex, hw::{HwDevice, HW_PIX_FMT}, hw_routing, read_ahead::{FrameSpan, ReadAhead}, rgb_range::{self, RangeOverride}, stream_extent, thread_policy, yuv_planar, Error};
+use crate::{frame_handle::FrameHandle, frame_index::FrameIndex, hw::{HwDevice, HW_PIX_FMT}, hw_routing, read_ahead::{FrameSpan, ReadAhead}, rgb_range::{self, RangeOverride}, thread_policy, yuv_planar, Error};
+use qcv_meta::stream_extent;
 use ffmpeg_sys_next as ff;
 use min_present::{Chroma, ColorMeta, Frame, Matrix, NativeFrame, Pixels, Plane, PlanarLayout, Primaries, Range, Transfer};
 use qcv_timeline::Rate;

@@ -1,0 +1,20 @@
+[package]
+name = "qcv-meta"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The family's media metadata: QCView's VideoMetadata / AdobeMetadata / ImageSequenceData, the FFmpeg extractor and probes, the XMP reader (exiftool's keys), the timecode formatter, the async service (canon §23, rows 132–136)"
+
+[dependencies]
+ffmpeg-sys-next = { workspace = true }
+quick-xml = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+
+[[bin]]
+name = "probe-metadata"
+path = "src/bin/probe-metadata.rs"

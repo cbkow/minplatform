@@ -2,7 +2,7 @@
 # The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"
-members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s2-scrub", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
+members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/min-present", "crates/qcv-player", "apps/qcv", "spikes/s1-present", "spikes/s2-scrub", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window"]
 
 [workspace.package]
 edition = "2024"
@@ -50,6 +50,7 @@ libc = "0.2"
 # misc
 cc = "1.2"   # the OCIO shim (S1 step 2); later any `*-sys` crate we own
 thiserror = "2"
+quick-xml = "0.38.3"
 anyhow = "1"
 png = "0.17"
 env_logger = "0.11"
