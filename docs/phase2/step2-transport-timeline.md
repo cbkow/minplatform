@@ -284,3 +284,10 @@ resume-after-seek measurement (that is the Transport's `seekToTime` shape — it
 S2 spike's retirement once the cut numbers hold.
 
 (as it lands)
+
+### 2 · piece 6 — `min-ui`'s first nodes (designed 2026-11-07; not built)
+Talked through before building (row 156): the design direction is canon §25 — Spectrum 2's token structure and scales
+with Geist + Phosphor, Spectrum blue rationed to four uses, the timeline as a 32-px scrubber with the waveform as a faded
+fill, dual and playlists as clip bars under it with no edit mode. Build order and the harness bar are in §25's closing
+paragraph; `min-theme` is first.
+
