@@ -2404,7 +2404,7 @@ lanes 34 / 68 + overview 18 = 126 single / 160 dual), not the ruler.
 ### 25.3 Rulings
 | # | Decision | Ruling | Status |
 |---|---|---|---|
-| 160 | The design system's structure | `min-theme` is born in Spectrum 2's three-tier shape — a 13-step global gray ramp per theme → alias layers (base / layer-1 / layer-2 / elevated; content / subdued / disabled; accent / positive / notice / negative / informative) → component tokens — in S2's JSON token file shape (`value` / `sets` / `{alias}`), with S2's scales: radius 4 / 8 / 10 / 16 / full, control heights 20 / 24 / 32 / 40, spacing 2 / 4 / 6 / 8 / 12 / 16 / 24 / 32, type 12 / 14 / 16 / 18 at line-height 1.3, icons 20 / 16. Our values on the ramp (QCView's tones re-expressed), dark only in v1; light is a value flip later | **RULED 2026-11-07** ("I really like Adobe Spectrum as inspiration … soft greys, rounding, dropdown, tree styling") |
+| 160 | The design system's structure | `min-theme` is born in Spectrum 2's three-tier shape — a 13-step global gray ramp per theme → alias layers (base / layer-1 / layer-2 / elevated; content / subdued / disabled; accent / positive / notice / negative / informative) → component tokens — in S2's JSON token file shape (`value` / `sets` / `{alias}`), with S2's scales: radius 4 / 8 / 10 / 16 / full, control heights 20 / 24 / 32 / 40, spacing 2 / 4 / 6 / 8 / 12 / 16 / 24 / 32, type 12 / 14 / 16 / 18 at line-height 1.3, icons 20 / 16. Our values on the ramp (QCView's tones re-expressed); **dark only, by product direction** (the user 2026-11-07: "our app will be dark mode only too") — the ramp keeps a light flip possible but nothing is built for it | **RULED 2026-11-07** ("I really like Adobe Spectrum as inspiration … soft greys, rounding, dropdown, tree styling") |
 | 161 | Fonts and icons | Geist Sans / Geist Mono / Phosphor stay (the six files QCView bundles, with their licences); Phosphor as glyphs through parley with QCView's slug → codepoint table ported; toolbar icons at 20 | **RULED 2026-11-07** ("I do want to keep phosphor and geist though") |
 | 162 | The accent | Spectrum's dark blue: blue-800 rgb(64,105,253) for fills under white text, blue-900 rgb(86,129,255) for accent text and icons, blue-1000 rgb(105,149,254) on hover; cobalt #0189f1 retires. Spent in FOUR places only: the focus ring, emphasized buttons in dialogs, the loaded-media row in the rails, the active side chip. Everything else neutral: selected toolbar toggles = gray-800 fill with inverted text, list selection = quiet gray-200 fill, the in/out zone = white at 6 %, the waveform gray | **RULED 2026-11-07** ("lets move away from cobalt as its a bit bright compared to the spectrum blue choices which are better and I think less use of the blue highlight in general is a good idea") |
 | 163 | Contrast roles | content = gray-800, subdued = gray-700, disabled = gray-400; the "muted" live-text role retires; disabled danger buttons go gray like everything else | **RULED 2026-11-07** (with the lean) |
@@ -2415,6 +2415,29 @@ lanes 34 / 68 + overview 18 = 126 single / 160 dual), not the ruler.
 | 168 | The surface's colours | lean Spectrum: playhead gray-900 (near-white), in-point = `positive-visual-color`, out-point = `notice-visual-color`, failed frames = `negative-visual-color`, side A / B re-picked from S2's categorical palette in the theme pass; the waveform a faded gray fill (solid at ~12 % alpha; the hatch of the reference as a one-line option) | **RULED 2026-11-07** ("Green is not sacred — lets lean toward spectrum for color choices") |
 | 169 | The bottom bands | status 24 + transport 32 + scrubber 32 (+24 dual, +20 playlist); the transport bar drawn at 32 with 20-px icons and spacing instead of dividers, every QCView button in order (unbacked ones disabled) | proposed |
 | 170 | The hover thumbnail | a `min-ui` node over the viewport (§17.5 item 5), display-referred, QCView's placement (bottom-left, 0.18 of the frame width) | proposed |
+
+### 25.4 Reference reading — rails, sliders, scrollers, and when to round (the user's second pointer, 2026-11-07)
+The same Adobe image's bottom panel (the current Lightroom on Spectrum 2) is the reference for the rails. What it
+shows, as rules for `min-ui`:
+- **Rail = layer-1 over the viewport's base**, sections separated by full-width hairlines, no cards for the sections
+  themselves: a section is a bold 14 header with a chevron on the LEFT ("⌄ Light", "> Effects" when closed). Sub-panels
+  that open elsewhere ("Curve", "Color Mixer", "Point Color", "Color Grading") are the only cards: raised layer-2 tiles
+  at radius 8 with an icon tile on the left and a small caret on the right.
+- **Slider row** = label left and value right-aligned in subdued gray on one line, the slider on its own line below:
+  a 1-px track (filled and unfilled halves one step apart in gray, never accent), the knob a 16-px hollow ring (dark
+  fill, 2-px light stroke); gradient tracks only where the value is a colour (temp, tint, hue).
+- **Rounding by role**: pills (`corner-radius-full`) for standalone action buttons ("Copy Edit Settings") and the search
+  field; small radius 4 for chips and buttons inside a group ("Auto", "B&W", "HDR" as raised gray chips with 12-px bold
+  text; the "★ ≥ 4 ×" filter tag); medium 8 for cards and for the lighter square behind the active tool in the icon
+  rail; hairlines and dividers stay square. Quiet pickers ("Profile  Adobe Standard ⌄", "Fit 100 % ⌄") are text plus a
+  chevron, no border.
+- **Icon rail**: ~40 px wide, 20-px icons, groups separated by hairlines; the active tool gets the radius-8 lighter
+  backing and a tiny accent dot — one of the four blue uses (row 162: the active side chip generalises to "the active
+  tool / side").
+- **Scroller**: a 2–3 px overlay bar at the rail's edge, no track, visible on hover / scroll — §16.4's fixed-thickness
+  rule, drawn S2's way.
+- **Type in the rail**: body 14 for headers and values, 12 for labels; the 2017 panel's tracked tiny capitals
+  ("TOOLS", "HISTOGRAM") are the detail style the go-to popover's title already uses.
 
 **Build order (row 156, revised by §25):** `min-theme` (the S2-shaped tokens, a TOML/JSON source + build.rs → a
 Rust struct; the Qt `Theme.qml` generator later, row 37) → the UI layer in `min-present` (vello into an Rgba8 overlay
