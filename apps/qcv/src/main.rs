@@ -25,7 +25,7 @@ struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Player>, hw: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
-    fetches: HashMap<AsyncRequestSerial, WindowId>, finished: bool, frames_presented: u64, edr_seen: f64,
+    fetches: HashMap<AsyncRequestSerial, WindowId>, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
 }
 
 impl App {
@@ -76,10 +76,10 @@ impl App {
         }
     }
     fn after_show(&mut self) {
-        let shown = self.player.as_ref().map(|p| p.stats.shown).unwrap_or(0);
+        let frame_no = self.player.as_ref().and_then(|p| p.current()).map(|h| h.frame_no).unwrap_or(-1);
         let g = self.gpu.as_ref().unwrap();
-        if let Some((path, n)) = &self.o.snap_out { if shown == *n { match g.presenter.engine.snapshot(Snapshot::Encoded) { Ok((px, w, h)) => { write_png_rgb8(path, &px, w, h); println!("snap-out written: {path} ({w}x{h}, display-encoded 8-bit, frame {n})"); } Err(e) => println!("snap-out: {e}") } } }
-        if self.o.verify_pq && shown == 24 { self.verify_pq(); }
+        if let Some((path, n)) = &self.o.snap_out { if frame_no == *n as i32 && !self.snapped { self.snapped = true; match g.presenter.engine.snapshot(Snapshot::Encoded) { Ok((px, w, h)) => { write_png_rgb8(path, &px, w, h); println!("snap-out written: {path} ({w}x{h}, display-encoded 8-bit, frame {n})"); } Err(e) => println!("snap-out: {e}") } } }
+        if self.o.verify_pq && frame_no == 24 && !self.verified { self.verified = true; self.verify_pq(); }
     }
     /// S1's check for the synthetic PQ ramp fixture (rows < H/2: grey ramp code = x/(W-1); then bands at 0.5081 / 0.7518 / 0.9026).
     fn verify_pq(&self) {
@@ -196,7 +196,7 @@ fn main() {
     let o = Opts { headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
-    let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), finished: false, frames_presented: 0, edr_seen: 0.0 };
+    let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
 }
 
@@ -220,11 +220,11 @@ fn run_headless(o: Opts) {
     p.looping = false;
     let mut first: Option<f32> = None; let mut show_ms = vec![];
     let deadline = Instant::now() + std::time::Duration::from_secs(60);
-    while p.stats.shown < n && Instant::now() < deadline {
+    while p.current().map(|h| h.frame_no + 1).unwrap_or(0) < n as i32 && !p.at_end() && Instant::now() < deadline {
         let now = Instant::now();
         let Some(d) = p.tick(now) else { p.idle_refresh(); std::thread::sleep(std::time::Duration::from_micros(500)); continue };
         match engine.show(&d.frame) { Ok(()) => { show_ms.push(engine.last_show_ms); if first.is_none() { first = Some(t.elapsed().as_secs_f32() * 1000.0); } } Err(e) => { println!("show: {e}"); return } }
-        let shown = p.stats.shown;
+        let shown = d.frame_no as u32;
         if let Some((path, k)) = &o.snap_out { if shown == *k { match engine.snapshot(Snapshot::Encoded) { Ok((px, w, h)) => { write_png_rgb8(path, &px, w, h); println!("snap-out written: {path} ({w}x{h}, display-encoded 8-bit, frame {k})"); } Err(e) => println!("snap-out: {e}") } } }
         if o.verify_pq && shown == 24 {
             let Ok((px, w, h)) = engine.snapshot(Snapshot::Linear) else { continue };
