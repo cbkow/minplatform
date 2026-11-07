@@ -525,7 +525,9 @@ impl Transport {
     fn show(&mut self, h: FrameHandle, now: Instant) -> Option<&FrameHandle> {
         if h.frame_no >= 0 {
             let k = self.tl_frame_of(&self.slots[self.active], h.frame_no as i64);
-            if let Some(last) = self.last_shown { if k > last + 1 { self.stats.dropped += (k - last - 1) as u32; } *self.stats.cadence.entry(self.refreshes_on_current).or_insert(0) += 1; }
+            // a gap counts as dropped only while the clock runs it: a scrub / seek / shuttle jump is not a drop
+            let continuous = self.timer.is_playing() && self.scrubbing.is_none() && self.fast.is_none() && self.seek_gate.is_none();
+            if let Some(last) = self.last_shown { if continuous && k > last + 1 { self.stats.dropped += (k - last - 1) as u32; } *self.stats.cadence.entry(self.refreshes_on_current).or_insert(0) += 1; }
             if self.timer.is_playing() && self.fps > 0.0 { let late = ((self.timer.position() - k as f64 / self.fps) / self.timer.playback_speed().max(1e-6) * 1000.0) as f32; self.stats.lateness_ms.push(late); if late > self.refresh_ms { self.stats.late += 1; } }
             self.last_shown = Some(k);
         }

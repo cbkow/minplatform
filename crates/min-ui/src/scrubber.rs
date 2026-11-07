@@ -109,7 +109,9 @@ impl Scrubber {
             Event::Down { .. } => {}
             Event::Up { x, button: Button::Primary, .. } => { if self.pressed { self.pressed = false; cmds.push(ScrubCmd::To(self.frame_at_x(x, s, scale))); cmds.push(ScrubCmd::End); dirty = true; } }
             Event::Up { .. } => {}
-            Event::Leave => { if self.hover_x.is_some() { dirty = true; } self.hover_x = None; self.hover_frame = None; if self.pressed { self.pressed = false; cmds.push(ScrubCmd::End); } }
+            // Leaving the window while pressed keeps the grab (Qt's MouseArea kept it for QCView): drags outside keep
+            // arriving as moves, clamped to the track, and the release ends the scrub wherever it lands.
+            Event::Leave => { if self.hover_x.is_some() { dirty = true; } self.hover_x = None; self.hover_frame = None; }
         }
         (cmds, dirty)
     }
@@ -217,6 +219,8 @@ mod tests {
         assert!(sc.hover_frame.is_none());
         let (c, _) = sc.event(&Event::Move { x: 508.0, y: 10.0 }, now, &s, 1.0);
         assert_eq!(c, vec![ScrubCmd::To(120)]);
+        let (c, _) = sc.event(&Event::Leave, now, &s, 1.0);
+        assert!(c.is_empty() && sc.is_pressed(), "leaving the window keeps the grab");
         let (c, _) = sc.event(&Event::Up { x: 2000.0, y: 10.0, button: Button::Primary }, now, &s, 1.0);
         assert_eq!(c, vec![ScrubCmd::To(239), ScrubCmd::End], "release past the end clamps");
         sc.wheel(508.0, 480.0, false, &s, 1.0);
