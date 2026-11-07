@@ -151,3 +151,18 @@ scalar round-trips to a fixed point, QCView's note on why not a W:H pair). The I
 Enter commits, Escape reverts, a press elsewhere commits (`has_focus / key / ime / blur`), the same routing the
 Settings panel has.
 
+### The loaded row, the bin icons, the waveform on a clip switch (2026-11-07 night)
+- The user: the blue in the rail "feels faded … low contrast against the grey hover background". It was the port's
+  deviation, not the token: the loaded row drew the name in blue-900 over the grey hover / selection fill (3.3–3.7:1,
+  under the 4.5:1 text floor) with an invented 2-px left bar. QCView's `LeftRail.qml` never puts accent text on grey:
+  priority active → selected → hover, the loaded row = a muted cobalt fill (`Theme.rowActive`) + a 1-px accent border +
+  the name in `textBright`, "no left rule". Carried: tokens `rail-row-active-fill` (blue-400) / `-border`
+  (accent-visual-color) / `-label` (gray-900); the accent tokens themselves are unchanged (Spectrum 2 dark blue-900; QCView's
+  own accent is cobalt #0189f1 on a Display-P3-tagged Qt swapchain, which is why the same hex reads more vivid there — noted,
+  not carried).
+- The user: "move the icons from the media items to the bins too, we don't need so many icons" — the type glyph is drawn once
+  on the bin header before "Label (n)"; rows are the name only.
+- Switching from a clip with audio to one without left the previous clip's peaks on the scrubber (the whole waveform block
+  was behind `has_audio`). QCView's loader goes inactive without audio and draws nothing; the peaks and the request now
+  clear in that case. Audio → audio was already right: the request is keyed by path, columns fill as peaks land, the old
+  clip stays in the probe engine's small LRU so switching back is instant.

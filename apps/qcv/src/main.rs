@@ -239,6 +239,9 @@ impl App {
                 if req != g.wave_req { g.wave_req = req.clone(); g.waveform.request_window(&req.0, t0, t1, cols); g.ui_dirty = true; }
                 let wgen = g.waveform.data_generation();
                 if wgen != g.wave_seen || g.ui_dirty { g.wave_seen = wgen; g.wave_peaks = g.waveform.sample_columns(&req.0, t0, t1, cols).into_iter().map(|c| if c.valid { (c.mn, c.mx) } else { (0.0, 0.0) }).collect(); g.ui_dirty = true; }
+            } else if !g.wave_peaks.is_empty() {
+                // a clip without audio (or the probe switched off): QCView's waveform loader goes inactive and draws nothing — never the previous clip's peaks
+                g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); g.ui_dirty = true;
             } }
             if g.thumbs.tick(self.player.as_mut(), g.scrubber.hover_frame, now) { g.ui_dirty = true; }
             let _ = frame;

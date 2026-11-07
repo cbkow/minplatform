@@ -1,7 +1,9 @@
 //! The left rail's Add Media section — QCView's `LeftRail.qml` media card carried: the project's name in the header, the
 //! "Media" list grouped by QCView's section labels (Videos · Audio · Images · Image Sequences · Playlists · Dual Views ·
-//! Live) with a count, rows = type glyph + name elided in the middle, the LOADED row in the accent (one of the four blue
-//! uses, canon row 162: "the loaded-media row"), selected rows in the deliberate grey; single click selects (Ctrl / Cmd
+//! Live) with the type glyph + a count on the bin header (the user 2026-11-07: "move the icons from the media items to the
+//! bins too, we don't need so many icons"), rows = the name elided in the middle; the LOADED row carries QCView's treatment
+//! (LeftRail.qml: a muted cobalt fill, a 1-px accent border, the name bright — never accent text on grey, which sat under
+//! 4.5:1; one of the four blue uses, canon row 162), selected rows in the deliberate grey; single click selects (Ctrl / Cmd
 //! toggles, Shift extends a range), double-click LOADS (QCView: "activation moved to double-click"), an empty list reads
 //! "Drop media here to add to the project". An "Add Media…" pill opens the file dialog. Context menus and drag-to-playlist
 //! wait for the menu node and DnD slice.
@@ -15,8 +17,8 @@ use vello::Scene;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd { Load(String), Remove(Vec<String>), AddMedia }
 
-struct Row { id: String, name: String, media_type: MediaType, rect: Rect, hovered: bool, hover: Ramp, failed: bool }
-struct Group { label: &'static str, header: Rect, rows: Vec<Row> }
+struct Row { id: String, name: String, rect: Rect, hovered: bool, hover: Ramp, failed: bool }
+struct Group { label: &'static str, icon: &'static str, header: Rect, rows: Vec<Row> }
 
 pub struct ProjectPanel {
     pub section: Section,
@@ -45,8 +47,8 @@ impl ProjectPanel {
         let mut groups: Vec<Group> = vec![];
         for t in order {
             let mut rows = vec![];
-            for bn in pm.bins() { for id in &bn.item_ids { if let Some(it) = pm.item(id) { if it.media_type == t { rows.push(Row { id: it.id.clone(), name: it.name.clone(), media_type: t, rect: Rect::ZERO, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), failed: it.load_failed }); } } } }
-            if !rows.is_empty() { groups.push(Group { label: section_label(t), header: Rect::ZERO, rows }); }
+            for bn in pm.bins() { for id in &bn.item_ids { if let Some(it) = pm.item(id) { if it.media_type == t { rows.push(Row { id: it.id.clone(), name: it.name.clone(), rect: Rect::ZERO, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), failed: it.load_failed }); } } } }
+            if !rows.is_empty() { groups.push(Group { label: section_label(t), icon: type_icon(t), header: Rect::ZERO, rows }); }
         }
         self.groups = groups;
         let ids: Vec<String> = self.groups.iter().flat_map(|g| g.rows.iter().map(|r| r.id.clone())).collect();
@@ -64,7 +66,7 @@ impl ProjectPanel {
         self.add.rect = Rect::new(x1 - pad - bw, cy, x1 - pad, cy + bh); cy += bh + pad;
         if self.groups.is_empty() { cy += row_h + pad; }   // the drop hint
         for g in &mut self.groups {
-            let gh = fonts.detail(g.label, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64;
+            let gh = (fonts.detail(g.label, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64).max(t::ICON_SIZE_SMALL as f64 * scale);
             g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + gap * 2.0;
             for r in &mut g.rows { r.rect = Rect::new(x0 + pad / 2.0, cy, x1 - pad / 2.0, cy + row_h); cy += row_h + gap; }
             cy += pad / 2.0;
@@ -117,16 +119,22 @@ impl ProjectPanel {
             min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((self.section.rect.x0 + pad, self.add.rect.y1 + pad + (t::COMPONENT_HEIGHT_75 as f64 * scale - l.height() as f64) / 2.0)));
         }
         for g in &self.groups {
+            // the bin header: the type glyph once, then "Label (n)" — the rows carry no icon
+            let mut hx = g.header.x0;
+            if let Some(ic) = fonts.icon(g.icon, t::ICON_SIZE_SMALL * scale as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((hx, g.header.y0 + (g.header.height() - ic.height() as f64) / 2.0))); hx += t::ICON_SIZE_SMALL as f64 * scale + t::SPACING_75 as f64 * scale; }
             let h = fonts.detail(&format!("{} ({})", g.label, g.rows.len()), t::RAIL_GROUP_HEADER_SIZE * scale as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
-            min_ui::fonts::draw_layout(scene, &h, kurbo::Affine::translate((g.header.x0, g.header.y0)));
+            min_ui::fonts::draw_layout(scene, &h, kurbo::Affine::translate((hx, g.header.y0 + (g.header.height() - h.height() as f64) / 2.0)));
             for r in &g.rows {
                 let selected = self.selected.contains(&r.id); let active = r.id == self.active;
-                let bg = if selected { t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT } else { mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, r.hover.value(now)) };
-                if bg.a > 0.0 { paint::rounded(scene, r.rect, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale, bg); }
-                if active { paint::rect(scene, Rect::new(r.rect.x0, r.rect.y0 + 3.0 * scale, r.rect.x0 + 2.0 * scale, r.rect.y1 - 3.0 * scale), t::ACCENT_VISUAL_COLOR); }
-                let c = if r.failed { t::DISABLED_CONTENT_COLOR } else if active { t::ACCENT_CONTENT_COLOR_DEFAULT } else { t::RAIL_LABEL_COLOR };
-                let mut x = r.rect.x0 + pad;
-                if let Some(g) = fonts.icon(type_icon(r.media_type), t::ICON_SIZE_SMALL * scale as f32, paint::color(if r.failed { t::DISABLED_CONTENT_COLOR } else { t::RAIL_VALUE_COLOR })) { min_ui::fonts::draw_layout(scene, &g, kurbo::Affine::translate((x, r.rect.y0 + (r.rect.height() - g.height() as f64) / 2.0))); x += t::ICON_SIZE_SMALL as f64 * scale + t::SPACING_100 as f64 * scale; }
+                let radius = t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale;
+                let bg = if active { t::RAIL_ROW_ACTIVE_FILL } else if selected { t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT } else { mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, r.hover.value(now)) };
+                if bg.a > 0.0 { paint::rounded(scene, r.rect, radius, bg); }
+                if active {   // QCView LeftRail.qml: the loaded row's 1-px accent border (no left rule)
+                    let bw = 1.0 * scale; let ring = kurbo::RoundedRect::from_rect(r.rect.inset(-bw / 2.0 + bw), radius - bw / 2.0);
+                    scene.stroke(&kurbo::Stroke::new(bw), kurbo::Affine::IDENTITY, paint::color(t::RAIL_ROW_ACTIVE_BORDER), None, &ring);
+                }
+                let c = if r.failed { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
+                let x = r.rect.x0 + pad;
                 let avail = (r.rect.x1 - pad - x).max(20.0);
                 let mut l = fonts.layout(&r.name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
                 if l.width() as f64 > avail {
