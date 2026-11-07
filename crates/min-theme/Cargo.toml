@@ -1,0 +1,23 @@
+[package]
+name = "min-theme"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The family's design tokens as DATA (canon §25, rows 160–169): Spectrum 2's three-tier shape (ramp → aliases → component tokens) and scales, our values, dark only; Geist + Phosphor bundled; the Phosphor slug → codepoint table"
+
+[features]
+default = ["fonts"]
+fonts = []
+
+[dependencies]
+
+[build-dependencies]
+serde_json = { workspace = true }
+
+[[bin]]
+name = "min-theme-dump"
+path = "src/bin/dump.rs"

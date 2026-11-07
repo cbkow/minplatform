@@ -291,3 +291,18 @@ with Geist + Phosphor, Spectrum blue rationed to four uses, the timeline as a 32
 fill, dual and playlists as clip bars under it with no edit mode. Build order and the harness bar are in §25's closing
 paragraph; `min-theme` is first.
 
+#### 6a · `min-theme` (landed 2026-11-07)
+`crates/min-theme` — the tokens as data in Spectrum 2's three-tier JSON shape (`tokens/color-palette.json` the 13-step
+gray ramp + 8 hue ramps, `color-aliases.json` the roles, `layout.json`, `typography.json`, `component.json` for the
+first nodes), one extension over Spectrum's format (`"alpha"` on a colour reference — the hover-ramp twin rule), and a
+`build.rs` that resolves every reference (dangling / cyclic → a build error by name) into one typed `pub const` per
+token plus `tokens::ALL` / `tokens::get`. 396 tokens resolved. Also the Phosphor slug → codepoint table (QCView's
+`PhosphorIcons.js`, 1 512 names, `icons::glyph`) and the six bundled faces (Geist ×5 OFL, Phosphor MIT; the family
+names inside the files verified: "Geist", "Geist Mono", "Phosphor") behind the default `fonts` feature.
+`min-theme-dump [--json] [prefix]` is the parity oracle for the later `Theme.qml` generator.
+**Tests (7):** the contrast roles hold on all three layers (content ≥ 7:1, subdued ≥ 4.5:1, disabled < 3:1), white on
+the accent fill ≥ 4.5:1 (cobalt was 3.6:1), inverted text on selected / tooltip fills ≥ 10:1, the alpha extension,
+Spectrum's desktop scales, colour maths, the icon table, the font files. Values of note (row 168's picks): accent
+blue-800 #4069fd / blue-900 #5681ff; playhead gray-900; in = green-900, out = orange-900, failed = red-900; side A =
+cyan-900, side B = cinnamon-900; note marker purple-900; waveform gray-800 at 0.12; in/out zone white at 0.06.
+
