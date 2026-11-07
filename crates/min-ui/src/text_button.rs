@@ -47,7 +47,7 @@ impl TextButton {
             Variant::Secondary => (if self.pressed { t::DOWN_BACKGROUND_COLOR } else { mix(t::BUTTON_SECONDARY_BACKGROUND_COLOR, t::BUTTON_SECONDARY_BACKGROUND_COLOR_HOVER, hv) }, t::BUTTON_SECONDARY_CONTENT_COLOR),
             Variant::Negative => (if self.pressed { t::NEGATIVE_BACKGROUND_COLOR_HOVER } else { mix(t::BUTTON_NEGATIVE_BACKGROUND_COLOR, t::BUTTON_NEGATIVE_BACKGROUND_COLOR_HOVER, hv) }, t::BUTTON_NEGATIVE_CONTENT_COLOR),
         } };
-        paint::rounded(scene, self.rect, t::BUTTON_CORNER_RADIUS as f64 * scale, bg);
+        paint::rounded(scene, self.rect, paint::radius(t::BUTTON_CORNER_RADIUS, scale, self.rect), bg);
         let l = fonts.layout(&self.label, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(fg));
         crate::fonts::draw_layout(scene, &l, Affine::translate((self.rect.x0 + (self.rect.width() - l.width() as f64) / 2.0, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
     }

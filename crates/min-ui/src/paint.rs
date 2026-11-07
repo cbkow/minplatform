@@ -9,6 +9,11 @@ pub fn color(c: min_theme::Color) -> Color { Color::new([c.r, c.g, c.b, c.a]) }
 /// A filled rectangle in physical pixels.
 pub fn rect(scene: &mut Scene, r: Rect, c: min_theme::Color) { scene.fill(Fill::NonZero, Affine::IDENTITY, color(c), None, &r); }
 
+/// A corner-radius token in physical px for `r`: px tokens scale by the window factor; `corner-radius-full` (the ratio
+/// 0.5) is half of `r`'s short side. Resolve BEFORE scaling — 0.5 × a scale of 2 is 1.0, which read as one pixel
+/// (the pill came out square on macOS, round on Windows; 2026-11-07).
+pub fn radius(token: f64, scale: f64, r: Rect) -> f64 { if token < 1.0 { token * r.width().min(r.height()) } else { token * scale } }
+
 /// A filled rounded rectangle; `radius` is a token value (px, already scaled) or `corner-radius-full`'s 0.5 → half the short side.
 pub fn rounded(scene: &mut Scene, r: Rect, radius: f64, c: min_theme::Color) {
     let rad = if radius < 1.0 { radius * r.width().min(r.height()) } else { radius };

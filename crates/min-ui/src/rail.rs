@@ -30,6 +30,8 @@ pub struct Rail {
     pub rect: Rect,
     splitter: Rect, hot: Rect, tab: Rect,
     splitter_hover: bool, drag: Option<(f64, f64)>, tab_hover: bool, inside: bool, last_scroll: Option<Instant>,
+    /// the overlay scrollbar: hovered (drawn thicker, S2's way) and a thumb drag (pointer y at grab, scroll at grab)
+    sb_hover: bool, sb_drag: Option<(f64, f64)>, sb_ramp: Ramp,
     splitter_ramp: Ramp, tab_ramp: Ramp,
     scale: f64,
 }
@@ -37,7 +39,7 @@ pub struct Rail {
 impl Rail {
     pub fn new(side: Side, width: f64, collapsed: bool) -> Rail {
         Rail { side, width: width.clamp(t::RAIL_WIDTH_MIN as f64, t::RAIL_WIDTH_MAX as f64), collapsed, open: Ramp::new(if collapsed { 0.0 } else { 1.0 }, t::RAIL_COLLAPSE_DURATION), scroll: 0.0, content_height: 0.0, rect: Rect::ZERO,
-            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
+            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
     }
     pub fn set_collapsed(&mut self, c: bool, now: Instant) { if self.collapsed != c { self.collapsed = c; self.open.set_target(if c { 0.0 } else { 1.0 }, now); } }
     pub fn toggle(&mut self, now: Instant) { let c = !self.collapsed; self.set_collapsed(c, now); }
@@ -65,6 +67,26 @@ impl Rail {
         let pad = t::RAIL_PADDING as f64 * self.scale;
         Rect::new(self.rect.x0 + pad, self.rect.y0 + pad - self.scroll, self.rect.x1 - pad, self.rect.y1 - pad)
     }
+    /// The overlay scrollbar's track and thumb (physical px) when the content overflows; the thumb is drawn
+    /// `scrollbar-thickness` wide, twice that while hovered or dragged, and hit in a 12-px band along the inner edge.
+    pub fn scrollbar(&self, now: Instant) -> Option<(Rect, Rect)> {
+        let max = (self.content_height - self.rect.height()).max(0.0);
+        if max <= 0.0 || self.rect.width() <= 0.0 { return None }
+        let scale = self.scale;
+        let th = t::SCROLLBAR_THICKNESS as f64 * scale * (1.0 + self.sb_ramp.value(now) as f64); let pad = t::SPACING_50 as f64 * scale;
+        let track_h = self.rect.height() - 2.0 * pad;
+        let bar_h = (track_h * self.rect.height() / self.content_height).max(t::COMPONENT_HEIGHT_75 as f64 * scale).min(track_h);
+        let y = self.rect.y0 + pad + (track_h - bar_h) * (self.scroll / max);
+        let x = match self.side { Side::Left => self.rect.x1 - th - pad - t::HAIRLINE as f64 * scale, Side::Right => self.rect.x0 + pad + t::HAIRLINE as f64 * scale };
+        Some((Rect::new(x, self.rect.y0 + pad, x + th, self.rect.y1 - pad), Rect::new(x, y, x + th, y + bar_h)))
+    }
+    fn scrollbar_hit(&self, x: f64, y: f64, now: Instant) -> Option<(Rect, Rect, bool)> {
+        let (track, thumb) = self.scrollbar(now)?;
+        let band = t::SPACING_200 as f64 * self.scale;
+        let zone = match self.side { Side::Left => Rect::new(self.rect.x1 - band, track.y0, self.rect.x1, track.y1), Side::Right => Rect::new(self.rect.x0, track.y0, self.rect.x0 + band, track.y1) };
+        if !zone.contains(kurbo::Point::new(x, y)) { return None }
+        Some((track, thumb, y >= thumb.y0 && y <= thumb.y1))
+    }
     fn fully_collapsed(&self, now: Instant) -> bool { self.collapsed && self.open.value(now) <= 0.001 }
     fn fully_open(&self, now: Instant) -> bool { !self.collapsed && self.open.value(now) >= 0.999 }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.width() > 0.0 && self.rect.contains(kurbo::Point::new(x, y)) }
@@ -72,8 +94,29 @@ impl Rail {
     /// splitter drag and the open tab are handled here.
     pub fn event(&mut self, e: &Event, now: Instant) -> RailResponse {
         let mut r = RailResponse::default();
-        let was = (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some());
+        let was = (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some(), self.sb_hover, self.sb_drag.is_some());
         let pos = e.pos();
+        // the scrollbar first: a thumb drag owns the pointer; a press on the track jumps there
+        if let Some((y0, s0)) = self.sb_drag {
+            match *e {
+                Event::Move { y, .. } => { if let Some((track, thumb)) = self.scrollbar(now) { let max = (self.content_height - self.rect.height()).max(0.0); let run = (track.height() - thumb.height()).max(1.0); let s = (s0 + (y - y0) * max / run).clamp(0.0, max); if s != self.scroll { self.scroll = s; self.last_scroll = Some(now); } } r.consumed = true; r.dirty = true; return r }
+                Event::Up { button: Button::Primary, .. } => { self.sb_drag = None; r.consumed = true; r.dirty = true; return r }
+                Event::Leave => { self.sb_drag = None; }
+                _ => {}
+            }
+        }
+        if let (Some((x, y)), false) = (pos, self.fully_collapsed(now)) {
+            match (e, self.scrollbar_hit(x, y, now)) {
+                (Event::Move { .. }, hit) => { self.sb_hover = hit.is_some(); }
+                (Event::Down { button: Button::Primary, .. }, Some((track, thumb, on_thumb))) => {
+                    if on_thumb { self.sb_drag = Some((y, self.scroll)); }
+                    else { let max = (self.content_height - self.rect.height()).max(0.0); let run = (track.height() - thumb.height()).max(1.0); let s = ((y - track.y0 - thumb.height() / 2.0) / run * max).clamp(0.0, max); self.scroll = s; self.last_scroll = Some(now); self.sb_drag = Some((y, s)); }
+                    self.sb_ramp.set_target(1.0, now);
+                    r.consumed = true; r.dirty = true; return r
+                }
+                _ => {}
+            }
+        } else if matches!(e, Event::Leave) { self.sb_hover = false; }
         let on_splitter = self.fully_open(now) && pos.is_some_and(|(x, y)| self.hot.contains(kurbo::Point::new(x, y)));
         let on_tab = self.fully_collapsed(now) && pos.is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
         match *e {
@@ -97,7 +140,8 @@ impl Rail {
         if !r.consumed && pos.is_some_and(|(x, y)| self.hit(x, y) || (self.fully_collapsed(now) && self.tab.contains(kurbo::Point::new(x, y)))) { r.consumed = true; }
         self.splitter_ramp.set_target(if self.splitter_hover || self.drag.is_some() { 1.0 } else { 0.0 }, now);
         self.tab_ramp.set_target(if self.tab_hover { 1.0 } else { 0.0 }, now);
-        r.dirty = was != (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some()) || r.width_changed || r.toggled;
+        self.sb_ramp.set_target(if self.sb_hover || self.sb_drag.is_some() { 1.0 } else { 0.0 }, now);
+        r.dirty = was != (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some(), self.sb_hover, self.sb_drag.is_some()) || r.width_changed || r.toggled;
         r
     }
     /// Scroll the content by `dy` physical px (positive = down); true when it moved.
@@ -107,7 +151,7 @@ impl Rail {
         self.last_scroll = Some(now);
         if s != self.scroll { self.scroll = s; true } else { false }
     }
-    pub fn animating(&self, now: Instant) -> bool { self.open.animating(now) || self.splitter_ramp.animating(now) || self.tab_ramp.animating(now) || self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + t::ANIMATION_DURATION_HOVER) }
+    pub fn animating(&self, now: Instant) -> bool { self.open.animating(now) || self.splitter_ramp.animating(now) || self.tab_ramp.animating(now) || self.sb_ramp.animating(now) || self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + t::ANIMATION_DURATION_HOVER) }
     pub fn paint_background(&self, scene: &mut Scene, now: Instant) {
         if self.rect.width() > 0.0 { paint::rect(scene, self.rect, t::RAIL_BACKGROUND_COLOR); }
         if self.fully_collapsed(now) {
@@ -124,17 +168,11 @@ impl Rail {
     pub fn paint_foreground(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
         if self.rect.width() > 0.0 {
             paint::rect(scene, self.splitter, mix(t::RAIL_SPLITTER_COLOR, t::RAIL_SPLITTER_COLOR_HOVER, self.splitter_ramp.value(now)));
-            let max = (self.content_height - self.rect.height()).max(0.0);
-            if max > 0.0 {
+            if let Some((_, thumb)) = self.scrollbar(now) {
                 let recent = self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY);
-                let a = if self.inside || recent { 1.0 } else { 0.0 };
-                if a > 0.0 {
-                    let th = t::SCROLLBAR_THICKNESS as f64 * scale; let pad = t::SPACING_50 as f64 * scale;
-                    let track_h = self.rect.height() - 2.0 * pad;
-                    let bar_h = (track_h * self.rect.height() / self.content_height).max(t::COMPONENT_HEIGHT_75 as f64 * scale);
-                    let y = self.rect.y0 + pad + (track_h - bar_h) * (self.scroll / max);
-                    let x = match self.side { Side::Left => self.rect.x1 - th - pad - t::HAIRLINE as f64 * scale, Side::Right => self.rect.x0 + pad + t::HAIRLINE as f64 * scale };
-                    paint::rounded(scene, Rect::new(x, y, x + th, y + bar_h), th / 2.0, t::SCROLLBAR_COLOR);
+                if self.inside || recent || self.sb_hover || self.sb_drag.is_some() {
+                    let c = if self.sb_hover || self.sb_drag.is_some() { t::SCROLLBAR_COLOR_HOVER } else { t::SCROLLBAR_COLOR };
+                    paint::rounded(scene, thumb, thumb.width() / 2.0, c);
                 }
             }
         }
@@ -171,5 +209,16 @@ mod tests {
         assert_eq!(rr.width, 420.0, "dragging a right rail's splitter left widens it");
         rr.content_height = 2000.0; rr.layout(1600.0, 0.0, 800.0, 1.0, now);
         assert!(rr.wheel(5000.0, now)); assert_eq!(rr.scroll, 1200.0, "scroll clamps to the overflow");
+        // the scrollbar: a press on the track's top jumps there, then a drag down follows the pointer
+        rr.wheel(-5000.0, now); rr.layout(1600.0, 0.0, 800.0, 1.0, now);
+        let (track, thumb) = rr.scrollbar(now).unwrap();
+        assert!(thumb.y0 == track.y0 && thumb.height() < track.height());
+        let e = rr.event(&Event::Down { x: rr.rect.x0 + 4.0, y: track.y1 - 1.0, button: Button::Primary }, now);
+        assert!(e.consumed && rr.scroll > 1000.0, "a press near the track's end jumps there: {}", rr.scroll);
+        rr.event(&Event::Up { x: rr.rect.x0 + 4.0, y: track.y1 - 1.0, button: Button::Primary }, now);
+        rr.event(&Event::Down { x: rr.rect.x0 + 4.0, y: rr.scrollbar(now).unwrap().1.center().y, button: Button::Primary }, now);
+        let before = rr.scroll;
+        rr.event(&Event::Move { x: rr.rect.x0 + 4.0, y: rr.scrollbar(now).unwrap().1.center().y - 100.0 }, now);
+        assert!(rr.scroll < before, "dragging the thumb up scrolls up");
     }
 }
