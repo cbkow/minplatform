@@ -60,9 +60,10 @@ impl Rail {
         let vw = self.visible_width(now, scale);
         let hz = t::SPLITTER_HOT_ZONE as f64 * scale; let th = t::HAIRLINE as f64 * scale;
         let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let tab_y = y0 + (t::COMPONENT_HEIGHT_100 as f64 * scale - sz) / 2.0;   // the same square as the collapse arrow, at its height (QCView: one element that flips)
+        let m = t::SPACING_75 as f64 * scale;   // a 4-px margin from the window's edge: a real button, clear of the chrome border (the user 2026-11-07)
         match self.side {
-            Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x, tab_y, edge_x + sz, tab_y + sz); }
-            Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - sz, tab_y, edge_x, tab_y + sz); }
+            Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x + m, tab_y, edge_x + m + sz, tab_y + sz); }
+            Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - m - sz, tab_y, edge_x - m, tab_y + sz); }
         }
         let max = (self.content_height - self.body_height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
