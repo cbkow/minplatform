@@ -1,4 +1,4 @@
-// Four planes: Y, Cb, Cr, A — or G, B, R, A. Alpha rides to the working texture (stage 4 composites it); the surface ignores it.
+// Four planes: Y, Cb, Cr, A — or G, B, R, A. Alpha rides through premultiplied; the present pass blends it over stage 0's background (row 153).
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var t0: texture_2d<f32>;
 @group(0) @binding(2) var t1: texture_2d<f32>;
@@ -16,5 +16,5 @@
     let vc = textureSample(t2, samp, in.uv).r * u.code_max;
     o = finish(ycc_to_rgb(levels(yc, uc, vc)));
   }
-  return vec4(o.rgb, a);
+  return vec4(o.rgb * a, a);   // premultiplied: the pipeline blends One / OneMinusSrcAlpha over the background (row 153)
 }

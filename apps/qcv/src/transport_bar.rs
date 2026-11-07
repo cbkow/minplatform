@@ -13,14 +13,15 @@ use vello::Scene;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(dead_code)]   // Pin arrives with the window-state step
-pub enum Cmd { Open, Act(Action), Pin, Volume(f32) }
+pub enum Cmd { Open, Act(Action), Pin, Volume(f32), /// QCView's Tools ▸ Background: open the left rail on the Background section
+    RevealBackground }
 
 /// QCView's review-speed chip: "1×" at rest, cycles the ring on click (R), snaps to 1× on Shift-click (⇧R).
 struct SpeedChip { rect: Rect, text: String, off_unity: bool, hovered: bool, hover: Ramp, enabled: bool }
 
 /// Which button does what; `None` = not backed yet (drawn disabled).
 #[derive(Clone, Copy)]
-enum Bind { Open, Act(Action), Hold(i32), Pin, Later }
+enum Bind { Open, Act(Action), Hold(i32), Pin, RevealBackground, Later }
 
 /// The window scale the bar was laid out at (its height is 32 logical px).
 fn scale_of(bar: &Rect, _: Rect) -> f64 { (bar.height() / t::TRANSPORT_BAR_HEIGHT as f64).max(0.5) }
@@ -68,7 +69,7 @@ impl TransportBar {
             ]),
             (true, vec![
                 (b("rectangle-dashed", "Safety guides"), Bind::Later),
-                (b("checkerboard", "Background"), Bind::Later),
+                (b("checkerboard", "Background"), Bind::RevealBackground),
                 (b("image-square", "Timeline hover thumbnails"), Bind::Later),
                 (b("palette", "Color panel (⌃3)"), Bind::Later),
                 (b("note-pencil", "Notes panel (⌃4)"), Bind::Later),
@@ -117,7 +118,7 @@ impl TransportBar {
         let has = p.is_some();
         for (g, binds) in self.groups.iter_mut().zip(&self.binds) {
             for (b, bind) in g.buttons.iter_mut().zip(binds) {
-                let enabled = match bind { Bind::Open => true, Bind::Later | Bind::Pin => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.audio.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
+                let enabled = match bind { Bind::Open | Bind::RevealBackground => true, Bind::Later | Bind::Pin => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.audio.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
                 if b.enabled != enabled { b.enabled = enabled; if !enabled { b.reset(now); } }
                 if let (Some(p), Bind::Act(a)) = (p, bind) {
                     match a {
@@ -149,6 +150,7 @@ impl TransportBar {
                     (Bind::Hold(d), Response::PressBegan) => cmds.push(Cmd::Act(Action::ShuttleBegin(d))),
                     (Bind::Hold(_), Response::PressEnded) => cmds.push(Cmd::Act(Action::ShuttleEnd)),
                     (Bind::Pin, Response::Clicked) => cmds.push(Cmd::Pin),
+                    (Bind::RevealBackground, Response::Clicked) => cmds.push(Cmd::RevealBackground),
                     _ => {}
                 }
             }

@@ -4,7 +4,9 @@ use crate::{frame::*, import::{Imported, Imports}, readback, Error};
 use std::{any::Any, collections::VecDeque, sync::Arc, time::Instant};
 
 #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, pad0: f32, off: [f32; 2], pad1: [f32; 2] }
+struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, pad0: f32, off: [f32; 2], pad1: [f32; 2],
+    /// stage 0, the background (row 153): mode / bounds-mix strength / checker tile px; the media rect in px (y down); the viewport size
+    bg: [f32; 4], media: [f32; 4], vp: [f32; 4] }
 
 /// What a colour chain consumes and produces: linear BT.709 working RGB, or display-encoded RGB with a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +80,8 @@ pub struct Engine {
     ubufs: Vec<wgpu::Buffer>, blit_ubuf: wgpu::Buffer,
     /// Stage 4: the UI layer's pipeline (blended), its uniform, and the bind group for the overlay texture when one is set.
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
+    /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
+    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
     /// Where the video fits inside the viewport (physical px; `None` = the whole viewport): the shell's bands take the rest.
     content: Option<(u32, u32, u32, u32)>,
@@ -153,14 +157,18 @@ impl Engine {
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("stage 1"), entries: &entries });
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
             let sh = module(&format!("{v:?}"), body);
-            targets.push(make_pipeline(&device, &sh, &pl, target_format, "stage 1+3 → target"));
+            targets.push(make_pipeline_blended(&device, &sh, &pl, target_format, "stage 1+3 → target"));   // over the background by the frame's alpha (row 153)
             inters.push(make_pipeline(&device, &sh, &pl, inter_fmt, "stage 1 → working"));
             layouts.push(layout);
         }
         let blit = module("blit", include_str!("shaders/blit.wgsl"));
         let blit_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("blit"), entries: &[smp, tex(1), ub(2)] });
         let lpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&blit_layout)], immediate_size: 0 });
-        let blit_target = make_pipeline(&device, &blit, &lpl, target_format, "blit→target");
+        let blit_target = make_pipeline_blended(&device, &blit, &lpl, target_format, "blit→target");
+        let bg_sh = module("background", include_str!("shaders/background.wgsl"));
+        let bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("background"), entries: &[ub(0)] });
+        let bg_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&bg_layout)], immediate_size: 0 });
+        let bg_pipeline = make_pipeline(&device, &bg_sh, &bg_pl, target_format, "background→target");
         let overlay_sh = module("overlay", include_str!("shaders/overlay.wgsl"));
         let overlay_pipeline = make_pipeline_blended(&device, &overlay_sh, &lpl, target_format, "overlay→target");   // the blit's layout: sampler, one texture, U
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("video"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
@@ -168,10 +176,15 @@ impl Engine {
         let ubufs = (0..N_U).map(|i| ubuf(&format!("u{i}"))).collect();
         let blit_ubuf = ubuf("u-blit");
         let overlay_ubuf = ubuf("u-overlay");
+        let bg_ubuf = ubuf("u-background");
+        let bg_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("background"), layout: &bg_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: bg_ubuf.as_entire_binding() }] });
+        // QCView's media-bounds policy: outside the media rect the fill mixes toward Theme.bg by these (black / darkgray / darkChecker / lightChecker); `QCV_BOUNDS_MIX` = one value for all four, or four comma-separated
+        let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
+        if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
-        e.write_overlay_uniform();
+        e.write_overlay_uniform(); e.write_bg_uniform();
         e
     }
     /// An engine with no surface (tests, offscreen renders): the first high-performance adapter.
@@ -203,10 +216,30 @@ impl Engine {
             wgpu::BindGroupEntry { binding: 2, resource: self.overlay_ubuf.as_entire_binding() }] }));
     }
     pub fn has_overlay(&self) -> bool { self.overlay.is_some() }
+    /// The viewport background mode (QCView `display/backgroundMode`: 0 Black, 1 DarkGray, 2 DarkChecker, 3 LightChecker).
+    pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
+    pub fn background(&self) -> u8 { self.bg_mode }
+    /// The window's scale factor: the checker tile is 32 DEVICE pixels (QCView's Metal path passes the contentsScale-aware size).
+    pub fn set_ui_scale(&mut self, scale: f32) { self.ui_scale = scale.max(0.5); self.write_bg_uniform(); }
+    /// The media rect in viewport px (x, y, w, h; y down) from the fit; the whole viewport when nothing is shown (QCView: no layout → everything "inside").
+    fn media_rect_px(&self) -> [f32; 4] {
+        let (vw, vh) = (self.viewport.0 as f32, self.viewport.1 as f32);
+        if self.base.is_none() { return [0.0, 0.0, vw, vh] }
+        let (fit, off) = fit_in(self.video, self.viewport, self.content);
+        let x0 = (off[0] - fit[0] + 1.0) * 0.5 * vw; let x1 = (off[0] + fit[0] + 1.0) * 0.5 * vw;
+        let y0 = (1.0 - (off[1] + fit[1])) * 0.5 * vh; let y1 = (1.0 - (off[1] - fit[1])) * 0.5 * vh;
+        [x0.round(), y0.round(), (x1 - x0).round(), (y1 - y0).round()]
+    }
+    fn write_bg_uniform(&self) {
+        let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
+        let m = self.bg_mode as usize;
+        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0,
+            bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, 0.0], media: self.media_rect_px(), vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0] }));
+    }
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0 }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
@@ -278,11 +311,11 @@ impl Engine {
     fn fit(&self) -> [f32; 2] { fit_in(self.video, self.viewport, self.content).0 }
     fn offset(&self) -> [f32; 2] { fit_in(self.video, self.viewport, self.content).1 }
     fn write_uniforms(&self) {
-        self.write_overlay_uniform();
+        self.write_overlay_uniform(); self.write_bg_uniform();
         let Some(b) = self.base else { return };
         let (trc, _, prim) = b.meta.selectors();
         let l = b.levels;
-        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, pad0: 0.0 };
+        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, pad0: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && b.meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
@@ -291,7 +324,7 @@ impl Engine {
         // the blit reads the chain's output space (linear, or encoded with a transfer)
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, pad0: 0.0 }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, pad0: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -321,7 +354,9 @@ impl Engine {
         }
     }
     fn encode_video(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
-        let Some(variant) = self.shown.as_ref().map(|s| s.variant) else { drop(pass(enc, "clear", target)); return };
+        // stage 0: the background over the whole viewport (clears it); the picture passes load and blend over it
+        { let mut p = pass(enc, "stage 0 background", target); p.set_pipeline(&self.bg_pipeline); p.set_bind_group(0, &self.bg_bind, &[]); p.draw(0..6, 0..1); }
+        let Some(variant) = self.shown.as_ref().map(|s| s.variant) else { return };
         if self.color_pass.is_some() {
             self.ensure_inter();
             let shown = self.shown.as_ref().unwrap(); let inter = self.inter.as_ref().unwrap();
@@ -329,10 +364,10 @@ impl Engine {
             { let mut p = pass(enc, "stage 1", &av); p.set_pipeline(self.inter_pipeline(variant)); p.set_bind_group(0, &shown.binds[1], &[]); p.draw(0..6, 0..1); }
             let Inter { a, b, bind, .. } = self.inter.as_ref().unwrap();
             self.color_pass.as_mut().unwrap().run(enc, a, b);
-            let mut p = pass(enc, "stage 3", target); p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..6, 0..1);
+            let mut p = pass_load(enc, "stage 3", target); p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..6, 0..1);
         } else {
             let shown = self.shown.as_ref().unwrap();
-            let mut p = pass(enc, "present", target); p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..6, 0..1);
+            let mut p = pass_load(enc, "present", target); p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..6, 0..1);
         }
     }
     /// Render the shown frame 1:1 at the video size into an `Rgba16Float` texture and read it back (RGBA f32).
@@ -400,6 +435,36 @@ mod tests {
         let out = e.render_offscreen(64, 16).unwrap();
         let px = |x: usize| out[(8 * 64 + x) * 4];
         assert!(px(16) == 0.0 && px(38) == 0.0 && px(57) == 0.0 && px(47) > 0.0, "{} {} {} {}", px(16), px(38), px(47), px(57));
+    }
+    /// As `ramp_frame`, with an alpha plane: opaque on the left half, transparent on the right.
+    fn alpha_frame(w: u32, h: u32) -> Frame {
+        let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane { data, width: pw, height: ph, pitch } };
+        let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128), plane(w, h, &|x, _| if x < w / 2 { 255 } else { 0 })];
+        Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: true } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+    }
+    #[test]
+    fn the_background_fills_under_alpha_and_mixes_outside_the_picture() {
+        // Row 153 / QCView's bounds policy: DarkGray = #1f1f1f under the picture (where its alpha is 0 the fill shows),
+        // #161616 outside the media rect (strength 1.0); Black = black everywhere; the checkers alternate 32-px tiles.
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let (g1f, bg) = (lin(31.0 / 255.0), lin(22.0 / 255.0));
+        e.set_background(1);
+        e.show(&alpha_frame(16, 16)).unwrap();   // a 16×16 picture centred in 64×16: x 24..40, opaque 24..32, transparent 32..40
+        let out = e.render_offscreen(64, 16).unwrap();
+        let px = |x: usize| out[(8 * 64 + x) * 4];
+        assert!((px(2) - bg).abs() < 2e-3 && (px(60) - bg).abs() < 2e-3, "outside the media: Theme.bg — {} {} (want {bg})", px(2), px(60));
+        assert!(px(30) > 0.05, "the opaque half shows the ramp: {}", px(30));
+        assert!((px(36) - g1f).abs() < 2e-3, "the transparent half shows the fill #1f1f1f: {} (want {g1f})", px(36));
+        e.set_background(0);
+        let out = e.render_offscreen(64, 16).unwrap();
+        let px = |x: usize| out[(8 * 64 + x) * 4];
+        assert!(px(2) == 0.0 && px(36) == 0.0 && px(30) > 0.05, "Black: black outside and under the alpha — {} {} {}", px(2), px(36), px(30));
+        e.set_background(3); e.set_ui_scale(1.0);
+        let out = e.render_offscreen(64, 16).unwrap();
+        let px = |x: usize| out[(8 * 64 + x) * 4];
+        assert!(px(2) > 0.03 && px(50) > 0.03 && (px(2) - px(50)).abs() > 0.01, "LightChecker (mixed 0.7 toward Theme.bg outside): two tiles 32 px apart differ — {} {}", px(2), px(50));
     }
     #[test]
     fn overlay_composites_at_sdr_white_in_linear_light() {

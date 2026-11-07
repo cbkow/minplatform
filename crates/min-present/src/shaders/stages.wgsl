@@ -18,6 +18,9 @@ struct U {
   pad0: f32,
   off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
   pad1: vec2<f32>,
+  bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
+  media: vec4<f32>,      // the media rect in viewport px (x, y, w, h; y down)
+  vp: vec4<f32>,         // the viewport size in px
 };
 // Levels in code values (QCView yuv_planar.h): limited Y = (code − 16K)/(219K), C = (code − 128K)/(224K); full Y = code/fullMax, C = (code − mid)/fullMax.
 fn levels(yc: f32, uc: f32, vc: f32) -> vec3<f32> {
