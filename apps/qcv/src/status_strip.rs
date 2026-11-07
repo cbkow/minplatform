@@ -6,7 +6,7 @@
 //! surface; `min-ui` has no such surface, so the popover opens ABOVE the well and never hides the transport row.
 use kurbo::Rect;
 use min_theme::tokens as t;
-use min_ui::{anim::{mix, Ramp}, paint, Button, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Popover, TextField};
+use min_ui::{anim::{mix, Ramp}, paint, Button, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Popover, TextField, Tooltips};
 use qcv_meta::TimecodeFormatter;
 use qcv_player::Transport;
 use std::time::Instant;
@@ -26,6 +26,8 @@ impl Well {
 
 pub struct StatusStrip {
     frame: Well, tc: Well, fps: String,
+    /// QCView's readouts carry no tooltips; ours name the well and its click (the user 2026-11-07: "double check the tooltips there")
+    pub tooltips: Tooltips, fps_rect: Rect,
     pub rect: Rect,
     popover: Popover, field: TextField, mode: Mode, error: bool,
     fmt: Option<TimecodeFormatter>, start: i32, frame_count: i32, duration_s: f64, drop_frame: bool,
@@ -37,7 +39,7 @@ impl StatusStrip {
     pub fn new() -> StatusStrip {
         let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S);
         field.placeholder = "frame number".into();
-        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), rect: Rect::ZERO, popover: Popover::new("Go to frame"), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
+        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, rect: Rect::ZERO, popover: Popover::new("Go to frame"), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
     }
     pub fn is_open(&self) -> bool { self.popover.open }
     /// QCView's bindings: the frame well = the active clock's frame, the SMPTE well = the formatter at the source's start timecode.
@@ -95,9 +97,14 @@ impl StatusStrip {
             w.hover.set_target(if w.hovered { 1.0 } else { 0.0 }, now);
         }
         if let Event::Down { x, y, button: Button::Primary } = *e {
+            self.tooltips.pressed(now);
             if self.frame.hit(x, y) && self.frame_count > 0 { self.open(Mode::Frame, fonts, bounds, scale); dirty = true; consumed = true; }
             else if self.tc.hit(x, y) && self.fmt.is_some() { self.open(Mode::Timecode, fonts, bounds, scale); dirty = true; consumed = true; }
         }
+        let over: Option<(u64, Rect, String)> = if self.frame.hovered { Some((1, self.frame.rect, if self.frame_count > 0 { "Frame number — click to go to a frame".into() } else { "Frame number".into() })) }
+            else if self.tc.hovered { Some((2, self.tc.rect, match (self.fmt.is_some(), self.drop_frame) { (true, true) => "Timecode (drop-frame) — click to go to a timecode".into(), (true, false) => "Timecode — click to go to a timecode".into(), _ => "Timecode".into() })) }
+            else if e.pos().is_some_and(|(x, y)| self.fps_rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave) { Some((3, self.fps_rect, "Frame rate of the open media".into())) } else { None };
+        if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         (dirty, consumed)
     }
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if self.popover.open { self.field.ime(e, fonts); } }
@@ -144,6 +151,9 @@ impl StatusStrip {
         }
     }
     pub fn animating(&self, now: Instant) -> bool { self.frame.hover.animating(now) || self.tc.hover.animating(now) }
+    /// Per frame: the tooltip's delay / timeout; true when a redraw is needed now.
+    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
+    pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
         let r = t::TIMECODE_WELL_CORNER_RADIUS as f64 * scale; let bw = t::BORDER_WIDTH_100 as f64 * scale;
         let pad = t::FIELD_EDGE_TO_TEXT as f64 * scale;
@@ -159,7 +169,9 @@ impl StatusStrip {
         if !self.fps.is_empty() {
             let l = fonts.layout(&self.fps, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
             let right = self.rect.x1 - t::SPACING_100 as f64 * scale;
-            min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((right - l.width() as f64, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
+            let y = self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0;
+            self.fps_rect = Rect::new(right - l.width() as f64, y, right, y + l.height() as f64);
+            min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((right - l.width() as f64, y)));
         }
     }
     /// The popover, drawn after every band (it rises over the video).
