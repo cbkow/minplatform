@@ -37,3 +37,32 @@ flat header; `FlatSwitch` 32 × 18 accent → S2 26 × 14 neutral; `FlatComboBox
 Background section (waits for stage 4's backgrounds, row 153); Safety Guides (row 152); Add Media / project tree
 (row 141); routing picker + meters into the Inspector's Audio; the Updates group; `revealSection` deep links from the
 bar's guides / background / settings buttons; scroll-into-view for a focused field; AccessKit on the new nodes.
+
+## Windows (rhombus, 2026-11-07 pm — the first Windows build of steps 2b–7)
+The clone (`$HOME\Documents\GitHub\minplatform`, fed by git bundles) builds `qcv` release clean at 0d14760 with
+`FFMPEG_DIR` = QCView's BtbN FFmpeg 9 and `LIBCLANG_PATH` set per command (neither is in the ssh environment). Two
+WASAPI compile errors fixed blind-written code: windows 0.62 moved `AvSetMmThreadCharacteristicsW` /
+`AvRevertMmThreadCharacteristics` to `Win32::System::Threading`, and `IMMDevice::Activate` is gated on the
+`Win32_System_Com_StructuredStorage` + `Win32_System_Variant` features. Headless (`qcv-bench*.ps1` in `C:\qcb-lab`, logs in
+`C:\qcb-lab\minplatform-logs\bench-win*.log`):
+- **UI layer with both rails** (DX12, 2560×1440 @2×): scene build p50 1.12 ms p95 1.76, vello p50 1.38 ms p95 3.10 (max 23
+  on the first build); the snap `fixtures/phase2/ui-rails-win.png` matches the macOS one line for line, plus the
+  Windows-only "Enable hardware decoding" row. Settings panel 1772 px tall at 2× (macOS 1698: a wrap difference).
+- **Audio** (NullDevice, the 1080p ProRes with a stereo track): start inside ±20 ms at 0.05 s, |drift| p50 5.2 ms; seek
+  0.20 s, p50 +17.9; pause→play 0.07 s, p50 +1.6; shuttle grains fed 253 callbacks; 2× tempo p50 +13.5 (max 43, 7
+  starved callbacks — the wall-paced null device meets Windows' 15.6-ms sleep granularity; not a product path); 0.5× never
+  settled inside the window's 36 samples and back-to-1× sat at +25.6 — the same servo as macOS, a slower clock. A LIVE
+  WASAPI check still needs a desktop session on the box (the ssh session has no audio endpoint to speak of).
+- **The hw-scrub check (row 149, owed since S1) — DONE, and QCView's default (OFF) holds:** D3D12VA as the SCRUB session
+  is slower than software everywhere measured — h264 1080p request→ready p50 21.2 ms vs 4.8 software (max 42 vs 13);
+  h264 4K ONE request served in 2.0 s vs software p50 6.8 ms, 49 of 50 served. `performance/hwScrubInterCodecs` stays
+  false (the schema), `ScrubOptions::default()` stays `cfg!(windows)` only as the harness's flag.
+- **FILED — Windows software HEVC 10-bit 4K scrub serves nothing at a 40-ms cadence** (0 of 50; frames behind p50 151),
+  while macOS serves 49 at p50 1.2 ms on the same fixture (15 keyframes, ~45-frame GOPs). At a 400-ms cadence each
+  Windows request completes in 377–409 ms (CPU 158–287 % of one core → ~3 threads); h264 4K software on the same box
+  serves 49 at p50 6.8 ms and ProRes 4K 49 at p50 19.8 ms. So the per-frame cost of the Windows software HEVC decoder in
+  the scrub session (frame threads for inter codecs, row 155) is the problem, not the GOP walk: check the session's
+  thread count on Windows (the 14900KF has 24 cores; 3 are busy), the BtbN build's hevc decoder vs macOS's, and whether
+  the scrub session inherits `threads: 0 = auto` as FFmpeg's auto (which caps frame threads at 16) or as 1. Next
+  Windows session; with a real display (row 130) still owed.
+

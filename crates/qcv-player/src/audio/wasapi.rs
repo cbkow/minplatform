@@ -6,7 +6,6 @@
 use super::device::{AudioDevice, RenderFn};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::*};
 use std::sync::{Arc, Mutex};
-use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::*;
 use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
