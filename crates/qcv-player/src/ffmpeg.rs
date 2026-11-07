@@ -48,7 +48,7 @@ pub enum Recv { Frame(FrameHandle), Again, Eof, Error(i32) }
 pub struct Session {
     fmt: *mut ff::AVFormatContext, cctx: *mut ff::AVCodecContext, pkt: *mut ff::AVPacket, frame: *mut ff::AVFrame, sw_frame: *mut ff::AVFrame,
     _hw: Option<HwDevice>, pub stream_idx: i32, pub info: SessionInfo, pub range_override: RangeOverride,
-    logged_hw_fallback: bool, logged_native: bool, logged_planes: bool,
+    #[allow(dead_code)] logged_hw_fallback: bool, logged_native: bool, logged_planes: bool,
 }
 unsafe impl Send for Session {}
 
