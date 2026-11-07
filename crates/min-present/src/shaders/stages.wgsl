@@ -16,6 +16,8 @@ struct U {
   is_rgb: f32,           // planar RGB (G, B, R planes): no matrix
   rgb_expand: f32,       // legal-range RGB → full (rgb_range.h's rule)
   pad0: f32,
+  off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
+  pad1: vec2<f32>,
 };
 // Levels in code values (QCView yuv_planar.h): limited Y = (code − 16K)/(219K), C = (code − 128K)/(224K); full Y = code/fullMax, C = (code − mid)/fullMax.
 fn levels(yc: f32, uc: f32, vc: f32) -> vec3<f32> {
@@ -84,7 +86,7 @@ fn finish(rgb: vec3<f32>) -> vec4<f32> {
   return stage3(to_709(eotf(rgb, u.src_transfer, u.white), u.src_primaries), u.out_mode, u.white);
 }
 struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-fn fullscreen(i: u32, fit: vec2<f32>) -> VsOut {
+fn fullscreen(i: u32, fit: vec2<f32>, off: vec2<f32>) -> VsOut {
   var p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
-  var o: VsOut; o.pos = vec4(p[i] * fit, 0.0, 1.0); o.uv = vec2((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5); return o;
+  var o: VsOut; o.pos = vec4(p[i] * fit + off, 0.0, 1.0); o.uv = vec2((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5); return o;
 }

@@ -372,3 +372,27 @@ past hover (gray-300; S2 has no pressed step — a written deviation, §16.4's c
   with the tooltip above it, set-in pressed, loop selected in the deliberate grey, the disabled glyphs, the pin.
   Open question kept for the user: the hairline seams between fused cells (S2's quiet compact group has none).
 
+#### 6d · the status strip, the go-to popover (the first text input), the video above the bands (landed 2026-11-07)
+- **`min-present`**: `Engine::set_content_rect` — the fit's NDC scale + offset (`fit_in`, pure, tested) through every
+  stage shader (`U.off`), so the video letterboxes into the rect above the bands instead of under them (the known gap
+  from 6b closed). `qcv` sets it from the three band heights at creation and on every resize.
+- **`min-ui`**: `input::{KeyEvent, Key, Named, ImeEvent}` (the shell translates winit's); `Fonts::detail` (Spectrum's
+  tracked-capitals detail style via parley `LetterSpacing`); **`TextField`** on S3's `PlainEditor` (the recessed well,
+  border default / hover / focus-accent / error-negative, text centred in any height — QCView's `FlatTextField` rule;
+  S3's key table for one line; Enter → `Accepted`, Escape → `Cancelled`, newlines never enter; IME preedit / commit
+  routed; caret + selection from the editor's geometry; 1 test); **`Popover`** (Spectrum's elevated layer: gray-75,
+  1-px gray-200 border, radius 8, the three-layer `drop-shadow-elevated` as vello blurred rects with σ = blur / 2,
+  8-px padding, an optional detail title; above the anchor, below when there is no room, clamped).
+- **`apps/qcv`**: `status_strip.rs` = QCView's `TimelineStatus.qml` as nodes — the frame well and the SMPTE well
+  (recessed, the border steps up on hover over the 100-ms ramp; the SMPTE well at the source's start timecode through
+  `qcv-meta`'s `TimecodeFormatter`, drop-frame in the notice colour; fps right, subdued); a click opens the go-to
+  popover in frame or timecode mode (time mode waits for playlists) with QCView's rules: Resolve-style digit padding
+  ("1000" → 00:00:10:00), warn-toned digits on a bad entry until the next edit, Enter commits (frame clamped to the
+  media, timecode relative to the start TC), Escape / a press outside / window focus loss closes and discards; a press
+  outside also goes no further (minNotes' flyout rule). **Divergence, with its reason beside the code:** the popover
+  opens ABOVE the well — QCView opened downward only because an in-scene popup could not rise over the native surface.
+  Keys route to the open field before the key map; IME is enabled while it is open. The bench stages it.
+- **Numbers:** unchanged — scene build 0.07 ms, vello 0.15 ms headless; 0.85–1.23 ms p50 in the window during playback.
+- **Seen in the snap:** the video now sits above the bands in its own letterbox; the popover rises over it from the SMPTE
+  well with "GO TO TIMECODE" in tracked capitals and the accent-bordered field.
+

@@ -7,7 +7,7 @@
 @group(0) @binding(0) var samp: sampler;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> u: U;
-@vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut { return fullscreen(i, vec2(1.0, 1.0)); }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut { return fullscreen(i, vec2(1.0, 1.0), vec2(0.0, 0.0)); }
 @fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
   let s = textureSample(tex, samp, in.uv);
   let lin = srgb_eotf(clamp(s.rgb, vec3(0.0), vec3(1.0)));

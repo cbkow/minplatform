@@ -22,8 +22,9 @@ struct Opts { cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: 
 
 mod ui_sketch;
 mod transport_bar;
+mod status_strip;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, ui_dirty: bool }
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, ui_dirty: bool }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -66,14 +67,18 @@ impl App {
             let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
             let key = frame.map(|(c, n, _)| (c, n));
             g.bar.sync(self.player.as_ref(), now);
-            if g.bar.tick(now) { g.ui_dirty = true; }
+            if g.bar.tick(now) || g.strip.animating(now) { g.ui_dirty = true; }
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
                 let (w, h) = u.size(); let scale = g.window.scale_factor();
                 let bands_y = h as f64 - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + t::STATUS_STRIP_HEIGHT as f64 * scale;
                 g.bar.layout(&mut g.fonts, w as f64, bands_y, scale);
+                g.strip.sync(self.player.as_ref());
+                g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
                 let scene = u.scene_mut();
                 ui_sketch::draw(scene, &mut g.fonts, w, h, scale, frame);
+                g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
+                g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.ui_shown_frame = key; g.ui_dirty = false;
             }
@@ -103,6 +108,12 @@ impl App {
     fn pointer(&mut self, e: min_ui::Event) {
         let now = Instant::now();
         let Some(g) = self.gpu.as_mut() else { return };
+        let (w, h) = g.ui.as_ref().map(|u| u.size()).unwrap_or((1, 1)); let scale = g.window.scale_factor();
+        let was_open = g.strip.is_open();
+        let (sd, consumed) = g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
+        if sd { g.ui_dirty = true; }
+        if g.strip.is_open() != was_open { set_ime(&**g.window, g.strip.is_open()); }
+        if consumed { return }
         let (cmds, dirty) = g.bar.event(&e, now);
         if dirty { g.ui_dirty = true; }
         for c in cmds {
@@ -160,6 +171,19 @@ fn describe(p: &Transport) -> String {
         if i.hw_accel.is_empty() { "software + upload".to_string() } else { format!("{} (zero-copy when the layout is bridged)", i.hw_accel) }, i.source_timecode.as_ref().map(|t| format!("  TC {t}")).unwrap_or_default())
 }
 
+/// IME on while a text node has focus (winit 0.31's request API; the deprecated `set_ime_allowed` is gone).
+fn set_ime(window: &dyn Window, on: bool) {
+    use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
+    let req = if on { match ImeEnableRequest::new(ImeCapabilities::new(), ImeRequestData::default()) { Some(r) => ImeRequest::Enable(r), None => return } } else { ImeRequest::Disable };
+    if let Err(e) = window.request_ime_update(req) { log::debug!("ime {on}: {e}"); }
+}
+
+/// The video's rect: everything above the three bottom bands (canon §25 row 169).
+fn content_rect(w: u32, h: u32, scale: f64) -> (u32, u32, u32, u32) {
+    let bands = ((t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale).round() as u32;
+    (0, 0, w, h.saturating_sub(bands).max(1))
+}
+
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {
     let bytes: Vec<u8> = px.chunks(4).flat_map(|c| [(c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect();
     let Ok(file) = std::fs::File::create(path) else { println!("cannot write {path}"); return };
@@ -183,6 +207,7 @@ impl ApplicationHandler for App {
         let ns_view = None;
         let mut presenter = Presenter::new(&instance, surface, (size.width, size.height), self.o.out, ns_view).expect("presenter");
         let mut d = presenter.engine.display(); d.white = self.o.white; presenter.engine.set_display(d);
+        presenter.engine.set_content_rect(Some(content_rect(size.width, size.height, window.scale_factor())));
         if self.o.identity_chain { presenter.engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
         let i = presenter.info();
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}{}; features {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, if i.layer_workaround { " (PQ set on the layer by name)" } else { "" }, i.features, window.scale_factor());
@@ -199,7 +224,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), ui_dirty: true });
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), ui_dirty: true });
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -209,11 +234,30 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, el: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
-            WindowEvent::Focused(f) => { log::info!("focused {f}"); }
-            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
+            WindowEvent::Focused(f) => { log::info!("focused {f}"); if !f { if let Some(g) = self.gpu.as_mut() { if g.strip.is_open() { g.strip.close(); g.ui_dirty = true; } } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { g.strip.ime(&e, &mut g.fonts); g.ui_dirty = true; } } }
+            WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_content_rect(Some(content_rect(s.width, s.height, sc))); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                if let Some(g) = self.gpu.as_mut() { if g.strip.is_open() {
+                    if pressed {
+                        let key = match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => min_ui::Key::Named(min_ui::Named::Escape), Key::Named(NamedKey::Enter) => min_ui::Key::Named(min_ui::Named::Enter), Key::Named(NamedKey::Tab) => min_ui::Key::Named(min_ui::Named::Tab),
+                            Key::Named(NamedKey::Backspace) => min_ui::Key::Named(min_ui::Named::Backspace), Key::Named(NamedKey::Delete) => min_ui::Key::Named(min_ui::Named::Delete),
+                            Key::Named(NamedKey::ArrowLeft) => min_ui::Key::Named(min_ui::Named::Left), Key::Named(NamedKey::ArrowRight) => min_ui::Key::Named(min_ui::Named::Right),
+                            Key::Named(NamedKey::ArrowUp) => min_ui::Key::Named(min_ui::Named::Up), Key::Named(NamedKey::ArrowDown) => min_ui::Key::Named(min_ui::Named::Down),
+                            Key::Named(NamedKey::Home) => min_ui::Key::Named(min_ui::Named::Home), Key::Named(NamedKey::End) => min_ui::Key::Named(min_ui::Named::End),
+                            Key::Character(c) => min_ui::Key::Char(c.to_string()), _ => min_ui::Key::Char(String::new()),
+                        };
+                        let k = min_ui::KeyEvent { key, text: event.text.as_ref().map(|t| t.to_string()), shift: self.mods.shift, cmd: self.mods.ctrl };
+                        let commit = g.strip.key(&k, &mut g.fonts);
+                        g.ui_dirty = true;
+                        if !g.strip.is_open() { set_ime(&**g.window, false); }
+                        match commit { Some(status_strip::Commit::Frame(f)) => { if let Some(p) = self.player.as_mut() { p.seek_to_frame(f); } } Some(status_strip::Commit::Time(s)) => { if let Some(p) = self.player.as_mut() { p.seek_to_time(s); } } None => {} }
+                    }
+                    return
+                } }
                 if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { self.finish(); el.exit(); return }
                 let key = match &event.logical_key {
                     Key::Character(c) if c == " " => Some(qcv_player::Key::Space),
@@ -303,6 +347,8 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
     engine.set_overlay(Some(ui.view()));
     // the transport bar in every state the snap can show: hover (step forward, with its tooltip), pressed (set in),
     // selected (loop), disabled (the unbacked buttons)
+    engine.set_content_rect(Some(content_rect(w, h, scale)));
+    let mut strip = status_strip::StatusStrip::new();
     let mut bar = transport_bar::TransportBar::new();
     let bands_y = h as f64 - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + t::STATUS_STRIP_HEIGHT as f64 * scale;
     let t0 = Instant::now();
@@ -313,13 +359,18 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>) {
     bar.event(&min_ui::Event::Move { x: hover.x, y: hover.y }, t0);
     let shown_at = t0 + std::time::Duration::from_millis(t::TOOLTIP_DELAY as u64 + 100);   // the hover ramp done, the tooltip up
     bar.sync(player.as_ref(), shown_at); bar.tick(shown_at);
+    strip.sync(player.as_ref());
+    strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
+    strip.stage(status_strip::Mode::Timecode, "1000", &mut fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
     let (mut build_ms, mut render_ms) = (vec![], vec![]);
     for i in 0..n.max(1) {
         let fi = frame_info.map(|(_, c, f)| ((i as i32 * 7) % c.max(1), c, f)).or(Some((i as i32, 240, 24.0)));
         let t = Instant::now();
         let scene = ui.scene_mut();
         ui_sketch::draw(scene, &mut fonts, w, h, scale, fi);
+        strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
+        strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
         if let Some(ms) = ui.render(&engine.device, &engine.queue) { render_ms.push(ms); }

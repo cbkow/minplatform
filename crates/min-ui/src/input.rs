@@ -13,3 +13,14 @@ pub enum Event {
 impl Event {
     pub fn pos(&self) -> Option<(f64, f64)> { match *self { Event::Move { x, y } | Event::Down { x, y, .. } | Event::Up { x, y, .. } => Some((x, y)), Event::Leave => None } }
 }
+
+/// Keys as the text node sees them (the shell translates its toolkit's event; `cmd` = ⌘ on macOS, Ctrl elsewhere).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Named { Escape, Enter, Tab, Backspace, Delete, Left, Right, Up, Down, Home, End }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Key { Named(Named), Char(String) }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyEvent { pub key: Key, pub text: Option<String>, pub shift: bool, pub cmd: bool }
+/// IME composition as winit delivers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImeEvent { Preedit(String, Option<(usize, usize)>), Commit(String) }

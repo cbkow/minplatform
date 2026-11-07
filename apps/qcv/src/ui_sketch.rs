@@ -1,5 +1,5 @@
-//! A SKETCH of the bottom bands drawn straight from `min-theme`'s tokens — the status strip and the scrubber (the transport
-//! row's buttons are real nodes, `transport_bar.rs`) (canon §25 rows 166 / 169) — to prove the UI layer end to end: fonts, glyphs, rounded fills, hairlines,
+//! A SKETCH of the bottom bands drawn straight from `min-theme`'s tokens — the scrubber (the status strip and the transport
+//! row are real nodes: `status_strip.rs`, `transport_bar.rs`) (canon §25 rows 166 / 169) — to prove the UI layer end to end: fonts, glyphs, rounded fills, hairlines,
 //! the faded waveform, the composite over video at SDR white. Replaced by `min-ui`'s nodes in piece 6b; nothing here
 //! is interactive, and every number is a token so the look already is the ruled one.
 use kurbo::{Affine, Rect};
@@ -18,24 +18,10 @@ pub fn draw(scene: &mut Scene, fonts: &mut Fonts, w: u32, h: u32, scale: f64, fr
     let hair = t::DIVIDER_THICKNESS as f64 * s;
     let pad = t::SPACING_100 as f64 * s;
 
-    // ---- status strip: the two wells (recessed, radius small) + fps, mono 12 ----
+    // ---- status strip: the band's top hairline only — the wells are `status_strip.rs`'s nodes ----
     let y0 = bands_top;
     paint::hline(scene, 0.0, w, y0, hair, t::DIVIDER_COLOR);
-    let well_w = t::TIMECODE_WELL_WIDTH as f64 * s; let well_h = t::TIMECODE_WELL_HEIGHT as f64 * s;
-    let well_y = y0 + (status_h - well_h) / 2.0;
     let (cur, count, fps) = frame.unwrap_or((0, 0, 0.0));
-    let texts = [if count > 0 { format!("Frame {cur} / {}", count - 1) } else { "Frame —".to_string() }, if fps > 0.0 { timecode(cur, fps) } else { "—:—:—:—".to_string() }];
-    let mut x = pad;
-    for txt in &texts {
-        paint::rounded(scene, Rect::new(x, well_y, x + well_w, well_y + well_h), t::TIMECODE_WELL_CORNER_RADIUS as f64 * s, t::FIELD_BACKGROUND_COLOR);
-        let l = fonts.layout(txt, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
-        min_ui::fonts::draw_layout(scene, &l, Affine::translate((x + t::FIELD_EDGE_TO_TEXT as f64 * s, well_y + (well_h - l.height() as f64) / 2.0)));
-        x += well_w + pad;
-    }
-    if fps > 0.0 {
-        let l = fonts.layout(&format!("{fps:.2} fps"), Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
-        min_ui::fonts::draw_layout(scene, &l, Affine::translate((w - pad - l.width() as f64, well_y + (well_h - l.height() as f64) / 2.0)));
-    }
 
     // ---- transport row: the band + hairline only — the buttons are `transport_bar.rs`'s nodes ----
     let y1 = y0 + status_h;
@@ -89,7 +75,3 @@ pub fn draw(scene: &mut Scene, fonts: &mut Fonts, w: u32, h: u32, scale: f64, fr
 }
 
 fn ruler_label(secs: f64) -> String { let m = (secs / 60.0).floor() as i64; let s = secs - m as f64 * 60.0; if secs.fract() > 1e-6 { format!("{m}:{s:04.1}") } else { format!("{m}:{:02}", s as i64) } }
-fn timecode(frame: i32, fps: f64) -> String {
-    let fpsi = fps.round().max(1.0) as i32; let f = frame.max(0);
-    format!("{:02}:{:02}:{:02}:{:02}", f / (fpsi * 3600), (f / (fpsi * 60)) % 60, (f / fpsi) % 60, f % fpsi)
-}

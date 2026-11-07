@@ -47,6 +47,22 @@ impl Fonts {
         layout.align(Alignment::Start, AlignmentOptions::default());
         layout
     }
+    /// A tracked-capitals "detail" layout (Spectrum 2's detail style; the go-to popover's title): bold, `letter_spacing` in em.
+    pub fn detail(&mut self, text: &str, size_px: f32, color: Color) -> Layout<Brush> {
+        let upper = text.to_uppercase();
+        let name = self.sans.clone();
+        let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, &upper, 1.0, true);
+        b.push_default(StyleProperty::FontFamily(FontFamily::Single(FontFamilyName::Named(Cow::Owned(name)))));
+        b.push_default(StyleProperty::FontSize(size_px));
+        b.push_default(StyleProperty::FontWeight(FontWeight::new(min_theme::tokens::FONT_WEIGHT_BOLD as f32)));
+        b.push_default(StyleProperty::LetterSpacing(size_px * min_theme::tokens::DETAIL_LETTER_SPACING));
+        b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(min_theme::tokens::UI_LINE_HEIGHT as f32)));
+        b.push_default(StyleProperty::Brush(Brush::Solid(color)));
+        let mut layout = b.build(&upper);
+        layout.break_all_lines(None);
+        layout.align(Alignment::Start, AlignmentOptions::default());
+        layout
+    }
     /// A Phosphor glyph as a layout (`None` for an unknown slug — QCView's blank-gap rule, the caller draws nothing).
     pub fn icon(&mut self, slug: &str, size_px: f32, color: Color) -> Option<Layout<Brush>> {
         let ch = min_theme::icons::glyph(slug)?;

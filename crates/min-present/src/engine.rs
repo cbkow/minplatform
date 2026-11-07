@@ -4,7 +4,7 @@ use crate::{frame::*, import::{Imported, Imports}, readback, Error};
 use std::{any::Any, collections::VecDeque, sync::Arc, time::Instant};
 
 #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, pad0: f32 }
+struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, pad0: f32, off: [f32; 2], pad1: [f32; 2] }
 
 /// What a colour chain consumes and produces: linear BT.709 working RGB, or display-encoded RGB with a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +79,8 @@ pub struct Engine {
     /// Stage 4: the UI layer's pipeline (blended), its uniform, and the bind group for the overlay texture when one is set.
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
+    /// Where the video fits inside the viewport (physical px; `None` = the whole viewport): the shell's bands take the rest.
+    content: Option<(u32, u32, u32, u32)>,
     planar_tex: Vec<wgpu::Texture>,
     shown: Option<Shown>, held: VecDeque<Held>,
     color_pass: Option<Box<dyn ColorPass>>, inter: Option<Inter>,
@@ -111,6 +113,18 @@ fn pass_load<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &
 fn attach(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> { wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } } }
 fn pass<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &'a wgpu::TextureView) -> wgpu::RenderPass<'a> {
     enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some(label), color_attachments: &[Some(attach(view))], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None })
+}
+
+/// The letterbox fit of `video` inside `content` (or the whole `viewport`) as the fullscreen triangle's NDC scale and
+/// offset: `pos = p × scale + offset`. Pure, so the maths is testable without a GPU.
+pub fn fit_in(video: (u32, u32), viewport: (u32, u32), content: Option<(u32, u32, u32, u32)>) -> ([f32; 2], [f32; 2]) {
+    let (vw, vh) = (video.0.max(1) as f32, video.1.max(1) as f32);
+    let (ww, wh) = (viewport.0.max(1) as f32, viewport.1.max(1) as f32);
+    let (cx, cy, cw, ch) = match content { Some((x, y, w, h)) => (x as f32, y as f32, w.max(1) as f32, h.max(1) as f32), None => (0.0, 0.0, ww, wh) };
+    let s = if vw / vh > cw / ch { [1.0, (cw / ch) / (vw / vh)] } else { [(vw / vh) / (cw / ch), 1.0] };
+    let scale = [s[0] * cw / ww, s[1] * ch / wh];
+    let off = [(cx + cw / 2.0) / ww * 2.0 - 1.0, 1.0 - (cy + ch / 2.0) / wh * 2.0];
+    (scale, off)
 }
 
 /// The features the presenter wants when it can have them: 16-bit norm planes, f32-filterable LUTs (stage 2), timestamps, passthrough shaders (OCIO).
@@ -156,7 +170,7 @@ impl Engine {
         let overlay_ubuf = ubuf("u-overlay");
         let imports = Imports::new(&device, &queue);
         let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None,
-            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
+            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform();
         e
     }
@@ -170,6 +184,9 @@ impl Engine {
     pub fn zero_copy_available(&self) -> bool { self.imports.available() }
     pub fn set_viewport(&mut self, w: u32, h: u32) { self.viewport = (w.max(1), h.max(1)); self.write_uniforms(); }
     pub fn viewport(&self) -> (u32, u32) { self.viewport }
+    /// The rect the video is letterboxed into (x, y, w, h in physical px within the viewport); `None` = the whole viewport.
+    pub fn set_content_rect(&mut self, r: Option<(u32, u32, u32, u32)>) { self.content = r; self.write_uniforms(); }
+    pub fn content_rect(&self) -> Option<(u32, u32, u32, u32)> { self.content }
     pub fn video_size(&self) -> (u32, u32) { self.video }
     pub fn set_display(&mut self, d: DisplayMode) { self.display = d; self.write_uniforms(); }
     pub fn display(&self) -> DisplayMode { self.display }
@@ -189,7 +206,7 @@ impl Engine {
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0 }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0 }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
@@ -258,25 +275,23 @@ impl Engine {
         let changed = self.base != Some(b);
         if changed { self.base = Some(b); self.write_uniforms(); }
     }
-    fn fit(&self) -> [f32; 2] {
-        let (vw, vh, ww, wh) = (self.video.0.max(1) as f32, self.video.1.max(1) as f32, self.viewport.0 as f32, self.viewport.1 as f32);
-        if vw / vh > ww / wh { [1.0, (ww / wh) / (vw / vh)] } else { [(vw / vh) / (ww / wh), 1.0] }
-    }
+    fn fit(&self) -> [f32; 2] { fit_in(self.video, self.viewport, self.content).0 }
+    fn offset(&self) -> [f32; 2] { fit_in(self.video, self.viewport, self.content).1 }
     fn write_uniforms(&self) {
         self.write_overlay_uniform();
         let Some(b) = self.base else { return };
         let (trc, _, prim) = b.meta.selectors();
         let l = b.levels;
-        let u = |fit: [f32; 2], out: OutMode| U { fit, code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, pad0: 0.0 };
+        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, pad0: 0.0 };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && b.meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
-        let sets = [u(self.fit(), display_out), u([1.0, 1.0], chain_in), u([1.0, 1.0], OutMode::Encoded), u([1.0, 1.0], OutMode::Linear)];
+        let sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear)];
         for (buf, v) in self.ubufs.iter().zip(sets.iter()) { self.queue.write_buffer(buf, 0, bytemuck::bytes_of(v)); }
         // the blit reads the chain's output space (linear, or encoded with a transfer)
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, pad0: 0.0 }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, pad0: 0.0 }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -353,6 +368,19 @@ mod tests {
         let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane { data, width: pw, height: ph, pitch } };
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128)];
         Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+    }
+    #[test]
+    fn fit_in_places_the_video_inside_the_content_rect() {
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
+        // 16:9 video in a 16:9 viewport: fills it
+        assert!(near(fit_in((1920, 1080), (1920, 1080), None).0, [1.0, 1.0]));
+        // the bottom 180 px taken by bands: the video letterboxes into the top 900 → scaled down and centred there
+        let (s, o) = fit_in((1920, 1080), (1920, 1080), Some((0, 0, 1920, 900)));
+        assert!(near(s, [1600.0 / 1920.0, 900.0 / 1080.0]), "{s:?}");
+        assert!(near(o, [0.0, 1.0 - 450.0 / 1080.0 * 2.0]), "{o:?}");
+        // a pillarboxed 4:3 video in the whole viewport: width scales, no offset
+        let (s, o) = fit_in((1440, 1080), (1920, 1080), None);
+        assert!(near(s, [0.75, 1.0]) && near(o, [0.0, 0.0]));
     }
     #[test]
     fn overlay_composites_at_sdr_white_in_linear_light() {

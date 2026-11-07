@@ -4,7 +4,7 @@
 @group(0) @binding(2) var t1: texture_2d<f32>;
 @group(0) @binding(3) var t2: texture_2d<f32>;
 @group(0) @binding(4) var<uniform> u: U;
-@vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut { return fullscreen(i, u.fit); }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut { return fullscreen(i, u.fit, u.off); }
 @fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
   if (u.is_rgb > 0.5) { return finish(rgb_levels(vec3(textureSample(t2, samp, in.uv).r, textureSample(t0, samp, in.uv).r, textureSample(t1, samp, in.uv).r))); }
   let yc = textureSample(t0, samp, in.uv).r * u.code_max;

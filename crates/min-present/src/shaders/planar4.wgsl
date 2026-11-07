@@ -5,7 +5,7 @@
 @group(0) @binding(3) var t2: texture_2d<f32>;
 @group(0) @binding(4) var t3: texture_2d<f32>;
 @group(0) @binding(5) var<uniform> u: U;
-@vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut { return fullscreen(i, u.fit); }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VsOut { return fullscreen(i, u.fit, u.off); }
 @fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
   let a = textureSample(t3, samp, in.uv).r * u.code_max / u.full_max;
   var o: vec4<f32>;
