@@ -80,3 +80,17 @@ fullscreen's bands POP like the rails (row 171 revised; the 160-ms slide retired
 mouse clicks after leaving the window and coming back" — winit-win32's leave / enter path read, nothing found; the
 Windows build carries `QCV_TRACE_INPUT=1`; the user could not reproduce it on the second session (2026-11-07 pm) — parked, the trace flag stays.
 
+## Stage 0 — the viewport background (row 153, BUILT 2026-11-07 pm; commits 989c69d, 280e828)
+QCView's `D3D11Compositor` carried verbatim (`backgroundColor` / `fillColor`, the 2026-09-15 retune): Black ·
+DarkGray #1f1f1f · DarkChecker #1f1f1f / #2e2e2e · LightChecker #b3b3b3 / #cccccc, 32 DEVICE-pixel tiles (the Metal
+path's contentsScale-aware size → `Engine::set_ui_scale`), the fill mixed toward Theme.bg #161616 OUTSIDE the media
+rect by 0 / 1 / 0.7 / 0.7 per mode (`QCV_BOUNDS_MIX` = one value or four), everything "inside" when nothing is shown.
+The constants are sRGB-encoded; decoded and placed at SDR reference white like the UI layer, never through the colour
+chain. `background.wgsl` draws first (clearing the target); the picture pipelines (`stage 1+3 → target`, `blit→target`)
+became blended One / OneMinusSrcAlpha and `planar4` / `packed` / the blit write premultiplied alpha (a 4444 snapshot is
+premultiplied now — noted). `U` gained `bg / media / vp`. Test: `the_background_fills_under_alpha_and_mixes_outside_the_picture`.
+Shell: `display/backgroundMode` applied at start and on change; the Background section sits ABOVE Settings (QCView's
+order) as a fused 2 × 2 block of size-S action buttons (`ActionButton::size_s`: 24 px, bold 12 — the reference's chips; one
+row of four did not fit a 280-px rail; the user: "interface is quite large text"); the bar's Background button reveals it
+and Ctrl+, reveals Settings (QCView's `revealSection`: open the rail, expand that section alone, scroll to the top).
+
