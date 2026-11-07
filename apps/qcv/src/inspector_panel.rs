@@ -11,12 +11,13 @@ use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{paint, ActionButton, ActionGroup, Event, Family, Fonts, Response, Section};
 use qcv_meta::{AdobeMetadata, VideoMetadata};
+use min_present::engine::{Geometry, Par};
 use qcv_player::{audio::RoutingMode, RangeOverride, Transport};
 use std::time::Instant;
 use vello::Scene;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Range(RangeOverride), Routing(RoutingMode), Origin(String) }
+pub enum Cmd { Range(RangeOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
 
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
@@ -33,6 +34,8 @@ pub struct InspectorPanel {
     pending_v: Option<(String, VideoMetadata)>, pending_a: Option<(String, AdobeMetadata)>,
     peaks: [f32; 16], channels: usize,
     range: RangeOverride, routing: RoutingMode, origin: Option<String>,
+    /// the presenter's geometry choices + the dims it fits with (the Display row tracks what the viewport shows)
+    geometry: Geometry, display_dims: (u32, u32),
     height: f64, dirty_model: bool,
 }
 
@@ -77,11 +80,13 @@ impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![] };
         InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode")], path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
-            range: RangeOverride::Auto, routing: RoutingMode::Auto, origin: None, height: 0.0, dirty_model: true }
+            range: RangeOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
     pub fn set_video_meta(&mut self, path: &str, m: VideoMetadata) { self.pending_v = Some((path.to_string(), m)); self.dirty_model = true; }
     pub fn set_adobe_meta(&mut self, path: &str, m: AdobeMetadata) { self.pending_a = Some((path.to_string(), m)); self.dirty_model = true; }
+    /// The presenter's geometry state (for the pickers' selection and the Display row).
+    pub fn set_geometry(&mut self, g: Geometry, display_dims: (u32, u32)) { if g != self.geometry || display_dims != self.display_dims { self.geometry = g; self.display_dims = display_dims; self.dirty_model = true; } }
     /// Refill from the Transport when something it shows changed; the meters read every frame.
     pub fn sync(&mut self, p: Option<&Transport>) -> bool {
         let Some(p) = p else { if !self.path.is_empty() { self.path.clear(); self.vmeta = None; self.ameta = None; for g in &mut self.groups { g.items.clear(); } self.dirty_model = false; return true } return false };
@@ -147,14 +152,15 @@ impl InspectorPanel {
         // ---- Geometry (the read-outs; the Aspect + Rotation pickers wait for their engine stages) ----
         let (sn, sd, anam) = v.map(|m| (m.sar_num, m.sar_den, m.is_anamorphic)).unwrap_or((i.meta.sar.0 as i32, i.meta.sar.1 as i32, i.meta.sar != (1, 1)));
         let rot = v.map(|m| m.rotation_deg).unwrap_or(i.meta.rotation as i32);
-        let mut geometry = vec![row("Detected", if anam && sd > 0 { format!("{sn}:{sd} (non-square)") } else { "1:1 (square)".into() }, true)];
-        if w > 0 && h > 0 {
-            // QCView: Square renders stored pixels untouched (the default); the Display row shows the effective aspect + dims, swapped for 90 / 270
-            let swap = rot == 90 || rot == 270;
-            let (dw, dh) = if swap { (h, w) } else { (w, h) };
-            geometry.push(row("Display", format!("{:.3}:1   ({dw} × {dh})", dw as f64 / dh as f64), true));
-        }
-        geometry.push(row("Rotation", if rot > 0 { format!("Auto ({rot}°)") } else { "Auto".into() }, false));
+        // QCView's Aspect pill: Square (stored pixels untouched, the default) / Detected n:d / Custom (the custom fields wait)
+        let detected_label = if anam && sd > 0 { format!("Detected {sn}:{sd}") } else { "Detected".to_string() };
+        let mut geometry = vec![chips("Aspect", &[("square", "Square"), ("detected", detected_label.as_str())], match self.geometry.par { Par::Square => "square", _ => "detected" })];
+        geometry.push(row("Detected", if anam && sd > 0 { format!("{sn}:{sd} (non-square)") } else { "1:1 (square)".into() }, true));
+        let (dw, dh) = if self.display_dims.0 > 0 { self.display_dims } else { (w, h) };
+        if dw > 0 && dh > 0 { geometry.push(row("Display", format!("{:.3}:1   ({dw} × {dh})", dw as f64 / dh as f64), true)); }   // what the viewport shows (rotation swapped, PAR applied)
+        // QCView's Rotation pill: Auto labels itself with the detected display matrix
+        let auto_label = if rot > 0 { format!("Auto ({rot}°)") } else { "Auto".to_string() };
+        geometry.push(chips("Rotation", &[("auto", auto_label.as_str()), ("0", "0°"), ("90", "90°"), ("180", "180°"), ("270", "270°")], match self.geometry.rotation { None => "auto", Some(0) => "0", Some(90) => "90", Some(180) => "180", Some(270) => "270", _ => "auto" }));
         // ---- Color ----
         let mut color = vec![];
         if let Some(m) = v {
@@ -249,6 +255,8 @@ impl InspectorPanel {
                         "Range" => cmds.push(Cmd::Range(match key { "full" => RangeOverride::Full, "limited" => RangeOverride::Limited, _ => RangeOverride::Auto })),
                         "Mix" => cmds.push(Cmd::Routing(match key { "5.1" => RoutingMode::Downmix5_1, "7-8" => RoutingMode::Stereo7_8, _ => RoutingMode::Auto })),
                         "Origin" => { self.origin = Some(key.to_string()); cmds.push(Cmd::Origin(key.to_string())); }
+                        "Aspect" => cmds.push(Cmd::Par(if key == "detected" { Par::Detected } else { Par::Square })),
+                        "Rotation" => cmds.push(Cmd::Rotation(match key { "0" => Some(0), "90" => Some(90), "180" => Some(180), "270" => Some(270), _ => None })),
                         _ => {}
                     }
                 } }

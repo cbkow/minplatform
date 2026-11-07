@@ -15,7 +15,7 @@ struct U {
   white: f32,            // nits at 1.0
   is_rgb: f32,           // planar RGB (G, B, R planes): no matrix
   rgb_expand: f32,       // legal-range RGB → full (rgb_range.h's rule)
-  pad0: f32,
+  rot: f32,              // display rotation, quarter turns CW; the sampler inverse-rotates (QCView's rotatedSrcUv)
   off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
   pad1: vec2<f32>,
   bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
@@ -94,5 +94,16 @@ struct VsOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 // letterbox (seen 2026-11-07 at odd window aspects). A quad covers exactly the fit rect.
 fn fullscreen(i: u32, fit: vec2<f32>, off: vec2<f32>) -> VsOut {
   var p = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
-  var o: VsOut; o.pos = vec4(p[i] * fit + off, 0.0, 1.0); o.uv = vec2((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5); return o;
+  var o: VsOut; o.pos = vec4(p[i] * fit + off, 0.0, 1.0);
+  let d = vec2((p[i].x + 1.0) * 0.5, 1.0 - (p[i].y + 1.0) * 0.5);   // display-orientation uv
+  o.uv = rotated_src_uv(d, u.rot);
+  return o;
+}
+// Display → stored uv for the quarter-turn rotation (QCView `rotatedSrcUv`): the fit was computed from swapped dims
+// for odd quarters, so the inverse rotation here lands back on the stored texture upright.
+fn rotated_src_uv(p: vec2<f32>, rot: f32) -> vec2<f32> {
+  if (rot > 0.5 && rot < 1.5) { return vec2(p.y, 1.0 - p.x); }
+  if (rot > 1.5 && rot < 2.5) { return vec2(1.0 - p.x, 1.0 - p.y); }
+  if (rot > 2.5) { return vec2(1.0 - p.y, p.x); }
+  return p;
 }

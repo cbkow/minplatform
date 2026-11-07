@@ -4,7 +4,8 @@ use crate::{frame::*, import::{Imported, Imports}, readback, Error};
 use std::{any::Any, collections::VecDeque, sync::Arc, time::Instant};
 
 #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, pad0: f32, off: [f32; 2], pad1: [f32; 2],
+struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, /// display rotation in quarter turns CW (the sampler inverse-rotates; QCView's `rotatedSrcUv`)
+    rot: f32, off: [f32; 2], pad1: [f32; 2],
     /// stage 0, the background (row 153): mode / bounds-mix strength / checker tile px; the media rect in px (y down); the viewport size
     bg: [f32; 4], media: [f32; 4], vp: [f32; 4] }
 
@@ -82,6 +83,7 @@ pub struct Engine {
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32,
+    geometry: Geometry,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
     /// Where the video fits inside the viewport (physical px; `None` = the whole viewport): the shell's bands take the rest.
     content: Option<(u32, u32, u32, u32)>,
@@ -93,6 +95,16 @@ pub struct Engine {
     pub last_show_ms: f32,
     pub frames_shown: u64,
 }
+
+/// The pixel-aspect choice (QCView's Aspect pill, per clip): Square renders the stored pixels untouched (the default —
+/// QC-safe), Detected applies the file's SAR, Custom a given ratio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Par { #[default] Square, Detected, Custom(u32, u32) }
+/// Geometry applied in the fit (QCView `effDim` + the rotation swap): PAR widens the larger-pixel axis in STORED space,
+/// then the display rotation (`None` = the file's display matrix, `Some(deg)` = forced) swaps the dims for 90 / 270 and
+/// the sampler inverse-rotates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Geometry { pub par: Par, pub rotation: Option<u16> }
 
 const HELD: usize = 3;   // the GPU is ≤ 2 frames behind (frame latency 2); S1's ring
 
@@ -182,7 +194,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, geometry: Geometry::default(),
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -216,6 +228,21 @@ impl Engine {
             wgpu::BindGroupEntry { binding: 2, resource: self.overlay_ubuf.as_entire_binding() }] }));
     }
     pub fn has_overlay(&self) -> bool { self.overlay.is_some() }
+    /// The clip's geometry choices (QCView's Aspect + Rotation pills).
+    pub fn set_geometry(&mut self, g: Geometry) { if self.geometry != g { self.geometry = g; self.write_uniforms(); } }
+    pub fn geometry(&self) -> Geometry { self.geometry }
+    /// The rotation in quarter turns CW that applies now (forced, else the frame's display matrix).
+    pub fn rotation_quarters(&self) -> u8 {
+        let deg = self.geometry.rotation.unwrap_or(self.base.map(|b| b.meta.rotation).unwrap_or(0));
+        match deg { 90 => 1, 180 => 2, 270 => 3, _ => 0 }
+    }
+    /// The dims the picture is fitted with: QCView's `effDim` (PAR widens the larger-pixel axis) then the rotation swap.
+    pub fn display_dims(&self) -> (u32, u32) {
+        let (w, h) = self.video;
+        let (n, d) = match self.geometry.par { Par::Square => (1, 1), Par::Detected => self.base.map(|b| b.meta.sar).unwrap_or((1, 1)), Par::Custom(n, d) => (n, d) };
+        let (ew, eh) = if w == 0 || h == 0 || n == 0 || d == 0 || n == d { (w, h) } else if n > d { ((w as f64 * n as f64 / d as f64).round() as u32, h) } else { (w, (h as f64 * d as f64 / n as f64).round() as u32) };
+        if self.rotation_quarters() & 1 == 1 { (eh, ew) } else { (ew, eh) }
+    }
     /// The viewport background mode (QCView `display/backgroundMode`: 0 Black, 1 DarkGray, 2 DarkChecker, 3 LightChecker).
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
@@ -225,7 +252,7 @@ impl Engine {
     fn media_rect_px(&self) -> [f32; 4] {
         let (vw, vh) = (self.viewport.0 as f32, self.viewport.1 as f32);
         if self.base.is_none() { return [0.0, 0.0, vw, vh] }
-        let (fit, off) = fit_in(self.video, self.viewport, self.content);
+        let (fit, off) = fit_in(self.display_dims(), self.viewport, self.content);
         let x0 = (off[0] - fit[0] + 1.0) * 0.5 * vw; let x1 = (off[0] + fit[0] + 1.0) * 0.5 * vw;
         let y0 = (1.0 - (off[1] + fit[1])) * 0.5 * vh; let y1 = (1.0 - (off[1] - fit[1])) * 0.5 * vh;
         [x0.round(), y0.round(), (x1 - x0).round(), (y1 - y0).round()]
@@ -233,13 +260,13 @@ impl Engine {
     fn write_bg_uniform(&self) {
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
         let m = self.bg_mode as usize;
-        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0,
+        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
             bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, 0.0], media: self.media_rect_px(), vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0] }));
     }
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, pad0: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
@@ -308,23 +335,26 @@ impl Engine {
         let changed = self.base != Some(b);
         if changed { self.base = Some(b); self.write_uniforms(); }
     }
-    fn fit(&self) -> [f32; 2] { fit_in(self.video, self.viewport, self.content).0 }
-    fn offset(&self) -> [f32; 2] { fit_in(self.video, self.viewport, self.content).1 }
+    fn fit(&self) -> [f32; 2] { fit_in(self.display_dims(), self.viewport, self.content).0 }
+    fn offset(&self) -> [f32; 2] { fit_in(self.display_dims(), self.viewport, self.content).1 }
     fn write_uniforms(&self) {
         self.write_overlay_uniform(); self.write_bg_uniform();
         let Some(b) = self.base else { return };
         let (trc, _, prim) = b.meta.selectors();
         let l = b.levels;
-        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, pad0: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
+        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && b.meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
-        let sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear)];
+        let rot = self.rotation_quarters() as f32;
+        let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear)];
+        sets[0].rot = rot;
         for (buf, v) in self.ubufs.iter().zip(sets.iter()) { self.queue.write_buffer(buf, 0, bytemuck::bytes_of(v)); }
         // the blit reads the chain's output space (linear, or encoded with a transfer)
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, pad0: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        let rotq = self.rotation_quarters() as f32;
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -465,6 +495,26 @@ mod tests {
         let out = e.render_offscreen(64, 16).unwrap();
         let px = |x: usize| out[(8 * 64 + x) * 4];
         assert!(px(2) > 0.03 && px(50) > 0.03 && (px(2) - px(50)).abs() > 0.01, "LightChecker (mixed 0.7 toward Theme.bg outside): two tiles 32 px apart differ — {} {}", px(2), px(50));
+    }
+    #[test]
+    fn geometry_rotates_the_picture_and_the_par_widens_the_fit() {
+        // A 32×16 ramp (dark left → bright right) in a 64×64 target. Rotated 90° CW it stands 16 wide × 32 tall, fitted
+        // to 32×64 at the centre, and the ramp runs top → bottom (the stored left edge is now the top). With a 2:1 PAR
+        // (Detected) and no rotation the picture is 64 wide × 16 tall.
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        let mut f = ramp_frame(32, 16); f.meta.rotation = 90; f.meta.sar = (2, 1);
+        e.show(&f).unwrap();
+        assert_eq!(e.display_dims(), (16, 32), "Auto rotation swaps the dims; Square ignores the SAR");
+        let out = e.render_offscreen(64, 64).unwrap();
+        let px = |x: usize, y: usize| out[(y * 64 + x) * 4];
+        assert!(px(4, 32) == 0.0 && px(60, 32) == 0.0 && px(32, 32) > 0.0, "a 32-wide column of picture at the centre: {} {} {}", px(4, 32), px(60, 32), px(32, 32));
+        assert!(px(32, 4) < px(32, 60), "90° CW: the stored left (dark) edge is on top — top {} bottom {}", px(32, 4), px(32, 60));
+        e.set_geometry(Geometry { par: Par::Detected, rotation: Some(0) });
+        assert_eq!(e.display_dims(), (64, 16), "Detected PAR 2:1 doubles the width; a forced 0° keeps it landscape");
+        let out = e.render_offscreen(64, 64).unwrap();
+        let px = |x: usize, y: usize| out[(y * 64 + x) * 4];
+        assert!(px(32, 20) == 0.0 && px(32, 32) > 0.0 && px(2, 32) < px(61, 32), "a 16-tall band across the centre with the ramp left → right: {} {} {} {}", px(32, 20), px(32, 32), px(2, 32), px(61, 32));
     }
     #[test]
     fn overlay_composites_at_sdr_white_in_linear_light() {

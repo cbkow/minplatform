@@ -68,7 +68,7 @@ impl App {
                 if p.audio.has_audio() { p.audio.set_volume(st.float(settings::k::VOLUME) as f32); p.audio.set_muted(st.bool(settings::k::MUTED)); p.audio.set_sync_offset_ms(st.int(settings::k::SYNC_OFFSET_MS) as i32); p.audio.set_scrub_muted(st.bool(settings::k::SCRUB_MUTED)); }
                 if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
-                self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p);
+                self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p); g.presenter.engine.set_geometry(Default::default());
                 self.meta.request_video_extraction(path, path); self.meta.request_adobe_extraction(path, path);   // QCView: both requests at open; the Inspector fills as they land
                 self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
                 g.window.set_title(&format!("qcv — {}", self.source_label));
@@ -128,6 +128,7 @@ impl App {
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + bh, scale); g.left.content_height = bh + lh;
+                g.inspector.set_geometry(g.presenter.engine.geometry(), g.presenter.engine.display_dims());
                 if g.inspector.sync(self.player.as_ref()) { g.ui_dirty = true; }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
@@ -262,6 +263,8 @@ impl App {
                     inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } }
                     inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(self.player.as_ref()); }
+                    inspector_panel::Cmd::Par(par) => { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; }
+                    inspector_panel::Cmd::Rotation(r) => { let mut geo = g.presenter.engine.geometry(); geo.rotation = r; g.presenter.engine.set_geometry(geo); g.content_set = None; }
                 } }
             }
             let _ = g; for c in cmds { self.apply_setting(c); }
@@ -764,6 +767,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
     let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih;
     // the snap shows the Inspector's lower half (Color / Audio / Timecode with their pickers): scroll the rail
+    if std::env::var_os("QCV_SNAP_ROTATE").is_some() { engine.set_geometry(min_present::engine::Geometry { par: min_present::engine::Par::Square, rotation: Some(90) }); inspector.set_geometry(engine.geometry(), engine.display_dims()); let _ = inspector.sync(player.as_ref()); let rc = right.content_rect(); inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); }
     if std::env::var_os("QCV_SNAP_SCROLL").is_some() { right.wheel(ih, t0); right.layout(w as f64, 0.0, rails_bottom, scale, t0); let rc = right.content_rect(); inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); }
     { let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
       // hover the "Timeline hover thumbnails" switch's label (its help tooltip) and press the scrub-cache field
