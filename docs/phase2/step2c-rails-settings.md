@@ -145,4 +145,9 @@ Range (5e4fa1d): the override reached both decoders but the Metal zero-copy impo
 attachment over the frame's metadata — `ColorMeta.range_forced` now lets a forced override win (Auto still defers to the
 attachment, the better detector). A headless probe clicks Full and watches a pixel (0.148 → 0.185). The Inspector's chip
 rows wrap like QCView's Flow. The strip's readouts are quiet text with a hover fill (the user's call; QCView's are wells).
+Custom aspect (same evening): the third chip and QCView's two fields — Pixel aspect, a scalar clamped 0.05–20 and
+rationalised at 1e4; Display aspect as one decimal ": 1", PAR = DAR × storageH / storageW rationalised at 1e3 (a single
+scalar round-trips to a fixed point, QCView's note on why not a W:H pair). The Inspector gained field focus: keys, IME,
+Enter commits, Escape reverts, a press elsewhere commits (`has_focus / key / ime / blur`), the same routing the
+Settings panel has.
 
