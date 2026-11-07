@@ -88,6 +88,8 @@ impl App {
         if let Some(p) = self.player.as_mut() {
             p.set_range_override(match item.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto });
             p.audio.set_routing_mode(match item.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto });
+            // QCView's handler ends with seekToFrame(0): the first frame the decoder produced carried Auto, and the player opens paused — re-decode it with the item's range in force
+            p.seek_to_frame(0);
         }
         if let Some(g) = self.gpu.as_mut() {
             let par = match item.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(item.custom_par_num.max(1) as u32, item.custom_par_den.max(1) as u32) };
