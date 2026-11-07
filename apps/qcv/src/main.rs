@@ -119,7 +119,8 @@ impl App {
             if g.left.animating(now) || g.right.animating(now) || g.left.tick(now) || g.right.tick(now) { g.ui_dirty = true; }
             let content = if g.fullscreen { (0, 0, w, h) } else { let x0 = lw.round() as u32; let x1 = (w as f64 - rw).round() as u32; (x0, 0, x1.saturating_sub(x0).max(1), (rails_bottom.round() as u32).max(1)) };
             if g.content_set != Some(content) { g.content_set = Some(content); g.presenter.engine.set_content_rect(Some(content)); g.ui_dirty = true; }
-            // the panels: the settings mirror the store; the inspector mirrors the Transport
+            // the panels: the settings mirror the store; the inspector mirrors the Transport (+ the metadata service's results, drained every tick)
+            while let Some(ev) = self.meta.try_recv() { match ev { qcv_meta::MetadataEvent::Video(id, m) => g.inspector.set_video_meta(&id, m), qcv_meta::MetadataEvent::Adobe(id, m) => g.inspector.set_adobe_meta(&id, m), _ => {} } g.ui_dirty = true; }
             g.settings_panel.sync(&self.settings, now);
             if g.settings_panel.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {
@@ -127,7 +128,6 @@ impl App {
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + bh, scale); g.left.content_height = bh + lh;
-                while let Some(ev) = self.meta.try_recv() { match ev { qcv_meta::MetadataEvent::Video(id, m) => g.inspector.set_video_meta(&id, m), qcv_meta::MetadataEvent::Adobe(id, m) => g.inspector.set_adobe_meta(&id, m), _ => {} } }
                 if g.inspector.sync(self.player.as_ref()) { g.ui_dirty = true; }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
@@ -259,7 +259,7 @@ impl App {
             if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) {
                 let (icmds, d) = g.inspector.event(&e, now); if d { g.ui_dirty = true; }
                 for c in icmds { match c {
-                    inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); } }
+                    inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } }
                     inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(self.player.as_ref()); }
                 } }

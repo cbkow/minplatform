@@ -28,6 +28,8 @@ pub struct InspectorPanel {
     groups: Vec<Group>,
     path: String, size_bytes: Option<u64>,
     vmeta: Option<VideoMetadata>, ameta: Option<AdobeMetadata>,
+    /// results keyed by the path they describe — kept until the panel is on that path (they land before the first layout at startup)
+    pending_v: Option<(String, VideoMetadata)>, pending_a: Option<(String, AdobeMetadata)>,
     peaks: [f32; 16], channels: usize,
     range: RangeOverride, routing: RoutingMode, origin: Option<String>,
     height: f64, dirty_model: bool,
@@ -43,12 +45,12 @@ fn fmt_bitrate(bps: i64) -> String { if bps <= 0 { String::new() } else if bps >
 impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![] };
-        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode")], path: String::new(), size_bytes: None, vmeta: None, ameta: None, peaks: [0.0; 16], channels: 0,
+        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode")], path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
             range: RangeOverride::Auto, routing: RoutingMode::Auto, origin: None, height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
-    pub fn set_video_meta(&mut self, path: &str, m: VideoMetadata) { if path == self.path { self.vmeta = Some(m); self.dirty_model = true; } }
-    pub fn set_adobe_meta(&mut self, path: &str, m: AdobeMetadata) { if path == self.path { self.ameta = Some(m); self.dirty_model = true; } }
+    pub fn set_video_meta(&mut self, path: &str, m: VideoMetadata) { self.pending_v = Some((path.to_string(), m)); self.dirty_model = true; }
+    pub fn set_adobe_meta(&mut self, path: &str, m: AdobeMetadata) { self.pending_a = Some((path.to_string(), m)); self.dirty_model = true; }
     /// Refill from the Transport when something it shows changed; the meters read every frame.
     pub fn sync(&mut self, p: Option<&Transport>) -> bool {
         let Some(p) = p else { if !self.path.is_empty() { self.path.clear(); self.vmeta = None; self.ameta = None; for g in &mut self.groups { g.items.clear(); } self.dirty_model = false; return true } return false };
@@ -62,6 +64,8 @@ impl InspectorPanel {
             if ch != self.channels { self.channels = ch; self.dirty_model = true; }
             if (0..ch).any(|i| (pk[i] - self.peaks[i]).abs() > 0.01) { self.peaks = pk; dirty = true; }
         } else if self.channels != 0 { self.channels = 0; self.dirty_model = true; }
+        if self.pending_v.as_ref().is_some_and(|(k, _)| *k == self.path) { self.vmeta = self.pending_v.take().map(|(_, m)| m); self.dirty_model = true; }
+        if self.pending_a.as_ref().is_some_and(|(k, _)| *k == self.path) { self.ameta = self.pending_a.take().map(|(_, m)| m); self.dirty_model = true; }
         if self.dirty_model { self.rebuild(p); self.dirty_model = false; dirty = true; }
         dirty
     }
