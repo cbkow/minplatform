@@ -57,7 +57,7 @@ impl ScrubDecoder {
             if ff::avformat_find_stream_info(fmt, std::ptr::null_mut()) >= 0 { for i in 0..(*fmt).nb_streams { let cp = (**(*fmt).streams.add(i as usize)).codecpar; if (*cp).codec_type == ff::AVMediaType::AVMEDIA_TYPE_VIDEO { let d = ff::avcodec_descriptor_get((*cp).codec_id); intra = !d.is_null() && ((*d).props & ff::AV_CODEC_PROP_INTRA_ONLY) != 0; break } } }
             ff::avformat_close_input(&mut fmt); intra } };
         let hw_eligible = probe_intra || opts.hw_inter_scrub;
-        let session_opts = OpenOptions { threads: opts.threads, hw: if hw_eligible { opts.hw.clone() } else { None }, seq: None };   // NOT the user's thread count: scrub runs beside the main decoder during seek bursts
+        let session_opts = OpenOptions { threads: opts.threads, hw: if hw_eligible { opts.hw.clone() } else { None }, seq: None, fast: false };   // NOT the user's thread count: scrub runs beside the main decoder during seek bursts
         let mut session = Session::open(path, &session_opts)?;
         session.range_override = opts.range_override;
         let hw_active = !session.info.hw_accel.is_empty();

@@ -84,7 +84,7 @@ pub struct Transport {
 
 impl Transport {
     pub fn open(src: &Source, opts: TransportOptions) -> Result<Transport, Error> {
-        let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), seq: match src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None } };
+        let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), seq: match src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None }, fast: false };
         let mut decoder = VideoDecoder::new(Policy::Clocked { lookahead: LOOKAHEAD });
         decoder.open(src.path(), &open)?;
         let info = decoder.info.clone().unwrap();

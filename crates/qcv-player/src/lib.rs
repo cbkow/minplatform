@@ -14,6 +14,7 @@ pub mod read_ahead;
 pub mod playback_timer;
 pub mod key_map;
 pub mod transport;
+pub mod thumbnail_cache;
 pub mod rgb_range;
 pub mod scrub_decoder;
 pub mod scrub_frame_cache;
@@ -34,6 +35,7 @@ pub use scrub_decoder::{ScrubDecoder, ScrubOptions, Served};
 pub use transport::{Transport, TransportOptions, AudioHooks, NoAudio, Stats};
 pub use playback_timer::{PlaybackTimer, ClockPolicy};
 pub use key_map::{Action, Key, Mods, map_key};
+pub use thumbnail_cache::{TimelineThumbnailCache, ThumbConfig, ThumbKey, ThumbEntry, ThumbPixels, ThumbLoader, VideoThumbLoader};
 pub use source::Source;
 pub use video_decoder::{Policy, State, VideoDecoder};
 

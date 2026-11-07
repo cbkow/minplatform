@@ -1,7 +1,13 @@
-//! `qcv-timeline` — RATIONAL time (canon §17.5, row 83): a frame count at a rate, never a double. Clips carry source
-//! trims at the source rate and sit on the timeline at the timeline rate; `resolve` maps a timeline frame to a clip and
-//! a source frame. Seconds are for display only. Grown from S2's `timeline.rs`; step 2 adds tracks, markers, the
-//! Sequencer's view. OTIO is ruled out (row 83): this is the family's own type.
+//! `qcv-timeline` — QCView's timeline model and edits carried onto RATIONAL time (canon §17.5, row 83: a frame count at a
+//! rate, never a double; seconds are display-only; edits snap by construction). Ported from
+//! `QCView-Player/src/timeline/timeline_types.h` (Clip / Track / EditPolicy / Timeline), `timeline_flattener.{h,cpp}`
+//! (visible / audible clip at T, timeline → source, next / prev boundary), `timeline_edits.{h,cpp}` (the undo commands:
+//! trim head / tail, slide, slip, split, delete, insert, move — as ops with inverses, row 84) and
+//! `timeline_controller.{h,cpp}` (the edit API, `snapEdgeIndexAtTime`, `recomputeContiguousStartTimes`,
+//! `patchClipDurationFromSource`, the live-preview + Esc-restore hooks, `loadSingleMedia` / `loadPlaylist`, `setFrameRate`).
+//! The `PlaybackTimer` stays with the Transport (`qcv-player`): the editor reports the new duration, the Transport seats
+//! the clock. Row 84's policy enforcement is explicit here: locked tracks refuse edits, source bounds clamp, overlaps are
+//! refused when the policy forbids them. OTIO is ruled out (row 83): this is the family's own type.
 #![forbid(unsafe_code)]
 
 /// Frames per second as a rational: 24000/1001, 24/1, 30000/1001 …
@@ -35,45 +41,401 @@ impl RationalTime {
         Self { value: ((v + d / 2) / d) as i64, rate }
     }
 }
+/// `frames` at `from` → the nearest count at `to`.
+pub fn rescale(frames: i64, from: Rate, to: Rate) -> i64 { RationalTime::new(frames, from).rescaled_to(to).value }
 
-/// A clip: `src_in..src_out` (exclusive) source frames at `src_rate`, placed at `start` timeline frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceMode { /// 1 video track + optional audio; locked
+    SingleMedia, /// 1 video track, N clips, ripple-edited
+    Playlist }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipMediaKind { Video, ImageSequence, Audio }
+
+/// A clip on a track. `start` / `duration` in TIMELINE frames; `source_in` / `source_out` (exclusive) / `source_duration`
+/// in SOURCE frames at `source_rate`. A gap has no media and keeps only `duration`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Clip { pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, pub start: i64 }
+pub struct Clip {
+    pub id: String, pub name: String, pub start: i64, pub duration: i64, pub source_in: i64, pub source_out: i64, pub is_gap: bool,
+    pub media_kind: ClipMediaKind, pub media_path: String, pub media_item_id: String, pub source_rate: Rate, pub source_width: u32, pub source_height: u32,
+    /// 0 = unknown (a Finder drop before its metadata arrives)
+    pub source_duration: i64, pub has_audio: bool,
+    pub sequence_pattern: String, pub sequence_start_frame: i64, pub sequence_end_frame: i64, pub sequence_exr_layer: String, pub audio_muted: bool,
+}
 impl Clip {
-    pub fn len_at(&self, rate: Rate) -> i64 { RationalTime::new(self.src_out - self.src_in, self.src_rate).rescaled_to(rate).value }
+    pub fn gap(duration: i64) -> Clip { Clip { id: fresh_id(), name: "Gap".into(), is_gap: true, duration, ..Clip::empty() } }
+    pub fn empty() -> Clip { Clip { id: String::new(), name: String::new(), start: 0, duration: 0, source_in: 0, source_out: 0, is_gap: false, media_kind: ClipMediaKind::Video, media_path: String::new(), media_item_id: String::new(), source_rate: Rate::new(24, 1), source_width: 0, source_height: 0, source_duration: 0, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), audio_muted: false } }
+    pub fn end(&self) -> i64 { self.start + self.duration }
+    /// Half-open containment: at the exact end of A which starts B, the next clip wins.
+    pub fn contains(&self, frame: i64) -> bool { frame >= self.start && frame < self.end() }
+    /// The source range's length in timeline frames (the trims snap to the timeline rate).
+    pub fn source_len_at(&self, rate: Rate) -> i64 { rescale((self.source_out - self.source_in).max(0), self.source_rate, rate) }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Timeline { pub rate: Rate, pub clips: Vec<Clip> }
+pub struct Track { pub id: String, pub name: String, pub is_video: bool, pub visible: bool, pub muted: bool, pub audio_muted: bool, pub locked: bool, pub z_index: i32, pub clips: Vec<Clip> }
+impl Track {
+    pub fn video(id: &str, locked: bool) -> Track { Track { id: id.into(), name: id.into(), is_video: true, visible: true, muted: false, audio_muted: false, locked, z_index: 1, clips: vec![] } }
+    pub fn clip(&self, id: &str) -> Option<&Clip> { self.clips.iter().find(|c| c.id == id) }
+    pub fn index_of(&self, id: &str) -> Option<usize> { self.clips.iter().position(|c| c.id == id) }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditPolicy { /// Playlist: drag / trim ripples downstream
+    pub ripple: bool, /// timeline frames of fixed gap between clips
+    pub inter_clip_gap: i64, pub allow_overlaps: bool }
+impl Default for EditPolicy { fn default() -> Self { EditPolicy { ripple: false, inter_clip_gap: 0, allow_overlaps: false } } }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Timeline { pub name: String, pub mode: SourceMode, pub policy: EditPolicy, pub rate: Rate, /// computed from the tracks; cached
+    pub duration: i64, pub canvas_width: u32, pub canvas_height: u32, pub tracks: Vec<Track> }
+impl Default for Timeline { fn default() -> Self { Timeline { name: String::new(), mode: SourceMode::SingleMedia, policy: EditPolicy::default(), rate: Rate::new(24, 1), duration: 0, canvas_width: 1920, canvas_height: 1080, tracks: vec![] } } }
+pub const TRACK_A: &str = "A";
+pub const TRACK_B: &str = "B";
+/// The timeline panel's snap tolerance (`snapTolPx`); the caller converts to frames via its pixels-per-frame.
+pub const SNAP_TOL_PX: f64 = 12.0;
+
 impl Timeline {
-    /// A contiguous playlist: starts re-derived from the lengths (QCView's `recomputeContiguousStartTimes`).
-    pub fn playlist(rate: Rate, mut clips: Vec<Clip>) -> Self {
-        let mut t = 0; for c in clips.iter_mut() { c.start = t; t += c.len_at(rate); }
-        Self { rate, clips }
-    }
-    pub fn duration(&self) -> i64 { self.clips.last().map(|c| c.start + c.len_at(self.rate)).unwrap_or(0) }
-    /// Half-open containment: the next clip wins at its boundary (§17.4). Returns (clip index, source frame).
-    pub fn resolve(&self, frame: i64) -> Option<(usize, i64)> {
-        for (i, c) in self.clips.iter().enumerate().rev() {
-            if frame >= c.start && frame < c.start + c.len_at(self.rate) {
-                let off = RationalTime::new(frame - c.start, self.rate).rescaled_to(c.src_rate).value;
-                return Some((i, c.src_in + off));
-            }
+    pub fn track(&self, id: &str) -> Option<&Track> { self.tracks.iter().find(|t| t.id == id) }
+    fn track_mut(&mut self, id: &str) -> Option<&mut Track> { self.tracks.iter_mut().find(|t| t.id == id) }
+    pub fn seconds(&self, frames: i64) -> f64 { RationalTime::new(frames, self.rate).seconds() }
+
+    // ---- the flattener (pure queries) ---------------------------------------------------------------------------
+    fn clip_in_track_at(track: &Track, frame: i64) -> Option<&Clip> { track.clips.iter().find(|c| !c.is_gap && c.contains(frame)) }
+    /// The clip on the topmost visible video track whose range contains `frame`.
+    pub fn visible_clip_at(&self, frame: i64) -> Option<&Clip> {
+        let (mut best, mut best_z) = (None, i32::MIN);
+        for t in &self.tracks {
+            if !t.is_video || !t.visible || t.z_index < best_z { continue }
+            if let Some(c) = Self::clip_in_track_at(t, frame) { if t.z_index > best_z || best.is_none() { best = Some(c); best_z = t.z_index; } }
         }
-        None
+        best
     }
-    pub fn boundaries(&self) -> Vec<i64> { self.clips.iter().skip(1).map(|c| c.start).collect() }
+    pub fn visible_clip_on_track(&self, track_id: &str, frame: i64) -> Option<&Clip> { let t = self.track(track_id)?; if !t.is_video || !t.visible { return None } Self::clip_in_track_at(t, frame) }
+    /// Every audio-emitting clip at `frame`: video tracks' clips unless track / clip audio-muted (lower-z video tracks still
+    /// contribute), plus every non-muted audio track's clip.
+    pub fn audible_clips_at(&self, frame: i64) -> Vec<&Clip> {
+        let mut out = vec![];
+        for t in self.tracks.iter().filter(|t| t.is_video && !t.audio_muted) { if let Some(c) = Self::clip_in_track_at(t, frame) { if !c.audio_muted && c.has_audio { out.push(c); } } }
+        for t in self.tracks.iter().filter(|t| !t.is_video && !t.muted) { if let Some(c) = Self::clip_in_track_at(t, frame) { if !c.audio_muted { out.push(c); } } }
+        out
+    }
+    /// Timeline frame → the clip's SOURCE frame (at the clip's rate); None outside the clip.
+    pub fn timeline_to_source(&self, clip: &Clip, frame: i64) -> Option<i64> { if !clip.contains(frame) { return None } Some(clip.source_in + rescale(frame - clip.start, self.rate, clip.source_rate)) }
+    /// The visible clip at `frame` with its source frame (S2's `resolve`).
+    pub fn resolve(&self, frame: i64) -> Option<(&Clip, i64)> { let c = self.visible_clip_at(frame)?; Some((c, self.timeline_to_source(c, frame)?)) }
+    pub fn next_clip_start(&self, frame: i64) -> Option<i64> { self.tracks.iter().flat_map(|t| &t.clips).filter(|c| !c.is_gap && c.start > frame).map(|c| c.start).min() }
+    pub fn prev_clip_start(&self, frame: i64) -> Option<i64> { self.tracks.iter().flat_map(|t| &t.clips).filter(|c| !c.is_gap && c.start < frame).map(|c| c.start).max() }
+    /// Every clip start after the first (the cut points a sequencer prewarms).
+    pub fn boundaries(&self) -> Vec<i64> { self.tracks.first().map(|t| t.clips.iter().skip(1).map(|c| c.start).collect()).unwrap_or_default() }
+
+    /// Auto-extend the duration if any clip extends past the current end (called after every successful edit).
+    pub fn recalculate_duration(&mut self) { let end = self.tracks.iter().flat_map(|t| &t.clips).map(|c| c.end()).max().unwrap_or(0); if end > self.duration || self.mode == SourceMode::Playlist { self.duration = end; } }
+    /// Every clip on the track contiguous from 0 (each start = the sum of the preceding durations).
+    pub fn recompute_contiguous_start_times(&mut self, track_id: &str) {
+        if let Some(t) = self.track_mut(track_id) { let mut cursor = 0; for c in &mut t.clips { c.start = cursor; cursor += c.duration; } }
+        self.recalculate_duration();
+    }
+    /// `snapEdgeIndexAtTime`: the insert-AT index whose nearest edge lies within `tol` frames of `frame` — clip[i].start →
+    /// i, clip[i].end → i + 1, t = 0 → 0, the track end → len; None when nothing is within tolerance.
+    pub fn snap_edge_index_at(&self, track_id: &str, frame: i64, tol: i64) -> Option<usize> {
+        let t = self.track(track_id)?; let tol = tol.max(0);
+        if t.clips.is_empty() { return if frame.abs() <= tol { Some(0) } else { None } }
+        let (mut best, mut best_d) = (None, tol);
+        let mut consider = |d: i64, idx: usize| { if d <= best_d { best_d = d; best = Some(idx); } };
+        consider(frame.abs(), 0);
+        for (i, c) in t.clips.iter().enumerate() { consider((frame - c.start).abs(), i); consider((frame - c.end()).abs(), i + 1); }
+        best
+    }
+}
+
+/// Media facts the loaders take (QCView's `MediaItem` slice the timeline reads).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaInfo { pub id: String, pub name: String, pub path: String, pub kind: ClipMediaKind, pub rate: Rate, /// source frames; 0 = unknown
+    pub duration: i64, pub width: u32, pub height: u32, pub has_audio: bool, pub sequence_pattern: String, pub sequence_start_frame: i64, pub sequence_end_frame: i64 }
+/// A playlist entry's trim in source frames; None = the full clip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InOutRange { pub in_point: Option<i64>, pub out_point: Option<i64> }
+
+/// One reversible edit (row 84): `apply` and `invert` on the model; the editor keeps the two stacks.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Edit {
+    /// trim head / tail, slide, slip: one clip's whole state replaced
+    Replace { track: String, clip: String, old: Clip, new: Clip, label: &'static str },
+    Split { track: String, clip: String, old: Clip, first: Clip, second: Clip },
+    Delete { track: String, clip: Clip, index: usize },
+    Insert { track: String, index: usize, clip: Clip },
+    /// slot-based reorder in the pre-remove numbering
+    Move { track: String, from: usize, to: usize },
+}
+
+#[derive(Debug, Default)]
+pub struct Editor { pub timeline: Timeline, undo: Vec<Edit>, redo: Vec<Edit>, /// bumps on every mutation (QCView's `timelineChanged`)
+    pub generation: u64, pub playlist_media_item_id: String }
+
+impl Editor {
+    pub fn new(timeline: Timeline) -> Editor { Editor { timeline, ..Default::default() } }
+    fn changed(&mut self) { self.generation += 1; }
+
+    // ---- loaders (undo cleared on load, row 84) ----------------------------------------------------------------
+    /// One locked video track, one clip spanning the media.
+    pub fn load_single_media(&mut self, m: &MediaInfo) {
+        let mut t = Timeline { name: m.name.clone(), mode: SourceMode::SingleMedia, rate: m.rate, duration: m.duration.max(0), ..Default::default() };
+        let mut track = Track::video(TRACK_A, true);
+        track.clips.push(Clip { id: fresh_id(), name: m.name.clone(), start: 0, duration: t.duration, source_in: 0, source_out: t.duration, media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: m.rate, source_width: m.width, source_height: m.height, source_duration: t.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, ..Clip::empty() });
+        t.tracks.push(track);
+        self.timeline = t; self.playlist_media_item_id.clear(); self.undo.clear(); self.redo.clear(); self.changed();
+    }
+    /// A ripple-edited playlist at the master rate; `gap_frames` of gap between adjacent clips when > 0; a trim's None
+    /// means the full source.
+    pub fn load_playlist(&mut self, name: &str, items: &[MediaInfo], trims: &[InOutRange], master_rate: Rate, gap_frames: i64, canvas: (u32, u32), playlist_media_item_id: &str) {
+        let mut t = Timeline { name: name.into(), mode: SourceMode::Playlist, policy: EditPolicy { ripple: true, inter_clip_gap: gap_frames.max(0), allow_overlaps: false }, rate: master_rate, canvas_width: if canvas.0 > 0 { canvas.0 } else { 1920 }, canvas_height: if canvas.1 > 0 { canvas.1 } else { 1080 }, ..Default::default() };
+        let mut track = Track::video(TRACK_A, false);
+        let mut cursor = 0;
+        for (i, m) in items.iter().enumerate() {
+            let r = trims.get(i).copied().unwrap_or_default();
+            let src_in = r.in_point.unwrap_or(0).max(0); let src_out = r.out_point.unwrap_or(m.duration);
+            let mut c = Clip { id: fresh_id(), name: m.name.clone(), start: cursor, source_in: src_in, source_out: src_out, media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: m.rate, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, ..Clip::empty() };
+            c.duration = c.source_len_at(master_rate);
+            cursor += c.duration; track.clips.push(c);
+            if gap_frames > 0 && i + 1 < items.len() { let mut g = Clip::gap(gap_frames); g.start = cursor; cursor += gap_frames; track.clips.push(g); }
+        }
+        t.duration = cursor; t.tracks.push(track);
+        self.timeline = t; self.playlist_media_item_id = playlist_media_item_id.into(); self.undo.clear(); self.redo.clear(); self.changed();
+    }
+    pub fn clear(&mut self) { self.timeline = Timeline::default(); self.playlist_media_item_id.clear(); self.undo.clear(); self.redo.clear(); self.changed(); }
+    /// Retune the rate without rebuilding (the image-sequence inspector): the frame count stays, the first clip follows.
+    /// Returns the position fraction the caller rescales the clock by.
+    pub fn set_rate(&mut self, rate: Rate) {
+        if rate == self.timeline.rate { return }
+        let frames = self.timeline.duration;
+        self.timeline.rate = rate; self.timeline.duration = frames;
+        if let Some(c) = self.timeline.tracks.first_mut().and_then(|t| t.clips.first_mut()) { c.duration = frames; c.source_out = frames; c.source_rate = rate; c.source_duration = frames; }
+        self.changed();
+    }
+
+    // ---- the edit ops (each pushes one undo entry and applies) --------------------------------------------------
+    fn editable(&self, track: &str) -> bool { self.timeline.track(track).map(|t| !t.locked).unwrap_or(false) }
+    fn clip_copy(&self, track: &str, clip: &str) -> Option<Clip> { self.timeline.track(track)?.clip(clip).cloned() }
+    /// Source bounds (row 84): in ≥ 0, out ≤ the source duration when known, out ≥ in.
+    fn clamp_source(c: &mut Clip) {
+        c.source_in = c.source_in.max(0);
+        if c.source_duration > 0 { c.source_out = c.source_out.min(c.source_duration); c.source_in = c.source_in.min(c.source_duration); }
+        c.source_out = c.source_out.max(c.source_in);
+    }
+    fn overlaps(&self, track: &str, candidate: &Clip) -> bool {
+        if self.timeline.policy.allow_overlaps || self.timeline.mode == SourceMode::Playlist { return false }   // playlists re-flow contiguously
+        self.timeline.track(track).map(|t| t.clips.iter().any(|c| c.id != candidate.id && !c.is_gap && c.start < candidate.end() && candidate.start < c.end())).unwrap_or(false)
+    }
+    fn push(&mut self, e: Edit) -> bool { if !self.apply(&e) { return false } self.undo.push(e); self.redo.clear(); true }
+    fn replace(&mut self, track: &str, clip: &str, new: Clip, label: &'static str) -> bool {
+        if !self.editable(track) { return false }
+        let Some(old) = self.clip_copy(track, clip) else { return false };
+        if self.overlaps(track, &new) { return false }
+        self.push(Edit::Replace { track: track.into(), clip: clip.into(), old, new, label })
+    }
+    /// The head moves to `new_start` with `new_source_in`; the end stays (duration = old end − new start).
+    pub fn trim_clip_head(&mut self, track: &str, clip: &str, new_start: i64, new_source_in: i64) -> bool {
+        let Some(old) = self.clip_copy(track, clip) else { return false };
+        let mut n = old.clone(); n.start = new_start.max(0); n.source_in = new_source_in; Self::clamp_source(&mut n); n.duration = (old.end() - n.start).max(0);
+        self.replace(track, clip, n, "Trim head")
+    }
+    pub fn trim_clip_tail(&mut self, track: &str, clip: &str, new_source_out: i64) -> bool {
+        let Some(old) = self.clip_copy(track, clip) else { return false };
+        let mut n = old.clone(); n.source_out = new_source_out; Self::clamp_source(&mut n); n.duration = n.source_len_at(self.timeline.rate);
+        self.replace(track, clip, n, "Trim tail")
+    }
+    pub fn slide_clip(&mut self, track: &str, clip: &str, new_start: i64) -> bool {
+        let Some(old) = self.clip_copy(track, clip) else { return false };
+        let mut n = old; n.start = new_start.max(0);
+        self.replace(track, clip, n, "Slide clip")
+    }
+    /// Shift the source window; position and duration unchanged.
+    pub fn slip_clip(&mut self, track: &str, clip: &str, new_source_in: i64, new_source_out: i64) -> bool {
+        let Some(old) = self.clip_copy(track, clip) else { return false };
+        let mut n = old; n.source_in = new_source_in.max(0); n.source_out = new_source_out.max(n.source_in); Self::clamp_source(&mut n);
+        self.replace(track, clip, n, "Slip clip")
+    }
+    /// Cut the clip containing `at` (strictly inside) into [start, at) and [at, end); both halves share the media.
+    pub fn split_clip_at(&mut self, track: &str, at: i64) -> bool {
+        if !self.editable(track) { return false }
+        let Some(old) = self.timeline.track(track).and_then(|t| t.clips.iter().find(|c| !c.is_gap && at > c.start && at < c.end()).cloned()) else { return false };
+        let off = at - old.start; let src_off = rescale(off, self.timeline.rate, old.source_rate);
+        let mut first = old.clone(); first.duration = off; first.source_out = old.source_in + src_off;
+        let mut second = old.clone(); second.id = fresh_id(); second.start = at; second.duration = old.duration - off; second.source_in = old.source_in + src_off;
+        let id = old.id.clone();
+        self.push(Edit::Split { track: track.into(), clip: id, old, first, second })
+    }
+    /// Surrounding clips don't shift in single / dual mode (no ripple); playlists re-flow.
+    pub fn delete_clip(&mut self, track: &str, clip: &str) -> bool {
+        if !self.editable(track) { return false }
+        let Some(t) = self.timeline.track(track) else { return false };
+        let Some(index) = t.index_of(clip) else { return false };
+        let c = t.clips[index].clone();
+        self.push(Edit::Delete { track: track.into(), clip: c, index })
+    }
+    /// Slot-based reorder (insert-AT numbering, the same as `snap_edge_index_at`); no-op into the clip's own slots.
+    pub fn move_clip_to_index(&mut self, track: &str, clip: &str, new_index: usize) -> bool {
+        if !self.editable(track) { return false }
+        let Some(t) = self.timeline.track(track) else { return false };
+        let Some(from) = t.index_of(clip) else { return false };
+        let to = new_index.min(t.clips.len());
+        if to == from || to == from + 1 { return false }
+        self.push(Edit::Move { track: track.into(), from, to })
+    }
+    /// Drop-to-add at a clip-array index (past the end appends); the track re-flows contiguously. Returns the new id.
+    pub fn insert_clip_at_index(&mut self, track: &str, at_index: usize, m: &MediaInfo, trim: InOutRange) -> Option<String> {
+        if !self.editable(track) || m.path.is_empty() || m.kind == ClipMediaKind::Audio { return None }   // audio media is not allowed in playlists
+        let mut c = Clip { id: fresh_id(), name: m.name.clone(), source_in: trim.in_point.unwrap_or(0).max(0), source_out: trim.out_point.unwrap_or(m.duration), media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: if m.rate.num > 0 { m.rate } else { self.timeline.rate }, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, ..Clip::empty() };
+        c.duration = c.source_len_at(self.timeline.rate);
+        if c.duration <= 0 { return None }
+        let idx = at_index.min(self.timeline.track(track)?.clips.len());
+        let id = c.id.clone();
+        if self.push(Edit::Insert { track: track.into(), index: idx, clip: c }) { Some(id) } else { None }
+    }
+    /// A dropped file's metadata arrived: patch the source duration + rate IN PLACE when the clip still uses the full
+    /// range (never a trimmed one), then re-flow. Not an undo entry (QCView patches directly).
+    pub fn patch_clip_duration_from_source(&mut self, track: &str, clip: &str, new_source_duration: i64, new_rate: Option<Rate>) -> bool {
+        if new_source_duration <= 0 { return false }
+        let rate = self.timeline.rate;
+        let Some(c) = self.timeline.track_mut(track).and_then(|t| t.clips.iter_mut().find(|c| c.id == clip)) else { return false };
+        let full = c.source_in == 0 && (c.source_out <= 0 || c.source_out == c.source_duration);
+        if !full { return false }
+        if c.source_duration == new_source_duration && new_rate.map(|r| r == c.source_rate).unwrap_or(true) { return false }
+        c.source_duration = new_source_duration; c.source_out = new_source_duration; if let Some(r) = new_rate { c.source_rate = r; }
+        c.duration = c.source_len_at(rate);
+        self.timeline.recompute_contiguous_start_times(track); self.changed();
+        true
+    }
+
+    // ---- live preview (no undo entry) + Esc restore -------------------------------------------------------------
+    /// Direct manipulation during a drag; the release pushes ONE command. The snapshot the gesture took restores on Esc.
+    pub fn preview_clip(&mut self, track: &str, clip: &str, state: Clip) -> bool { if !self.editable(track) { return false } self.apply_replacement(track, clip, state) }
+    pub fn restore_clip(&mut self, track: &str, clip: &str, snapshot: Clip) -> bool { self.apply_replacement(track, clip, snapshot) }
+
+    pub fn can_undo(&self) -> bool { !self.undo.is_empty() }
+    pub fn can_redo(&self) -> bool { !self.redo.is_empty() }
+    pub fn undo_label(&self) -> Option<&'static str> { self.undo.last().map(label) }
+    pub fn undo_edit(&mut self) -> bool { let Some(e) = self.undo.pop() else { return false }; self.invert(&e); self.redo.push(e); true }
+    pub fn redo_edit(&mut self) -> bool { let Some(e) = self.redo.pop() else { return false }; self.apply(&e); self.undo.push(e); true }
+    pub fn clear_undo_stack(&mut self) { self.undo.clear(); self.redo.clear(); }
+
+    // ---- the mutators -----------------------------------------------------------------------------------------
+    fn apply(&mut self, e: &Edit) -> bool {
+        match e {
+            Edit::Replace { track, clip, new, .. } => self.apply_replacement(track, clip, new.clone()),
+            Edit::Split { track, clip, first, second, .. } => { self.apply_replacement(track, clip, first.clone()) && self.apply_insert_after(track, clip, second.clone()) }
+            Edit::Delete { track, clip, .. } => self.apply_remove(track, &clip.id),
+            Edit::Insert { track, index, clip } => { let ok = self.apply_insert_at(track, *index, clip.clone()); self.timeline.recompute_contiguous_start_times(track); self.changed(); ok }
+            Edit::Move { track, from, to } => self.move_by_slot(track, *from, *to),
+        }
+    }
+    fn invert(&mut self, e: &Edit) -> bool {
+        match e {
+            Edit::Replace { track, clip, old, .. } => self.apply_replacement(track, clip, old.clone()),
+            Edit::Split { track, clip, old, second, .. } => { self.apply_remove(track, &second.id) && self.apply_replacement(track, clip, old.clone()) }
+            Edit::Delete { track, clip, index } => self.apply_insert_at(track, *index, clip.clone()),
+            Edit::Insert { track, clip, .. } => { let ok = self.apply_remove(track, &clip.id); self.timeline.recompute_contiguous_start_times(track); self.changed(); ok }
+            // QCView's MoveClipEdit::undo moves the clip back to slot `from` — right for forward moves, wrong for backward ones
+            // (pre-remove numbering: the clip now sits BEFORE its old slot, so the old slot is `from + 1`; [x, y] moved y → 0
+            // never undid at all, the slot being its own + 1). Fixed here and listed for QCView (§17.6).
+            Edit::Move { track, from, to } => { if to == from || *to == from + 1 { return false } let post = if to > from { to - 1 } else { *to }; let back = if to > from { *from } else { from + 1 }; self.move_by_slot(track, post, back) }
+        }
+    }
+    fn apply_replacement(&mut self, track: &str, clip: &str, new: Clip) -> bool {
+        let mode = self.timeline.mode;
+        let Some(c) = self.timeline.track_mut(track).and_then(|t| t.clips.iter_mut().find(|c| c.id == clip)) else { return false };
+        *c = new;
+        if mode == SourceMode::Playlist { self.timeline.recompute_contiguous_start_times(track); } else { self.timeline.recalculate_duration(); }
+        self.changed(); true
+    }
+    fn apply_insert_at(&mut self, track: &str, index: usize, clip: Clip) -> bool {
+        let Some(t) = self.timeline.track_mut(track) else { return false };
+        let i = index.min(t.clips.len()); t.clips.insert(i, clip);
+        self.timeline.recalculate_duration(); self.changed(); true
+    }
+    fn apply_insert_after(&mut self, track: &str, after: &str, clip: Clip) -> bool {
+        let Some(i) = self.timeline.track(track).and_then(|t| t.index_of(after)) else { return false };
+        self.apply_insert_at(track, i + 1, clip)
+    }
+    fn apply_remove(&mut self, track: &str, clip: &str) -> bool {
+        let Some(t) = self.timeline.track_mut(track) else { return false };
+        let Some(i) = t.index_of(clip) else { return false };
+        t.clips.remove(i);
+        if self.timeline.mode == SourceMode::Playlist { self.timeline.recompute_contiguous_start_times(track); } else { self.timeline.recalculate_duration(); }
+        self.changed(); true
+    }
+    fn move_by_slot(&mut self, track: &str, from: usize, to: usize) -> bool {
+        if from == to || to == from + 1 { return false }
+        let Some(t) = self.timeline.track_mut(track) else { return false };
+        if from >= t.clips.len() { return false }
+        let c = t.clips.remove(from);
+        let adj = if to > from { to - 1 } else { to };   // pre-remove → post-remove index
+        t.clips.insert(adj.min(t.clips.len()), c);
+        if self.timeline.mode == SourceMode::Playlist { self.timeline.recompute_contiguous_start_times(track); } else { self.timeline.recalculate_duration(); }
+        self.changed(); true
+    }
+}
+fn label(e: &Edit) -> &'static str { match e { Edit::Replace { label, .. } => label, Edit::Split { .. } => "Cut clip", Edit::Delete { .. } => "Delete clip", Edit::Insert { .. } => "Add clip", Edit::Move { .. } => "Reorder clip" } }
+
+/// A fresh clip id (QCView: a UUID without braces; the project file carries them as strings).
+pub fn fresh_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let mut x = t ^ (n.wrapping_mul(0x9E37_79B9_7F4A_7C15)) ^ (std::process::id() as u64) << 32;
+    x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+    format!("{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}", (x >> 32) as u32, (x >> 16) as u16, (x & 0xfff) as u16, ((t >> 20) & 0xffff) as u16, (t ^ x.rotate_left(29)) & 0xffff_ffff_ffff)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn media(name: &str, frames: i64, rate: Rate) -> MediaInfo { MediaInfo { id: name.into(), name: name.into(), path: format!("/m/{name}.mov"), kind: ClipMediaKind::Video, rate, duration: frames, width: 1920, height: 1080, has_audio: true, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1 } }
     #[test] fn rescale_round_trips_at_equal_rates() { let r = Rate::from_f64(23.976); let t = RationalTime::new(12345, r); assert_eq!(t.rescaled_to(r), t); assert_eq!(r, Rate { num: 24000, den: 1001 }); }
     #[test] fn exact_rates_from_rationals() { assert_eq!(Rate::from_rational(24000, 1001), Some(Rate::new(24000, 1001))); assert_eq!(Rate::from_rational(0, 1), None); assert_eq!(Rate::from_f64(25.0), Rate::new(25, 1)); assert_eq!(Rate::from_f64(23.5), Rate::new(23500, 1000)); }
-    #[test] fn resolve_is_half_open() {
-        let r = Rate { num: 24, den: 1 };
-        let tl = Timeline::playlist(r, vec![Clip { path: "a".into(), src_rate: r, src_in: 10, src_out: 20, start: 0 }, Clip { path: "b".into(), src_rate: r, src_in: 100, src_out: 105, start: 0 }]);
-        assert_eq!(tl.resolve(0), Some((0, 10))); assert_eq!(tl.resolve(9), Some((0, 19))); assert_eq!(tl.resolve(10), Some((1, 100))); assert_eq!(tl.resolve(15), None); assert_eq!(tl.boundaries(), vec![10]); assert_eq!(tl.duration(), 15);
+    #[test] fn mixed_rates_snap() { let a = Rate::new(24, 1); let b = Rate::new(30, 1); assert_eq!(rescale(24, a, b), 30); assert_eq!(rescale(1, a, b), 1); assert_eq!(rescale(7, b, a), 6); }
+    #[test] fn playlist_resolve_is_half_open_and_gaps_skip() {
+        let r = Rate::new(24, 1); let mut e = Editor::default();
+        e.load_playlist("p", &[media("a", 10, r), media("b", 5, r)], &[InOutRange::default(), InOutRange { in_point: Some(100), out_point: Some(105) }], r, 2, (0, 0), "pl");
+        let t = &e.timeline; assert_eq!(t.duration, 17); assert_eq!(t.tracks[0].clips.len(), 3); assert!(t.tracks[0].clips[1].is_gap);
+        assert_eq!(t.resolve(9).map(|(c, s)| (c.name.as_str(), s)), Some(("a", 9))); assert!(t.resolve(10).is_none()); assert_eq!(t.resolve(12).map(|(c, s)| (c.name.as_str(), s)), Some(("b", 100)));
+        assert_eq!(t.boundaries(), vec![10, 12]); assert_eq!(t.next_clip_start(0), Some(12)); assert_eq!(t.prev_clip_start(12), Some(0));
+        assert_eq!(t.audible_clips_at(13).len(), 1);
     }
-    #[test] fn mixed_rates_snap() { let a = Rate::new(24, 1); let b = Rate::new(30, 1); assert_eq!(RationalTime::new(24, a).rescaled_to(b).value, 30); assert_eq!(RationalTime::new(1, a).rescaled_to(b).value, 1); assert_eq!(RationalTime::new(7, b).rescaled_to(a).value, 6); }
+    #[test] fn edits_apply_and_invert() {
+        let r = Rate::new(24, 1); let mut e = Editor::default();
+        e.load_playlist("p", &[media("a", 48, r), media("b", 24, r), media("c", 12, r)], &[], r, 0, (0, 0), "");
+        let ids: Vec<String> = e.timeline.tracks[0].clips.iter().map(|c| c.id.clone()).collect();
+        assert!(e.trim_clip_head(TRACK_A, &ids[0], 10, 10)); assert_eq!(e.timeline.tracks[0].clips[0].duration, 38); assert_eq!(e.timeline.tracks[0].clips[1].start, 38);   // ripple
+        assert!(e.trim_clip_tail(TRACK_A, &ids[1], 12)); assert_eq!(e.timeline.duration, 38 + 12 + 12);
+        assert!(e.split_clip_at(TRACK_A, 5)); assert_eq!(e.timeline.tracks[0].clips.len(), 4); assert_eq!(e.timeline.tracks[0].clips[1].source_in, 15); assert_eq!(e.timeline.tracks[0].clips[0].source_out, 15);
+        assert!(e.move_clip_to_index(TRACK_A, &ids[2], 0)); assert_eq!(e.timeline.tracks[0].clips[0].name, "c"); assert_eq!(e.timeline.tracks[0].clips[0].start, 0);
+        assert!(e.delete_clip(TRACK_A, &ids[1])); assert_eq!(e.timeline.tracks[0].clips.len(), 3);
+        let after = e.timeline.clone();
+        for _ in 0..5 { assert!(e.undo_edit()); }
+        assert_eq!(e.timeline.tracks[0].clips.len(), 3); assert_eq!(e.timeline.tracks[0].clips[0].duration, 48); assert_eq!(e.timeline.duration, 84);
+        for _ in 0..5 { assert!(e.redo_edit()); }
+        assert_eq!(e.timeline, after);
+        let r = Rate::new(24, 1); let mut e2 = Editor::default(); e2.load_playlist("q", &[media("x", 5, r), media("y", 5, r)], &[], r, 0, (0, 0), "");
+        let y = e2.timeline.tracks[0].clips[1].id.clone(); assert!(e2.move_clip_to_index(TRACK_A, &y, 0)); assert_eq!(e2.timeline.tracks[0].clips[0].name, "y"); assert!(e2.undo_edit()); assert_eq!(e2.timeline.tracks[0].clips[0].name, "x");   // the backward-move undo QCView gets wrong
+    }
+    #[test] fn policy_locked_bounds_snap_patch() {
+        let r = Rate::new(24, 1); let mut e = Editor::default();
+        e.load_single_media(&media("s", 100, r)); let id = e.timeline.tracks[0].clips[0].id.clone();
+        assert!(!e.slide_clip(TRACK_A, &id, 5));   // locked
+        e.load_playlist("p", &[media("a", 48, r), media("b", 24, r)], &[], r, 0, (0, 0), "");
+        let id = e.timeline.tracks[0].clips[0].id.clone();
+        assert!(e.slip_clip(TRACK_A, &id, -5, 300)); let c = &e.timeline.tracks[0].clips[0]; assert_eq!((c.source_in, c.source_out), (0, 48));   // clamped to the source
+        assert_eq!(e.timeline.snap_edge_index_at(TRACK_A, 47, 3), Some(1)); assert_eq!(e.timeline.snap_edge_index_at(TRACK_A, 2, 3), Some(0)); assert_eq!(e.timeline.snap_edge_index_at(TRACK_A, 30, 3), None); assert_eq!(e.timeline.snap_edge_index_at(TRACK_A, 71, 3), Some(2));
+        let dropped = MediaInfo { duration: 0, ..media("d", 0, r) };
+        let nid = e.insert_clip_at_index(TRACK_A, 9, &dropped, InOutRange::default()); assert!(nid.is_none());   // a zero-length drop is refused
+        let nid = e.insert_clip_at_index(TRACK_A, 9, &media("d", 10, r), InOutRange::default()).unwrap();
+        assert_eq!(e.timeline.tracks[0].clips[2].id, nid); assert_eq!(e.timeline.tracks[0].clips[2].start, 72);
+        assert!(e.patch_clip_duration_from_source(TRACK_A, &nid, 30, None)); assert_eq!(e.timeline.duration, 102);
+        assert!(e.trim_clip_tail(TRACK_A, &nid, 20)); assert!(!e.patch_clip_duration_from_source(TRACK_A, &nid, 40, None));   // trimmed: never patched
+        let snap = e.timeline.tracks[0].clips[0].clone(); let mut moved = snap.clone(); moved.start = 7;
+        assert!(e.preview_clip(TRACK_A, &snap.id, moved)); assert!(e.restore_clip(TRACK_A, &snap.id, snap.clone())); assert_eq!(e.timeline.tracks[0].clips[0], snap);
+        assert_eq!(e.undo_label(), Some("Trim tail"));
+    }
+    #[test] fn ids_are_unique() { let a = fresh_id(); let b = fresh_id(); assert_ne!(a, b); assert_eq!(a.len(), 36); }
 }

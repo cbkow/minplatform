@@ -1,4 +1,4 @@
-# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport LANDED 2026-11-07)
+# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport + the timeline edits + the hover cache LANDED 2026-11-07)
 
 **Question.** Does QCView's Transport — J / K / L, seeks, scrubs, the two-slot playlist cut, shuttle, loop, in / out,
 review speeds — run on `qcv-player` with S2's numbers, driven by `min-ui`'s FIRST nodes (the transport bar and the
@@ -51,7 +51,7 @@ the evidence note fills as each lands. **Spikes retired by step 2:** `s2-scrub` 
 
 ## Evidence
 
-### 2a · the scrub decoder + GOP cache (landed 2026-11-07)
+### 2 · piece 1 — the scrub decoder + GOP cache (landed 2026-11-07)
 
 **What landed** (`crates/qcv-player`): `scrub_decoder.rs` ← QCView's `scrub_decoder.{h,cpp}` (own `Session` + hwaccel,
 the intra-only hw gate with `hw_inter_scrub` lifting it, `intra_direct` for intra codecs, thread policy auto — never the
@@ -109,7 +109,7 @@ Apple; Windows D3D12VA (S2: 7.5 ms) is the per-OS default and is owed its headle
 - **The feed's shape is QCView's** (`av_read_frame` → `avcodec_send_packet` → drain `avcodec_receive_frame` until EAGAIN;
   the send's return is not consulted in either). Kept as is (row 131).
 
-### 2b · the Transport (landed 2026-11-07)
+### 2 · piece 2 — the Transport (landed 2026-11-07)
 
 **What landed** (`crates/qcv-player`): `transport.rs` ← `WindowManager`'s transport slice (play / pause / toggle with the
 user-intent flag, `seekToTime` / `seekToFrame` / `…AndResume` with the 50 ms playlist debounce as the seam, `stepFrames`
@@ -143,11 +143,53 @@ its shuttle / dual / image-sequence paths are timer-leads already.
 | the scrub decoder beside it | unchanged from 2a (ProRes 5.1 ms, H.264 97 ms, sweeps 0.3–4.3 ms) |
 | seek correctness | 0 mismatches over 90 random seeks on three files (the gate takes the OLDEST post-seek frame; the first cut took the newest and landed one frame late on ProRes) |
 
-**Owed from 2b**: the stream's resume on the playlist path (the timeline step brings the clip resolve + slot swap behind
+### 2 · piece 3 — the timeline model + edits, and the hover-thumbnail cache (landed 2026-11-07)
+
+**What landed.** `crates/qcv-timeline` ← `timeline_types.h` / `timeline_flattener.{h,cpp}` / `timeline_edits.{h,cpp}` /
+`timeline_controller.{h,cpp}` carried onto RATIONAL time (row 83): `Clip` / `Track` / `EditPolicy` / `Timeline` with
+frames at the timeline rate and source frames at the clip's rate; the flattener (visible clip at T on the topmost
+visible track, per-track, audible clips with QCView's under-track rule, timeline → source, next / prev boundary, S2's
+`resolve`); the eight edits as ops with inverses (row 84: trim head / tail, slide, slip, split, delete, insert, move);
+the `Editor` = the controller's API (`snap_edge_index_at` = `snapEdgeIndexAtTime`, `recompute_contiguous_start_times`,
+`patch_clip_duration_from_source` with its full-range-only rule, the live-preview + Esc-restore hooks, undo / redo with
+QCView's labels, `load_single_media` / `load_playlist` with the gap clips, `set_rate`, `clear`; undo cleared on load);
+row 84's policy ENFORCED (locked tracks refuse, source bounds clamp, overlaps refused outside playlists); 7 tests.
+The timeline panel's `snapTolPx` 12 lives there as `SNAP_TOL_PX`. `crates/qcv-player/src/thumbnail_cache.rs` ←
+`timeline_thumbnail_cache.{h,cpp}` + `video_image_loader.cpp`: keys (path, frame), 320 × 180, LRU 100, three workers
+idle / one playing with the park-and-requeue, misses at the front / prefetch at the back (stride 6), nearest-cached and
+numbered-sibling fallbacks, ≤ 64 adopts per drain, the clear generation; the loader trait with `VideoThumbLoader` =
+QCView's (an own one-thread `FLAG2_FAST` session, seek BACKWARD + the frame nearest (f + 0.5) / fps, `SWS_POINT` to RGBA8,
+the 8-bit legal expansion for RGB sources); stills come with `min-image` (2c); the textures are the caller's (the harness
+makes wgpu textures on the headless engine). The 16 ms hover throttle and the 33 ms drain are constants beside the cache.
+
+**A QCView bug found by the port's tests, filed in §17.6:** `MoveClipEdit::undo` moves the clip back to slot `from`, which
+is right for forward moves and wrong for backward ones (the clip then sits BEFORE its old slot, so the old slot is
+`from + 1`); a two-clip playlist with the second moved to the front never undoes at all (the target is its own slot + 1, the
+no-op case). Fixed in the port with the reason beside it.
+
+**Numbers (`qcv --hover 20`: random hover frames at the 16 ms throttle, the drain every 33 ms; then the same frames; then
+the whole file at stride 6):**
+
+| File | hover miss → thumbnail landed ms p50 / p95 | re-hover hit | prefetch, 3 workers | playing, 1 worker (121 frames) |
+|---|---|---|---|---|
+| 4K ProRes 422 | 132 / 133 | 0.000 ms | 56 ms per thumbnail | 12.9 s |
+| 1080p ProRes 422 (5-min) | **34 / 34** | 0.001 ms | 23 ms per thumbnail (1,222 thumbs, 1,162 evictions at the 100 budget, 135 MB) | 2.3 s |
+| 4K H.264 GOP 48 | 628 / 1,090 | 0.001 ms | 192 ms per thumbnail | > 60 s (timed out) |
+
+The bar "a hover answers within one refresh" holds once cached (a hit is a map lookup). A MISS costs one thumbnail decode
+on QCView's loader design — single-threaded, seek-exact — which is 34 ms on 1080p ProRes and 0.6 s on 4K H.264 (a GOP
+prefix at one thread). That is QCView's behaviour today; the obvious improvement — serve hover thumbnails from the scrub
+decoder's GOP cache (the frames are already decoded) or give the loader frame threads for inter codecs — is a discussion
+for the UI step, not a change here (row 131).
+
+**Owed from piece 3**: the playlist slot swap behind the Transport's debounce (rows 85 / 157: two decoder slots + the
+next-clip prewarm — the next piece after `qcv-meta`), the timeline SURFACE (`min-ui`, row 86), still-image loaders (2c).
+
+**Owed from piece 2**: the stream's resume on the playlist path (the timeline step brings the clip resolve + slot swap behind
 the debounce), the audio hooks' implementation (2b-audio), the shell's actions (B / T / F / ⌘Z) wired when the shell exists,
 `loopEnabled` persistence with the settings model (step 3), and a windowed key walk on the user's desk (the harness can't press keys).
 
-**Owed from 2a**: the Windows headless run (D3D12VA scrub for inter codecs + the readback-to-planes entries), the stream's
+**Owed from piece 1**: the Windows headless run (D3D12VA scrub for inter codecs + the readback-to-planes entries), the stream's
 resume-after-seek measurement (that is the Transport's `seekToTime` shape — it lands with 2b's Transport port), and the
 S2 spike's retirement once the cut numbers hold.
 

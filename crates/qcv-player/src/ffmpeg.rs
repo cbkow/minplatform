@@ -16,7 +16,8 @@ pub struct SeqOptions { pub rate: Rate, pub start_number: i64 }
 #[derive(Clone, Default)]
 pub struct OpenOptions { /// 0 = FFmpeg auto; the user's performance/ffmpegThreads value otherwise
     pub threads: i32, pub hw: Option<HwDevice>, /// an image sequence (the path is an image2 printf pattern)
-    pub seq: Option<SeqOptions> }
+    pub seq: Option<SeqOptions>, /// `AV_CODEC_FLAG2_FAST` (the thumbnail loader: speed over spec)
+    pub fast: bool }
 
 /// A hardware frame: an `av_frame_clone` reference that owns the platform buffer until dropped (QCView retains the
 /// CVPixelBuffer itself; holding the AVFrame ref is the same contract and covers D3D12VA's pool slot too).
@@ -110,6 +111,7 @@ impl Session {
                 } else { log::info!("codec=prores_raw → software decode (hw_routing: software-only codec)"); }
             }
             thread_policy::apply_software_thread_policy(cctx, codec, opts.threads);
+            if opts.fast { (*cctx).flags2 |= ff::AV_CODEC_FLAG2_FAST as i32; }
             log::info!("threading {} (count={})", thread_policy::thread_policy_name(cctx), (*cctx).thread_count);
             if let e @ ..=-1 = ff::avcodec_open2(cctx, codec, ptr::null_mut()) { let mut c = cctx; ff::avcodec_free_context(&mut c); ff::avformat_close_input(&mut fmt); return Err(Error::Open(format!("avcodec_open2: {}", av_err(e)))) }
             // metadata
@@ -140,6 +142,9 @@ impl Session {
     }
     pub fn frame_index(&self) -> FrameIndex { let i = &self.info; FrameIndex::new(i.time_base.0, i.time_base.1, i.frame_rate.0, i.frame_rate.1, i.frame_count, i.intra_only) }
     pub fn read_ahead_spans(&mut self, index: &FrameIndex) -> Vec<FrameSpan> { unsafe { ReadAhead::spans_from_index(self.fmt, self.stream_idx, &|ts| index.frame_for_pts(ts), index.total_frames()) } }
+    pub fn time_base(&self) -> ff::AVRational { unsafe { let st = *(*self.fmt).streams.add(self.stream_idx as usize); (*st).time_base } }
+    /// microseconds (AV_TIME_BASE) → this stream's time-base ticks
+    pub fn us_to_pts(&self, us: i64) -> i64 { unsafe { ff::av_rescale_q(us, ff::AVRational { num: 1, den: 1_000_000 }, self.time_base()) } }
     pub fn start_pts(&self) -> i64 { unsafe { let st = *(*self.fmt).streams.add(self.stream_idx as usize); if (*st).start_time != ff::AV_NOPTS_VALUE { (*st).start_time } else { 0 } } }
     pub fn pts_to_us(&self, pts: i64) -> i64 { if pts == ff::AV_NOPTS_VALUE { return 0 } unsafe { let st = *(*self.fmt).streams.add(self.stream_idx as usize); ff::av_rescale_q(pts, (*st).time_base, ff::AVRational { num: 1, den: 1_000_000 }) } }
     /// `av_seek_frame` (or the reopen-to-seek demuxer's reopen) + a codec flush. QCView's performSeek preamble.

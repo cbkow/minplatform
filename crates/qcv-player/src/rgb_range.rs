@@ -31,3 +31,9 @@ pub fn source_needs_16bit_publish(fmt: ff::AVPixelFormat) -> bool {
     if (d.flags as i32 & ff::AV_PIX_FMT_FLAG_BAYER) != 0 { return true }
     (0..d.nb_components as usize).any(|i| d.comp[i].depth > 8)
 }
+
+/// `expandRgba8LegalToFull`: 16–235 → 0–255 on packed RGBA8 (alpha untouched), rounded as QCView's LUT does.
+pub fn expand_rgba8_legal_to_full(rgba: &mut [u8]) {
+    let lut: [u8; 256] = std::array::from_fn(|v| (((v as i32 - 16) * 255 + 109) / 219).clamp(0, 255) as u8);
+    for px in rgba.chunks_exact_mut(4) { px[0] = lut[px[0] as usize]; px[1] = lut[px[1] as usize]; px[2] = lut[px[2] as usize]; }
+}

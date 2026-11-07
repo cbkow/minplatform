@@ -17,7 +17,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition};
 
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
 
-struct Opts { seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
+struct Opts { hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter }
 
@@ -203,11 +203,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
-    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
+    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let scrub = arg("--scrub").and_then(|v| { let (r, ms) = v.rsplit_once(':')?; let (a, b) = r.split_once('-')?; Some((a.parse().ok()?, b.parse().ok()?, ms.parse().ok()?)) });
-    let o = Opts { seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
+    let o = Opts { hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
@@ -217,6 +217,7 @@ fn main() {
 /// `--headless N`: no window — decode N frames through the player, show each on a headless engine (the same zero-copy
 /// import and stage graph), write `--snap-out` / run `--verify-pq`. The evidence that needs no display.
 fn run_headless(o: Opts) {
+    if o.hover.is_some() { return run_hover_bench(o) }
     if o.seeks.is_some() || o.scrub.is_some() { return run_scrub_bench(o) }
     use min_present::engine::{DisplayMode, Engine, OutMode};
     let n = o.headless.unwrap_or(1);
@@ -347,4 +348,70 @@ fn run_scrub_bench(o: Opts) {
     }
     println!("CPU {:.0} % of one core over the run; max RSS {:.0} MB", 100.0 * qcv_player::process_cpu_seconds() / t_open.elapsed().as_secs_f64(), qcv_player::max_rss_mb());
     p.end_scrub();
+}
+
+/// `--hover N`: the hover-thumbnail cache (QCView's `TimelineThumbnailCache` + `VideoImageLoader`) — N random hover frames
+/// at the panel's 16 ms request throttle, the drain every 33 ms (textures made on the headless engine); then the same
+/// frames again (hits), then a prefetch of the whole file at stride 6. The bar: a hover answers within one refresh once
+/// cached, and a miss lands in the time one thumbnail decode takes.
+fn run_hover_bench(o: Opts) {
+    use min_present::engine::Engine;
+    use qcv_player::{TimelineThumbnailCache, ThumbConfig, VideoThumbLoader, thumbnail_cache::{HOVER_REQUEST_THROTTLE_MS, UPLOAD_DRAIN_MS, PREFETCH_STRIDE}};
+    let n = o.hover.unwrap_or(20);
+    let Some(file) = o.file.clone() else { println!("--hover needs a file"); return };
+    let engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
+    let src = Source::from_path(&file, None);
+    let p = match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let total = p.frame_count();
+    println!("opened {} — {}", src.display(), describe(&p));
+    let textures: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, wgpu::Texture>>> = Default::default();
+    let released = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let (tx, rl) = (textures.clone(), released.clone());
+    let mut cache = TimelineThumbnailCache::new(ThumbConfig::default(), VideoThumbLoader::factory(), Box::new(move |h| { tx.borrow_mut().remove(&h); rl.set(rl.get() + 1); }));
+    let mut next_handle = 0u64;
+    let mut adopt = |key: &qcv_player::ThumbKey, px: &qcv_player::ThumbPixels| -> u64 {
+        let _ = key;
+        let tex = engine.device.create_texture(&wgpu::TextureDescriptor { label: Some("thumb"), size: wgpu::Extent3d { width: px.width, height: px.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] });
+        engine.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &px.rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(px.width * 4), rows_per_image: Some(px.height) }, wgpu::Extent3d { width: px.width, height: px.height, depth_or_array_layers: 1 });
+        engine.queue.submit(std::iter::empty()); let _ = engine.device.poll(wgpu::PollType::Poll);
+        next_handle += 1; textures.borrow_mut().insert(next_handle, tex); next_handle
+    };
+    let mut rng = 0x9E3779B97F4A7C15u64; let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+    let frames: Vec<i32> = (0..n).map(|_| (next() % total.max(1) as u64) as i32).collect();
+    let (mut land_ms, mut sizes) = (vec![], (0u32, 0u32));
+    let t_all = Instant::now();
+    for &f in &frames {
+        let t = Instant::now();
+        let e = cache.get_thumbnail(&file, f, true);
+        if e.texture != 0 && cache.stats().total_cached > 0 && land_ms.is_empty() { /* a fallback answered */ }
+        let mut landed = e.texture != 0 && false;
+        let mut next_drain = t;
+        while !landed && t.elapsed().as_secs() < 10 {
+            if Instant::now() >= next_drain { cache.process_pending_uploads(&mut adopt); next_drain += std::time::Duration::from_millis(UPLOAD_DRAIN_MS); }
+            let e = cache.get_thumbnail(&file, f, false);
+            if e.texture != 0 { landed = true; sizes = (e.width, e.height); land_ms.push(t.elapsed().as_secs_f32() * 1000.0); }
+            else { std::thread::sleep(std::time::Duration::from_millis(1)); }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(HOVER_REQUEST_THROTTLE_MS));
+    }
+    let fill = t_all.elapsed().as_secs_f32();
+    let mut hit_ms = vec![];
+    for &f in &frames { let t = Instant::now(); let e = cache.get_thumbnail(&file, f, true); hit_ms.push(t.elapsed().as_secs_f32() * 1000.0); if e.texture == 0 { println!("  miss on a re-hover of frame {f}"); } }
+    let s = cache.stats();
+    println!("hover: {} random frames: miss → thumbnail landed ms p50 {:.1} p95 {:.1} max {:.1} (thumb {}x{}); re-hover hit ms p50 {:.3} max {:.3}; cached {} of {}; hits {} misses {}; the walk took {:.1} s",
+        frames.len(), pct(&mut land_ms, 50.0), pct(&mut land_ms, 95.0), pct(&mut land_ms, 100.0), sizes.0, sizes.1, pct(&mut hit_ms, 50.0), pct(&mut hit_ms, 100.0), s.total_cached, ThumbConfig::default().cache_size, s.cache_hits, s.cache_misses, fill);
+    // the whole file at stride 6 (QCView's precacheRange), the priority frame in the middle
+    let t = Instant::now(); cache.precache_range(&file, 0, total - 1, total / 2, PREFETCH_STRIDE);
+    let wanted = ((total + PREFETCH_STRIDE - 1) / PREFETCH_STRIDE) as usize;
+    let mut landed = 0usize;
+    while cache.stats().pending_requests > 0 && t.elapsed().as_secs() < 120 { landed += cache.process_pending_uploads(&mut adopt); std::thread::sleep(std::time::Duration::from_millis(UPLOAD_DRAIN_MS)); }
+    landed += cache.process_pending_uploads(&mut adopt);
+    let s = cache.stats();
+    println!("prefetch: {} of {} frames (stride {PREFETCH_STRIDE}) landed in {:.1} s = {:.1} ms per thumbnail across 3 workers; cache holds {} (budget {}), {} textures released; peak RSS {:.0} MB", landed, wanted, t.elapsed().as_secs_f32(), t.elapsed().as_secs_f32() * 1000.0 / landed.max(1) as f32, s.total_cached, ThumbConfig::default().cache_size, released.get(), qcv_player::max_rss_mb());
+    // playback: one worker
+    cache.notify_playback_state(true);
+    let t = Instant::now(); cache.precache_range(&file, 0, (total - 1).min(120), 0, 1);
+    while cache.stats().pending_requests > 0 && t.elapsed().as_secs() < 60 { cache.process_pending_uploads(&mut adopt); std::thread::sleep(std::time::Duration::from_millis(UPLOAD_DRAIN_MS)); }
+    println!("playing (one worker): 121 frames at stride 1 in {:.1} s", t.elapsed().as_secs_f32());
+    cache.shutdown();
 }

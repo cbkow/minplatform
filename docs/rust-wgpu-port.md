@@ -1634,16 +1634,19 @@ Undo stack never cleared across loads; trim-tail/slip have no upper clamp to `so
 edits commit un-snapped seconds; `clipToMap` drops sequence fields + `audioMuted` (lossy restore);
 `locked` unenforced; dual allows overlaps against its own policy; playlist fps/gap hard-coded 24/0
 in the UI; `precacheRange` has no callers; the undo stack is used as an "edited" flag.
+**Added 2026-11-07 (found by the port's tests):** `MoveClipEdit::undo` moves the clip back to slot `from` — right for
+forward moves, wrong for backward ones (post-move the clip sits before its old slot, so the old slot is `from + 1`); a
+two-clip playlist with the second moved to the front never undoes at all (the target is its own slot + 1, the no-op case).
 
 ### 17.7 Added decisions
 | # | Decision | Proposed default | Status |
 |---|---|---|---|
 | 83 | Time base in the shared timeline model | rational time (value i64 + rate), own type; seconds display-only; edits frame-snapped by construction | open — **OTIO itself RULED OUT 2026-11-06; evidence in (S2): the cut and the 3:2 cadence fell out of it** |
-| 84 | `qcv-timeline` in the player crate | types + 8 ops with inverses (op-based undo) + flattener + snap + mapping; policy enforced; undo cleared on load; ONE `Sequencer` replaces the WindowManager orchestration | open |
+| 84 | `qcv-timeline` in the player crate | types + 8 ops with inverses (op-based undo) + flattener + snap + mapping; policy enforced; undo cleared on load; ONE `Sequencer` replaces the WindowManager orchestration | **BUILT 2026-11-07** (step 2 piece 3: `qcv-timeline`'s `Editor`; the Sequencer's clip → slot dispatch = the next piece) |
 | 85 | Gapless playlists | two decoder slots + video next-clip prewarm in `qcv-player` | open — **evidence in (S2): gapless on ProRes and mid-GOP H.264, 0 black / 0 dup** |
 | 86 | Timeline rendering | one surface node on the canvas camera (1-axis), draws from the model per frame, visible-range only; no per-clip nodes | open |
 | 87 | Hover thumbnail | a UI node over the viewport (display-referred), fed by `min-image`'s thumbnail cache; the presenter composites no UI | open |
-| 88 | Scrub / shuttle / debounce constants | in `Transport` once; minNotes' QML copies retire | open |
+| 88 | Scrub / shuttle / debounce constants | in `Transport` once; minNotes' QML copies retire | **BUILT 2026-11-07** (step 2 piece 2: `transport.rs` constants; the hover throttle + drain beside the thumbnail cache) |
 | 89 | Edit feature set v1 | today's ops + frame snapping + source clamps + in/out in the model; no multi-select / roll / overwrite / markers | open |
 | 90 | §17.6 bug list | fix now in QCView | open |
 
