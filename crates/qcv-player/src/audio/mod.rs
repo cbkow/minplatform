@@ -14,6 +14,7 @@ pub mod multi_decoder;
 pub mod chunk_reader;
 pub mod device;
 #[cfg(target_os = "macos")] pub mod coreaudio;
+#[cfg(windows)] pub mod wasapi;
 pub mod shuttle;
 pub mod waveform;
 pub mod player;

@@ -6,7 +6,7 @@
 //! same path as the keys); the rest are drawn disabled until their step lands.
 use kurbo::Rect;
 use min_theme::tokens as t;
-use min_ui::{ActionButton, ActionGroup, Event, Fonts, Response, Slider, Tooltips};
+use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, Family, Fonts, Response, Slider, Tooltips};
 use qcv_player::{Action, Transport};
 use std::time::Instant;
 use vello::Scene;
@@ -14,6 +14,9 @@ use vello::Scene;
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(dead_code)]   // Pin arrives with the window-state step
 pub enum Cmd { Open, Act(Action), Pin, Volume(f32) }
+
+/// QCView's review-speed chip: "1×" at rest, cycles the ring on click (R), snaps to 1× on Shift-click (⇧R).
+struct SpeedChip { rect: Rect, text: String, off_unity: bool, hovered: bool, hover: Ramp, enabled: bool }
 
 /// Which button does what; `None` = not backed yet (drawn disabled).
 #[derive(Clone, Copy)]
@@ -28,6 +31,7 @@ pub struct TransportBar {
     pin: ActionGroup,
     /// QCView's 90-px volume slider, in the mute group's cluster (the user 2026-11-07: "mute … in its own group with the eventual volume slider").
     volume: Slider,
+    speed: SpeedChip, shift: bool,
     pub tooltips: Tooltips,
     pub rect: Rect,
 }
@@ -79,7 +83,7 @@ impl TransportBar {
         }
         let pin = ActionGroup::new(vec![b("push-pin", "Always on Top (Ctrl+Alt+T)")]);
         let mut volume = Slider::new(1.0); volume.tooltip = "Volume".into();
-        TransportBar { groups: gs, binds, pin, volume, tooltips: Tooltips::default(), rect: Rect::ZERO }
+        TransportBar { groups: gs, binds, pin, volume, speed: SpeedChip { rect: Rect::ZERO, text: "1×".into(), off_unity: false, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), enabled: false }, shift: false, tooltips: Tooltips::default(), rect: Rect::ZERO }
     }
 
     /// Lay the row out across `[0, w)` at `y` with the bar's height; the pin flush right.
@@ -89,7 +93,19 @@ impl TransportBar {
         let by = y + (h - t::ACTION_BUTTON_HEIGHT_M as f64 * scale) / 2.0;
         let mut x = pad;
         let last = self.groups.len() - 1;
-        for (i, g) in self.groups.iter_mut().enumerate() { x += g.layout(fonts, x, by, scale); if i == last { x += t::SPACING_75 as f64 * scale; let w = 90.0 * scale; self.volume.rect = Rect::new(x, by, x + w, by + t::ACTION_BUTTON_HEIGHT_M as f64 * scale); x += w; } x += cluster; }
+        for (i, g) in self.groups.iter_mut().enumerate() {
+            x += g.layout(fonts, x, by, scale);
+            if i == 1 {
+                // the review-speed chip sits with the transport cluster (QCView: right after skip-forward)
+                x += t::SPACING_75 as f64 * scale;
+                let l = fonts.layout(&self.speed.text, Family::Mono, t::REVIEW_SPEED_CHIP_FONT_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE);
+                let w = l.width() as f64 + 2.0 * t::FIELD_EDGE_TO_TEXT as f64 * scale; let h = t::REVIEW_SPEED_CHIP_HEIGHT as f64 * scale;
+                let cy = by + (t::ACTION_BUTTON_HEIGHT_M as f64 * scale - h) / 2.0;
+                self.speed.rect = Rect::new(x, cy, x + w, cy + h); x += w;
+            }
+            if i == last { x += t::SPACING_75 as f64 * scale; let w = 90.0 * scale; self.volume.rect = Rect::new(x, by, x + w, by + t::ACTION_BUTTON_HEIGHT_M as f64 * scale); x += w; }
+            x += cluster;
+        }
         let pw = self.pin.layout(fonts, 0.0, by, scale);
         self.pin.layout(fonts, w - pad - pw, by, scale);
         self.rect = Rect::new(0.0, y, w, y + h);
@@ -117,6 +133,7 @@ impl TransportBar {
             }
         }
         self.pin.buttons[0].enabled = false;
+        if let Some(p) = p { let sp = p.review_speed(); let mut txt = format!("{sp:.2}"); while txt.ends_with('0') { txt.pop(); } if txt.ends_with('.') { txt.pop(); } self.speed.text = format!("{txt}×"); self.speed.off_unity = (sp - 1.0).abs() > 0.001; self.speed.enabled = true; } else { self.speed.enabled = false; }
         if let Some(p) = p { let on = p.audio.has_audio() && !p.audio.is_muted(); self.volume.enabled = on; if !self.volume.dragging() { self.volume.value = p.audio.volume(); } self.volume.tooltip = format!("Volume — {}%", (p.audio.volume() * 100.0).round() as i32); } else { self.volume.enabled = false; }
     }
 
@@ -138,19 +155,28 @@ impl TransportBar {
         }
         for (_, r) in self.pin.event(e, now) { dirty = true; if r == Response::Clicked { cmds.push(Cmd::Pin); } }
         let (v, d) = self.volume.event(e, now, scale_of(&self.rect, self.volume.rect)); if d { dirty = true; } if let Some(v) = v { cmds.push(Cmd::Volume(v)); }
+        {
+            let inside = e.pos().is_some_and(|(x, y)| self.speed.rect.contains(kurbo::Point::new(x, y))) && self.speed.enabled;
+            let was = self.speed.hovered; self.speed.hovered = inside && !matches!(e, Event::Leave); if was != self.speed.hovered { dirty = true; }
+            self.speed.hover.set_target(if self.speed.hovered { 1.0 } else { 0.0 }, now);
+            if let Event::Down { button: Button::Primary, .. } = e { if inside { cmds.push(Cmd::Act(if self.shift { Action::ResetReviewSpeed } else { Action::CycleReviewSpeed })); dirty = true; } }
+        }
         if matches!(e, Event::Move { .. } | Event::Leave) { dirty = true; }   // hover ramps start on a move
         if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); dirty = true; }
         let over = self.hovered().map(|(k, r, s)| (k, r, s.to_string()));
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         (cmds, dirty)
     }
+    /// The shell's modifier state (Shift-click on the chip snaps to 1×).
+    pub fn set_shift(&mut self, on: bool) { self.shift = on; }
     fn hovered(&self) -> Option<(u64, Rect, &str)> {
+        if self.speed.hovered { return Some((1 << 22, self.speed.rect, "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)")) }
         if self.volume.hovered() || self.volume.dragging() { return Some((1 << 21, self.volume.rect, &self.volume.tooltip)) }
         for (gi, g) in self.groups.iter().enumerate() { if let Some(i) = g.hovered() { let b = &g.buttons[i]; return Some(((gi as u64) << 8 | i as u64, b.rect, &b.tooltip)) } }
         self.pin.hovered().map(|i| { let b = &self.pin.buttons[i]; (1 << 20, b.rect, b.tooltip.as_str()) })
     }
     /// Per-frame: tooltip timing; true when a redraw is needed now.
-    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) || self.groups.iter().any(|g| g.animating(now)) || self.pin.animating(now) || self.volume.animating(now) }
+    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) || self.groups.iter().any(|g| g.animating(now)) || self.pin.animating(now) || self.volume.animating(now) || self.speed.hover.animating(now) }
     #[allow(dead_code)]   // the app redraws every frame today; the on-demand scheduler uses these
     pub fn next_change(&self, now: Instant) -> Option<Instant> { self.tooltips.next_change(now) }
     #[allow(dead_code)]
@@ -162,6 +188,13 @@ impl TransportBar {
         for g in &self.groups { g.paint(scene, fonts, scale, now); }
         self.pin.paint(scene, fonts, scale, now);
         self.volume.paint(scene, scale, now);
+        // the chip: the wells' recessed look, border stepping up on hover, bold content colour off 1×
+        let c = &self.speed; let r = t::REVIEW_SPEED_CHIP_CORNER_RADIUS as f64 * scale; let bw = t::BORDER_WIDTH_100 as f64 * scale;
+        paint::rounded(scene, c.rect, r, mix(t::FIELD_BORDER_COLOR, t::FIELD_BORDER_COLOR_HOVER, c.hover.value(now)));
+        paint::rounded(scene, c.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR);
+        let color = if !c.enabled { t::DISABLED_CONTENT_COLOR } else if c.off_unity { t::REVIEW_SPEED_CHIP_OFF_UNITY_COLOR } else { t::REVIEW_SPEED_CHIP_COLOR };
+        let l = fonts.layout(&c.text, Family::Mono, t::REVIEW_SPEED_CHIP_FONT_SIZE * scale as f32, if c.off_unity { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, paint::color(color));
+        min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((c.rect.x0 + (c.rect.width() - l.width() as f64) / 2.0, c.rect.y0 + (c.rect.height() - l.height() as f64) / 2.0)));
     }
     /// The tooltip, drawn last so it sits over every band.
     pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }

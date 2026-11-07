@@ -54,9 +54,10 @@ impl AudioDevice for NullDevice {
 }
 impl Drop for NullDevice { fn drop(&mut self) { self.quit.store(true, Relaxed); if let Some(t) = self.thread.take() { let _ = t.join(); } } }
 
-/// The platform's default output: CoreAudio's default-output AudioUnit on macOS (QCView `CoreAudioDevice`); WASAPI on
-/// Windows arrives with the rhombus pass.
+/// The platform's default output: CoreAudio's default-output AudioUnit on macOS (QCView `CoreAudioDevice`), WASAPI's
+/// default render endpoint on Windows (QCView `WasapiAudioDevice`); nothing on Linux.
 pub fn default_device(render: RenderFn, sample_rate: i32, buffer_ms: u32) -> Result<Box<dyn AudioDevice>, crate::Error> {
     #[cfg(target_os = "macos")] { return super::coreaudio::CoreAudioDevice::new(render, sample_rate, buffer_ms).map(|d| Box::new(d) as Box<dyn AudioDevice>) }
+    #[cfg(windows)] { return super::wasapi::WasapiAudioDevice::new(render, sample_rate, buffer_ms).map(|d| Box::new(d) as Box<dyn AudioDevice>) }
     #[allow(unreachable_code)] { let _ = (render, sample_rate, buffer_ms); Err(crate::Error::Open("no audio device layer on this platform yet (WASAPI: rhombus pass)".into())) }
 }

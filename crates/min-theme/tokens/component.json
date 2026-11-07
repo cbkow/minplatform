@@ -130,7 +130,12 @@
   "timecode-well-corner-radius": { "value": "{corner-radius-small-default}" },
   "timecode-well-font-size": { "value": "{code-size-s}" },
   "timecode-drop-frame-color": { "value": "{notice-visual-color}" },
-  "review-speed-chip-off-unity-color": { "value": "{accent-content-color-default}" },
+  "$review-speed": "QCView's chip lit ACCENT off 1×; row 162 rations the accent, so the chip goes bold + content colour instead, in the wells' recessed look.",
+  "review-speed-chip-height": { "value": "{component-height-50}" },
+  "review-speed-chip-corner-radius": { "value": "{corner-radius-small-default}" },
+  "review-speed-chip-font-size": { "value": "{code-size-s}" },
+  "review-speed-chip-color": { "value": "{neutral-subdued-content-color-default}" },
+  "review-speed-chip-off-unity-color": { "value": "{neutral-content-color-hover}" },
 
   "scrubber-height":            { "value": "{component-height-100}" },
   "scrubber-background-color":  { "value": "{background-layer-1-color}" },
