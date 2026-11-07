@@ -27,7 +27,8 @@ mod hover_thumbs;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), cursor_pointer: bool, ui_dirty: bool,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
-    fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant> }
+    fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
+    waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)> }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
@@ -46,7 +47,10 @@ impl App {
             Ok(mut p) => {
                 p.play();   // the harness plays on open (QCView opens paused; the shell decides)
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
-                self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p); self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
+                self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p);
+                let mut p = p;
+                if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {}", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }); } Err(e) => println!("audio: {e}") } }
+                self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
                 g.window.set_title(&format!("qcv — {}", self.source_label));
             }
             Err(e) => println!("open {path}: {e}"),
@@ -87,6 +91,15 @@ impl App {
             let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale + slide;
             g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, h as f64), scale);
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
+            // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
+            if let Some(p) = self.player.as_ref() { if p.audio.has_audio() {
+                g.waveform.set_playback_active(p.is_playing() || p.is_scrubbing());
+                let (t0, t1) = g.scrubber.visible_window(&st); let cols = g.scrubber.track_columns();
+                let req = (p.path().to_string(), t0, t1, cols);
+                if req != g.wave_req { g.wave_req = req.clone(); g.waveform.request_window(&req.0, t0, t1, cols); g.ui_dirty = true; }
+                let wgen = g.waveform.data_generation();
+                if wgen != g.wave_seen || g.ui_dirty { g.wave_seen = wgen; g.wave_peaks = g.waveform.sample_columns(&req.0, t0, t1, cols).into_iter().map(|c| if c.valid { (c.mn, c.mx) } else { (0.0, 0.0) }).collect(); g.ui_dirty = true; }
+            } }
             if g.thumbs.tick(self.player.as_mut(), g.scrubber.hover_frame, now) { g.ui_dirty = true; }
             let _ = frame;
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
@@ -99,7 +112,7 @@ impl App {
                 ui_sketch::bands(scene, w, h, scale, slide);
                 g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
-                g.scrubber.paint(scene, &mut g.fonts, scale, &st, None);
+                g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 g.thumbs.paint(scene, content, scale);
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
@@ -121,6 +134,7 @@ impl App {
             let (lat_p95, dropped, late) = self.player.as_mut().map(|p| (pct(&mut p.stats.lateness_ms.clone(), 95.0), p.stats.dropped, p.stats.late)).unwrap_or((f32::NAN, 0, 0));
             let g = self.gpu.as_mut().unwrap();
             let ui = if g.ui_ms.is_empty() { String::new() } else { format!("  ui renders {} ms p50 {:.2} max {:.2}", g.ui_ms.len(), pct(&mut g.ui_ms, 50.0), pct(&mut g.ui_ms, 100.0)) };
+            if let Some(p) = self.player.as_mut() { if p.audio.has_audio() { let mut d = p.audio.take_drift(); if let Some(a) = p.audio.stats() { if !d.is_empty() { println!("        audio drift ms p50 {:+.1} p95 {:+.1} max {:+.1} (n={})  re-seeks {} holds {} skips {} underruns {} fades {} callbacks {} contended {}", pct(&mut d, 50.0), pct(&mut d.iter().map(|v| v.abs()).collect::<Vec<_>>(), 95.0), d.iter().fold(0.0f32, |m, v| m.max(v.abs())), d.len(), a.reseeks, a.holds, a.skips, a.underruns, a.fades, a.callbacks, a.contended); } } } }
             println!("{:>5.1} s  shown {:>5.1} fps  show ms p50 {:.2} max {:.2}  present ms p50 {:.1} p95 {:.1} max {:.1}  lateness p95 {:.1}  dropped {dropped} late {late}  EDR now {:?}{ui}",
                 self.t0.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0), self.shown_in_window as f32 / dt, pct(&mut self.show_ms, 50.0), pct(&mut self.show_ms, 100.0), pct(&mut self.presents, 50.0), pct(&mut self.presents, 95.0), pct(&mut self.presents, 100.0), lat_p95, edr);
             g.ui_ms.clear();
@@ -155,6 +169,7 @@ impl App {
                 }
                 transport_bar::Cmd::Open => println!("open: the file dialog arrives with the shell step (drop a file on the window meanwhile)"),
                 transport_bar::Cmd::Pin => {}
+                transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } }
             }
         }
     }
@@ -274,7 +289,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), cursor_pointer: false, ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, t::BANDS_SLIDE_DURATION), bands_leave: None });
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), cursor_pointer: false, ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, t::BANDS_SLIDE_DURATION), bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![] });
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { self.open(&f); }
     }
@@ -355,11 +370,12 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
-    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
+    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let scrub = arg("--scrub").and_then(|v| { let (r, ms) = v.rsplit_once(':')?; let (a, b) = r.split_once('-')?; Some((a.parse().ok()?, b.parse().ok()?, ms.parse().ok()?)) });
     let o = Opts { cut: arg("--cut"), hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
+    if let Some(secs) = arg("--audio-bench").and_then(|v| v.parse().ok()) { run_audio_bench(o, secs); return }
     if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap"), arg("--ui-size").and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))); return }
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
@@ -369,6 +385,53 @@ fn main() {
 
 /// `--headless N`: no window — decode N frames through the player, show each on a headless engine (the same zero-copy
 /// import and stage graph), write `--snap-out` / run `--verify-pq`. The evidence that needs no display.
+/// `--audio-bench SECONDS file`: no window, no speaker — the Transport plays through a wall-paced silent device; the
+/// servo's drift is sampled every refresh. Then a seek to one third and the time it takes the drift to re-enter ±20 ms,
+/// then a hold/release cycle through pause → play. The step-2b bar: drift settles inside the quiet band and stays,
+/// no re-seeks after the first second, no underruns at 1×.
+fn run_audio_bench(o: Opts, seconds: f32) {
+    let Some(file) = o.file.clone() else { println!("--audio-bench needs a file"); return };
+    let src = Source::from_path(&file, None);
+    let mut p = match Transport::open(&src, TransportOptions { hw: None, threads: o.threads, loop_enabled: true, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let a = match qcv_player::AudioPlayer::headless() { Ok(a) => a, Err(e) => { println!("audio: {e}"); return } };
+    p.set_audio(Box::new(a));
+    println!("opened {} — {}; audio: {}", src.display(), describe(&p), if p.audio.has_audio() { "open" } else { "NONE — the bench needs a file with an audio stream" });
+    if !p.audio.has_audio() { return }
+    let refresh = std::time::Duration::from_secs_f32(o.refresh_ms / 1000.0);
+    let mut run = |p: &mut Transport, secs: f32, label: &str| {
+        let t0 = Instant::now(); let mut drift: Vec<(f32, f32)> = vec![];
+        while t0.elapsed().as_secs_f32() < secs {
+            let now = Instant::now(); let _ = p.tick(now); if p.current().is_none() { p.idle_refresh(); }
+            for d in p.audio.take_drift() { drift.push((t0.elapsed().as_secs_f32(), d)); }
+            std::thread::sleep(refresh);
+        }
+        let settle = drift.iter().find(|(_, d)| d.abs() <= 20.0).map(|(t, _)| *t);
+        let after: Vec<f32> = drift.iter().filter(|(t, _)| settle.is_some_and(|s| *t >= s + 0.5)).map(|(_, d)| *d).collect();
+        let mut abs: Vec<f32> = after.iter().map(|v| v.abs()).collect();
+        let a = p.audio.stats().unwrap_or_default();
+        println!("{label}: {} drift samples; first inside ±20 ms at {}; after settling: |drift| p50 {:.1} p95 {:.1} max {:.1} ms (n={}); re-seeks {} holds {} skips {} underruns {} fades {} callbacks {} contended {}",
+            drift.len(), settle.map(|s| format!("{s:.2} s")).unwrap_or("never".into()), pct(&mut abs, 50.0), pct(&mut abs, 95.0), pct(&mut abs, 100.0), after.len(), a.reseeks, a.holds, a.skips, a.underruns, a.fades, a.callbacks, a.contended);
+    };
+    p.play();
+    run(&mut p, seconds, "play from 0");
+    let third = p.frame_count() / 3; p.seek_to_frame(third);
+    run(&mut p, (seconds / 2.0).max(3.0), &format!("seek to frame {third} while playing"));
+    p.pause(); std::thread::sleep(std::time::Duration::from_millis(300)); p.tick(Instant::now()); p.play();
+    run(&mut p, (seconds / 2.0).max(3.0), "pause 300 ms → play (hold + release)");
+    // the shuttle: hold fast-forward for 1.5 s (2× → 4× → 8×), then rewind for 1 s; the grains feed the callback instead of the decoder
+    let t0 = Instant::now(); p.start_fast_seek(1, t0); let mut calls0 = p.audio.stats().map(|a| a.callbacks).unwrap_or(0);
+    while t0.elapsed().as_secs_f32() < 1.5 { let now = Instant::now(); let _ = p.tick(now); std::thread::sleep(refresh); }
+    let active_ff = p.audio.shuttle_active(); p.stop_fast_seek();
+    let t1 = Instant::now(); p.start_fast_seek(-1, t1);
+    while t1.elapsed().as_secs_f32() < 1.0 { let now = Instant::now(); let _ = p.tick(now); std::thread::sleep(refresh); }
+    let active_rw = p.audio.shuttle_active(); p.stop_fast_seek();
+    let calls1 = p.audio.stats().map(|a| a.callbacks).unwrap_or(0); calls0 = calls1 - calls0;
+    println!("shuttle: ff 1.5 s (active {active_ff}) + rw 1 s (active {active_rw}): {calls0} device callbacks fed by grains; after release the player is {} at frame {}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame());
+    if !p.is_playing() { p.play(); }
+    run(&mut p, 3.0, "play on after the shuttle");
+    println!("process CPU {:.0} % of one core over the run; max RSS {:.0} MB", 0.0, qcv_player::max_rss_mb());
+}
+
 /// `--ui-bench N [--ui-snap PATH] [file]`: no window — the UI layer at 2560×1440 (scale 2) over a headless engine; the
 /// token sketch is rebuilt + rendered N times at a moving frame (scene-build ms and vello render ms apart), then the
 /// composite (over the file's first frame when one is given) is written as an sRGB PNG. The piece-6 harness: the bar is
@@ -427,6 +490,15 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     scrubber.event(&min_ui::Event::Move { x: w as f64 * 0.62, y: h as f64 - 10.0 }, t0, &st, scale);
     if let Some(p) = player.as_mut() { thumbs.on_open(p); let deadline = Instant::now() + std::time::Duration::from_millis(1500); while Instant::now() < deadline { thumbs.tick(Some(p), scrubber.hover_frame, Instant::now()); if thumbs_shown(&thumbs) { break } std::thread::sleep(std::time::Duration::from_millis(20)); } }
     let content = engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap();
+    let mut wave_peaks: Vec<(f32, f32)> = vec![];
+    if let Some(p) = player.as_ref() {
+        let eng = qcv_player::WaveformProbeEngine::new();
+        let (t0w, t1w) = scrubber.visible_window(&st); let cols = scrubber.track_columns();
+        eng.request_window(p.path(), t0w, t1w, cols);
+        let deadline = Instant::now() + std::time::Duration::from_millis(3000); let mut last = 0;
+        while Instant::now() < deadline { let g = eng.data_generation(); if g != last { last = g; let c = eng.sample_columns(p.path(), t0w, t1w, cols); if c.iter().filter(|c| c.valid).count() * 10 >= cols * 9 { wave_peaks = c.into_iter().map(|c| (c.mn, c.mx)).collect(); break } } std::thread::sleep(std::time::Duration::from_millis(30)); }
+        println!("waveform: {} of {} columns probed in time", wave_peaks.len(), cols);
+    }
     let (mut build_ms, mut render_ms) = (vec![], vec![]);
     for i in 0..n.max(1) {
         let fi = frame_info.map(|(_, c, f)| ((i as i32 * 7) % c.max(1), c, f)).or(Some((i as i32, 240, 24.0)));
@@ -436,7 +508,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         ui_sketch::bands(scene, w, h, scale, 0.0);
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
-        scrubber.paint(scene, &mut fonts, scale, &st, None);
+        scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });
         thumbs.paint(scene, content, scale);
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);

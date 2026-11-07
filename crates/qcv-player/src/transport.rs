@@ -55,6 +55,17 @@ pub trait AudioHooks {
     fn shuttle_active(&self) -> bool { false }
     fn toggle_mute(&mut self) {}
     fn volume_step(&mut self, _delta: f32) {}
+    fn set_volume(&mut self, _v: f32) {}
+    /// Open the file's audio (false = none); the Transport calls it per clip.
+    fn open(&mut self, _path: &str) -> bool { false }
+    fn close(&mut self) {}
+    /// Every refresh (deferred device stops and the like).
+    fn tick(&mut self, _now: Instant) {}
+    fn is_muted(&self) -> bool { false }
+    fn volume(&self) -> f32 { 1.0 }
+    fn stats(&mut self) -> Option<crate::audio::AudioStats> { None }
+    /// Drain the drift samples gathered since the last call (the stats line).
+    fn take_drift(&mut self) -> Vec<f32> { vec![] }
 }
 pub struct NoAudio;
 impl AudioHooks for NoAudio {}
@@ -110,6 +121,8 @@ pub struct Transport {
     seek_gate: Option<(i32, u32, u64, Instant)>,
     playlist_active: bool, pending_playlist_seek: Option<(f64, Instant)>, resume_after_playlist_seek: bool,
     pub stats: Stats, last_shown: Option<i64>, refreshes_on_current: i64, pub refresh_ms: f32, current: Option<FrameHandle>, first_landed: bool,
+    /// `play` held the audio until the next picture lands (QCView releases on the first frame published after play)
+    audio_hold_pending: bool,
 }
 
 impl Transport {
@@ -150,7 +163,7 @@ impl Transport {
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
-            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false }
+            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false }
     }
     /// The timeline changed under us (an edit): durations re-seat; the active clip index is re-found by id order.
     pub fn set_timeline(&mut self, timeline: Timeline) {
@@ -211,7 +224,7 @@ impl Transport {
         self.user_wants_playback = true;
         if self.at_end() { self.seek_to_frame(0); }   // play from the end restarts (the timer clamps at duration)
         self.timer.play(); self.slots[self.active].decoder.play();
-        if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); self.audio.set_hold(true); self.audio.play(); }
+        if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); self.audio.set_hold(true); self.audio.play(); self.audio_hold_pending = true; }
     }
     pub fn pause(&mut self) {
         self.user_wants_playback = false;
@@ -344,6 +357,12 @@ impl Transport {
         if was_playing { self.play(); }
     }
     pub fn is_scrubbing(&self) -> bool { self.scrubbing.is_some() }
+    /// Install an audio player (QCView's `AudioPlayer`): opens the active clip's audio on it.
+    pub fn set_audio(&mut self, mut audio: Box<dyn AudioHooks>) {
+        let path = self.path().to_string();
+        if !path.is_empty() { audio.open(&path); }
+        self.audio = audio;
+    }
 
     // ---- review speed ---------------------------------------------------------------------------------------------
     pub fn set_review_speed(&mut self, speed: f64) {
@@ -455,6 +474,7 @@ impl Transport {
     /// One refresh: the shuttle's 33 ms tick, the playlist debounce, the prewarm landing, the clock, the clip dispatch,
     /// then the frame due now (if a new one).
     pub fn tick(&mut self, now: Instant) -> Option<&FrameHandle> {
+        self.audio.tick(now);
         if let Some(f) = &self.fast { if now - f.last_tick >= Duration::from_millis(FAST_SEEK_TICK_MS) { self.fast_seek_tick(now); } }
         if let Some((sec, at)) = self.pending_playlist_seek { if now - at >= Duration::from_millis(PLAYLIST_SEEK_DEBOUNCE_MS) { self.pending_playlist_seek = None; self.apply_playlist_seek(sec); } }
         self.pump_prewarm();
@@ -476,7 +496,7 @@ impl Transport {
             self.stats.seek_land_ms.push((now - issued).as_secs_f32() * 1000.0);
             let tl = self.tl_frame_of(&self.slots[a], h.frame_no as i64);
             if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); }
-            if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.release_hold(p); }
+            if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.release_hold(p); self.audio_hold_pending = false; }
             return self.show(h, now);
         }
         if self.fast.is_some() || self.scrubbing.is_some() { let (h, _) = self.slots[self.active].decoder.fetch_due(i32::MAX); return self.show(h?, now) }   // the gesture drives the clock; frames land whenever
@@ -524,6 +544,7 @@ impl Transport {
     }
     fn show(&mut self, h: FrameHandle, now: Instant) -> Option<&FrameHandle> {
         if h.frame_no >= 0 {
+            if self.audio_hold_pending && self.audio.has_audio() && self.is_playing() { self.audio_hold_pending = false; let p = self.audio_position(); self.audio.release_hold(p); }
             let k = self.tl_frame_of(&self.slots[self.active], h.frame_no as i64);
             // a gap counts as dropped only while the clock runs it: a scrub / seek / shuttle jump is not a drop
             let continuous = self.timer.is_playing() && self.scrubbing.is_none() && self.fast.is_none() && self.seek_gate.is_none();

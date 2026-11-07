@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(ACTION_BUTTON_HEIGHT_M, 32.0);
         assert_eq!(CORNER_RADIUS_MEDIUM_DEFAULT, 8.0);
         assert_eq!(HOVER_BACKGROUND_COLOR_IDLE, HOVER_BACKGROUND_COLOR.with_alpha(0.0));
-        assert_eq!(SCRUBBER_WAVEFORM_COLOR.a, 0.12);
+        assert_eq!(SCRUBBER_WAVEFORM_COLOR.a, 0.2);
         assert_eq!(SCRUBBER_WAVEFORM_COLOR.with_alpha(1.0), GRAY_800);
         assert_eq!(tokens::get("spacing-100"), Some(Token::Px(8.0)));
         assert_eq!(tokens::get("no-such-token"), None);

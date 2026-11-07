@@ -38,13 +38,15 @@ objc2-core-video = "0.3.2"
 objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3.2"   # S1 step 3: the PQ-layer workaround for wgpu-hal 30.0.1's BT.2100 crash
 objc2-app-kit = "0.3"            # features per crate (NSPasteboard for min-paths, NSView for the spikes)
+objc2-audio-toolbox = { version = "0.3.2", default-features = false }   # step 2b: the AUHAL default-output unit (QCView's CoreAudioDevice), features in qcv-player
+objc2-core-audio-types = { version = "0.3.2", default-features = false }
 windows-sys = "0.60"             # features per crate
 windows = { version = "0.62", default-features = false }   # the version wgpu-hal 30 uses: raw ID3D12 handles cross the hal boundary (min-present)
 serde = { version = "1", features = ["derive"] }   # optional in min-paths (the {vol,rel} ref shape)
 serde_json = "1"
 cbindgen = "0.29"
 # media (FFmpeg 9 via raw bindings + thin RAII, canon §4; system FFmpeg through pkg-config)
-ffmpeg-sys-next = { version = "9.0.1", default-features = false, features = ["avcodec", "avformat", "swscale"] }
+ffmpeg-sys-next = { version = "9.0.1", default-features = false, features = ["avcodec", "avformat", "swscale", "swresample"] }   # swresample: step 2b audio
 crossbeam-channel = "0.5"
 libc = "0.2"
 # misc

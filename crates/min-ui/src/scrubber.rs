@@ -64,6 +64,9 @@ impl Scrubber {
     fn time_at_x(&self, x: f64, s: &ScrubState, scale: f64) -> f64 { let p = self.pps(s); if p > 0.0 { ((x - self.rect.x0 - self.pad(scale)).clamp(0.0, self.track_w) + self.scroll_x) / p } else { 0.0 } }
     pub fn frame_at_x(&self, x: f64, s: &ScrubState, scale: f64) -> i32 { ((self.time_at_x(x, s, scale) * s.fps).round() as i64).clamp(0, (s.frames as i64 - 1).max(0)) as i32 }
     pub fn fit(&mut self) { self.pps = None; self.scroll_x = 0.0; }
+    /// The visible time window (seconds) and the track's width in whole pixel columns — the waveform probe's request.
+    pub fn visible_window(&self, s: &ScrubState) -> (f64, f64) { let p = self.pps(s); if p <= 0.0 { return (0.0, 0.0) } (self.scroll_x / p, (self.scroll_x + self.track_w) / p) }
+    pub fn track_columns(&self) -> usize { self.track_w.max(1.0) as usize }
     /// QCView's `applyWheel`: `dy` in Qt angle units (120 per notch); `pan` = Alt held.
     pub fn wheel(&mut self, x: f64, dy: f64, pan: bool, s: &ScrubState, scale: f64) -> bool {
         if self.dur(s) <= 0.0 || dy == 0.0 { return false }
@@ -130,7 +133,7 @@ impl Scrubber {
         if let Some(pk) = peaks {
             let wave_h = r.height() * t::SCRUBBER_WAVEFORM_HEIGHT_RATIO; let base = r.y1;
             let mut path = BezPath::new(); path.move_to((tx0, base));
-            for (i, (_, mx)) in pk.iter().enumerate() { path.line_to((tx0 + i as f64, base - (*mx as f64).abs().min(1.0) * wave_h)); }
+            for (i, (mn, mx)) in pk.iter().enumerate() { let a = mn.abs().max(mx.abs()).min(1.0) as f64; path.line_to((tx0 + i as f64, base - a * wave_h)); }
             path.line_to((tx0 + pk.len() as f64, base)); path.close_path();
             scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(t::SCRUBBER_WAVEFORM_COLOR), None, &path);
         }

@@ -149,7 +149,7 @@
   "scrubber-in-out-zone-color": { "value": "{white}", "alpha": 0.06 },
   "scrubber-flag-width":  { "value": "11px" },
   "scrubber-flag-height": { "value": "7px" },
-  "scrubber-waveform-color":    { "value": "{gray-800}", "alpha": 0.12 },
+  "scrubber-waveform-color":    { "value": "{gray-800}", "alpha": 0.2 },
   "scrubber-waveform-height-ratio": { "value": 0.6 },
   "scrubber-cache-band-thickness": { "value": "2px" },
   "scrubber-cache-ahead-color":  { "value": "{gray-600}" },
