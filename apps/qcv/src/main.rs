@@ -17,7 +17,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition};
 
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
 
-struct Opts { hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
+struct Opts { cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32 }
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter }
 
@@ -105,7 +105,7 @@ impl App {
                 s.shown, s.dropped, s.late, s.black, s.loops, pct(&mut s.lateness_ms, 50.0), pct(&mut s.lateness_ms, 95.0), pct(&mut s.lateness_ms, 100.0), pct(&mut s.lateness_ms, 0.0), s.cadence, pct(&mut s.decode_ms, 50.0), pct(&mut s.decode_ms, 100.0),
                 if s.seek_land_ms.is_empty() { String::new() } else { format!("; stream seeks landed ms p50 {:.1} p95 {:.1} (n={})", pct(&mut s.seek_land_ms, 50.0), pct(&mut s.seek_land_ms, 95.0), s.seek_land_ms.len()) });
         }
-        if let Some(p) = self.player.as_ref() { if let Some(idx) = p.decoder.frame_index() { println!("frame index: tier 2 {:?} ({} frames, {} keyframes); decode errors {}{}", idx.scan_state(), idx.scan_frames_built(), idx.keyframe_count(), p.decoder.decode_error_count(), if p.decoder.decode_error_count() > 0 { format!(" (last: {})", p.decoder.last_decode_error()) } else { String::new() }); } }
+        if let Some(p) = self.player.as_ref() { if let Some(idx) = p.decoder().frame_index() { println!("frame index: tier 2 {:?} ({} frames, {} keyframes); decode errors {}{}", idx.scan_state(), idx.scan_frames_built(), idx.keyframe_count(), p.decoder().decode_error_count(), if p.decoder().decode_error_count() > 0 { format!(" (last: {})", p.decoder().last_decode_error()) } else { String::new() }); } }
         let cpu = qcv_player::process_cpu_seconds();
         if wall > 0.0 { println!("process CPU time {cpu:.2} s over {wall:.1} s = {:.0} % of one core (decode threads included); max RSS {:.0} MB; frames presented {}; EDR headroom seen {:.1}", 100.0 * cpu / wall, qcv_player::max_rss_mb(), self.frames_presented, self.edr_seen); }
         if let Some(g) = self.gpu.as_ref() { let r = g.presenter.layer_report(); if !r.is_empty() { println!("{r}"); } }
@@ -203,11 +203,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
-    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
+    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut"].contains(&a.as_str()); continue } let _ = i; f = Some(a.clone()); } f };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let scrub = arg("--scrub").and_then(|v| { let (r, ms) = v.rsplit_once(':')?; let (a, b) = r.split_once('-')?; Some((a.parse().ok()?, b.parse().ok()?, ms.parse().ok()?)) });
-    let o = Opts { hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
+    let o = Opts { cut: arg("--cut"), hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
@@ -217,6 +217,7 @@ fn main() {
 /// `--headless N`: no window — decode N frames through the player, show each on a headless engine (the same zero-copy
 /// import and stage graph), write `--snap-out` / run `--verify-pq`. The evidence that needs no display.
 fn run_headless(o: Opts) {
+    if o.cut.is_some() { return run_cut_bench(o) }
     if o.hover.is_some() { return run_hover_bench(o) }
     if o.seeks.is_some() || o.scrub.is_some() { return run_scrub_bench(o) }
     use min_present::engine::{DisplayMode, Engine, OutMode};
@@ -253,7 +254,7 @@ fn run_headless(o: Opts) {
         }
     }
     // the FrameIndex report: tier 2 vs tier 1 on every frame, the keyframe table, the read-ahead pages touched
-    if let Some(idx) = p.decoder.frame_index() {
+    if let Some(idx) = p.decoder().frame_index() {
         let t1 = Instant::now(); while idx.scan_state() == qcv_player::frame_index::ScanState::Building && t1.elapsed().as_secs() < 30 { std::thread::sleep(std::time::Duration::from_millis(20)); }
         let n = idx.total_frames();
         let (mut mism, mut worst) = (0, 0i64);
@@ -289,14 +290,14 @@ fn run_scrub_bench(o: Opts) {
     let mut p = match Transport::open(&src, TransportOptions { hw: hw.clone(), threads: o.threads, loop_enabled: false, scrub: Some(sopts), ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     let index = p.frame_index().clone();
     let total = index.total_frames();
-    let (hw_active, intra_direct, served) = match &p.scrub { Some(sd) => (sd.hw_active, sd.intra_direct, sd.served.clone().unwrap()), None => { println!("no scrub decoder"); return } };
+    let (hw_active, intra_direct, served) = match p.scrub() { Some(sd) => (sd.hw_active, sd.intra_direct, sd.served.clone().unwrap()), None => { println!("no scrub decoder"); return } };
     println!("opened {} — {}; scrub decoder: {} (intra-direct {}), transport opened in {:.0} ms", src.display(), describe(&p), if hw_active { hw.as_ref().map(|h| h.name()).unwrap_or("hw") } else { "software" }, intra_direct, t_open.elapsed().as_secs_f32() * 1000.0);
     // the open's own first frame lands through the transport's seek gate (paused at open)
     { let t = Instant::now(); while p.seek_in_flight() && t.elapsed().as_secs() < 10 { if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); } else { std::thread::sleep(std::time::Duration::from_micros(200)); } } }
     if let Some(ms) = std::env::var("QCV_SCRUB_SETTLE_MS").ok().and_then(|v| v.parse::<u64>().ok()) { std::thread::sleep(std::time::Duration::from_millis(ms)); }   // measurement: let the index scan / warmer finish first
     // the first frame through the scrub decoder (the H.264 open carried from step 1)
-    let t0 = Instant::now(); p.scrub.as_mut().unwrap().request_frame(0);
-    match served.recv_timeout(std::time::Duration::from_secs(10)) { Ok(s) => { let h = p.decoder.fetch_latest(); if let Some(h) = &h { engine.show(&h.frame).ok(); } println!("first frame via the scrub decoder: ready {:.1} ms, shown {:.1} ms (decoded {}, seeked {})", (s.done - s.issued).as_secs_f32() * 1000.0, t0.elapsed().as_secs_f32() * 1000.0, s.decoded, s.seeked); } Err(_) => { println!("first frame: no answer in 10 s"); return } }
+    let t0 = Instant::now(); p.scrub().unwrap().request_frame(0);
+    match served.recv_timeout(std::time::Duration::from_secs(10)) { Ok(s) => { let h = p.decoder().fetch_latest(); if let Some(h) = &h { engine.show(&h.frame).ok(); } println!("first frame via the scrub decoder: ready {:.1} ms, shown {:.1} ms (decoded {}, seeked {})", (s.done - s.issued).as_secs_f32() * 1000.0, t0.elapsed().as_secs_f32() * 1000.0, s.decoded, s.seeked); } Err(_) => { println!("first frame: no answer in 10 s"); return } }
     let mut rng = 0x9E3779B97F4A7C15u64; let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
     if let Some(n) = o.seeks {
         let (mut ready, mut shown, mut fwd, mut back, mut hits) = (vec![], vec![], vec![], vec![], 0u32);
@@ -307,7 +308,7 @@ fn run_scrub_bench(o: Opts) {
             if o.seek_gap_ms > 0 { std::thread::sleep(std::time::Duration::from_millis(o.seek_gap_ms)); }   // a user's seeks are spaced; the decoder's in-flight frame threads drain between them
             let t = Instant::now();
             p.seek_to_frame(target);                            // the stream's own seek (QCView's seekToFrame)
-            p.scrub.as_mut().unwrap().request_frame(target);    // the scrub decoder answers first
+            p.scrub().unwrap().request_frame(target);    // the scrub decoder answers first
             let Ok(s) = served.recv_timeout(std::time::Duration::from_secs(10)) else { println!("seek {target}: no answer in 10 s"); break };
             let r = (s.done - s.issued).as_secs_f32() * 1000.0;
             let mut sh = f32::NAN;
@@ -339,7 +340,7 @@ fn run_scrub_bench(o: Opts) {
             tick += period; let now = Instant::now(); if tick > now { std::thread::sleep(tick - now); }
             while let Ok(s) = served.try_recv() { ready.push((s.done - s.issued).as_secs_f32() * 1000.0); if s.hit { hits += 1 } if s.retargeted { retargets += 1 } }
             if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); shown_n += 1; }
-            behind.push((pointer - p.scrub.as_ref().unwrap().last_shown()).abs() as f32);
+            behind.push((pointer - p.scrub().unwrap().last_shown()).abs() as f32);
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
         while let Ok(s) = served.try_recv() { ready.push((s.done - s.issued).as_secs_f32() * 1000.0); if s.hit { hits += 1 } }
@@ -414,4 +415,65 @@ fn run_hover_bench(o: Opts) {
     while cache.stats().pending_requests > 0 && t.elapsed().as_secs() < 60 { cache.process_pending_uploads(&mut adopt); std::thread::sleep(std::time::Duration::from_millis(UPLOAD_DRAIN_MS)); }
     println!("playing (one worker): 121 frames at stride 1 in {:.1} s", t.elapsed().as_secs_f32());
     cache.shutdown();
+}
+
+/// `--cut a.mov@0-48,b.mp4@100-148[,…]`: a playlist through the Transport's two slots, played headless at a 60 Hz refresh
+/// cadence from the start to the end; the cut's evidence is the cadence / black / drop accounting around every
+/// boundary (S2's bar: no black refresh, no duplicate frame at the cut).
+fn run_cut_bench(o: Opts) {
+    use min_present::engine::Engine;
+    let spec = o.cut.clone().unwrap();
+    let mut specs = vec![];
+    for part in spec.split(',') {
+        let (path, trim) = match part.rsplit_once('@') { Some((p, r)) if r.contains('-') => { let (a, b) = r.split_once('-').unwrap(); (p.to_string(), Some((a.parse::<i64>().unwrap_or(0), b.parse::<i64>().unwrap_or(0)))) } _ => (part.to_string(), None) };
+        specs.push((path, trim));
+    }
+    let mut engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
+    #[cfg(windows)] let dev = engine.dx12_device_raw();
+    #[cfg(not(windows))] let dev = None;
+    let hw = if o.sw { None } else { HwDevice::platform(dev) };
+    let tl = match qcv_player::transport::playlist_from_specs(&specs) { Ok(t) => t, Err(e) => { println!("cut: {e}"); return } };
+    let boundaries = tl.boundaries(); let total = tl.duration;
+    let t0 = Instant::now();
+    let mut p = match Transport::open_playlist(tl, TransportOptions { hw, threads: o.threads, loop_enabled: o.looping, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open playlist: {e}"); return } };
+    println!("playlist: {} clips, {} timeline frames at {} fps, boundaries at {:?}; opened in {:.0} ms", specs.len(), total, p.rate(), boundaries, t0.elapsed().as_secs_f32() * 1000.0);
+    // let the first frame land, then play at a 60 Hz refresh cadence
+    { let t = Instant::now(); while p.seek_in_flight() && t.elapsed().as_secs() < 10 { if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); } else { std::thread::sleep(std::time::Duration::from_micros(200)); } } }
+    p.play();
+    let period = std::time::Duration::from_secs_f32(o.refresh_ms / 1000.0);
+    let mut next = Instant::now(); let mut shown_at: Vec<(i64, u32)> = vec![];   // (timeline frame shown, refresh index)
+    let mut refresh = 0u32; let deadline = Instant::now() + std::time::Duration::from_secs(120);
+    let loops_wanted = if o.looping { 1 } else { 0 };
+    let (mut last_loops, mut wrap_at, mut wraps) = (0u32, None::<(u32, i64)>, vec![]);
+    while !p.at_end() && Instant::now() < deadline && p.stats.loops <= loops_wanted {
+        let now = Instant::now();
+        match p.tick(now) { Some(h) => { engine.show(&h.frame).ok(); shown_at.push((p.current_frame() as i64, refresh)); if let Some((r0, f0)) = wrap_at.take() { wraps.push(format!("wrap {}: frame {f0} at refresh {r0} → frame {} at refresh {refresh} ({} refreshes; the landing {:.1} ms)", p.stats.loops, p.current_frame(), refresh - r0, p.stats.seek_land_ms.last().copied().unwrap_or(f32::NAN))); } } None => p.idle_refresh() }
+        if p.stats.loops != last_loops { last_loops = p.stats.loops; wrap_at = Some((refresh, shown_at.last().map(|x| x.0).unwrap_or(-1))); }
+        if o.looping && p.stats.loops > loops_wanted { break }
+        refresh += 1; next += period; let n2 = Instant::now(); if next > n2 { std::thread::sleep(next - n2); }
+    }
+    let s = &mut p.stats;
+    println!("cut: shown {} frames over {refresh} refreshes, dropped {}, late {}, black refreshes {}, loops {}; lateness ms p50 {:.1} p95 {:.1} max {:.1}; cadence {:?}; swaps prewarmed {} / opened {}; CPU {:.0} %; RSS {:.0} MB",
+        s.shown, s.dropped, s.late, s.black, s.loops, pct(&mut s.lateness_ms, 50.0), pct(&mut s.lateness_ms, 95.0), pct(&mut s.lateness_ms, 100.0), s.cadence, s.swaps_prewarmed, s.swaps_opened, 100.0 * qcv_player::process_cpu_seconds() / t0.elapsed().as_secs_f64(), qcv_player::max_rss_mb());
+    // around every boundary: the refresh gaps between the frames shown just before and after the cut
+    for w in &wraps { println!("  {w}"); }
+    // random seeks across the playlist through the 50 ms debounce (applyPlaylistSeek: clip resolve + swap + the stream's landing)
+    if !o.looping && total > 1 {
+        p.pause();
+        let mut rng = 0x9E3779B97F4A7C15u64; let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+        let (mut land, mut cross) = (vec![], 0u32);
+        for _ in 0..12 {
+            let target = (next() % total as u64) as i32; let from_clip = p.active_clip_index();
+            let t = Instant::now(); p.seek_to_frame(target);
+            while (p.seek_in_flight() || t.elapsed().as_millis() < 60) && t.elapsed().as_secs() < 10 { if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); } else { std::thread::sleep(std::time::Duration::from_micros(200)); } }
+            let landed = t.elapsed().as_secs_f32() * 1000.0; land.push(landed); if p.active_clip_index() != from_clip { cross += 1; }
+            if p.current_frame() != target { println!("  seek → {target}: landed on timeline frame {} (clip {})", p.current_frame(), p.active_clip_index()); }
+        }
+        let s = &p.stats;
+        println!("playlist seeks: 12 random, {cross} cross-clip; request → landed ms (incl. the 50 ms debounce) p50 {:.1} p95 {:.1} max {:.1}; swaps prewarmed {} / opened {}", pct(&mut land, 50.0), pct(&mut land, 95.0), pct(&mut land, 100.0), s.swaps_prewarmed, s.swaps_opened);
+    }
+    for b in &boundaries {
+        let after = shown_at.iter().find(|(f, _)| *f >= *b); let before = after.and_then(|(_, ra)| shown_at.iter().rev().find(|(f, r)| *f < *b && r < ra));
+        match (before, after) { (Some((fb, rb)), Some((fa, ra))) => println!("  boundary {b}: frame {fb} at refresh {rb} → frame {fa} at refresh {ra} ({} refreshes apart; a 2/3 cadence = gapless, no duplicate)", ra - rb), _ => println!("  boundary {b}: not crossed") }
+    }
 }

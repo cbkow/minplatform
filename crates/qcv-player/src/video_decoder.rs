@@ -95,6 +95,8 @@ impl VideoDecoder {
     /// Latest request wins; an in-flight seek's target is replaced for the NEXT seek, never aborted mid-decode.
     pub fn seek_to_frame(&self, frame_no: i32) { self.shared.pending_seek.store(frame_no.max(0), Ordering::Release); self.shared.cv.notify_all(); }
     pub fn seeks_performed(&self) -> u32 { self.shared.seeks_performed.load(Ordering::Acquire) }
+    /// Counts every publish (the decode loop's and external ones).
+    pub fn published_seq(&self) -> u64 { self.shared.published_seq.load(Ordering::Acquire) }
     pub fn set_playback_speed(&self, speed: f64) { self.shared.speed_bits.store(speed.to_bits(), Ordering::Release); self.shared.pace_dirty.store(true, Ordering::Release); }
     pub fn playback_speed(&self) -> f64 { self.shared.speed() }
     pub fn current_frame(&self) -> i32 { self.shared.current_frame.load(Ordering::Acquire) }

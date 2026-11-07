@@ -1,4 +1,4 @@
-# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport + the timeline edits + the hover cache + qcv-meta LANDED 2026-11-07)
+# Phase 2 · step 2 — transport + timeline (planned 2026-11-07; rows 154–159 RULED 2026-11-07 "go, start with the scrub decoder"; the scrub decoder + the Transport + the timeline edits + the hover cache + qcv-meta + the playlist Sequencer LANDED 2026-11-07; S2 retired)
 
 **Question.** Does QCView's Transport — J / K / L, seeks, scrubs, the two-slot playlist cut, shuttle, loop, in / out,
 review speeds — run on `qcv-player` with S2's numbers, driven by `min-ui`'s FIRST nodes (the transport bar and the
@@ -208,6 +208,44 @@ alpha). The three client masters (local only), our reader vs exiftool's `-s` out
 Premiere renders, MediaCreateDate alone on the third (no XMP there, as exiftool agrees); we additionally read the tmcd
 timecode and `altTimecode` exiftool's tag list left out. The Perl bundle can go for MOV / MP4 (it stays as the MXF oracle,
 row 137). Logs under `fixtures/phase2/step2-meta-*.log` (gitignored: project paths are client data).
+
+### 2 · piece 5 — the Sequencer: playlists on two decoder slots (landed 2026-11-07)
+
+**What landed.** `Transport` is row 84's ONE Sequencer: every source is a timeline (single media = `Editor::load_single_media`'s
+one locked clip; a playlist = `load_playlist`'s), the clock runs in TIMELINE frames, and each refresh resolves the frame to
+(clip, source frame) through `qcv-timeline` and fetches from that clip's SLOT. Two slots (row 85, S2's gapless pair): the
+active clip's and the next non-gap clip's, prewarmed on its in-point on a thread (`Slot::open` + the in-point seek; the
+tick never stalls), swapped in at the cut with its in-point frame already due; a reused slot (the loop's return to a clip
+still open) re-parks on its in-point. QCView's rules carried: `applyPlaylistSeek` (the 50 ms debounce → the clip containing
+the position, past the end → the last non-gap, inside a gap → the next else the previous, swap, the decoder seek, the
+deferred resume), `playlistAdvanceToClip`'s next-non-gap + loop-to-first, the end-of-playlist stop when not looping,
+in / out off in playlist mode, the shuttle's "no per-tick decoder seeks on playlists" (the swap is the one expensive hit,
+deferred to the release), `audioPosition`'s clip translation for the audio hooks. The one divergence stays row 85's:
+QCView reopens its single decoder at every clip change; the port's prewarm removes the frame-1 flash and the boundary
+stall S2 measured. `--cut a@in-out,b@in-out[,…] [--loop]` in the qcv app plays a playlist at a 60 Hz cadence and reports
+the boundary refresh gaps, the wrap, and 12 random playlist seeks.
+
+**The seek gate learned two rules from the playlist tests** (both in the code): the landing is the oldest post-seek frame
+AT OR PAST the target (a prewarmed slot's in-point frame, below it, is dropped — the first cut re-seated the clock on the
+in-point), and the "landing consumed by a scrub publish" fallback requires a publish since the seek was issued (the
+decoder's `published_seq`).
+
+**Numbers (macOS, headless engine at a 60 Hz refresh cadence, VideoToolbox):**
+
+| Playlist | cuts | wrap (`--loop`) | 12 random seeks (incl. the 50 ms debounce) |
+|---|---|---|---|
+| 1080p ProRes 0–48 → H.264 100–148 → ProRes 4444 0–48 | 0 dropped, 0 black, cadence {2: 70, 3: 71}; both boundaries 2–3 refreshes apart, swaps prewarmed 2 / opened 0 | — | 9 cross-clip: landed p50 143 ms, p95 232 (the H.264 clip's VideoToolbox landing); prewarmed 9 / opened 2 |
+| 1080p ProRes 0–24 → H.264 100–124, looping | gapless | frame 47 → frame 0 in ONE refresh (the landing 11.5 ms), 2 wraps, 0 dropped | — |
+| 4K ProRes 0–96 → H.264 200–296 | 0 dropped, 0 black, cadence {2: 94, 3: 96}; boundary 2 refreshes apart | — | 6 cross-clip: p50 60 ms, p95 609 (4K H.264 VideoToolbox after a flush, as single media: 339 / 520) |
+| 4K H.264 200–248 → ProRes 0–48 → HEVC 10-bit 100–148 | 0 dropped, 0 black, cadence {2: 69, 3: 72}; both boundaries 2 refreshes apart | — | — |
+
+S2's bar ("the cut shows no black and no duplicated frame") holds on every pair, including H.264 in-points mid-GOP and
+the 10-bit HEVC; single media is unchanged by the refactor (the same 111 ms first frame, 0 dropped, the same seek and
+scrub numbers). **S2's spike is retired with this piece** (`spikes/s2-scrub` removed; `docs/spikes/S2-scrub.md` stays the
+record).
+
+**Owed from piece 5**: image-sequence clips in playlists (2c: the slot is a `Source::Sequence`, the cache is its decoder),
+the per-clip range override from the project (step 3), the playlist's audio through the hooks (2b).
 
 **Owed from piece 4**: an After Effects render for `aeProjectLink:fullPath` (none among the local masters), the MXF scanner
 (2d), `qcv-meta-ffi`, the Transport's use of the timecode origin (the UI's timecode well, with `min-ui`).
