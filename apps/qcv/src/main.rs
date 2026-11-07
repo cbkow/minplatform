@@ -60,7 +60,7 @@ impl App {
                 // audio first, so the harness's play below starts it too (the player's hooks run inside Transport::play)
                 if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {} (device latency {:.1} ms)", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }, p.audio.device_latency_ms()); } Err(e) => println!("audio: {e}") } }
                 if p.audio.has_audio() { p.audio.set_volume(st.float(settings::k::VOLUME) as f32); p.audio.set_muted(st.bool(settings::k::MUTED)); p.audio.set_sync_offset_ms(st.int(settings::k::SYNC_OFFSET_MS) as i32); p.audio.set_scrub_muted(st.bool(settings::k::SCRUB_MUTED)); }
-                p.play();   // the harness plays on open (QCView opens paused; the shell decides)
+                if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
                 println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
                 self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p);
                 self.player = Some(p); self.t_open = Some(t); self.first_presented = false;

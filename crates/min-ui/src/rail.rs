@@ -59,10 +59,10 @@ impl Rail {
         self.scale = scale;
         let vw = self.visible_width(now, scale);
         let hz = t::SPLITTER_HOT_ZONE as f64 * scale; let th = t::HAIRLINE as f64 * scale;
-        let tw = t::RAIL_OPEN_TAB_WIDTH as f64 * scale; let tab_h = t::COMPONENT_HEIGHT_200 as f64 * scale;
+        let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let tab_y = y0 + (t::COMPONENT_HEIGHT_100 as f64 * scale - sz) / 2.0;   // the same square as the collapse arrow, at its height (QCView: one element that flips)
         match self.side {
-            Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x, y0, edge_x + tw, y0 + tab_h); }
-            Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - tw, y0, edge_x, y0 + tab_h); }
+            Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x, tab_y, edge_x + sz, tab_y + sz); }
+            Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - sz, tab_y, edge_x, tab_y + sz); }
         }
         let max = (self.content_height - self.body_height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
@@ -188,7 +188,7 @@ impl Rail {
             // the open tab: a quiet caret at the window's edge, brighter on hover
             let a = self.tab_ramp.value(now);
             let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a);
-            if bg.a > 0.0 { paint::rect(scene, self.tab, bg); }
+            if bg.a > 0.0 { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * self.scale, bg); }
         }
     }
     /// Clip to the rail for the panel's content.
