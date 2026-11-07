@@ -52,7 +52,12 @@ the transport runs. **`--audio-bench SECONDS file`** = the harness: the Transpor
 | pause 300 ms → play | 0.08 s | 5.9 / 13.9 / 21.8 | — | 0 | 5 (hold out / in, the skip) |
 | shuttle ff 1.5 s + rw 1 s | — | 255 device callbacks fed by grains, both directions active | — | 0 | — |
 | play on after the shuttle | 0.06 s | 5.5 / 14.1 / 17.3 | — | 0 | — |
-The window run with real CoreAudio output presents the same line while playing. The decode thread + probe at idle:
+**Unattended window run, real CoreAudio output, UI layer on, 25 s, no hands (2026-11-07):** drift p50 between −8 and
++7 ms every 2-s window (p95 ≤ 16, max 17.5), 1 hold, 0 re-seeks, 0 underruns, 0 dropped frames, present max 17 ms, the
+UI layer 1.25 ms — the first attended walks had read +20–30 ms with 130-ms present stalls: a pause / play every few
+seconds re-anchors the servo before it converges, and scrubbing fires the thumbnail strip's precache burst, which now
+runs at utility QoS. Two app fixes fell out: the harness's play-on-open ran BEFORE the player was installed (silent
+until the first space), and `--play` exists for unattended measurement. The decode thread + probe at idle:
 process ≈ 60 % of one core during 1080p playback with audio (decode threads included). Waveform: 2 528 columns of an
 11-s window probed in < 3 s on open (the linear regime).
 

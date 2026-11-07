@@ -186,6 +186,11 @@ fn parse_sequence_parts(path: &str) -> Option<(String, i64, String)> {
 }
 
 fn worker(sh: Arc<Shared>, id: usize) {
+    // The strip precache after open runs 3 workers × the loaders' FFmpeg threads: at default priority it starved the UI
+    // thread (130-ms present stalls, dropped frames during the user's first audio walk, 2026-11-07). Utility QoS, as
+    // `read_ahead` does: the thumbnails yield to the picture and the device callback.
+    #[cfg(target_os = "macos")]
+    unsafe { unsafe extern "C" { fn pthread_set_qos_class_self_np(qos: u32, relative_priority: i32) -> i32; } pthread_set_qos_class_self_np(0x09, 0); }
     let mut loaders: HashMap<String, Box<dyn ThumbLoader>> = HashMap::new();
     while sh.running.load(Ordering::Acquire) {
         let req = {
