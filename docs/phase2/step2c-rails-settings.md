@@ -66,3 +66,17 @@ WASAPI compile errors fixed blind-written code: windows 0.62 moved `AvSetMmThrea
   the scrub session inherits `threads: 0 = auto` as FFmpeg's auto (which caps frame threads at 16) or as 1. Next
   Windows session; with a real display (row 130) still owed.
 
+## The user's walk (macOS + Windows, 2026-11-07 pm) — fixes landed, commits 77af428 … cee7d53
+"both are working well … the sidebar looks like and resizes well". Fixed on the walk: the overlay scrollbar is draggable
+(12-px hit band, thumb drag, track jump, thicker on hover) and sits 4 px from the edge, past the splitter's hot zone;
+pills resolve `corner-radius-full` BEFORE scaling (`paint::radius`; 0.5 × 2 read as 1 px on macOS); the number field is
+one well with a bare text field inside (no inner corners at the stepper seam); the column-resize cursor whenever the
+splitter is hovered; QCView's collapse arrow in a fixed 32-px header strip above the scrolling body, the reopen tab the
+same square at the same height 4 px in from the window edge, both with tooltips ("Hide / Show the left rail (⌘1)");
+inspector values at 12 with the labels; the wells round to 6 px and carry tooltips (frame / timecode / fps — QCView has
+none); the A/V sync help texts carried in full; the app OPENS PAUSED like QCView (`--play` for the harness) — the
+waveform probe suspends during playback by design, so play-on-open had left the strip empty until the first pause;
+fullscreen's bands POP like the rails (row 171 revised; the 160-ms slide retired). OPEN: on Windows "not accepting
+mouse clicks after leaving the window and coming back" — winit-win32's leave / enter path read, nothing found; the
+Windows build carries `QCV_TRACE_INPUT=1` and the instance on rhombus runs with it, awaiting a reproduction.
+
