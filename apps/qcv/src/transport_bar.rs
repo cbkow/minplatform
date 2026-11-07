@@ -1,7 +1,8 @@
 //! The transport bar as `min-ui` nodes (canon §25 row 169; QCView's `TransportBar.qml` order and tooltips carried):
 //! open · [prev-clip, start, rewind (hold), step back, play / pause, step forward, fast-forward (hold), end, next-clip]
-//! as a COMPACT fused group · in / out / clear · loop / fullscreen / compact · screenshots · guides / background /
-//! hover-thumbs · colour / notes · mute · … · the pin flush right. Buttons the Transport backs emit its `Action` (the
+//! as a COMPACT fused group, and so are in / out / clear · loop / fullscreen / compact · screenshots · guides /
+//! background / hover-thumbs / colour / notes · mute (the volume slider joins it with audio) — the user 2026-11-07:
+//! "bring our other buttons into groups as well" · … · the pin flush right. Buttons the Transport backs emit its `Action` (the
 //! same path as the keys); the rest are drawn disabled until their step lands.
 use kurbo::Rect;
 use min_theme::tokens as t;
@@ -42,27 +43,29 @@ impl TransportBar {
                 (b("skip-forward", "Skip to end (End)"), Bind::Act(Action::SeekToEnd)),
                 (b("arrow-line-right", "Next clip"), Bind::Later),
             ]),
-            (false, vec![
+            (true, vec![
                 (b("sign-out", "Set in point (I)"), Bind::Act(Action::SetInPoint)),
                 (b("sign-in", "Set out point (O)"), Bind::Act(Action::SetOutPoint)),
                 (b("x-circle", "Clear in/out points (Shift+I)"), Bind::Act(Action::ClearInOut)),
             ]),
-            (false, vec![
+            (true, vec![
                 (b("repeat", "Loop (V)"), Bind::Act(Action::ToggleLoop)),
                 (b("frame-corners", "Fullscreen (F)"), Bind::Act(Action::ToggleFullscreen)),
                 (b("arrows-in-simple", "Compact Mode (Ctrl+Shift+C)"), Bind::Later),
             ]),
-            (false, vec![
+            (true, vec![
                 (b("file-image", "Screenshot to clipboard (⌥T)"), Bind::Later),
                 (b("file-arrow-down", "Screenshot to Desktop (T)"), Bind::Later),
             ]),
-            (false, vec![
+            (true, vec![
                 (b("rectangle-dashed", "Safety guides"), Bind::Later),
                 (b("checkerboard", "Background"), Bind::Later),
                 (b("image-square", "Timeline hover thumbnails"), Bind::Later),
+                (b("palette", "Color panel (⌃3)"), Bind::Later),
+                (b("note-pencil", "Notes panel (⌃4)"), Bind::Later),
             ]),
-            (false, vec![(b("palette", "Color panel (⌃3)"), Bind::Later), (b("note-pencil", "Notes panel (⌃4)"), Bind::Later)]),
-            (false, vec![(b("speaker-high", "Mute (M)"), Bind::Later)]),
+            // mute alone for now; the volume slider joins this group when audio lands (step 2b)
+            (true, vec![(b("speaker-high", "Mute (M)"), Bind::Later)]),
         ];
         let mut gs = vec![]; let mut binds = vec![];
         for (compact, items) in groups {
