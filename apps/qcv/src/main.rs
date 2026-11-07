@@ -44,6 +44,7 @@ struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
     scrub_last_req: Option<(i32, Instant)>,
+    last_tick: Instant,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, WindowId>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
     settings: min_settings::Settings,
@@ -157,6 +158,7 @@ impl App {
         }
     }
     fn tick(&mut self) {
+        self.last_tick = Instant::now();
         let Some(g) = self.gpu.as_mut() else { return };
         let now = Instant::now();
         let mut shown_new = false; let mut reopen = false;
@@ -671,7 +673,14 @@ impl ApplicationHandler for App {
         if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { self.add_and_load(&f, true); } }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
-        if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
+        if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); return } }
+        // THE HEARTBEAT: the app's tick runs from RedrawRequested, re-requested after each tick. On Windows that chain died at the
+        // first 6.7K open (2026-11-07: the stats stopped, no tick ran while input kept arriving — the whole UI froze until a drag
+        // or resize); winit's own idiom is to request the redraw from here. Wake at least every refresh and ask again if the last
+        // tick is older than one — a duplicate request coalesces, a dropped one no longer freezes the app.
+        let now = Instant::now();
+        if let Some(g) = self.gpu.as_ref() { if now.duration_since(self.last_tick) >= std::time::Duration::from_millis(16) { g.window.request_redraw(); } }
+        el.set_control_flow(ControlFlow::WaitUntil(now + std::time::Duration::from_millis(16)));
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
         // `QCV_TRACE_INPUT=1`: every pointer / focus event as the window layer delivers it (the Windows leave-and-return click report, 2026-11-07)
@@ -825,7 +834,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
