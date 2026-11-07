@@ -130,7 +130,7 @@ impl Engine {
     }
     /// An engine with no surface (tests, offscreen renders): the first high-performance adapter.
     pub fn headless(target_format: wgpu::TextureFormat) -> Result<Engine, Error> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = crate::presenter::Presenter::instance();   // DX12 on Windows (the hal the zero-copy import needs), the platform default elsewhere
         let (_, device, queue) = request(&instance, None)?;
         Ok(Engine::new(device, queue, target_format))
     }

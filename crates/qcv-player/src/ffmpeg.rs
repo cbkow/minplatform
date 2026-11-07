@@ -5,7 +5,7 @@ use crate::{hw::{HwDevice, HW_PIX_FMT}, Error};
 use ffmpeg_sys_next as ff;
 use min_present::{Chroma, ColorMeta, Frame, Matrix, NativeFrame, Pixels, Plane, PlanarLayout, Primaries, Range, Transfer};
 use qcv_timeline::Rate;
-use std::{ffi::CString, ptr, sync::Arc, time::Instant};
+use std::{ffi::CString, ptr, time::Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SeqOptions { pub rate: Rate, pub start_number: i64 }
@@ -154,13 +154,13 @@ impl Decoder {
         if format == HW_PIX_FMT && format != ff::AVPixelFormat::AV_PIX_FMT_NONE {
             let hwf = HwFrame(ff::av_frame_clone(self.frame));
             #[cfg(target_os = "macos")]
-            let native = { let handle = (*hwf.0).data[3] as *mut std::ffi::c_void; NativeFrame { handle, keep: Arc::new(hwf) } };
+            let native = { let handle = (*hwf.0).data[3] as *mut std::ffi::c_void; NativeFrame { handle, keep: std::sync::Arc::new(hwf) } };
             #[cfg(windows)]
             let native = {
                 let af = &*((*hwf.0).data[0] as *const crate::hw::AVD3D12VAFrame);
                 let handle = Box::new(min_present::Dx12FrameHandle { resource: af.texture, fence: af.sync_ctx.fence, fence_value: af.sync_ctx.fence_value });
                 let ptr = &*handle as *const _ as *mut std::ffi::c_void;
-                NativeFrame { handle: ptr, keep: Arc::new(Dx12Keep { _frame: hwf, handle }) }
+                NativeFrame { handle: ptr, keep: std::sync::Arc::new(Dx12Keep { _frame: hwf, handle }) }
             };
             #[cfg(not(any(target_os = "macos", windows)))]
             let native = { let _ = hwf; unreachable!() };

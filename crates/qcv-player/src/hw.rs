@@ -1,7 +1,7 @@
 //! The hardware decode device, shared by every decoder of a session: VideoToolbox on macOS (its own context), D3D12VA on
 //! Windows built ON the presenter's `ID3D12Device` so decoded resources need no sharing (S1 Windows).
 use ffmpeg_sys_next as ff;
-use std::{ffi::c_void, ptr, sync::Arc};
+use std::{ffi::c_void, sync::Arc};
 
 struct Inner(*mut ff::AVBufferRef);
 unsafe impl Send for Inner {}
@@ -24,8 +24,8 @@ impl HwDevice {
     /// macOS: a VideoToolbox device context.
     #[cfg(target_os = "macos")]
     pub fn platform(_presenter_device: Option<*mut c_void>) -> Option<HwDevice> {
-        let mut hwref: *mut ff::AVBufferRef = ptr::null_mut();
-        let r = unsafe { ff::av_hwdevice_ctx_create(&mut hwref, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, ptr::null(), ptr::null_mut(), 0) };
+        let mut hwref: *mut ff::AVBufferRef = std::ptr::null_mut();
+        let r = unsafe { ff::av_hwdevice_ctx_create(&mut hwref, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, std::ptr::null(), std::ptr::null_mut(), 0) };
         if r < 0 { log::warn!("VideoToolbox device context: {r}"); return None }
         Some(HwDevice(Arc::new(Inner(hwref))))
     }

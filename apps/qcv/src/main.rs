@@ -22,9 +22,9 @@ struct Opts { headless: Option<u32>, file: Option<String>, sw: bool, out: Output
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter }
 
 struct App {
-    o: Opts, gpu: Option<Gpu>, player: Option<Player>, hw: Option<HwDevice>, source_label: String,
+    o: Opts, gpu: Option<Gpu>, player: Option<Player>, hw: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
-    presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, decoded_in_window: u32, shown_in_window: u32,
+    presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, WindowId>, finished: bool, frames_presented: u64, edr_seen: f64,
 }
 
@@ -39,7 +39,7 @@ impl App {
                 p.refresh_ms = self.o.refresh_ms;
                 let i = p.info();
                 println!("opened {} — {} {}x{} {} fps ({} frames) {} {:?} {:?} {:?} {}-bit  decode {}  (open took {:.0} ms)", src.display(), i.codec, i.width, i.height, i.rate, i.frames, i.pix_fmt, i.meta.matrix, i.meta.transfer, i.meta.range, i.meta.bit_depth, if i.hw_active { "hw zero-copy" } else { "software + upload" }, t.elapsed().as_secs_f32() * 1000.0);
-                self.source_label = src.display(); self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
+                self.source_label = src.display(); self.source_path = path.to_string(); self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
                 g.window.set_title(&format!("qcv — {}", self.source_label));
             }
             Err(e) => println!("open {path}: {e}"),
@@ -48,16 +48,16 @@ impl App {
     fn tick(&mut self) {
         let Some(g) = self.gpu.as_mut() else { return };
         let now = Instant::now();
-        let mut shown_new = false;
+        let mut shown_new = false; let mut reopen = false;
         if let Some(p) = self.player.as_mut() {
             if let Some(d) = p.tick(now) {
                 match g.presenter.engine.show(&d.frame) {
                     Ok(()) => { shown_new = true; self.show_ms.push(g.presenter.engine.last_show_ms); self.shown_in_window += 1; }
-                    Err(e) => { println!("show: {e} — reopening in software"); self.o.sw = true; let path = p.info().codec.clone(); let _ = path; let src = self.source_label.clone(); let _ = src; }
+                    Err(e) => { println!("show: {e} — reopening in software"); reopen = true; }
                 }
             }
         }
-        if !shown_new && self.player.as_ref().map(|p| !p.started()).unwrap_or(false) { /* waiting for the first frame */ }
+        if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); self.open(&path); return }
         let presented = g.presenter.draw(|| g.window.pre_present_notify());
         if presented {
             self.frames_presented += 1;
@@ -72,7 +72,7 @@ impl App {
             let (lat_p95, dropped, late) = self.player.as_mut().map(|p| (pct(&mut p.stats.lateness_ms.clone(), 95.0), p.stats.dropped, p.stats.late)).unwrap_or((f32::NAN, 0, 0));
             println!("{:>5.1} s  shown {:>5.1} fps  show ms p50 {:.2} max {:.2}  present ms p50 {:.1} p95 {:.1} max {:.1}  lateness p95 {:.1}  dropped {dropped} late {late}  EDR now {:?}",
                 self.t0.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0), self.shown_in_window as f32 / dt, pct(&mut self.show_ms, 50.0), pct(&mut self.show_ms, 100.0), pct(&mut self.presents, 50.0), pct(&mut self.presents, 95.0), pct(&mut self.presents, 100.0), lat_p95, edr);
-            self.shown_in_window = 0; self.decoded_in_window = 0; self.show_ms.clear(); self.presents.clear(); self.last_report = now;
+            self.shown_in_window = 0; self.show_ms.clear(); self.presents.clear(); self.last_report = now;
         }
     }
     fn after_show(&mut self) {
@@ -189,7 +189,7 @@ fn main() {
     let o = Opts { headless: arg("--headless").and_then(|v| v.parse().ok()), file, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0) };
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
-    let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), decoded_in_window: 0, shown_in_window: 0, fetches: HashMap::new(), finished: false, frames_presented: 0, edr_seen: 0.0 };
+    let app = App { o, gpu: None, player: None, hw: None, source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), finished: false, frames_presented: 0, edr_seen: 0.0 };
     el.run_app(app).unwrap();
 }
 
@@ -202,7 +202,9 @@ fn run_headless(o: Opts) {
     let mut engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
     engine.set_display(DisplayMode { out: OutMode::Linear, white: o.white });
     if o.identity_chain { engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
-    let hw = if o.sw { None } else { HwDevice::platform(None) };
+    #[cfg(windows)] let dev = engine.dx12_device_raw();
+    #[cfg(not(windows))] let dev = None;
+    let hw = if o.sw { None } else { HwDevice::platform(dev) };
     println!("headless engine: zero-copy {} · decode {}", engine.zero_copy_available(), hw.as_ref().map(|h| h.name()).unwrap_or("software"));
     let src = Source::from_path(&file, None);
     let t = Instant::now();
