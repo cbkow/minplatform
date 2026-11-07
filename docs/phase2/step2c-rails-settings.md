@@ -132,3 +132,17 @@ follows). Meters: `AudioHooks::peak_levels` per source channel, 4-px bars, notic
 (scrolls). Owed: Aspect + Rotation pickers (the presenter applies neither SAR nor rotation yet), the Transfer picker
 (the colour stage), Copy path / Reveal (clipboard + OS reveal), hero thumbnail, Linked Projects / Playlist Contents.
 
+## Geometry in the presenter (2026-11-07 evening; d106e95) + the Range fix (5e4fa1d) + the quiet readouts (6ca5486)
+QCView's `effDim` (metal_player_renderer.mm) and `rotatedSrcUv` (d3d11_compositor.cpp) carried: the PAR widens the
+larger-pixel axis in STORED space (num > den → w × num / den, else h × den / num), then the display rotation swaps the
+dims for 90 / 270 and the vertex stage inverse-rotates the sampling uv — the fit, the media rect (stage 0's bounds mix),
+the hover thumbnail's anchor all see display-orientation dims. `U.pad0` became `rot`. Defaults are QCView's: Aspect
+Square (stored pixels untouched — QC-safe), Rotation Auto (the file's display matrix). The Inspector's Aspect (Square /
+"Detected n:d") and Rotation ("Auto (90°)" / 0° / 90° / 180° / 270°) chips drive `Engine::set_geometry`; the Display row
+shows what the viewport shows. Per clip in memory, reset at open; persistence waits for media items (row 141). Custom PAR
+(a scalar or W:H) waits for its two fields. Test: `geometry_rotates_the_picture_and_the_par_widens_the_fit`.
+Range (5e4fa1d): the override reached both decoders but the Metal zero-copy import trusted the CVPixelBuffer's range
+attachment over the frame's metadata — `ColorMeta.range_forced` now lets a forced override win (Auto still defers to the
+attachment, the better detector). A headless probe clicks Full and watches a pixel (0.148 → 0.185). The Inspector's chip
+rows wrap like QCView's Flow. The strip's readouts are quiet text with a hover fill (the user's call; QCView's are wells).
+
