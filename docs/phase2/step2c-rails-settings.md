@@ -110,3 +110,13 @@ Ctrl+Shift+O, Open / Save (the project crate), Ctrl+/ (the shortcuts sheet).
 The rail reopen tabs are overlays on the picture: shown while the pointer is in the window, faded out (160 ms) when
 it leaves or the window loses focus (the user: "I quite like them as overlays on the viewport, but not always").
 
+## The slow Windows close (found and fixed 2026-11-07 evening; 7256960 → 7a1222c)
+The user: "it takes a bit to close" on Windows (macOS 28 ms). The teardown was timed stage by stage: audio 4 ms,
+player 4 ms, waveform / thumbnails 0, gpu 17–21 ms, window 0 — and the log ENDED there: the next drop, the D3D12VA
+device context (`HwDevice`, built ON the presenter's `ID3D12Device`), was being released AFTER the presenter had let
+go of that device, and FFmpeg's `av_buffer_unref` → the context's uninit stalled on the dying device. The rule now:
+**the hw device context drops right after the player (its decoders hold hw frames) and BEFORE the presenter**, while
+the GPU device is alive. Result on rhombus: teardown 22 ms, the event loop returns 1 ms later, the process is gone
+~0.5 s after that (the launcher's own stamp costs most of that; DLL detach the rest) — the user: "much faster". The
+stage lines stay in the log under `close:`; the ordering is the fix, the timing the evidence.
+
