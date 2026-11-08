@@ -237,6 +237,7 @@ impl AgxPanel {
     }
     pub fn set_expanded(&mut self, e: bool) { self.f.expanded = e; }
     pub fn focused(&self) -> bool { self.peak.focused() }
+    pub fn width(&self) -> f64 { self.f.width() }
     pub fn dragging(&self) -> bool { self.sliders.iter().any(|s| s.dragging()) || self.f.sb.dragging() }
     pub fn sync(&mut self, c: &Chain, now: Instant) {
         self.chain = *c;

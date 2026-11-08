@@ -85,11 +85,8 @@ pub struct ColorDrawer {
 
 /// QCView's waveform HDR tops (nits).
 const PEAKS: [i32; 5] = [300, 600, 1000, 2000, 4000];
-const WAVEFORM_W: f64 = 460.0;
-const WF_MIN: f64 = 280.0;
+const WAVEFORM_W: f64 = 360.0;
 const COLLAPSED: f64 = 32.0;
-const PRESETS_W: f64 = 220.0;
-const LIST_W: f64 = 170.0;
 
 impl ColorDrawer {
     pub fn new(open: bool, height: f64) -> ColorDrawer {
@@ -214,47 +211,51 @@ impl ColorDrawer {
         let body = Rect::new(full.x0 + pad, self.header.y1, full.x1 - pad, bottom.y0 - t::SPACING_100 as f64 * scale);
         // Save as preset… under the presets list
         let (bw, bh) = self.save_as.measure(fonts, scale);
-        // the columns flow left to right at their widths; the waveform fills what is left (at least WF_MIN); past the drawer's
-        // width the row scrolls sideways (a trackpad swipe or Shift + wheel; a thin bar shows where)
-        self.body = body;
+        // THE LAYOUT (the user 2026-11-08: "make the waveform flush right … OCIO has a full width panel, but minColor doesn't"):
+        // the waveform is pinned to the right edge at WAVEFORM_W (or its 32-px strip); the colour controls fill everything to
+        // its left in both engines — the list columns share the spare width by weight, the Knee and AgX keep their widths.
+        // Only when the controls' minimums do not fit does their area scroll sideways (the waveform never moves).
         let ocio = self.view.as_ref().is_some_and(|v| v.stored.chain.is_ocio());
-        let mut x = body.x0 - self.hscroll;
-        let pw = PRESETS_W * scale;
-        self.presets.layout(Rect::new(x, body.y0, x + pw, body.y1 - bh - t::SPACING_100 as f64 * scale), scale);
-        self.save_as.rect = Rect::new(x, body.y1 - bh, x + bw, body.y1);
-        x += pw + gap;
-        if ocio {
-            self.ocfg.layout(Rect::new(x, body.y0, x + 130.0 * scale, body.y1), scale); x += 130.0 * scale + gap;
-            self.oinput.layout_with(fonts, Rect::new(x, body.y0, x + 210.0 * scale, body.y1), scale); x += 210.0 * scale + gap;
-            self.olook.layout(Rect::new(x, body.y0, x + 230.0 * scale, body.y1), scale); x += 230.0 * scale + gap;
-            // View: what is left beside the Knee and the waveform's minimum, never under 200
-            let wf_need = if self.wf_expanded { WF_MIN * scale } else { COLLAPSED * scale };
-            let vw = (body.x1 - x - gap - self.knee.width() * scale - gap - wf_need).max(200.0 * scale);
-            self.oview.layout(Rect::new(x, body.y0, x + vw, body.y1), scale); x += vw + gap;
-            x += self.knee.layout(fonts, x, body.y0, body.y1, scale) + gap;
-        } else {
-            for l in [&mut self.gamut, &mut self.transfer] { l.layout(Rect::new(x, body.y0, x + LIST_W * scale, body.y1), scale); x += LIST_W * scale + gap; }
-            x += self.knee.layout(fonts, x, body.y0, body.y1, scale) + gap;
-            x += self.agx.layout(fonts, x, body.y0, body.y1, scale) + gap;
-            // no Rendering column (the user 2026-11-08: "our rendering column isn't needed for mincolor anymore"): un-tone-mapped
-            // is the rendering, AgX is its own column; a chain carrying an OpenDRT look keeps rendering with it
-        }
-        // the waveform: a collapsible column like the Knee and AgX (the single caret), caption row with the scale chips
         let cap = t::COMPONENT_HEIGHT_75 as f64 * scale;
-        let ww = if self.wf_expanded { (body.x1 - x).clamp(WF_MIN * scale, WAVEFORM_W * scale) } else { COLLAPSED * scale };
-        self.wf_col = Rect::new(x, body.y0, x + ww, body.y1);
-        self.wf_card = Rect::new(x, body.y0 + cap, x + ww, body.y1);
-        self.content_w = x + ww - (body.x0 - self.hscroll);
+        let ww = if self.wf_expanded { WAVEFORM_W * scale } else { COLLAPSED * scale };
+        self.wf_col = Rect::new(body.x1 - ww, body.y0, body.x1, body.y1);
+        self.wf_card = Rect::new(body.x1 - ww, body.y0 + cap, body.x1, body.y1);
+        let area = Rect::new(body.x0, body.y0, (body.x1 - ww - gap).max(body.x0), body.y1);
+        self.body = area;
+        // (min width, weight): lists stretch, the control columns do not
+        enum Col { Presets, List(u8), Knee, Agx }
+        let cols: Vec<(Col, f64, f64)> = if ocio {
+            vec![(Col::Presets, 180.0, 1.0), (Col::List(0), 110.0, 0.5), (Col::List(1), 190.0, 1.2), (Col::List(2), 180.0, 1.0), (Col::List(3), 200.0, 1.6), (Col::Knee, self.knee.width(), 0.0)]
+        } else {
+            vec![(Col::Presets, 200.0, 1.0), (Col::List(4), 160.0, 1.0), (Col::List(5), 170.0, 1.0), (Col::Knee, self.knee.width(), 0.0), (Col::Agx, self.agx.width(), 0.0)]
+        };
+        let gaps = gap * (cols.len() as f64 - 1.0);
+        let min_sum: f64 = cols.iter().map(|c| c.1 * scale).sum::<f64>() + gaps;
+        let weight: f64 = cols.iter().map(|c| c.2).sum();
+        let extra = (area.width() - min_sum).max(0.0);
+        self.content_w = min_sum + extra;
+        let max = (self.content_w - area.width()).max(0.0);
+        if self.hscroll > max { self.hscroll = max; }
+        let mut x = area.x0 - self.hscroll;
+        for (c, min, w) in cols {
+            let cw = min * scale + if weight > 0.0 { extra * w / weight } else { 0.0 };
+            match c {
+                Col::Presets => { self.presets.layout(Rect::new(x, body.y0, x + cw, body.y1 - bh - t::SPACING_100 as f64 * scale), scale); self.save_as.rect = Rect::new(x, body.y1 - bh, x + bw, body.y1); }
+                Col::List(k) => { let r = Rect::new(x, body.y0, x + cw, body.y1); match k { 0 => self.ocfg.layout(r, scale), 1 => self.oinput.layout_with(fonts, r, scale), 2 => self.olook.layout(r, scale), 3 => self.oview.layout(r, scale), 4 => self.gamut.layout(r, scale), _ => self.transfer.layout(r, scale) } }
+                Col::Knee => { self.knee.layout(fonts, x, body.y0, body.y1, scale); }
+                Col::Agx => { self.agx.layout(fonts, x, body.y0, body.y1, scale); }
+            }
+            x += cw + gap;
+        }
+        // the waveform's caption row: the scale chips + the HDR top, right-aligned before its caret
         let b = t::ICON_SIZE_SMALL as f64 * scale + 4.0 * scale;
-        self.wf_collapse = Rect::new(x + ww - b, body.y0 + (cap - b) / 2.0, x + ww, body.y0 + (cap + b) / 2.0);
+        self.wf_collapse = Rect::new(body.x1 - b, body.y0 + (cap - b) / 2.0, body.x1, body.y0 + (cap + b) / 2.0);
         let ch = self.wf_scale.buttons[0].measure(fonts, scale).1;
         let mut cx = self.wf_collapse.x0 - t::SPACING_100 as f64 * scale;
         if self.wf_expanded && self.scope_hdr() { let (w, bh) = self.wf_peak.measure(fonts, scale); cx -= w; self.wf_peak.rect = Rect::new(cx, body.y0 + (cap - bh) / 2.0, cx + w, body.y0 + (cap + bh) / 2.0); cx -= t::SPACING_100 as f64 * scale; } else { self.wf_peak.rect = Rect::ZERO; }
         if self.wf_expanded { let w: f64 = self.wf_scale.buttons.iter().map(|b| b.measure(fonts, scale).0).sum::<f64>() + t::ACTION_GROUP_GAP_COMPACT as f64 * scale; cx -= w; self.wf_scale.layout(fonts, cx, body.y0 + (cap - ch) / 2.0, scale); } else { self.wf_scale.layout(fonts, -1e6, -1e6, scale); }
         let p = t::SPACING_100 as f64 * scale; let label_w = 34.0 * scale;
         self.wf_trace = if self.wf_expanded { Rect::new(self.wf_card.x0 + p + label_w, self.wf_card.y0 + p, self.wf_card.x1 - p, self.wf_card.y1 - p) } else { Rect::ZERO };
-        let max = (self.content_w - body.width()).max(0.0);
-        if self.hscroll > max { self.hscroll = max; }
     }
 
     fn edited(&self, f: impl FnOnce(&mut qcv_color::Chain)) -> Option<Cmd> {
@@ -281,9 +282,7 @@ impl ColorDrawer {
     /// The waveform to draw (window px, the scale, the HDR top) — None while the drawer or the card is hidden.
     pub fn scope(&self) -> Option<min_present::ScopeView> {
         if !self.open || !self.wf_expanded || self.rect.height() < self.height * self.scale * 0.98 || self.wf_trace.width() < 40.0 { return None }
-        // the trace stays inside the scrolled row's window
-        let r = self.wf_trace.intersect(Rect::new(self.body.x0, self.wf_trace.y0, self.body.x1, self.wf_trace.y1));
-        if r.width() < 8.0 { return None }
+        let r = self.wf_trace;
         Some(min_present::ScopeView { rect: [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32], hdr: self.scope_hdr(), peak_nits: self.wf_peak_nits, brightness: 1.0 })
     }
     fn set_aids(&mut self, a: ViewerAids) {
@@ -481,6 +480,7 @@ impl ColorDrawer {
             }
         }
         // the waveform card: caption + scale chips; the graticule under the presenter's trace
+        scene.pop_layer();
         if !self.wf_expanded {
             let bg = if self.wf_hover { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR };
             paint::rounded(scene, self.wf_card, t::CORNER_RADIUS_500 as f64 * s, bg);
@@ -510,7 +510,6 @@ impl ColorDrawer {
             let unit = fonts.layout(if self.scope_hdr() { "nits" } else { "%" }, Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
             min_ui::fonts::draw_layout(scene, &unit, Affine::translate((self.wf_card.x0 + t::SPACING_75 as f64 * s, self.wf_card.y1 - unit.height() as f64 - t::SPACING_75 as f64 * s)));
         }
-        scene.pop_layer();
         // the row's sideways position, when it overflows: a thin pill under the columns
         let max = (self.content_w - self.body.width()).max(0.0);
         if max > 0.5 {
