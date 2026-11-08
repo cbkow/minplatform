@@ -390,7 +390,8 @@ impl App {
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
         if let Some(u) = g.ui.as_mut() {
-            let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
+            // the bands repaint when the playhead moves (single: once its first frame landed; dual: the master's frame)
+            let frame = match &self.dual { Some(d) => Some((d.current_frame(), d.frame_count(), d.rate().as_f64())), None => self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64()))) };
             let key = frame.map(|(c, n, _)| (c, n));
             g.bar.sync(pb(&self.dual, &self.player), now);
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
