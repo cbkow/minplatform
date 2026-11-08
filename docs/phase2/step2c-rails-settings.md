@@ -270,3 +270,8 @@ Settings panel has.
   one probe). The inter codecs still take D3D12VA zero-copy (h264 1080p, HEVC10 PQ 4K). The windowed player runs the bridge live.
 - Owed: ProRes RAW stays software (QCView: GPU debayer not implemented); a LUID match when a machine has several GPUs; the
   6.7K ProRes clips from the NAS through the bridge on the user's walk.
+
+### Where this leaves the queue (2026-11-07 night)
+Canon §26 is the handoff: what runs, what is banked but not ruled (§18.6), the queue in the user's order (the Add Media
+section's owed pieces → the user's walk on both OSes → 2c image sequences → 2d MXF), and the recipes (the Windows bundle /
+build / probe loop, the harness flags, the fixture rule).
