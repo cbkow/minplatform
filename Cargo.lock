@@ -2895,6 +2895,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "ffmpeg-sys-next",
+ "half",
  "libc",
  "log",
  "min-ffmpeg",
