@@ -11,6 +11,10 @@
 //! commits, Esc dismisses — QCView's `commitEditedItemName` / `renameClickAway`). The Playlists header is always shown with
 //! its "+" (QCView's `createEmptyPlaylistAndRename`). DEVIATION: the menu's clip-chain entries (Input · Use Clip Chain of ·
 //! Reset Clip Chain) arrive with the colour chain (canon §18.6) — they would be inert here.
+//! THE LOADED PLAYLIST'S TREE (the user 2026-11-08: "go with the tree") — QCView's Inspector card "Playlist Contents" moved here:
+//! the loaded playlist's row opens into its clips, indented, each with its type glyph; the playing clip in the quiet selected
+//! grey (no blue); a click seeks to it (QCView `seekToPlaylistItem`); the clip count + canvas ride the playlist row in the
+//! subdued voice. A view only — reorder / trim / remove stay on the clip bar, Delete here still means the project's rows.
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{anim::{mix, Ramp}, paint, ActionButton, Tooltips, Event, FieldResponse, Family, Fonts, ImeEvent, KeyEvent, Menu, MenuItem, Section, TextButton, TextField, Variant};
@@ -22,11 +26,16 @@ use vello::Scene;
 pub enum Cmd { Load(String), Remove(Vec<String>), AddMedia, /// QCView `createPlaylistFromSelection`: the eligible ids in bin order
     CreatePlaylist(Vec<String>), /// QCView `createEmptyPlaylistAndRename`
     NewPlaylist, Rename(String, String), /// rows dragged out of the bin and released at (x, y) — the shell resolves the target
-    DropRows(Vec<String>, f64, f64) }
+    DropRows(Vec<String>, f64, f64), /// a clip row of the loaded playlist's tree: seek to the n-th clip (QCView `seekToPlaylistItem`)
+    SeekClip(usize) }
 
 struct Row { id: String, name: String, media_type: MediaType, rect: Rect, hovered: bool, hover: Ramp, failed: bool, /// QCView's `unsupported`: the codec has no decoder, or the load failed → the warning badge
     unsupported: bool }
 struct Group { label: &'static str, icon: &'static str, kind: MediaType, header: Rect, rows: Vec<Row> }
+/// The loaded playlist's contents as the shell reads them off the transport.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreeModel { pub playlist: String, pub clips: Vec<(String, MediaType)>, pub current: Option<usize>, pub info: String }
+struct Tree { model: TreeModel, rows: Vec<Rect>, hover: Option<usize> }
 
 pub struct ProjectPanel {
     pub section: Section,
@@ -42,6 +51,7 @@ pub struct ProjectPanel {
     /// a press on a row (id, x, y) that becomes a drag past the threshold; the drag: (ids in bin order, label, pointer)
     press: Option<(String, f64, f64)>, drag: Option<(Vec<String>, String, (f64, f64))>,
     tooltips: Tooltips, badge_rects: Vec<(String, Rect)>,
+    tree: Option<Tree>,
 }
 
 fn type_icon(t: MediaType) -> &'static str { match t { MediaType::Video => "video", MediaType::Audio => "music-notes", MediaType::Image => "image", MediaType::ImageSequence => "film-strip", MediaType::Playlist => "playlist", MediaType::DualPair => "frame-corners", MediaType::LiveStream => "broadcast" } }
@@ -50,7 +60,12 @@ fn section_label(t: MediaType) -> &'static str { match t { MediaType::Video => "
 const DOUBLE_CLICK_MS: u128 = 400;
 
 impl ProjectPanel {
-    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new("Media", true), add: TextButton::new("Add Media…", Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![] } }
+    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new("Media", true), add: TextButton::new("Add Media…", Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![], tree: None } }
+    /// The loaded playlist's tree (None = no playlist loaded); true when it changed.
+    pub fn set_tree(&mut self, m: Option<TreeModel>) -> bool {
+        if self.tree.as_ref().map(|t| &t.model) == m.as_ref() { return false }
+        self.tree = m.map(|model| Tree { model, rows: vec![], hover: None }); true
+    }
     /// Mirror the project when it changed (the manager's revision).
     pub fn sync(&mut self, pm: &ProjectManager, active_loaded_id: &str) -> bool {
         if pm.revision() == self.revision_seen && self.active == active_loaded_id { return false }
@@ -130,7 +145,14 @@ impl ProjectPanel {
             let gh = if g.kind == MediaType::Playlist { gh.max(t::COMPONENT_HEIGHT_75 as f64 * scale) } else { gh };
             g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + gap * 2.0;
             if g.kind == MediaType::Playlist { let b = t::COMPONENT_HEIGHT_75 as f64 * scale; self.new_playlist.rect = Rect::new(g.header.x1 - b, g.header.y0 + (gh - b) / 2.0, g.header.x1, g.header.y0 + (gh + b) / 2.0); }
-            for r in &mut g.rows { r.rect = Rect::new(x0 + pad / 2.0, cy, x1 - pad / 2.0, cy + row_h); cy += row_h + gap; }
+            for r in &mut g.rows {
+                r.rect = Rect::new(x0 + pad / 2.0, cy, x1 - pad / 2.0, cy + row_h); cy += row_h + gap;
+                // the loaded playlist opens into its clips, indented one step
+                if let Some(tr) = self.tree.as_mut().filter(|t| t.model.playlist == r.id) {
+                    let indent = t::SPACING_300 as f64 * scale;
+                    tr.rows = tr.model.clips.iter().map(|_| { let rr = Rect::new(x0 + pad / 2.0 + indent, cy, x1 - pad / 2.0, cy + row_h); cy += row_h + gap; rr }).collect();
+                }
+            }
             cy += pad / 2.0;
         }
         cy += t::RAIL_SECTION_GAP as f64 * scale - pad / 2.0;
@@ -201,6 +223,12 @@ impl ProjectPanel {
         // QCView's badge tooltip
         { let over = e.pos().filter(|_| !matches!(e, Event::Leave)).and_then(|(x, y)| self.badge_rects.iter().find(|(_, r)| r.contains(kurbo::Point::new(x, y)))).map(|(_, r)| (7u64, *r, "Can’t be played here: unsupported format or un-debayered camera raw"));
           if self.tooltips.hover(over, now) { dirty = true; } if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); } }
+        if let Some(tr) = self.tree.as_mut() {
+            let at = |x: f64, y: f64| tr.rows.iter().position(|r| r.contains(kurbo::Point::new(x, y)));
+            let h = match *e { Event::Leave => None, _ => e.pos().and_then(|(x, y)| at(x, y)) };
+            if h != tr.hover { tr.hover = h; dirty = true; }
+            if let Event::Down { x, y, button: min_ui::Button::Primary } = *e && let Some(i) = at(x, y) { cmds.push(Cmd::SeekClip(i)); return (cmds, true) }
+        }
         if let Event::Down { x, y, button: min_ui::Button::Primary } = *e {
             let hit = self.groups.iter().flat_map(|g| g.rows.iter()).find(|r| r.rect.contains(kurbo::Point::new(x, y))).map(|r| r.id.clone());
             if let Some(id) = hit {
@@ -257,15 +285,27 @@ impl ProjectPanel {
                 let x = r.rect.x0 + pad;
                 let mut right = r.rect.x1 - pad;
                 if r.unsupported { if let Some(g) = fonts.icon("warning", t::ICON_SIZE_SMALL * scale as f32, paint::color(t::NOTICE_VISUAL_COLOR)) { let gx = right - g.width() as f64; let gy = r.rect.y0 + (r.rect.height() - g.height() as f64) / 2.0; min_ui::fonts::draw_layout(scene, &g, kurbo::Affine::translate((gx, gy))); badges.push((r.id.clone(), Rect::new(gx, gy, right, gy + g.height() as f64))); right = gx - t::SPACING_75 as f64 * scale; } }
-                let avail = (right - x).max(20.0);
-                let weight = if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32;   // Spectrum 2 marks the current item with fill + weight, never an outline (a ring = keyboard focus)
-                let mut l = fonts.layout(&r.name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c));
-                if l.width() as f64 > avail {
-                    // ElideMiddle: keep the head and the tail
-                    let chars: Vec<char> = r.name.chars().collect(); let mut keep = chars.len();
-                    while keep > 2 { keep -= 1; let head = keep / 2; let tail = keep - head; let s: String = format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>()); l = fonts.layout(&s, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c)); if l.width() as f64 <= avail { break } }
+                // the loaded playlist's row: its clip count + canvas, subdued, at the right
+                let tree = self.tree.as_ref().filter(|tr| tr.model.playlist == r.id);
+                if let Some(tr) = tree {
+                    let il = fonts.layout(&tr.model.info, Family::Sans, t::RAIL_GROUP_HEADER_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_GROUP_HEADER_COLOR }));
+                    let ix = right - il.width() as f64; min_ui::fonts::draw_layout(scene, &il, kurbo::Affine::translate((ix, r.rect.y0 + (r.rect.height() - il.height() as f64) / 2.0))); right = ix - t::SPACING_200 as f64 * scale;
                 }
+                let weight = if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32;   // Spectrum 2 marks the current item with fill + weight, never an outline (a ring = keyboard focus)
+                let l = elided(fonts, &r.name, weight, c, (right - x).max(20.0), scale);
                 min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((x, r.rect.y0 + (r.rect.height() - l.height() as f64) / 2.0)));
+                // the clips: glyph + name, the playing one in the quiet selected grey (blue stays on the loaded row, canon row 162)
+                if let Some(tr) = tree {
+                    for (i, ((name, kind), rr)) in tr.model.clips.iter().zip(&tr.rows).enumerate() {
+                        let cur = tr.model.current == Some(i);
+                        let bg = if cur { t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT } else if tr.hover == Some(i) { t::HOVER_BACKGROUND_COLOR } else { t::HOVER_BACKGROUND_COLOR_IDLE };
+                        if bg.a > 0.0 { paint::rounded(scene, *rr, radius, bg); }
+                        let mut cx = rr.x0 + pad;
+                        if let Some(ic) = fonts.icon(type_icon(*kind), t::ICON_SIZE_SMALL * scale as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((cx, rr.y0 + (rr.height() - ic.height() as f64) / 2.0))); cx += t::ICON_SIZE_SMALL as f64 * scale + t::SPACING_75 as f64 * scale; }
+                        let cl = elided(fonts, name, if cur { t::FONT_WEIGHT_BOLD as f32 } else { t::FONT_WEIGHT_REGULAR as f32 }, if cur { t::GRAY_900 } else { t::RAIL_LABEL_COLOR }, (rr.x1 - pad - cx).max(20.0), scale);
+                        min_ui::fonts::draw_layout(scene, &cl, kurbo::Affine::translate((cx, rr.y0 + (rr.height() - cl.height() as f64) / 2.0)));
+                    }
+                }
             }
         }
             if let Some((_, f)) = self.editing.as_mut() { f.paint(scene, fonts, scale); }
@@ -365,4 +405,14 @@ mod tests {
         assert!(pp.begin_rename(&a, &mut f)); pp.key(&KeyEvent { key: min_ui::Key::Named(min_ui::Named::Backspace), text: None, shift: false, cmd: false }, &mut f);
         assert_eq!(pp.commit_rename(), None, "empty is refused (QCView renameMediaItem)");
     }
+}
+
+/// A row label elided in the middle (QCView's `Text.ElideMiddle`: keep the head and the tail).
+fn elided(fonts: &mut Fonts, name: &str, weight: f32, c: min_theme::Color, avail: f64, scale: f64) -> min_ui::fonts::TextLayout {
+    let mut l = fonts.layout(name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c));
+    if l.width() as f64 > avail {
+        let chars: Vec<char> = name.chars().collect(); let mut keep = chars.len();
+        while keep > 2 { keep -= 1; let head = keep / 2; let tail = keep - head; let s: String = format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>()); l = fonts.layout(&s, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c)); if l.width() as f64 <= avail { break } }
+    }
+    l
 }

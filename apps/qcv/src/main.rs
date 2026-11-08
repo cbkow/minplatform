@@ -347,6 +347,16 @@ impl App {
             if !chromeless {
                 let lc = g.left.content_rect();
                 if g.project_panel.sync(&self.project, &self.loaded_item) { g.ui_dirty = true; }
+                // the loaded playlist's tree: its non-gap clips, the playing one, the count + canvas
+                let tree = self.player.as_ref().filter(|p| p.is_playlist() && self.pl_editor.is_some()).map(|p| {
+                    let clips: Vec<&qcv_timeline::Clip> = p.timeline.tracks.first().map(|t| t.clips.iter().filter(|c| !c.is_gap).collect()).unwrap_or_default();
+                    let active = p.active_clip_index();
+                    let current = p.timeline.tracks.first().and_then(|t| t.clips.get(active)).filter(|c| !c.is_gap).and_then(|ac| clips.iter().position(|c| c.id == ac.id));
+                    let kind = |k: qcv_timeline::ClipMediaKind| match k { qcv_timeline::ClipMediaKind::ImageSequence => qcv_project::MediaType::ImageSequence, qcv_timeline::ClipMediaKind::Audio => qcv_project::MediaType::Audio, _ => qcv_project::MediaType::Video };
+                    let n = clips.len();
+                    project_panel::TreeModel { playlist: self.loaded_item.clone(), clips: clips.iter().map(|c| (c.name.clone(), kind(c.media_kind))).collect(), current, info: format!("{n} clip{} · {}×{}", if n == 1 { "" } else { "s" }, p.timeline.canvas_width, p.timeline.canvas_height) }
+                });
+                if g.project_panel.set_tree(tree) { g.ui_dirty = true; }
                 if let Some(id) = g.project_panel.pending_rename.take() { if g.project_panel.begin_rename(&id, &mut g.fonts) { set_ime(&**g.window, true); g.ui_dirty = true; } }
                 let ph = g.project_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
@@ -682,6 +692,8 @@ impl App {
     fn project_cmd(&mut self, c: project_panel::Cmd) {
         match c {
             project_panel::Cmd::Load(id) => self.load_item(&id),
+            // QCView `seekToPlaylistItem`: the n-th clip's start on the playlist timeline
+            project_panel::Cmd::SeekClip(i) => { if let Some(p) = self.player.as_mut() { let start = p.timeline.tracks.first().and_then(|t| t.clips.iter().filter(|c| !c.is_gap).nth(i)).map(|c| c.start); let fps = p.rate().as_f64(); if let Some(s) = start && fps > 0.0 { p.seek_to_time(s as f64 / fps); } } }
             project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let first_name = ids.first().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_default(); let n = self.project.remove_media_items(&ids); if n > 0 { self.toast_action(&if n == 1 { format!("Removed {first_name}") } else { format!("Removed {n} items") }, min_ui::ToastKind::Notice, "Undo", "undo-media-delete"); } if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::AddMedia => self.open_media_dialog(),
             // QCView createPlaylistFromSelection / createEmptyPlaylistAndRename: auto-named Playlist_NN at 24 fps 1920×1080, gap 0;
@@ -1254,6 +1266,12 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut panel = settings_panel::SettingsPanel::new(); panel.sync(&store, t0);
     let mut project = qcv_project::ProjectManager::new(); let mut pp = project_panel::ProjectPanel::new();
     let loaded = if let Some(p) = player.as_ref() { project.add_media_file(p.path()).0.unwrap_or_default() } else { String::new() };
+    // `QCV_UI_SNAP_TREE=1`: a playlist of three clips loaded, its tree open on the second (the snapshot of the Media tree)
+    let loaded = if std::env::var_os("QCV_UI_SNAP_TREE").is_some() {
+        let pid = project.create_playlist(&[], "Review_01", 24.0, 1920, 1080, 0, 0).0;
+        pp.set_tree(Some(project_panel::TreeModel { playlist: pid.clone(), clips: vec![("shot_010_v003.mov".into(), qcv_project::MediaType::Video), ("render_[1001-1048]".into(), qcv_project::MediaType::ImageSequence), ("shot_020_comp_v012_with_a_long_name.mov".into(), qcv_project::MediaType::Video)], current: Some(1), info: "3 clips · 1920×1080".into() }));
+        pid
+    } else { loaded };
     let _ = pp.sync(&project, &loaded);
     let mut bgp = background_panel::BackgroundPanel::new(); bgp.sync(2); engine.set_background(2); engine.set_ui_scale(scale as f32);
     let lc = left.content_rect(); let pph = pp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph + bh, scale); left.content_height = pph + bh + ph;

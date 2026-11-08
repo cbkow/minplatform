@@ -3,6 +3,9 @@ use parley::{Alignment, AlignmentOptions, FontContext, FontFamily, FontFamilyNam
 use peniko::{Blob, Brush, Color};
 use std::{borrow::Cow, sync::Arc};
 
+/// A shaped text layout as the panels hold it.
+pub type TextLayout = Layout<Brush>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family { Sans, Mono, Icon }
 
