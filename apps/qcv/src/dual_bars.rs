@@ -18,7 +18,7 @@ const DOUBLE_CLICK_MS: u128 = 400;
 const SNAP_PX: f64 = 8.0;
 pub const LANE: f64 = 12.0;
 /// The row label cell (logical px) — the scrubber's end inset, so frame 0 starts just past it.
-pub const LABEL_W: f64 = 16.0;
+pub const LABEL_W: f64 = 28.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LaneCmd {
@@ -150,7 +150,7 @@ impl DualBars {
             // the row's label cell in the scrubber's end inset: the side letter in its colour (as on the chips); the TARGET lane's
             // cell is filled (⌘K and the keys act there) — the walk 2026-11-08: neutral clips, labelled rows
             let cell = Rect::new(lane.x0, lane.y0, lane.x0 + LABEL_W * scale, lane.y1);
-            if self.target == side { paint::rect(scene, cell, t::HOVER_BACKGROUND_COLOR); }
+            if self.target == side { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, t::GRAY_300); }
             let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, (LANE - 3.0) as f32 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x0 + (cell.width() - l.width() as f64) / 2.0, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));
             for c in clips(tl, side) {

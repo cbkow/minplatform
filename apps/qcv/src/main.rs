@@ -621,7 +621,7 @@ impl App {
         if let (Some(d), Some(ed)) = (self.dual.as_mut(), g.presenter.engine.dual_mut()) {
             let t_tick = Instant::now();
             let u = d.tick(now);
-            if std::env::var_os("QCV_TRACE_DUAL").is_some() { let fa = d.side(qcv_player::Side::A).and_then(|t| t.current()).map(|h| h.frame_no); let fb = d.side(qcv_player::Side::B).and_then(|t| t.current()).map(|h| h.frame_no); println!("dual {:.1} ms: tick {:.2} ms master {} playing {} inflight {} | A {:?} {fa:?} | B {:?} {fb:?}", trace_ms(), t_tick.elapsed().as_secs_f64() * 1000.0, d.current_frame(), d.is_playing(), d.seek_in_flight(), u[0], u[1]); }
+            if std::env::var_os("QCV_TRACE_DUAL").is_some() { let fa = d.side(qcv_player::Side::A).and_then(|t| t.current()).map(|h| h.frame_no); let fb = d.side(qcv_player::Side::B).and_then(|t| t.current()).map(|h| h.frame_no); println!("dual {:.1} ms: tick {:.2} ms master {} playing {} inflight {} in {} out {} | A {:?} {fa:?} | B {:?} {fb:?}", trace_ms(), t_tick.elapsed().as_secs_f64() * 1000.0, d.current_frame(), d.is_playing(), d.seek_in_flight(), d.in_point(), d.out_point(), u[0], u[1]); }
             for (i, side) in [(0usize, qcv_player::Side::A), (1, qcv_player::Side::B)] {
                 let eng = if i == 0 { &mut ed.a } else { &mut ed.b };
                 match u[i] {
