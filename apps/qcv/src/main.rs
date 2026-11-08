@@ -28,6 +28,7 @@ mod hover_thumbs;
 mod settings;
 mod settings_panel;
 mod inspector_panel;
+mod os_actions;
 mod background_panel;
 mod compact_strip;
 mod project_panel;
@@ -343,7 +344,7 @@ impl App {
             // the window title: QCView's "clip — project" with a dot while unsaved
             { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("qcv — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("qcv — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
             g.settings_panel.sync(&self.settings, now);
-            if g.settings_panel.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
+            if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {
                 let lc = g.left.content_rect();
                 if g.project_panel.sync(&self.project, &self.loaded_item) { g.ui_dirty = true; }
@@ -428,7 +429,7 @@ impl App {
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
-                if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
+                if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
                 g.toast.paint(scene, &mut g.fonts, content, scale, now);
@@ -531,6 +532,10 @@ impl App {
                 for c in icmds { match c {
                     // QCView: the timeline retunes live (`TimelineController::setFrameRate`) and the item keeps the rate (`setImageSeqFrameRate`)
                     // QCView `setImageSeqLayer`: the cache reloads at the layer, the item keeps it
+                    // QCView copyTextToClipboard / revealInFileManager / openExternalPath
+                    inspector_panel::Cmd::Copy(text) => { match os_actions::copy(&text) { Ok(()) => g.toast.show("Copied to the clipboard", min_ui::ToastKind::Positive, now), Err(e) => g.toast.show(&format!("Couldn’t copy: {e}"), min_ui::ToastKind::Negative, now) } g.ui_dirty = true; }
+                    inspector_panel::Cmd::Reveal(p) => { if let Err(e) = os_actions::reveal(&p) { log::warn!("reveal: {e}"); } }
+                    inspector_panel::Cmd::Open(p) => { if let Err(e) = os_actions::open(&p) { log::warn!("open: {e}"); } }
                     inspector_panel::Cmd::Layer(l) => { if let Some(p) = self.player.as_mut() { p.set_sequence_layer(&l); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_sequence_layer(&id, &l); } g.ui_dirty = true; }
                     inspector_panel::Cmd::FrameRate(fps) => { if let Some(p) = self.player.as_mut() { p.set_sequence_rate(qcv_timeline::Rate::from_f64(fps)); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_frame_rate(&id, fps); } g.ui_dirty = true; }
                     // QCView `setImageSeqCacheStride`: the live cache + the item's session value

@@ -20,7 +20,8 @@ use vello::Scene;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { /// the image-sequence card's chips (QCView `ImageSequenceInspector`)
     FrameRate(f64), Stride(i32), /// an EXR layer tile
-    Layer(String), Range(RangeOverride), Transfer(TransferOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
+    Layer(String), /// the path actions (QCView's File card + Linked Projects): copy the text, reveal / open the path
+    Copy(String), Reveal(String), Open(String), Range(RangeOverride), Transfer(TransferOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
 
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
@@ -33,7 +34,11 @@ enum FieldKind { Par, Dar }
 struct Field { label: String, kind: FieldKind, field: TextField, suffix: String, rect: Rect }
 /// QCView's EXR layer grid: a tile per layer (the first frame at that layer + the name), two columns.
 struct Layers { names: Vec<String>, current: String, tiles: Vec<Rect>, aspect: f64, hover: Option<usize> }
-enum Item { Row(Row), Chips(Chips), Field(Field), Meters, Layers(Layers) }
+/// A row of quiet action buttons (QCView's FlatButtons under a path), each with what it does.
+struct Actions { buttons: Vec<(ActionButton, Cmd)> }
+enum Item { Row(Row), Chips(Chips), Field(Field), Meters, Layers(Layers), Actions(Actions), /// a small subdued caption (a link's app)
+    Caption(String), /// a full-width mono path, elided in the middle
+    PathLine(String) }
 /// `shown` = QCView's card visibility (the video cards hide for an image sequence; the sequence card shows only for one)
 struct Group { section: Section, items: Vec<Item>, rects: Vec<Rect>, shown: bool }
 /// QCView's preset rates ("the 8 SMPTE / broadcast standards cover ~95% of source material")
@@ -58,9 +63,14 @@ pub struct InspectorPanel {
     /// decoded off-thread per (frame, layer) (QCView's `image://thumb/<first>?layer=`)
     seq_layers: (Vec<String>, String, String), layer_thumbs: std::collections::HashMap<String, peniko::ImageBrush>,
     layer_rx: Option<std::sync::mpsc::Receiver<(String, String, Option<qcv_player::ThumbPixels>)>>,
+    tooltips: min_ui::Tooltips,
 }
 
-const LABEL_W: f64 = 96.0;   // QCView's labelColWidth (logical)
+const LABEL_W: f64 = 96.0;
+/// Quiet small buttons with icon + label; a disabled one carries why in its tooltip.
+fn actions(v: Vec<(&'static str, &str, bool, &str, Cmd)>) -> Item {
+    Item::Actions(Actions { buttons: v.into_iter().map(|(icon, label, on, why, cmd)| { let mut b = ActionButton::new(icon, if on { label } else { why }).size_s().enabled(on); b.label = Some(label.to_string()); (b, cmd) }).collect() })
+}   // QCView's labelColWidth (logical)
 
 /// QCView's `KvChipRow` is a Flow: the chips wrap. Here: on the label's line when they fit beside it, else on their own
 /// line(s) below it, each line a fused run (radius on the run's ends). Returns the item's height.
@@ -100,7 +110,7 @@ fn fmt_bitrate(bps: i64) -> String { if bps <= 0 { String::new() } else if bps >
 impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![], shown: true };
-        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
+        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
             range: RangeOverride::Auto, transfer: TransferOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
@@ -144,7 +154,7 @@ impl InspectorPanel {
         if seq.map(|s| s.0) != self.seq_shape { self.seq_shape = seq.map(|s| s.0); self.dirty_model = true; }
         if let Some((_, fill)) = seq && fill != self.seq_fill {
             self.seq_fill = fill;
-            if !self.dirty_model { if let Some(c) = p.decoder().as_sequence().map(|s| s.cache().config()) { for it in self.groups[6].items.iter_mut() { if let Item::Row(r) = it {
+            if !self.dirty_model { if let Some(c) = p.decoder().as_sequence().map(|s| s.cache().config()) { for it in self.groups[7].items.iter_mut() { if let Item::Row(r) = it {
                 if r.label == "Cache ahead" { r.value = format!("{} / {} frames", fill.0, c.read_ahead); dirty = true; }
                 if r.label == "Cache behind" { r.value = format!("{} / {} frames", fill.1, c.read_behind); dirty = true; }
             } } } }
@@ -171,12 +181,16 @@ impl InspectorPanel {
         let seq = p.decoder().as_sequence();
         let mut file = vec![row("Name", name, false), row("Folder", folder, false)];
         if let Some(b) = self.size_bytes { file.push(row("Size", fmt_bytes(b), true)); }
+        // QCView's File card actions: Copy path · Reveal (a sequence: its first frame; Reveal off when the file is not reachable)
+        let real = seq.map(|s| s.cache().frame_path(0)).unwrap_or_else(|| self.path.clone());
+        let reachable = std::path::Path::new(&real).exists();
         // a sequence's duration is its frames at the item's rate (the extractor reads one frame at FFmpeg's default 25)
         file.push(row("Duration", fmt_dur(if seq.is_some() { i.duration_secs } else { v.map(|m| m.duration).filter(|d| *d > 0.0).unwrap_or(i.duration_secs) }), true));
         if let Some(m) = v {
             if !m.container_format.is_empty() { file.push(row("Container", if m.mxf_operational_pattern.is_empty() { m.container_format.clone() } else { format!("{} · {}", m.container_format, m.mxf_operational_pattern) }, false)); }
             if !m.encoder_tool.is_empty() { file.push(row("Encoder", m.encoder_tool.clone(), false)); }
         }
+        file.push(actions(vec![("copy", "Copy path", true, "", Cmd::Copy(crate::os_actions::native(&real))), ("folder-simple", "Reveal", reachable, "Not reachable from this machine", Cmd::Reveal(real.clone()))]));   // the card's actions, last
         // ---- Video ----
         let (w, h) = v.map(|m| (m.width as u32, m.height as u32)).filter(|(w, _)| *w > 0).unwrap_or((i.width, i.height));
         let fps = v.map(|m| m.frame_rate).filter(|f| *f > 0.0).unwrap_or(i.rate().as_f64());
@@ -284,6 +298,18 @@ impl InspectorPanel {
             for (label, val) in [("Created", &am.qt_creation_date), ("Media Created", &am.qt_media_create_date)] { if !val.is_empty() { tc.push(row(label, val.clone(), false)); } }
         }
         tc.push(row("Drop frame", if i.drop_frame { "yes" } else { "no" }.to_string(), false));   // ours
+        // ---- Linked Projects (QCView's card: After Effects · Premiere (Mac) · Premiere (Windows); Open · Copy · Reveal; ours: Open /
+        // Reveal off with a tooltip when the path is not reachable from this machine — cross-OS mapping waits for its table) ----
+        let mut linked = vec![];
+        if let Some(am) = a {
+            for (label, path) in [("After Effects", &am.ae_project_path), ("Premiere (Mac)", &am.premiere_mac_path), ("Premiere (Windows)", &am.premiere_win_path)] {
+                if path.is_empty() { continue }
+                let there = std::path::Path::new(path.as_str()).exists();
+                linked.push(Item::Caption(label.into()));
+                linked.push(Item::PathLine(crate::os_actions::native(path)));
+                linked.push(actions(vec![("arrow-square-out", "Open", there, "Not reachable from this machine", Cmd::Open(path.clone())), ("copy", "Copy", true, "", Cmd::Copy(crate::os_actions::native(path))), ("folder-simple", "Reveal", there, "Not reachable from this machine", Cmd::Reveal(path.clone()))]));
+            }
+        }
         // ---- Image Sequence (QCView `ImageSequenceInspector`; the EXR layer list and Compression wait for piece 5) ----
         let mut sq = vec![];
         if let Some(s) = seq {
@@ -313,8 +339,8 @@ impl InspectorPanel {
         }
         // QCView: Video / Geometry / Color need `videoLoaded` (never for a sequence); Timecode needs a line; the sequence card needs a sequence
         let is_seq = seq.is_some();
-        for (gi, g) in self.groups.iter_mut().enumerate() { g.shown = match gi { 0 => true, 6 => is_seq, _ => !is_seq }; }
-        for (g, items) in self.groups.iter_mut().zip([file, video, geometry, color, audio, tc, sq]) { g.items = items; }
+        for (gi, g) in self.groups.iter_mut().enumerate() { g.shown = match gi { 0 => true, 6 => !linked.is_empty(), 7 => is_seq, _ => !is_seq }; }
+        for (g, items) in self.groups.iter_mut().zip([file, video, geometry, color, audio, tc, linked, sq]) { g.items = items; }
         for g in self.groups.iter_mut() { for it in g.items.iter_mut() { if let Item::Chips(c) = it { let sel = c.selected; for (j, b) in c.group.buttons.iter_mut().enumerate() { b.selected = j == sel; } } } }
     }
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
@@ -329,10 +355,16 @@ impl InspectorPanel {
             cy += pad / 2.0;
             for it in g.items.iter_mut() {
                 let h = match it {
-                    Item::Row(_) => row_h,
+                    Item::Row(_) | Item::PathLine(_) => row_h,
                     Item::Chips(c) => { let h = layout_chips(c, fonts, x0 + pad, x1 - pad, cy, scale); h + gap }
                     Item::Field(f) => { let fw = 90.0 * scale; let fh = t::FIELD_HEIGHT_S as f64 * scale; let sw = if f.suffix.is_empty() { 0.0 } else { fonts.layout(&f.suffix, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 + t::SPACING_75 as f64 * scale }; let x1f = x1 - pad - sw; f.rect = Rect::new(x1f - fw, cy + (row_h - fh) / 2.0, x1f, cy + (row_h + fh) / 2.0); f.field.layout(fonts, f.rect, scale); row_h }
                     Item::Meters => 6.0 * scale * self.channels.max(1) as f64 + gap,
+                    Item::Actions(a) => {
+                        let mut x = x0 + pad; let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * scale;
+                        for (b, _) in a.buttons.iter_mut() { let (w, _) = b.measure(fonts, scale); b.rect = Rect::new(x, cy, x + w, cy + bh); x += w + t::SPACING_100 as f64 * scale; }
+                        bh
+                    }
+                    Item::Caption(_) => t::RAIL_GROUP_HEADER_SIZE as f64 * scale * 1.5,
                     Item::Layers(l) => {
                         let (lx0, lx1) = (x0 + pad, x1 - pad); let tg = t::SPACING_100 as f64 * scale; let ip = t::SPACING_85 as f64 * scale;
                         let top = t::RAIL_GROUP_GAP as f64 * scale - gap;   // the caption is a sub-header: the group gap above it
@@ -388,6 +420,10 @@ impl InspectorPanel {
             if !g.shown { continue }
             let (_, d) = g.section.event(e, now); dirty |= d;
             if !g.section.expanded { continue }
+            for it in g.items.iter_mut() { if let Item::Actions(a) = it { for (b, c) in a.buttons.iter_mut() {
+                let r = b.event(e, now); if r != Response::None { dirty = true; }
+                if r == Response::Clicked && b.enabled { cmds.push(c.clone()); }
+            } } }
             for it in g.items.iter_mut() { if let Item::Layers(l) = it {
                 match *e {
                     Event::Move { x, y } => { let h = l.tiles.iter().position(|r| r.contains(kurbo::Point::new(x, y))); if h != l.hover { l.hover = h; dirty = true; } }
@@ -414,8 +450,17 @@ impl InspectorPanel {
                 for (j, b) in c.group.buttons.iter_mut().enumerate() { b.selected = j == c.selected; }
             } }
         }
+        // the action buttons' tooltips (a disabled one says why)
+        let over = e.pos().filter(|_| !matches!(e, Event::Leave)).and_then(|(x, y)| self.groups.iter().filter(|g| g.shown && g.section.expanded).flat_map(|g| g.items.iter()).find_map(|it| match it {
+            Item::Actions(a) => a.buttons.iter().enumerate().find(|(_, (b, _))| b.hit(x, y) && !b.enabled).map(|(i, (b, _))| (900 + i as u64, b.rect, b.tooltip.clone())), _ => None }));
+        if self.tooltips.hover(over.as_ref().map(|(i, r, s)| (*i, *r, s.as_str())), now) { dirty = true; }
+        if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
         (cmds, dirty)
     }
+    /// The tooltip clock (true = redraw).
+    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
+    /// Tooltips, over every panel.
+    pub fn paint_overlays(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }
     /// The harness: a chip's rect by its row label and index.
     pub fn chip_rect(&self, label: &str, i: usize) -> Option<Rect> { self.groups.iter().flat_map(|g| g.items.iter()).find_map(|it| match it { Item::Chips(c) if c.label == label => c.group.buttons.get(i).map(|b| b.rect), _ => None }) }
     pub fn animating(&self, now: Instant) -> bool { self.groups.iter().any(|g| g.section.animating(now) || g.items.iter().any(|it| matches!(it, Item::Chips(c) if c.group.animating(now)))) }
@@ -460,6 +505,21 @@ impl InspectorPanel {
                         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y0 + (r.height() - l.height() as f64) / 2.0)));
                         // the field paints its own well; the editor's `paint` wants &mut, so the panel's paint takes the item through a cell below
                         if !f.suffix.is_empty() { let sfx = fonts.layout(&f.suffix, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR)); min_ui::fonts::draw_layout(scene, &sfx, kurbo::Affine::translate((f.rect.x1 + t::SPACING_75 as f64 * scale, r.y0 + (r.height() - sfx.height() as f64) / 2.0))); }
+                    }
+                    Item::Actions(a) => { for (b, _) in &a.buttons { b.paint(scene, fonts, scale, now); } }
+                    Item::Caption(c) => {
+                        let l = fonts.layout(c, Family::Sans, t::RAIL_GROUP_HEADER_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR));
+                        min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y1 - l.height() as f64)));
+                    }
+                    Item::PathLine(pth) => {
+                        let (size, c) = (t::CODE_SIZE_S * scale as f32, paint::color(t::RAIL_LABEL_COLOR));
+                        let mut l = fonts.layout(pth, Family::Mono, size, t::FONT_WEIGHT_REGULAR as f32, c);
+                        if l.width() as f64 > r.width() {
+                            // QCView's ElideMiddle: the head (the volume) and the tail (the project's name) both stay
+                            let chars: Vec<char> = pth.chars().collect(); let mut keep = chars.len();
+                            while keep > 4 { keep -= 1; let head = keep / 3; let tail = keep - head; let s = format!("{}…{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>()); l = fonts.layout(&s, Family::Mono, size, t::FONT_WEIGHT_REGULAR as f32, c); if l.width() as f64 <= r.width() { break } }
+                        }
+                        min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y0 + (r.height() - l.height() as f64) / 2.0)));
                     }
                     Item::Layers(l) => {
                         let cap = fonts.detail("Layer", t::RAIL_GROUP_HEADER_SIZE * scale as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));

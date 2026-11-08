@@ -52,6 +52,9 @@ fn assign(out: &mut XmpFields, context: &[(String, String)], prefix: &str, key: 
     let set = |slot: &mut String| { if slot.is_empty() { *slot = val.into(); } };
     match (prefix, key) {
         ("aeProjectLink", "fullPath") => set(&mut out.ae_project_link_full_path),
+        // newer After Effects writes the link as a creatorAtom struct (`<creatorAtom:aeProjectLink creatorAtom:fullPath="…"/>`) —
+        // exiftool names both AeProjectLinkFullPath (found on a 2022 render: the reader had only the older namespace)
+        (_, "fullPath") if under("aeProjectLink") => set(&mut out.ae_project_link_full_path),
         (_, "uncProjectPath") if under("windowsAtom") => set(&mut out.windows_atom_unc_project_path),
         (_, "posixProjectPath") if under("macAtom") => set(&mut out.mac_atom_posix_project_path),
         (_, "timeValue") if under("startTimecode") => set(&mut out.start_timecode),
@@ -116,6 +119,8 @@ mod tests {
         assert_eq!(f.ae_project_link_full_path, "/Volumes/Jobs/x.aep"); assert_eq!(f.windows_atom_unc_project_path, r"\\srv\jobs\y.prproj"); assert_eq!(f.mac_atom_posix_project_path, "/Volumes/Jobs/y.prproj");
         assert_eq!(f.start_timecode, "01:00:00;00"); assert_eq!(f.alt_timecode, "00:59:58;00"); assert_eq!(f.create_date, "2026-11-01T10:00:00-07:00");
         let attr = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="r"><rdf:Description xmlns:aeProjectLink="a" aeProjectLink:fullPath="C:\p.aep"/></rdf:RDF></x:xmpmeta>"#;
+        let creator = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="r"><rdf:Description xmlns:creatorAtom="c"><creatorAtom:aeProjectLink creatorAtom:compositionID="230" creatorAtom:fullPath="/Volumes/Jobs/new.aep"/></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        assert_eq!(parse_xmp(creator).ae_project_link_full_path, "/Volumes/Jobs/new.aep", "the creatorAtom form newer After Effects writes");
         let premiere = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="r"><rdf:Description xmlns:xmpDM="d" xmlns:xmpMM="m" xmlns:creatorAtom="c">
 <xmpDM:startTimecode xmpDM:timeFormat="23976Timecode" xmpDM:timeValue="01:00:00:00"/>
 <xmpMM:Pantry><rdf:Bag><rdf:li><rdf:Description><xmpDM:startTimecode xmpDM:timeValue="05:00:00:00"/></rdf:Description></rdf:li></rdf:Bag></xmpMM:Pantry>
