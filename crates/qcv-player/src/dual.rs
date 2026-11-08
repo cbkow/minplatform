@@ -134,7 +134,10 @@ impl DualTransport {
         let f = frame.clamp(0, (self.frames - 1).max(0));
         self.timer.seek(f as f64 / self.fps);
         let fps = self.fps;
-        for t in self.sides.iter_mut().flatten() { let sf = side_frame(f, fps, t.rate().as_f64()); t.follow(sf); t.seek_to_frame(sf.clamp(0, (t.frame_count() - 1).max(0) as i64) as i32); }
+        let playing = self.timer.is_playing();
+        // a playing side's decoder resumes after the seek: one that hit its end (the wrap, a seek back from past it) has stopped
+        // (the single view's wrap restarts it the same way)
+        for t in self.sides.iter_mut().flatten() { let sf = side_frame(f, fps, t.rate().as_f64()); t.follow(sf); t.seek_to_frame_and_resume(sf.clamp(0, (t.frame_count() - 1).max(0) as i64) as i32, playing); }
         if self.timer.is_playing() { self.gate = Some((f, Instant::now())); }
     }
     pub fn seek_to_start(&mut self) { self.seek_to_frame(0) }
@@ -338,6 +341,39 @@ mod tests {
         let t0 = Instant::now(); while t0.elapsed() < Duration::from_millis(700) { d.tick(Instant::now()); let f = d.current_frame(); if f < last { wrapped = true; } last = f; seen.insert(f); std::thread::sleep(Duration::from_millis(4)); }
         assert!(wrapped, "the loop wrapped"); assert!(seen.contains(&8), "the out frame shows: {seen:?}"); assert!(seen.iter().all(|&f| (4..=8).contains(&f)), "{seen:?}");
         d.pause();
+        // the wrap at the END of the file: the decoder that reached EOF restarts (it froze on frame 0 before 2026-11-08)
+        d.clear_in_out_points(); d.seek_to_frame(20); settle(&mut d); d.play();
+        let t0 = Instant::now(); while t0.elapsed() < Duration::from_millis(500) { d.tick(Instant::now()); std::thread::sleep(Duration::from_millis(4)); }
+        let shown = d.side(Side::A).unwrap().current().unwrap().frame_no; let master = d.current_frame();
+        assert!(master >= 5 && master <= 12, "the master wrapped and runs: {master}");
+        assert!((shown as i32 - master).abs() <= 2, "A follows past the wrap: shows {shown} at master {master}");
+        d.pause();
         let _ = std::fs::remove_file(a);
+    }
+}
+
+#[cfg(test)]
+mod trace {
+    use super::*;
+    /// `QCV_DUAL_A=… QCV_DUAL_B=… cargo test -p qcv-player --lib dual_trace -- --ignored --nocapture`
+    #[test] #[ignore]
+    fn dual_trace() {
+        let (Ok(a), Ok(b)) = (std::env::var("QCV_DUAL_A"), std::env::var("QCV_DUAL_B")) else { return };
+        let mut d = DualTransport::open(Some(media_info(&a).unwrap()), Some(media_info(&b).unwrap()), TransportOptions::default()).unwrap();
+        let t0 = Instant::now();
+        let mut log = |d: &mut DualTransport, tag: &str| { let u = d.tick(Instant::now()); let fa = d.side(Side::A).and_then(|t| t.current()).map(|h| h.frame_no); let fb = d.side(Side::B).and_then(|t| t.current()).map(|h| h.frame_no);
+            println!("{:6.0} ms {tag} master {:4} playing {} gate {} | A {:?} {:?} inflight {} | B {:?} {:?} inflight {}", t0.elapsed().as_secs_f64() * 1000.0, d.current_frame(), d.is_playing(), d.gate.is_some(), u[0], fa, d.side(Side::A).unwrap().seek_in_flight(), u[1], fb, d.side(Side::B).unwrap().seek_in_flight()); };
+        for _ in 0..30 { log(&mut d, "open"); std::thread::sleep(Duration::from_millis(16)); }
+        d.play();
+        for _ in 0..120 { log(&mut d, "play"); std::thread::sleep(Duration::from_millis(16)); }
+        d.seek_to_frame(100);
+        for _ in 0..60 { log(&mut d, "seek"); std::thread::sleep(Duration::from_millis(16)); }
+        d.seek_to_frame(250);
+        for _ in 0..60 { log(&mut d, "seek past B"); std::thread::sleep(Duration::from_millis(16)); }
+        d.pause(); d.seek_to_frame(200); for _ in 0..20 { log(&mut d, "paused seek"); std::thread::sleep(Duration::from_millis(16)); }
+        d.begin_scrub(); for f in (100..200).step_by(5) { d.scrub_to_frame(f); log(&mut d, "scrub"); std::thread::sleep(Duration::from_millis(16)); } d.end_scrub();
+        for _ in 0..30 { log(&mut d, "after scrub"); std::thread::sleep(Duration::from_millis(16)); }
+        d.step_frames(1); for _ in 0..10 { log(&mut d, "step"); std::thread::sleep(Duration::from_millis(16)); }
+        d.seek_to_frame(280); d.play(); for _ in 0..90 { log(&mut d, "wrap"); std::thread::sleep(Duration::from_millis(16)); }
     }
 }
