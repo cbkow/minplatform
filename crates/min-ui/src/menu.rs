@@ -25,14 +25,7 @@ impl Menu {
     /// Open `items` with the menu's top-left at the pointer (flipped above / clamped inside `bounds` when there is no room).
     pub fn open_at(&mut self, items: Vec<MenuItem>, fonts: &mut Fonts, x: f64, y: f64, bounds: Rect, scale: f64) {
         self.items = items; self.scale = scale; self.hover = None; self.pressed = None;
-        let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64;
-        let w = self.items.iter().map(|it| match it {
-            MenuItem::Action { label, shortcut, .. } => {
-                let lw = fonts.layout(label, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 / scale;
-                let sw = if shortcut.is_empty() { 0.0 } else { fonts.layout(shortcut, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 / scale + t::SPACING_400 as f64 };
-                lw + sw + 2.0 * edge
-            }
-            MenuItem::Separator => 0.0 }).fold(t::MENU_MIN_WIDTH as f64, f64::max);
+        let w = self.items.iter().map(|it| match it { MenuItem::Action { label, shortcut, .. } => row_width(fonts, label, shortcut, false, false), MenuItem::Separator => 0.0 }).fold(t::MENU_MIN_WIDTH as f64, f64::max);
         let h: f64 = (0..self.items.len()).map(|i| self.row_h(i)).sum();
         self.popover.open_at_prefer(fonts, Rect::new(x, y, x, y), w, h, bounds, scale, Placement::Below);
     }
@@ -65,24 +58,69 @@ impl Menu {
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64) {
         if !self.popover.open { return }
         self.popover.paint(scene, fonts, scale);
-        let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64 * scale; let radius = t::PICKER_CORNER_RADIUS as f64 * scale;
         for (i, it) in self.items.iter().enumerate() {
             let r = self.item_rect(i);
             match it {
-                MenuItem::Separator => { let y = (r.y0 + r.y1) / 2.0; paint::rect(scene, Rect::new(r.x0 + edge / 2.0, y, r.x1 - edge / 2.0, y + scale.max(1.0)), t::DIVIDER_COLOR); }
-                MenuItem::Action { label, enabled, shortcut } => {
-                    if *enabled { if self.pressed == Some(i) { paint::rounded(scene, r, radius, t::MENU_ITEM_DOWN_COLOR); } else if self.hover == Some(i) { paint::rounded(scene, r, radius, t::MENU_ITEM_HOVER_COLOR); } }
-                    let c = if *enabled { t::MENU_ITEM_CONTENT_COLOR } else { t::DISABLED_CONTENT_COLOR };
-                    let l = fonts.layout(label, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
-                    crate::fonts::draw_layout(scene, &l, Affine::translate((r.x0 + edge, r.y0 + (r.height() - l.height() as f64) / 2.0)));
-                    if !shortcut.is_empty() {
-                        let s = fonts.layout(shortcut, Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
-                        crate::fonts::draw_layout(scene, &s, Affine::translate((r.x1 - edge - s.width() as f64, r.y0 + (r.height() - s.height() as f64) / 2.0)));
-                    }
-                }
+                MenuItem::Separator => paint_separator(scene, r, scale),
+                MenuItem::Action { label, enabled, shortcut } => paint_row(scene, fonts, r, &Row { label, shortcut, enabled: *enabled, hover: self.hover == Some(i), down: self.pressed == Some(i), checked: None, gutter: false, sub: false, underline: None }, scale),
             }
         }
     }
+}
+
+/// One row of a menu — the context menu's and the menu bar's popups share it (QCView's `ThemedMenuItem`): the rounded
+/// hover / down fill, the label at the edge (after a check gutter when the menu has checkable rows), the shortcut right-
+/// aligned in the disabled colour, a caret for a submenu, the mnemonic underlined while the keyboard drives the menu.
+pub(crate) struct Row<'a> { pub label: &'a str, pub shortcut: &'a str, pub enabled: bool, pub hover: bool, pub down: bool, pub checked: Option<bool>, pub gutter: bool, pub sub: bool, pub underline: Option<usize> }
+
+/// The check gutter (a checkable row's tick sits in it) and the caret column, logical px.
+pub(crate) fn gutter_width() -> f64 { t::ICON_SIZE_SMALL as f64 + t::SPACING_100 as f64 }
+
+/// A row's natural width in logical px.
+pub(crate) fn row_width(fonts: &mut Fonts, label: &str, shortcut: &str, gutter: bool, sub: bool) -> f64 {
+    let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64;
+    let lw = fonts.layout(label, Family::Sans, t::BODY_SIZE_M, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64;
+    let sw = if shortcut.is_empty() { 0.0 } else { fonts.layout(shortcut, Family::Sans, t::BODY_SIZE_M, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 + t::SPACING_400 as f64 };
+    lw + sw + 2.0 * edge + if gutter { gutter_width() } else { 0.0 } + if sub { gutter_width() } else { 0.0 }
+}
+
+pub(crate) fn paint_separator(scene: &mut Scene, r: Rect, scale: f64) {
+    let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64 * scale; let y = ((r.y0 + r.y1) / 2.0).floor();
+    paint::rect(scene, Rect::new(r.x0 + edge / 2.0, y, r.x1 - edge / 2.0, y + scale.max(1.0).floor()), t::DIVIDER_COLOR);
+}
+
+pub(crate) fn paint_row(scene: &mut Scene, fonts: &mut Fonts, r: Rect, row: &Row, scale: f64) {
+    let edge = t::MENU_ITEM_EDGE_TO_TEXT as f64 * scale; let radius = t::PICKER_CORNER_RADIUS as f64 * scale;
+    if row.enabled { if row.down { paint::rounded(scene, r, radius, t::MENU_ITEM_DOWN_COLOR); } else if row.hover { paint::rounded(scene, r, radius, t::MENU_ITEM_HOVER_COLOR); } }
+    let c = paint::color(if row.enabled { t::MENU_ITEM_CONTENT_COLOR } else { t::DISABLED_CONTENT_COLOR });
+    let size = t::BODY_SIZE_M * scale as f32; let icon = t::ICON_SIZE_SMALL * scale as f32;
+    let mut x = r.x0 + edge;
+    if row.gutter {
+        if row.checked == Some(true) { if let Some(g) = fonts.icon("check", icon, c) { crate::fonts::draw_layout(scene, &g, Affine::translate((x, r.y0 + (r.height() - g.height() as f64) / 2.0))); } }
+        x += gutter_width() * scale;
+    }
+    let l = fonts.layout(row.label, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, c);
+    let ty = r.y0 + (r.height() - l.height() as f64) / 2.0;
+    crate::fonts::draw_layout(scene, &l, Affine::translate((x, ty)));
+    if let Some(u) = row.underline { underline(scene, fonts, row.label, u, x, ty, &l, size, row.enabled, scale); }
+    let mut x1 = r.x1 - edge;
+    if row.sub {
+        if let Some(g) = fonts.icon("caret-right", icon, c) { crate::fonts::draw_layout(scene, &g, Affine::translate((x1 - g.width() as f64, r.y0 + (r.height() - g.height() as f64) / 2.0))); }
+        x1 -= gutter_width() * scale;
+    }
+    if !row.shortcut.is_empty() {
+        let s = fonts.layout(row.shortcut, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
+        crate::fonts::draw_layout(scene, &s, Affine::translate((x1 - s.width() as f64, r.y0 + (r.height() - s.height() as f64) / 2.0)));
+    }
+}
+
+/// Underline the `i`-th char of `text` (laid out at `x, y` as `l`): Windows' keyboard-cue mnemonic.
+pub(crate) fn underline(scene: &mut Scene, fonts: &mut Fonts, text: &str, i: usize, x: f64, y: f64, l: &crate::fonts::TextLayout, size: f32, enabled: bool, scale: f64) {
+    let (Some((b0, ch)), Some(line)) = (text.char_indices().nth(i), l.lines().next()) else { return };
+    let mut w = |s: &str| fonts.layout(s, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64;
+    let x0 = x + w(&text[..b0]); let cw = w(&text[b0..b0 + ch.len_utf8()]);
+    let base = y + line.metrics().baseline as f64 + scale.max(1.0);
+    paint::rect(scene, Rect::new(x0, base.round(), x0 + cw, base.round() + scale.max(1.0).floor()), if enabled { t::MENU_ITEM_CONTENT_COLOR } else { t::DISABLED_CONTENT_COLOR });
 }
 
 #[cfg(test)]

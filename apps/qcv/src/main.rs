@@ -52,7 +52,9 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_
     strip_hidden: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
-    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon }
+    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
+    /// QCView's in-window menu bar (Windows; row 194) + its About modal
+    menu_bar: Option<menu::InWindowMenu>, about: min_ui::Dialog }
 
 struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, hw_intra: Option<HwDevice>, source_label: String, source_path: String,
@@ -72,7 +74,11 @@ struct App {
     /// QCView's project (row 141): the media pool, the bins, the per-clip choices; `loaded_item` = the media id in the player.
     project: qcv_project::ProjectManager, loaded_item: String,
     /// the native menu bar (row 143)
-    menu: Option<menu::AppMenu>,
+    #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>,
+    /// Alt went down with nothing else since: its release alone focuses the in-window bar (Windows' Alt tap)
+    alt_clean: bool,
+    /// the in-window bar's choices, run from `about_to_wait` (Quit needs the event loop)
+    menu_queue: Vec<menu::Cmd>,
     /// single instance (row 143): what later launches forwarded
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 }
@@ -337,12 +343,15 @@ impl App {
             // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
             let rails_bottom = if g.compact { scrub_y } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
+            // QCView's in-window menu bar across the top (Windows); chromeless collapses it to zero, as QCView's `menuBar.height` did
+            let menu_h = if chromeless || g.menu_bar.is_none() { 0.0 } else { (t::MENU_BAR_HEIGHT as f64 * scale).round() };
+            if let Some(mb) = g.menu_bar.as_mut() { if chromeless { if mb.bar.cancel() { g.ui_dirty = true; } } mb.bar.layout(&mut g.fonts, 0.0, 0.0, w as f64, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale); if chromeless { mb.bar.rect = kurbo::Rect::ZERO; } }
             let (lw, rw) = if chromeless { (0.0, 0.0) } else {
-                g.left.layout(0.0, 0.0, rails_bottom, scale, now); g.right.layout(w as f64, 0.0, rails_bottom, scale, now);
+                g.left.layout(0.0, menu_h, rails_bottom, scale, now); g.right.layout(w as f64, menu_h, rails_bottom, scale, now);
                 (g.left.visible_width(now, scale), g.right.visible_width(now, scale))
             };
             if g.left.animating(now) || g.right.animating(now) || g.left.tick(now) || g.right.tick(now) { g.ui_dirty = true; }
-            let content = if g.fullscreen { (0, 0, w, h) } else { let x0 = lw.round() as u32; let x1 = (w as f64 - rw).round() as u32; (x0, 0, x1.saturating_sub(x0).max(1), (rails_bottom.round() as u32).max(1)) };
+            let content = if g.fullscreen { (0, 0, w, h) } else { let x0 = lw.round() as u32; let x1 = (w as f64 - rw).round() as u32; let y0 = menu_h as u32; (x0, y0, x1.saturating_sub(x0).max(1), ((rails_bottom - menu_h).round() as u32).max(1)) };
             if g.content_set != Some(content) { g.content_set = Some(content); g.presenter.engine.set_content_rect(Some(content)); g.ui_dirty = true; }
             // the panels: the settings mirror the store; the inspector mirrors the Transport (+ the metadata service's results, drained every tick)
             while let Some(ev) = self.meta.try_recv() {
@@ -434,6 +443,7 @@ impl App {
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
                     }
                 }
+                if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
                 if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); }
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
@@ -447,6 +457,8 @@ impl App {
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
                 g.toast.paint(scene, &mut g.fonts, content, scale, now);
+                if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint_menus(scene, &mut g.fonts, scale); }
+                if g.about.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.about.layout(&mut g.fonts, b, scale); g.about.paint(scene, &mut g.fonts, scale, b, now); }
                 g.ui_shown_frame = key; g.ui_dirty = false;
                 }
             }
@@ -481,6 +493,18 @@ impl App {
         if let Some((x, y)) = e.pos() { g.pointer = (x, y); } else { g.pointer = (-1.0, -1.0); }
         { let present = e.pos().is_some(); g.left.set_pointer_present(present, now); g.right.set_pointer_present(present, now); }
         let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
+        if matches!(e, min_ui::Event::Down { .. }) { self.alt_clean = false; }
+        // QCView's About modal takes everything while open
+        if g.about.open { let (b, _) = g.about.event(&e, now); match b { Some(0) => { let _ = os_actions::open("https://qcview.app/"); g.about.cancel(); } Some(_) => g.about.cancel(), None => {} } g.ui_dirty = true; return }
+        // QCView's in-window menu bar (row 194): an open menu takes everything (its click-eater), the strip its own presses;
+        // a band node's grab (a scrub released over the bar) is never the bar's
+        if !g.compact && !g.fullscreen && !(matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed())) {
+            if let Some(mb) = g.menu_bar.as_mut() {
+                let (id, d, consumed) = mb.bar.event(&e, &mut g.fonts); if d { g.ui_dirty = true; }
+                if let Some(c) = id.and_then(|i| mb.cmd(i)) { self.menu_queue.push(c); }
+                if consumed { if g.cursor != winit::cursor::CursorIcon::Default { g.cursor = winit::cursor::CursorIcon::Default; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); } return }
+            }
+        }
         if g.compact {
             let (cmds, dirty, consumed) = g.compact_strip.event(&e, now); if dirty { g.ui_dirty = true; }
             let want = if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) && !consumed { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
@@ -743,6 +767,34 @@ impl App {
     }
     /// Compact mode (QCView's `toggleCompact` / `exitCompact`): the window drops its title bar, every rail and band goes, one
     /// 32-px strip stays; fullscreen is left first (QCView refuses the window-style change while fullscreen).
+    /// A key → the in-window bar's view of it (None = not the bar's). Tracks Windows' Alt tap: Alt down and up with nothing
+    /// between. Letters come from the physical key (Alt+F on any layout's F position, as Qt's mnemonics on Windows).
+    fn bar_key(&mut self, event: &winit::event::KeyEvent, pressed: bool) -> Option<min_ui::BarKey> {
+        use winit::keyboard::PhysicalKey;
+        let active = self.gpu.as_ref().and_then(|g| g.menu_bar.as_ref()).is_some_and(|m| m.bar.is_active());
+        self.gpu.as_ref()?.menu_bar.as_ref()?;
+        if matches!(event.logical_key, Key::Named(NamedKey::Alt)) {
+            if pressed { if !event.repeat { self.alt_clean = true; } return None }
+            let tap = std::mem::take(&mut self.alt_clean); return if tap && !self.mods.ctrl && !self.mods.shift { Some(min_ui::BarKey::AltTap) } else { None };
+        }
+        if !pressed { return None }
+        self.alt_clean = false;
+        if matches!(event.logical_key, Key::Named(NamedKey::F10)) && !self.mods.ctrl && !self.mods.shift { return Some(min_ui::BarKey::F10) }
+        let letter = match event.physical_key { PhysicalKey::Code(c) => { let n = format!("{c:?}"); n.strip_prefix("Key").filter(|l| l.len() == 1).and_then(|l| l.chars().next()).map(|ch| ch.to_ascii_lowercase()) } _ => None };
+        if self.mods.alt && !self.mods.ctrl { if let Some(ch) = letter { return Some(min_ui::BarKey::Alt(ch)) } }
+        if !active { return None }
+        Some(match &event.logical_key {
+            Key::Named(NamedKey::Escape) => min_ui::BarKey::Named(min_ui::Named::Escape),
+            Key::Named(NamedKey::Enter) => min_ui::BarKey::Named(min_ui::Named::Enter),
+            Key::Named(NamedKey::ArrowUp) => min_ui::BarKey::Named(min_ui::Named::Up),
+            Key::Named(NamedKey::ArrowDown) => min_ui::BarKey::Named(min_ui::Named::Down),
+            Key::Named(NamedKey::ArrowLeft) => min_ui::BarKey::Named(min_ui::Named::Left),
+            Key::Named(NamedKey::ArrowRight) => min_ui::BarKey::Named(min_ui::Named::Right),
+            Key::Character(c) if c == " " => min_ui::BarKey::Space,
+            Key::Named(NamedKey::Tab) => min_ui::BarKey::Named(min_ui::Named::Tab),
+            _ => match letter { Some(ch) => min_ui::BarKey::Char(ch), None => min_ui::BarKey::Other },   // anything else: swallowed while the bar holds the keyboard
+        })
+    }
     /// A menu command (QCView's `onTriggered`s); the keys that share them call the same functions.
     fn menu_cmd(&mut self, c: menu::Cmd, el: &dyn ActiveEventLoop) {
         use menu::Cmd as M;
@@ -782,6 +834,8 @@ impl App {
             M::Settings => self.reveal(Reveal::Settings),
             M::CopyProjectLink => self.copy_project_link(),
             M::Docs => { let _ = os_actions::open("https://qcview.app/"); }
+            // QCView's own About modal (Windows; macOS shows the platform panel from the app menu)
+            M::About => { if let Some(g) = self.gpu.as_mut() { if let Some(mb) = g.menu_bar.as_mut() { mb.bar.cancel(); } g.about.show(); } }
         }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
@@ -1059,14 +1113,13 @@ impl ApplicationHandler for App {
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
+            about: min_ui::Dialog::new("QCView", &format!("Version {}\n\nColor-accurate review player.", env!("CARGO_PKG_VERSION")), vec![("Docs", min_ui::Variant::Secondary), ("Close", min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
-        // the native menu bar (QCView's MenuBar, row 143): the app's menu on macOS, the window's on Windows
-        let m = menu::AppMenu::new();
-        #[cfg(target_os = "macos")] { m.menu.init_for_nsapp(); }
-        #[cfg(windows)] { use raw_window_handle::{HasWindowHandle, RawWindowHandle}; if let Some(g) = self.gpu.as_ref() && let Ok(h) = g.window.window_handle() && let RawWindowHandle::Win32(w) = h.as_raw() { unsafe { let _ = m.menu.init_for_hwnd(w.hwnd.get()); } } }
-        self.menu = Some(m);
+        // the menu bar (QCView's MenuBar, row 143): the app's native menu on macOS; QCView's in-window bar on Windows (row 194)
+        #[cfg(target_os = "macos")] { let m = menu::AppMenu::new(); m.menu.init_for_nsapp(); self.menu = Some(m); }
+        if menu::InWindowMenu::wanted() { if let Some(g) = self.gpu.as_mut() { g.menu_bar = Some(menu::InWindowMenu::new(&mut g.fonts)); } }
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { let paths = if self.o.files.is_empty() { vec![f.clone()] } else { self.o.files.clone() }; let mut first = true; for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } } } }
     }
@@ -1080,12 +1133,14 @@ impl ApplicationHandler for App {
         let forwarded: Vec<Vec<String>> = self.single_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
         for args in forwarded { self.open_forwarded(args); }
         // the menu bar: its commands, then its live parts (the Recent submenus, the two checkmarks)
-        while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c, el); } }
-        if let Some(m) = self.menu.as_mut() {
-            let list = |k| self.settings.string(k).lines().filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>();
-            m.set_recents(&list(settings::k::RECENT_MEDIA), &list(settings::k::RECENT_PROJECTS));
-            if let Some(g) = self.gpu.as_ref() { m.set_checks(g.compact, g.pinned); }
+        for c in std::mem::take(&mut self.menu_queue) { self.menu_cmd(c, el); }
+        let list = |k| self.settings.string(k).lines().filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>();
+        let (rm, rp) = (list(settings::k::RECENT_MEDIA), list(settings::k::RECENT_PROJECTS));
+        #[cfg(target_os = "macos")] {
+            while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c, el); } }
+            if let Some(m) = self.menu.as_mut() { m.set_recents(&rm, &rp); if let Some(g) = self.gpu.as_ref() { m.set_checks(g.compact, g.pinned); } }
         }
+        if let Some(g) = self.gpu.as_mut() { let (c, p) = (g.compact, g.pinned); if let Some(mb) = g.menu_bar.as_mut() { mb.update(&rm, &rp, c, p, &mut g.fonts); g.ui_dirty = true; } }
         let now = Instant::now();
         if let Some(g) = self.gpu.as_ref() { if now.duration_since(self.last_tick) >= std::time::Duration::from_millis(16) { g.window.request_redraw(); } }
         el.set_control_flow(ControlFlow::WaitUntil(now + std::time::Duration::from_millis(16)));
@@ -1101,7 +1156,9 @@ impl ApplicationHandler for App {
                 if let Some(g) = self.gpu.as_mut() {
                     let now = Instant::now();
                     if !f {
+                        self.alt_clean = false;
                         if g.strip.is_open() { g.strip.close(); }
+                        if let Some(mb) = g.menu_bar.as_mut() { mb.bar.cancel(); }   // a menu never outlives the window's focus (Qt closes its popups)
                         // the window lost focus: every typed field commits (QCView's editingFinished)
                         pending = g.settings_panel.blur(&mut self.settings);
                         if let Some(c) = g.project_panel.commit_rename() { pending_pp.push(c); } set_ime(&**g.window, false);
@@ -1118,6 +1175,17 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                // QCView's About modal: Escape / Enter close it; it takes every key while open
+                if let Some(g) = self.gpu.as_mut() { if g.about.open { if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) { g.about.cancel(); g.ui_dirty = true; } return } }
+                // the in-window menu bar's keys (Windows' rules, row 194): Alt tapped alone / F10 focus it, Alt+letter opens a menu,
+                // and while it is active the arrows / Enter / Space / Escape / letters are its
+                if let Some(k) = self.bar_key(&event, pressed) {
+                    if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { if let Some(mb) = g.menu_bar.as_mut() {
+                        let (id, d, consumed) = mb.bar.key(&k, &mut g.fonts); if d { g.ui_dirty = true; }
+                        if let Some(c) = id.and_then(|i| mb.cmd(i)) { self.menu_queue.push(c); }
+                        if consumed { return }
+                    } } }
+                }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if g.clip_popover.is_open() {
                     let k = to_key_event(&event, self.mods);
                     let c = g.clip_popover.key(&k, &mut g.fonts); g.ui_dirty = true;
@@ -1300,7 +1368,7 @@ fn main() {
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { single_rx, menu: None, unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -1406,8 +1474,21 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut left = min_ui::Rail::new(min_ui::Side::Left, 280.0, false); left.settle();
     let mut right = min_ui::Rail::new(min_ui::Side::Right, 320.0, false); right.settle();
     let rails_bottom = bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale;
-    left.layout(0.0, 0.0, rails_bottom, scale, t0); right.layout(w as f64, 0.0, rails_bottom, scale, t0);
-    engine.set_content_rect(Some((left.visible_width(t0, scale) as u32, 0, (w as f64 - left.visible_width(t0, scale) - right.visible_width(t0, scale)) as u32, rails_bottom as u32)));
+    // `QCV_UI_SNAP_MENU=1`: the in-window menu bar (row 194) on top, File open, the Recent Media submenu cascaded
+    let mut menu_bar = std::env::var_os("QCV_UI_SNAP_MENU").map(|_| menu::InWindowMenu::new(&mut fonts));
+    let menu_h = if menu_bar.is_some() { (t::MENU_BAR_HEIGHT as f64 * scale).round() } else { 0.0 };
+    left.layout(0.0, menu_h, rails_bottom, scale, t0); right.layout(w as f64, menu_h, rails_bottom, scale, t0);
+    engine.set_content_rect(Some((left.visible_width(t0, scale) as u32, menu_h as u32, (w as f64 - left.visible_width(t0, scale) - right.visible_width(t0, scale)) as u32, (rails_bottom - menu_h) as u32)));
+    if let Some(mb) = menu_bar.as_mut() {
+        mb.update(&["/media/review_v003.mov".into(), "/media/plate_0001.exr".into()], &["/projects/review.qcvproj".into()], false, true, &mut fonts);
+        mb.bar.layout(&mut fonts, 0.0, 0.0, w as f64, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
+        let r = mb.bar.rect; let x = r.x0 + 30.0 * scale;   // the File title
+        mb.bar.event(&min_ui::Event::Down { x, y: r.center().y, button: min_ui::Button::Primary }, &mut fonts);
+        mb.bar.event(&min_ui::Event::Up { x, y: r.center().y, button: min_ui::Button::Primary }, &mut fonts);
+        // the sixth row (Open Recent Media): rows are 32 px under the popover's padding
+        let y = r.y1 + (t::POPOVER_PADDING as f64 + 5.5 * t::MENU_ITEM_HEIGHT as f64) * scale;
+        mb.bar.event(&min_ui::Event::Move { x: x + 40.0 * scale, y }, &mut fonts);
+    }
     let mut panel = settings_panel::SettingsPanel::new(); panel.sync(&store, t0);
     let mut project = qcv_project::ProjectManager::new(); let mut pp = project_panel::ProjectPanel::new();
     let loaded = if let Some(p) = player.as_ref() { project.add_media_file(p.path()).0.unwrap_or_default() } else { String::new() };
@@ -1517,6 +1598,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         panel.tick(shown_at); panel.paint_overlays(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
+        if let Some(mb) = menu_bar.as_ref() { mb.bar.paint(scene, &mut fonts, scale); mb.bar.paint_menus(scene, &mut fonts, scale); }
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
         if let Some(ms) = ui.render(&engine.device, &engine.queue) { render_ms.push(ms); }
         let _ = engine.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });

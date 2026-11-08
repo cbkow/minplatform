@@ -26,8 +26,6 @@ min-paths = { path = "../../crates/min-paths" }
 winit31 = { workspace = true }
 wgpu = { workspace = true }
 raw-window-handle = { workspace = true }
-# the native menu bar (canon row 143 / §21.1's note): NSMenu on macOS, a Win32 menu on Windows, one definition
-muda = { version = "0.21", default-features = false }
 # single instance (row 143): a per-user local socket (Unix socket / Windows named pipe)
 interprocess = "2.4"
 serde_json = { workspace = true }
@@ -38,6 +36,8 @@ env_logger = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# the native menu bar (row 143); Windows draws QCView's in-window bar instead (row 194)
+muda = { version = "0.21", default-features = false }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSString", "NSUserDefaults"] }
 objc2-app-kit = { workspace = true, features = ["NSMenu", "NSMenuItem", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
