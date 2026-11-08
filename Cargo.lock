@@ -2978,6 +2978,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "peniko",
  "png 0.17.16",
+ "qcv-color",
  "qcv-meta",
  "qcv-player",
  "qcv-project",

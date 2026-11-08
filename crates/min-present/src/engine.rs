@@ -477,7 +477,21 @@ impl Engine {
         }
     }
     /// Render the shown frame 1:1 at the video size into an `Rgba16Float` texture and read it back (RGBA f32).
-    pub fn snapshot(&self, which: Snapshot) -> Result<(Vec<f32>, u32, u32), Error> {
+    pub fn snapshot(&mut self, which: Snapshot) -> Result<(Vec<f32>, u32, u32), Error> {
+        // with a chain bound, the display snapshot is the chain's output 1:1 (stage 1 → the slot), read straight from the
+        // working texture: on the linear surface the screen pass adds only the fit (and, later, the viewer aids)
+        if matches!(which, Snapshot::Display) && self.color_pass.is_some() {
+            let variant = self.shown.as_ref().ok_or(Error::NoFrame)?.variant;
+            self.ensure_inter();
+            let mut enc = self.device.create_command_encoder(&Default::default());
+            { let shown = self.shown.as_ref().unwrap(); let av = self.inter.as_ref().unwrap().a.create_view(&Default::default());
+              let mut p = pass(&mut enc, "snapshot stage 1", &av); p.set_pipeline(self.inter_pipeline(variant)); p.set_bind_group(0, &shown.binds[1], &[]); p.draw(0..6, 0..1); }
+            let Inter { a, b, .. } = self.inter.as_ref().unwrap();
+            self.color_pass.as_mut().unwrap().run(&mut enc, a, b);
+            self.queue.submit([enc.finish()]);
+            let (w, h) = self.video;
+            return Ok((readback::read_rgba16f(&self.device, &self.queue, &self.inter.as_ref().unwrap().b, w, h), w, h));
+        }
         let shown = self.shown.as_ref().ok_or(Error::NoFrame)?;
         let (w, h) = self.video;
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("snapshot"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
