@@ -160,6 +160,9 @@ pub struct Transport {
     /// user intent, captured BEFORE the decoder flips — the loop wrap reads it to decide on the auto-resume
     user_wants_playback: bool,
     fast: Option<FastSeek>, modal_active: bool, modal_was_playing: bool, scrubbing: Option<bool>,
+    /// a single video's scrub target (timeline frame): the clock moves once, on release (QCView's single-media scrub)
+    scrub_pos: Option<i64>, /// the skim audio's drag velocity (QCView `scrubAudioMove`): (started, last ms, last s, EMA), and whether it runs
+    skim: Option<(Instant, f64, f64, f64)>,
     /// a seek in flight on the active slot: (target SOURCE frame, the decoder's seek + publish counters when issued, issued at)
     seek_gate: Option<(i32, u32, u64, Instant)>,
     playlist_active: bool, pending_playlist_seek: Option<(f64, Instant)>, resume_after_playlist_seek: bool,
@@ -211,7 +214,7 @@ impl Transport {
         Transport { timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts, range_override: crate::RangeOverride::Auto,
             slots: vec![], active: 0, prewarm: None, pending: None, edit_scrub: false, rate, frames, fps,
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
-            fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, seek_gate: None,
+            fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, scrub_pos: None, skim: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
             stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false, trace_play: None, trace_n: 0 }
     }
@@ -269,7 +272,7 @@ impl Transport {
     /// played through to the end, not looping (QCView: "play stops at the end")
     pub fn at_end(&self) -> bool { !self.loop_enabled && self.timer.duration() > 0.0 && self.timer.position() >= self.timer.duration() && !self.timer.is_playing() }
     /// the TIMELINE frame under the playhead (`currentFrameUnified`)
-    pub fn current_frame(&self) -> i32 { self.timer.current_frame().clamp(0, (self.frames - 1).max(0)) }
+    pub fn current_frame(&self) -> i32 { self.scrub_pos.map(|f| f as i32).unwrap_or_else(|| self.timer.current_frame()).clamp(0, (self.frames - 1).max(0)) }
     pub fn review_speed(&self) -> f64 { self.review_speed }
     pub fn loop_enabled(&self) -> bool { self.loop_enabled }
     /// QCView's per-clip Range override (Inspector ▸ Color ▸ Range: Auto / Full / Limited) on the active clip's stream and scrub decoders.
@@ -458,6 +461,26 @@ impl Transport {
         self.slots[self.active].decoder.pause();
         self.scrubbing = Some(was_playing);
     }
+    /// The clock moves per scrub move only where QCView moves it (playlists `scrubToTimelineFrame`, image sequences `commitTime`);
+    /// a single video's drag drives the scrub decoder alone and seeks the timer once, on release.
+    fn scrub_moves_clock(&self) -> bool { self.playlist_active || self.slots[self.active].decoder.as_sequence().is_some() }
+    /// QCView `beginScrubAudio` / `scrubAudioMove`: the shuttle grain engine at the drag's velocity — signed source-seconds per
+    /// wall second, clamped to ±32, EMA-smoothed with a dt-scaled alpha (τ = 40 ms). Speed 0 at the press: the engine's hold
+    /// detection keeps it silent until the drag moves. Image sequences and clips without audio have none.
+    fn skim_audio(&mut self, tl: i64) {
+        if self.fps <= 0.0 || self.slots[self.active].decoder.as_sequence().is_some() || !self.audio.has_audio() { return }
+        let sec = tl as f64 / self.fps;
+        let (path, src) = self.audio_source_at(sec);
+        match &mut self.skim {
+            None => { self.skim = Some((Instant::now(), 0.0, sec, 0.0)); self.audio.begin_shuttle(&path, src, 0.0); }
+            Some((t0, last_ms, last_s, ema)) => {
+                let now = t0.elapsed().as_secs_f64() * 1000.0; let dt = (now - *last_ms) * 1e-3;
+                if dt > 0.0005 { let v = ((sec - *last_s) / dt).clamp(-32.0, 32.0); let alpha = 1.0 - (-dt / 0.040).exp(); *ema += alpha * (v - *ema); *last_ms = now; *last_s = sec; }
+                let speed = *ema;
+                if self.audio.shuttle_active() { self.audio.shuttle_target(&path, src, speed); }
+            }
+        }
+    }
     /// `frame` is a TIMELINE frame; a cross-clip drag swaps first (QCView pays the open there too).
     pub fn scrub_to_frame(&mut self, frame: i32) {
         let tl = (frame as i64).clamp(0, (self.frames as i64 - 1).max(0));
@@ -466,13 +489,17 @@ impl Transport {
         else { self.pending = None; }
         let s = &mut self.slots[self.active];
         if let Some(sd) = &mut s.scrub { sd.request_frame(src as i32); } else { s.decoder.scrub_to(src as i32); }
-        if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); }
+        if self.scrub_moves_clock() { if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); } } else { self.scrub_pos = Some(tl); }
         self.seek_gate = None;
+        if self.scrubbing.is_some() && !self.edit_scrub { self.skim_audio(tl); }
     }
     /// The heavy decoder seek lands here; playback resumes if the press interrupted it.
     pub fn end_scrub(&mut self) {
         let Some(was_playing) = self.scrubbing.take() else { return };
+        // QCView's release: the skim audio stops FIRST (the commit below re-seats the normal pipeline), then the clock moves once
+        if self.skim.take().is_some() && self.audio.shuttle_active() { self.audio.end_shuttle(); }
         let tl = self.current_frame() as i64;
+        if self.scrub_pos.take().is_some() && self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); }
         if let Some((_, src)) = self.resolve(tl) { self.issue_seek(tl, src as i32); }
         if was_playing { self.play(); }
     }
@@ -749,4 +776,43 @@ pub fn playlist_from_specs(specs: &[(String, Option<(i64, i64)>)]) -> Result<Tim
     let mut e = Editor::default();
     e.load_playlist("cut", &items, &trims, master.unwrap_or(Rate::new(24, 1)), 0, (0, 0), "");
     Ok(e.timeline)
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    /// Records the shuttle calls (has audio, so the skim runs).
+    struct Rec(Arc<Mutex<Vec<(String, f64)>>>, bool);
+    impl AudioHooks for Rec {
+        fn has_audio(&self) -> bool { true }
+        fn begin_shuttle(&mut self, _p: &str, _s: f64, v: f64) { self.0.lock().unwrap().push(("begin".into(), v)); self.1 = true; }
+        fn shuttle_target(&mut self, _p: &str, _s: f64, v: f64) { self.0.lock().unwrap().push(("target".into(), v)); }
+        fn end_shuttle(&mut self) { self.0.lock().unwrap().push(("end".into(), 0.0)); self.1 = false; }
+        fn shuttle_active(&self) -> bool { self.1 }
+        fn open(&mut self, _p: &str) -> bool { true }
+    }
+    /// QCView's single-media scrub: the skim audio begins silent, follows the drag's velocity, ends on release; the clock
+    /// stays put until the release seeks it once (the playhead reads the scrub target meanwhile).
+    #[test]
+    fn a_drag_skims_audio_and_seeks_the_clock_once() {
+        let p = std::env::temp_dir().join(format!("qcv-scrub-{}.mov", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "4", "-c:v", "mjpeg", "-c:a", "pcm_s16le"]).arg(&p).status().map(|s| s.success()).unwrap_or(false);
+        if !ok { eprintln!("ffmpeg missing: skipped"); return }
+        let mut t = Transport::open(&Source::File(p.to_string_lossy().into_owned()), TransportOptions::default()).unwrap();
+        let log = Arc::new(Mutex::new(vec![]));
+        t.set_audio(Box::new(Rec(log.clone(), false)));
+        let clock0 = t.timer.position();
+        t.begin_scrub();
+        for f in [10, 14, 18, 22, 26] { t.scrub_to_frame(f); std::thread::sleep(std::time::Duration::from_millis(16)); }
+        assert_eq!(t.current_frame(), 26, "the playhead reads the scrub target");
+        assert_eq!(t.timer.position(), clock0, "the clock does not move during a single video's drag");
+        t.end_scrub();
+        assert!((t.timer.position() - 26.0 / 24.0).abs() < 1e-6, "the release seeks the clock once, to the target");
+        let l = log.lock().unwrap();
+        assert_eq!(l.first(), Some(&("begin".to_string(), 0.0)), "the shuttle starts at speed 0 (silent until the drag moves)");
+        assert!(l.iter().filter(|(k, _)| k == "target").all(|(_, v)| *v >= 0.0) && l.iter().any(|(k, v)| k == "target" && *v > 1.0), "a forward drag (~10 fps of frames per 16 ms) skims forward faster than 1x: {l:?}");
+        assert_eq!(l.last().map(|(k, _)| k.as_str()), Some("end"));
+        let _ = std::fs::remove_file(p);
+    }
 }
