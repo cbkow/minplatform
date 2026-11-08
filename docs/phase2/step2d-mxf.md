@@ -19,4 +19,7 @@ OR Artistic-1.0), so the scanner is its own crate under the workspace's GPL-3.0-
 `regxmllib-rs` (row 137's donor) was not needed.
 
 Not in this step: the Inspector's MXF section (a design talk — which of the ~50 tags people see), DMS-1 / AS-11 contents
-(their sets are read and named; the user's corpus carries none), the Windows check (synthetic MXFs on rhombus at the next pass).
+(their sets are read and named; the user's corpus carries none).
+
+**Windows (rhombus, 2026-11-08, at 52ef5a5):** the unit test green; 4 of 4 synthetic MXFs made on the box (OP1a DNxHD + timecode, MPEG-2,
+ProRes, OP-Atom) IDENTICAL to ExifTool.exe; 0.33 ms a file vs 294 ms.
