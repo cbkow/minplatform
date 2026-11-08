@@ -182,7 +182,8 @@ mod probe {
 }
 #[cfg(test)]
 mod whole_frame {
-    /// Every pixel against FFmpeg's decode of the same file (`MIN_IMAGE_EXR_RAW` = gbrpf32le), at offsets -1..=1 —
+    /// Every pixel against FFmpeg's decode of the same file. `MIN_IMAGE_EXR_RAW` = gbrpf16le (the decoder's native
+    /// output: bit-identical required) or gbrpf32le (through swscale's lossy f16 input path), at offsets -1..=1 —
     /// a real offset shows as the best match away from (0,0).
     #[test] #[ignore]
     fn against_ffmpeg_raw() {
@@ -190,6 +191,17 @@ mod whole_frame {
         let img = super::load(&p, "", 0).unwrap();
         let raw = std::fs::read(raw).unwrap();
         let (w, h) = (img.width as usize, img.height as usize);
+        if raw.len() == w * h * 3 * 2 {
+            // gbrpf16le = FFmpeg's EXR decoder's native output (no swscale): the half bits must be identical.
+            let mut diff = 0u64;
+            for pl in 0..3 { for y in 0..h { for x in 0..w {
+                let o = y * img.pitch as usize + x * 2; let f = (pl * w * h + y * w + x) * 2;
+                if img.planes[pl][o..o + 2] != raw[f..f + 2] { diff += 1 }
+            }}}
+            println!("F16 differing halves {diff} of {}", w * h * 3);
+            assert_eq!(diff, 0);
+            return;
+        }
         let half = |b: &[u8]| { let h = u16::from_le_bytes([b[0], b[1]]); let s = if h & 0x8000 != 0 { -1.0f32 } else { 1.0 }; let e = ((h >> 10) & 0x1f) as i32; let m = (h & 0x3ff) as f32; s * if e == 31 { f32::INFINITY } else if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e - 15) } };
         let ff = |pl: usize, x: usize, y: usize| { let o = (pl * w * h + y * w + x) * 4; f32::from_le_bytes(raw[o..o + 4].try_into().unwrap()) };
         for (dx, dy) in [(0i32, 0i32), (-1, 0), (1, 0), (0, -1), (0, 1)] {
