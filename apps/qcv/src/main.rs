@@ -29,6 +29,7 @@ mod settings;
 mod settings_panel;
 mod inspector_panel;
 mod os_actions;
+mod menu;
 mod background_panel;
 mod compact_strip;
 mod project_panel;
@@ -45,7 +46,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_
     /// QCView's single outcome voice (Toast.qml)
     toast: min_ui::Toast,
     /// Compact mode (canon row 172; QCView's chromeless + CompactStrip): the picture and one 32-px band, no title bar.
-    compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool,
+    compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool, /// View ▸ Status Bar (Ctrl+5) / Minimal Mode hid the strip
+    strip_hidden: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
     left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon }
@@ -67,6 +69,8 @@ struct App {
     meta: qcv_meta::MetadataService,
     /// QCView's project (row 141): the media pool, the bins, the per-clip choices; `loaded_item` = the media id in the player.
     project: qcv_project::ProjectManager, loaded_item: String,
+    /// the native menu bar (row 143)
+    menu: Option<menu::AppMenu>,
 }
 
 impl App {
@@ -308,7 +312,8 @@ impl App {
             }
             let st = scrub_state(self.player.as_ref());
             let bar_h = if self.pl_editor.is_some() && !g.compact { clip_bar::ClipBar::height(scale) } else { 0.0 };   // +20 for a playlist (row 169)
-            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
+            let strip_h = if g.strip_hidden { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
+            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
                 // the pointer at the bottom edge (or on the shown bands) reveals; leaving starts the hide delay
                 let (px, py) = g.pointer;
@@ -321,7 +326,7 @@ impl App {
             let slide = bands_h * (1.0 - g.bands.value(now) as f64);
             let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale - bar_h + slide;
             // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
-            let rails_bottom = if g.compact { scrub_y } else { scrub_y - (t::TRANSPORT_BAR_HEIGHT + t::STATUS_STRIP_HEIGHT) as f64 * scale };
+            let rails_bottom = if g.compact { scrub_y } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
             let (lw, rw) = if chromeless { (0.0, 0.0) } else {
                 g.left.layout(0.0, 0.0, rails_bottom, scale, now); g.right.layout(w as f64, 0.0, rails_bottom, scale, now);
@@ -420,7 +425,7 @@ impl App {
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
                     }
                 }
-                g.strip.paint(scene, &mut g.fonts, scale, now);
+                if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); }
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
@@ -557,7 +562,7 @@ impl App {
         }
         let g = self.gpu.as_mut().unwrap();
         let was_open = g.strip.is_open();
-        let (sd, consumed) = if grabbed { (false, false) } else { g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale) };
+        let (sd, consumed) = if grabbed || g.strip_hidden { (false, false) } else { g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale) };
         if sd { g.ui_dirty = true; }
         if g.strip.is_open() != was_open { set_ime(&**g.window, g.strip.is_open()); }
         if consumed { return }
@@ -729,6 +734,53 @@ impl App {
     }
     /// Compact mode (QCView's `toggleCompact` / `exitCompact`): the window drops its title bar, every rail and band goes, one
     /// 32-px strip stays; fullscreen is left first (QCView refuses the window-style change while fullscreen).
+    /// A menu command (QCView's `onTriggered`s); the keys that share them call the same functions.
+    fn menu_cmd(&mut self, c: menu::Cmd, el: &dyn ActiveEventLoop) {
+        use menu::Cmd as M;
+        let now = Instant::now();
+        match c {
+            M::OpenMedia => self.open_media_dialog(),
+            M::NewProject => self.new_project(),
+            M::OpenProject => self.open_project_dialog(),
+            M::SaveProject => self.save_project(),
+            M::SaveProjectAs => self.save_project_as(),
+            M::RecentMedia(p) => { if std::path::Path::new(&p).exists() { for a in self.admit_media_paths(&[p]) { self.add_and_load(&a, true); } } else { self.toast("That file is no longer there", min_ui::ToastKind::Notice); } }
+            M::RecentProject(p) => { if std::path::Path::new(&p).exists() { self.open_project(&p); } else { self.toast("That project is no longer there", min_ui::ToastKind::Notice); } }
+            M::ClearRecentMedia => { self.settings.set_str(settings::k::RECENT_MEDIA, ""); }
+            M::ClearRecentProjects => { self.settings.set_str(settings::k::RECENT_PROJECTS, ""); }
+            M::Quit => { self.finish(); el.exit(); }
+            M::Minimal => self.view_minimal(),
+            M::AllPanels => self.view_all_panels(),
+            M::Compact => self.toggle_compact(),
+            M::Pin => self.toggle_pin(),
+            M::ZoomIn | M::ZoomOut => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == M::ZoomOut { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } }
+            M::Fullscreen => self.toggle_fullscreen(),
+            M::DefaultFrame => {
+                // QCView `resetWindowFrame`: fullscreen left first, then the first-run size centred on this screen
+                if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); }
+                if let Some(g) = self.gpu.as_ref() {
+                    let size = winit::dpi::LogicalSize::new(1280.0, 720.0);
+                    let _ = g.window.request_surface_size(size.into());
+                    if let Some(mon) = g.window.current_monitor() && let (Some(mp), Some(ms)) = (mon.position(), mon.current_video_mode().map(|v| v.size())) {
+                        let sc = g.window.scale_factor(); let (w, h) = (1280.0 * sc, 720.0 * sc);
+                        g.window.set_outer_position(winit::dpi::PhysicalPosition::new(mp.x + ((ms.width as f64 - w) / 2.0) as i32, mp.y + ((ms.height as f64 - h) / 2.0) as i32).into());
+                    }
+                }
+            }
+            M::LeftRail | M::RightRail => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen { if c == M::LeftRail { g.left.toggle(now); } else { g.right.toggle(now); } g.ui_dirty = true; } } }
+            M::StatusBar => self.toggle_status_bar(),
+            M::Background => self.reveal(Reveal::Background),
+            M::Settings => self.reveal(Reveal::Settings),
+            M::Docs => { let _ = os_actions::open("https://qcview.app/"); }
+        }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+    }
+    /// QCView `viewMinimal`: both rails collapsed (their reopen tabs stay), the status strip hidden.
+    fn view_minimal(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { let now = Instant::now(); g.left.set_collapsed(true, now); g.right.set_collapsed(true, now); g.strip_hidden = true; g.ui_dirty = true; } } }
+    /// QCView `viewAllPanels` → `viewDefault`: the rails open, the strip back.
+    fn view_all_panels(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { let now = Instant::now(); g.left.set_collapsed(false, now); g.right.set_collapsed(false, now); g.strip_hidden = false; g.ui_dirty = true; } } }
+    /// View ▸ Status Bar (Ctrl+5).
+    fn toggle_status_bar(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.strip_hidden = !g.strip_hidden; g.content_set = None; g.ui_dirty = true; } } }
     fn toggle_compact(&mut self) {
         if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); }
         let Some(g) = self.gpu.as_mut() else { return };
@@ -960,9 +1012,14 @@ impl ApplicationHandler for App {
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
+        // the native menu bar (QCView's MenuBar, row 143): the app's menu on macOS, the window's on Windows
+        let m = menu::AppMenu::new();
+        #[cfg(target_os = "macos")] { m.menu.init_for_nsapp(); }
+        #[cfg(windows)] { use raw_window_handle::{HasWindowHandle, RawWindowHandle}; if let Some(g) = self.gpu.as_ref() && let Ok(h) = g.window.window_handle() && let RawWindowHandle::Win32(w) = h.as_raw() { unsafe { let _ = m.menu.init_for_hwnd(w.hwnd.get()); } } }
+        self.menu = Some(m);
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { let paths = if self.o.files.is_empty() { vec![f.clone()] } else { self.o.files.clone() }; let mut first = true; for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } } } }
     }
@@ -972,6 +1029,13 @@ impl ApplicationHandler for App {
         // first 6.7K open (2026-11-07: the stats stopped, no tick ran while input kept arriving — the whole UI froze until a drag
         // or resize); winit's own idiom is to request the redraw from here. Wake at least every refresh and ask again if the last
         // tick is older than one — a duplicate request coalesces, a dropped one no longer freezes the app.
+        // the menu bar: its commands, then its live parts (the Recent submenus, the two checkmarks)
+        while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c, el); } }
+        if let Some(m) = self.menu.as_mut() {
+            let list = |k| self.settings.string(k).lines().filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>();
+            m.set_recents(&list(settings::k::RECENT_MEDIA), &list(settings::k::RECENT_PROJECTS));
+            if let Some(g) = self.gpu.as_ref() { m.set_checks(g.compact, g.pinned); }
+        }
         let now = Instant::now();
         if let Some(g) = self.gpu.as_ref() { if now.duration_since(self.last_tick) >= std::time::Duration::from_millis(16) { g.window.request_redraw(); } }
         el.set_control_flow(ControlFlow::WaitUntil(now + std::time::Duration::from_millis(16)));
@@ -1044,8 +1108,9 @@ impl ApplicationHandler for App {
                 if pressed && self.mods.ctrl && !self.mods.shift && !self.mods.alt && !event.repeat { if let Key::Character(c) = &event.logical_key {
                     let now = Instant::now();
                     match c.as_str() {
-                        "0" => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.left.set_collapsed(true, now); g.right.set_collapsed(true, now); g.ui_dirty = true; } } return }   // Minimal Mode
-                        "9" => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.left.set_collapsed(false, now); g.right.set_collapsed(false, now); g.ui_dirty = true; } } return }  // Show All Panels
+                        "0" => { self.view_minimal(); return }   // Minimal Mode
+                        "9" => { self.view_all_panels(); return }  // Show All Panels
+                        "5" => { self.toggle_status_bar(); return }   // View ▸ Status Bar
                         "l" | "L" => { if let Some(p) = self.player.as_mut() { p.apply(Action::ToggleLoop, now); } return }
                         "q" | "Q" => { self.finish(); el.exit(); return }
                         "=" | "+" | "-" | "_" => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == "-" || c == "_" { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } return }
@@ -1160,6 +1225,7 @@ static TRACE_SCRUB: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std:
 fn trace_ms() -> f64 { static T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now); T0.elapsed().as_secs_f64() * 1000.0 }
 
 fn main() {
+    #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before NSApp launches: AppKit reads these at launch
     env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
@@ -1176,7 +1242,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { menu: None, unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
