@@ -482,7 +482,7 @@ mod tests {
     fn a_missing_first_frame_fails_the_open() {
         let d = tempdir::Dir::new();
         assert!(matches!(ImageSequenceCache::open(&d.0.to_string_lossy(), "x_%04d.exr", 1, 10, 24.0, "", StreamingConfig::default()), Err(Error::Probe(_))));
-        assert!(matches!(ImageSequenceCache::open(&d.0.to_string_lossy(), "x_%04d.dpx", 1, 10, 24.0, "", StreamingConfig::default()), Err(Error::Format(_))));
+        assert!(matches!(ImageSequenceCache::open(&d.0.to_string_lossy(), "x_%04d.cin", 1, 10, 24.0, "", StreamingConfig::default()), Err(Error::Format(_))));
     }
 }
 
