@@ -63,24 +63,24 @@ impl Rail {
         self.scale = scale;
         let vw = self.visible_width(now, scale);
         let hz = t::SPLITTER_HOT_ZONE as f64 * scale; let th = t::HAIRLINE as f64 * scale;
-        let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let tab_y = y0 + (t::COMPONENT_HEIGHT_100 as f64 * scale - sz) / 2.0;   // the same square as the collapse arrow, at its height (QCView: one element that flips)
+        let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let tab_y = y0 + t::SPACING_75 as f64 * scale;   // the floating tab (the user 2026-11-08: "I like how the close button for this panel floats outside the panel. Can we do the same for the sidebar rails?"): one element that flips, open or closed
         let m = t::SPACING_75 as f64 * scale;   // a 4-px margin from the window's edge: a real button, clear of the chrome border (the user 2026-11-07)
         match self.side {
-            Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x + m, tab_y, edge_x + m + sz, tab_y + sz); }
-            Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - m - sz, tab_y, edge_x - m, tab_y + sz); }
+            Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x + vw + m, tab_y, edge_x + vw + m + sz, tab_y + sz); }
+            Side::Right => { self.rect = Rect::new(edge_x - vw, y0, edge_x, y1); self.splitter = Rect::new(self.rect.x0, y0, self.rect.x0 + th, y1); self.hot = Rect::new(self.rect.x0 - hz, y0, self.rect.x0 + hz, y1); self.tab = Rect::new(edge_x - vw - m - sz, tab_y, edge_x - vw - m, tab_y + sz); }
         }
         let max = (self.content_height - self.body_height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
         // the collapse arrow: a 24-px square in the header strip, at the inner end
         let pad = t::RAIL_PADDING as f64 * scale; let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let hh = self.header_height();
         let cy = y0 + (hh - sz) / 2.0;
-        self.collapse = match self.side { Side::Left => Rect::new(self.rect.x1 - pad - sz, cy, self.rect.x1 - pad, cy + sz), Side::Right => Rect::new(self.rect.x0 + pad, cy, self.rect.x0 + pad + sz, cy + sz) };
+        let _ = (pad, sz, cy); self.collapse = Rect::ZERO;   // retired: the floating tab toggles both ways
     }
     /// The pointer is over one of the rail's own controls (the collapse arrow, the scrollbar) — the panel should not see the press.
     pub fn over_control(&self, x: f64, y: f64, now: Instant) -> bool { self.fully_open(now) && (self.collapse.contains(kurbo::Point::new(x, y)) || self.scrollbar_hit(x, y, now).is_some()) }
-    /// The fixed header strip above the scrolling body (QCView's rail header row): it holds the collapse arrow, so
-    /// nothing scrolls under the arrow and no section needs to make room for it.
-    pub fn header_height(&self) -> f64 { t::COMPONENT_HEIGHT_100 as f64 * self.scale }
+    /// The space above the scrolling body: the padding alone — the collapse arrow that once had a header strip floats outside
+    /// the rail as its tab now (2026-11-08).
+    pub fn header_height(&self) -> f64 { t::RAIL_PADDING as f64 * self.scale }
     /// Where the panel lays its content: below the header strip, inset by the padding, its top shifted by the scroll.
     pub fn content_rect(&self) -> Rect {
         let pad = t::RAIL_PADDING as f64 * self.scale;
@@ -152,7 +152,7 @@ impl Rail {
             }
         } else if matches!(e, Event::Leave) { self.sb_hover = false; }
         let on_splitter = self.fully_open(now) && pos.is_some_and(|(x, y)| self.hot.contains(kurbo::Point::new(x, y)));
-        let on_tab = self.fully_collapsed(now) && self.present.value(now) > 0.5 && pos.is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
+        let on_tab = self.present.value(now) > 0.5 && !self.open.animating(now) && pos.is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
         match *e {
             Event::Move { x, .. } => {
                 if let Some((x0, w0)) = self.drag {
@@ -171,7 +171,7 @@ impl Rail {
             Event::Up { .. } => {}
             Event::Leave => { self.splitter_hover = false; self.tab_hover = false; self.inside = false; }
         }
-        if !r.consumed && pos.is_some_and(|(x, y)| self.hit(x, y) || (self.fully_collapsed(now) && self.tab.contains(kurbo::Point::new(x, y)))) { r.consumed = true; }
+        if !r.consumed && pos.is_some_and(|(x, y)| self.hit(x, y) || (self.present.value(now) > 0.5 && self.tab.contains(kurbo::Point::new(x, y)))) { r.consumed = true; }
         self.splitter_ramp.set_target(if self.splitter_hover || self.drag.is_some() { 1.0 } else { 0.0 }, now);
         self.tab_ramp.set_target(if self.tab_hover { 1.0 } else { 0.0 }, now);
         self.sb_ramp.set_target(if self.sb_hover || self.sb_drag.is_some() { 1.0 } else { 0.0 }, now);
@@ -180,7 +180,7 @@ impl Rail {
         if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
         let side = match self.side { Side::Left => "left", Side::Right => "right" };
         let key = if self.shortcut.is_empty() { String::new() } else { format!(" ({})", self.shortcut) };
-        let over = if self.collapse_hover { Some((1u64, self.collapse, format!("Hide the {side} rail{key}"))) } else if self.tab_hover { Some((2u64, self.tab, format!("Show the {side} rail{key}"))) } else { None };
+        let over = if self.tab_hover { Some((2u64, self.tab, if self.collapsed { format!("Show the {side} rail{key}") } else { format!("Hide the {side} rail{key}") })) } else { None };
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { r.dirty = true; }
         r.dirty = was != (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some(), self.sb_hover, self.sb_drag.is_some(), self.collapse_hover) || r.width_changed || r.toggled;
         r
@@ -192,20 +192,15 @@ impl Rail {
         self.last_scroll = Some(now);
         if s != self.scroll { self.scroll = s; true } else { false }
     }
-    /// The pointer is in the window (and the window has focus): the reopen tab shows; otherwise it fades away.
+    /// The pointer is over the picture or this rail (the shell decides; the window has focus): the tab shows; otherwise it
+    /// fades away (the user 2026-11-08: so the timeline can be used without them in view).
     pub fn set_pointer_present(&mut self, on: bool, now: Instant) { if on { if self.present.target() < 0.5 || self.present.value(now) < 0.999 { self.present = Ramp::new(1.0, t::ANIMATION_DURATION_SLIDE); } } else { self.present.set_target(0.0, now); } }   // shows at once, fades away
     /// Per frame: the tooltip's delay / timeout; true when a redraw is needed now.
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
     pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }
     pub fn animating(&self, now: Instant) -> bool { self.open.animating(now) || self.splitter_ramp.animating(now) || self.tab_ramp.animating(now) || self.sb_ramp.animating(now) || self.collapse_ramp.animating(now) || self.present.animating(now) || self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + t::ANIMATION_DURATION_HOVER) }
-    pub fn paint_background(&self, scene: &mut Scene, now: Instant) {
+    pub fn paint_background(&self, scene: &mut Scene, _now: Instant) {
         if self.rect.width() > 0.0 { paint::rect(scene, self.rect, t::RAIL_BACKGROUND_COLOR); }
-        if self.fully_collapsed(now) {
-            // the open tab: a quiet caret at the window's edge, brighter on hover, faded out while the pointer is away
-            let a = self.tab_ramp.value(now); let p = self.present.value(now);
-            let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a).with_alpha(mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a).a * p);
-            if bg.a > 0.0 { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * self.scale, bg); }
-        }
     }
     /// Clip to the rail for the panel's content.
     pub fn push_clip(&self, scene: &mut Scene) { let pad = t::RAIL_PADDING as f64 * self.scale; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &Rect::new(self.rect.x0, self.rect.y0 + self.header_height(), self.rect.x1, self.rect.y1 - pad)); }
@@ -214,14 +209,6 @@ impl Rail {
     pub fn paint_foreground(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
         if self.rect.width() > 0.0 {
             paint::rect(scene, self.splitter, mix(t::RAIL_SPLITTER_COLOR, t::RAIL_SPLITTER_COLOR_HOVER, self.splitter_ramp.value(now)));
-            if self.fully_open(now) {
-                let hv = self.collapse_ramp.value(now);
-                let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, hv);
-                if bg.a > 0.0 { paint::rounded(scene, self.collapse, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale, bg); }
-                let c = mix(t::RAIL_OPEN_TAB_COLOR, t::NEUTRAL_CONTENT_COLOR_HOVER, hv);
-                let slug = match self.side { Side::Left => "caret-left", Side::Right => "caret-right" };
-                if let Some(g) = fonts.icon(slug, t::ICON_SIZE_SMALL * scale as f32, paint::color(c)) { crate::fonts::draw_layout(scene, &g, Affine::translate((self.collapse.x0 + (self.collapse.width() - g.width() as f64) / 2.0, self.collapse.y0 + (self.collapse.height() - g.height() as f64) / 2.0))); }
-            }
             if let Some((_, thumb)) = self.scrollbar(now) {
                 let recent = self.last_scroll.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY);
                 if self.inside || recent || self.sb_hover || self.sb_drag.is_some() {
@@ -230,10 +217,15 @@ impl Rail {
                 }
             }
         }
-        if self.fully_collapsed(now) {
+        // the floating tab, open or closed (it rides the rail's inner edge as the rail slides): a quiet caret over the picture,
+        // brighter on hover, faded out while the pointer is elsewhere or parked
+        {
             let p = self.present.value(now); if p <= 0.001 { return }
-            let c = mix(t::RAIL_OPEN_TAB_COLOR, t::NEUTRAL_CONTENT_COLOR_HOVER, self.tab_ramp.value(now)); let c = c.with_alpha(c.a * p);
-            let slug = match self.side { Side::Left => "caret-right", Side::Right => "caret-left" };
+            let a = self.tab_ramp.value(now);
+            let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a); let bg = bg.with_alpha(bg.a * p);
+            if bg.a > 0.0 { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale, bg); }
+            let c = mix(t::RAIL_OPEN_TAB_COLOR, t::NEUTRAL_CONTENT_COLOR_HOVER, a); let c = c.with_alpha(c.a * p);
+            let slug = match (self.side, self.collapsed) { (Side::Left, true) | (Side::Right, false) => "caret-right", _ => "caret-left" };
             if let Some(g) = fonts.icon(slug, t::ICON_SIZE_SMALL * scale as f32, paint::color(c)) { crate::fonts::draw_layout(scene, &g, Affine::translate((self.tab.x0 + (self.tab.width() - g.width() as f64) / 2.0, self.tab.y0 + (self.tab.height() - g.height() as f64) / 2.0))); }
         }
     }
@@ -258,11 +250,15 @@ mod tests {
         assert_eq!(r.visible_width(now, 2.0), 0.0);
         let e = r.event(&Event::Down { x: 8.0, y: 20.0, button: Button::Primary }, now);
         assert!(e.toggled && !r.collapsed);
-        let mut l2 = Rail::new(Side::Left, 280.0, false); l2.settle(); l2.layout(0.0, 0.0, 800.0, 1.0, now);
-        let c = l2.collapse.center();
-        assert!(l2.over_control(c.x, c.y, now));
+        // open, the same floating tab sits just past the rail's inner edge and hides it (2026-11-08: the header arrow retired)
+        let mut l2 = Rail::new(Side::Left, 280.0, false); l2.settle(); l2.layout(0.0, 0.0, 800.0, 1.0, now); l2.set_pointer_present(true, now);
+        let c = l2.tab.center();
+        assert!(c.x > l2.rect.x1, "the tab floats outside the rail");
         let e = l2.event(&Event::Down { x: c.x, y: c.y, button: Button::Primary }, now);
-        assert!(e.toggled && e.consumed && l2.collapsed, "the header arrow collapses the rail");
+        assert!(e.toggled && e.consumed && l2.collapsed, "the floating tab collapses the rail");
+        let mut l3 = Rail::new(Side::Left, 280.0, false); l3.settle(); l3.layout(0.0, 0.0, 800.0, 1.0, now); l3.set_pointer_present(false, now);
+        let c = l3.tab.center(); let _ = l3.event(&Event::Down { x: c.x, y: c.y, button: Button::Primary }, now + std::time::Duration::from_secs(1));
+        assert!(!l3.collapsed, "a faded tab does not take presses");
         let mut rr = Rail::new(Side::Right, 320.0, false); rr.settle(); rr.layout(1600.0, 0.0, 800.0, 1.0, now);
         rr.event(&Event::Down { x: 1281.0, y: 10.0, button: Button::Primary }, now);
         rr.event(&Event::Move { x: 1181.0, y: 10.0 }, now);

@@ -122,6 +122,8 @@ impl ColorDrawer {
     pub fn is_modal(&self) -> bool { self.menu.is_open() || self.naming.is_some() }
     pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee.focused() || self.agx.focused() || self.oinput.focused() }
     /// The top edge is under the pointer or being dragged (the shell shows the row-resize cursor).
+    /// The pointer is on the floating tab (it keeps the tabs from fading while parked there).
+    pub fn tab_hovered(&self) -> bool { self.tab_hover }
     pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
     fn split_zone(&self) -> Rect { let z = t::SPLITTER_HOT_ZONE as f64 * self.scale; Rect::new(self.rect.x0, self.rect.y0 - z, self.rect.x1, self.rect.y0 + z) }
     fn dragging(&self) -> bool { self.split_drag.is_some() || self.knee.dragging() || self.agx.dragging() || self.exp.dragging() || self.gam.dragging() }
@@ -333,7 +335,7 @@ impl ColorDrawer {
         // the tab
         let over_tab = e.pos().is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
         if over_tab != self.tab_hover { self.tab_hover = over_tab; self.tab_ramp.set_target(if over_tab { 1.0 } else { 0.0 }, now); dirty = true; }
-        if let Event::Down { button: Button::Primary, .. } = e { if over_tab { cmds.push(Cmd::Toggle); return (cmds, true, true) } }
+        if let Event::Down { button: Button::Primary, .. } = e { if over_tab && self.present.value(now) > 0.5 { cmds.push(Cmd::Toggle); return (cmds, true, true) } }
         if self.rect.height() <= 1.0 { return (cmds, dirty, false) }
         // the top edge: drag to resize (200…600 px, kept in the store on release)
         if let Some((y0, h0)) = self.split_drag {
@@ -451,7 +453,7 @@ impl ColorDrawer {
 
     /// The tab over the picture (drawn with the picture's overlays).
     pub fn paint_tab(&self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
-        let p = self.present.value(now).max(if self.open { 1.0 } else { 0.0 }); if p <= 0.001 { return }
+        let p = self.present.value(now); if p <= 0.001 { return }
         let s = self.scale; let a = self.tab_ramp.value(now);
         let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a); let bg = bg.with_alpha(bg.a * p);
         if bg.a > 0.0 { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, bg); }

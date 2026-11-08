@@ -51,7 +51,8 @@ use min_i18n::fill;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
     mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
-    drawer: color_drawer::ColorDrawer, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
+    drawer: color_drawer::ColorDrawer, /// the pointer's last movement (the floating tabs fade when it parks over the picture)
+    last_move: Instant, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
@@ -318,6 +319,7 @@ impl App {
         self.last_tick = Instant::now();
         let Some(g) = self.gpu.as_mut() else { return };
         let now = Instant::now();
+        tab_presence(g, now);   // a parked pointer fades the tabs with no event to say so
         let mut shown_new = false; let mut reopen = false;
         if let Some(p) = self.player.as_mut() {
             if *TRACE_SCRUB { if let Some(sd) = p.scrub() { if let Some(rx) = sd.served.clone() { while let Ok(sv) = rx.try_recv() { println!("scrub: served {} at {:.1} ms — request → ready {:.1} ms, decoded {}, hit {}, seeked {}", sv.target, trace_ms(), (sv.done - sv.issued).as_secs_f32() * 1000.0, sv.decoded, sv.hit, sv.seeked); } } } }
@@ -528,7 +530,8 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let (w, h) = g.ui.as_ref().map(|u| u.size()).unwrap_or((1, 1)); let scale = g.window.scale_factor();
         if let Some((x, y)) = e.pos() { g.pointer = (x, y); } else { g.pointer = (-1.0, -1.0); }
-        { let present = e.pos().is_some(); g.left.set_pointer_present(present, now); g.right.set_pointer_present(present, now); }
+        if matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Down { .. }) { g.last_move = now; }
+        tab_presence(g, now);
         let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
         if matches!(e, min_ui::Event::Down { .. }) { self.alt_clean = false; }
         // QCView's About modal takes everything while open
@@ -580,7 +583,6 @@ impl App {
         let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed());
         // the Color drawer (row 199): its menu / naming popover take everything; its tab over the picture; its own presses
         if !g.fullscreen && !g.compact && !grabbed {
-            g.drawer.set_pointer_present(e.pos().is_some(), now);
             let mut cmds = vec![];
             if matches!(e, min_ui::Event::Down { .. }) && g.drawer.has_focus() && !e.pos().is_some_and(|(x, y)| g.drawer.rect.contains(kurbo::Point::new(x, y))) { cmds.extend(g.drawer.blur()); }
             let modal = g.drawer.is_modal(); let was_typing = g.drawer.is_typing();
@@ -1058,6 +1060,22 @@ fn set_ime(window: &dyn Window, on: bool) {
 }
 
 /// winit's key to the UI's (S3's table; the strip and the settings fields share it).
+/// The floating tabs (the rails' and the drawer's, the user 2026-11-08): each shows while the pointer is over the picture or
+/// its own panel, and all fade once the pointer has parked over the picture for the bands' hide delay (~2 s) — unless it
+/// rests on a tab. Outside the window (or without focus, which the shell reports as a leave) they are gone.
+fn tab_presence(g: &mut Gpu, now: Instant) {
+    let (px, py) = g.pointer;
+    let inside = px >= 0.0 && g.window.has_focus();
+    let pt = kurbo::Point::new(px, py);
+    let view = g.presenter.engine.content_rect().map(|(x, y, w, h)| kurbo::Rect::new(x as f64, y as f64, (x + w) as f64, (y + h) as f64)).unwrap_or(kurbo::Rect::ZERO);
+    let in_view = inside && view.contains(pt);
+    let on_tab = g.left.hovered() && !g.left.hit(px, py) || g.right.hovered() && !g.right.hit(px, py) || g.drawer.tab_hovered();
+    let parked = in_view && !on_tab && now.duration_since(g.last_move).as_millis() as u32 >= t::BANDS_HIDE_DELAY;
+    let show = |own: bool| inside && (in_view || own) && !parked;
+    let (l, r, d) = (show(g.left.hit(px, py)), show(g.right.hit(px, py)), show(g.drawer.rect.contains(pt)));
+    g.left.set_pointer_present(l, now); g.right.set_pointer_present(r, now); g.drawer.set_pointer_present(d, now);
+}
+
 fn to_key_event(event: &winit::event::KeyEvent, mods: qcv_player::Mods) -> min_ui::KeyEvent {
     let key = match &event.logical_key {
         Key::Named(NamedKey::Escape) => min_ui::Key::Named(min_ui::Named::Escape), Key::Named(NamedKey::Enter) => min_ui::Key::Named(min_ui::Named::Enter), Key::Named(NamedKey::Tab) => min_ui::Key::Named(min_ui::Named::Tab),
@@ -1168,7 +1186,7 @@ impl ApplicationHandler for App {
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, last_move: Instant::now(), ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
@@ -1220,8 +1238,8 @@ impl ApplicationHandler for App {
                         if let Some(c) = g.project_panel.commit_rename() { pending_pp.push(c); } set_ime(&**g.window, false);
                         for c in g.inspector.blur() { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } }
                         set_ime(&**g.window, false);
-                        g.left.set_pointer_present(false, now); g.right.set_pointer_present(false, now);
-                    } else if g.pointer.0 >= 0.0 { g.left.set_pointer_present(true, now); g.right.set_pointer_present(true, now); }
+                    }
+                    tab_presence(g, now);
                     g.ui_dirty = true;
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
