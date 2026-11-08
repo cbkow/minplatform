@@ -17,6 +17,7 @@ unsafe extern "C" {
     fn oc_config_open(path: *const c_char, err: *mut c_char, n: usize) -> *mut RawConfig;
     fn oc_config_free(c: *mut RawConfig);
     fn oc_config_warning(c: *const RawConfig) -> *const c_char;
+    fn oc_config_role(c: *const RawConfig, role: *const c_char) -> *const c_char;
     fn oc_config_count(c: *const RawConfig, what: c_int) -> c_int;
     fn oc_config_item(c: *const RawConfig, what: c_int, i: c_int) -> *const c_char;
     fn oc_config_family(c: *const RawConfig, cs: *const c_char) -> *const c_char;
@@ -58,6 +59,8 @@ impl Config {
     pub fn looks(&self) -> Vec<String> { self.list(1) }
     /// The views on the one display, the sRGB display's first.
     pub fn views(&self) -> Vec<String> { self.list(2) }
+    /// A role's colourspace ("scene_linear" …), "" when the config has none.
+    pub fn role(&self, role: &str) -> String { s(unsafe { oc_config_role(self.raw, cstr(role).as_ptr()) }) }
     pub fn family(&self, cs: &str) -> String { s(unsafe { oc_config_family(self.raw, cstr(cs).as_ptr()) }) }
     pub fn encoding(&self, cs: &str) -> String { s(unsafe { oc_config_encoding(self.raw, cstr(cs).as_ptr()) }) }
 }

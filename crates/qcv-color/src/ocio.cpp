@@ -103,6 +103,7 @@ OcConfig *oc_config_open(const char *path, char *err, size_t errn)
 
 void oc_config_free(OcConfig *c) { delete c; }
 const char *oc_config_warning(const OcConfig *c) { return c->warning.c_str(); }
+const char *oc_config_role(const OcConfig *c, const char *role) { if (!c->cfg->hasRole(role)) return ""; const char *n = c->cfg->getRoleColorSpace(role); return n ? n : ""; }
 int oc_config_count(const OcConfig *c, int what) { return what == 0 ? (int)c->inputs.size() : what == 1 ? (int)c->looks.size() : (int)c->views.size(); }
 const char *oc_config_item(const OcConfig *c, int what, int i) {
     const auto &v = what == 0 ? c->inputs : what == 1 ? c->looks : c->views;

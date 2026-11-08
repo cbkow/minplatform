@@ -67,6 +67,13 @@ pub fn knee_wanted() -> qcv_color::Knee {
     qcv_color::Knee { enabled: n.len() >= 2, source_nits: *n.first().unwrap_or(&1000.0), target_nits: *n.get(1).unwrap_or(&1000.0), start: *n.get(2).unwrap_or(&-1.0) }
 }
 
+/// The bundled configs (row 198): folder name, label.
+pub const BUNDLED: [(&str, &str); 3] = [("ACES_2.0", "ACES 2.0"), ("ACES_1.3", "ACES 1.3"), ("Blender5.2", "Blender 5.2")];
+/// A config key → its file: a bundled folder name under the configs folder, else the path itself.
+pub fn ocio_config_path(key: &str) -> String {
+    if key.contains('/') || key.contains('\\') || key.ends_with(".ocio") { key.to_string() } else { ocio_configs_dir().join(key).join("config.ocio").to_string_lossy().into_owned() }
+}
+
 /// `QCV_OCIO=<config>|<input>|<view>[|<look>]`.
 pub fn ocio_wanted() -> Option<(String, qcv_color::ocio::Spec)> {
     let v = std::env::var("QCV_OCIO").ok()?;
@@ -91,8 +98,8 @@ pub fn ocio_build_ahead(device: &wgpu::Device, queue: &wgpu::Queue, config: Stri
 
 // ---- the Color drawer's engine binding (canon rows 199 / 205–208) -------------------------------------------------------
 
-use crate::color_drawer::{Cmd as DCmd, View};
-use crate::color_model::{fallback_default, ClipChain, Preset, Stored};
+use crate::color_drawer::{Cmd as DCmd, OcioLists, View};
+use crate::color_model::{fallback_default, ClipChain, OcioChain, Preset, Stored};
 use std::{cell::RefCell, rc::Rc};
 
 /// The one minColor pass, shared between the shell (its chain changes) and the engine's slot (it runs).
@@ -127,7 +134,12 @@ impl crate::App {
         let target = id.as_ref().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_else(|| min_i18n::trc("ColorPanel", "Project default").to_string());
         let custom = self.colors.find(&stored.preset).map(|p| p.stored.chain != stored.chain).unwrap_or(true);
         let file_peak = id.as_ref().and_then(|i| self.project.item(i)).map(|m| (m.video.max_cll, m.video.mastering_max_nits)).unwrap_or((0, 0.0));
-        View { target, has_clip: id.is_some(), own, stored, custom, on: self.settings.bool(crate::settings::k::COLOR_ENABLED), presets: self.colors.all(), file_peak }
+        let ocio = if let ClipChain::Ocio(o) = &stored.chain { self.ocio_configs.get(&o.config).map(|c| {
+            let mut configs: Vec<(String, String)> = BUNDLED.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect();
+            if !BUNDLED.iter().any(|(k, _)| *k == o.config) { configs.push((o.config.clone(), std::path::Path::new(&o.config).parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| o.config.clone()))); }
+            OcioLists { configs, inputs: c.inputs(), looks: c.looks(), views: c.views() }
+        }) } else { None };
+        View { target, has_clip: id.is_some(), own, stored, custom, on: self.settings.bool(crate::settings::k::COLOR_ENABLED), presets: self.colors.all(), file_peak, ocio }
     }
     /// Bind what the drawer says to the engine's slot: off = bypass; minColor = the shared pass (a uniform update); OCIO = a
     /// pass built on a worker (the previous chain stays on screen until it is ready).
@@ -150,7 +162,7 @@ impl crate::App {
             ClipChain::Ocio(o) => {
                 let key = format!("{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.knee);
                 if self.color_bound.as_deref() == Some(key.as_str()) || self.ocio_rx.as_ref().is_some_and(|(k, _)| *k == key) { return }
-                let cfg = if o.config.contains('/') || o.config.contains('\\') { o.config.clone() } else { ocio_configs_dir().join(&o.config).join("config.ocio").to_string_lossy().into_owned() };
+                let cfg = ocio_config_path(&o.config);
                 let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut };
                 let (d, q, knee) = (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone(), o.knee);
                 let (tx, rx) = mpsc::channel();
@@ -169,6 +181,28 @@ impl crate::App {
             if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_color_pass(Some(p)); self.color_bound = Some(key); g.ui_dirty = true; }
         }
     }
+    /// A config by its key (a bundled folder name, or a file path), loaded once and kept.
+    pub(crate) fn ocio_config(&mut self, key: &str) -> Option<std::sync::Arc<qcv_color::ocio::Config>> {
+        if let Some(c) = self.ocio_configs.get(key) { return Some(c.clone()) }
+        match qcv_color::ocio::Config::open(&ocio_config_path(key)) {
+            Ok(c) => { self.ocio_configs.insert(key.to_string(), c.clone()); Some(c) }
+            Err(e) => { log::error!("OCIO config {key}: {e}"); if let Some(g) = self.gpu.as_mut() { g.toast.show(&min_i18n::fill(min_i18n::trc("ColorPanel", "Couldn't load the OCIO config: %1"), &[&e]), min_ui::ToastKind::Negative, std::time::Instant::now()); } None }
+        }
+    }
+    /// An OCIO chain's names checked against its config: a missing input falls to the scene_linear role, a missing view to the
+    /// first SDR view, a missing look to none (QCView keeps names across configs where they exist).
+    fn fixup_ocio(&mut self, mut o: OcioChain) -> OcioChain {
+        let Some(c) = self.ocio_config(&o.config) else { return o };
+        let ins = c.inputs(); if !ins.contains(&o.input) { let r = c.role("scene_linear"); o.input = if ins.contains(&r) { r } else { ins.first().cloned().unwrap_or_default() }; }
+        let vs = c.views(); if !vs.contains(&o.view) { o.view = vs.iter().find(|v| v.contains("SDR") || v.as_str() == "Standard").or(vs.first()).cloned().unwrap_or_default(); }
+        if !o.look.is_empty() && !c.looks().contains(&o.look) { o.look.clear(); }
+        o
+    }
+    /// Keep the target's OCIO config loaded (the drawer's lists come from it).
+    pub(crate) fn ensure_color_config(&mut self) {
+        let (_, st, _) = self.color_target();
+        if let ClipChain::Ocio(o) = st.chain { if !self.ocio_configs.contains_key(&o.config) { let _ = self.ocio_config(&o.config); } }
+    }
     fn write_target(&mut self, st: Stored) {
         match self.project.item(&self.loaded_item).cloned() {
             Some(item) => { let (oc, mc) = st.to_clip_maps(&item.ocio_clip, &item.min_color_clip); self.project.set_color_clip(&item.id, oc, mc); }
@@ -179,7 +213,21 @@ impl crate::App {
         use crate::settings::k;
         let now = std::time::Instant::now();
         match c {
-            DCmd::Pick(st) | DCmd::Edit(st) => { self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(st); }
+            DCmd::Pick(mut st) | DCmd::Edit(mut st) => {
+                if let ClipChain::Ocio(o) = st.chain { st.chain = ClipChain::Ocio(self.fixup_ocio(o)); }
+                self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(st);
+            }
+            DCmd::NewOcio => {
+                let o = self.fixup_ocio(OcioChain { config: BUNDLED[0].0.into(), input: String::new(), look: String::new(), view: String::new(), scene_lut: String::new(), knee: qcv_color::Knee::default() });
+                self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(Stored { chain: ClipChain::Ocio(o), preset: String::new() });
+            }
+            DCmd::OpenConfig => {
+                let (_, st, _) = self.color_target();
+                if let (ClipChain::Ocio(o), Some(p)) = (st.chain.clone(), rfd::FileDialog::new().set_title(min_i18n::trc("ColorPanel", "Open OCIO config")).add_filter("OCIO config", &["ocio"]).pick_file()) {
+                    let o = self.fixup_ocio(OcioChain { config: p.to_string_lossy().into_owned(), ..o });
+                    self.write_target(Stored { chain: ClipChain::Ocio(o), preset: st.preset });
+                }
+            }
             DCmd::ResetToDefault => { let id = self.loaded_item.clone(); if self.project.item(&id).is_some() { self.project.set_color_clip(&id, Default::default(), Default::default()); } }
             DCmd::ApplyToAll => {
                 let (_, st, _) = self.color_target();

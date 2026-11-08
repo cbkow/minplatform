@@ -101,14 +101,19 @@ pub struct KneePanel {
     f: Frame, chain: Chain, file: (i32, f64),
     on: Switch, src: NumberField, use_file: TextButton, tgt: NumberField, start: Slider, reset: ActionButton,
     rows: Vec<(f64, f64)>, last_press: Option<Instant>,
+    /// an OCIO SDR view: the target is 100 nits by rule (QCView's "100 nits · SDR display"), no field
+    sdr: bool,
 }
 
 impl KneePanel {
     pub fn new() -> KneePanel {
         KneePanel { f: Frame::new(tr("Highlight Knee")), chain: Chain::default(), file: (0, 0.0), on: Switch::new(false), src: NumberField::new(1000, 100, 10000, 100), use_file: TextButton::new("", Variant::Secondary).size_s(),
-            tgt: NumberField::new(100, 100, 10000, 50), start: Slider::new(0.5), reset: ActionButton::new("arrow-counter-clockwise", tr("Reset knee start to BT.2390")).size_s(), rows: vec![], last_press: None }
+            tgt: NumberField::new(100, 100, 10000, 50), start: Slider::new(0.5), reset: ActionButton::new("arrow-counter-clockwise", tr("Reset knee start to BT.2390")).size_s(), rows: vec![], last_press: None, sdr: false }
     }
     pub fn set_expanded(&mut self, e: bool) { self.f.expanded = e; }
+    pub fn set_sdr_view(&mut self, sdr: bool) { self.sdr = sdr; }
+    /// The column's width now (logical px), for the drawer's row of columns.
+    pub fn width(&self) -> f64 { self.f.width() }
     pub fn focused(&self) -> bool { self.src.focused() || self.tgt.focused() }
     pub fn dragging(&self) -> bool { self.start.dragging() || self.f.sb.dragging() }
     pub fn sync(&mut self, c: &Chain, file: (i32, f64), now: Instant) {
@@ -149,7 +154,7 @@ impl KneePanel {
         let mut c = self.chain; let mut changed = false; let mut d = std::mem::take(&mut self.f.dirty);
         let (v, dd) = self.on.event(e, now); d |= dd; if let Some(on) = v { c.knee_on = on as i32; changed = true; }
         let (v, dd) = self.src.event(e, fonts); d |= dd; if let Some(v) = v { c.knee_src = v as f32; changed = true; }
-        let (v, dd) = self.tgt.event(e, fonts); d |= dd; if let Some(v) = v { c.knee_tgt = v as f32; changed = true; }
+        if !self.sdr { let (v, dd) = self.tgt.event(e, fonts); d |= dd; if let Some(v) = v { c.knee_tgt = v as f32; changed = true; } }
         let (clicked, dd) = self.use_file.event(e, now); d |= dd; if clicked { c.knee_src = if self.file.0 > 0 { self.file.0 as f32 } else { self.file.1 as f32 }; changed = true; }
         match self.reset.event(e, now) { Response::Clicked => { c.knee_start = -1.0; changed = true; } Response::None => {} _ => d = true }
         if let Event::Down { x, y, button: Button::Primary } = *e { if self.start.hit(x, y) {
@@ -187,7 +192,9 @@ impl KneePanel {
         let (y, h) = r(3, &self.rows); label(scene, fonts, &min_i18n::fill(tr("+%1 stops over SDR white"), &[&format!("{:.1}", (c.knee_src.max(1.0) / 100.0).log2())]), ix, y, h, s, t::DISABLED_CONTENT_COLOR, true);
         self.use_file.paint(scene, fonts, s, now);
         let (y, h) = r(5, &self.rows); label(scene, fonts, tr("Target peak"), ix, y, h, s, t::RAIL_GROUP_HEADER_COLOR, false);
-        self.tgt.paint(scene, fonts, s); let (y, h) = r(6, &self.rows); label(scene, fonts, tr("nits"), self.tgt.rect.x1 + t::SPACING_75 as f64 * s, y, h, s, t::DISABLED_CONTENT_COLOR, false);
+        let (y, h) = r(6, &self.rows);
+        if self.sdr { label(scene, fonts, tr("100 nits · SDR display"), ix, y, h, s, t::RAIL_LABEL_COLOR, true); }
+        else { self.tgt.paint(scene, fonts, s); label(scene, fonts, tr("nits"), self.tgt.rect.x1 + t::SPACING_75 as f64 * s, y, h, s, t::DISABLED_CONTENT_COLOR, false); }
         let (y, h) = r(7, &self.rows); label(scene, fonts, tr("Knee start"), ix, y, h, s, t::RAIL_GROUP_HEADER_COLOR, false);
         self.start.paint(scene, s, now);
         let (y, h) = r(9, &self.rows);

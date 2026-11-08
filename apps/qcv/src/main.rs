@@ -95,6 +95,8 @@ struct App {
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// colour (canon rows 198–208): the user's presets; the shared minColor pass (and its build); what the slot holds; an OCIO build in flight
     colors: color_model::Library, mincolor: Option<std::rc::Rc<std::cell::RefCell<qcv_color::MinColorPass>>>, mincolor_ready: Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>,
+    /// the OCIO configs the drawer has opened, by key
+    ocio_configs: HashMap<String, std::sync::Arc<qcv_color::ocio::Config>>,
     color_bound: Option<String>, ocio_rx: Option<(String, std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>)>,
 }
 
@@ -308,6 +310,7 @@ impl App {
     }
     fn tick(&mut self) {
         self.poll_color();
+        self.ensure_color_config();
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
@@ -578,10 +581,10 @@ impl App {
             g.drawer.set_pointer_present(e.pos().is_some(), now);
             let mut cmds = vec![];
             if matches!(e, min_ui::Event::Down { .. }) && g.drawer.has_focus() && !e.pos().is_some_and(|(x, y)| g.drawer.rect.contains(kurbo::Point::new(x, y))) { cmds.extend(g.drawer.blur()); }
-            let modal = g.drawer.is_modal();
+            let modal = g.drawer.is_modal(); let was_typing = g.drawer.is_typing();
             let (more, d, consumed) = g.drawer.event(&e, now, &mut g.fonts, bounds); cmds.extend(more);
             if d { g.ui_dirty = true; }
-            if g.drawer.is_modal() != modal { set_ime(&**g.window, g.drawer.is_modal()); }
+            let typing = g.drawer.is_typing(); if typing != was_typing { set_ime(&**g.window, typing); }
             for c in cmds { self.color_cmd(c); }
             if consumed || modal { return }
         }
@@ -1220,7 +1223,7 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_modal() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -1429,7 +1432,7 @@ fn main() {
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
     let colors = color_model::Library::load(settings.path());
-    let app = App { colors, mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -1667,7 +1670,13 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
             let mine = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, ..Default::default() }), preset: "Client PQ review".into() };
             presets.push(color_model::Preset { name: "Client PQ review".into(), stored: mine.clone(), builtin: false });
             let edited = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, knee_tgt: 200.0, agx_on: 1, ..Default::default() }), preset: "Client PQ review".into() };
-            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored: edited, custom: true, on: true, presets, file_peak: (1000, 1000.0) }, t0);
+            // `QCV_UI_SNAP_COLOR=ocio`: an OCIO chain on the bundled ACES 2.0 config
+            let (stored, ocio) = if std::env::var("QCV_UI_SNAP_COLOR").as_deref() == Ok("ocio") {
+                let cfg = qcv_color::ocio::Config::open(&color::ocio_config_path("ACES_2.0")).expect("ACES 2.0 config");
+                let o = color_model::OcioChain { config: "ACES_2.0".into(), input: cfg.inputs().into_iter().find(|i| i.contains("ACEScg")).unwrap_or_default(), look: String::new(), view: cfg.views().into_iter().find(|v| v.contains("SDR")).unwrap_or_default(), scene_lut: String::new(), knee: qcv_color::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } };
+                (color_model::Stored { chain: color_model::ClipChain::Ocio(o), preset: String::new() }, Some(color_drawer::OcioLists { configs: color::BUNDLED.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(), inputs: cfg.inputs(), looks: cfg.looks(), views: cfg.views() }))
+            } else { (edited, None) };
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
             d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts);
         }
