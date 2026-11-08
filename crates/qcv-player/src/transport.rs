@@ -102,6 +102,14 @@ pub struct TransportOptions { pub hw: Option<HwDevice>, /// the intra-codec devi
     pub refresh_ms: f32 }
 impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0 } } }
 
+/// What a pending swap does once its clip has opened: the latest scrub target, a seek (timeline frame, source frame), or rest
+/// at the in-point it was opened on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum After { Scrub(i32), Seek(i64, i32), AtIn }
+struct Pending { clip: usize, rx: mpsc::Receiver<Result<Slot, Error>>, autoplay: bool, after: After }
+/// A slot that leaves the transport is dropped on a thread: its decoders join their threads (seconds on a NAS / Windows).
+fn drop_off_thread(s: Slot) { thread::Builder::new().name("qcv-slot-drop".into()).spawn(move || drop(s)).ok(); }
+
 /// A decoder slot: one clip's streaming decoder (+ its scrub decoder), with the clip's source window.
 pub struct Slot { pub clip: usize, pub decoder: VideoDecoder, pub scrub: Option<ScrubDecoder>, pub info: SessionInfo, pub index: Arc<FrameIndex>, pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, /// parked on its in-point with the lookahead queued (a prewarmed slot); false once it has played
     pub positioned_at_in: bool }
@@ -127,6 +135,8 @@ pub struct Transport {
     pub timeline: Timeline, pub timer: PlaybackTimer, pub audio: Box<dyn AudioHooks>, opts: TransportOptions, range_override: crate::RangeOverride,
     slots: Vec<Slot>, active: usize, /// the spare slot's open in flight: (clip index, the receiver)
     prewarm: Option<(usize, mpsc::Receiver<Result<Slot, Error>>)>,
+    /// a clip that was NOT prewarmed, opening on a thread (the UI keeps running; the current picture holds): what to do on landing
+    pending: Option<Pending>,
     rate: Rate, frames: i32, fps: f64,
     review_speed: f64, loop_enabled: bool, in_point: i32, out_point: i32,
     /// user intent, captured BEFORE the decoder flips — the loop wrap reads it to decide on the auto-resume
@@ -179,7 +189,7 @@ impl Transport {
         let mut timer = PlaybackTimer::new();
         timer.set_frame_rate(fps); timer.set_duration(if fps > 0.0 { frames as f64 / fps } else { 0.0 }); timer.set_clock_policy(opts.clock_policy); timer.set_looping(opts.loop_enabled);
         Transport { timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts, range_override: crate::RangeOverride::Auto,
-            slots: vec![], active: 0, prewarm: None, rate, frames, fps,
+            slots: vec![], active: 0, prewarm: None, pending: None, rate, frames, fps,
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
@@ -227,7 +237,7 @@ impl Transport {
     pub fn has_in_out_range(&self) -> bool { self.in_point >= 0 && self.out_point > self.in_point }
     pub fn is_fast_seeking(&self) -> bool { self.fast.is_some() }
     pub fn modal_active(&self) -> bool { self.modal_active }
-    pub fn seek_in_flight(&self) -> bool { self.seek_gate.is_some() }
+    pub fn seek_in_flight(&self) -> bool { self.seek_gate.is_some() || self.pending.is_some() || self.pending_playlist_seek.is_some() }   // a clip still opening off-thread (or the 50-ms debounce) counts
     pub fn is_playlist(&self) -> bool { self.playlist_active }
     pub fn active_clip_index(&self) -> usize { self.slots[self.active].clip }
     pub fn prewarmed_clip(&self) -> Option<usize> { self.slots.iter().enumerate().find(|(i, _)| *i != self.active).map(|(_, s)| s.clip) }
@@ -306,28 +316,55 @@ impl Transport {
         let Some(mut target) = target else { return };
         if track.clips[target].is_gap { let Some(t) = self.find_non_gap_clip(target as isize, 1).or_else(|| self.find_non_gap_clip(target as isize, -1)) else { return }; target = t; }
         let was_playing = self.timer.is_playing();
-        if target != self.slots[self.active].clip { self.swap_to(target, was_playing); }
         let (start, src_in, src_rate) = { let c = &self.timeline.tracks[0].clips[target]; (c.start, c.source_in, c.source_rate) };
         let src = src_in + rescale(tl - start, self.rate, src_rate);
+        if target != self.slots[self.active].clip { if !self.swap_to(target, was_playing) { self.set_after(After::Seek(tl, src as i32)); self.timer.seek(tl as f64 / self.fps); return } }
+        else { self.pending = None; }   // back on the active clip: a pending open for another clip is stale
         self.issue_seek(tl, src as i32);
         if self.resume_after_playlist_seek { self.resume_after_playlist_seek = false; self.slots[self.active].decoder.play(); if !self.timer.is_playing() { self.timer.play(); } }
     }
     /// `playlistAdvanceToClip`: make `clip` the active one — the prewarmed slot when it holds that clip, else a fresh open
     /// (QCView's path); position on `src_frame` or the in-point; autoplay as asked.
-    fn swap_to(&mut self, clip: usize, autoplay: bool) {
+    /// Make `clip` the active one. A prewarmed / already-open slot swaps NOW (true). Otherwise the clip opens on a thread and
+    /// the swap lands in `pump_pending` (false) — DEVIATION from QCView's synchronous `playlistAdvanceToClip`: its open costs
+    /// ~50–100 ms; ours on 5.7K ProRes from a NAS on Windows took ~4 s and froze the UI mid-scrub (2026-11-08).
+    fn swap_to(&mut self, clip: usize, autoplay: bool) -> bool {
         self.pump_prewarm();
         if let Some(i) = self.slots.iter().position(|s| s.clip == clip) {
             if i != self.active { self.slots[self.active].decoder.pause(); self.active = i; self.stats.swaps_prewarmed += 1; }
             self.slots[self.active].positioned_at_in = false;
-        } else {
-            let Some(c) = self.clip(clip).cloned() else { return };
-            match Slot::open(clip, &c, &self.opts) {
-                Ok(s) => { s.decoder.seek_to_frame(c.source_in as i32); self.slots[self.active].decoder.pause(); if self.slots.len() >= 2 { let spare = 1 - self.active; self.slots[spare] = s; self.active = spare; } else { self.slots.push(s); self.active = self.slots.len() - 1; } self.stats.swaps_opened += 1; }
-                Err(e) => { log::warn!("Transport: swap to clip {clip}: {e}"); return }
-            }
+            self.pending = None;
+            self.last_shown = None; self.seek_gate = None;
+            if autoplay { self.slots[self.active].decoder.play(); }
+            self.ensure_prewarm();
+            return true
         }
+        if let Some(p) = self.pending.as_mut() { if p.clip == clip { p.autoplay = autoplay; return false } }
+        let Some(c) = self.clip(clip).cloned() else { return false };
+        let opts = self.opts.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new().name("qcv-swap-open".into()).spawn(move || { let r = Slot::open(clip, &c, &opts).map(|s| { s.decoder.seek_to_frame(c.source_in as i32); s }); if let Err(mpsc::SendError(r)) = tx.send(r) { if let Ok(s) = r { drop(s); } } }).ok();
+        self.pending = Some(Pending { clip, rx, autoplay, after: After::AtIn });   // a newer target replaces an older pending open (its slot is dropped on its thread)
+        false
+    }
+    fn set_after(&mut self, after: After) { if let Some(p) = self.pending.as_mut() { p.after = after; } }
+    /// A pending swap whose clip has opened lands: the spare slot takes it (the old one dropped off-thread), the latest target applies.
+    fn pump_pending(&mut self) {
+        let Some(p) = &self.pending else { return };
+        let r = match p.rx.try_recv() { Ok(r) => r, Err(mpsc::TryRecvError::Empty) => return, Err(mpsc::TryRecvError::Disconnected) => { self.pending = None; return } };
+        let p = self.pending.take().unwrap();
+        let s = match r { Ok(s) => s, Err(e) => { log::warn!("Transport: open of clip {}: {e}", p.clip); return } };
+        self.slots[self.active].decoder.pause();
+        if self.slots.len() >= 2 { let spare = 1 - self.active; let old = std::mem::replace(&mut self.slots[spare], s); drop_off_thread(old); self.active = spare; } else { self.slots.push(s); self.active = self.slots.len() - 1; }
+        self.stats.swaps_opened += 1;
         self.last_shown = None; self.seek_gate = None;
-        if autoplay { self.slots[self.active].decoder.play(); }
+        match p.after {
+            After::Scrub(src) => { let sl = &mut self.slots[self.active]; if let Some(sd) = &mut sl.scrub { sd.request_frame(src); } else { sl.decoder.seek_to_frame(src); } }
+            After::Seek(tl, src) => { self.issue_seek(tl, src); if self.resume_after_playlist_seek { self.resume_after_playlist_seek = false; self.slots[self.active].decoder.play(); if !self.timer.is_playing() { self.timer.play(); } } }
+            After::AtIn => {}
+        }
+        if p.autoplay { self.slots[self.active].decoder.play(); }
+        log::info!("Transport: clip {} opened off the UI thread", p.clip);
         self.ensure_prewarm();
     }
     /// The next non-gap clip after the active one (the first one when looping at the end) opens on the spare slot, on a
@@ -354,7 +391,7 @@ impl Transport {
         let Some((clip, rx)) = &self.prewarm else { return };
         let clip = *clip;
         match rx.try_recv() {
-            Ok(Ok(s)) => { self.prewarm = None; if self.slots.len() >= 2 { let spare = 1 - self.active; self.slots[spare] = s; } else { self.slots.push(s); } log::info!("Transport: prewarmed clip {clip}"); }
+            Ok(Ok(s)) => { self.prewarm = None; if self.slots.len() >= 2 { let spare = 1 - self.active; let old = std::mem::replace(&mut self.slots[spare], s); drop_off_thread(old); } else { self.slots.push(s); } log::info!("Transport: prewarmed clip {clip}"); }
             Ok(Err(e)) => { self.prewarm = None; log::warn!("Transport: prewarm of clip {clip}: {e}"); }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => { self.prewarm = None; }
@@ -377,7 +414,8 @@ impl Transport {
     pub fn scrub_to_frame(&mut self, frame: i32) {
         let tl = (frame as i64).clamp(0, (self.frames as i64 - 1).max(0));
         let Some((clip, src)) = self.resolve(tl) else { return };
-        if clip != self.slots[self.active].clip { self.swap_to(clip, false); }
+        if clip != self.slots[self.active].clip { if !self.swap_to(clip, false) { self.set_after(After::Scrub(src as i32)); if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); } self.seek_gate = None; return } }
+        else { self.pending = None; }
         let s = &mut self.slots[self.active];
         if let Some(sd) = &mut s.scrub { sd.request_frame(src as i32); } else { s.decoder.seek_to_frame(src as i32); }
         if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); }
@@ -513,6 +551,7 @@ impl Transport {
         if let Some(f) = &self.fast { if now - f.last_tick >= Duration::from_millis(FAST_SEEK_TICK_MS) { self.fast_seek_tick(now); } }
         if let Some((sec, at)) = self.pending_playlist_seek { if now - at >= Duration::from_millis(PLAYLIST_SEEK_DEBOUNCE_MS) { self.pending_playlist_seek = None; self.apply_playlist_seek(sec); } }
         self.pump_prewarm();
+        self.pump_pending();
         // a seek in flight: the integrator holds; the sought frame re-seats the clock when it lands
         if let Some((target, seeks_before, seq_before, issued)) = self.seek_gate {
             let a = self.active;
@@ -546,7 +585,7 @@ impl Transport {
         };
         // the clip dispatch (QCView's boundary cross: the mirror sees sourceTime pass sourceOut → playlistAdvanceToClip)
         let Some((clip, src)) = self.resolve(tl.min(self.frames as i64 - 1)) else { return None };   // a gap or past the end: the picture holds
-        if clip != self.slots[self.active].clip { let playing = self.timer.is_playing(); self.swap_to(clip, playing); }
+        if clip != self.slots[self.active].clip { let playing = self.timer.is_playing(); if !self.swap_to(clip, playing) { return None } }
         let (h, dropped) = self.slots[self.active].decoder.fetch_due(src as i32);
         self.stats.dropped += dropped;
         let h = h?;
@@ -564,7 +603,7 @@ impl Transport {
         if self.frames <= 1 { return }   // a 1-frame source: nothing to loop
         let tl = self.current_frame() as i64;
         let Some((clip, src)) = self.resolve(tl).or_else(|| { let c = self.find_non_gap_clip(0, 1)?; let k = self.clip(c)?; Some((c, k.source_in)) }) else { return };
-        if clip != self.slots[self.active].clip { self.swap_to(clip, self.user_wants_playback); }
+        if clip != self.slots[self.active].clip { if !self.swap_to(clip, self.user_wants_playback) { return } }
         let a = self.active;
         self.seek_gate = Some((src as i32, self.slots[a].decoder.seeks_performed(), self.slots[a].decoder.published_seq(), Instant::now()));
         self.slots[a].decoder.seek_to_frame(src as i32);

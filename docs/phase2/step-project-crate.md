@@ -122,3 +122,10 @@ Proposed and taken ("go"): 1 loading · 2 the bar · 3 gestures · 4 drops · 5 
   turns red and stays open. Test included.
 - Owed: the viewport preview while trimming (QCView's `beginEditScrub`), thumbnails in the bar, QCView's undo toast; the
   user's walk.
+- Walk fixes (2026-11-08): the band backing stacks on the clip bar (it was drawn 20 px low); the bar is 28 px (the user: "make
+  the tracks a little taller so text fits"); **cross-clip opens leave the UI thread** — Windows froze 6.5 s / 6.1 s scrubbing
+  across 5.7K NAS clips because a non-prewarmed clip opened synchronously (QCView's `playlistAdvanceToClip` does, at ~50–100
+  ms; ours took ~4 s there). `Transport::swap_to` now swaps at once only for an open / prewarmed slot; otherwise the clip opens
+  on a thread (`pending`), the picture holds, the latest scrub / seek target applies on landing, a return to the active clip
+  cancels it, and replaced slots are dropped off-thread (their decoders join). Bench: 12 random cross-clip seeks all land,
+  p50 62 ms incl. the 50-ms debounce; playback across cuts unchanged (0 dropped, all prewarmed).

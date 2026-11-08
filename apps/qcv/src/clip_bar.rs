@@ -34,7 +34,7 @@ pub struct ClipBar {
 
 impl ClipBar {
     pub fn new() -> ClipBar { ClipBar { rect: Rect::ZERO, selected: None, hover: None, press: None, last_click: None, drop_hint: None, pointer: (0.0, 0.0) } }
-    pub fn height(scale: f64) -> f64 { t::CLIP_BAR_HEIGHT as f64 * scale }
+    pub fn height(scale: f64) -> f64 { t::PLAYLIST_BAR_HEIGHT as f64 * scale }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     /// A gesture holds the pointer until its release (the shell's grab).
     pub fn is_pressed(&self) -> bool { self.press.is_some() }
@@ -43,7 +43,7 @@ impl ClipBar {
     fn clips(tl: &Timeline) -> &[Clip] { tl.tracks.first().map(|t| t.clips.as_slice()).unwrap_or(&[]) }
     fn span(c: &Clip, sc: &Scrubber, st: &ScrubState, scale: f64) -> (f64, f64) { (sc.x_of_frame(c.start, st, scale), sc.x_of_frame(c.start + c.duration, st, scale)) }
     fn at(&self, x: f64, tl: &Timeline, sc: &Scrubber, st: &ScrubState, scale: f64) -> Option<(Clip, Zone)> {
-        let hw = t::CLIP_BAR_HANDLE_WIDTH as f64 * scale;
+        let hw = t::PLAYLIST_BAR_HANDLE_WIDTH as f64 * scale;
         Self::clips(tl).iter().filter(|c| !c.is_gap).find_map(|c| {
             let (x0, x1) = Self::span(c, sc, st, scale);
             if x < x0 || x >= x1 { return None }
@@ -128,7 +128,7 @@ impl ClipBar {
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r);
         for c in clips {
             let (mut x0, mut x1) = Self::span(c, sc, st, scale);
-            if c.is_gap { paint::rect(scene, Rect::new(x0, y0, x1, y1), t::CLIP_BAR_GAP_COLOR); continue }
+            if c.is_gap { paint::rect(scene, Rect::new(x0, y0, x1, y1), t::PLAYLIST_BAR_GAP_COLOR); continue }
             // the trim in progress shows its result in place
             match &preview { Some(BarCmd::TrimTail { clip, new_source_out }) if *clip == c.id => { x1 = x0 + (sc.x_of_frame(rescale(*new_source_out - c.source_in, c.source_rate, tl.rate), st, scale) - sc.x_of_frame(0, st, scale)); }
                 Some(BarCmd::TrimHead { clip, new_source_in, .. }) if *clip == c.id => { x0 = x1 - (sc.x_of_frame(rescale(c.source_out - *new_source_in, c.source_rate, tl.rate), st, scale) - sc.x_of_frame(0, st, scale)); } _ => {} }
@@ -136,27 +136,27 @@ impl ClipBar {
             let selected = self.selected.as_deref() == Some(c.id.as_str());
             let hovered = self.hover.as_ref().is_some_and(|h| h.0 == c.id);
             let dragged = g.is_some_and(|g| g.op == Op::Reorder && g.clip.id == c.id);
-            let fill = if selected { t::CLIP_BAR_SELECTED_COLOR } else if current { t::CLIP_BAR_CURRENT_COLOR } else if hovered { t::CLIP_BAR_CLIP_HOVER_COLOR } else { t::CLIP_BAR_CLIP_COLOR };
+            let fill = if selected { t::PLAYLIST_BAR_SELECTED_COLOR } else if current { t::PLAYLIST_BAR_CURRENT_COLOR } else if hovered { t::PLAYLIST_BAR_CLIP_HOVER_COLOR } else { t::PLAYLIST_BAR_CLIP_COLOR };
             let cr = Rect::new(x0 + 0.5 * scale, y0, (x1 - 0.5 * scale).max(x0 + scale), y1);
-            paint::rounded(scene, cr, radius, if dragged { t::CLIP_BAR_GAP_COLOR } else { fill });
+            paint::rounded(scene, cr, radius, if dragged { t::PLAYLIST_BAR_GAP_COLOR } else { fill });
             // the name, elided in the middle, when there is room
             let pad = 6.0 * scale; let avail = cr.width() - 2.0 * pad;
             if avail > 16.0 * scale && !dragged {
-                let col = if selected { t::GRAY_100 } else { t::CLIP_BAR_LABEL_COLOR };
+                let col = if selected { t::GRAY_100 } else { t::PLAYLIST_BAR_LABEL_COLOR };
                 let mk = |s: &str, f: &mut Fonts| f.layout(s, Family::Sans, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(col));
                 let mut l = mk(&c.name, fonts);
                 if l.width() as f64 > avail { let ch: Vec<char> = c.name.chars().collect(); let mut keep = ch.len(); while keep > 2 { keep -= 1; let h = keep / 2; let s: String = format!("{}…{}", ch[..h].iter().collect::<String>(), ch[ch.len() - (keep - h)..].iter().collect::<String>()); l = mk(&s, fonts); if (l.width() as f64) <= avail { break } } }
                 if (l.width() as f64) <= avail { min_ui::fonts::draw_layout(scene, &l, Affine::translate((cr.x0 + pad, cr.y0 + (cr.height() - l.height() as f64) / 2.0))); }
             }
             // the trim handles on hover (QCView: they light when the pointer is in the 8-px zone)
-            if let Some((id, z)) = &self.hover { if *id == c.id && g.is_none() { let w = 2.0 * scale; match z { Zone::Head => paint::rect(scene, Rect::new(cr.x0, y0, cr.x0 + w, y1), t::CLIP_BAR_HANDLE_COLOR), Zone::Tail => paint::rect(scene, Rect::new(cr.x1 - w, y0, cr.x1, y1), t::CLIP_BAR_HANDLE_COLOR), Zone::Body => {} } } }
+            if let Some((id, z)) = &self.hover { if *id == c.id && g.is_none() { let w = 2.0 * scale; match z { Zone::Head => paint::rect(scene, Rect::new(cr.x0, y0, cr.x0 + w, y1), t::PLAYLIST_BAR_HANDLE_COLOR), Zone::Tail => paint::rect(scene, Rect::new(cr.x1 - w, y0, cr.x1, y1), t::PLAYLIST_BAR_HANDLE_COLOR), Zone::Body => {} } } }
         }
         // reorder: the insertion bar at the target edge + the ghost under the pointer; drops: the insertion bar
-        let bar = |scene: &mut Scene, x: f64| paint::rect(scene, Rect::new(x - scale, r.y0, x + scale, r.y1), t::CLIP_BAR_INSERT_COLOR);
+        let bar = |scene: &mut Scene, x: f64| paint::rect(scene, Rect::new(x - scale, r.y0, x + scale, r.y1), t::PLAYLIST_BAR_INSERT_COLOR);
         if let (Some(g), Some(BarCmd::Move { index, .. })) = (g, &preview) {
             let edge = if *index >= clips.len() { tl.duration } else { clips[*index].start }; bar(scene, sc.x_of_frame(edge, st, scale));
             let (gx0, gx1) = Self::span(&g.clip, sc, st, scale); let w = gx1 - gx0; let gx = g.x - (g.x0 - gx0);
-            paint::rounded(scene, Rect::new(gx, y0, gx + w, y1), radius, min_theme::Color { a: 0.85, ..t::CLIP_BAR_CLIP_HOVER_COLOR });
+            paint::rounded(scene, Rect::new(gx, y0, gx + w, y1), radius, min_theme::Color { a: 0.85, ..t::PLAYLIST_BAR_CLIP_HOVER_COLOR });
         }
         if let Some((_, x)) = self.drop_hint { bar(scene, x); }
         scene.pop_layer();
@@ -165,7 +165,7 @@ impl ClipBar {
             let n = match p { BarCmd::TrimTail { new_source_out, .. } => new_source_out - g.clip.source_out, BarCmd::TrimHead { new_source_in, .. } => g.clip.source_in - new_source_in, BarCmd::Slip { new_in, .. } => new_in - g.clip.source_in, _ => 0 };
             if n != 0 || matches!(g.op, Op::Slip) {
                 let txt = format!("{}{n} f", if n > 0 { "+" } else { "" });
-                let l = fonts.layout(&txt, Family::Mono, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::CLIP_BAR_LABEL_COLOR));
+                let l = fonts.layout(&txt, Family::Mono, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::PLAYLIST_BAR_LABEL_COLOR));
                 let pad = 6.0 * scale; let bw = l.width() as f64 + 2.0 * pad; let bh = r.height();
                 let bx = (g.x - bw / 2.0).clamp(r.x0, r.x1 - bw); let br = Rect::new(bx, r.y0 - bh - 4.0 * scale, bx + bw, r.y0 - 4.0 * scale);
                 paint::rounded(scene, br, radius, t::GRAY_75);
