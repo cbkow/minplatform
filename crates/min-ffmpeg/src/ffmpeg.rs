@@ -222,7 +222,19 @@ impl Session {
         if hw::is_hw_format(format) {
             // Vulkan (S6 milestone 1): the GPU decoded it; until the D3D12 bridge lands the frame is read back to planes
             if format == ff::AVPixelFormat::AV_PIX_FMT_VULKAN {
-                if !self.logged_hw_fallback { log::info!("Vulkan decoded ({w}x{h}) — hwframe_transfer + planes (the D3D12 bridge is S6's next milestone)"); self.logged_hw_fallback = true; }
+                if !self.logged_hw_fallback {
+                    // the frame's Vulkan layout, for the bridge's design: one multiplane image or one image per plane, the VkFormats, the tiling
+                    let mut desc = String::new();
+                    if !f.hw_frames_ctx.is_null() {
+                        let fc = &*((*f.hw_frames_ctx).data as *const ff::AVHWFramesContext);
+                        let vk = &*(fc.hwctx as *const ff::AVVulkanFramesContext);
+                        let vkf = &*(f.data[0] as *const ff::AVVkFrame);
+                        let n_img = vkf.img.iter().take_while(|i| **i != 0).count();
+                        let fmts: Vec<String> = vk.format.iter().take_while(|x| **x != 0).map(|x| format!("{x}")).collect();
+                        desc = format!(" — sw_format {}, {} VkImage(s), VkFormat(s) [{}], tiling {}, frame flags {:#x}, nb_layers {}", cstr(ff::av_get_pix_fmt_name(fc.sw_format)), n_img, fmts.join(" "), vkf.tiling, vk.flags as u64, vk.nb_layers);
+                    }
+                    log::info!("Vulkan decoded ({w}x{h}){desc} — hwframe_transfer + planes (the D3D12 bridge is S6's next milestone)"); self.logged_hw_fallback = true;
+                }
                 let r = ff::av_hwframe_transfer_data(self.sw_frame, frame, 0);
                 if r < 0 { return Err(Error::Open(format!("hwframe_transfer_data (vulkan): {}", av_err(r)))) }
                 (*self.sw_frame).color_range = f.color_range; (*self.sw_frame).colorspace = f.colorspace; (*self.sw_frame).color_primaries = f.color_primaries; (*self.sw_frame).color_trc = f.color_trc;
