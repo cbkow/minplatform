@@ -305,7 +305,7 @@ impl Engine {
                 if let Some(t) = imp.transfer { meta.transfer = t; }
                 let full_range = if frame.meta.range_forced { frame.meta.range == Range::Full } else { imp.full_range.unwrap_or(frame.meta.range == Range::Full) };
                 self.set_base(Base { levels: Levels::new(imp.code_bits, if imp.code_bits > 8 { 2 } else { 1 }, full_range, meta.matrix), meta });
-                let variant = if imp.packed { Variant::Packed } else { Variant::Biplanar };
+                let variant = if imp.packed { Variant::Packed } else { match imp.textures.len() { 3 => Variant::Planar3, 4 => Variant::Planar4, _ => Variant::Biplanar } };   // the Vulkan bridge hands planar sets (S6)
                 let views: Vec<_> = imp.textures.iter().map(|t| t.create_view(&Default::default())).collect();
                 let binds = self.binds(variant, &views);
                 self.shown = Some(Shown { variant, binds });

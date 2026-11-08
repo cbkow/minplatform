@@ -16,6 +16,7 @@ pub mod source;
 pub mod thread_policy;
 pub mod yuv_planar;
 pub mod decoder_cleanup;
+#[cfg(windows)] pub mod vk_bridge;
 pub use ffmpeg::{OpenOptions, SeqOptions, Session, SessionInfo};
 pub use frame_handle::FrameHandle;
 pub use frame_index::FrameIndex;

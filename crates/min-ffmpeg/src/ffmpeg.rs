@@ -31,6 +31,11 @@ impl Drop for HwFrame { fn drop(&mut self) { unsafe { ff::av_frame_free(&mut sel
 struct Dx12Keep { _frame: HwFrame, _handle: Box<min_present::Dx12FrameHandle> }
 #[cfg(windows)] unsafe impl Send for Dx12Keep {}
 #[cfg(windows)] unsafe impl Sync for Dx12Keep {}
+/// The Vulkan bridge's plane set: the bridge's ring owns the AVFrame until the slot is reused; the handle rides alone.
+#[cfg(windows)]
+struct VkKeep { _handle: Box<min_present::Dx12FrameHandle> }
+#[cfg(windows)] unsafe impl Send for VkKeep {}
+#[cfg(windows)] unsafe impl Sync for VkKeep {}
 
 /// What `open` learned (QCView's `metadataChanged` surface).
 #[derive(Clone, Debug)]
@@ -54,6 +59,8 @@ pub struct Session {
     fmt: *mut ff::AVFormatContext, cctx: *mut ff::AVCodecContext, pkt: *mut ff::AVPacket, frame: *mut ff::AVFrame, sw_frame: *mut ff::AVFrame,
     _hw: Option<HwDevice>, pub stream_idx: i32, pub info: SessionInfo, pub range_override: RangeOverride,
     #[allow(dead_code)] logged_hw_fallback: bool, logged_native: bool, logged_planes: bool,
+    /// S6 (Windows): the Vulkan → D3D12 bridge, built on the first Vulkan frame; `vk_bridge_tried` stops retrying after a failure
+    #[cfg(windows)] vk_bridge: Option<crate::vk_bridge::VkBridge>, #[cfg(windows)] vk_bridge_tried: bool,
 }
 unsafe impl Send for Session {}
 
@@ -141,7 +148,7 @@ impl Session {
                 if ext.ok { frame_count = ext.frames; if duration_secs <= 0.0 { duration_secs = ext.duration_us as f64 * 1e-6; } }
             }
             let info = SessionInfo { width: (*cctx).width as u32, height: (*cctx).height as u32, frame_count, codec_name, codec_short: cstr((*codec).name), pix_fmt, hw_accel, source_timecode, drop_frame, time_base: (tb.num, tb.den), frame_rate: (fr_num, fr_den), intra_only, meta: meta_from(&*cctx, format, RangeOverride::Auto), duration_secs };
-            Ok(Session { fmt, cctx, pkt: ff::av_packet_alloc(), frame: ff::av_frame_alloc(), sw_frame: ff::av_frame_alloc(), _hw: hw_keep, stream_idx, info, range_override: RangeOverride::Auto, logged_hw_fallback: false, logged_native: false, logged_planes: false })
+            Ok(Session { fmt, cctx, pkt: ff::av_packet_alloc(), frame: ff::av_frame_alloc(), sw_frame: ff::av_frame_alloc(), _hw: hw_keep, stream_idx, info, range_override: RangeOverride::Auto, #[cfg(windows)] vk_bridge: None, #[cfg(windows)] vk_bridge_tried: false, logged_hw_fallback: false, logged_native: false, logged_planes: false })
         }
     }
     pub fn frame_index(&self) -> FrameIndex { let i = &self.info; FrameIndex::new(i.time_base.0, i.time_base.1, i.frame_rate.0, i.frame_rate.1, i.frame_count, i.intra_only) }
@@ -220,8 +227,19 @@ impl Session {
         meta.range_forced = self.range_override != RangeOverride::Auto;
         let fin = |frame: Frame, s: &Session| FrameHandle { frame, pts, pts_us: s.pts_to_us(pts), frame_no: index.frame_for_pts(pts), keyframe, decode_ms: t0.elapsed().as_secs_f32() * 1000.0 };
         if hw::is_hw_format(format) {
-            // Vulkan (S6 milestone 1): the GPU decoded it; until the D3D12 bridge lands the frame is read back to planes
+            // Vulkan (S6): the bridge copies the planes into shared D3D12 textures on the GPU; without it the frame is read back
             if format == ff::AVPixelFormat::AV_PIX_FMT_VULKAN {
+                #[cfg(windows)]
+                {
+                    if self.vk_bridge.is_none() && !self.vk_bridge_tried { self.vk_bridge_tried = true; if let Some(hw) = self._hw.clone() { self.vk_bridge = crate::vk_bridge::VkBridge::new(&hw); } }
+                    if let Some(b) = self.vk_bridge.as_mut() {
+                        if let Some(handle) = b.export(frame, HwFrame(ff::av_frame_clone(frame))) {
+                            if !self.logged_native { log::info!("Vulkan → D3D12 bridge publish ({w}x{h}, {} planes)", handle.plane_count); self.logged_native = true; }
+                            let p = &*handle as *const _ as *mut std::ffi::c_void;
+                            return Ok(fin(Frame { width: w, height: h, pixels: Pixels::Native(NativeFrame { handle: p, keep: std::sync::Arc::new(VkKeep { _handle: handle }) }), meta }, self));
+                        }
+                    }
+                }
                 if !self.logged_hw_fallback {
                     // the frame's Vulkan layout, for the bridge's design: one multiplane image or one image per plane, the VkFormats, the tiling
                     let mut desc = String::new();
@@ -262,7 +280,7 @@ impl Session {
             {
                 let af = &*((*frame).data[0] as *const crate::hw::AVD3D12VAFrame);
                 let hwf = HwFrame(ff::av_frame_clone(frame));
-                let handle = Box::new(min_present::Dx12FrameHandle { resource: af.texture, fence: af.sync_ctx.fence, fence_value: af.sync_ctx.fence_value });
+                let handle = Box::new(min_present::Dx12FrameHandle { resource: af.texture, fence: af.sync_ctx.fence, fence_value: af.sync_ctx.fence_value, planes: [std::ptr::null_mut(); 4], plane_count: 0, interleaved_chroma: true, code_bits: 0 });
                 let p = &*handle as *const _ as *mut std::ffi::c_void;
                 if !self.logged_native { log::info!("D3D12VA zero-copy publish ({w}x{h})"); self.logged_native = true; }
                 return Ok(fin(Frame { width: w, height: h, pixels: Pixels::Native(NativeFrame { handle: p, keep: std::sync::Arc::new(Dx12Keep { _frame: hwf, _handle: handle }) }), meta }, self));

@@ -651,7 +651,7 @@ impl ApplicationHandler for App {
         #[cfg(windows)] let dev = presenter.engine.dx12_device_raw();
         #[cfg(not(windows))] let dev = None;
         self.hw = if self.o.sw { None } else { HwDevice::platform(dev) };
-        self.hw_intra = if self.o.sw { None } else { HwDevice::vulkan() };   // Windows: ProRes / FFV1 / APV on FFmpeg's Vulkan device (S6); None elsewhere
+        self.hw_intra = if self.o.sw { None } else { HwDevice::vulkan(dev) };   // Windows: ProRes / FFV1 / APV on FFmpeg's Vulkan device (S6); None elsewhere
         if let Some(h) = &self.hw { println!("hardware decode: {}", h.name()); } else if !self.o.sw { println!("hardware decode unavailable — software"); }
         #[cfg(target_os = "macos")] { mac::menu_bar(); mac::activate(); }
         window.focus_window();
@@ -1050,7 +1050,7 @@ fn run_headless(o: Opts) {
     if o.identity_chain { engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
-    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan() };
+    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan(dev) };
     println!("headless engine: zero-copy {} · decode {}", engine.zero_copy_available(), hw.as_ref().map(|h| h.name()).unwrap_or("software"));
     let src = Source::from_path(&file, None);
     let t = Instant::now();
@@ -1106,7 +1106,7 @@ fn run_scrub_bench(o: Opts) {
     engine.set_display(DisplayMode { out: OutMode::Linear, white: o.white });
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
-    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan() };
+    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan(dev) };
     let src = Source::from_path(&file, None);
     let t_open = Instant::now();
     let sopts = ScrubOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), hw_inter_scrub: o.scrub_hw || cfg!(windows), stats: true, threads: std::env::var("QCV_SCRUB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(0), budget_bytes: std::env::var("QCV_SCRUB_CACHE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512) << 20, ..Default::default() };
@@ -1292,7 +1292,7 @@ fn run_cut_bench(o: Opts) {
     let mut engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
-    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan() };
+    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan(dev) };
     let tl = match qcv_player::transport::playlist_from_specs(&specs) { Ok(t) => t, Err(e) => { println!("cut: {e}"); return } };
     let boundaries = tl.boundaries(); let total = tl.duration;
     let t0 = Instant::now();

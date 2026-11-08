@@ -6,7 +6,8 @@
 use ffmpeg_sys_next as ff;
 use std::{ffi::c_void, sync::Arc};
 
-struct Inner { buf: *mut ff::AVBufferRef, kind: HwKind }
+struct Inner { buf: *mut ff::AVBufferRef, kind: HwKind, /// the presenter's `ID3D12Device` (Windows): what D3D12VA was built on, what the Vulkan bridge exports into
+    d3d: *mut c_void }
 unsafe impl Send for Inner {}
 unsafe impl Sync for Inner {}
 impl Drop for Inner { fn drop(&mut self) { unsafe { ff::av_buffer_unref(&mut self.buf) } } }
@@ -43,7 +44,7 @@ impl HwDevice {
         let mut hwref: *mut ff::AVBufferRef = std::ptr::null_mut();
         let r = unsafe { ff::av_hwdevice_ctx_create(&mut hwref, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, std::ptr::null(), std::ptr::null_mut(), 0) };
         if r < 0 { log::warn!("VideoToolbox device context: {r}"); return None }
-        Some(HwDevice(Arc::new(Inner { buf: hwref, kind: HwKind::VideoToolbox })))
+        Some(HwDevice(Arc::new(Inner { buf: hwref, kind: HwKind::VideoToolbox, d3d: std::ptr::null_mut() })))
     }
     /// Windows: FFmpeg's D3D12VA device context on the presenter's `ID3D12Device` (a reference the context releases).
     #[cfg(windows)]
@@ -56,7 +57,7 @@ impl HwDevice {
             (*hwctx).device = device;
             let r = ff::av_hwdevice_ctx_init(hwref);
             if r < 0 { log::warn!("d3d12va: av_hwdevice_ctx_init failed ({r})"); return None }
-            Some(HwDevice(Arc::new(Inner { buf: hwref, kind: HwKind::D3d12va })))
+            Some(HwDevice(Arc::new(Inner { buf: hwref, kind: HwKind::D3d12va, d3d: device })))
         }
     }
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -64,7 +65,7 @@ impl HwDevice {
     /// Windows: FFmpeg's own Vulkan device (`av_hwdevice_ctx_create`) for the compute-decoded intra codecs. Logs the enabled
     /// device extensions the D3D12 bridge depends on; None when the loader or the device is missing.
     #[cfg(windows)]
-    pub fn vulkan() -> Option<HwDevice> {
+    pub fn vulkan(presenter_device: Option<*mut c_void>) -> Option<HwDevice> {
         unsafe {
             let mut hwref: *mut ff::AVBufferRef = std::ptr::null_mut();
             let r = ff::av_hwdevice_ctx_create(&mut hwref, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VULKAN, std::ptr::null(), std::ptr::null_mut(), 0);
@@ -77,12 +78,15 @@ impl HwDevice {
             }
             log::info!("vulkan: FFmpeg device up — {} device extensions, {} queue families; external memory win32 {mem_win32}, external semaphore win32 {sem_win32}", (*vk).nb_enabled_dev_extensions, (*vk).nb_qf);
             if !(mem_win32 && sem_win32) { log::warn!("vulkan: the D3D12 bridge needs VK_KHR_external_memory_win32 + VK_KHR_external_semaphore_win32 — decoded frames will be READ BACK"); }
-            Some(HwDevice(Arc::new(Inner { buf: hwref, kind: HwKind::Vulkan })))
+            Some(HwDevice(Arc::new(Inner { buf: hwref, kind: HwKind::Vulkan, d3d: presenter_device.unwrap_or(std::ptr::null_mut()) })))
         }
     }
     #[cfg(not(windows))]
-    pub fn vulkan() -> Option<HwDevice> { None }
+    pub fn vulkan(_presenter_device: Option<*mut c_void>) -> Option<HwDevice> { None }
     pub fn kind(&self) -> HwKind { self.0.kind }
+    /// The presenter's `ID3D12Device` this device was built beside (null on macOS / when none was given).
+    pub fn d3d_device(&self) -> *mut c_void { self.0.d3d }
+    pub fn raw_buf(&self) -> *mut ff::AVBufferRef { self.0.buf }
     pub fn pix_fmt(&self) -> ff::AVPixelFormat { self.0.kind.pix_fmt() }
     pub(crate) fn raw(&self) -> *mut ff::AVBufferRef { self.0.buf }
     pub(crate) fn device_type(&self) -> ff::AVHWDeviceType { unsafe { (*((*self.0.buf).data as *const ff::AVHWDeviceContext)).type_ } }

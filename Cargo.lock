@@ -1806,6 +1806,7 @@ dependencies = [
 name = "min-ffmpeg"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "ffmpeg-sys-next",
  "libc",
  "log",
@@ -1814,6 +1815,7 @@ dependencies = [
  "qcv-meta",
  "qcv-timeline",
  "thiserror 2.0.21",
+ "windows",
  "windows-sys 0.60.2",
 ]
 

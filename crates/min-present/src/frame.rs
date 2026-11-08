@@ -62,7 +62,10 @@ unsafe impl Sync for NativeFrame {}
 
 /// Windows: what a D3D12VA frame hands the presenter (the producer fills it from `AVD3D12VAFrame` and keeps the AVFrame).
 #[repr(C)] #[derive(Clone, Copy, Debug)]
-pub struct Dx12FrameHandle { pub resource: *mut c_void, pub fence: *mut c_void, pub fence_value: u64 }
+/// A D3D12VA frame (`resource` = the NV12 / P010 texture, `plane_count` 0) or — S6 — the Vulkan bridge's plane set (`planes[..plane_count]`,
+/// one single-plane shared texture each, `interleaved_chroma` when plane 1 is CbCr, `code_bits` the stored depth: 10 / 12 LSB-aligned in
+/// 16-bit textures, 8 in 8-bit). `fence` / `fence_value`: the presenter waits before sampling.
+pub struct Dx12FrameHandle { pub resource: *mut c_void, pub fence: *mut c_void, pub fence_value: u64, pub planes: [*mut c_void; 4], pub plane_count: u8, pub interleaved_chroma: bool, pub code_bits: u8 }
 
 pub enum Pixels { Planar { planes: Vec<Plane>, layout: PlanarLayout }, Native(NativeFrame) }
 
