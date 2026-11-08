@@ -21,6 +21,7 @@ struct U {
   bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
   media: vec4<f32>,      // the media rect in viewport px (x, y, w, h; y down)
   vp: vec4<f32>,         // the viewport size in px
+  aids: vec4<f32>,       // the viewer aids (screen pass only): gain, 1/gamma, channel (0 RGB 1 R 2 G 3 B 4 A 5 Y), active
 };
 // Levels in code values (QCView yuv_planar.h): limited Y = (code − 16K)/(219K), C = (code − 128K)/(224K); full Y = code/fullMax, C = (code − mid)/fullMax.
 fn levels(yc: f32, uc: f32, vc: f32) -> vec3<f32> {
@@ -76,8 +77,23 @@ fn to_709(lin: vec3<f32>, prim: f32) -> vec3<f32> {
   if (prim < 1.5) { return vec3(1.2249 * lin.r - 0.2247 * lin.g, -0.0420 * lin.r + 1.0419 * lin.g, -0.0197 * lin.r - 0.0786 * lin.g + 1.0983 * lin.b); }
   return vec3(1.6605 * lin.r - 0.5876 * lin.g - 0.0728 * lin.b, -0.1246 * lin.r + 1.1329 * lin.g - 0.0083 * lin.b, -0.0182 * lin.r - 0.1006 * lin.g + 1.1187 * lin.b);
 }
+// QCView's viewer aids on the linear output (linear_stage.h applyViewer, `Linear` encoding): gain, c^(1/γ) sign-kept, the
+// channel view (alpha is the callers': they know it). Inspection only — the screen's uniform set carries them, no other.
+fn viewer_aids(lin: vec3<f32>) -> vec3<f32> {
+  if (u.aids.w < 0.5) { return lin; }
+  var c = lin * u.aids.x;
+  if (abs(u.aids.y - 1.0) > 1e-5) { c = sign(c) * pow(abs(c), vec3(u.aids.y)); }
+  let ch = u.aids.z;
+  if (ch > 0.5 && ch < 1.5) { return vec3(c.r); }
+  if (ch > 1.5 && ch < 2.5) { return vec3(c.g); }
+  if (ch > 2.5 && ch < 3.5) { return vec3(c.b); }
+  if (ch > 4.5) { return vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))); }
+  return c;
+}
+fn alpha_view() -> bool { return u.aids.w > 0.5 && u.aids.z > 3.5 && u.aids.z < 4.5; }
 // Stage 3 — the display transform. 0 EDR linear · 2 PQ encode · 3 SDR linear clipped (sRGB surface) · 4 SDR sRGB-encoded.
-fn stage3(lin: vec3<f32>, mode: f32, white: f32) -> vec4<f32> {
+fn stage3(lin_in: vec3<f32>, mode: f32, white: f32) -> vec4<f32> {
+  let lin = viewer_aids(lin_in);
   if (mode < 0.5) { return vec4(max(lin, vec3(0.0)), 1.0); }
   if (mode < 2.5) { return vec4(pq_oetf(max(lin, vec3(0.0)) * white), 1.0); }
   if (mode < 3.5) { return vec4(clamp(lin, vec3(0.0), vec3(1.0)), 1.0); }

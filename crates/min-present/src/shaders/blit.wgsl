@@ -7,6 +7,7 @@
   let s = textureSample(tex, samp, in.uv);
   var lin = s.rgb;
   if (u.src_transfer < 3.5) { lin = eotf(s.rgb, u.src_transfer, u.white); }
+  if (alpha_view()) { return vec4(vec3(s.a), 1.0); }
   let o = stage3(lin, u.out_mode, u.white);
   return vec4(o.rgb * s.a, s.a);   // the working texture's alpha (planar4 wrote it premultiplied; a chain that drops it leaves 1)
 }

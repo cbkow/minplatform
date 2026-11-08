@@ -16,5 +16,6 @@
     let vc = textureSample(t2, samp, in.uv).r * u.code_max;
     o = finish(ycc_to_rgb(levels(yc, uc, vc)));
   }
+  if (alpha_view()) { return vec4(vec3(a), 1.0); }
   return vec4(o.rgb * a, a);   // premultiplied: the pipeline blends One / OneMinusSrcAlpha over the background (row 153)
 }

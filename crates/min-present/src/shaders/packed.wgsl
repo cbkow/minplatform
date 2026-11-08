@@ -7,5 +7,6 @@
 @fragment fn fs(in: VsOut) -> @location(0) vec4<f32> {
   let s = textureSample(tex, samp, in.uv);
   let o = finish(ycc_to_rgb(levels(s.g * u.code_max, s.b * u.code_max, s.a * u.code_max)));
+  if (alpha_view()) { return vec4(vec3(s.r), 1.0); }
   return vec4(o.rgb * s.r, s.r);   // premultiplied: the pipeline blends One / OneMinusSrcAlpha over the background (row 153)
 }

@@ -255,6 +255,7 @@ impl crate::App {
                 if st.preset == name { self.write_target(st); }
             }
             DCmd::DeletePreset(name) => { self.colors.user.retain(|p| p.name != name); self.colors.save(); }
+            DCmd::Aids(a) => { if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_viewer_aids(a); } }
             DCmd::Toggle => { if let Some(g) = self.gpu.as_mut() { g.drawer.toggle(now); self.settings.set_bool(k::COLOR_DRAWER_OPEN, g.drawer.open); g.ui_dirty = true; } }
         }
         self.apply_color();

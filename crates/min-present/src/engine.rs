@@ -7,7 +7,9 @@ use std::{any::Any, collections::VecDeque, sync::Arc, time::Instant};
 struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid: f32, full_range: f32, kr: f32, kb: f32, src_transfer: f32, src_primaries: f32, out_mode: f32, white: f32, is_rgb: f32, rgb_expand: f32, /// display rotation in quarter turns CW (the sampler inverse-rotates; QCView's `rotatedSrcUv`)
     rot: f32, off: [f32; 2], pad1: [f32; 2],
     /// stage 0, the background (row 153): mode / bounds-mix strength / checker tile px; the media rect in px (y down); the viewport size
-    bg: [f32; 4], media: [f32; 4], vp: [f32; 4] }
+    bg: [f32; 4], media: [f32; 4], vp: [f32; 4],
+    /// the viewer aids (canon row 204): gain = 2^exposure, 1 / gamma, channel (0 RGB · 1 R · 2 G · 3 B · 4 A · 5 Y), active
+    aids: [f32; 4] }
 
 /// What a colour chain consumes and produces: linear BT.709 working RGB, or display-encoded RGB with a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,6 +126,17 @@ impl Uploader {
     }
 }
 
+/// QCView's viewer aids (linear_stage.h `ViewerAids` + the stage's gain): inspection only — on the screen pass alone, never in
+/// the chain-in, the snapshots or the scopes. Exposure in stops (a gain on the linear output), gamma (> 1 lifts: c^(1/γ)),
+/// the channel view (0 RGB · 1 R · 2 G · 3 B · 4 Alpha · 5 Luma).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewerAids { pub exposure: f32, pub gamma: f32, pub channel: u8 }
+impl Default for ViewerAids { fn default() -> Self { ViewerAids { exposure: 0.0, gamma: 1.0, channel: 0 } } }
+impl ViewerAids {
+    pub fn is_identity(&self) -> bool { self.exposure.abs() < 1e-4 && (self.gamma - 1.0).abs() < 1e-4 && self.channel == 0 }
+    fn gpu(&self) -> [f32; 4] { [2f32.powf(self.exposure), 1.0 / self.gamma.clamp(0.1, 10.0), self.channel as f32, if self.is_identity() { 0.0 } else { 1.0 }] }
+}
+
 pub struct Engine {
     /// No presenter will submit after `show` (a headless engine): flush + maintain per show.
     pub standalone: bool,
@@ -136,7 +149,7 @@ pub struct Engine {
     /// Stage 4: the UI layer's pipeline (blended), its uniform, and the bind group for the overlay texture when one is set.
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
-    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32,
+    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids,
     geometry: Geometry,
     transfer_override: TransferChoice,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
@@ -251,7 +264,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -315,6 +328,9 @@ impl Engine {
         if self.rotation_quarters() & 1 == 1 { (eh, ew) } else { (ew, eh) }
     }
     /// The viewport background mode (QCView `display/backgroundMode`: 0 Black, 1 DarkGray, 2 DarkChecker, 3 LightChecker).
+    /// The viewer aids on the screen pass (a uniform write).
+    pub fn set_viewer_aids(&mut self, a: ViewerAids) { if a != self.aids { self.aids = a; self.write_uniforms(); } }
+    pub fn viewer_aids(&self) -> ViewerAids { self.aids }
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
     /// The window's scale factor: the checker tile is 32 DEVICE pixels (QCView's Metal path passes the contentsScale-aware size).
@@ -331,13 +347,13 @@ impl Engine {
     fn write_bg_uniform(&self) {
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
         let m = self.bg_mode as usize;
-        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
+        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
             bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, 0.0], media: self.media_rect_px(), vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0] }));
     }
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
@@ -413,13 +429,13 @@ impl Engine {
         let meta = self.effective_meta(b.meta);
         let (trc, _, prim) = meta.selectors();
         let l = b.levels;
-        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
+        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
         let rot = self.rotation_quarters() as f32;
         let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear), u([1.0, 1.0], [0.0, 0.0], display_out)];
-        sets[0].rot = rot;
+        sets[0].rot = rot; sets[0].aids = self.aids.gpu();
         // BYPASS = AS STORED (canon row 180, QCView's rule): with no chain engaged, display-referred SDR (sRGB / BT.1886 tags) is
         // linearised with the sRGB EOTF so the surface's encode is a no-op and the screen shows the stored values — on the EDR
         // layer as on an 8-bit sRGB surface. NOT a transfer opinion: the 2.2-vs-2.4 question is the chain's Input, which still
@@ -430,7 +446,7 @@ impl Engine {
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
         let rotq = self.rotation_quarters() as f32;
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -631,6 +647,27 @@ mod tests {
         let out = e.render_offscreen(4, 1).unwrap();
         assert!(near(out[0], 0.0), "overlay removed");
     }
+    #[test]
+    fn viewer_aids_touch_the_screen_pass_only() {
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        let mut f = ramp_frame(256, 16); f.meta.transfer = Transfer::Srgb;
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        e.show(&f).unwrap();
+        let plain = e.render_offscreen(256, 16).unwrap();
+        let (snap, _, _) = e.snapshot(Snapshot::Linear).unwrap();
+        e.set_viewer_aids(ViewerAids { exposure: 1.0, ..Default::default() });
+        let up = e.render_offscreen(256, 16).unwrap();
+        let x = 128 * 4; assert!((up[x] / plain[x] - 2.0).abs() < 0.01, "+1 stop doubles linear light: {} vs {}", up[x], plain[x]);
+        let (snap2, _, _) = e.snapshot(Snapshot::Linear).unwrap();
+        assert_eq!(snap, snap2, "the snapshots never carry the aids");
+        e.set_viewer_aids(ViewerAids { gamma: 2.0, ..Default::default() });
+        let g = e.render_offscreen(256, 16).unwrap(); assert!((g[x] - plain[x].sqrt()).abs() < 0.01, "gamma 2 = c^(1/2)");
+        e.set_color_pass(Some(Box::new(IdentityColorPass)));
+        e.set_viewer_aids(ViewerAids { exposure: 1.0, ..Default::default() });
+        let chained = e.render_offscreen(256, 16).unwrap(); assert!((chained[x] / plain[x] - 2.0).abs() < 0.02, "and after a chain (the blit)");
+        e.set_viewer_aids(ViewerAids::default());
+    }
+
     #[test]
     fn identity_chain_matches_the_fused_route() {
         let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };

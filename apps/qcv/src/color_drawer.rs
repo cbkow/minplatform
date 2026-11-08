@@ -11,7 +11,8 @@ use crate::color_model::{ClipChain, OcioChain, Preset, Stored};
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
 use crate::color_columns::{AgxPanel, KneePanel};
-use min_ui::{anim::{mix, Ramp}, paint, Button, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, ListColumn, ListRow, Menu, MenuItem, Popover, Switch, TextButton, TextField, Variant};
+use min_present::ViewerAids;
+use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, Response, Slider, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, ListColumn, ListRow, Menu, MenuItem, Popover, Switch, TextButton, TextField, Variant};
 use std::time::Instant;
 use vello::Scene;
 
@@ -20,7 +21,8 @@ fn tr(s: &'static str) -> &'static str { min_i18n::trc("ColorPanel", s) }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
-    NewOcio, OpenConfig, ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
+    NewOcio, OpenConfig, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
+    Aids(ViewerAids), ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
 
 /// What the drawer shows, fed by the shell every sync.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +66,8 @@ pub struct ColorDrawer {
     knee: KneePanel, agx: AgxPanel, /// the target the columns' open / collapsed state was last set for
     columns_for: String,
     on: Switch, on_rect: Rect,
+    /// QCView's viewer-aids row: Exposure (±4 st), Gamma (0.25–4), the channel view, one reset
+    exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
     menu: Menu, menu_for: Option<String>,
@@ -88,6 +92,9 @@ impl ColorDrawer {
             preset_rows: vec![],
             knee: KneePanel::new(), agx: AgxPanel::new(), columns_for: String::new(),
             on: Switch::new(false), on_rect: Rect::ZERO,
+            exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
+            chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
+            aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
             save_as: TextButton::new(tr("Save as preset…"), Variant::Secondary).size_s(), reset: TextButton::new(tr("Reset to default"), Variant::Secondary).size_s(),
             apply_all: TextButton::new(tr("Apply to all clips"), Variant::Secondary).size_s(), make_default: TextButton::new(tr("Make project default"), Variant::Secondary).size_s(),
             header: Rect::ZERO, menu: Menu::new(), menu_for: None, name_pop: Popover::new(""), name_field: TextField::new(Family::Sans, t::RAIL_LABEL_SIZE), naming: None,
@@ -97,10 +104,10 @@ impl ColorDrawer {
     pub fn toggle(&mut self, now: Instant) { self.open = !self.open; self.open_ramp.set_target(if self.open { 1.0 } else { 0.0 }, now); }
     /// The drawer's height on screen now (px), for the layout that pushes the picture up.
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
-    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee.animating(now) || self.agx.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
+    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee.animating(now) || self.agx.animating(now) || self.exp.animating(now) || self.gam.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
     pub fn is_modal(&self) -> bool { self.menu.is_open() || self.naming.is_some() }
     pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee.focused() || self.agx.focused() || self.oinput.focused() }
-    fn dragging(&self) -> bool { self.knee.dragging() || self.agx.dragging() }
+    fn dragging(&self) -> bool { self.knee.dragging() || self.agx.dragging() || self.exp.dragging() || self.gam.dragging() }
     pub fn set_pointer_present(&mut self, on: bool, now: Instant) { if on { if self.present.target() < 0.5 { self.present = Ramp::new(1.0, t::ANIMATION_DURATION_SLIDE); } } else { self.present.set_target(0.0, now); } }
 
     /// Mirror the shell's state; true when something visible changed.
@@ -179,6 +186,14 @@ impl ColorDrawer {
         let bottom = Rect::new(full.x0 + pad, full.y1 - row, full.x1 - pad, full.y1);
         let (sw, sh) = Switch::size(scale);
         self.on_rect = bottom; self.on.rect = Rect::new(bottom.x0, bottom.y0 + (row - sh) / 2.0, bottom.x0 + sw, bottom.y0 + (row + sh) / 2.0);
+        // the viewer aids, right-aligned: Exposure [slider] 0.0 st · Gamma [slider] 1.00 · RGB R G B A Y · ↺
+        let (rw, rh) = self.aids_reset.measure(fonts, scale);
+        let mut ax = bottom.x1 - rw; self.aids_reset.rect = Rect::new(ax, bottom.y0 + (row - rh) / 2.0, ax + rw, bottom.y0 + (row + rh) / 2.0);
+        let cw: f64 = self.chan.buttons.iter().map(|b| b.measure(fonts, scale).0).sum::<f64>() + t::ACTION_GROUP_GAP_COMPACT as f64 * scale * 5.0;
+        ax -= cw + t::SPACING_200 as f64 * scale; let ch = self.chan.buttons[0].measure(fonts, scale).1; self.chan.layout(fonts, ax, bottom.y0 + (row - ch) / 2.0, scale);
+        let sl = 140.0 * scale; let rd = 72.0 * scale; let lab = 64.0 * scale;
+        ax -= rd + sl + lab + t::SPACING_300 as f64 * scale; self.gam_rect = Rect::new(ax, bottom.y0, ax + lab + sl + rd, bottom.y1); self.gam.rect = Rect::new(ax + lab, bottom.y0, ax + lab + sl, bottom.y1);
+        ax -= rd + sl + lab + t::SPACING_400 as f64 * scale; self.exp_rect = Rect::new(ax, bottom.y0, ax + lab + sl + rd, bottom.y1); self.exp.rect = Rect::new(ax + lab, bottom.y0, ax + lab + sl, bottom.y1);
         let body = Rect::new(full.x0 + pad, self.header.y1, full.x1 - pad, bottom.y0 - t::SPACING_100 as f64 * scale);
         // Save as preset… under the presets list
         let (bw, bh) = self.save_as.measure(fonts, scale);
@@ -219,6 +234,13 @@ impl ColorDrawer {
             ClipChain::Ocio(o) => Some(Cmd::Edit(Stored { chain: ClipChain::Ocio(OcioChain { knee: qcv_color::Knee { enabled: c.knee_on != 0, source_nits: c.knee_src, target_nits: c.knee_tgt, start: c.knee_start }, ..o.clone() }), preset: v.stored.preset.clone() })),
             ClipChain::MinColor(m) => Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(qcv_color::Chain { knee_on: c.knee_on, knee_src: c.knee_src, knee_tgt: c.knee_tgt, knee_start: c.knee_start, ..*m }), preset: v.stored.preset.clone() })),
         }
+    }
+    fn set_aids(&mut self, a: ViewerAids) {
+        self.aids = a;
+        if !self.exp.dragging() { self.exp.value = ((a.exposure + 4.0) / 8.0).clamp(0.0, 1.0); }
+        if !self.gam.dragging() { self.gam.value = ((a.gamma - 0.25) / 3.75).clamp(0.0, 1.0); }
+        for (i, b) in self.chan.buttons.iter_mut().enumerate() { b.selected = i as u8 == a.channel; }
+        self.aids_reset.enabled = !a.is_identity();
     }
     fn with_chain(&self, c: qcv_color::Chain) -> Option<Cmd> { let v = self.view.as_ref()?; Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(c), preset: v.stored.preset.clone() })) }
     fn open_naming(&mut self, n: Naming, fonts: &mut Fonts, bounds: Rect) {
@@ -295,6 +317,17 @@ impl ColorDrawer {
             let (c, d) = self.agx.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
         }
         let (k, d) = self.on.event(e, now); dirty |= d; if let Some(on) = k { cmds.push(Cmd::SetOn(on)); }
+        // the viewer aids: a double-click on a slider resets it (QCView)
+        let mut a = self.aids;
+        if let Event::Down { x, y, button: Button::Primary } = *e { for (id, sl) in [(0u8, &self.exp), (1u8, &self.gam)] { if sl.hit(x, y) {
+            if self.last_aid_press.is_some_and(|(j, t0)| j == id && now.duration_since(t0).as_millis() < 400) { if id == 0 { a.exposure = 0.0 } else { a.gamma = 1.0 } self.last_aid_press = None; }
+            else { self.last_aid_press = Some((id, now)); }
+        } } }
+        let (v, d) = self.exp.event(e, now, self.scale); dirty |= d; if let Some(v) = v { a.exposure = ((v * 8.0 - 4.0) * 10.0).round() / 10.0; }
+        let (v, d) = self.gam.event(e, now, self.scale); dirty |= d; if let Some(v) = v { a.gamma = ((0.25 + v * 3.75) / 0.05).round() * 0.05; }
+        for (i, rsp) in self.chan.event(e, now) { dirty = true; if rsp == Response::Clicked { a.channel = i as u8; } }
+        if self.aids_reset.event(e, now) == Response::Clicked { a = ViewerAids::default(); }
+        if a != self.aids { self.set_aids(a); cmds.push(Cmd::Aids(a)); }
         let (c, d) = self.save_as.event(e, now); dirty |= d; if c { self.open_naming(Naming::Save, fonts, bounds); dirty = true; }
         let (c, d) = self.reset.event(e, now); dirty |= d; if c { cmds.push(Cmd::ResetToDefault); }
         let (c, d) = self.apply_all.event(e, now); dirty |= d; if c { cmds.push(Cmd::ApplyToAll); }
@@ -384,6 +417,15 @@ impl ColorDrawer {
         self.on.paint(scene, s, now);
         let ol = fonts.layout(if v.on { tr("Color On") } else { tr("Color Off") }, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if v.on { t::RAIL_LABEL_COLOR } else { t::RAIL_GROUP_HEADER_COLOR }));
         min_ui::fonts::draw_layout(scene, &ol, Affine::translate((self.on.rect.x1 + t::SPACING_100 as f64 * s, mid(&ol, self.on_rect))));
+        for (r, sl, name, val) in [(self.exp_rect, &self.exp, tr("Exposure"), format!("{:+.1} st", self.aids.exposure)), (self.gam_rect, &self.gam, tr("Gamma"), format!("{:.2}", self.aids.gamma))] {
+            let l = fonts.layout(name, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
+            min_ui::fonts::draw_layout(scene, &l, Affine::translate((r.x0, mid(&l, r))));
+            sl.paint(scene, s, now);
+            let vl = fonts.layout(&val, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
+            min_ui::fonts::draw_layout(scene, &vl, Affine::translate((r.x1 - vl.width() as f64, mid(&vl, r))));
+        }
+        self.chan.paint(scene, fonts, s, now);
+        if !self.aids.is_identity() { self.aids_reset.paint(scene, fonts, s, now); }
         scene.pop_layer();
     }
     /// The menu and the naming popover, over everything.
