@@ -4,7 +4,7 @@
 //! is the DISPLAY window, the data window placed in it, zeros outside. DEVIATIONS (written): chunks decode in parallel on our
 //! threads (Imf's global pool, 2–8 threads, is how QCView got its "parallel mode"); the output is planar G, B, R [, A] halves
 //! (the presenter's planar RGB) instead of interleaved RGBA16F, so no alpha is synthesised — three planes mean opaque.
-use crate::{pitch_for, sys::*, Error, Image, Sample, MIN_FILE_BYTES};
+use crate::{pitch_for, sys::*, Error, Image, Sample};
 use std::{ffi::{CStr, CString}, sync::atomic::{AtomicUsize, Ordering}};
 
 struct Ctx(exr_context_t);
@@ -15,7 +15,8 @@ impl Drop for Ctx { fn drop(&mut self) { unsafe { exr_finish(&mut self.0); } } }
 fn ok(r: exr_result_t, what: &str, path: &str) -> Result<(), Error> { if r == 0 { Ok(()) } else { Err(Error::Decode(path.into(), format!("{what} failed ({r})"))) } }
 
 fn open(path: &str) -> Result<Ctx, Error> {
-    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) < MIN_FILE_BYTES { return Err(Error::Open(format!("{path}: missing or truncated"))) }
+    // No size gate: QCView declares kBrokenFileThresholdBytes but never applies it — a short file fails in the decoder.
+    if std::fs::metadata(path).is_err() { return Err(Error::Open(format!("{path}: missing"))) }
     let c = CString::new(path).map_err(|_| Error::Open(path.into()))?;
     let mut init = exr_context_initializer_t { size: std::mem::size_of::<exr_context_initializer_t>(), ..Default::default() };
     init.error_handler_fn = Some(quiet);   // errors come back as results; the default handler prints every one to stderr
@@ -42,7 +43,7 @@ pub fn layers(path: &str) -> Result<Vec<String>, Error> {
     let ch = channels(&ctx, 0);
     let mut out: Vec<String> = vec![];
     if ch.iter().any(|(c, _)| c == "R") { out.push(String::new()); }
-    for (c, _) in &ch { if let Some(p) = c.strip_suffix(".R") { if !out.iter().any(|o| o == p) { out.push(p.to_string()); } } }
+    for (c, _) in &ch { if let Some(p) = c.strip_suffix(".R") && !out.iter().any(|o| o == p) { out.push(p.to_string()); } }
     Ok(out)
 }
 
@@ -63,7 +64,7 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
     let has = |n: &str| chans.iter().any(|(c, _)| c == n);
     let mut prefix = if layer.is_empty() { String::new() } else { format!("{layer}.") };
     if !has(&format!("{prefix}R")) && !layer.is_empty() { prefix.clear(); }
-    if !has(&format!("{prefix}R")) && layer.is_empty() { if let Some(fb) = chans.iter().find_map(|(c, _)| c.strip_suffix(".R").map(|s| s.to_string())) { prefix = format!("{fb}."); } }
+    if !has(&format!("{prefix}R")) && layer.is_empty() && let Some(fb) = chans.iter().find_map(|(c, _)| c.strip_suffix(".R").map(|s| s.to_string())) { prefix = format!("{fb}."); }
     let names = ["G", "B", "R", "A"].map(|c| format!("{prefix}{c}"));   // the presenter's planar order
     if !(has(&names[0]) && has(&names[1]) && has(&names[2])) { return Err(Error::NoRgb(path.into(), layer.into())) }
     let alpha = has(&names[3]);
