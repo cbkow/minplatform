@@ -140,7 +140,12 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> Option<String> { let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/exr_4k/frame_0001.exr"); p.exists().then(|| p.to_string_lossy().into_owned()) }
+    /// `MIN_IMAGE_EXR_FIXTURE` overrides the path (rhombus: a synthetic EXR generated on the box — fixtures never travel).
+    fn fixture() -> Option<String> {
+        let p = std::env::var_os("MIN_IMAGE_EXR_FIXTURE").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/exr_4k/frame_0001.exr"));
+        p.exists().then(|| p.to_string_lossy().into_owned())
+    }
     fn half(b: &[u8]) -> f32 { let h = u16::from_le_bytes([b[0], b[1]]); let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 }; let e = ((h >> 10) & 0x1f) as i32; let m = (h & 0x3ff) as f32; s * if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e - 15) } }
     #[test]
     fn the_4k_fixture_decodes_to_three_half_planes_with_plausible_values() {
@@ -166,8 +171,8 @@ mod tests {
 mod probe {
     #[test] #[ignore]
     fn print_points() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/exr_4k/frame_0001.exr");
-        let img = super::load(&p.to_string_lossy(), "", 0).unwrap();
+        let p = std::env::var("MIN_IMAGE_EXR_FIXTURE").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/exr_4k/frame_0001.exr").into());
+        let img = super::load(&p, "", 0).unwrap();
         let half = |b: &[u8]| { let h = u16::from_le_bytes([b[0], b[1]]); let s = if h & 0x8000 != 0 { -1.0f32 } else { 1.0 }; let e = ((h >> 10) & 0x1f) as i32; let m = (h & 0x3ff) as f32; s * if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e - 15) } };
         for (x, y) in [(1920usize, 1080usize), (100, 100), (3000, 1800), (500, 1500)] {
             let o = y * img.pitch as usize + x * 2;
