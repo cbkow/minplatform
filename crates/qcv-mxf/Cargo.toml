@@ -1,0 +1,20 @@
+[package]
+name = "qcv-mxf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+# GPL: the tag table is generated from ExifTool's MXF.pm (Perl's terms: GPL-1.0-or-later OR Artistic-1.0); qcv-meta stays
+# permissive (row 132) and does not depend on this crate
+license = "GPL-3.0-or-later"
+description = "The MXF header-metadata scanner (canon row 137, step 2d): ExifTool's MXF reader carried onto Rust, its table generated from MXF.pm"
+
+[dependencies]
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "mxf-parity"
+path = "src/bin/mxf-parity.rs"
