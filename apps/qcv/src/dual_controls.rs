@@ -150,10 +150,6 @@ impl DualControls {
             };
             let nl = crate::project_panel::elided(fonts, &text, weight, color, (right - nx).max(0.0), scale);
             min_ui::fonts::draw_layout(scene, &nl, Affine::translate((nx, c.rect.y0 + (c.rect.height() - nl.height() as f64) / 2.0)));
-            if self.shows_b() && self.target == side && self.drop_side.is_none() {
-                let bw = scale.max(1.0);
-                scene.stroke(&Stroke::new(bw), Affine::IDENTITY, paint::color(letter_c), None, &RoundedRect::from_rect(c.rect.inset(-bw / 2.0), r));
-            }
             if self.drop_side == Some(side) {
                 let bw = 2.0 * scale;
                 scene.stroke(&Stroke::new(bw), Affine::IDENTITY, paint::color(t::FOCUS_INDICATOR_COLOR), None, &RoundedRect::from_rect(c.rect.inset(-bw / 2.0), r));

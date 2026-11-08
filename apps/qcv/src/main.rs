@@ -1564,9 +1564,9 @@ impl ApplicationHandler for App {
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
-        // macOS rounds the window's bottom corners (~16 pt): the scrubber's camera insets past them, so the timeline's ends —
-        // and the playlist / dual lanes on the same camera — keep their trim zones reachable (the walk, 2026-11-08)
-        if cfg!(target_os = "macos") { if let Some(g) = self.gpu.as_mut() { g.scrubber.end_inset = 16.0; } }   // the waveform's A / B (row 173)
+        // the scrubber's camera insets 16 px at both ends (the walk, 2026-11-08): past macOS's rounded bottom corners, so the
+        // timeline's ends keep their trim zones reachable, and room for the dual lanes' A / B row labels on every OS
+        if let Some(g) = self.gpu.as_mut() { g.scrubber.end_inset = dual_bars::LABEL_W; }   // the waveform's A / B (row 173)
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
         // the menu bar (QCView's MenuBar, row 143): the app's native menu on macOS; QCView's in-window bar on Windows (row 194)

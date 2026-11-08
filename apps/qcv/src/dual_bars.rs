@@ -17,6 +17,8 @@ const THRESHOLD_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u128 = 400;
 const SNAP_PX: f64 = 8.0;
 pub const LANE: f64 = 12.0;
+/// The row label cell (logical px) — the scrubber's end inset, so frame 0 starts just past it.
+pub const LABEL_W: f64 = 16.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LaneCmd {
@@ -145,9 +147,12 @@ impl DualBars {
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r);
         for side in [Side::A, Side::B] {
             let lane = self.lane(side); let (y0, y1) = (lane.y0 + inset, lane.y1 - inset);
-            let strong = if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR };
-            // the target lane: a hairline in its side colour along its left end (⌘K and the keys act here)
-            if self.target == side { paint::rect(scene, Rect::new(lane.x0, y0, lane.x0 + 2.0 * scale, y1), strong); }
+            // the row's label cell in the scrubber's end inset: the side letter in its colour (as on the chips); the TARGET lane's
+            // cell is filled (⌘K and the keys act there) — the walk 2026-11-08: neutral clips, labelled rows
+            let cell = Rect::new(lane.x0, lane.y0, lane.x0 + LABEL_W * scale, lane.y1);
+            if self.target == side { paint::rect(scene, cell, t::HOVER_BACKGROUND_COLOR); }
+            let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, (LANE - 3.0) as f32 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
+            min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x0 + (cell.width() - l.width() as f64) / 2.0, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));
             for c in clips(tl, side) {
                 let (mut x0, mut x1) = Self::span(c, sc, st, scale);
                 match &preview {
@@ -162,11 +167,10 @@ impl DualBars {
                 // Spectrum 2: neutral surfaces (the playlist bar's greys), the side's colour as a 2-px accent along the top
                 let fill = if selected { t::PLAYLIST_BAR_SELECTED_COLOR } else if hovered { t::PLAYLIST_BAR_CLIP_HOVER_COLOR } else if current { t::PLAYLIST_BAR_CURRENT_COLOR } else { t::PLAYLIST_BAR_CLIP_COLOR };
                 // drawn inside the lane only: zoomed in on a long film a clip spans far off-screen, and vello's coverage breaks at those extents
-                let (vx0, vx1) = (lane.x0 - 4.0 * scale, lane.x1 + 4.0 * scale);
+                let (vx0, vx1) = (lane.x0 + LABEL_W * scale, lane.x1 + 4.0 * scale);   // never under the row label
                 let cr = Rect::new((x0 + 0.5 * scale).max(vx0), y0, (x1 - 0.5 * scale).max(x0 + scale).min(vx1), y1);
                 if cr.x1 <= cr.x0 { continue }
                 paint::rounded(scene, cr, radius, fill);
-                paint::rect(scene, Rect::new(cr.x0, y0, cr.x1, y0 + 2.0 * scale), strong);
                 if let Some((s, id, z)) = &self.hover { if *s == side && *id == c.id && g.is_none() { let w = 2.0 * scale; let hc = t::PLAYLIST_BAR_HANDLE_COLOR; match z { Zone::Head => paint::rect(scene, Rect::new(cr.x0, y0, cr.x0 + w, y1), hc), Zone::Tail => paint::rect(scene, Rect::new(cr.x1 - w, y0, cr.x1, y1), hc), Zone::Body => {} } } }
             }
         }
