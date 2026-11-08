@@ -792,6 +792,18 @@ mod scrub_tests {
         fn shuttle_active(&self) -> bool { self.1 }
         fn open(&mut self, _p: &str) -> bool { true }
     }
+    /// An MXF's start timecode lives on the container (its timecode component), not the stream: the session reads it there
+    /// (QCView `readEmbeddedTimecode`), drop-frame `;` and all.
+    #[test]
+    fn an_mxf_timecode_reaches_the_session() {
+        let p = std::env::temp_dir().join(format!("qcv-df-{}.mxf", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30000/1001", "-t", "1", "-c:v", "dnxhd", "-b:v", "145M", "-pix_fmt", "yuv422p", "-timecode", "01:00:00;00"]).arg(&p).status().map(|s| s.success()).unwrap_or(false);
+        if !ok { eprintln!("ffmpeg missing: skipped"); return }
+        let t = Transport::open(&Source::File(p.to_string_lossy().into_owned()), TransportOptions { scrub: None, ..Default::default() }).unwrap();
+        assert_eq!(t.info().source_timecode.as_deref(), Some("01:00:00;00"));
+        assert!(t.info().drop_frame);
+        let _ = std::fs::remove_file(p);
+    }
     /// QCView's single-media scrub: the skim audio begins silent, follows the drag's velocity, ends on release; the clock
     /// stays put until the release seeks it once (the playhead reads the scrub target meanwhile).
     #[test]

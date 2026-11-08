@@ -131,9 +131,12 @@ impl Session {
             let mut frame_count = (*st).nb_frames as i32;
             let codec_name = { let l = cstr((*codec).long_name); if l.is_empty() { cstr((*codec).name) } else { l } };
             let pix_fmt = cstr(ff::av_get_pix_fmt_name(format));
+            // QCView `readEmbeddedTimecode`: the video stream, then the container (MXF puts its timecode component there — the
+            // session read the stream alone, so an MXF's start timecode and its drop-frame `;` never reached the strip), then
+            // any stream (a dedicated data / tmcd stream)
             let tc_key = CString::new("timecode").unwrap();
-            let tc = ff::av_dict_get((*st).metadata, tc_key.as_ptr(), ptr::null(), 0);
-            let source_timecode = if tc.is_null() { None } else { Some(cstr((*tc).value)) };
+            let tag = |d: *mut ff::AVDictionary| -> Option<String> { let e = ff::av_dict_get(d, tc_key.as_ptr(), ptr::null(), 0); (!e.is_null()).then(|| cstr((*e).value)).filter(|v| !v.is_empty()) };
+            let source_timecode = tag((*st).metadata).or_else(|| tag((*fmt).metadata)).or_else(|| (0..(*fmt).nb_streams).find_map(|i| tag((**(*fmt).streams.add(i as usize)).metadata)));
             let drop_frame = source_timecode.as_deref().map(|s| s.contains(';')).unwrap_or(false);
             // FrameIndex inputs: time_base + guessed frame rate; total from nb_frames, else duration × fps, else a packet count
             let tb = (*st).time_base;
