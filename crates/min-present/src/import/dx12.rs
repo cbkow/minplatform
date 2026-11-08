@@ -62,7 +62,7 @@ impl Dx12Import {
             let size = wgpu::Extent3d { width: desc.Width as u32, height: desc.Height, depth_or_array_layers: 1 };
             // SAFETY: the bridge's ring owns the resource and reuses it only after the fence passes; `keep` holds a reference beside the texture.
             let hal_tex = unsafe { wgpu::hal::dx12::Device::texture_from_raw(res.clone(), fmt, wgpu::TextureDimension::D2, size, 1, 1) };
-            let tex = unsafe { device.create_texture_from_hal::<wgpu::hal::api::Dx12>(hal_tex, &wgpu::TextureDescriptor { label: Some("vk bridge plane"), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }, wgpu::wgt::TextureDescriptorDrop::default()) };
+            let tex = unsafe { device.create_texture_from_hal::<wgpu::hal::api::Dx12>(hal_tex, &wgpu::TextureDescriptor { label: Some("vk bridge plane"), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: fmt, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }, wgpu::wgt::TextureUses::RESOURCE) };
             textures.push(tex); keep.push(res);
         }
         self.last_format = if f.code_bits > 8 { "vk planes 16" } else { "vk planes 8" };
