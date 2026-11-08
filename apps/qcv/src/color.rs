@@ -124,6 +124,12 @@ pub fn mincolor_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> mpsc::Recei
 }
 
 impl crate::App {
+    /// Colour starts OFF at every launch (the user 2026-11-08: "ensure color is OFF when the app opens fresh unless a project has a
+    /// specific media-item with assigned color"); opening a project that has a clip with its own chain turns it on.
+    pub(crate) fn color_on_for_project(&mut self) {
+        let assigned = self.project.pool().iter().any(|m| Stored::from_clip_maps(&m.ocio_clip, &m.min_color_clip, &fallback_default()).is_some());
+        if assigned { self.settings.set_bool(crate::settings::k::COLOR_ENABLED, true); }
+    }
     pub(crate) fn color_default(&self) -> Stored { Stored::from_map(self.project.color_default()).unwrap_or_else(fallback_default) }
     /// The loaded clip's chain and whether it is its own (else the project default's).
     pub(crate) fn color_target(&self) -> (Option<String>, Stored, bool) {
@@ -261,6 +267,7 @@ impl crate::App {
                 if st.preset == name { self.write_target(st); }
             }
             DCmd::DeletePreset(name) => { self.colors.user.retain(|p| p.name != name); self.colors.save(); }
+            DCmd::Waveform(hdr, peak, open) => { self.settings.set_int(k::WAVEFORM_SCALE, match hdr { None => -1, Some(false) => 0, Some(true) => 1 }); self.settings.set_int(k::WAVEFORM_PEAK, peak as i64); self.settings.set_bool(k::WAVEFORM_OPEN, open); }
             DCmd::Height(h) => { self.settings.set_int(k::COLOR_DRAWER_HEIGHT, h.round() as i64); }
             DCmd::Aids(a) => { if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_viewer_aids(a); } }
             DCmd::Toggle => { if let Some(g) = self.gpu.as_mut() { g.drawer.toggle(now); self.settings.set_bool(k::COLOR_DRAWER_OPEN, g.drawer.open); g.ui_dirty = true; } }

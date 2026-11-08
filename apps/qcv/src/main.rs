@@ -238,7 +238,7 @@ impl App {
     fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title(trm("Open Project")).add_filter(trm("QCView Project"), &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
     fn open_project(&mut self, path: &str) {
         match self.project.open_project(path) {
-            Ok(probes) => { self.schedule_probes(probes); self.note_recent_project(path); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            Ok(probes) => { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.schedule_probes(probes); self.note_recent_project(path); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Err(e) => log::warn!("{e}"),
         }
     }
@@ -251,7 +251,7 @@ impl App {
             match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") }
         }
     }
-    fn new_project(&mut self) { self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
+    fn new_project(&mut self) { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
     /// Open the file in the Transport (the raw open; the project paths above call it). True when it opened.
     /// The transport options every open uses — QCView's performance settings apply at open: threads, hardware decode (its
     /// row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate.
@@ -1185,7 +1185,8 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64);
+        let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
+        let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
         self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, last_move: Instant::now(), ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
@@ -1456,6 +1457,8 @@ fn main() {
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
+    let mut settings = settings;
+    settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
     let app = App { colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
@@ -1564,7 +1567,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut right = min_ui::Rail::new(min_ui::Side::Right, 320.0, false); right.settle();
     let rails_bottom = bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale;
     // `QCV_UI_SNAP_COLOR=1`: the Color drawer open (row 199) on a sample state — a user preset, the chain edited (Custom), a clip that owns it
-    let mut drawer = std::env::var_os("QCV_UI_SNAP_COLOR").map(|_| { let mut d = color_drawer::ColorDrawer::new(true, 320.0); d.set_pointer_present(true, t0); d });
+    let mut drawer = std::env::var_os("QCV_UI_SNAP_COLOR").map(|_| { let mut d = color_drawer::ColorDrawer::new(true, 320.0, (None, 1000.0, true)); d.set_pointer_present(true, t0); d });
     let rails_bottom = rails_bottom - drawer.as_ref().map(|d| d.visible_height(t0, scale)).unwrap_or(0.0);
     // `QCV_UI_SNAP_MENU=1`: the in-window menu bar (row 194) on top, File open, the Recent Media submenu cascaded
     let mut menu_bar = std::env::var_os("QCV_UI_SNAP_MENU").map(|_| menu::InWindowMenu::new(&mut fonts));

@@ -23,7 +23,8 @@ fn tr(s: &'static str) -> &'static str { min_i18n::trc("ColorPanel", s) }
 pub enum Cmd { Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
     NewOcio, OpenConfig, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
     Aids(ViewerAids), /// the drawer's height after a drag of its top edge (logical px)
-    Height(f64), ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
+    Height(f64), /// the waveform's state as the user set it (kept across launches): scale override, HDR top, open
+    Waveform(Option<bool>, f32, bool), ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
 
 /// What the drawer shows, fed by the shell every sync.
 #[derive(Clone, Debug, PartialEq)]
@@ -92,7 +93,8 @@ const WAVEFORM_W: f64 = 360.0;
 const COLLAPSED: f64 = 32.0;
 
 impl ColorDrawer {
-    pub fn new(open: bool, height: f64) -> ColorDrawer {
+    /// `wf` = the waveform as last left: (scale override, HDR top in nits, open).
+    pub fn new(open: bool, height: f64, wf: (Option<bool>, f32, bool)) -> ColorDrawer {
         let mut gamut_names = qcv_color::input_gamut_names(); gamut_names.truncate(15);
         let transfer_names = qcv_color::input_transfer_names();
         ColorDrawer {
@@ -105,7 +107,7 @@ impl ColorDrawer {
             on: Switch::new(false), on_rect: Rect::ZERO,
             wf_scale: ActionGroup::new(["SDR", "HDR"].iter().map(|l| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect()).compact(),
             wf_peak: TextButton::new("1000 nits", Variant::Secondary).size_s(),
-            wf_hdr: None, wf_peak_nits: 1000.0, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: true, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO,
+            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO,
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
@@ -174,7 +176,6 @@ impl ColorDrawer {
             self.knee.set_sdr_view(qcv_color::ocio::view_is_sdr(&o.view));
             self.knee.sync(&kc, v.file_peak, now);
         }
-        if self.view.as_ref().map(|o| &o.target) != Some(&v.target) { self.wf_hdr = None; }
         self.wf_src_hdr = v.hdr_source;
         self.sync_wf_chips();
         self.on.set(v.on, now);
@@ -281,6 +282,7 @@ impl ColorDrawer {
             ClipChain::MinColor(m) => Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(qcv_color::Chain { knee_on: c.knee_on, knee_src: c.knee_src, knee_tgt: c.knee_tgt, knee_start: c.knee_start, ..*m }), preset: v.stored.preset.clone() })),
         }
     }
+    fn wf_cmd(&self) -> Cmd { Cmd::Waveform(self.wf_hdr, self.wf_peak_nits, self.wf_expanded) }
     fn scope_hdr(&self) -> bool { self.wf_hdr.unwrap_or(self.wf_src_hdr) }
     fn sync_wf_chips(&mut self) {
         let hdr = self.scope_hdr();
@@ -389,10 +391,10 @@ impl ColorDrawer {
         if let Some((px, py)) = e.pos() {
             let over = if self.wf_expanded { self.wf_collapse.contains(kurbo::Point::new(px, py)) } else { self.wf_card.contains(kurbo::Point::new(px, py)) };
             if over != self.wf_hover { self.wf_hover = over; dirty = true; }
-            if over && matches!(e, Event::Down { button: Button::Primary, .. }) { self.wf_expanded = !self.wf_expanded; return (cmds, true, true) }
+            if over && matches!(e, Event::Down { button: Button::Primary, .. }) { self.wf_expanded = !self.wf_expanded; cmds.push(self.wf_cmd()); return (cmds, true, true) }
         }
-        for (i, rsp) in self.wf_scale.event(e, now) { dirty = true; if rsp == Response::Clicked { self.wf_hdr = Some(i == 1); self.sync_wf_chips(); } }
-        if self.scope_hdr() { let (c, d) = self.wf_peak.event(e, now); dirty |= d; if c { let i = PEAKS.iter().position(|p| *p as f32 == self.wf_peak_nits).map(|i| (i + 1) % PEAKS.len()).unwrap_or(2); self.wf_peak_nits = PEAKS[i] as f32; self.sync_wf_chips(); } }   // QCView's tops, cycled
+        for (i, rsp) in self.wf_scale.event(e, now) { dirty = true; if rsp == Response::Clicked { self.wf_hdr = Some(i == 1); self.sync_wf_chips(); cmds.push(self.wf_cmd()); } }
+        if self.scope_hdr() { let (c, d) = self.wf_peak.event(e, now); dirty |= d; if c { let i = PEAKS.iter().position(|p| *p as f32 == self.wf_peak_nits).map(|i| (i + 1) % PEAKS.len()).unwrap_or(2); self.wf_peak_nits = PEAKS[i] as f32; self.sync_wf_chips(); cmds.push(self.wf_cmd()); } }   // QCView's tops, cycled
         // the viewer aids: a double-click on a slider resets it (QCView)
         let mut a = self.aids;
         if let Event::Down { x, y, button: Button::Primary } = *e { for (id, sl) in [(0u8, &self.exp), (1u8, &self.gam)] { if sl.hit(x, y) {

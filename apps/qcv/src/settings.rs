@@ -42,6 +42,10 @@ pub mod k {
     pub const COLOR_ENABLED: &str = "color/enabled";
     pub const COLOR_DRAWER_OPEN: &str = "ui.layout/colorDrawerOpen";
     pub const COLOR_DRAWER_HEIGHT: &str = "ui.layout/colorDrawerHeight";
+    /// the waveform as the user left it: scale (−1 = follow the source, 0 SDR, 1 HDR), the HDR top in nits, open / collapsed
+    pub const WAVEFORM_SCALE: &str = "ui.layout/waveformScale";
+    pub const WAVEFORM_PEAK: &str = "ui.layout/waveformPeakNits";
+    pub const WAVEFORM_OPEN: &str = "ui.layout/waveformOpen";
     pub const RIGHT_RAIL_COLLAPSED: &str = "ui.layout/rightRailCollapsed";
     pub const WINDOW_X: &str = "window/x";
     pub const WINDOW_Y: &str = "window/y";
@@ -83,6 +87,9 @@ static KEYS: &[Key] = &[
     Key::bool(k::COLOR_ENABLED, false),
     Key::bool(k::COLOR_DRAWER_OPEN, false),
     Key::int(k::COLOR_DRAWER_HEIGHT, 320, 200, 600),
+    Key::int(k::WAVEFORM_SCALE, -1, -1, 1),
+    Key::int(k::WAVEFORM_PEAK, 1000, 300, 4000),
+    Key::bool(k::WAVEFORM_OPEN, true),
     Key::int(k::LEFT_RAIL_WIDTH, 280, 200, 600),
     Key::int(k::RIGHT_RAIL_WIDTH, 320, 200, 600),
     Key::bool(k::LEFT_RAIL_COLLAPSED, false),
