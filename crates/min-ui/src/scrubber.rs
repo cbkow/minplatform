@@ -63,6 +63,10 @@ impl Scrubber {
     fn fit_pps(&self, s: &ScrubState) -> f64 { let d = self.dur(s); if d > 0.0 { self.track_w / d } else { 0.0 } }
     fn pps(&self, s: &ScrubState) -> f64 { self.pps.unwrap_or_else(|| self.fit_pps(s)) }
     fn max_scroll(&self, s: &ScrubState) -> f64 { (self.dur(s) * self.pps(s) - self.track_w).max(0.0) }
+    /// The x of timeline frame `f` on this scrubber's camera — the clip bar below draws on the same mapping.
+    pub fn x_of_frame(&self, f: i64, s: &ScrubState, scale: f64) -> f64 { if s.fps > 0.0 { self.x_of_time(f as f64 / s.fps, s, scale) } else { self.rect.x0 + self.pad(scale) } }
+    /// Frames per pixel on the camera (for gesture deltas).
+    pub fn frames_per_px(&self, s: &ScrubState) -> f64 { let p = self.pps(s); if p > 0.0 { s.fps / p } else { 0.0 } }
     fn x_of_time(&self, secs: f64, s: &ScrubState, scale: f64) -> f64 { self.rect.x0 + self.pad(scale) + secs * self.pps(s) - self.scroll_x }
     fn time_at_x(&self, x: f64, s: &ScrubState, scale: f64) -> f64 { let p = self.pps(s); if p > 0.0 { ((x - self.rect.x0 - self.pad(scale)).clamp(0.0, self.track_w) + self.scroll_x) / p } else { 0.0 } }
     pub fn frame_at_x(&self, x: f64, s: &ScrubState, scale: f64) -> i32 { ((self.time_at_x(x, s, scale) * s.fps).round() as i64).clamp(0, (s.frames as i64 - 1).max(0)) as i32 }

@@ -31,10 +31,13 @@ mod background_panel;
 mod compact_strip;
 mod project_panel;
 mod playlist;
+mod clip_bar;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
+    /// the playlist's clip bar (canon row 167), shown while a playlist is loaded
+    clip_bar: clip_bar::ClipBar,
     /// Compact mode (canon row 172; QCView's chromeless + CompactStrip): the picture and one 32-px band, no title bar.
     compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
@@ -66,6 +69,7 @@ impl App {
         if g.fullscreen || g.compact { return Some(DropTarget::Viewport) }
         if g.left.hit(x, y) { return Some(DropTarget::Bin) }
         if g.right.hit(x, y) { return None }
+        if self.pl_editor.is_some() && (g.clip_bar.hit(x, y) || g.scrubber.hit(x, y)) { return Some(DropTarget::Playlist(x.round() as i32)) }
         let (cx, cy, cw, ch) = g.presenter.engine.content_rect()?;
         (x >= cx as f64 && x < (cx + cw) as f64 && y >= cy as f64 && y < (cy + ch) as f64).then_some(DropTarget::Viewport)
     }
@@ -224,7 +228,8 @@ impl App {
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
             let st = scrub_state(self.player.as_ref());
-            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale };
+            let bar_h = if self.pl_editor.is_some() && !g.compact { clip_bar::ClipBar::height(scale) } else { 0.0 };   // +20 for a playlist (row 169)
+            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
                 // the pointer at the bottom edge (or on the shown bands) reveals; leaving starts the hide delay
                 let (px, py) = g.pointer;
@@ -235,7 +240,7 @@ impl App {
             }
             if g.bands.animating(now) { g.ui_dirty = true; }
             let slide = bands_h * (1.0 - g.bands.value(now) as f64);
-            let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale + slide;
+            let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale - bar_h + slide;
             // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
             let rails_bottom = if g.compact { scrub_y } else { scrub_y - (t::TRANSPORT_BAR_HEIGHT + t::STATUS_STRIP_HEIGHT) as f64 * scale };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
@@ -279,7 +284,7 @@ impl App {
             if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
             g.scrubber.compact = g.compact;
             if g.compact { g.strip.sync(self.player.as_ref()); let tc = g.strip.timecode_text().to_string(); g.compact_strip.sync(self.player.as_ref(), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
-            else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, h as f64), scale); }
+            else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); g.clip_bar.rect = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; }
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
             if let Some(p) = self.player.as_ref() { if p.audio.has_audio() && g.waveform_enabled {
@@ -325,6 +330,7 @@ impl App {
                 g.strip.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
+                if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 g.thumbs.paint(scene, content, scale, Some(g.pointer.0));
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
@@ -389,7 +395,7 @@ impl App {
         // playhead (to the end of the clip when the mouse went right), a held fast-forward never saw its release-on-leave and
         // shuttled to the end — the user's "scrubbing overruns until the end" (2026-11-07 night), and the parked Windows
         // "clicks lost after leaving and returning" is the same swallow.
-        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed());
+        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed());
         // the rails first (a modal dialog or an open menu in the settings panel takes everything)
         if !g.fullscreen && !grabbed {
             let had_focus = g.settings_panel.has_focus();
@@ -425,7 +431,9 @@ impl App {
                     inspector_panel::Cmd::Rotation(r) => { let mut geo = g.presenter.engine.geometry(); geo.rotation = r; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
                 } }
             }
+            let dragging = g.project_panel.is_dragging(); let ptr = e.pos();
             let _ = g; for c in cmds { self.apply_setting(c); } for c in pcmds { self.project_cmd(c); }
+            if self.pl_editor.is_some() { let hint = match (dragging, ptr) { (true, Some((x, y))) => match self.drop_target(x, y) { Some(DropTarget::Playlist(_)) => self.playlist_drop_index(x), _ => None }, _ => None }; if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(hint) { g.ui_dirty = true; } } }
             let g = self.gpu.as_mut().unwrap();
             if modal || pp_modal || g.project_panel.menu_open() || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
             let _ = g;
@@ -439,6 +447,15 @@ impl App {
         let (cmds, dirty) = g.bar.event(&e, now);
         if dirty { g.ui_dirty = true; }
         let st = scrub_state(self.player.as_ref());
+        // the clip bar (a playlist): its gestures commit timeline edits; while one is pressed it owns the pointer
+        let mut bcmds = vec![];
+        if let Some(ed) = self.pl_editor.as_ref() { if g.clip_bar.is_pressed() || e.pos().is_some_and(|(x, y)| g.clip_bar.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
+            let (c, d) = g.clip_bar.event(&e, now, self.mods.ctrl, &ed.timeline, &g.scrubber, &st, scale); if d { g.ui_dirty = true; } bcmds = c;
+            let want = match g.clip_bar.hover_zone() { Some(clip_bar::Zone::Head) | Some(clip_bar::Zone::Tail) => winit::cursor::CursorIcon::ColResize, Some(clip_bar::Zone::Body) => winit::cursor::CursorIcon::Grab, None => winit::cursor::CursorIcon::Default };
+            if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
+        } }
+        if !bcmds.is_empty() || g.clip_bar.is_pressed() { for c in bcmds { self.bar_cmd(c); } return }
+        let g = self.gpu.as_mut().unwrap();
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
         if sd { g.ui_dirty = true; }
         if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
@@ -493,6 +510,64 @@ impl App {
         self.load_item(&id);   // QCView: setActiveItem — the new playlist loads (empty: no player, the bar invites a drop)
         if let Some(g) = self.gpu.as_mut() { g.project_panel.selected = vec![id.clone()]; g.project_panel.pending_rename = Some(id); g.ui_dirty = true; }
     }
+    /// A clip-bar command: seeks / selection, or one undoable timeline edit followed by the sync.
+    fn bar_cmd(&mut self, c: clip_bar::BarCmd) {
+        use clip_bar::{BarCmd, TRACK};
+        let Some(ed) = self.pl_editor.as_mut() else { return };
+        let (changed, structural) = match c {
+            BarCmd::Seek(f) => { if let Some(p) = self.player.as_mut() { let fps = p.rate().as_f64(); if fps > 0.0 { p.seek_to_time(f as f64 / fps); } } (false, false) }
+            BarCmd::Select(id) => { if id.is_some() { if let Some(g) = self.gpu.as_mut() { g.project_panel.selected.clear(); } } (false, false) }   // one selection at a time: the bar's or the bin's (QCView's mutual exclusion)
+            BarCmd::TrimHead { clip, new_start, new_source_in } => (ed.trim_clip_head(TRACK, &clip, new_start, new_source_in), false),
+            BarCmd::TrimTail { clip, new_source_out } => (ed.trim_clip_tail(TRACK, &clip, new_source_out), false),
+            BarCmd::Slip { clip, new_in, new_out } => (ed.slip_clip(TRACK, &clip, new_in, new_out), false),
+            BarCmd::Move { clip, index } => (ed.move_clip_to_index(TRACK, &clip, index), true),
+            BarCmd::Precision(_) => (false, false),
+        };
+        if changed { self.after_playlist_edit(structural); }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+    }
+    /// After a timeline edit: the project item takes the new order + trims (QCView writes them back; the dirty dot), and the
+    /// transport plays the new timeline — trims / slips re-seat in place; a reorder / insert / delete / split rebuilds the
+    /// playlist transport at the same position and play state (the slots are indexed by clip).
+    fn after_playlist_edit(&mut self, structural: bool) {
+        let Some(ed) = self.pl_editor.as_ref() else { return };
+        let tl = ed.timeline.clone();
+        let id = ed.playlist_media_item_id.clone();
+        self.project.set_playlist_items(&id, playlist::entries_from(&tl));
+        let has_clips = tl.tracks.first().is_some_and(|t| t.clips.iter().any(|c| !c.is_gap));
+        if !has_clips { self.player = None; return }
+        match self.player.as_mut() {
+            Some(p) if !structural => p.set_timeline(tl),
+            _ => {
+                let (pos, playing) = self.player.as_ref().map(|p| (p.current_frame(), p.is_playing())).unwrap_or((0, false));
+                let t = Instant::now();
+                match Transport::open_playlist(tl, self.transport_options()) {
+                    Ok(p) => { let name = self.source_label.clone(); self.adopt(p, name, "", t); if let Some(p) = self.player.as_mut() { let fps = p.rate().as_f64(); if fps > 0.0 { p.seek_to_time(pos.min(p.frame_count() - 1).max(0) as f64 / fps); } if playing { p.play(); } } }
+                    Err(e) => println!("playlist rebuild: {e}"),
+                }
+            }
+        }
+    }
+    /// The playlist's insert point for a drop at x: the clip edge within 12 px (QCView `snapTolPx`), else the end.
+    fn playlist_drop_index(&self, x: f64) -> Option<(usize, f64)> {
+        let (ed, g) = (self.pl_editor.as_ref()?, self.gpu.as_ref()?);
+        let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor();
+        let tol = (12.0 * scale * g.scrubber.frames_per_px(&st)).ceil().max(1.0) as i64;
+        let f = if self.player.is_some() { g.scrubber.frame_at_x(x, &st, scale) as i64 } else { 0 };
+        let clips = ed.timeline.tracks.first().map(|t| t.clips.len()).unwrap_or(0);
+        Some(clip_bar::ClipBar::insert_index(&ed.timeline, f, Some(tol), &g.scrubber, &st, scale).unwrap_or((clips, g.scrubber.x_of_frame(ed.timeline.duration, &st, scale))))
+    }
+    /// QCView's playlist drop: each item (already in the project) inserted at successive indices from the drop edge; audio is
+    /// refused (`createPlaylist` / `insertClipAtIndex` rule).
+    fn playlist_insert(&mut self, media_ids: &[String], x: f64) {
+        let Some((mut idx, _)) = self.playlist_drop_index(x) else { return };
+        let infos: Vec<_> = media_ids.iter().filter_map(|id| self.project.item(id)).filter(|m| { let ok = !matches!(m.media_type, qcv_project::MediaType::Audio | qcv_project::MediaType::Playlist | qcv_project::MediaType::DualPair); if !ok { log::info!("playlist drop: '{}' refused (audio / playlist / dual view)", m.name); } ok }).map(playlist::media_info).collect();
+        let Some(ed) = self.pl_editor.as_mut() else { return };
+        let mut n = 0;
+        for info in &infos { if ed.insert_clip_at_index(clip_bar::TRACK, idx, info, Default::default()).is_some() { idx += 1; n += 1; } }
+        if n > 0 { self.after_playlist_edit(true); }
+        if let Some(g) = self.gpu.as_mut() { g.clip_bar.set_drop_hint(None); g.ui_dirty = true; }
+    }
     fn project_cmd(&mut self, c: project_panel::Cmd) {
         match c {
             project_panel::Cmd::Load(id) => self.load_item(&id),
@@ -504,7 +579,7 @@ impl App {
             project_panel::Cmd::NewPlaylist => self.create_playlist(&[]),
             // rows released over the viewport load the first (QCView: the bin's drag → the viewport DropArea → openMediaPaths; the rows
             // are already in the project, so this is the load); over the bin / the bands / outside the window nothing happens
-            project_panel::Cmd::DropRows(ids, x, y) => { if self.drop_target(x, y) == Some(DropTarget::Viewport) { if let Some(first) = ids.first() { self.load_item(first); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            project_panel::Cmd::DropRows(ids, x, y) => { if let Some(DropTarget::Playlist(_)) = self.drop_target(x, y) { self.playlist_insert(&ids, x); } else if self.drop_target(x, y) == Some(DropTarget::Viewport) { if let Some(first) = ids.first() { self.load_item(first); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::Rename(id, name) => { if self.project.rename_media_item(&id, &name) { if id == self.loaded_item { self.source_label = name; } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
         }
     }
@@ -675,7 +750,8 @@ fn write_png_display(path: &str, px: &[f32], w: u32, h: u32, linear_surface: boo
 /// viewport is the explicit load-now gesture"); the viewport ADDS and LOADS the first (`dropMediaAt` → `openMediaPaths`). The
 /// bands and the Inspector have no drop target — the OS shows a refused drop there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DropTarget { Bin, Viewport }
+enum DropTarget { Bin, Viewport, /// a playlist is loaded and the drop is over the scrubber or the clip bar: insert at x (QCView's playlistDropArea)
+    Playlist(i32) }
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {
     let bytes: Vec<u8> = px.chunks(4).flat_map(|c| [(c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect();
     let Ok(file) = std::fs::File::create(path) else { println!("cannot write {path}"); return };
@@ -729,7 +805,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
@@ -822,6 +898,13 @@ impl ApplicationHandler for App {
                     ("n", false) => { self.new_project(); return }   // QCView's New Project has no shortcut (a menu item); Ctrl+N stands in until the menu bar exists
                     _ => {}
                 } } }
+                // a loaded playlist: Delete / Backspace removes the selected clip (no ripple close, QCView), Ctrl/Cmd+K splits at the playhead
+                if pressed && !event.repeat && self.pl_editor.is_some() { if let Some(g) = self.gpu.as_mut() { if !g.settings_panel.has_focus() && !g.inspector.has_focus() && !g.project_panel.is_editing() && !g.strip.is_open() {
+                    let del = matches!(event.logical_key, Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace));
+                    let split = self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "k" || c == "K");
+                    if del { if let Some(id) = g.clip_bar.selected.take() { if self.pl_editor.as_mut().unwrap().delete_clip(clip_bar::TRACK, &id) { self.after_playlist_edit(true); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return } }
+                    if split { let at = self.player.as_ref().map(|p| p.current_frame() as i64).unwrap_or(0); if self.pl_editor.as_mut().unwrap().split_clip_at(clip_bar::TRACK, at) { self.after_playlist_edit(true); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return }
+                } } }
                 // Delete / Backspace: remove the bin selection (QCView's Delete menu item); Ctrl+Z restores the last batch while the annotation undo has no owner
                 if pressed && !event.repeat && matches!(event.logical_key, Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace)) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && !g.settings_panel.has_focus() && !g.inspector.has_focus() { if let Some(c) = g.project_panel.remove_selection() { self.project_cmd(c); return } } } }
                 // QCView's Tools ▸ Settings… (Ctrl+,)
@@ -852,6 +935,11 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
+                    else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.pl_editor.is_some() {
+                        // a loaded playlist owns Ctrl/Cmd+Z (QCView: the timeline's undoEdit / redoEdit in an editable mode)
+                        let ed = self.pl_editor.as_mut().unwrap(); let ok = if a == Action::AnnotationUndo { ed.undo_edit() } else { ed.redo_edit() };
+                        if ok { self.after_playlist_edit(true); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+                    }
                     else if a == Action::AnnotationUndo { let names = self.project.restore_last_removed(); if !names.is_empty() { log::info!("restored {names:?}"); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
                 }
             }
@@ -884,10 +972,12 @@ impl ApplicationHandler for App {
             // the cursor says refused over the bands / the Inspector (QCView: no DropArea there)
             WindowEvent::DragPosition { id: tid, position, .. } => {
                 self.drag_pos = Some((position.x, position.y));
+                let hint = match self.drop_target(position.x, position.y) { Some(DropTarget::Playlist(x)) => self.playlist_drop_index(x as f64), _ => None };
+                if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(hint) { g.ui_dirty = true; } }
                 let ok = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false) && self.drop_target(position.x, position.y).is_some();
                 el.set_valid_dnd_actions(tid, if ok { &[DndAction::Copy] } else { &[] }).ok();
             }
-            WindowEvent::DragLeft { .. } => { self.drag_pos = None; }
+            WindowEvent::DragLeft { .. } => { self.drag_pos = None; if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(None) { g.ui_dirty = true; } } }
             WindowEvent::DragDropped { id: tid, .. } => {
                 // no position from the OS at all: the viewport, as before
                 let target = match self.drag_pos { Some((x, y)) => self.drop_target(x, y), None => Some(DropTarget::Viewport) };
@@ -895,7 +985,7 @@ impl ApplicationHandler for App {
                 if let Some(t) = target { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, t); } }
             }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { let mut first = target == DropTarget::Viewport; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if p.to_lowercase().ends_with(".qcvproj") { self.open_project(&p); first = false; continue } if self.add_and_load(&p, first).is_some() { first = false; } } } }
+                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if p.to_lowercase().ends_with(".qcvproj") { self.open_project(&p); first = false; continue } if self.add_and_load(&p, first).is_some() { first = false; } } } }
             }
             _ => {}
         }

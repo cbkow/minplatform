@@ -6,7 +6,7 @@ use qcv_timeline::{ClipMediaKind, Editor, InOutRange, MediaInfo, Rate, Timeline}
 
 /// The source facts a clip needs: the project's metadata when the service has delivered it, else a synchronous probe (QCView
 /// reflows on `binsChanged` instead; a probe at load keeps the first build right).
-fn media_info(m: &MediaItem) -> MediaInfo {
+pub fn media_info(m: &MediaItem) -> MediaInfo {
     let (kind, mut fps, mut frames, mut w, mut h) = match m.media_type {
         MediaType::ImageSequence => (ClipMediaKind::ImageSequence, m.image_seq.frame_rate, m.image_seq.frame_count as i64, m.image_seq.width, m.image_seq.height),
         MediaType::Audio => (ClipMediaKind::Audio, 0.0, 0, 0, 0),
