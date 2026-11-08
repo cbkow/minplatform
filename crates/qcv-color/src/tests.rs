@@ -10,7 +10,7 @@ fn f16_to_f32(h: u16) -> f32 {
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let inst = min_present::Presenter::instance();   // the app's backend: DX12 on Windows (the default picks Vulkan there)
     let a = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(a.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }

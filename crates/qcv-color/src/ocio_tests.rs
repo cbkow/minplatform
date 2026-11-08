@@ -15,7 +15,7 @@ fn open(name: &str) -> Option<std::sync::Arc<Config>> {
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let inst = min_present::Presenter::instance();   // the app's backend: DX12 on Windows (the default picks Vulkan there)
     let a = pollster::block_on(inst.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     let f = a.features() & (wgpu::Features::PASSTHROUGH_SHADERS | wgpu::Features::FLOAT32_FILTERABLE);
     if !f.contains(wgpu::Features::PASSTHROUGH_SHADERS) { return None }
