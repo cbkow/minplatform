@@ -82,7 +82,7 @@ static KEYS: &[Key] = &[
     Key::bool(k::HW_SCRUB_INTER, false),
     Key::bool(k::COLOR_ENABLED, false),
     Key::bool(k::COLOR_DRAWER_OPEN, false),
-    Key::int(k::COLOR_DRAWER_HEIGHT, 280, 200, 600),
+    Key::int(k::COLOR_DRAWER_HEIGHT, 320, 200, 600),
     Key::int(k::LEFT_RAIL_WIDTH, 280, 200, 600),
     Key::int(k::RIGHT_RAIL_WIDTH, 320, 200, 600),
     Key::bool(k::LEFT_RAIL_COLLAPSED, false),

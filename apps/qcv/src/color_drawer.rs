@@ -2,12 +2,16 @@
 //! drawer that pushes the picture up, toggled by an up-caret tab on the viewport (like the rails' tabs), QCView's menu item,
 //! transport button and Ctrl+3. One whole chain per clip with a project default; presets are starting points (picking one
 //! copies its chain); an edited chain shows as a "Custom (from …)" row with one action, Save as preset…; Rename · Update ·
-//! Delete on a user preset's right-click menu; one list for both engines. Slice 1: minColor's columns (Input gamut ·
-//! Input transfer · Highlight Knee · Rendering); OCIO's columns, the viewer aids and the waveform follow.
+//! Delete on a user preset's right-click menu; one list for both engines. minColor's columns: Input gamut · Input transfer ·
+//! Highlight Knee · AgX · Rendering — the Knee and AgX are QCView's optional columns (KneeColumn / AgxColumn in
+//! ColorPanel.qml) with their whole interface, collapsing to a slim strip. Every column is a layer-2 card under its caption
+//! with the rails' overlay scrollbar (the user 2026-11-08: "some layer-2 background around lists … scrollbars for the lists").
+//! OCIO's columns, the viewer aids and the waveform follow.
 use crate::color_model::{ClipChain, Preset, Stored};
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
-use min_ui::{anim::{mix, Ramp}, paint, Button, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, ListColumn, ListRow, Menu, MenuItem, NumberField, Popover, Switch, TextButton, TextField, Variant};
+use crate::color_columns::{AgxPanel, KneePanel};
+use min_ui::{anim::{mix, Ramp}, paint, Button, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, ListColumn, ListRow, Menu, MenuItem, Popover, Switch, TextButton, TextField, Variant};
 use std::time::Instant;
 use vello::Scene;
 
@@ -30,6 +34,8 @@ pub struct View {
     pub custom: bool,
     pub on: bool,
     pub presets: Vec<Preset>,
+    /// the loaded file's HDR10 metadata (MaxCLL, mastering peak) for the Knee's "Use file MaxCLL"
+    pub file_peak: (i32, f64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,7 +52,8 @@ pub struct ColorDrawer {
     tab: Rect, tab_hover: bool, tab_ramp: Ramp, present: Ramp,
     presets: ListColumn, gamut: ListColumn, transfer: ListColumn, render: ListColumn,
     preset_rows: Vec<PresetRow>,
-    knee_rect: Rect, knee_on: Switch, knee_src: NumberField, knee_tgt: NumberField, knee_start: NumberField,
+    knee: KneePanel, agx: AgxPanel, /// the target the columns' open / collapsed state was last set for
+    columns_for: String,
     on: Switch, on_rect: Rect,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
@@ -59,7 +66,6 @@ pub struct ColorDrawer {
 
 const PRESETS_W: f64 = 220.0;
 const LIST_W: f64 = 170.0;
-const KNEE_W: f64 = 190.0;
 
 impl ColorDrawer {
     pub fn new(open: bool, height: f64) -> ColorDrawer {
@@ -70,7 +76,7 @@ impl ColorDrawer {
             tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE),
             presets: ListColumn::new(tr("Presets")), gamut: ListColumn::new(tr("Input gamut")), transfer: ListColumn::new(tr("Input transfer")), render: ListColumn::new(tr("Rendering")),
             preset_rows: vec![],
-            knee_rect: Rect::ZERO, knee_on: Switch::new(false), knee_src: NumberField::new(1000, 100, 10000, 100), knee_tgt: NumberField::new(100, 48, 10000, 10), knee_start: NumberField::new(0, 0, 99, 1).zero_label("BT.2390"),
+            knee: KneePanel::new(), agx: AgxPanel::new(), columns_for: String::new(),
             on: Switch::new(false), on_rect: Rect::ZERO,
             save_as: TextButton::new(tr("Save as preset…"), Variant::Secondary).size_s(), reset: TextButton::new(tr("Reset to default"), Variant::Secondary).size_s(),
             apply_all: TextButton::new(tr("Apply to all clips"), Variant::Secondary).size_s(), make_default: TextButton::new(tr("Make project default"), Variant::Secondary).size_s(),
@@ -81,9 +87,10 @@ impl ColorDrawer {
     pub fn toggle(&mut self, now: Instant) { self.open = !self.open; self.open_ramp.set_target(if self.open { 1.0 } else { 0.0 }, now); }
     /// The drawer's height on screen now (px), for the layout that pushes the picture up.
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
-    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee_on.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
+    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee.animating(now) || self.agx.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
     pub fn is_modal(&self) -> bool { self.menu.is_open() || self.naming.is_some() }
-    pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee_src.focused() || self.knee_tgt.focused() || self.knee_start.focused() }
+    pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee.focused() || self.agx.focused() }
+    fn dragging(&self) -> bool { self.knee.dragging() || self.agx.dragging() }
     pub fn set_pointer_present(&mut self, on: bool, now: Instant) { if on { if self.present.target() < 0.5 { self.present = Ramp::new(1.0, t::ANIMATION_DURATION_SLIDE); } } else { self.present.set_target(0.0, now); } }
 
     /// Mirror the shell's state; true when something visible changed.
@@ -105,13 +112,16 @@ impl ColorDrawer {
         if let ClipChain::MinColor(c) = &v.stored.chain {
             self.gamut.set_rows(self.gamut_names.iter().map(ListRow::item).collect()); self.gamut.set_selected(Some(c.in_gamut as usize));
             self.transfer.set_rows(self.transfer_names.iter().map(ListRow::item).collect()); self.transfer.set_selected(Some(c.in_transfer as usize));
-            let mut r = vec![ListRow::item(tr("Un-tone-mapped")), ListRow::item("AgX")];
+            // QCView's Rendering column: un-tone-mapped is what it offers; a chain carrying an OpenDRT look shows it; AgX on =
+            // the picture formation has happened (its title says so)
+            let mut r = vec![ListRow::item(tr("Un-tone-mapped"))];
             if c.open_drt != 0 { r.push(ListRow::item(format!("OpenDRT · {}", self.look_names.get(c.look as usize).cloned().unwrap_or_default()))); }
             self.render.set_rows(r);
-            self.render.set_selected(Some(if c.agx_on != 0 { 1 } else if c.open_drt != 0 { 2 } else { 0 }));
-            self.knee_on.set(c.knee_on != 0, now);
-            self.knee_src.set(c.knee_src.round() as i64); self.knee_tgt.set(c.knee_tgt.round() as i64);
-            self.knee_start.set(if c.knee_start < 0.0 { 0 } else { (c.knee_start * 100.0).round() as i64 });
+            self.render.title = if c.agx_on != 0 { tr("Rendering · AgX").into() } else { tr("Rendering").into() };
+            self.render.set_selected(Some(if c.open_drt != 0 && c.agx_on == 0 { 1 } else { 0 }));
+            // the optional columns open for a chain that uses them, once per target; the user's toggles stand after that
+            if self.columns_for != v.target { self.columns_for = v.target.clone(); self.knee.set_expanded(c.knee_on != 0); self.agx.set_expanded(c.agx_on != 0); }
+            self.knee.sync(c, v.file_peak, now); self.agx.sync(c, now);
         } else {
             for l in [&mut self.gamut, &mut self.transfer, &mut self.render] { l.set_rows(vec![]); }
         }
@@ -155,12 +165,8 @@ impl ColorDrawer {
         self.save_as.rect = Rect::new(x, body.y1 - bh, x + bw.max(pw.min(bw)), body.y1);
         x += pw + gap;
         for l in [&mut self.gamut, &mut self.transfer] { l.layout(Rect::new(x, body.y0, x + LIST_W * scale, body.y1), scale); x += LIST_W * scale + gap; }
-        self.knee_rect = Rect::new(x, body.y0, x + KNEE_W * scale, body.y1);
-        let cap = t::COMPONENT_HEIGHT_75 as f64 * scale; let fh = t::FIELD_HEIGHT_S as f64 * scale; let lab = 64.0 * scale;
-        let mut ky = body.y0 + cap;
-        self.knee_on.rect = Rect::new(x, ky + (row - sh) / 2.0, x + sw, ky + (row + sh) / 2.0); ky += row;
-        for f in [&mut self.knee_src, &mut self.knee_tgt, &mut self.knee_start] { f.layout(fonts, Rect::new(x + lab, ky + (row - fh) / 2.0, x + KNEE_W * scale, ky + (row + fh) / 2.0), scale); ky += row; }
-        x += KNEE_W * scale + gap;
+        x += self.knee.layout(fonts, x, body.y0, body.y1, scale) + gap;
+        x += self.agx.layout(fonts, x, body.y0, body.y1, scale) + gap;
         self.render.layout(Rect::new(x, body.y0, x + LIST_W * scale, body.y1), scale);
     }
 
@@ -171,6 +177,7 @@ impl ColorDrawer {
         Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(c), preset: v.stored.preset.clone() }))
     }
 
+    fn with_chain(&self, c: qcv_color::Chain) -> Option<Cmd> { let v = self.view.as_ref()?; Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(c), preset: v.stored.preset.clone() })) }
     fn open_naming(&mut self, n: Naming, fonts: &mut Fonts, bounds: Rect) {
         let s = self.scale;
         let (title, text) = match &n { Naming::Save => (tr("PRESET NAME"), self.view.as_ref().map(|v| if v.stored.preset.is_empty() { String::new() } else { format!("{} 2", v.stored.preset) }).unwrap_or_default()), Naming::Rename(old) => (tr("RENAME PRESET"), old.clone()) };
@@ -208,7 +215,7 @@ impl ColorDrawer {
         if let Event::Down { button: Button::Primary, .. } = e { if over_tab { cmds.push(Cmd::Toggle); return (cmds, true, true) } }
         if self.rect.height() <= 1.0 { return (cmds, dirty, false) }
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y)));
-        if !inside && !matches!(e, Event::Up { .. } | Event::Leave) { return (cmds, dirty, false) }
+        if !inside && !self.dragging() && !matches!(e, Event::Up { .. } | Event::Leave) { return (cmds, dirty, false) }
         let mc = self.view.as_ref().is_some_and(|v| !v.stored.chain.is_ocio());
         // the lists
         let r = self.presets.event(e, now); dirty |= r.dirty;
@@ -221,11 +228,9 @@ impl ColorDrawer {
             let r = self.gamut.event(e, now); dirty |= r.dirty; if let Some(i) = r.clicked { cmds.extend(self.edited(|c| c.in_gamut = i as i32)); }
             let r = self.transfer.event(e, now); dirty |= r.dirty; if let Some(i) = r.clicked { cmds.extend(self.edited(|c| c.in_transfer = i as i32)); }
             let r = self.render.event(e, now); dirty |= r.dirty;
-            if let Some(i) = r.clicked { cmds.extend(self.edited(|c| match i { 0 => { c.agx_on = 0; c.open_drt = 0; } 1 => { c.agx_on = 1; c.open_drt = 0; } _ => { c.agx_on = 0; c.open_drt = 1; } })); }
-            let (k, d) = self.knee_on.event(e, now); dirty |= d; if let Some(on) = k { cmds.extend(self.edited(|c| c.knee_on = on as i32)); }
-            let (v, d) = self.knee_src.event(e, fonts); dirty |= d; if let Some(v) = v { cmds.extend(self.edited(|c| c.knee_src = v as f32)); }
-            let (v, d) = self.knee_tgt.event(e, fonts); dirty |= d; if let Some(v) = v { cmds.extend(self.edited(|c| c.knee_tgt = v as f32)); }
-            let (v, d) = self.knee_start.event(e, fonts); dirty |= d; if let Some(v) = v { cmds.extend(self.edited(|c| c.knee_start = if v == 0 { -1.0 } else { v as f32 / 100.0 })); }
+            if let Some(i) = r.clicked { cmds.extend(self.edited(|c| match i { 0 => { c.agx_on = 0; c.open_drt = 0; } _ => { c.agx_on = 0; c.open_drt = 1; } })); }
+            let (c, d) = self.knee.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
+            let (c, d) = self.agx.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
         }
         let (k, d) = self.on.event(e, now); dirty |= d; if let Some(on) = k { cmds.push(Cmd::SetOn(on)); }
         let (c, d) = self.save_as.event(e, now); dirty |= d; if c { self.open_naming(Naming::Save, fonts, bounds); dirty = true; }
@@ -239,6 +244,7 @@ impl ColorDrawer {
         if !self.rect.contains(kurbo::Point::new(x, y)) { return false }
         let mut moved = false;
         for l in [&mut self.presets, &mut self.gamut, &mut self.transfer, &mut self.render] { moved |= l.wheel(x, y, dy_px); }
+        let now = Instant::now(); moved |= self.knee.wheel(x, y, dy_px, now); moved |= self.agx.wheel(x, y, dy_px, now);
         moved
     }
     /// Keys while a field has focus (the preset name, the knee numbers). Returns commands and whether the key was used.
@@ -250,19 +256,16 @@ impl ColorDrawer {
                 _ => return (vec![], true),
             }
         }
-        let mut cmds = vec![];
-        if self.knee_src.focused() { if let Some(v) = self.knee_src.key(k, fonts) { cmds.extend(self.edited(|c| c.knee_src = v as f32)); } return (cmds, true) }
-        if self.knee_tgt.focused() { if let Some(v) = self.knee_tgt.key(k, fonts) { cmds.extend(self.edited(|c| c.knee_tgt = v as f32)); } return (cmds, true) }
-        if self.knee_start.focused() { if let Some(v) = self.knee_start.key(k, fonts) { cmds.extend(self.edited(|c| c.knee_start = if v == 0 { -1.0 } else { v as f32 / 100.0 })); } return (cmds, true) }
-        (cmds, false)
+        if self.knee.focused() { return (self.knee.key(k, fonts).and_then(|c| self.with_chain(c)).into_iter().collect(), true) }
+        if self.agx.focused() { return (self.agx.key(k, fonts).and_then(|c| self.with_chain(c)).into_iter().collect(), true) }
+        (vec![], false)
     }
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if self.naming.is_some() { self.name_field.ime(e, fonts); } }
     /// A press elsewhere commits a typed knee number.
     pub fn blur(&mut self) -> Vec<Cmd> {
         let mut cmds = vec![];
-        if let Some(v) = self.knee_src.blur() { cmds.extend(self.edited(|c| c.knee_src = v as f32)); }
-        if let Some(v) = self.knee_tgt.blur() { cmds.extend(self.edited(|c| c.knee_tgt = v as f32)); }
-        if let Some(v) = self.knee_start.blur() { cmds.extend(self.edited(|c| c.knee_start = if v == 0 { -1.0 } else { v as f32 / 100.0 })); }
+        if let Some(c) = self.knee.blur() { cmds.extend(self.with_chain(c)); }
+        if let Some(c) = self.agx.blur() { cmds.extend(self.with_chain(c)); }
         cmds
     }
 
@@ -290,22 +293,22 @@ impl ColorDrawer {
         min_ui::fonts::draw_layout(scene, &tl, Affine::translate((x, mid(&tl, self.header)))); x += tl.width() as f64 + t::SPACING_200 as f64 * s;
         let status = if !v.has_clip { tr("Clips without their own chain follow this one") } else if v.own { tr("Own chain") } else { tr("Following the project default") };
         let sl = fonts.layout(status, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
-        min_ui::fonts::draw_layout(scene, &sl, Affine::translate((x, mid(&sl, self.header))));
+        min_ui::fonts::draw_layout(scene, &sl, Affine::translate((x, mid(&sl, self.header)))); x += sl.width() as f64 + t::SPACING_200 as f64 * s;
+        // QCView's amber KNEE pill: the picture is not 1:1 while the knee compresses
+        if let ClipChain::MinColor(c) = &v.stored.chain { if v.on && c.knee_on != 0 && c.knee_src > c.knee_tgt {
+            let pl = fonts.detail("KNEE", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
+            paint::rounded(scene, Rect::new(x, py, x + pw, py + ph), ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
+            min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
+        } }
         for b in [&self.reset, &self.apply_all, &self.make_default] { if v.has_clip { b.paint(scene, fonts, s, now); } }
         self.presets.paint(scene, fonts, now);
         self.save_as.paint(scene, fonts, s, now);
         match &v.stored.chain {
             ClipChain::MinColor(_) => {
-                self.gamut.paint(scene, fonts, now); self.transfer.paint(scene, fonts, now); self.render.paint(scene, fonts, now);
-                let cap = fonts.detail(tr("Highlight Knee"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
-                let capr = Rect::new(self.knee_rect.x0, self.knee_rect.y0, self.knee_rect.x1, self.knee_rect.y0 + t::COMPONENT_HEIGHT_75 as f64 * s);
-                min_ui::fonts::draw_layout(scene, &cap, Affine::translate((self.knee_rect.x0 + t::SPACING_50 as f64 * s, mid(&cap, capr))));
-                self.knee_on.paint(scene, s, now);
-                for (f, label) in [(&mut self.knee_src, tr("Source")), (&mut self.knee_tgt, tr("Target")), (&mut self.knee_start, tr("Start %"))] {
-                    let l = fonts.layout(label, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
-                    min_ui::fonts::draw_layout(scene, &l, Affine::translate((self.knee_rect.x0, f.rect.y0 + (f.rect.height() - l.height() as f64) / 2.0)));
-                    f.paint(scene, fonts, s);
-                }
+                self.gamut.paint(scene, fonts, now); self.transfer.paint(scene, fonts, now);
+                self.knee.paint(scene, fonts, now); self.agx.paint(scene, fonts, now);
+                self.render.paint(scene, fonts, now);
             }
             ClipChain::Ocio(o) => {
                 let l = fonts.layout(&format!("OCIO · {} · {} → {}", o.config, o.input, o.view), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));

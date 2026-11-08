@@ -42,6 +42,7 @@ mod i18n;
 mod color;
 mod color_model;
 mod color_drawer;
+mod color_columns;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -1535,7 +1536,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut right = min_ui::Rail::new(min_ui::Side::Right, 320.0, false); right.settle();
     let rails_bottom = bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale;
     // `QCV_UI_SNAP_COLOR=1`: the Color drawer open (row 199) on a sample state — a user preset, the chain edited (Custom), a clip that owns it
-    let mut drawer = std::env::var_os("QCV_UI_SNAP_COLOR").map(|_| { let mut d = color_drawer::ColorDrawer::new(true, 280.0); d.set_pointer_present(true, t0); d });
+    let mut drawer = std::env::var_os("QCV_UI_SNAP_COLOR").map(|_| { let mut d = color_drawer::ColorDrawer::new(true, 320.0); d.set_pointer_present(true, t0); d });
     let rails_bottom = rails_bottom - drawer.as_ref().map(|d| d.visible_height(t0, scale)).unwrap_or(0.0);
     // `QCV_UI_SNAP_MENU=1`: the in-window menu bar (row 194) on top, File open, the Recent Media submenu cascaded
     let mut menu_bar = std::env::var_os("QCV_UI_SNAP_MENU").map(|_| menu::InWindowMenu::new(&mut fonts));
@@ -1665,8 +1666,8 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
             let mut presets = color_model::builtins();
             let mine = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, ..Default::default() }), preset: "Client PQ review".into() };
             presets.push(color_model::Preset { name: "Client PQ review".into(), stored: mine.clone(), builtin: false });
-            let edited = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, knee_tgt: 200.0, ..Default::default() }), preset: "Client PQ review".into() };
-            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored: edited, custom: true, on: true, presets }, t0);
+            let edited = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, knee_tgt: 200.0, agx_on: 1, ..Default::default() }), preset: "Client PQ review".into() };
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored: edited, custom: true, on: true, presets, file_peak: (1000, 1000.0) }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
             d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts);
         }

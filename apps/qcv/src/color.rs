@@ -126,7 +126,8 @@ impl crate::App {
         let (id, stored, own) = self.color_target();
         let target = id.as_ref().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_else(|| min_i18n::trc("ColorPanel", "Project default").to_string());
         let custom = self.colors.find(&stored.preset).map(|p| p.stored.chain != stored.chain).unwrap_or(true);
-        View { target, has_clip: id.is_some(), own, stored, custom, on: self.settings.bool(crate::settings::k::COLOR_ENABLED), presets: self.colors.all() }
+        let file_peak = id.as_ref().and_then(|i| self.project.item(i)).map(|m| (m.video.max_cll, m.video.mastering_max_nits)).unwrap_or((0, 0.0));
+        View { target, has_clip: id.is_some(), own, stored, custom, on: self.settings.bool(crate::settings::k::COLOR_ENABLED), presets: self.colors.all(), file_peak }
     }
     /// Bind what the drawer says to the engine's slot: off = bypass; minColor = the shared pass (a uniform update); OCIO = a
     /// pass built on a worker (the previous chain stays on screen until it is ready).
