@@ -1820,6 +1820,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-image"
+version = "0.1.0"
+dependencies = [
+ "bindgen 0.71.1",
+ "log",
+ "pkg-config",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "min-paths"
 version = "0.1.0"
 dependencies = [

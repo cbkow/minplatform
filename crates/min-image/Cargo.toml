@@ -1,0 +1,18 @@
+[package]
+name = "min-image"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform — ONE image decoding stack (canon §10.4, rows 34 / 148): OpenEXR through the OpenEXRCore C library (parts, layers, every compression, parallel chunk decode), PNG / TIFF / JPEG with QCView's quirks, sentinels for gap / broken frames. Step 2c of Phase 2."
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+bindgen = "0.71"
+pkg-config = "0.3"
