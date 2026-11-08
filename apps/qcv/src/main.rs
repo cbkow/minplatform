@@ -104,9 +104,16 @@ impl App {
         match item.media_type {
             qcv_project::MediaType::Video | qcv_project::MediaType::Audio => {}
             qcv_project::MediaType::Playlist => { let ok = self.load_playlist(id); self.project.set_load_failed(id, !ok); if ok { self.loaded_item = id.to_string(); } if let Some(g) = self.gpu.as_mut() { g.content_set = None; g.ui_dirty = true; } return }
+            qcv_project::MediaType::ImageSequence => {}
             other => { log::info!("load: {other:?} items load with their step; selected only"); return }
         }
-        let ok = self.open(&item.path);
+        let ok = if item.media_type == qcv_project::MediaType::ImageSequence {
+            // QCView `loadImageSequence`: the item's own pattern, frame range and rate (the detector's, at add) — a still is a 1-frame sequence
+            let q = &item.image_seq;
+            let pattern = std::path::Path::new(&q.directory).join(&q.pattern).to_string_lossy().into_owned();
+            let label = format!("{} ({} frames{})", item.name, q.frame_count, if q.missing_frames.is_empty() { String::new() } else { format!(", {} missing", q.missing_frames.len()) });
+            self.open_source(Source::Sequence { pattern, rate: qcv_timeline::Rate::from_f64(if q.frame_rate > 0.0 { q.frame_rate } else { 24.0 }), start: q.start_frame as i64, end: q.end_frame as i64, label }, &item.path)
+        } else { self.open(&item.path) };
         self.project.set_load_failed(id, !ok);
         if !ok { self.report_unsupported(id); return }
         if self.unsupported_toast.as_ref().is_some_and(|(i, _)| i != id) { self.unsupported_toast = None; }
@@ -207,9 +214,9 @@ impl App {
         let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(st.int(settings::k::IMAGE_SEQ_THREADS) as i32, st.int(settings::k::IMAGE_SEQ_READ_AHEAD) as i32);   // QCView reads them at each sequence load
         TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, ..Default::default() }
     }
-    fn open(&mut self, path: &str) -> bool {
+    fn open(&mut self, path: &str) -> bool { self.open_source(Source::from_path(path, None), path) }
+    fn open_source(&mut self, src: Source, path: &str) -> bool {
         if self.gpu.is_none() { return false }
-        let src = Source::from_path(path, None);
         let t = Instant::now();
         match Transport::open(&src, self.transport_options()) {
             Ok(p) => { self.pl_editor = None; self.adopt(p, src.display(), path, t); true }
