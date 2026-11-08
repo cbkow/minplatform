@@ -32,9 +32,22 @@ pub fn dimensions(path: &str) -> Result<(u32, u32), Error> {
     let h = header(path, &b)?; Ok((h.w, h.h))
 }
 
-pub fn load(path: &str) -> Result<Image, Error> {
-    let b = std::fs::read(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
-    let h = header(path, &b)?;
+pub fn load(path: &str) -> Result<Image, Error> { decode(path, 1) }
+
+/// The hover thumbnail's fast path (QCView's skip rule, every Nth row and pixel, N = the long side / `max_size`): only the
+/// rows it samples are read from disk.
+pub fn load_thumbnail(path: &str, max_size: u32) -> Result<Image, Error> {
+    let (w, h) = dimensions(path)?;
+    decode(path, (w.max(h) / max_size.max(1)).max(1) as usize)
+}
+
+/// Decode every `skip`-th row and pixel (1 = the whole image), reading only those rows (every line starts on a 32-bit word).
+fn decode(path: &str, skip: usize) -> Result<Image, Error> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let mut hb = vec![0u8; 820];
+    f.read_exact(&mut hb).map_err(|e| Error::Decode(path.into(), format!("truncated DPX header: {e}")))?;
+    let h = header(path, &hb)?;
     let bad = |m: String| Error::Decode(path.into(), m);
     if h.encoding != 0 { return Err(bad("RLE-encoded DPX is not supported".into())) }
     if h.orientation >= 4 { return Err(bad(format!("DPX orientation {} (transposed) is not supported", h.orientation))) }
@@ -42,51 +55,33 @@ pub fn load(path: &str) -> Result<Image, Error> {
     let (w, ht) = (h.w as usize, h.h as usize);
     if w == 0 || ht == 0 || w > 65536 || ht > 65536 { return Err(bad(format!("DPX size {w}x{ht}"))) }
     let n = w * ch;   // samples per line
-    let data = b.get(h.offset..).ok_or_else(|| bad("DPX data offset past the end".into()))?;
-    let need = |bytes: usize| if data.len() < bytes { Err(bad(format!("DPX data truncated ({} of {bytes} bytes)", data.len()))) } else { Ok(()) };
-    let rd32 = |o: usize| { let a = [data[o], data[o + 1], data[o + 2], data[o + 3]]; if h.le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } };
-    let rd16 = |o: usize| { let a = [data[o], data[o + 1]]; if h.le { u16::from_le_bytes(a) } else { u16::from_be_bytes(a) } };
-    // the samples in file order, one line at a time (every line starts on a 32-bit word)
-    let mut img = match h.bits {
-        8 => {
-            let stride = n.div_ceil(4) * 4; need(stride * ht)?;
-            let v: Vec<u8> = (0..ht).flat_map(|y| data[y * stride..y * stride + n].iter().copied()).collect();
-            build(w, ht, Samples::U8(&v), ch, h.descriptor)
-        }
-        10 => {
-            let mut v = Vec::with_capacity(n * ht);
-            if h.packing == 0 {
-                // packed: the samples run continuously, MSB first within each 32-bit word, a line padded to a word
-                let stride = (n * 10).div_ceil(32) * 4; need(stride * ht)?;
-                for y in 0..ht { for i in 0..n {
-                    let bit = i * 10; let (word, off) = (bit / 32, bit % 32);
-                    let hi = rd32(y * stride + word * 4) as u64; let lo = if off + 10 > 32 { rd32(y * stride + word * 4 + 4) as u64 } else { 0 };
-                    let x = ((hi << 32) | lo) >> (64 - off - 10);
-                    v.push(widen10((x & 0x3ff) as u16));
-                } }
-            } else {
-                // filled: three samples per word — method A (packing 1) pad bits low, method B (packing 2) pad bits high
-                let stride = n.div_ceil(3) * 4; need(stride * ht)?;
-                let shift = if h.packing == 1 { 2 } else { 0 };
-                for y in 0..ht { for i in 0..n {
-                    let word = rd32(y * stride + (i / 3) * 4);
-                    v.push(widen10(((word >> (shift + 20 - 10 * (i % 3) as u32)) & 0x3ff) as u16));
-                } }
-            }
-            build(w, ht, Samples::U16(&v), ch, h.descriptor)
-        }
-        12 => {
-            let stride = (n * 2).div_ceil(4) * 4; need(stride * ht)?;
-            let v: Vec<u16> = (0..ht).flat_map(|y| (0..n).map(move |i| (y, i))).map(|(y, i)| { let s = rd16(y * stride + i * 2); widen12(if h.packing == 1 { s >> 4 } else { s & 0xfff }) }).collect();
-            build(w, ht, Samples::U16(&v), ch, h.descriptor)
-        }
-        16 => {
-            let stride = (n * 2).div_ceil(4) * 4; need(stride * ht)?;
-            let v: Vec<u16> = (0..ht).flat_map(|y| (0..n).map(move |i| (y, i))).map(|(y, i)| rd16(y * stride + i * 2)).collect();
-            build(w, ht, Samples::U16(&v), ch, h.descriptor)
-        }
-        b => return Err(bad(format!("DPX bit depth {b} not supported"))),
+    let stride = match (h.bits, h.packing) {
+        (8, _) => n.div_ceil(4) * 4, (10, 0) => (n * 10).div_ceil(32) * 4, (10, _) => n.div_ceil(3) * 4, (12 | 16, _) => (n * 2).div_ceil(4) * 4,
+        (b, _) => return Err(bad(format!("DPX bit depth {b} not supported"))),
     };
+    let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    if len < h.offset + stride * ht { return Err(bad(format!("DPX data truncated ({} of {} bytes)", len.saturating_sub(h.offset), stride * ht))) }
+    let le = h.le;
+    let rd32 = |l: &[u8], o: usize| { let a = [l[o], l[o + 1], l[o + 2], l[o + 3]]; if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } };
+    let rd16 = |l: &[u8], o: usize| { let a = [l[o], l[o + 1]]; if le { u16::from_le_bytes(a) } else { u16::from_be_bytes(a) } };
+    // sample i of a line, widened to 16 bits (8-bit read separately)
+    let sample = |l: &[u8], i: usize| -> u16 {
+        match (h.bits, h.packing) {
+            (10, 0) => { let bit = i * 10; let (word, off) = (bit / 32, bit % 32); let hi = rd32(l, word * 4) as u64; let lo = if off + 10 > 32 { rd32(l, word * 4 + 4) as u64 } else { 0 }; widen10(((((hi << 32) | lo) >> (64 - off - 10)) & 0x3ff) as u16) }
+            // filled: three samples per word — method A (packing 1) pad bits low, method B (packing 2) pad bits high
+            (10, p) => { let word = rd32(l, (i / 3) * 4); widen10(((word >> (if p == 1 { 2 } else { 0 } + 20 - 10 * (i % 3) as u32)) & 0x3ff) as u16) }
+            (12, p) => { let s = rd16(l, i * 2); widen12(if p == 1 { s >> 4 } else { s & 0xfff }) }
+            _ => rd16(l, i * 2),
+        }
+    };
+    let (ow, oh) = ((w / skip).max(1), (ht / skip).max(1));
+    let mut line = vec![0u8; stride];
+    let (mut v8, mut v16) = (Vec::new(), Vec::new());
+    for oy in 0..oh {
+        f.seek(SeekFrom::Start((h.offset + oy * skip * stride) as u64)).and_then(|_| f.read_exact(&mut line)).map_err(|e| bad(format!("DPX read: {e}")))?;
+        for ox in 0..ow { for c in 0..ch { let i = ox * skip * ch + c; if h.bits == 8 { v8.push(line[i]) } else { v16.push(sample(&line, i)) } } }
+    }
+    let mut img = if h.bits == 8 { build(ow, oh, Samples::U8(&v8), ch, h.descriptor) } else { build(ow, oh, Samples::U16(&v16), ch, h.descriptor) };
     if h.orientation != 0 { img.flip(h.orientation & 1 != 0, h.orientation & 2 != 0); }
     Ok(img)
 }

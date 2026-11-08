@@ -36,6 +36,36 @@ pub fn load(path: &str) -> Result<Image, Error> {
     })
 }
 
+/// The hover thumbnail's fast path (QCView's PNG skip-downsample): the rows still inflate one by one, but only every Nth
+/// row and pixel (N = the long side / `max_size`) is kept — no full-size buffer. Interlaced files take the full decode.
+pub fn load_thumbnail(path: &str, max_size: u32) -> Result<Image, Error> {
+    let f = std::fs::File::open(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let mut dec = png::Decoder::new(std::io::BufReader::new(f));
+    dec.set_transformations(Transformations::EXPAND);
+    let dec_err = |e: png::DecodingError| Error::Decode(path.into(), e.to_string());
+    let mut reader = dec.read_info().map_err(dec_err)?;
+    if reader.info().interlaced { return load(path) }
+    let (w, h) = (reader.info().width, reader.info().height);
+    let (ct, depth) = reader.output_color_type();
+    let (color, alpha, channels) = match ct {
+        ColorType::Grayscale => (false, false, 1), ColorType::GrayscaleAlpha => (false, true, 2),
+        ColorType::Rgb => (true, false, 3), ColorType::Rgba => (true, true, 4),
+        ColorType::Indexed => return load(path),
+    };
+    let skip = (w.max(h) / max_size.max(1)).max(1) as usize;
+    let (ow, oh) = ((w as usize / skip).max(1), (h as usize / skip).max(1));
+    let sixteen = depth == BitDepth::Sixteen;
+    let (mut v8, mut v16) = (Vec::with_capacity(ow * oh * channels), Vec::with_capacity(if sixteen { ow * oh * channels } else { 0 }));
+    for y in 0..h as usize {
+        let Some(row) = reader.next_row().map_err(dec_err)? else { break };
+        if y % skip != 0 || y / skip >= oh { continue }
+        let d = row.data();
+        for ox in 0..ow { for c in 0..channels { let i = ox * skip * channels + c; if sixteen { v16.push(u16::from_be_bytes([d[i * 2], d[i * 2 + 1]])) } else { v8.push(d[i]) } } }
+    }
+    let (ow, oh) = (ow as u32, oh as u32);
+    Ok(if sixteen { Image::from_interleaved(ow, oh, Sample::U16, Samples::U16(&v16), channels, color, alpha) } else { Image::from_interleaved(ow, oh, Sample::U8, Samples::U8(&v8), channels, color, alpha) })
+}
+
 /// Width and height without decoding pixels (QCView's `getDimensions`).
 pub fn dimensions(path: &str) -> Result<(u32, u32), Error> {
     let f = std::fs::File::open(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;

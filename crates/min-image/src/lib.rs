@@ -73,6 +73,18 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
     }
 }
 
+/// A reduced decode for a thumbnail whose long side is about `max_size` (QCView's `loadThumbnail` fast paths): JPEG by DCT
+/// scaling, PNG / DPX / striped TIFF by keeping every Nth row / pixel; the others decode whole (the caller reduces them).
+pub fn load_thumbnail(path: &str, layer: &str, max_size: u32) -> Result<Image, Error> {
+    match Format::of(path) {
+        Some(Format::Jpeg) => jpeg::load_thumbnail(path, max_size),
+        Some(Format::Png) => png::load_thumbnail(path, max_size),
+        Some(Format::Dpx) => dpx::load_thumbnail(path, max_size),
+        Some(Format::Tiff) => tiff::load_thumbnail(path, max_size),
+        _ => load(path, layer, 2),
+    }
+}
+
 /// Width and height from the headers (QCView's `getDimensions`) — the sequence cache's first-frame probe.
 pub fn dimensions(path: &str, layer: &str) -> Result<(u32, u32), Error> {
     match Format::of(path) {

@@ -97,3 +97,34 @@ pub fn dimensions(path: &str) -> Result<(u32, u32), Error> {
     let f = std::fs::File::open(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
     Decoder::new(std::io::BufReader::new(f)).and_then(|mut d| d.dimensions()).map_err(|e| Error::Decode(path.into(), e.to_string()))
 }
+
+/// The hover thumbnail's fast path for the common striped layouts (8 / 16-bit gray, gray + alpha, RGB, RGBA, chunky, top-left):
+/// only the strips holding every Nth row are decompressed. Anything else takes the full decode.
+pub fn load_thumbnail(path: &str, max_size: u32) -> Result<Image, Error> {
+    use tiff::decoder::ChunkType;
+    let full = || load(path);
+    let Ok(f) = std::fs::File::open(path) else { return full() };
+    let Ok(mut d) = Decoder::new(std::io::BufReader::new(f)) else { return full() };
+    let (Ok((w, h)), Ok(ct)) = (d.dimensions(), d.colortype()) else { return full() };
+    let (channels, color, alpha) = match ct { ColorType::Gray(8 | 16) => (1, false, false), ColorType::GrayA(8 | 16) => (2, false, true), ColorType::RGB(8 | 16) => (3, true, false), ColorType::RGBA(8 | 16) => (4, true, true), _ => return full() };
+    let simple = d.get_chunk_type() == ChunkType::Strip && d.find_tag_unsigned::<u16>(Tag::PlanarConfiguration).ok().flatten().unwrap_or(1) == 1
+        && d.find_tag_unsigned::<u16>(Tag::Orientation).ok().flatten().unwrap_or(1) == 1 && d.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation).ok().flatten().unwrap_or(2) != 0;
+    if !simple { return full() }
+    let rps = d.chunk_dimensions().1.max(1) as usize;
+    let skip = (w.max(h) / max_size.max(1)).max(1) as usize;
+    let (ow, oh) = ((w as usize / skip).max(1), (h as usize / skip).max(1));
+    let (mut v8, mut v16): (Vec<u8>, Vec<u16>) = (vec![], vec![]);
+    let mut cached: Option<(usize, DecodingResult)> = None;
+    for oy in 0..oh {
+        let y = oy * skip; let strip = y / rps;
+        if cached.as_ref().map(|c| c.0) != Some(strip) { match d.read_chunk(strip as u32) { Ok(r) => cached = Some((strip, r)), Err(_) => return full() } }
+        let row = (y % rps) * w as usize * channels;
+        match &cached.as_ref().unwrap().1 {
+            DecodingResult::U8(b) => for ox in 0..ow { for c in 0..channels { v8.push(b[row + ox * skip * channels + c]) } },
+            DecodingResult::U16(b) => for ox in 0..ow { for c in 0..channels { v16.push(b[row + ox * skip * channels + c]) } },
+            _ => return full(),
+        }
+    }
+    let (ow, oh) = (ow as u32, oh as u32);
+    Ok(if v16.is_empty() { Image::from_interleaved(ow, oh, Sample::U8, Samples::U8(&v8), channels, color, alpha) } else { Image::from_interleaved(ow, oh, Sample::U16, Samples::U16(&v16), channels, color, alpha) })
+}

@@ -226,3 +226,28 @@ fn ycbcr_tiff_reads_through_libtiff() {
         eprintln!("tif  {pix:10} (YCbCr) → libtiff RGBA, IDENTICAL to tiff2rgba");
     }
 }
+
+/// The thumbnail fast paths (QCView's `loadThumbnail`): PNG / TIFF / DPX keep exactly the full decode's samples at every
+/// Nth row and pixel; JPEG decodes at a DCT scale whose long side still reaches the request.
+#[test]
+fn thumbnail_fast_paths_sample_the_full_decode() {
+    if !have_ffmpeg() { return }
+    let d = dir();
+    for (name, pix, extra) in [("th.png", "rgb48be", vec![]), ("th.tif", "rgba", vec!["-compression_algo", "lzw"]), ("th.dpx", "gbrp10le", vec![]), ("th8.png", "rgba", vec![])] {
+        let p = d.join(name).to_string_lossy().into_owned();
+        let mut args = vec!["-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=1", "-frames:v", "1", "-pix_fmt", pix]; args.extend(extra.iter()); args.push(&p);
+        assert!(ffmpeg(&args));
+        let (full, th) = (load(&p, "", 0).unwrap(), min_image::load_thumbnail(&p, "", 320).unwrap());
+        let skip = 1920usize / 320;
+        assert_eq!((th.width as usize, th.height as usize), (1920 / skip, 1080 / skip), "{name}");
+        let b = full.sample.bytes();
+        for pl in 0..th.planes.len() { for y in 0..th.height as usize { for x in 0..th.width as usize {
+            let (o, of) = (y * th.pitch as usize + x * b, y * skip * full.pitch as usize + x * skip * b);
+            assert_eq!(th.planes[pl][o..o + b], full.planes[pl][of..of + b], "{name} plane {pl} at {x},{y}");
+        } } }
+    }
+    let j = d.join("th.jpg").to_string_lossy().into_owned();
+    assert!(ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=3840x2160:rate=1", "-frames:v", "1", &j]));
+    let th = min_image::load_thumbnail(&j, "", 320).unwrap();
+    assert_eq!((th.width, th.height), (480, 270), "a 4K JPEG decodes at 1/8");
+}

@@ -308,11 +308,11 @@ impl VideoThumbLoaderSws {
     } }
 }
 
-/// QCView's still loaders' `loadThumbnail` (EXR / PNG / TIFF / JPEG): the frame's file through `min-image`. QCView's
-/// fast paths (EXR scanline skip, PNG skip-downsample, JPEG DCT scaling) are owed — this decodes the whole frame.
+/// QCView's still loaders' `loadThumbnail`: the frame's file through `min_image::load_thumbnail` (JPEG DCT scaling, PNG / DPX
+/// row skipping; EXR / TIFF / TGA / BMP decode whole and are reduced here).
 pub struct ImageThumbLoader { path: String, layer: String }
 impl ThumbLoader for ImageThumbLoader {
-    fn load_thumbnail(&mut self, _source_frame: i32, max_size: u32) -> Option<ThumbPixels> { image_thumb(&min_image::load(&self.path, &self.layer, 2).ok()?, max_size) }
+    fn load_thumbnail(&mut self, _source_frame: i32, max_size: u32) -> Option<ThumbPixels> { image_thumb(&min_image::load_thumbnail(&self.path, &self.layer, max_size).ok()?, max_size) }
 }
 
 /// A decoded still reduced to a thumbnail: every Nth pixel, N = max(1, the long side / `max_size`) (QCView's EXR skip
@@ -348,6 +348,17 @@ pub fn image_thumb(img: &min_image::Image, max_size: u32) -> Option<ThumbPixels>
 mod tests {
     use super::*;
     use std::time::Duration;
+    /// `QCV_THUMB_BENCH=<dir>`: the hover thumbnail's cost per still in the folder (the ImageThumbLoader path).
+    #[test] #[ignore] fn thumb_bench() {
+        let Ok(dir) = std::env::var("QCV_THUMB_BENCH") else { return };
+        let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| min_image::Format::of(&p.to_string_lossy()).is_some()).collect(); files.sort();
+        for p in files {
+            let p = p.to_string_lossy().into_owned(); let mut l = ImageThumbLoader { path: p.clone(), layer: String::new() };
+            let _ = l.load_thumbnail(0, 320);   // warm the page cache
+            let t = std::time::Instant::now(); let n = 5; for _ in 0..n { assert!(l.load_thumbnail(0, 320).is_some()); }
+            eprintln!("{:>10}  {:6.1} ms per thumbnail", std::path::Path::new(&p).file_name().unwrap().to_string_lossy(), t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+        }
+    }
     #[test] fn image_thumb_skips_and_encodes() {
         use min_image::{Image, Sample};
         // 640×360 half-float planes G, B, R: G = 0.5 linear everywhere, B = 0, R = 1.0; max 320 → every 2nd pixel

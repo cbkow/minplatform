@@ -34,6 +34,22 @@ pub fn load(path: &str) -> Result<Image, Error> {
     Ok(Image::from_interleaved(w, ht, Sample::U8, Samples::U8(&px), ch, !gray, false))
 }
 
+/// The hover thumbnail's fast path (QCView's JPEG DCT scaling): libjpeg-turbo decodes at 1/2, 1/4 or 1/8 — the smallest
+/// scale whose long side still reaches `max_size` — so a 4K frame's IDCT runs at an eighth of the work.
+pub fn load_thumbnail(path: &str, max_size: u32) -> Result<Image, Error> {
+    let bytes = std::fs::read(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let (h, w, ht, gray) = header(path, &bytes)?;
+    let long = w.max(ht);
+    let d = [8u32, 4, 2, 1].into_iter().find(|d| long.div_ceil(*d) >= max_size.max(1)).unwrap_or(1);
+    if unsafe { tj3SetScalingFactor(h.0, tjscalingfactor { num: 1, denom: d as i32 }) } != 0 { return Err(err(path, &h)) }
+    let (sw, sh) = (w.div_ceil(d), ht.div_ceil(d));   // TJSCALED
+    let ch = if gray { 1 } else { 3 };
+    let mut px = vec![0u8; sw as usize * sh as usize * ch];
+    let fmt = if gray { TJPF_GRAY } else { TJPF_RGB };
+    if unsafe { tj3Decompress8(h.0, bytes.as_ptr(), bytes.len(), px.as_mut_ptr(), (sw as usize * ch) as i32, fmt as _) } != 0 { return Err(err(path, &h)) }
+    Ok(Image::from_interleaved(sw, sh, Sample::U8, Samples::U8(&px), ch, !gray, false))
+}
+
 pub fn dimensions(path: &str) -> Result<(u32, u32), Error> {
     let bytes = std::fs::read(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
     let (_, w, h, _) = header(path, &bytes)?; Ok((w, h))

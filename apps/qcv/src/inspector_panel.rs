@@ -121,7 +121,7 @@ impl InspectorPanel {
                 let (tx, rx) = std::sync::mpsc::channel(); self.layer_rx = Some(rx);
                 let (names, first) = (layers.clone(), first_frame.to_string());
                 std::thread::Builder::new().name("qcv-layer-thumbs".into()).spawn(move || {
-                    for n in names { let px = qcv_player::min_image::load(&first, &n, 2).ok().and_then(|img| qcv_player::thumbnail_cache::image_thumb(&img, 240)); if tx.send((first.clone(), n, px)).is_err() { return } }
+                    for n in names { let px = qcv_player::min_image::load_thumbnail(&first, &n, 240).ok().and_then(|img| qcv_player::thumbnail_cache::image_thumb(&img, 240)); if tx.send((first.clone(), n, px)).is_err() { return } }
                 }).ok();
             }
         }
