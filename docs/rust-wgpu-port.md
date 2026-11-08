@@ -1816,7 +1816,7 @@ EOTF for every path" is the deviation; the parked question was whether to carry 
 | 181 | minColor's halves | Rendering kept (Knee / AgX / OpenDRT, target gamut + nits); Display half removed | banked |
 | 182 | OCIO's role | a LUT SOURCE: `ociobakelut` out of process → float shaper + 3D LUT node in minColor; no OCIO in-process (supersedes 91 / 93 / 94) | **REJECTED 2026-11-08** (row 200: native shaders) |
 | 183 | OCIO's display | ONE patched "Linear sRGB EDR" display per bundled config (the existing EDR patch promoted); the user picks config · input · view · look | banked |
-| 184 | The gate | row 130's Windows HDR-monitor session: fp16 with HDR off (banding), SDR white level with HDR on | banked |
+| 184 | The gate | row 130's Windows HDR-monitor session: fp16 with HDR off (banding), SDR white level with HDR on | banked **DONE 2026-11-08 on rhombus's HDR monitor (HDR on):** the surface = scRGB Rgba16Float ExtendedSrgbLinear on the RTX 4090; SDR looked dim (scRGB 1.0 = 80 nits) → `sdr_white.rs` reads the window's monitor's DISPLAYCONFIG_SDR_WHITE_LEVEL every 2 s (248 nits on the box) and the picture, UI, background and waveform passes take level / 80 (a07cd74); the user: "that is much better", then "perfect". 1.0 = SDR white on both OSes. Not run: HDR OFF (DWM's conversion / banding). |
 
 ## 19. Scopes + title-safe guides: viewport overlays in the port (2026-11-06)
 
