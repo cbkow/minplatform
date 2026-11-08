@@ -21,8 +21,9 @@
 //!   up to 10 ms before it was filed;
 //! - ONE broken sentinel per cache, shared: QCView built a full-size RGBA8 image per broken frame (33 MB at 4K) and
 //!   costed it at 4 bytes — a run of broken frames could hold gigabytes the budget never saw;
-//! - closing never waits for a decode in flight (QCView waited on every future — up to a DWAB multilayer frame,
-//!   ~900 ms, on the closing thread); the loads finish into the dropped generation;
+//! - (NOT a divergence, tried and reverted 2026-11-08: dropping without waiting for the loads in flight crashed the
+//!   Windows process at exit — a loader still inside OpenEXRCore while the runtime tore down, 0xC0000005. Drop waits,
+//!   as QCView's shutdown waits on its futures; the transport drops replaced slots off the UI thread.)
 //! - QCView's overrun flags (`m_overrunMode`, `m_lastGoodFrame`) were written and never read — not carried.
 use crate::simple_lru::SimpleLru;
 use min_image::{Image, Sentinel};
@@ -60,7 +61,8 @@ pub type EvictSink = Arc<dyn Fn(i32) + Send + Sync>;
 #[derive(thiserror::Error, Debug)]
 pub enum Error { #[error("no loader for '{0}'")] Format(String), #[error("first frame: {0}")] Probe(String) }
 
-struct Io { requests: VecDeque<i32>, in_flight: HashMap<i32, u64>, done: Vec<(i32, u64, Option<Image>)> }
+struct Io { requests: VecDeque<i32>, in_flight: HashMap<i32, u64>, done: Vec<(i32, u64, Option<Image>)>, /// the loader threads, joined on drop
+    loaders: Vec<thread::JoinHandle<()>> }
 
 struct Shared {
     directory: String, pattern: String, start_frame: i32, frame_count: i32, fps: f64, width: u32, height: u32,
@@ -109,7 +111,7 @@ impl ImageSequenceCache {
             directory: directory.into(), pattern: pattern.into(), start_frame, frame_count, fps, width, height,
             is_exr: fmt == min_image::Format::Exr, layer: Mutex::new(layer.into()), config,
             lru: SimpleLru::new(budget), broken: Arc::new(Image::sentinel(Sentinel::Broken, width, height)), gap: Arc::new(Image::sentinel(Sentinel::Gap, 1, 1)),
-            io: Mutex::new(Io { requests: VecDeque::new(), in_flight: HashMap::new(), done: vec![] }), io_cv: Condvar::new(), sleep: Mutex::new(()), cache_cv: Condvar::new(),
+            io: Mutex::new(Io { requests: VecDeque::new(), in_flight: HashMap::new(), done: vec![], loaders: vec![] }), io_cv: Condvar::new(), sleep: Mutex::new(()), cache_cv: Condvar::new(),
             running: AtomicBool::new(true), playhead: AtomicI32::new(0), last_seek: AtomicI32::new(0), generation: AtomicU64::new(0),
             stride: AtomicI32::new(1), looping: AtomicBool::new(true), has_range: AtomicBool::new(false), loop_in: AtomicI32::new(-1), loop_out: AtomicI32::new(-1),
             failed: Mutex::new(HashSet::new()),
@@ -202,6 +204,9 @@ impl Drop for ImageSequenceCache {
         self.sh.generation.fetch_add(1, AcqRel);   // loads still running finish into a dead generation
         self.sh.cache_cv.notify_all(); self.sh.io_cv.notify_all();
         for t in self.threads.drain(..) { let _ = t.join(); }
+        // wait for the loads in flight (QCView's shutdown waits on its futures) — see the module note
+        let loaders = std::mem::take(&mut self.sh.io.lock().unwrap().loaders);
+        for h in loaders { let _ = h.join(); }
         self.sh.lru.clear();
     }
 }
@@ -351,8 +356,9 @@ impl Shared {
                     sh.io.lock().unwrap().done.push((frame, generation, r));
                     sh.io_cv.notify_all();
                 });
-                if spawned.is_err() { io.in_flight.remove(&frame); break }
+                match spawned { Ok(h) => io.loaders.push(h), Err(_) => { io.in_flight.remove(&frame); break } }
             }
+            io.loaders.retain(|h| !h.is_finished());
             let done = std::mem::take(&mut io.done);
             for (f, _, _) in &done { io.in_flight.remove(f); }
             drop(io);
