@@ -5,12 +5,44 @@
 //! Divergences, with reasons: QCView marked 16-bit FLOAT and 32-bit FLOAT TIFFs high-depth but copied their bits into
 //! an RGBA16 integer buffer ("the pixels will look wrong" — its own comment), and refused 16-bit gray. Here float TIFFs
 //! land as F16 (32-bit converted, 16-bit kept), 16-bit gray reads, and the orientation applies at every depth.
-//! Planar (separate-plane) files read too. Still refused (→ a broken frame), the `tiff` crate's limits where QCView's
-//! libtiff RGBA helper read them: PALETTE, YCbCr and Lab — rare in sequences; libtiff joins if a real file shows up.
+//! Planar (separate-plane) files read too. What the `tiff` crate refuses — PALETTE, subsampled YCbCr, CIE / ICC Lab, old
+//! JPEG — falls back to QCView's own path, libtiff's `TIFFReadRGBAImageOriented(…, ORIENTATION_TOPLEFT)` → 8-bit RGBA
+//! (canon row 189 ruled 2026-11-08: "Cover those TIFFs too"); alpha is kept only when the file declares extra samples.
 use crate::{Error, Image, Sample, Samples};
 use tiff::{decoder::{Decoder, DecodingResult}, tags::Tag, ColorType};
 
 pub fn load(path: &str) -> Result<Image, Error> {
+    match load_crate(path) {
+        Ok(img) => Ok(img),
+        Err(Error::Decode(p, why)) => libtiff_rgba(path).map_err(|_| Error::Decode(p, why)),
+        Err(e) => Err(e),
+    }
+}
+
+/// QCView's 8-bit TIFF path verbatim: libtiff converts anything RGB-ish (palette, YCbCr at any subsampling, Lab, CMYK,
+/// separations, old JPEG) to ABGR words, top-left first.
+fn libtiff_rgba(path: &str) -> Result<Image, Error> {
+    use crate::sys::tiff as t;
+    let fail = |m: &str| Error::Decode(path.into(), format!("libtiff: {m}"));
+    unsafe { t::TIFFSetWarningHandler(None); t::TIFFSetErrorHandler(None); }   // a broken frame is reported by the cache, not on stderr
+    #[cfg(windows)] let tif = { let w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect(); unsafe { t::TIFFOpenW(w.as_ptr() as _, c"r".as_ptr()) } };
+    #[cfg(not(windows))] let tif = { let c = std::ffi::CString::new(path).map_err(|_| fail("path"))?; unsafe { t::TIFFOpen(c.as_ptr(), c"r".as_ptr()) } };
+    if tif.is_null() { return Err(fail("open")) }
+    struct Close(*mut t::TIFF); impl Drop for Close { fn drop(&mut self) { unsafe { t::TIFFClose(self.0) } } }
+    let _c = Close(tif);
+    let (mut w, mut h) = (0u32, 0u32);
+    if unsafe { t::TIFFGetField(tif, t::TIFFTAG_IMAGEWIDTH, &mut w as *mut u32) } == 0 || unsafe { t::TIFFGetField(tif, t::TIFFTAG_IMAGELENGTH, &mut h as *mut u32) } == 0 { return Err(fail("size")) }
+    if w == 0 || h == 0 || w as u64 * h as u64 > 1 << 28 { return Err(fail("size")) }
+    let mut extra: u16 = 0; let mut kinds: *mut u16 = std::ptr::null_mut();
+    let alpha = unsafe { t::TIFFGetField(tif, t::TIFFTAG_EXTRASAMPLES, &mut extra as *mut u16, &mut kinds as *mut *mut u16) } != 0 && extra > 0;
+    let mut abgr = vec![0u32; w as usize * h as usize];
+    if unsafe { t::TIFFReadRGBAImageOriented(tif, w, h, abgr.as_mut_ptr(), t::ORIENTATION_TOPLEFT as i32, 0) } == 0 { return Err(fail("read")) }
+    let rgba: Vec<u8> = abgr.iter().flat_map(|v| [*v as u8, (*v >> 8) as u8, (*v >> 16) as u8, (*v >> 24) as u8]).collect();   // TIFFGetR/G/B/A
+    Ok(if alpha { Image::from_interleaved(w, h, Sample::U8, Samples::U8(&rgba), 4, true, true) }
+       else { let rgb: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect(); Image::from_interleaved(w, h, Sample::U8, Samples::U8(&rgb), 3, true, false) })
+}
+
+fn load_crate(path: &str) -> Result<Image, Error> {
     let f = std::fs::File::open(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
     let e = |e: tiff::TiffError| Error::Decode(path.into(), e.to_string());
     let mut d = Decoder::new(std::io::BufReader::new(f)).map_err(e)?;

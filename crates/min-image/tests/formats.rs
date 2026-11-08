@@ -38,6 +38,15 @@ fn reference(path: &str, native: &str) -> Vec<u16> {
         "rgba64be" | "rgba64le" => u16s(native.ends_with("be")),
         "gray16be" | "gray16le" => u16s(native.ends_with("be")).iter().flat_map(|&g| [g, g, g, 65535]).collect(),
         "ya16be" | "ya16le" => u16s(native.ends_with("be")).chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        // DPX's 10 / 12-bit planes, widened by bit replication as the loader does (the file's bits stay the top bits)
+        "gbrp10le" | "gbrp10be" | "gbrp12le" | "gbrp12be" => {
+            let v = u16s(native.ends_with("be")); let bits = if native.contains("10") { 10 } else { 12 };
+            let wide = |x: u16| (x << (16 - bits)) | (x >> (2 * bits - 16));
+            (0..w * h).flat_map(|i| [wide(v[2 * w * h + i]), wide(v[i]), wide(v[w * h + i]), 65535]).collect()
+        }
+        "bgr24" => b.chunks_exact(3).flat_map(|p| [w8(p[2]), w8(p[1]), w8(p[0]), 65535]).collect(),
+        "bgra" => b.chunks_exact(4).flat_map(|p| [w8(p[2]), w8(p[1]), w8(p[0]), w8(p[3])]).collect(),
+        "bgr0" => b.chunks_exact(4).flat_map(|p| [w8(p[2]), w8(p[1]), w8(p[0]), 65535]).collect(),
         other => panic!("no layout rule for {other}"),
     }
 }
@@ -102,11 +111,8 @@ fn tiff_every_layout_and_compression_matches_ffmpeg() {
             check("tif", pix, &["-compression_algo", comp], want, Some(pix));
         }
     }
-    // Palette TIFFs: the `tiff` crate refuses RGBPalette at read — a clean error → a broken frame (QCView's libtiff
-    // RGBA helper read them; rare in sequences — libtiff joins if a real one shows up).
-    let d = dir(); let p = d.join("pal.tif").to_string_lossy().into_owned();
-    assert!(ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=64x64:rate=1", "-frames:v", "1", "-pix_fmt", "pal8", &p]));
-    assert!(load(&p, "", 0).is_err());
+    // Palette TIFFs: the `tiff` crate refuses RGBPalette — libtiff's RGBA path (QCView's) reads them, IDENTICAL to FFmpeg
+    check("tif", "pal8", &[], (Sample::U8, false), Some("pal8"));
     // FFmpeg writes planar TIFF from its planar RGB formats.
     check("tiff", "gbrp", &["-compression_algo", "lzw"], (Sample::U8, false), Some("gbrp"));
 }
@@ -171,4 +177,52 @@ fn exr_multipart_layers() {
     assert_eq!(min_image::exr::layers(&single).unwrap(), vec!["default".to_string()]);
     assert!(min_image::load(&single, "default", 1).is_ok());
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// DPX (ours, row 190): every layout FFmpeg's encoder writes, both byte orders — IDENTICAL to FFmpeg's decode (10 / 12-bit
+/// compared with the samples widened the loader's way, so the file's bits must match exactly).
+#[test]
+fn dpx_every_layout_matches_ffmpeg() {
+    if !have_ffmpeg() { return }
+    for (pix, want, native) in [("rgb24", (Sample::U8, false), "rgb24"), ("rgba", (Sample::U8, true), "rgba"), ("gray", (Sample::U8, false), "gray"),
+                                ("rgb48be", (Sample::U16, false), "rgb48be"), ("rgb48le", (Sample::U16, false), "rgb48le"),
+                                ("rgba64be", (Sample::U16, true), "rgba64be"), ("rgba64le", (Sample::U16, true), "rgba64le"),
+                                ("gray16be", (Sample::U16, false), "gray16be"), ("gray16le", (Sample::U16, false), "gray16le"),
+                                ("gbrp10be", (Sample::U16, false), "gbrp10be"), ("gbrp10le", (Sample::U16, false), "gbrp10le"),
+                                ("gbrp12be", (Sample::U16, false), "gbrp12be"), ("gbrp12le", (Sample::U16, false), "gbrp12le")] {
+        check("dpx", pix, &[], want, Some(native));
+    }
+}
+
+/// TGA + BMP (ours, row 191): the layouts FFmpeg's encoders write, IDENTICAL to FFmpeg's decode.
+#[test]
+fn tga_and_bmp_match_ffmpeg() {
+    if !have_ffmpeg() { return }
+    for (pix, want, native) in [("bgr24", (Sample::U8, false), "bgr24"), ("bgra", (Sample::U8, true), "bgra"), ("gray", (Sample::U8, false), "gray")] {
+        check("tga", pix, &[], want, Some(native));
+    }
+    // a 32-bit BI_RGB BMP has no alpha by the spec (the fourth byte is padding): the crate reads RGB, FFmpeg calls it bgra
+    // and FFmpeg's encoder writes 255 there — the pixels agree, our frame is simply opaque
+    for (pix, want, native) in [("bgr24", (Sample::U8, false), "bgr24"), ("bgra", (Sample::U8, false), "bgra"), ("gray", (Sample::U8, false), "pal8")] {   // a gray BMP is a palette file
+        check("bmp", pix, &[], want, Some(native));
+    }
+}
+
+/// YCbCr TIFFs at every subsampling FFmpeg writes: the `tiff` crate refuses them, libtiff's RGBA path (QCView's) reads them —
+/// IDENTICAL to libtiff's own `tiff2rgba` conversion (the colour maths is libtiff's by design; skipped without the tool).
+#[test]
+fn ycbcr_tiff_reads_through_libtiff() {
+    if !have_ffmpeg() || Command::new("tiff2rgba").arg("-h").output().is_err() { return }
+    let d = dir();
+    for pix in ["yuv444p", "yuv422p", "yuv420p", "yuv411p"] {
+        let p = d.join(format!("ycc_{pix}.tif")).to_string_lossy().into_owned(); let r = d.join(format!("ycc_{pix}_rgba.tif")).to_string_lossy().into_owned();
+        assert!(ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=1", "-frames:v", "1", "-pix_fmt", pix, &p]));
+        assert!(Command::new("tiff2rgba").args(["-c", "none", &p, &r]).status().unwrap().success());
+        let (ours, theirs) = (load(&p, "", 0).unwrap_or_else(|e| panic!("{pix}: {e}")), load(&r, "", 0).unwrap());
+        assert_eq!((ours.width, ours.height), (320, 180));
+        let (a, b) = (rgba16(&ours), rgba16(&theirs));
+        let rgb_equal = a.chunks_exact(4).zip(b.chunks_exact(4)).all(|(x, y)| x[..3] == y[..3]);
+        assert!(rgb_equal, "{pix}: differs from tiff2rgba");
+        eprintln!("tif  {pix:10} (YCbCr) → libtiff RGBA, IDENTICAL to tiff2rgba");
+    }
 }

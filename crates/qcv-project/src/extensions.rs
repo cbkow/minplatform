@@ -1,12 +1,13 @@
-//! QCView's `media_extensions.h`: the one table that decides what gets a bin entry. 32 video (webp / gif / dpx included),
-//! 13 audio, 6 image. `.r3d` / `.braw` / `.ari` are absent ON PURPOSE (refused: no decoder in the family); ARRIRAW in an MXF
+//! QCView's `media_extensions.h`: the one table that decides what gets a bin entry. 31 video (webp / gif included), 13 audio,
+//! 9 image — DPX moved from video to image and TGA / BMP joined (canon rows 190 / 191, 2026-11-08: native loaders, so they
+//! detect as sequences and ride the sequence cache; QCView opened a .dpx as a one-frame video and read neither of the others). `.r3d` / `.braw` / `.ari` are absent ON PURPOSE (refused: no decoder in the family); ARRIRAW in an MXF
 //! is admitted by extension and badged unsupported by the extractor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind { Video, Audio, Image, Unknown }
 
-pub const VIDEO: &[&str] = &["mov", "mp4", "m4v", "mxf", "mkv", "avi", "webm", "webp", "gif", "ts", "mts", "m2ts", "m2t", "mpg", "mpeg", "mpe", "m2v", "vob", "3gp", "3g2", "wmv", "asf", "flv", "f4v", "ogv", "ogm", "mjpeg", "mjpg", "y4m", "dv", "mj2", "dpx"];
+pub const VIDEO: &[&str] = &["mov", "mp4", "m4v", "mxf", "mkv", "avi", "webm", "webp", "gif", "ts", "mts", "m2ts", "m2t", "mpg", "mpeg", "mpe", "m2v", "vob", "3gp", "3g2", "wmv", "asf", "flv", "f4v", "ogv", "ogm", "mjpeg", "mjpg", "y4m", "dv", "mj2"];
 pub const AUDIO: &[&str] = &["wav", "aif", "aiff", "aifc", "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wma", "caf"];
-pub const IMAGE: &[&str] = &["png", "jpg", "jpeg", "tif", "tiff", "exr"];
+pub const IMAGE: &[&str] = &["png", "jpg", "jpeg", "tif", "tiff", "exr", "dpx", "tga", "bmp"];
 
 pub fn kind_for_suffix(suffix_lower: &str) -> Kind {
     if VIDEO.contains(&suffix_lower) { Kind::Video } else if AUDIO.contains(&suffix_lower) { Kind::Audio } else if IMAGE.contains(&suffix_lower) { Kind::Image } else { Kind::Unknown }

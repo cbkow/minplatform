@@ -42,7 +42,7 @@ impl SequenceDecoder {
         let file = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         let cache = ImageSequenceCache::open(&dir, &file, start as i32, end as i32, rate.as_f64(), layer, config).map_err(|e| Error::Open(e.to_string()))?;
         let fmt = min_image::Format::of(&file).unwrap();
-        let (name, short) = match fmt { min_image::Format::Exr => ("OpenEXR", "exr"), min_image::Format::Png => ("PNG", "png"), min_image::Format::Tiff => ("TIFF", "tiff"), min_image::Format::Jpeg => ("JPEG", "mjpeg") };
+        let (name, short) = match fmt { min_image::Format::Exr => ("OpenEXR", "exr"), min_image::Format::Png => ("PNG", "png"), min_image::Format::Tiff => ("TIFF", "tiff"), min_image::Format::Jpeg => ("JPEG", "mjpeg"), min_image::Format::Dpx => ("DPX", "dpx"), min_image::Format::Tga => ("TGA", "targa"), min_image::Format::Bmp => ("BMP", "bmp") };
         let frames = cache.frame_count();
         let float = fmt == min_image::Format::Exr;
         let meta = rgb_meta(if float { Sample::F16 } else { Sample::U8 });

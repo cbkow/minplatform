@@ -9,8 +9,10 @@
 //! and memory safety on hostile files. JPEG is LOSSY: its pixels depend on the decoder's IDCT and upsampling, and the
 //! pure-Rust decoder measured 2–4 code values off libjpeg-turbo — so JPEG goes through libjpeg-turbo (TurboJPEG), as
 //! in QCView, bit-identical to `djpeg`. Where QCView's loader was wrong the fix is written beside the code.
+pub mod dpx;
 pub mod exr;
 pub mod jpeg;
+pub mod tga_bmp;
 pub mod png;
 pub mod tiff;
 mod sys;
@@ -46,11 +48,13 @@ pub fn pitch_for(width: u32, sample: Sample) -> u32 { ((width as usize * sample.
 
 /// Which loader a path goes to — QCView's `thumbnail_image_provider` / `media_extensions.h` table, case-insensitive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format { Exr, Png, Tiff, Jpeg }
+pub enum Format { Exr, Png, Tiff, Jpeg, /// ours (row 190): QCView had no DPX sequences
+    Dpx, /// ours (row 191): QCView read neither
+    Tga, Bmp }
 impl Format {
     pub fn of(path: &str) -> Option<Format> {
         let ext = std::path::Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
-        Some(match ext.as_str() { "exr" => Format::Exr, "png" => Format::Png, "tif" | "tiff" => Format::Tiff, "jpg" | "jpeg" => Format::Jpeg, _ => return None })
+        Some(match ext.as_str() { "exr" => Format::Exr, "png" => Format::Png, "tif" | "tiff" => Format::Tiff, "jpg" | "jpeg" => Format::Jpeg, "dpx" => Format::Dpx, "tga" => Format::Tga, "bmp" => Format::Bmp, _ => return None })
     }
 }
 
@@ -63,6 +67,8 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
         Some(Format::Png) => png::load(path),
         Some(Format::Tiff) => tiff::load(path),
         Some(Format::Jpeg) => jpeg::load(path),
+        Some(Format::Dpx) => dpx::load(path),
+        Some(Format::Tga) | Some(Format::Bmp) => tga_bmp::load(path),
         None => Err(Error::Open(format!("{path}: not an image format min-image reads"))),
     }
 }
@@ -74,6 +80,8 @@ pub fn dimensions(path: &str, layer: &str) -> Result<(u32, u32), Error> {
         Some(Format::Png) => png::dimensions(path),
         Some(Format::Tiff) => tiff::dimensions(path),
         Some(Format::Jpeg) => jpeg::dimensions(path),
+        Some(Format::Dpx) => dpx::dimensions(path),
+        Some(Format::Tga) | Some(Format::Bmp) => tga_bmp::dimensions(path),
         None => Err(Error::Open(format!("{path}: not an image format min-image reads"))),
     }
 }
