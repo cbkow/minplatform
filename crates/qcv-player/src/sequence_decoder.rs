@@ -54,6 +54,21 @@ impl SequenceDecoder {
             want: Mutex::new(Some(0)), last: AtomicI32::new(-1), shown: Mutex::new(None) })
     }
     pub fn cache(&self) -> &ImageSequenceCache { &self.cache }
+    /// The inspector's frame-rate chips (QCView `TimelineController::setFrameRate`): the frame count stays, the cache keeps its frames.
+    pub fn set_rate(&mut self, rate: Rate) {
+        let frames = self.info.frame_count;
+        self.fps = rate.as_f64();
+        self.info.time_base = (rate.den as i32, rate.num as i32); self.info.frame_rate = (rate.num as i32, rate.den as i32); self.info.duration_secs = frames as f64 / self.fps;
+        self.index = Arc::new(FrameIndex::new(rate.den as i32, rate.num as i32, rate.num as i32, rate.den as i32, frames, true));
+    }
+    /// At a cache stride > 1 an off-grid frame is never cached: QCView's renderer shows the closest cached frame
+    /// (`getClosestFrame`) — here only a grid neighbour (within the stride), so a stale window never stands in.
+    fn frame_or_grid_neighbour(&self, f: i32) -> Option<Arc<Image>> {
+        if let Some(img) = self.cache.frame(f) { return Some(img) }
+        let stride = self.cache.stride();
+        if stride <= 1 { return None }
+        self.cache.closest_frame(f).filter(|(k, _)| (k - f).abs() < stride).map(|(_, img)| img)
+    }
     pub fn frame_index(&self) -> &Arc<FrameIndex> { &self.index }
 
     pub fn play(&self) { self.playing.store(true, Release) }
@@ -78,7 +93,7 @@ impl SequenceDecoder {
     pub fn fetch_front(&self) -> Option<FrameHandle> {
         let mut want = self.want.lock().unwrap();
         let f = (*want)?;
-        let img = self.cache.frame(f)?;
+        let img = self.frame_or_grid_neighbour(f)?;
         *want = None;
         self.landed(f, img)
     }
@@ -87,7 +102,7 @@ impl SequenceDecoder {
         if self.want.lock().unwrap().is_some() { return (self.fetch_front(), 0) }
         let f = if f == i32::MAX { self.cache.playhead() } else { if f != self.cache.playhead() { self.cache.update_playhead(f, false) } f };
         if self.last.load(Acquire) == f { return (None, 0) }
-        let Some(img) = self.cache.frame(f) else { return (None, 0) };
+        let Some(img) = self.frame_or_grid_neighbour(f) else { return (None, 0) };
         self.last.store(f, Release);
         (self.landed(f, img), 0)
     }
@@ -143,4 +158,40 @@ impl SlotDecoder {
     pub fn last_decode_error(&self) -> String { match self { SlotDecoder::Video(d) => d.last_decode_error(), SlotDecoder::Sequence(d) => d.cache.failed_frames().first().map(|f| format!("frame {f} failed")).unwrap_or_default() } }
     pub fn as_video(&self) -> Option<&VideoDecoder> { match self { SlotDecoder::Video(d) => Some(d), _ => None } }
     pub fn as_sequence(&self) -> Option<&SequenceDecoder> { match self { SlotDecoder::Sequence(d) => Some(d), _ => None } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    /// A synthetic PNG sequence (FFmpeg; fixtures never travel): 1001–1024.
+    fn sequence(tag: &str) -> Option<std::path::PathBuf> {
+        let d = std::env::temp_dir().join(format!("qcv-seqdec-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
+        let ok = std::process::Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=64x36:rate=24", "-frames:v", "24", "-start_number", "1001"])
+            .arg(d.join("f_%04d.png")).status().map(|s| s.success()).unwrap_or(false);
+        ok.then_some(d)
+    }
+    fn wait(mut f: impl FnMut() -> bool) -> bool { let t = Instant::now(); while t.elapsed() < Duration::from_secs(5) { if f() { return true } std::thread::sleep(Duration::from_millis(5)) } false }
+    #[test]
+    fn stride_shows_the_grid_neighbour_of_an_off_grid_frame() {
+        let Some(d) = sequence("stride") else { eprintln!("ffmpeg missing: skipped"); return };
+        let dec = SequenceDecoder::open(&d.join("f_%04d.png").to_string_lossy(), Rate::new(24, 1), 1001, 1024, StreamingConfig::from_settings(4, 24), "").unwrap();
+        dec.cache().set_stride(2);
+        // the open filled at stride 1; the new grid (0, 2, 4, …) evicts the off-grid frames
+        assert!(wait(|| dec.cache().frame(5).is_none() && dec.cache().frame(4).is_some()), "stride 2 drops frame 5 and keeps frame 4");
+        dec.seek_to_frame(5);   // off the grid: never cached itself
+        assert!(wait(|| dec.fetch_front().is_some()), "an off-grid seek target must land on a grid neighbour");
+        let _ = std::fs::remove_dir_all(d);
+    }
+    #[test]
+    fn set_rate_keeps_the_frames_and_retimes_them() {
+        let Some(d) = sequence("rate") else { eprintln!("ffmpeg missing: skipped"); return };
+        let mut dec = SequenceDecoder::open(&d.join("f_%04d.png").to_string_lossy(), Rate::new(24, 1), 1001, 1024, StreamingConfig::from_settings(4, 24), "").unwrap();
+        assert!(wait(|| dec.cache().frame(10).is_some()));
+        dec.set_rate(Rate::new(25, 1));
+        assert_eq!(dec.info.frame_count, 24); assert_eq!(dec.info.frame_rate, (25, 1)); assert!((dec.info.duration_secs - 24.0 / 25.0).abs() < 1e-9);
+        assert!(dec.cache().frame(10).is_some(), "the cache keeps its frames across a rate change");
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

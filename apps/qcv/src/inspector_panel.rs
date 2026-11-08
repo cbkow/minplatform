@@ -18,7 +18,8 @@ use std::time::Instant;
 use vello::Scene;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Range(RangeOverride), Transfer(TransferOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
+pub enum Cmd { /// the image-sequence card's chips (QCView `ImageSequenceInspector`)
+    FrameRate(f64), Stride(i32), Range(RangeOverride), Transfer(TransferOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
 
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
@@ -30,7 +31,10 @@ struct Chips { label: String, group: ActionGroup, keys: Vec<String>, selected: u
 enum FieldKind { Par, Dar }
 struct Field { label: String, kind: FieldKind, field: TextField, suffix: String, rect: Rect }
 enum Item { Row(Row), Chips(Chips), Field(Field), Meters }
-struct Group { section: Section, items: Vec<Item>, rects: Vec<Rect> }
+/// `shown` = QCView's card visibility (the video cards hide for an image sequence; the sequence card shows only for one)
+struct Group { section: Section, items: Vec<Item>, rects: Vec<Rect>, shown: bool }
+/// QCView's preset rates ("the 8 SMPTE / broadcast standards cover ~95% of source material")
+const SEQ_RATES: [&str; 8] = ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"];
 
 pub struct InspectorPanel {
     groups: Vec<Group>,
@@ -45,6 +49,8 @@ pub struct InspectorPanel {
     /// the stored dims (the DAR ↔ PAR conversion needs them)
     storage: (u32, u32),
     height: f64, dirty_model: bool,
+    /// the loaded sequence's live state: (stride, rate) rebuild the card; (ahead, behind) update its rows in place
+    seq_shape: Option<(i32, f64)>, seq_fill: (i32, i32),
 }
 
 const LABEL_W: f64 = 96.0;   // QCView's labelColWidth (logical)
@@ -86,8 +92,8 @@ fn fmt_bitrate(bps: i64) -> String { if bps <= 0 { String::new() } else if bps >
 
 impl InspectorPanel {
     pub fn new() -> InspectorPanel {
-        let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![] };
-        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode")], path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
+        let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![], shown: true };
+        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
             range: RangeOverride::Auto, transfer: TransferOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
@@ -110,6 +116,15 @@ impl InspectorPanel {
             if ch != self.channels { self.channels = ch; self.dirty_model = true; }
             if (0..ch).any(|i| (pk[i] - self.peaks[i]).abs() > 0.01) { self.peaks = pk; dirty = true; }
         } else if self.channels != 0 { self.channels = 0; self.dirty_model = true; }
+        let seq = p.decoder().as_sequence().map(|s| { let c = s.cache(); ((c.stride(), p.rate().as_f64()), (c.buffered_ahead(), c.buffered_behind())) });
+        if seq.map(|s| s.0) != self.seq_shape { self.seq_shape = seq.map(|s| s.0); self.dirty_model = true; }
+        if let Some((_, fill)) = seq && fill != self.seq_fill {
+            self.seq_fill = fill;
+            if !self.dirty_model { if let Some(c) = p.decoder().as_sequence().map(|s| s.cache().config()) { for it in self.groups[6].items.iter_mut() { if let Item::Row(r) = it {
+                if r.label == "Cache ahead" { r.value = format!("{} / {} frames", fill.0, c.read_ahead); dirty = true; }
+                if r.label == "Cache behind" { r.value = format!("{} / {} frames", fill.1, c.read_behind); dirty = true; }
+            } } } }
+        }
         if self.pending_v.as_ref().is_some_and(|(k, _)| *k == self.path) { self.vmeta = self.pending_v.take().map(|(_, m)| m); self.dirty_model = true; }
         if self.pending_a.as_ref().is_some_and(|(k, _)| *k == self.path) { self.ameta = self.pending_a.take().map(|(_, m)| m); self.dirty_model = true; }
         if self.dirty_model { self.rebuild(p); self.dirty_model = false; dirty = true; }
@@ -129,9 +144,11 @@ impl InspectorPanel {
         let name = pb.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.path.clone());
         let folder = pb.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         // ---- File ----
+        let seq = p.decoder().as_sequence();
         let mut file = vec![row("Name", name, false), row("Folder", folder, false)];
         if let Some(b) = self.size_bytes { file.push(row("Size", fmt_bytes(b), true)); }
-        file.push(row("Duration", fmt_dur(v.map(|m| m.duration).filter(|d| *d > 0.0).unwrap_or(i.duration_secs)), true));
+        // a sequence's duration is its frames at the item's rate (the extractor reads one frame at FFmpeg's default 25)
+        file.push(row("Duration", fmt_dur(if seq.is_some() { i.duration_secs } else { v.map(|m| m.duration).filter(|d| *d > 0.0).unwrap_or(i.duration_secs) }), true));
         if let Some(m) = v {
             if !m.container_format.is_empty() { file.push(row("Container", if m.mxf_operational_pattern.is_empty() { m.container_format.clone() } else { format!("{} · {}", m.container_format, m.mxf_operational_pattern) }, false)); }
             if !m.encoder_tool.is_empty() { file.push(row("Encoder", m.encoder_tool.clone(), false)); }
@@ -243,13 +260,38 @@ impl InspectorPanel {
             for (label, val) in [("Created", &am.qt_creation_date), ("Media Created", &am.qt_media_create_date)] { if !val.is_empty() { tc.push(row(label, val.clone(), false)); } }
         }
         tc.push(row("Drop frame", if i.drop_frame { "yes" } else { "no" }.to_string(), false));   // ours
-        for (g, items) in self.groups.iter_mut().zip([file, video, geometry, color, audio, tc]) { g.items = items; }
+        // ---- Image Sequence (QCView `ImageSequenceInspector`; its Pattern / Range rows, the EXR layer list and Compression wait for piece 5) ----
+        let mut sq = vec![];
+        if let Some(s) = seq {
+            let c = s.cache(); let cfg = c.config();
+            let fps = p.rate().as_f64();
+            let rate_opts: Vec<(&str, &str)> = SEQ_RATES.iter().map(|r| (*r, *r)).collect();
+            let mut rates = chips("Frame rate", &rate_opts, "");
+            if let Item::Chips(ch) = &mut rates { ch.selected = SEQ_RATES.iter().position(|r| (r.parse::<f64>().unwrap() - fps).abs() < 0.01).unwrap_or(usize::MAX); }
+            sq.push(rates);
+            let is_exr = i.codec_short == "exr";
+            let detected_t = if is_exr { "Auto (Linear, EXR)" } else { "Auto (sRGB)" };
+            sq.push(chips("Transfer", &[("auto", detected_t), ("sdr", "SDR 709"), ("pq2020", "PQ 2020"), ("pqp3", "PQ P3"), ("hlg", "HLG"), ("linear", "Linear")],
+                match self.transfer { TransferOverride::Auto => "auto", TransferOverride::SdrRec709 => "sdr", TransferOverride::Pq2020 => "pq2020", TransferOverride::PqP3D65 => "pqp3", TransferOverride::Hlg => "hlg", TransferOverride::Linear => "linear" }));
+            sq.push(row("Resolution", format!("{} × {}", c.width(), c.height()), true));
+            sq.push(row("Duration", format!("{:.2} s", i.duration_secs), true));
+            let stride = c.stride().to_string();
+            sq.push(chips("Cache stride", &[("1", "1x"), ("2", "2x"), ("3", "3x"), ("4", "4x")], &stride));
+            sq.push(row("Cache ahead", format!("{} / {} frames", c.buffered_ahead(), cfg.read_ahead), true));
+            sq.push(row("Cache behind", format!("{} / {} frames", c.buffered_behind(), cfg.read_behind), true));
+        }
+        // QCView: Video / Geometry / Color need `videoLoaded` (never for a sequence); Timecode needs a line; the sequence card needs a sequence
+        let is_seq = seq.is_some();
+        for (gi, g) in self.groups.iter_mut().enumerate() { g.shown = match gi { 0 => true, 6 => is_seq, _ => !is_seq }; }
+        for (g, items) in self.groups.iter_mut().zip([file, video, geometry, color, audio, tc, sq]) { g.items = items; }
+        for g in self.groups.iter_mut() { for it in g.items.iter_mut() { if let Item::Chips(c) = it { let sel = c.selected; for (j, b) in c.group.buttons.iter_mut().enumerate() { b.selected = j == sel; } } } }
     }
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale); let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale;
         let row_h = t::COMPONENT_HEIGHT_75 as f64 * scale;
         let mut cy = y;
         for g in &mut self.groups {
+            if !g.shown { g.section.rect = Rect::ZERO; g.rects.clear(); continue }
             g.section.rect = Rect::new(x0, cy, x1, cy + hh); cy += hh;
             g.rects.clear();
             if !g.section.expanded || g.items.is_empty() { continue }
@@ -301,8 +343,9 @@ impl InspectorPanel {
         if let Event::Down { x, y, .. } = *e { let on_field = self.groups.iter().flat_map(|g| g.items.iter()).any(|it| matches!(it, Item::Field(f) if f.field.hit(x, y))); if !on_field && self.has_focus() { cmds.extend(self.blur()); dirty = true; } }
         // a press on one field commits any other (focus moves field to field without Enter)
         if let Event::Down { x, y, .. } = *e { let storage = self.storage; for g in &mut self.groups { for it in g.items.iter_mut() { if let Item::Field(f) = it { if f.field.focused && !f.field.hit(x, y) { f.field.focused = false; if let Some(c) = Self::commit_field(storage, f) { cmds.push(c); } self.dirty_model = true; dirty = true; } } } } }
-        for g in &mut self.groups { if g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { let was = f.field.focused; if f.field.pointer(e, fonts) { dirty = true; } if f.field.focused && !was { f.field.select_all(fonts); } } } } }
+        for g in &mut self.groups { if g.shown && g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { let was = f.field.focused; if f.field.pointer(e, fonts) { dirty = true; } if f.field.focused && !was { f.field.select_all(fonts); } } } } }
         for g in &mut self.groups {
+            if !g.shown { continue }
             let (_, d) = g.section.event(e, now); dirty |= d;
             if !g.section.expanded { continue }
             for it in g.items.iter_mut() { if let Item::Chips(c) = it {
@@ -310,6 +353,8 @@ impl InspectorPanel {
                     c.selected = i;
                     let key = c.keys[i].as_str();
                     match c.label.as_str() {
+                        "Frame rate" => { if let Ok(f) = key.parse::<f64>() { cmds.push(Cmd::FrameRate(f)); } }
+                        "Cache stride" => { if let Ok(s) = key.parse::<i32>() { cmds.push(Cmd::Stride(s)); } }
                         "Range" => cmds.push(Cmd::Range(match key { "full" => RangeOverride::Full, "limited" => RangeOverride::Limited, _ => RangeOverride::Auto })),
                         "Transfer" => { let t = match key { "sdr" => TransferOverride::SdrRec709, "pq2020" => TransferOverride::Pq2020, "pqp3" => TransferOverride::PqP3D65, "hlg" => TransferOverride::Hlg, "linear" => TransferOverride::Linear, _ => TransferOverride::Auto }; self.transfer = t; cmds.push(Cmd::Transfer(t)); }
                         "Mix" => cmds.push(Cmd::Routing(match key { "5.1" => RoutingMode::Downmix5_1, "7-8" => RoutingMode::Stereo7_8, _ => RoutingMode::Auto })),
@@ -328,8 +373,9 @@ impl InspectorPanel {
     pub fn chip_rect(&self, label: &str, i: usize) -> Option<Rect> { self.groups.iter().flat_map(|g| g.items.iter()).find_map(|it| match it { Item::Chips(c) if c.label == label => c.group.buttons.get(i).map(|b| b.rect), _ => None }) }
     pub fn animating(&self, now: Instant) -> bool { self.groups.iter().any(|g| g.section.animating(now) || g.items.iter().any(|it| matches!(it, Item::Chips(c) if c.group.animating(now)))) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
-        for g in self.groups.iter_mut() { if g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { f.field.paint(scene, fonts, scale); } } } }
+        for g in self.groups.iter_mut() { if g.shown && g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { f.field.paint(scene, fonts, scale); } } } }
         for (gi, g) in self.groups.iter().enumerate() {
+            if !g.shown { continue }
             g.section.paint(scene, fonts, scale, now, gi == 0);
             if !g.section.expanded { continue }
             for (it, r) in g.items.iter().zip(&g.rects) {

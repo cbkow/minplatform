@@ -214,6 +214,21 @@ impl Transport {
         for s in &mut self.slots { if let Some(c) = self.timeline.tracks.first().and_then(|t| t.clips.get(s.clip)) { s.src_in = c.source_in; s.src_out = c.source_out; } }
     }
 
+    /// QCView `TimelineController::setFrameRate` (the image-sequence inspector's chips): retune a single sequence in place —
+    /// the frame count stays, the same frame stays under the playhead, in/out (frames) stay, the cache keeps its frames.
+    pub fn set_sequence_rate(&mut self, rate: Rate) -> bool {
+        if self.playlist_active || rate == self.rate || rate.as_f64() <= 0.0 || self.slots[self.active].decoder.as_sequence().is_none() { return false }
+        let frame = self.current_frame();
+        self.rate = rate; self.fps = rate.as_f64(); self.timeline.rate = rate;
+        if let Some(c) = self.timeline.tracks.first_mut().and_then(|t| t.clips.first_mut()) { c.source_rate = rate; }
+        let s = &mut self.slots[self.active];
+        s.src_rate = rate;
+        if let SlotDecoder::Sequence(d) = &mut s.decoder { d.set_rate(rate); s.info = d.info.clone(); s.index = d.frame_index().clone(); }
+        self.timer.set_frame_rate(self.fps); self.timer.set_duration(self.frames as f64 / self.fps); self.timer.seek(frame as f64 / self.fps);
+        self.push_in_out_to_timer();
+        true
+    }
+
     // ---- reads --------------------------------------------------------------------------------------------------
     pub fn info(&self) -> &SessionInfo { &self.slots[self.active].info }
     /// The active clip's metadata (the Inspector's rows come from `qcv-meta` on the project side; this is the session's).

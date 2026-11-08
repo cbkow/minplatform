@@ -256,6 +256,14 @@ impl ProjectManager {
     pub fn set_bin_open(&mut self, bin: usize, open: bool) { if let Some(bn) = self.bins.get_mut(bin) { if bn.is_open != open { bn.is_open = open; self.mark_dirty(); } } }
     fn edit(&mut self, id: &str, f: impl FnOnce(&mut MediaItem) -> bool) -> bool { let changed = self.item_mut(id).map(f).unwrap_or(false); if changed { self.mark_dirty(); } changed }
     pub fn set_video_range_override(&mut self, id: &str, r: VideoRange) -> bool { self.edit(id, |m| if m.video_range_override != r { m.video_range_override = r; true } else { false }) }
+    /// QCView `setImageSeqFrameRate`: a sequence item's rate (the inspector's chips); the frame count stays, the durations re-derive.
+    pub fn set_image_seq_frame_rate(&mut self, id: &str, fps: f64) -> bool {
+        if fps <= 0.0 { return false }
+        self.edit(id, |m| { if m.media_type != MediaType::ImageSequence || (m.image_seq.frame_rate - fps).abs() < 1e-9 { return false } m.image_seq.frame_rate = fps; if m.image_seq.frame_count > 0 { let d = m.image_seq.frame_count as f64 / fps; m.image_seq.duration = d; m.duration = d; } true })
+    }
+    /// QCView `setImageSeqCacheStride`'s write-through onto the item: session state, no dirty mark (QCView: "in-memory only",
+    /// though the file carries the field when the project is saved for another reason).
+    pub fn set_image_seq_cache_stride(&mut self, id: &str, stride: i32) { if let Some(m) = self.item_mut(id) { m.image_seq.cache_stride = stride.clamp(1, 4); } }
     pub fn set_transfer_override(&mut self, id: &str, t: TransferOverride) -> bool { self.edit(id, |m| if m.transfer_override != t { m.transfer_override = t; true } else { false }) }
     /// QCView `setPixelAspect(item, mode, num, den)`: Custom keeps the given ratio; the others keep the stored custom ratio.
     pub fn set_pixel_aspect(&mut self, id: &str, mode: PixelAspectMode, num: i32, den: i32) -> bool { self.edit(id, |m| { let (n, d) = if mode == PixelAspectMode::Custom && num > 0 && den > 0 { (num, den) } else { (m.custom_par_num, m.custom_par_den) }; if m.pixel_aspect_mode != mode || m.custom_par_num != n || m.custom_par_den != d { m.pixel_aspect_mode = mode; m.custom_par_num = n; m.custom_par_den = d; true } else { false } }) }

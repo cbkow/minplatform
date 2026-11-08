@@ -120,6 +120,7 @@ impl App {
         self.loaded_item = id.to_string();
         if let Some(p) = self.player.as_mut() {
             p.set_range_override(match item.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto });
+            if let Some(s) = p.decoder().as_sequence() { s.cache().set_stride(item.image_seq.cache_stride); }   // QCView `startImageSequence` applies the item's stride
             p.audio.set_routing_mode(match item.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto });
             // QCView's handler ends with seekToFrame(0): the first frame the decoder produced carried Auto, and the player opens paused — re-decode it with the item's range in force
             p.seek_to_frame(0);
@@ -502,6 +503,10 @@ impl App {
                 let (icmds, d) = g.inspector.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
                 if g.inspector.has_focus() != had { set_ime(&**g.window, g.inspector.has_focus()); }
                 for c in icmds { match c {
+                    // QCView: the timeline retunes live (`TimelineController::setFrameRate`) and the item keeps the rate (`setImageSeqFrameRate`)
+                    inspector_panel::Cmd::FrameRate(fps) => { if let Some(p) = self.player.as_mut() { p.set_sequence_rate(qcv_timeline::Rate::from_f64(fps)); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_frame_rate(&id, fps); } g.ui_dirty = true; }
+                    // QCView `setImageSeqCacheStride`: the live cache + the item's session value
+                    inspector_panel::Cmd::Stride(s) => { if let Some(c) = self.player.as_ref().and_then(|p| p.decoder().as_sequence()) { c.cache().set_stride(s); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_cache_stride(&id, s); } g.ui_dirty = true; }
                     inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Transfer(t) => { g.presenter.engine.set_transfer_override(transfer_choice(t)); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_transfer_override(&id, t); } }
                     inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
