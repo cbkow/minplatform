@@ -20,7 +20,7 @@ fn main() {
     let wgsl = naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty()).unwrap();
     fs::write(out.join("mincolor.wgsl"), wgsl).unwrap();
 
-    cc::Build::new().cpp(true).std("c++17").include("core")
+    cc::Build::new().cpp(true).std("c++20").include("core")
         .file("core/opendrt_presets.cpp").file("core/mincolor_agx.cpp").file("src/ffi.cpp")
         .flag_if_supported("-fno-fast-math").flag_if_supported("/fp:precise")
         .compile("mincolor_core");
