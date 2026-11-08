@@ -65,7 +65,13 @@ impl DualTransport {
             None => None,
         };
         let sec = self.timer.position();
-        if let Some(old) = std::mem::replace(&mut self.sides[i], t) { drop_off_thread(old); }
+        let mut t = t;
+        if let Some(mut old) = std::mem::replace(&mut self.sides[i], None) {
+            // A's audio player moves to the new A (it reopens on the new file)
+            if i == 0 { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); if let Some(t) = t.as_mut() { t.set_audio(au); } }
+            drop_off_thread(old);
+        }
+        self.sides[i] = t;
         self.media[i] = m; self.blank[i] = false;
         self.retime(sec);
         let f = self.current_frame();
@@ -89,6 +95,9 @@ impl DualTransport {
         self.push_in_out();
         self.timer.seek(keep_sec.min(((self.frames - 1).max(0)) as f64 / self.fps));
     }
+
+    /// Drop both sides with their decoders joined on threads (leaving dual view).
+    pub fn retire(mut self) { for s in self.sides.iter_mut() { if let Some(t) = s.take() { drop_off_thread(t); } } }
 
     // ---- reads ------------------------------------------------------------------------------------------------------
     pub fn side(&self, s: Side) -> Option<&Transport> { self.sides[s as usize].as_ref() }

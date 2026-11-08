@@ -167,7 +167,8 @@ pub struct Engine {
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
     out_gain: f32,
-    scope: Option<Scope>, scope_view: Option<ScopeView>,
+    scope: Option<Scope>, scope_view: Option<ScopeView>, /// dual view's waveform tints, A / B (linear RGB; QCView's cyan / orange until the shell sets the theme's)
+    side_tints: ([f32; 3], [f32; 3]),
     /// dual view: the two side engines + the compare state (None = single view)
     dual: Option<Box<crate::dual::Dual>>,
     geometry: Geometry,
@@ -284,7 +285,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -370,13 +371,15 @@ impl Engine {
     /// Show the waveform in `v`'s rect (None hides it; the GPU objects are built on first use).
     pub fn set_scope(&mut self, v: Option<ScopeView>) { if self.scope_view != v { self.scope_view = v; self.relayout_dual(); } }
     pub fn scope_view(&self) -> Option<ScopeView> { self.scope_view }
+    /// Dual view's waveform tints for A and B (linear RGB) — the theme's side colours (row 173).
+    pub fn set_side_tints(&mut self, a: [f32; 3], b: [f32; 3]) { self.side_tints = (a, b); }
     fn ensure_scope(&mut self) {
         if self.scope.is_some() { return }
         let dev = &self.device;
         let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scope"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scope.wgsl").into()) });
         let hist = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope histogram"), size: 512 * 512 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let su = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope accumulate"), size: 80, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let du = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope draw"), size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let du = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope draw"), size: 96, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let acc_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope accumulate"), entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
@@ -433,7 +436,8 @@ impl Engine {
             Some((Some(a), Some(b))) => (Some(self.scope_bind(&a.0, &b.0)), 2.0, gain_of(a.1), gain_of(b.1)),
         };
         let s = self.scope.as_ref().unwrap();
-        let u: [f32; 16] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, g0, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, self.out_gain, n, g1, 0.0, 0.0];
+        let (ca, cb) = self.side_tints;
+        let u: [f32; 24] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, g0, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, self.out_gain, n, g1, 0.0, 0.0, ca[0], ca[1], ca[2], 1.0, cb[0], cb[1], cb[2], 1.0];
         self.queue.write_buffer(&s.du, 0, bytemuck::cast_slice(&u));
         let mut p = pass_load(enc, "scope draw", target); p.set_pipeline(&s.draw); p.set_bind_group(0, bind.as_ref().unwrap_or(&s.draw_bind), &[]); p.draw(0..6, 0..1);
     }

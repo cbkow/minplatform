@@ -66,8 +66,8 @@
 
   "side-a-color":       { "value": "{cyan-900}" },
   "side-a-muted-color": { "value": "{cyan-500}" },
-  "side-b-color":       { "value": "{cinnamon-900}" },
-  "side-b-muted-color": { "value": "{cinnamon-500}" },
+  "side-b-color":       { "value": "{orange-900}" },
+  "side-b-muted-color": { "value": "{orange-500}" },
   "note-marker-color":  { "value": "{purple-900}" },
 
   "overlay-color": { "value": "{black}", "alpha": 0.4 },

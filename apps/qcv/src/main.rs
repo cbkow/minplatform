@@ -5,6 +5,9 @@ use winit31 as winit;
 use min_present::{Output, Presenter, Snapshot};
 use min_theme::tokens as t;
 use qcv_player::{HwDevice, Transport, TransportOptions, Source, Action, Playback};
+use min_present::dual::CompareMode;
+/// QCView's `ViewportOverlay` catalog context (dual view's strings, canon row 195).
+fn trv(s: &str) -> &str { min_i18n::trc("ViewportOverlay", s) }
 use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 use winit::application::ApplicationHandler;
 use winit::data_transfer::TypeHint;
@@ -45,6 +48,7 @@ mod color_model;
 mod color_drawer;
 mod color_columns;
 mod sdr_white;
+mod dual_controls;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -53,7 +57,8 @@ use min_i18n::fill;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
     mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
-    drawer: color_drawer::ColorDrawer, /// the pointer's last movement (the floating tabs fade when it parks over the picture)
+    drawer: color_drawer::ColorDrawer, /// dual view's controls on the status strip + the Save dialog + the seam's grab (row 173)
+    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// the pointer's last movement (the floating tabs fade when it parks over the picture)
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
     clip_peak: Option<[f32; 2]>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
@@ -90,7 +95,8 @@ struct App {
     /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
     meta: qcv_meta::MetadataService,
     /// QCView's project (row 141): the media pool, the bins, the per-clip choices; `loaded_item` = the media id in the player.
-    project: qcv_project::ProjectManager, loaded_item: String,
+    project: qcv_project::ProjectManager, loaded_item: String, /// the saved Dual View this session came from (QCView `activeDualViewId`: Update overwrites it)
+    active_dual_view: String,
     /// the native menu bar (row 143)
     #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>,
     /// Alt went down with nothing else since: its release alone focuses the in-window bar (Windows' Alt tap)
@@ -114,9 +120,12 @@ impl App {
         if g.fullscreen || g.compact { return Some(DropTarget::Viewport) }
         if g.left.hit(x, y) { return Some(DropTarget::Bin) }
         if g.right.hit(x, y) { return None }
+        if self.pl_editor.is_none() { if let Some(s) = g.dualc.chip_at(x, y) { return Some(DropTarget::Side(s)) } }
         if self.pl_editor.is_some() && (g.clip_bar.hit(x, y) || g.scrubber.hit(x, y)) { return Some(DropTarget::Playlist(x.round() as i32)) }
         let (cx, cy, cw, ch) = g.presenter.engine.content_rect()?;
-        (x >= cx as f64 && x < (cx + cw) as f64 && y >= cy as f64 && y < (cy + ch) as f64).then_some(DropTarget::Viewport)
+        let inside = x >= cx as f64 && x < (cx + cw) as f64 && y >= cy as f64 && y < (cy + ch) as f64;
+        if inside && self.dual.is_some() { return Some(DropTarget::Side(self.side_at(x))) }
+        inside.then_some(DropTarget::Viewport)
     }
     fn add_and_load(&mut self, path: &str, load: bool) -> Option<String> {
         let (id, probes) = self.project.add_media_file(path);
@@ -147,6 +156,18 @@ impl App {
     /// views and live streams arrive with their steps (2c, Phase 4): they select but do not load yet.
     fn load_item(&mut self, id: &str) {
         let Some(item) = self.project.item(id).cloned() else { return };
+        if item.media_type == qcv_project::MediaType::DualPair { self.load_dual_view(id); return }
+        // in dual (QCView `loadRequested`): a video / sequence becomes A in place; anything else falls back to the single view
+        if self.dual.is_some() {
+            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::ImageSequence) {
+                let info = self.dual_media(id);
+                let ok = self.dual.as_mut().map(|d| d.set_side(qcv_player::Side::A, info).is_ok()).unwrap_or(false);
+                self.project.set_load_failed(id, !ok);
+                if ok { self.project.set_active_item(id); self.loaded_item = id.to_string(); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+                return
+            }
+            self.leave_dual();
+        }
         self.project.set_active_item(id);
         match item.media_type {
             qcv_project::MediaType::Video | qcv_project::MediaType::Audio => {}
@@ -271,30 +292,147 @@ impl App {
         let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(st.int(settings::k::IMAGE_SEQ_THREADS) as i32, st.int(settings::k::IMAGE_SEQ_READ_AHEAD) as i32);   // QCView reads them at each sequence load
         TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, uploader: self.gpu.as_ref().map(|g| g.presenter.engine.uploader()), ..Default::default() }
     }
-    /// Dual view (row 211): the loaded clip becomes A, `b` is B, on one master clock; the presenter's sides draw them in the
-    /// compare mode (`QCV_DUAL_MODE` = single / sbs / split / diff until step 3's chips). Opens PAUSED like QCView's entry.
+    // ---- dual view (canon rows 173 / 211) ---------------------------------------------------------------------------
+    /// `--dual <B>` (the harness / a manual launch): B joins the project as its B source, then QCV_DUAL_MODE's mode (side by side).
     fn enter_dual(&mut self, b: &str) {
-        if self.gpu.is_none() { return }
-        let a = self.player.as_ref().map(|p| p.path().to_string()).filter(|p| !p.is_empty());
-        let info = |p: &str| match qcv_player::dual::media_info(p) { Ok(m) => Some(m), Err(e) => { println!("dual: {e}"); None } };
-        let (ma, mb) = (a.as_deref().and_then(info), info(b));
-        let frame_s = self.player.as_ref().map(|p| p.current_frame() as f64 / p.rate().as_f64().max(1e-9)).unwrap_or(0.0);
-        match qcv_player::DualTransport::open(ma, mb, self.transport_options()) {
-            Ok(mut d) => {
-                if let Some(p) = self.player.take() { p.retire(); }
-                if std::env::var_os("QCV_NO_AUDIO").is_none() && let Ok(au) = qcv_player::AudioPlayer::new() { d.set_audio(Box::new(au)); }
-                let f = (frame_s * d.rate().as_f64()).round() as i32; d.seek_to_frame(f);   // QCView: the single view's time carries into A
-                let g = self.gpu.as_mut().unwrap();
-                g.presenter.engine.set_dual(true);
-                let mode = match std::env::var("QCV_DUAL_MODE").as_deref() { Ok("single") => min_present::dual::CompareMode::Single, Ok("split") => min_present::dual::CompareMode::Split, Ok("diff") => min_present::dual::CompareMode::Difference, _ => min_present::dual::CompareMode::SideBySide };
-                if let Some(ed) = g.presenter.engine.dual_mut() { ed.mode = mode; }
-                g.presenter.engine.relayout_dual();
-                println!("dual: {} vs {} — master {:.3} fps, {} frames, {mode:?}", a.as_deref().unwrap_or("(empty)"), b, d.rate().as_f64(), d.frame_count());
-                if self.o.autoplay { d.play(); }
-                self.dual = Some(d); g.ui_dirty = true;
+        let admitted = self.admit_media_paths(&[b.to_string()]);
+        if let Some(p) = admitted.first() { if let Some(id) = self.add_and_load(p, false) { self.project.set_b_source_media_id(&id); } }
+        let mode = match std::env::var("QCV_DUAL_MODE").as_deref() { Ok("split") => CompareMode::Split, Ok("diff") => CompareMode::Difference, _ => CompareMode::SideBySide };
+        self.set_compare_mode(mode);
+        if self.o.autoplay { if let Some(d) = self.dual.as_mut() { d.play(); } }
+    }
+    /// A project item as a dual side: a video probed, a sequence from the item (its own rate — row 211 b); anything else is not a side.
+    fn dual_media(&self, id: &str) -> Option<qcv_timeline::MediaInfo> {
+        let m = self.project.item(id)?;
+        match m.media_type {
+            qcv_project::MediaType::Video => qcv_player::dual::media_info(&m.path).ok().map(|mut i| { i.id = id.to_string(); i.name = m.name.clone(); i }),
+            qcv_project::MediaType::ImageSequence => {
+                let q = &m.image_seq;
+                let pattern = std::path::Path::new(&q.directory).join(&q.pattern).to_string_lossy().into_owned();
+                Some(qcv_timeline::MediaInfo { id: id.to_string(), name: m.name.clone(), path: m.path.clone(), kind: qcv_timeline::ClipMediaKind::ImageSequence, rate: qcv_timeline::Rate::from_f64(if q.frame_rate > 0.0 { q.frame_rate } else { 24.0 }), duration: q.frame_count as i64, width: q.width.max(0) as u32, height: q.height.max(0) as u32, has_audio: false, sequence_pattern: pattern, sequence_start_frame: q.start_frame as i64, sequence_end_frame: q.end_frame as i64, sequence_exr_layer: q.layer.clone(), sequence_missing: q.missing_frames.clone() })
             }
-            Err(e) => println!("dual: {e}"),
+            _ => None,
         }
+    }
+    /// QCView `setCompositorMode`: Single leaves dual; any other mode enters it (A = the loaded clip, B = the project's B
+    /// source — either may be empty: that side is blank and a drop target) or just switches the presenter's mode.
+    fn set_compare_mode(&mut self, mode: CompareMode) {
+        if mode == CompareMode::Single { self.leave_dual(); return }
+        if self.gpu.is_none() { return }
+        if self.dual.is_none() {
+            if self.pl_editor.is_some() { return }   // a playlist: QCView hides the modes (dualUnavailable)
+            let a = (!self.loaded_item.is_empty()).then(|| self.dual_media(&self.loaded_item.clone())).flatten();
+            let b_id = self.project.b_source_media_id().to_string();
+            let b = (!b_id.is_empty()).then(|| self.dual_media(&b_id)).flatten();
+            let sec = self.player.as_ref().map(|p| p.current_frame() as f64 / p.rate().as_f64().max(1e-9)).unwrap_or(0.0);
+            match qcv_player::DualTransport::open(a, b, self.transport_options()) {
+                Ok(mut d) => {
+                    if let Some(p) = self.player.take() { p.retire(); }
+                    if std::env::var_os("QCV_NO_AUDIO").is_none() && let Ok(au) = qcv_player::AudioPlayer::new() { d.set_audio(Box::new(au)); }
+                    let f = (sec * d.rate().as_f64()).round() as i32; d.seek_to_frame(f);   // the single view's time carries into A
+                    println!("dual: master {:.3} fps, {} frames", d.rate().as_f64(), d.frame_count());
+                    self.dual = Some(d);
+                    if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(true); }
+                }
+                Err(e) => { println!("dual: {e}"); self.toast(&fill(trw("Couldn’t open: %1"), &[&e]), min_ui::ToastKind::Negative); return }
+            }
+        }
+        if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.mode = mode; } g.presenter.engine.relayout_dual(); g.ui_dirty = true; }
+    }
+    /// QCView's Single: the dual session ends, A reloads as the single view at the same time.
+    fn leave_dual(&mut self) {
+        let Some(d) = self.dual.take() else { return };
+        let sec = d.current_frame() as f64 / d.rate().as_f64().max(1e-9);
+        d.retire();
+        self.active_dual_view.clear();
+        if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(false); g.seam_hot = false; g.seam_drag = false; g.ui_dirty = true; }
+        let id = self.loaded_item.clone();
+        if !id.is_empty() { self.load_item(&id); if let Some(p) = self.player.as_mut() { let f = (sec * p.rate().as_f64()).round() as i32; p.seek_to_frame(f); } }
+    }
+    /// QCView `setBSource` (in place here — row 211 c): audio-only refused.
+    fn set_b_source(&mut self, id: &str) -> bool {
+        let info = self.dual_media(id);
+        if info.is_none() { self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false }
+        self.project.set_b_source_media_id(id);
+        if let Some(d) = self.dual.as_mut() { if let Err(e) = d.set_side(qcv_player::Side::B, info) { println!("dual B: {e}"); self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false } }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+        true
+    }
+    /// QCView `clearBSource`: B blank, dual stays.
+    fn clear_b_source(&mut self) {
+        self.project.set_b_source_media_id("");
+        if let Some(d) = self.dual.as_mut() { let _ = d.set_side(qcv_player::Side::B, None); }
+        if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.b.clear_frame(); } g.ui_dirty = true; }
+    }
+    /// A drop on a side (a chip, or the picture by mode): B takes the first path, the rest go to the bins; A loads the first.
+    fn drop_on_side(&mut self, side: qcv_player::Side, paths: Vec<String>) {
+        let mut first = true;
+        for p in paths {
+            if first && side == qcv_player::Side::B { if let Some(id) = self.add_and_load(&p, false) { self.set_b_source(&id); first = false; } continue }
+            if self.add_and_load(&p, first).is_some() { first = false; }
+        }
+    }
+    /// Which side a point in the picture belongs to (QCView `dropMediaAt`: SBS halves, the wipe's seam, Single / Difference = A).
+    fn side_at(&self, x: f64) -> qcv_player::Side {
+        let Some(g) = self.gpu.as_ref() else { return qcv_player::Side::A };
+        let Some(ed) = g.presenter.engine.dual() else { return qcv_player::Side::A };
+        let (cx, _, cw, _) = g.presenter.engine.content_rect().unwrap_or((0, 0, 1, 1));
+        let b = match ed.mode { CompareMode::SideBySide => x >= cx as f64 + cw as f64 / 2.0, CompareMode::Split => x >= ed.seam_x(), _ => false };
+        if b { qcv_player::Side::B } else { qcv_player::Side::A }
+    }
+    /// QCView `loadDualView`: A, then B, side by side, the saved in / out; Update now overwrites this view.
+    fn load_dual_view(&mut self, id: &str) {
+        let Some(item) = self.project.item(id).cloned() else { return };
+        let dp = item.dual_pair;
+        self.project.set_b_source_media_id(&dp.media_id_b);
+        if self.dual.is_some() {
+            let (a, b) = (self.dual_media(&dp.media_id_a), self.dual_media(&dp.media_id_b));
+            self.loaded_item = dp.media_id_a.clone(); self.project.set_active_item(&dp.media_id_a);
+            if let Some(d) = self.dual.as_mut() { let _ = d.set_side(qcv_player::Side::A, a); let _ = d.set_side(qcv_player::Side::B, b); }
+            self.set_compare_mode(CompareMode::SideBySide);
+        } else {
+            if self.project.item(&dp.media_id_a).is_some() { self.loaded_item = dp.media_id_a.clone(); self.project.set_active_item(&dp.media_id_a); }
+            self.set_compare_mode(CompareMode::SideBySide);
+        }
+        if let Some(d) = self.dual.as_mut() { d.set_in_out(dp.in_point, dp.out_point); }
+        self.active_dual_view = id.to_string();
+    }
+    fn dual_pair_data(&self) -> Option<qcv_project::DualPairData> {
+        let d = self.dual.as_ref()?;
+        let fps = d.rate().as_f64();
+        Some(qcv_project::DualPairData { media_id_a: self.loaded_item.clone(), media_id_b: self.project.b_source_media_id().to_string(), master_fps: fps, master_duration: d.frame_count() as f64 / fps.max(1e-9), clips_a: vec![], clips_b: vec![], in_point: d.in_point(), out_point: d.out_point() })
+    }
+    fn dual_cmd(&mut self, c: dual_controls::Cmd) {
+        use dual_controls::Cmd;
+        match c {
+            Cmd::Mode(m) => self.set_compare_mode(m),
+            Cmd::ClearB => self.clear_b_source(),
+            Cmd::Seam(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.seam = v.clamp(0.0, 1.0); } g.ui_dirty = true; },
+            Cmd::Gain(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.gain = v.clamp(1.0, dual_controls::GAIN_MAX); } g.ui_dirty = true; },
+            Cmd::Save => {
+                // QCView `autoSaveName`: "<A> vs <B>", "(none)" for an empty side
+                let name_of = |id: &str| self.project.item(id).map(|m| m.name.clone()).unwrap_or_else(|| trv("(none)").to_string());
+                let name = format!("{} vs {}", name_of(&self.loaded_item.clone()), name_of(self.project.b_source_media_id()));
+                if let Some(g) = self.gpu.as_mut() { g.dual_dialog.show_with(&name, &mut g.fonts); set_ime(&**g.window, true); g.ui_dirty = true; }
+            }
+            Cmd::Update => {
+                let Some(data) = self.dual_pair_data() else { return };
+                let id = self.active_dual_view.clone();
+                if !id.is_empty() && self.project.item(&id).is_some() { self.project.set_dual_pair(&id, data); self.toast(trv("Dual view updated"), min_ui::ToastKind::Positive); }
+                else { self.toast(trv("Couldn't update dual view"), min_ui::ToastKind::Negative); }
+            }
+        }
+    }
+    /// The Save dialog closed with button `i` (1 = Save).
+    fn dual_dialog_done(&mut self, i: usize) {
+        let Some(g) = self.gpu.as_mut() else { return };
+        set_ime(&**g.window, false); g.ui_dirty = true;
+        if i != 1 { return }
+        let name = g.dual_dialog.value();
+        let Some(data) = self.dual_pair_data() else { self.toast(trv("Couldn't save dual view"), min_ui::ToastKind::Negative); return };
+        let id = self.project.add_dual_pair(&name, data);
+        self.active_dual_view = id;
+        self.toast(&fill(trv("Dual view saved: %1"), &[&name]), min_ui::ToastKind::Positive);
     }
     fn open(&mut self, path: &str) -> bool { self.open_source(Source::from_path(path, None), path) }
     fn open_source(&mut self, src: Source, path: &str) -> bool { self.open_source_layer(src, path, "") }
@@ -394,6 +532,14 @@ impl App {
             let frame = match &self.dual { Some(d) => Some((d.current_frame(), d.frame_count(), d.rate().as_f64())), None => self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64()))) };
             let key = frame.map(|(c, n, _)| (c, n));
             g.bar.sync(pb(&self.dual, &self.player), now);
+            { // dual view's controls (row 173): the loaded clip as A, the project's B source while dual is on
+                let name = |id: &str| (!id.is_empty()).then(|| self.project.item(id).map(|m| m.name.clone())).flatten();
+                let a = name(&self.loaded_item);
+                let b = self.dual.as_ref().filter(|d| d.media(qcv_player::Side::B).is_some()).and_then(|_| name(self.project.b_source_media_id()));
+                let (mode, seam, gain) = g.presenter.engine.dual().map(|d| (d.mode, d.seam, d.gain)).unwrap_or((CompareMode::Single, 0.5, 1.0));
+                if g.dualc.sync(self.dual.is_some(), self.pl_editor.is_none(), mode, a, b, seam, gain, !self.active_dual_view.is_empty()) { g.ui_dirty = true; }
+                if g.dualc.tick(now) || g.dualc.animating(now) { g.ui_dirty = true; }
+            }
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
             // the sequence cache's band + failed ticks: repaint when they change (QCView polls the cache at 33 ms, emits on change)
@@ -514,6 +660,10 @@ impl App {
                 g.bar.layout(&mut g.fonts, w as f64, bands_y, scale);
                 g.strip.sync(pb(&self.dual, &self.player));
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
+                { let sr = g.strip.rect; let fw = g.strip.fps_width(&mut g.fonts, scale); let gap = t::SPACING_300 as f64 * scale;
+                  g.dualc.layout(&mut g.fonts, g.strip.wells_right() + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale); }
+                // the seam (Split wipe: grey, white under the pointer / while dragged) and side-by-side's fixed grey centre line (QCView's compositor)
+                let seam_line = g.presenter.engine.dual().and_then(|d| match d.mode { CompareMode::Split => Some((d.seam_x(), g.seam_hot || g.seam_drag)), CompareMode::SideBySide => g.presenter.engine.content_rect().map(|(cx, _, cw, _)| (cx as f64 + (cw / 2) as f64, false)), _ => None });
                 let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
                 let scene = u.scene_mut();
                 if g.compact {
@@ -536,9 +686,10 @@ impl App {
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
                     }
                 }
+                if let (Some((sx, hot)), Some((_, cy, _, ch))) = (seam_line, g.presenter.engine.content_rect()) { let lw = (2.0 * scale).round().max(1.0); let c = if hot { min_theme::Color::rgba(1.0, 1.0, 1.0, 1.0) } else { min_theme::Color::rgba(0.4, 0.4, 0.4, 1.0) }; min_ui::paint::rect(scene, kurbo::Rect::new(sx - lw / 2.0, cy as f64, sx + lw / 2.0, (cy + ch) as f64), c); }
                 if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
                 if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
-                if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); }
+                if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now); }
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
@@ -546,6 +697,7 @@ impl App {
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
+                if !g.strip_hidden { g.dualc.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
@@ -554,6 +706,7 @@ impl App {
                 g.toast.paint(scene, &mut g.fonts, content, scale, now);
                 if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint_menus(scene, &mut g.fonts, scale); }
                 if g.about.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.about.layout(&mut g.fonts, b, scale); g.about.paint(scene, &mut g.fonts, scale, b, now); }
+                if g.dual_dialog.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.dual_dialog.layout(&mut g.fonts, b, scale); g.dual_dialog.paint(scene, &mut g.fonts, scale, b, now); }
                 g.ui_shown_frame = key; g.ui_dirty = false;
                 }
             }
@@ -591,10 +744,11 @@ impl App {
         let bounds = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64);
         if matches!(e, min_ui::Event::Down { .. }) { self.alt_clean = false; }
         // QCView's About modal takes everything while open
+        if g.dual_dialog.open { let d1 = g.dual_dialog.pointer(&e, &mut g.fonts); let (b, d2) = g.dual_dialog.event(&e, now); if d1 || d2 { g.ui_dirty = true; } if let Some(i) = b { self.dual_dialog_done(i); } return }
         if g.about.open { let (b, _) = g.about.event(&e, now); match b { Some(0) => { let _ = os_actions::open("https://qcview.app/"); g.about.cancel(); } Some(_) => g.about.cancel(), None => {} } g.ui_dirty = true; return }
         // QCView's in-window menu bar (row 194): an open menu takes everything (its click-eater), the strip its own presses;
         // a band node's grab (a scrub released over the bar) is never the bar's
-        if !g.compact && !g.fullscreen && !(matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed())) {
+        if !g.compact && !g.fullscreen && !(matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag)) {
             if let Some(mb) = g.menu_bar.as_mut() {
                 let (id, d, consumed) = mb.bar.event(&e, &mut g.fonts); if d { g.ui_dirty = true; }
                 if let Some(c) = id.and_then(|i| mb.cmd(i)) { self.menu_queue.push(c); }
@@ -636,7 +790,7 @@ impl App {
             if consumed || closed_now { return }
         }
         let Some(g) = self.gpu.as_mut() else { return };
-        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed());
+        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag);
         // the Color drawer (row 199): its menu / naming popover take everything; its tab over the picture; its own presses
         if !g.fullscreen && !g.compact && !grabbed {
             let mut cmds = vec![];
@@ -703,6 +857,28 @@ impl App {
             let _ = g;
         }
         let g = self.gpu.as_mut().unwrap();
+        // dual view's controls (row 173) — they own the pointer while their slider drags
+        if !g.strip_hidden && !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
+            let (dc, dd, consumed) = g.dualc.event(&e, now, scale);
+            if dd { g.ui_dirty = true; }
+            if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
+        }
+        // the Split wipe's seam on the picture: a 14-px grab strip, the resize cursor, press snaps, drag follows (QCView kSeamGrabWidth)
+        if let (Some(sx), Some((cx, cy, cw, ch))) = (g.presenter.engine.dual().filter(|d| d.mode == CompareMode::Split).map(|d| d.seam_x()), g.presenter.engine.content_rect()) {
+            let in_pic = |x: f64, y: f64| x >= cx as f64 && x < (cx + cw) as f64 && y >= cy as f64 && y < (cy + ch) as f64;
+            let near = |x: f64, y: f64| in_pic(x, y) && (x - sx).abs() <= 7.0 * scale;
+            let set = |g: &mut Gpu, x: f64| { if let Some(ed) = g.presenter.engine.dual_mut() { ed.seam = (((x - cx as f64) / cw.max(1) as f64) as f32).clamp(0.0, 1.0); } g.ui_dirty = true; };
+            let used = match e {
+                min_ui::Event::Move { x, .. } if g.seam_drag => { set(g, x); true }
+                min_ui::Event::Down { x, y, button: min_ui::Button::Primary } if near(x, y) && !grabbed => { g.seam_drag = true; set(g, x); true }
+                min_ui::Event::Up { .. } if g.seam_drag => { g.seam_drag = false; g.ui_dirty = true; true }
+                _ => false,
+            };
+            let hot = e.pos().is_some_and(|(x, y)| near(x, y)) && !matches!(e, min_ui::Event::Leave);
+            if hot != g.seam_hot { g.seam_hot = hot; g.ui_dirty = true; }
+            if hot || g.seam_drag { if g.cursor != winit::cursor::CursorIcon::ColResize { g.cursor = winit::cursor::CursorIcon::ColResize; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); } }
+            if used || (hot && !matches!(e, min_ui::Event::Leave)) { return }
+        } else if g.seam_hot || g.seam_drag { g.seam_hot = false; g.seam_drag = false; g.ui_dirty = true; }
         let was_open = g.strip.is_open();
         let (sd, consumed) = if grabbed || g.strip_hidden { (false, false) } else { g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale) };
         if sd { g.ui_dirty = true; }
@@ -871,7 +1047,7 @@ impl App {
                 let idx = self.pl_editor.as_ref().and_then(|ed| ed.timeline.tracks.first()).map(|t| { let real: Vec<usize> = t.clips.iter().enumerate().filter(|(_, c)| !c.is_gap).map(|(k, _)| k).collect(); real.get(to).copied().unwrap_or(t.clips.len()) });
                 if let Some(i) = idx { self.playlist_insert_at(&ids, i); }
             }
-            project_panel::Cmd::DropRows(ids, x, y) => { if let Some(DropTarget::Playlist(_)) = self.drop_target(x, y) { self.playlist_insert(&ids, x); } else if self.drop_target(x, y) == Some(DropTarget::Viewport) { if let Some(first) = ids.first() { self.load_item(first); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            project_panel::Cmd::DropRows(ids, x, y) => { if let Some(DropTarget::Side(sd)) = self.drop_target(x, y) { if let Some(first) = ids.first().cloned() { if sd == qcv_player::Side::B { self.set_b_source(&first); } else { self.load_item(&first); } } } else if let Some(DropTarget::Playlist(_)) = self.drop_target(x, y) { self.playlist_insert(&ids, x); } else if self.drop_target(x, y) == Some(DropTarget::Viewport) { if let Some(first) = ids.first() { self.load_item(first); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::Rename(id, name) => { if self.project.rename_media_item(&id, &name) { if id == self.loaded_item { self.source_label = name; } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
         }
     }
@@ -1187,7 +1363,8 @@ fn write_png_display(path: &str, px: &[f32], w: u32, h: u32, linear_surface: boo
 /// viewport is the explicit load-now gesture"); the viewport ADDS and LOADS the first (`dropMediaAt` → `openMediaPaths`). The
 /// bands and the Inspector have no drop target — the OS shows a refused drop there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DropTarget { Bin, Viewport, /// a playlist is loaded and the drop is over the scrubber or the clip bar: insert at x (QCView's playlistDropArea)
+enum DropTarget { Bin, Viewport, /// dual view: a chip, or the picture by mode (QCView `dropMediaAt` / the chips' DropAreas)
+    Side(qcv_player::Side), /// a playlist is loaded and the drop is over the scrubber or the clip bar: insert at x (QCView's playlistDropArea)
     Playlist(i32) }
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {
     let bytes: Vec<u8> = px.chunks(4).flat_map(|c| [(c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect();
@@ -1246,9 +1423,10 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
+        if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }   // the waveform's A / B (row 173)
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
         // the menu bar (QCView's MenuBar, row 143): the app's native menu on macOS; QCView's in-window bar on Windows (row 194)
@@ -1305,11 +1483,16 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                // the Save dual view dialog takes every key while open (Enter = Save, Escape = Cancel)
+                if let Some(g) = self.gpu.as_mut() { if g.dual_dialog.open {
+                    if pressed { let k = to_key_event(&event, self.mods); let r = g.dual_dialog.key(&k, &mut g.fonts); g.ui_dirty = true; if let Some(i) = r { self.dual_dialog_done(i); } }
+                    return
+                } }
                 // QCView's About modal: Escape / Enter close it; it takes every key while open
                 if let Some(g) = self.gpu.as_mut() { if g.about.open { if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter)) { g.about.cancel(); g.ui_dirty = true; } return } }
                 // the in-window menu bar's keys (Windows' rules, row 194): Alt tapped alone / F10 focus it, Alt+letter opens a menu,
@@ -1464,20 +1647,24 @@ impl ApplicationHandler for App {
             // the cursor says refused over the bands / the Inspector (QCView: no DropArea there)
             WindowEvent::DragPosition { id: tid, position, .. } => {
                 self.drag_pos = Some((position.x, position.y));
-                let hint = match self.drop_target(position.x, position.y) { Some(DropTarget::Playlist(x)) => self.playlist_drop_index(x as f64), _ => None };
+                let target = self.drop_target(position.x, position.y);
+                let hint = match target { Some(DropTarget::Playlist(x)) => self.playlist_drop_index(x as f64), _ => None };
+                let side = match target { Some(DropTarget::Side(sd)) => Some(sd), _ => None };
+                if let Some(g) = self.gpu.as_mut() { if g.dualc.set_drop_side(side) { g.ui_dirty = true; } }
                 if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(hint) { g.ui_dirty = true; } }
                 let ok = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false) && self.drop_target(position.x, position.y).is_some();
                 el.set_valid_dnd_actions(tid, if ok { &[DndAction::Copy] } else { &[] }).ok();
             }
-            WindowEvent::DragLeft { .. } => { self.drag_pos = None; if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(None) { g.ui_dirty = true; } } }
+            WindowEvent::DragLeft { .. } => { self.drag_pos = None; if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(None) { g.ui_dirty = true; } if g.dualc.set_drop_side(None) { g.ui_dirty = true; } } }
             WindowEvent::DragDropped { id: tid, .. } => {
                 // no position from the OS at all: the viewport, as before
                 let target = match self.drag_pos { Some((x, y)) => self.drop_target(x, y), None => Some(DropTarget::Viewport) };
                 self.drag_pos = None;
+                if let Some(g) = self.gpu.as_mut() { if g.dualc.set_drop_side(None) { g.ui_dirty = true; } }
                 if let Some(t) = target { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, t); } }
             }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { let raw: Vec<String> = uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)).collect(); let projects: Vec<String> = raw.iter().filter(|p| p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let media: Vec<String> = raw.iter().filter(|p| !p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let admitted = if media.is_empty() { vec![] } else { self.admit_media_paths(&media) }; for p in &projects { self.open_project(p); } if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in admitted.iter().cloned() { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport && projects.is_empty(); for p in admitted { if self.add_and_load(&p, first).is_some() { first = false; } } } }
+                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { let raw: Vec<String> = uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)).collect(); let projects: Vec<String> = raw.iter().filter(|p| p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let media: Vec<String> = raw.iter().filter(|p| !p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let admitted = if media.is_empty() { vec![] } else { self.admit_media_paths(&media) }; for p in &projects { self.open_project(p); } if let DropTarget::Side(sd) = target { self.drop_on_side(sd, admitted); return } if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in admitted.iter().cloned() { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport && projects.is_empty(); for p in admitted { if self.add_and_load(&p, first).is_some() { first = false; } } } }
             }
             _ => {}
         }
@@ -1520,7 +1707,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { dual: None, colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { dual: None, active_dual_view: String::new(), colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

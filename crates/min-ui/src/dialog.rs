@@ -1,16 +1,38 @@
 //! Dialog — Spectrum 2's dialog as a node: a scrim over the window, an elevated card (radius 16, 24-px padding) with a
 //! heading, a body in the subdued colour and a right-aligned row of pill buttons; the last button is the default. Modal:
 //! presses outside do nothing (the owner closes it on Escape via `cancel`). QCView's "Reset all preferences?" lives here.
-use crate::{input::Event, paint, text_button::{TextButton, Variant}, Family, Fonts};
+//! `with_field` adds a labelled text field under the body (Save as Dual View's name, canon row 173): it takes the keys while
+//! open, Enter = the default (last) button, Escape = cancel, and the default button is off while the field is empty.
+use crate::{input::{Event, ImeEvent, KeyEvent}, paint, text_button::{TextButton, Variant}, text_field::{FieldResponse, TextField}, Family, Fonts};
 use kurbo::{Affine, Rect, RoundedRect};
 use min_theme::tokens as t;
 use std::time::Instant;
 use vello::Scene;
 
-pub struct Dialog { pub title: String, pub body: String, pub buttons: Vec<TextButton>, pub open: bool, pub rect: Rect }
+pub struct Dialog { pub title: String, pub body: String, pub buttons: Vec<TextButton>, pub open: bool, pub rect: Rect, pub field: Option<TextField>, pub field_label: String }
 
 impl Dialog {
-    pub fn new(title: &str, body: &str, buttons: Vec<(&str, Variant)>) -> Dialog { Dialog { title: title.to_string(), body: body.to_string(), buttons: buttons.into_iter().map(|(l, v)| TextButton::new(l, v)).collect(), open: false, rect: Rect::ZERO } }
+    pub fn new(title: &str, body: &str, buttons: Vec<(&str, Variant)>) -> Dialog { Dialog { title: title.to_string(), body: body.to_string(), buttons: buttons.into_iter().map(|(l, v)| TextButton::new(l, v)).collect(), open: false, rect: Rect::ZERO, field: None, field_label: String::new() } }
+    pub fn with_field(mut self, label: &str, placeholder: &str) -> Dialog { let mut f = TextField::new(Family::Sans, t::DIALOG_BODY_SIZE); f.placeholder = placeholder.to_string(); self.field = Some(f); self.field_label = label.to_string(); self }
+    /// Open with the field holding `text`, all of it selected (QCView's save field: the auto-name, selected, focused).
+    pub fn show_with(&mut self, text: &str, fonts: &mut Fonts) { self.open = true; if let Some(f) = self.field.as_mut() { f.set_text_end(text, fonts); f.select_all(fonts); f.focused = true; } self.sync_default(); }
+    /// The field's text, trimmed.
+    pub fn value(&self) -> String { self.field.as_ref().map(|f| f.text().trim().to_string()).unwrap_or_default() }
+    fn sync_default(&mut self) { if self.field.is_some() { let on = !self.value().is_empty(); if let Some(b) = self.buttons.last_mut() { b.enabled = on; } } }
+    /// A key while open (the field's): Some(button index) when it closes the dialog — Enter = the last button, Escape = the first.
+    pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Option<usize> {
+        let f = self.field.as_mut()?;
+        match f.key(k, fonts) {
+            FieldResponse::Accepted => { if self.value().is_empty() { return None } self.open = false; Some(self.buttons.len().saturating_sub(1)) }
+            FieldResponse::Cancelled => { self.open = false; Some(0) }
+            FieldResponse::Changed => { self.sync_default(); None }
+            FieldResponse::None => None,
+        }
+    }
+    /// The field's pointer handling (focus, caret placement); call before `event` while open.
+    pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> bool { if !self.open { return false } self.field.as_mut().map(|f| f.pointer(e, fonts)).unwrap_or(false) }
+    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if let Some(f) = self.field.as_mut() { f.ime(e, fonts); self.sync_default(); } }
+    pub fn caret_rect(&self, fonts: &mut Fonts) -> Option<Rect> { self.field.as_ref().filter(|_| self.open).and_then(|f| f.caret_rect(fonts)) }
     pub fn show(&mut self) { self.open = true; }
     pub fn cancel(&mut self) { self.open = false; }
     /// Centre in `bounds`; the body wraps to the dialog's width.
@@ -19,9 +41,14 @@ impl Dialog {
         let title = fonts.layout(&self.title, Family::Sans, t::DIALOG_TITLE_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE);
         let body = fonts.layout_width(&self.body, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some((w - 2.0 * pad) as f32));
         let bh = t::BUTTON_HEIGHT_M as f64 * scale;   // the dialog's buttons stay size M
-        let h = pad + title.height() as f64 + gap + body.height() as f64 + gap * 1.5 + bh + pad;
+        let has_body = !self.body.is_empty();
+        let fh = if self.field.is_some() { t::FIELD_HEIGHT_M as f64 * scale } else { 0.0 };
+        let label_h = if self.field.is_some() { fonts.layout(&self.field_label, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).height() as f64 + t::SPACING_75 as f64 * scale } else { 0.0 };
+        let field_block = if self.field.is_some() { label_h + fh + gap } else { 0.0 };
+        let h = pad + title.height() as f64 + gap + if has_body { body.height() as f64 + gap } else { 0.0 } + field_block + gap * 0.5 + bh + pad;
         let x0 = bounds.x0 + (bounds.width() - w) / 2.0; let y0 = bounds.y0 + (bounds.height() - h) / 2.0;
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
+        if let Some(f) = self.field.as_mut() { let fy = y0 + pad + title.height() as f64 + gap + if has_body { body.height() as f64 + gap } else { 0.0 } + label_h; f.layout(fonts, Rect::new(x0 + pad, fy, x0 + w - pad, fy + fh), scale); }
         let mut x = self.rect.x1 - pad; let by = self.rect.y1 - pad - bh; let bgap = t::DIALOG_BUTTON_GAP as f64 * scale;
         for b in self.buttons.iter_mut().rev() { let (bw, _) = b.measure(fonts, scale); b.rect = Rect::new(x - bw, by, x, by + bh); x -= bw + bgap; }
     }
@@ -34,7 +61,7 @@ impl Dialog {
         (clicked, dirty)
     }
     pub fn animating(&self, now: Instant) -> bool { self.open && self.buttons.iter().any(|b| b.animating(now)) }
-    pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) {
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) {
         if !self.open { return }
         paint::rect(scene, bounds, t::DIALOG_SCRIM_COLOR);
         let r = t::DIALOG_CORNER_RADIUS as f64 * scale;
@@ -45,6 +72,12 @@ impl Dialog {
         crate::fonts::draw_layout(scene, &title, Affine::translate((self.rect.x0 + pad, self.rect.y0 + pad)));
         let body = fonts.layout_width(&self.body, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DIALOG_BODY_COLOR), Some((self.rect.width() - 2.0 * pad) as f32));
         crate::fonts::draw_layout(scene, &body, Affine::translate((self.rect.x0 + pad, self.rect.y0 + pad + title.height() as f64 + gap)));
+        if let Some(f) = &self.field {
+            let label = fonts.layout(&self.field_label, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DIALOG_BODY_COLOR));
+            let ly = f.rect.y0 - t::SPACING_75 as f64 * scale - label.height() as f64;
+            crate::fonts::draw_layout(scene, &label, Affine::translate((self.rect.x0 + pad, ly)));
+        }
+        if let Some(f) = self.field.as_mut() { f.paint(scene, fonts, scale); }
         for b in &self.buttons { b.paint(scene, fonts, scale, now); }
     }
 }

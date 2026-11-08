@@ -64,6 +64,10 @@ impl StatusStrip {
         self.fps = min_i18n::fill(tr("%1 fps"), &[&format!("{:.2}", p.rate().as_f64())]);
         self.fmt = fmt.is_valid().then_some(fmt);
     }
+    /// The right edge of the frame / timecode wells (dual view's controls start beyond it).
+    pub fn wells_right(&self) -> f64 { self.tc.rect.x1 }
+    /// The fps readout's width (it ends the strip on the right).
+    pub fn fps_width(&self, fonts: &mut Fonts, scale: f64) -> f64 { if self.fps.is_empty() { 0.0 } else { fonts.layout(&self.fps, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)).width() as f64 } }
     pub fn layout(&mut self, w: f64, y: f64, scale: f64) {
         let h = t::STATUS_STRIP_HEIGHT as f64 * scale;
         let pad = t::SPACING_100 as f64 * scale;

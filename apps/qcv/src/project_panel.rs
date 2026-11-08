@@ -461,7 +461,7 @@ mod tests {
 }
 
 /// A row label elided in the middle (QCView's `Text.ElideMiddle`: keep the head and the tail).
-fn elided(fonts: &mut Fonts, name: &str, weight: f32, c: min_theme::Color, avail: f64, scale: f64) -> min_ui::fonts::TextLayout {
+pub(crate) fn elided(fonts: &mut Fonts, name: &str, weight: f32, c: min_theme::Color, avail: f64, scale: f64) -> min_ui::fonts::TextLayout {
     let mut l = fonts.layout(name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c));
     if l.width() as f64 > avail {
         let chars: Vec<char> = name.chars().collect(); let mut keep = chars.len();

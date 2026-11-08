@@ -210,6 +210,8 @@ impl ProjectManager {
         let max = self.pool.iter().filter(|m| m.media_type == MediaType::Playlist).filter_map(|m| m.name.strip_prefix("Playlist_").and_then(|n| n.parse::<i32>().ok())).max().unwrap_or(0);
         format!("Playlist_{:02}", max + 1)
     }
+    /// QCView `updateDualView`: overwrite a saved Dual View's pair in place.
+    pub fn set_dual_pair(&mut self, id: &str, data: DualPairData) -> bool { self.edit(id, |m| if m.media_type == MediaType::DualPair && m.dual_pair != data { m.dual_pair = data; true } else { false }) }
     pub fn add_dual_pair(&mut self, name: &str, data: DualPairData) -> String {
         let item = MediaItem { id: new_uuid(), name: if name.is_empty() { "Untitled Dual View".into() } else { name.to_string() }, media_type: MediaType::DualPair, dual_pair: data, ..Default::default() };
         let id = item.id.clone();
