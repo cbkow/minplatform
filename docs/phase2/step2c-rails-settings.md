@@ -241,3 +241,29 @@ Settings panel has.
   apps compile unchanged. One added dependency surfaced (`min-paths` for the sequence detector in `source`); nothing else.
 - Verified: min-ffmpeg 3 tests, qcv-player 15, min-present 11; `cargo build --workspace`; headless 30 frames on two fixtures,
   the scrub bench (0 stream frames), 12 random seeks, the UI bench — all as before. Windows build follows by bundle.
+
+### S6 — GPU ProRes on Windows through FFmpeg's Vulkan decoder and a D3D12 bridge (2026-11-07 night; canon row 149 DONE)
+- Milestone 1 (device + routing): `HwDevice::vulkan(presenter_device)` = `av_hwdevice_ctx_create(VULKAN)`; on the box the
+  default device carries 28 extensions incl. `VK_KHR_external_memory_win32` + `VK_KHR_external_semaphore_win32`, so FFmpeg owns
+  the VkDevice (QCView's device-manager handoff is not needed). `OpenOptions::hw_intra` + `hw_routing::vulkan_preferred_codec`
+  (ProRes, FFV1, APV — QCView's list) route those codecs to it; everything else keeps D3D12VA. The platform constant `HW_PIX_FMT`
+  became per-device (`HwKind::pix_fmt`, `device_pix_fmt` read from the codec context in `get_format`). With readback only:
+  4K 81 % of a core vs 495 % software.
+- Milestone 2 (the bridge, `crates/min-ffmpeg/src/vk_bridge.rs`): the presenter's `ID3D12Device` creates one SHARED committed
+  texture per plane (R16 / R16G16 or R8 / R8G8) in a ring plus one shared `ID3D12Fence`; Vulkan imports them (dedicated
+  allocations, `D3D12_RESOURCE` handle type; the fence as a timeline semaphore, `D3D12_FENCE`) through `ash` driven by FFmpeg's
+  own `get_proc_addr`; per frame one command buffer on an FFmpeg transfer queue (`lock_queue` / `unlock_queue`): barriers,
+  `vkCmdCopyImage` per plane, the source back to FFmpeg's layout; the submit waits the frame's timeline semaphores at
+  `sem_value` and signals them at `+1` (FFmpeg's contract) plus the shared one; the presenter waits the fence (`add_wait_fence`)
+  and samples the planes through `Dx12FrameHandle { planes[..], plane_count, interleaved_chroma, code_bits }` →
+  `Dx12Import::import_planes` → the planar3 / planar4 kernels (`code_bits` 10 LSB-aligned in R16, like the software upload).
+  FFmpeg's ProRes 422 10-bit frame = 3 separate `R16_UNORM` images (not a multiplane image), optimal tiling.
+- THE BUG FOUND BY THE SNAPSHOT: 1080p matched software exactly but 4K was garbage — the ring reused a slot once its COPY had
+  completed, while the presenter was still sampling those textures (it holds a short ring of shown frames). Now every handle
+  carries the slot's token (an `Arc`), a slot is reusable only when the token is unique again, and the ring grows when none is
+  free. After the fix: pixel-identical at 1080p and 4K, encoded and display paths.
+- Numbers (RTX 4090, headless 120 frames): 1080p 19 % of a core vs 236 % software (show 0.37 vs 3.8 ms); 4K 37 % vs 511 %
+  (show 0.37 vs 5.96, decode 0.1 vs 6.1 ms); the scrub session bridges too (previews 4.4 ms p50 vs 8.7 readback, 0 stream
+  frames). The scrub cache keeps Vulkan frames native (FFmpeg's pool frame held by the entry; the bridge copies at publish).
+- Owed: the 4:4:4 / 4444-alpha / 8-bit layouts verified against synthetic clips (this session's last check), ProRes RAW
+  stays software (QCView: GPU debayer not implemented), a LUID match when a machine has several GPUs.

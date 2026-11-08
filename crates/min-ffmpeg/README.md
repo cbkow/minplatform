@@ -12,6 +12,7 @@ every app — the QCView port today, minNotes / ufb / MinRender as they port —
 | `thread_policy` | slice threads for intra codecs, frame threads otherwise |
 | `rgb_range`, `yuv_planar` | the legal→full RGB rule and the planar level constants |
 | `seek_compat`, `source`, `frame_handle`, `decoder_cleanup` | the seek shim, the media source descriptor, the handle, the slow-teardown queue |
+| `vk_bridge` (Windows) | S6: FFmpeg's Vulkan-decoded frames (ProRes / FFV1 / APV) copied on the GPU into shared D3D12 plane textures the presenter samples — the GPU ProRes route for Windows (canon row 149) |
 
 The FFmpeg itself is the ONE pinned build per machine: `tools/ffmpeg/` (9.0.2; Homebrew on macOS, BtbN gpl-shared on
 Windows fetched into `external/ffmpeg/win64`). `ffmpeg-sys-next` binds it at build time through pkg-config / `FFMPEG_DIR`.
