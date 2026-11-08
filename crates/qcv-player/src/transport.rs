@@ -100,8 +100,9 @@ pub struct TransportOptions { pub hw: Option<HwDevice>, /// the intra-codec devi
     pub scrub: Option<ScrubOptions>, /// QCView: `playback/loopEnabled`, default ON ("press play, watch a cycle, scrub, watch again")
     pub loop_enabled: bool, pub clock_policy: ClockPolicy, /// one refresh in ms — the "late" threshold
     pub refresh_ms: f32, /// image sequences: the cache's window + IO threads (Settings ▸ Performance)
-    pub seq: StreamingConfig }
-impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0, seq: StreamingConfig::default() } } }
+    pub seq: StreamingConfig, /// a single sequence's EXR layer at open (the item's; QCView `startImageSequence`); "" = the default
+    pub seq_layer: String }
+impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0, seq: StreamingConfig::default(), seq_layer: String::new() } } }
 
 /// What a pending swap does once its clip has opened: the latest scrub target, a seek (timeline frame, source frame), or rest
 /// at the in-point it was opened on.
@@ -120,7 +121,8 @@ impl Slot {
         // An image sequence min-image reads goes through QCView's sequence cache (step 2c); DPX / TGA / BMP stay on FFmpeg's image2.
         // `QCV_SEQ_FFMPEG=1` forces the image2 route (the A/B against the cache).
         if let Source::Sequence { pattern, rate, start, end, .. } = &src && cache_reads(pattern) && std::env::var_os("QCV_SEQ_FFMPEG").is_none() {
-            let d = SequenceDecoder::open(pattern, *rate, *start, *end, opts.seq, "")?;
+            let layer = if clip.sequence_exr_layer.is_empty() { opts.seq_layer.as_str() } else { clip.sequence_exr_layer.as_str() };
+            let d = SequenceDecoder::open(pattern, *rate, *start, *end, opts.seq, layer)?;
             // the cache's wrap follows the loop from the open (QCView set it only on a toggle: a fresh sequence wrapped with loop off)
             d.cache().set_looping(opts.loop_enabled);
             let (info, index) = (d.info.clone(), d.frame_index().clone());
@@ -171,7 +173,9 @@ impl Transport {
         let rate = slot.info.rate(); let frames = slot.info.frame_count as i64;
         let mut editor = Editor::default();
         editor.load_single_media(&MediaInfo { id: String::new(), name: src.display(), path: src.path().to_string(), kind: probe_clip.media_kind, rate, duration: frames, width: slot.info.width, height: slot.info.height, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: probe_clip.sequence_start_frame, sequence_end_frame: probe_clip.sequence_start_frame + frames - 1 });
+        let seq_layer = opts.seq_layer.clone();
         let mut t = Transport::from_timeline(editor.timeline, opts, false);
+        if probe_clip.media_kind == ClipMediaKind::ImageSequence { t.timeline.tracks[0].clips[0].sequence_exr_layer = seq_layer; }   // the hover keys carry it
         let first = t.timeline.tracks[0].clips[0].clone();
         let mut slot = slot; slot.clip = 0; slot.src_rate = first.source_rate; slot.src_in = first.source_in; slot.src_out = first.source_out;
         t.slots.push(slot); t.active = 0;
@@ -226,6 +230,19 @@ impl Transport {
         if let SlotDecoder::Sequence(d) = &mut s.decoder { d.set_rate(rate); s.info = d.info.clone(); s.index = d.frame_index().clone(); }
         self.timer.set_frame_rate(self.fps); self.timer.set_duration(self.frames as f64 / self.fps); self.timer.seek(frame as f64 / self.fps);
         self.push_in_out_to_timer();
+        true
+    }
+
+    /// QCView `setImageSeqLayer`: the cache reloads at the new EXR layer (its generation bumps, the window refills); the
+    /// clip carries it so the hover thumbnails key on it.
+    pub fn set_sequence_layer(&mut self, layer: &str) -> bool {
+        let a = self.active;
+        let Some(d) = self.slots[a].decoder.as_sequence() else { return false };
+        if d.cache().layer() == layer { return false }
+        d.cache().set_layer(layer);
+        let clip = self.slots[a].clip;
+        if let Some(c) = self.timeline.tracks.first_mut().and_then(|t| t.clips.get_mut(clip)) { c.sequence_exr_layer = layer.to_string(); }
+        let f = self.current_frame(); self.slots[a].decoder.seek_to_frame(f);   // re-show the frame under the playhead at the new layer
         true
     }
 

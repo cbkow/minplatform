@@ -34,17 +34,37 @@ fn channels(ctx: &Ctx, part: i32) -> Vec<(String, exr_pixel_type_t)> {
 }
 fn part_name(ctx: &Ctx, part: i32) -> Option<String> { let mut n: *const std::os::raw::c_char = std::ptr::null(); (unsafe { exr_get_name(ctx.0, part, &mut n) } == 0 && !n.is_null()).then(|| unsafe { CStr::from_ptr(n) }.to_string_lossy().into_owned()) }
 
-/// The layers a file offers (QCView's layer discovery): part names for multi-part files, else the channel prefixes owning an
-/// `.R` ("" for the bare RGB).
+/// QCView's `isCryptomatte`: any name containing "crypto", case-insensitive (non-image ID layers).
+fn is_cryptomatte(name: &str) -> bool { name.to_ascii_lowercase().contains("crypto") }
+
+/// The layers a file offers — QCView `EXRImageLoader::discoverLayers` verbatim: a multi-part file lists its part names
+/// (a nameless part as "default (part N)"); a single part lists "default" when any channel is bare, then each distinct
+/// prefix before a channel's LAST dot, in channel order; cryptomatte layers are filtered; never empty. "default" loads as the
+/// bare RGB (an absent `default.R` falls back, as in QCView's `loadFrame`).
 pub fn layers(path: &str) -> Result<Vec<String>, Error> {
     let ctx = open(path)?;
     let mut n = 0; ok(unsafe { exr_get_count(ctx.0, &mut n) }, "exr_get_count", path)?;
-    if n > 1 { return Ok((0..n).filter_map(|p| part_name(&ctx, p)).collect()) }
-    let ch = channels(&ctx, 0);
-    let mut out: Vec<String> = vec![];
-    if ch.iter().any(|(c, _)| c == "R") { out.push(String::new()); }
-    for (c, _) in &ch { if let Some(p) = c.strip_suffix(".R") && !out.iter().any(|o| o == p) { out.push(p.to_string()); } }
+    if n > 1 { return Ok((0..n).map(|p| part_name(&ctx, p).filter(|s| !s.is_empty()).unwrap_or_else(|| format!("default (part {p})"))).filter(|s| !is_cryptomatte(s)).collect()) }
+    let mut uniq: Vec<String> = vec![]; let mut saw_bare = false;
+    for (c, _) in channels(&ctx, 0) {
+        match c.rfind('.') {
+            None => saw_bare = true,
+            Some(dot) => { let p = &c[..dot]; if !is_cryptomatte(p) && !uniq.iter().any(|u| u == p) { uniq.push(p.to_string()); } }
+        }
+    }
+    let mut out = if saw_bare { vec!["default".to_string()] } else { vec![] };
+    out.extend(uniq);
+    if out.is_empty() { out.push("default".into()); }
     Ok(out)
+}
+
+/// QCView `EXRImageLoader::compressionName`: the first part's compression as QCView names it; None for a type QCView does
+/// not name (HTJ2K / ZSTD — "forward-compat") or an unreadable header.
+pub fn compression(path: &str) -> Option<&'static str> {
+    let ctx = open(path).ok()?;
+    let mut c: exr_compression_t = 0;
+    if unsafe { exr_get_compression(ctx.0, 0, &mut c) } != 0 { return None }
+    Some(match c as u32 { 0 => "NONE", 1 => "RLE", 2 => "ZIPS", 3 => "ZIP", 4 => "PIZ", 5 => "PXR24", 6 => "B44", 7 => "B44A", 8 => "DWAA", 9 => "DWAB", _ => return None })
 }
 
 /// Decode `path` (QCView `loadFrame`): `layer` "" = the default; `threads` 0 = all cores, capped at 8 (QCView's probe: 8 is
@@ -170,7 +190,7 @@ mod tests {
         let row = img.height as usize / 2 * img.pitch as usize + img.width as usize; // the centre pixel
         let (g, b, r) = (half(&img.planes[0][row..]), half(&img.planes[1][row..]), half(&img.planes[2][row..]));
         assert!([g, b, r].iter().all(|v| v.is_finite() && *v >= 0.0 && *v < 64.0), "{r} {g} {b}");
-        assert_eq!(layers(&p).unwrap(), vec![String::new()]);
+        assert_eq!(layers(&p).unwrap(), vec!["default".to_string()]);
     }
     #[test]
     fn a_missing_file_and_a_layer_without_rgb_fail_cleanly() {

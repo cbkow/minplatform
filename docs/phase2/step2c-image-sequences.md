@@ -99,3 +99,24 @@ Open for the user / later pieces:
   sink — carry it if playback needs it.
 - Piece 4: seed the detector's missing frames at open (the ticks before any IO), sequences in playlists (the cache
   window per clip), hover thumbnails, the bins; piece 5: the EXR layer picker.
+
+## The walk + pieces 4 / 5 (2026-11-08)
+
+- Sequence items load (Add Media, drops, the command line) — they had been selected only.
+- The Image Sequence card (QCView `ImageSequenceInspector`): frame-rate chips (retune live, the item keeps the rate), Transfer,
+  Range, Pattern, Resolution, Compression (EXR), Duration, cache stride 1x–4x (off-grid frames show a grid neighbour — QCView's
+  `getClosestFrame`, kept to stride > 1; at 1x the picture holds until the target lands), cache ahead / behind. The video cards
+  hide for a sequence (QCView's `videoLoaded`).
+- Hover thumbnails: QCView's per-frame-file keys + the still loaders (`ImageThumbLoader`), the sequence cache peeked first (ours);
+  EXR thumbnails get the sRGB curve to match the viewport (QCView: linear as code values — §18.6). The thumbnail fast paths
+  (EXR scanline skip, PNG skip-downsample, JPEG DCT scaling) are still owed.
+- The detector's gaps seed the failed set at open (QCView `startImageSequence`); playlist clips open from the item's directory +
+  pattern (they opened the first frame's path). Owed: the seed for playlist sequence clips, a playlist clip's EXR layer.
+- Loop fixes (the user: "after a loop the grey overwrites" the red ticks): a sequence's wrap is QCView's unforced frame advance,
+  not a seek; the seam uses [in, out] when set (QCView: every range wrap was a seek); the amnesty evicts cached sentinels so
+  failed frames really are retried and re-flag (QCView's comment promised it, its code kept them cached).
+- Piece 5, the EXR layers: `min_image::exr::layers` = QCView `discoverLayers` verbatim (part names, "default (part N)", single-part
+  prefixes before the LAST dot, "default" for bare channels, cryptomatte filtered), `compression` = QCView's names; the project
+  takes them at add (`set_exr_import_metadata`, the first layer current), the cache opens at the item's layer, the card's LAYER
+  grid = QCView's tiles (first frame per layer, two columns) with the selection as a FILL one grey step up (the user 2026-11-08,
+  not QCView's accent border — blue stays rationed, row 162); a click = `Transport::set_sequence_layer` + the item.

@@ -58,3 +58,5 @@ pub fn max_rss_mb() -> f64 {
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
     unsafe { let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed(); c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32; if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) == 0 { return 0.0 } c.PeakWorkingSetSize as f64 / 1048576.0 }
 }
+/// the still loaders (the app's EXR layer discovery + the inspector's layer tiles)
+pub use min_image;

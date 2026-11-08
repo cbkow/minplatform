@@ -188,17 +188,36 @@ mod tests {
     fn a_loop_wrap_keeps_the_failed_ticks() {
         let Some(d) = sequence("wrap") else { eprintln!("ffmpeg missing: skipped"); return };
         std::fs::remove_file(d.join("f_1006.png")).unwrap();   // frame 5: a gap
-        let src = crate::Source::Sequence { pattern: d.join("f_%04d.png").to_string_lossy().into_owned(), rate: Rate::new(240, 1), start: 1001, end: 1024, label: String::new() };
+        let src = crate::Source::Sequence { pattern: d.join("f_%04d.png").to_string_lossy().into_owned(), rate: Rate::new(60, 1), start: 1001, end: 1024, label: String::new() };   // 60 fps: one frame per tick at most (a faster clock skipped frames under load and read the wrap as a seek — the slack rule, correctly)
         let mut t = crate::Transport::open(&src, crate::TransportOptions { loop_enabled: true, scrub: None, seq: StreamingConfig::from_settings(4, 24), ..Default::default() }).unwrap();
         let failed = |t: &crate::Transport| t.decoder().as_sequence().unwrap().cache().failed_frames();
         assert!(wait(|| failed(&t).contains(&5)), "the gap flags");
         t.play();
         let gen0 = t.decoder().as_sequence().unwrap().cache().generation();
         let t0 = Instant::now();
-        while t.stats.loops < 2 && t0.elapsed() < Duration::from_secs(5) { let _ = t.tick(Instant::now()); std::thread::sleep(Duration::from_millis(1)); }
+        while t.stats.loops < 2 && t0.elapsed() < Duration::from_secs(8) { let _ = t.tick(Instant::now()); std::thread::sleep(Duration::from_millis(1)); }
         assert!(t.stats.loops >= 2, "played through two wraps");
         assert_eq!(t.decoder().as_sequence().unwrap().cache().generation(), gen0, "a wrap is not a seek (QCView's frame advance): no generation bump, no amnesty");
         assert!(failed(&t).contains(&5), "the tick survives the wraps");
+        let _ = std::fs::remove_dir_all(d);
+    }
+    #[test]
+    fn a_layer_switch_reloads_the_frame_at_the_new_layer() {
+        let d = std::env::temp_dir().join(format!("qcv-seqdec-layers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
+        let ff = |src: &str, stem: &str| std::process::Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src, "-frames:v", "4", "-pix_fmt", "gbrpf32le", "-c:v", "exr", "-start_number", "1"]).arg(d.join(format!("{stem}_%04d.exr"))).status().map(|s| s.success()).unwrap_or(false);
+        if !(ff("testsrc2=size=64x36:rate=24", "a") && ff("smptebars=size=64x36:rate=24", "b")) { eprintln!("ffmpeg missing: skipped"); return }
+        for n in 1..=4 {
+            let ok = std::process::Command::new("exrmultipart").arg("-combine").arg("-i").arg(format!("{}::beauty", d.join(format!("a_{n:04}.exr")).display())).arg(format!("{}::diffuse", d.join(format!("b_{n:04}.exr")).display())).arg("-o").arg(d.join(format!("r_{n:04}.exr"))).stdout(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+            if !ok { eprintln!("exrmultipart missing: skipped"); return }
+        }
+        let src = crate::Source::Sequence { pattern: d.join("r_%04d.exr").to_string_lossy().into_owned(), rate: Rate::new(24, 1), start: 1, end: 4, label: String::new() };
+        let mut t = crate::Transport::open(&src, crate::TransportOptions { scrub: None, seq: StreamingConfig::from_settings(4, 24), seq_layer: "beauty".into(), ..Default::default() }).unwrap();
+        let cache = |t: &crate::Transport| t.decoder().as_sequence().unwrap().cache().frame(0).filter(|i| i.sentinel.is_none()).map(|i| i.planes[0].clone());
+        assert!(wait(|| cache(&t).is_some())); let beauty = cache(&t).unwrap();
+        assert!(t.set_sequence_layer("diffuse"));
+        assert_eq!(t.timeline.tracks[0].clips[0].sequence_exr_layer, "diffuse", "the clip carries the layer (the hover keys)");
+        assert!(wait(|| cache(&t).is_some_and(|p| p != beauty)), "frame 0 reloads at the diffuse layer");
         let _ = std::fs::remove_dir_all(d);
     }
     #[test]

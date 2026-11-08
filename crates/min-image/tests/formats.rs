@@ -147,3 +147,28 @@ fn unknown_extensions_and_missing_files_fail_cleanly() {
     let bad = dir().join("bad.jpg"); std::fs::write(&bad, b"not a jpeg at all").unwrap();
     assert!(load(&bad.to_string_lossy(), "", 0).is_err(), "a corrupt JPEG is an error, never a process exit");
 }
+
+/// QCView's layer discovery on a synthetic multi-part EXR (FFmpeg frames combined by OpenEXR's `exrmultipart`; skipped
+/// without it): part names in order, the cryptomatte part filtered, each part loads its own pixels, the compression named.
+#[test]
+fn exr_multipart_layers() {
+    let d = std::env::temp_dir().join(format!("min-image-mp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
+    let ff = |src: &str, name: &str| std::process::Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src, "-frames:v", "1", "-pix_fmt", "gbrpf32le", "-c:v", "exr"]).arg(d.join(name)).status().map(|s| s.success()).unwrap_or(false);
+    if !(ff("testsrc2=size=64x36", "a.exr") && ff("smptebars=size=64x36", "b.exr") && ff("color=red:size=64x36", "c.exr")) { eprintln!("ffmpeg missing: skipped"); return }
+    let multi = d.join("multi.exr");
+    let ok = std::process::Command::new("exrmultipart").arg("-combine").arg("-i").arg(format!("{}::beauty", d.join("a.exr").display())).arg(format!("{}::diffuse", d.join("b.exr").display())).arg(format!("{}::CryptoObject", d.join("c.exr").display())).arg("-o").arg(&multi)
+        .stdout(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    if !ok { eprintln!("exrmultipart missing: skipped"); return }
+    let m = multi.to_string_lossy();
+    assert_eq!(min_image::exr::layers(&m).unwrap(), vec!["beauty".to_string(), "diffuse".to_string()]);
+    let (a, b) = (min_image::load(&m, "beauty", 1).unwrap(), min_image::load(&m, "diffuse", 1).unwrap());
+    assert_ne!(a.planes[0], b.planes[0], "each part loads its own pixels");
+    assert_eq!(min_image::load(&m, "", 1).unwrap().planes[0], a.planes[0], "no layer = part 0");
+    assert!(min_image::exr::compression(&m).is_some());
+    // a single-part file: "default" (bare channels), and it loads
+    let single = d.join("a.exr").to_string_lossy().into_owned();
+    assert_eq!(min_image::exr::layers(&single).unwrap(), vec!["default".to_string()]);
+    assert!(min_image::load(&single, "default", 1).is_ok());
+    let _ = std::fs::remove_dir_all(&d);
+}

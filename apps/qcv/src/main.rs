@@ -83,6 +83,14 @@ impl App {
         let (id, probes) = self.project.add_media_file(path);
         self.schedule_probes(probes);
         let id = id?;
+        // QCView `populateExrImportMetadata`: a new EXR sequence's layers + compression from its first frame's header
+        if let Some(m) = self.project.item(&id) && m.media_type == qcv_project::MediaType::ImageSequence && m.image_seq.format == "EXR" && m.image_seq.available_layers.is_empty() {
+            let first = m.path.clone();
+            let layers = qcv_player::min_image::exr::layers(&first).unwrap_or_default();
+            log::info!("project: EXR '{first}' layers ({}): [{}]", layers.len(), layers.join(", "));
+            let comp = qcv_player::min_image::exr::compression(&first).unwrap_or("");
+            self.project.set_exr_import_metadata(&id, layers, comp);
+        }
         self.note_recent_media(path);
         if load { self.load_item(&id); }
         Some(id)
@@ -112,7 +120,7 @@ impl App {
             let q = &item.image_seq;
             let pattern = std::path::Path::new(&q.directory).join(&q.pattern).to_string_lossy().into_owned();
             let label = format!("{} ({} frames{})", item.name, q.frame_count, if q.missing_frames.is_empty() { String::new() } else { format!(", {} missing", q.missing_frames.len()) });
-            self.open_source(Source::Sequence { pattern, rate: qcv_timeline::Rate::from_f64(if q.frame_rate > 0.0 { q.frame_rate } else { 24.0 }), start: q.start_frame as i64, end: q.end_frame as i64, label }, &item.path)
+            self.open_source_layer(Source::Sequence { pattern, rate: qcv_timeline::Rate::from_f64(if q.frame_rate > 0.0 { q.frame_rate } else { 24.0 }), start: q.start_frame as i64, end: q.end_frame as i64, label }, &item.path, &q.layer)
         } else { self.open(&item.path) };
         self.project.set_load_failed(id, !ok);
         if !ok { self.report_unsupported(id); return }
@@ -218,10 +226,11 @@ impl App {
         TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, ..Default::default() }
     }
     fn open(&mut self, path: &str) -> bool { self.open_source(Source::from_path(path, None), path) }
-    fn open_source(&mut self, src: Source, path: &str) -> bool {
+    fn open_source(&mut self, src: Source, path: &str) -> bool { self.open_source_layer(src, path, "") }
+    fn open_source_layer(&mut self, src: Source, path: &str, layer: &str) -> bool {
         if self.gpu.is_none() { return false }
         let t = Instant::now();
-        match Transport::open(&src, self.transport_options()) {
+        match Transport::open(&src, TransportOptions { seq_layer: layer.to_string(), ..self.transport_options() }) {
             Ok(p) => { self.pl_editor = None; self.adopt(p, src.display(), path, t); true }
             Err(e) => { println!("open {path}: {e}"); false }
         }
@@ -343,6 +352,9 @@ impl App {
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + bh, scale); g.left.content_height = ph + bh + lh;
                 g.inspector.set_geometry(g.presenter.engine.geometry(), g.presenter.engine.display_dims());
+                // the EXR layer tiles: the loaded sequence item's layers (the project's), its current layer, its first frame
+                let (ls, cur, first) = self.project.item(&self.loaded_item).filter(|m| m.media_type == qcv_project::MediaType::ImageSequence && self.player.as_ref().is_some_and(|p| p.decoder().as_sequence().is_some())).map(|m| (m.image_seq.available_layers.clone(), m.image_seq.layer.clone(), m.path.clone())).unwrap_or_default();
+                g.inspector.set_seq_layers(ls, &cur, &first);
                 if g.inspector.sync(self.player.as_ref()) { g.ui_dirty = true; }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
@@ -506,6 +518,8 @@ impl App {
                 if g.inspector.has_focus() != had { set_ime(&**g.window, g.inspector.has_focus()); }
                 for c in icmds { match c {
                     // QCView: the timeline retunes live (`TimelineController::setFrameRate`) and the item keeps the rate (`setImageSeqFrameRate`)
+                    // QCView `setImageSeqLayer`: the cache reloads at the layer, the item keeps it
+                    inspector_panel::Cmd::Layer(l) => { if let Some(p) = self.player.as_mut() { p.set_sequence_layer(&l); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_sequence_layer(&id, &l); } g.ui_dirty = true; }
                     inspector_panel::Cmd::FrameRate(fps) => { if let Some(p) = self.player.as_mut() { p.set_sequence_rate(qcv_timeline::Rate::from_f64(fps)); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_frame_rate(&id, fps); } g.ui_dirty = true; }
                     // QCView `setImageSeqCacheStride`: the live cache + the item's session value
                     inspector_panel::Cmd::Stride(s) => { if let Some(c) = self.player.as_ref().and_then(|p| p.decoder().as_sequence()) { c.cache().set_stride(s); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_cache_stride(&id, s); } g.ui_dirty = true; }
@@ -1243,6 +1257,12 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let lc = left.content_rect(); let pph = pp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph + bh, scale); left.content_height = pph + bh + ph;
     let mut inspector = inspector_panel::InspectorPanel::new(); let _ = inspector.sync(player.as_ref());
     if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
+    // an EXR sequence: the layer tiles as the project would fill them (discovery on the first frame), thumbnails awaited
+    if let Some(c) = player.as_ref().and_then(|p| p.decoder().as_sequence()).map(|s| s.cache()) {
+        let first = c.frame_path(0);
+        let layers = if first.to_lowercase().ends_with(".exr") { qcv_player::min_image::exr::layers(&first).unwrap_or_default() } else { vec![] };
+        if !layers.is_empty() { let cur = std::env::var("QCV_SNAP_LAYER").unwrap_or_else(|_| layers[0].clone()); inspector.set_seq_layers(layers, &cur, &first); std::thread::sleep(std::time::Duration::from_millis(800)); let _ = inspector.sync(player.as_ref()); }
+    }
     let rc = right.content_rect(); let ih = inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); right.content_height = ih;
     // the snap shows the Inspector's lower half (Color / Audio / Timecode with their pickers): scroll the rail
     if std::env::var_os("QCV_SNAP_ROTATE").is_some() { engine.set_geometry(min_present::engine::Geometry { par: min_present::engine::Par::Square, rotation: Some(90) }); inspector.set_geometry(engine.geometry(), engine.display_dims()); let _ = inspector.sync(player.as_ref()); let rc = right.content_rect(); inspector.layout(&mut fonts, rc.x0, rc.x1, rc.y0, scale); }

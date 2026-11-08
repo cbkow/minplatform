@@ -264,6 +264,14 @@ impl ProjectManager {
     /// QCView `setImageSeqCacheStride`'s write-through onto the item: session state, no dirty mark (QCView: "in-memory only",
     /// though the file carries the field when the project is saved for another reason).
     pub fn set_image_seq_cache_stride(&mut self, id: &str, stride: i32) { if let Some(m) = self.item_mut(id) { m.image_seq.cache_stride = stride.clamp(1, 4); } }
+    /// QCView `populateExrImportMetadata` (the app probes the first frame; this crate stays free of the EXR library): the
+    /// discovered layers, the first as the current one, and the compression name.
+    pub fn set_exr_import_metadata(&mut self, id: &str, layers: Vec<String>, compression: &str) {
+        if let Some(m) = self.item_mut(id) { if let Some(f) = layers.first() { m.image_seq.layer = f.clone(); } m.image_seq.available_layers = layers; if !compression.is_empty() { m.image_seq.compression = compression.to_string(); } }
+        self.mark_dirty();
+    }
+    /// QCView `setSequenceLayer`.
+    pub fn set_sequence_layer(&mut self, id: &str, layer: &str) -> bool { self.edit(id, |m| if m.media_type == MediaType::ImageSequence && m.image_seq.layer != layer { m.image_seq.layer = layer.to_string(); true } else { false }) }
     pub fn set_transfer_override(&mut self, id: &str, t: TransferOverride) -> bool { self.edit(id, |m| if m.transfer_override != t { m.transfer_override = t; true } else { false }) }
     /// QCView `setPixelAspect(item, mode, num, den)`: Custom keeps the given ratio; the others keep the stored custom ratio.
     pub fn set_pixel_aspect(&mut self, id: &str, mode: PixelAspectMode, num: i32, den: i32) -> bool { self.edit(id, |m| { let (n, d) = if mode == PixelAspectMode::Custom && num > 0 && den > 0 { (num, den) } else { (m.custom_par_num, m.custom_par_den) }; if m.pixel_aspect_mode != mode || m.custom_par_num != n || m.custom_par_den != d { m.pixel_aspect_mode = mode; m.custom_par_num = n; m.custom_par_den = d; true } else { false } }) }
