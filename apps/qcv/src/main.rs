@@ -1313,6 +1313,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     }
     let mut inspector = inspector_panel::InspectorPanel::new(); let _ = inspector.sync(player.as_ref());
     if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
+    std::thread::sleep(std::time::Duration::from_millis(400)); let _ = inspector.sync(player.as_ref());   // the hero thumbnail's worker lands
     // an EXR sequence: the layer tiles as the project would fill them (discovery on the first frame), thumbnails awaited
     if let Some(c) = player.as_ref().and_then(|p| p.decoder().as_sequence()).map(|s| s.cache()) {
         let first = c.frame_path(0);

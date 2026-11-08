@@ -2564,9 +2564,9 @@ is fed by git bundles and sits at the same commit. Every ruling is dated in the 
 2. **The user's walk on both OSes**: the project panel, the Transfer chips, the grab, the loaded-row treatment, the dimmed frame
    numbers, the 6.7K NAS clips through the bridge on Windows.
 3. **Step 2c image sequences** (`min-image`, EXR layer discovery), then **2d the MXF scanner** (§21.4's slice, row 138).
-- Smaller owed items: QCView's scrub SKIM AUDIO (`beginScrubAudio` → the shuttle grain engine at a velocity-EMA speed) and the
-  timer seeked once on release (we seek it per move); Custom PAR is in, the Transfer picker is in, Copy path / Reveal and the
-  hero thumbnail are not; `.lnk` resolution; menus / Recents UI; row 178 (Windows software HEVC10 4K scrub); the live WASAPI
+- Smaller owed items: ~~scrub skim audio + the clock once on release~~ (BUILT 2026-11-08, 0b6c88b); ~~Copy path / Reveal + the
+  hero thumbnail~~ (BUILT 2026-11-08, rows 193 + the mid-clip hero); ~~MXF timecode~~ (2026-11-08: the session read only the stream's
+  tag — QCView's stream → container → any-stream lookup carried, 6280b51); `.lnk` resolution; menus / Recents UI; row 178 (Windows software HEVC10 4K scrub); the live WASAPI
   listen; a LUID match for the Vulkan device on multi-GPU machines; the audio FFmpeg session still lives in the player
   (`audio/ffmpeg_audio.rs`) — it joins `min-ffmpeg` when audio is shared.
 

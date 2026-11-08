@@ -36,7 +36,8 @@ struct Field { label: String, kind: FieldKind, field: TextField, suffix: String,
 struct Layers { names: Vec<String>, current: String, tiles: Vec<Rect>, aspect: f64, hover: Option<usize> }
 /// A row of quiet action buttons (QCView's FlatButtons under a path), each with what it does.
 struct Actions { buttons: Vec<(ActionButton, Cmd)> }
-enum Item { Row(Row), Chips(Chips), Field(Field), Meters, Layers(Layers), Actions(Actions), /// a small subdued caption (a link's app)
+enum Item { Row(Row), Chips(Chips), Field(Field), Meters, Layers(Layers), Actions(Actions), /// QCView's hero thumbnail (the type glyph)
+    Hero(&'static str), /// a small subdued caption (a link's app)
     Caption(String), /// a full-width mono path, elided in the middle
     PathLine(String) }
 /// `shown` = QCView's card visibility (the video cards hide for an image sequence; the sequence card shows only for one)
@@ -64,6 +65,8 @@ pub struct InspectorPanel {
     seq_layers: (Vec<String>, String, String), layer_thumbs: std::collections::HashMap<String, peniko::ImageBrush>,
     layer_rx: Option<std::sync::mpsc::Receiver<(String, String, Option<qcv_player::ThumbPixels>)>>,
     tooltips: min_ui::Tooltips,
+    /// the hero thumbnail: its key (path + layer), the picture once decoded, the worker's channel
+    hero_key: String, hero: Option<peniko::ImageBrush>, hero_rx: Option<std::sync::mpsc::Receiver<(String, Option<qcv_player::ThumbPixels>)>>,
 }
 
 const LABEL_W: f64 = 96.0;
@@ -110,7 +113,7 @@ fn fmt_bitrate(bps: i64) -> String { if bps <= 0 { String::new() } else if bps >
 impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(title, true), items: vec![], rects: vec![], shown: true };
-        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
+        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), hero_key: String::new(), hero: None, hero_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
             range: RangeOverride::Auto, transfer: TransferOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
@@ -144,6 +147,23 @@ impl InspectorPanel {
         let (range, routing) = (p.range_override(), p.audio.routing_mode());
         if range != self.range || routing != self.routing { self.range = range; self.routing = routing; self.dirty_model = true; }
         let mut dirty = false;
+        // QCView's hero: a video's MID-clip frame (first frames are routinely black leaders), a sequence's first frame at its layer
+        let (key, src, frame, layer) = match p.decoder().as_sequence() {
+            Some(s) => { let c = s.cache(); let f = c.frame_path(0); (format!("{f}?layer={}", c.layer()), f, 0, c.layer()) }
+            None => (path.clone(), path.clone(), (p.frame_count() / 2).max(0), String::new()),
+        };
+        if key != self.hero_key {
+            self.hero_key = key.clone(); self.hero = None; dirty = true;
+            let (tx, rx) = std::sync::mpsc::channel(); self.hero_rx = Some(rx);
+            let seq = p.decoder().as_sequence().is_some();
+            std::thread::Builder::new().name("qcv-hero".into()).spawn(move || {
+                use qcv_player::ThumbLoader;
+                let px = if seq { qcv_player::min_image::load_thumbnail(&src, &layer, 480).ok().and_then(|img| qcv_player::thumbnail_cache::image_thumb(&img, 480)) }
+                         else { qcv_player::VideoThumbLoader::open(&src).and_then(|mut l| l.load_thumbnail(frame, 480)) };
+                let _ = tx.send((key, px));
+            }).ok();
+        }
+        if let Some(rx) = &self.hero_rx && let Ok((k, px)) = rx.try_recv() { if k == self.hero_key { self.hero = px.map(|px| paint::image_rgba8(px.width, px.height, px.rgba)); dirty = true; } self.hero_rx = None; }
         if let Some(rx) = &self.layer_rx { while let Ok((first, n, px)) = rx.try_recv() { if first == self.seq_layers.2 && let Some(px) = px { self.layer_thumbs.insert(n, paint::image_rgba8(px.width, px.height, px.rgba)); dirty = true; } } }
         if p.audio.has_audio() {
             let pk = p.audio.peak_levels(); let ch = p.audio.source_channels().min(16);
@@ -179,7 +199,7 @@ impl InspectorPanel {
         let folder = pb.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         // ---- File ----
         let seq = p.decoder().as_sequence();
-        let mut file = vec![row("Name", name, false), row("Folder", folder, false)];
+        let mut file = vec![Item::Hero(if seq.is_some() { "film-strip" } else { "video" }), row("Name", name, false), row("Folder", folder, false)];
         if let Some(b) = self.size_bytes { file.push(row("Size", fmt_bytes(b), true)); }
         // QCView's File card actions: Copy path · Reveal (a sequence: its first frame; Reveal off when the file is not reachable)
         let real = seq.map(|s| s.cache().frame_path(0)).unwrap_or_else(|| self.path.clone());
@@ -365,6 +385,7 @@ impl InspectorPanel {
                         bh
                     }
                     Item::Caption(_) => t::RAIL_GROUP_HEADER_SIZE as f64 * scale * 1.5,
+                    Item::Hero(_) => ((x1 - x0 - 2.0 * pad) * 9.0 / 16.0).round(),
                     Item::Layers(l) => {
                         let (lx0, lx1) = (x0 + pad, x1 - pad); let tg = t::SPACING_100 as f64 * scale; let ip = t::SPACING_85 as f64 * scale;
                         let top = t::RAIL_GROUP_GAP as f64 * scale - gap;   // the caption is a sub-header: the group gap above it
@@ -507,6 +528,21 @@ impl InspectorPanel {
                         if !f.suffix.is_empty() { let sfx = fonts.layout(&f.suffix, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR)); min_ui::fonts::draw_layout(scene, &sfx, kurbo::Affine::translate((f.rect.x1 + t::SPACING_75 as f64 * scale, r.y0 + (r.height() - sfx.height() as f64) / 2.0))); }
                     }
                     Item::Actions(a) => { for (b, _) in &a.buttons { b.paint(scene, fonts, scale, now); } }
+                    Item::Hero(icon) => {
+                        // QCView's tile: 16:9 recess, the picture fitted, its type badge bottom-right; no picture yet = the type glyph
+                        let rad = t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale;
+                        paint::rounded(scene, *r, rad, t::FIELD_BACKGROUND_COLOR);
+                        match &self.hero {
+                            Some(b) => {
+                                let (bw, bh) = (b.image.width as f64, b.image.height as f64); let s = (r.width() / bw).min(r.height() / bh); let (w, h) = (bw * s, bh * s);
+                                paint::image(scene, b, Rect::new(r.center().x - w / 2.0, r.center().y - h / 2.0, r.center().x + w / 2.0, r.center().y + h / 2.0));
+                                let bs = 22.0 * scale; let br = Rect::new(r.x1 - 4.0 * scale - bs, r.y1 - 4.0 * scale - bs, r.x1 - 4.0 * scale, r.y1 - 4.0 * scale);
+                                paint::rounded(scene, br, rad, min_theme::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.55 });
+                                if let Some(ic) = fonts.icon(icon, 14.0 * scale as f32, paint::color(t::GRAY_900)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((br.center().x - ic.width() as f64 / 2.0, br.center().y - ic.height() as f64 / 2.0))); }
+                            }
+                            None => if let Some(ic) = fonts.icon(icon, t::ICON_SIZE_LARGE * scale as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR)) { min_ui::fonts::draw_layout(scene, &ic, kurbo::Affine::translate((r.center().x - ic.width() as f64 / 2.0, r.center().y - ic.height() as f64 / 2.0))); },
+                        }
+                    }
                     Item::Caption(c) => {
                         let l = fonts.layout(c, Family::Sans, t::RAIL_GROUP_HEADER_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR));
                         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y1 - l.height() as f64)));
