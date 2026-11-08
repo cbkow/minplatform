@@ -37,7 +37,7 @@ const SCOPE_TAP_W: u32 = 960;
 /// The peaks' readback: two 8-byte staging buffers, copied one frame and mapped the next (never a stall). State per buffer:
 /// 0 idle · 1 copied (map at the next encode) · 2 mapping · 3 mapped (read it).
 struct PeakReader { bufs: [wgpu::Buffer; 2], state: [std::sync::Arc<std::sync::atomic::AtomicU8>; 2], latest: Option<[f32; 2]> }
-struct Scope { peaks: wgpu::Buffer, reader: PeakReader, hist: wgpu::Buffer, su: wgpu::Buffer, du: wgpu::Buffer, acc: wgpu::ComputePipeline, acc_layout: wgpu::BindGroupLayout, draw: wgpu::RenderPipeline, draw_bind: wgpu::BindGroup, tap: Option<(wgpu::Texture, (u32, u32))>, samples: u32 }
+struct Scope { peaks: wgpu::Buffer, reader: PeakReader, hist: wgpu::Buffer, su: wgpu::Buffer, du: wgpu::Buffer, acc: wgpu::ComputePipeline, acc_layout: wgpu::BindGroupLayout, draw: wgpu::RenderPipeline, draw_bind: wgpu::BindGroup, draw_layout: wgpu::BindGroupLayout, tap: Option<(wgpu::Texture, (u32, u32))>, samples: u32 }
 /// The identity chain: exercises the three-pass route (stage 1 → slot → blit) with no colour change.
 pub struct IdentityColorPass;
 impl ColorPass for IdentityColorPass {
@@ -168,6 +168,8 @@ pub struct Engine {
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
     out_gain: f32,
     scope: Option<Scope>, scope_view: Option<ScopeView>,
+    /// dual view: the two side engines + the compare state (None = single view)
+    dual: Option<Box<crate::dual::Dual>>,
     geometry: Geometry,
     transfer_override: TransferChoice,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
@@ -282,7 +284,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -295,13 +297,30 @@ impl Engine {
         Ok(e)
     }
     pub fn zero_copy_available(&self) -> bool { self.imports.available() }
-    pub fn set_viewport(&mut self, w: u32, h: u32) { self.viewport = (w.max(1), h.max(1)); self.write_uniforms(); }
+    pub fn set_viewport(&mut self, w: u32, h: u32) { self.viewport = (w.max(1), h.max(1)); self.write_uniforms(); self.relayout_dual(); }
     pub fn viewport(&self) -> (u32, u32) { self.viewport }
+    pub fn target_format(&self) -> wgpu::TextureFormat { self.target_format }
     /// The rect the video is letterboxed into (x, y, w, h in physical px within the viewport); `None` = the whole viewport.
-    pub fn set_content_rect(&mut self, r: Option<(u32, u32, u32, u32)>) { self.content = r; self.write_uniforms(); }
+    pub fn set_content_rect(&mut self, r: Option<(u32, u32, u32, u32)>) { self.content = r; self.write_uniforms(); self.relayout_dual(); }
+    /// Dual view on / off (canon row 150): two side engines on this device draw A and B; this engine keeps the background,
+    /// the UI and the waveform. Off drops them (and their frames).
+    pub fn set_dual(&mut self, on: bool) {
+        if on == self.dual.is_some() { return }
+        self.dual = on.then(|| Box::new(crate::dual::Dual::new(&self.device, &self.queue, self.target_format)));
+        self.relayout_dual();
+    }
+    pub fn dual(&self) -> Option<&crate::dual::Dual> { self.dual.as_deref() }
+    /// The dual state; call `relayout_dual` after changing its mode / seam.
+    pub fn dual_mut(&mut self) -> Option<&mut crate::dual::Dual> { self.dual.as_deref_mut() }
+    /// Push this engine's viewport, content rect, display, aids and output gain to the side engines for the current mode.
+    pub fn relayout_dual(&mut self) {
+        let Some(mut d) = self.dual.take() else { return };
+        d.layout(self.viewport, self.content, self.display, self.aids, self.out_gain, self.scope_view);
+        self.dual = Some(d);
+    }
     pub fn content_rect(&self) -> Option<(u32, u32, u32, u32)> { self.content }
     pub fn video_size(&self) -> (u32, u32) { self.video }
-    pub fn set_display(&mut self, d: DisplayMode) { self.display = d; self.write_uniforms(); }
+    pub fn set_display(&mut self, d: DisplayMode) { self.display = d; self.write_uniforms(); self.relayout_dual(); }
     pub fn display(&self) -> DisplayMode { self.display }
     pub fn set_color_pass(&mut self, cp: Option<Box<dyn ColorPass>>) { self.color_pass = cp; self.inter = None; self.write_uniforms(); }
     pub fn has_color_pass(&self) -> bool { self.color_pass.is_some() }
@@ -347,14 +366,15 @@ impl Engine {
     }
     /// The viewport background mode (QCView `display/backgroundMode`: 0 Black, 1 DarkGray, 2 DarkChecker, 3 LightChecker).
     /// Show the waveform in `v`'s rect (None hides it; the GPU objects are built on first use).
-    pub fn set_scope(&mut self, v: Option<ScopeView>) { self.scope_view = v; }
+    pub fn set_scope(&mut self, v: Option<ScopeView>) { if self.scope_view != v { self.scope_view = v; self.relayout_dual(); } }
+    pub fn scope_view(&self) -> Option<ScopeView> { self.scope_view }
     fn ensure_scope(&mut self) {
         if self.scope.is_some() { return }
         let dev = &self.device;
         let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scope"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scope.wgsl").into()) });
         let hist = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope histogram"), size: 512 * 512 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let su = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope accumulate"), size: 80, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let du = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope draw"), size: 48, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let du = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope draw"), size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let acc_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope accumulate"), entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
@@ -364,18 +384,19 @@ impl Engine {
         let acc = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("scope accumulate"), layout: Some(&apl), module: &module, entry_point: Some("accumulate"), compilation_options: Default::default(), cache: None });
         let draw_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope draw"), entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
         let dpl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&draw_layout)], immediate_size: 0 });
         let blend = wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent::OVER };
         let draw = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("scope draw"), layout: Some(&dpl),
             vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: self.target_format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
-        let draw_bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope draw"), layout: &draw_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: du.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: hist.as_entire_binding() }] });
+        let draw_bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope draw"), layout: &draw_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: du.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: hist.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: hist.as_entire_binding() }] });
         let peaks = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope peaks"), size: 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let stg = |l: &str| dev.create_buffer(&wgpu::BufferDescriptor { label: Some(l), size: 8, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let reader = PeakReader { bufs: [stg("scope peaks a"), stg("scope peaks b")], state: [Default::default(), Default::default()], latest: None };
-        self.scope = Some(Scope { peaks, reader, hist, su, du, acc, acc_layout, draw, draw_bind, tap: None, samples: 1 });
+        self.scope = Some(Scope { peaks, reader, hist, su, du, acc, acc_layout, draw, draw_bind, draw_layout, tap: None, samples: 1 });
     }
     /// The tap (a texture in linear light + its matrix to linear Rec.2020) → the histogram.
     fn accumulate_scope(&mut self, enc: &mut wgpu::CommandEncoder, tap: &wgpu::Texture, to2020: [f32; 9], v: ScopeView) {
@@ -396,13 +417,27 @@ impl Engine {
           p.set_pipeline(&s.acc); p.set_bind_group(0, &bind, &[]); p.dispatch_workgroups(gw.div_ceil(16), gh.div_ceil(16), 1); }
         if let Some(i) = (0..2).find(|&i| s.reader.state[i].load(Ordering::Acquire) == 0) { enc.copy_buffer_to_buffer(&s.peaks, 0, &s.reader.bufs[i], 0, 8); s.reader.state[i].store(1, Ordering::Release); }
     }
-    fn draw_scope(&self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, v: ScopeView) {
-        let Some(s) = self.scope.as_ref() else { return };
+    fn draw_scope(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, v: ScopeView) {
         // QCView resolveDraw: a bin holding 1/16384 of the samples reaches 1 − 1/e at brightness 1
-        let gain = v.brightness.max(0.01) * 16384.0 / s.samples.max(1) as f32;
-        let u: [f32; 12] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, gain, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, self.out_gain];
+        let gain_of = |samples: u32| v.brightness.max(0.01) * 16384.0 / samples.max(1) as f32;
+        // dual view: the side engines accumulated A and B; this engine draws them overlaid (QCView: cyan A, orange B)
+        let sides = self.dual.as_ref().map(|d| (d.a.scope.as_ref().filter(|_| d.a.has_frame()).map(|s| (s.hist.clone(), s.samples)), d.b.scope.as_ref().filter(|_| d.b.has_frame()).map(|s| (s.hist.clone(), s.samples))));
+        if sides.is_some() { self.ensure_scope(); }
+        let Some(s) = self.scope.as_ref() else { return };
+        let (bind, n, g0, g1) = match sides {
+            None => (None, 1.0, gain_of(s.samples), 0.0),
+            Some((None, None)) => return,
+            Some((Some(a), None)) | Some((None, Some(a))) => (Some(self.scope_bind(&a.0, &a.0)), 1.0, gain_of(a.1), 0.0),
+            Some((Some(a), Some(b))) => (Some(self.scope_bind(&a.0, &b.0)), 2.0, gain_of(a.1), gain_of(b.1)),
+        };
+        let s = self.scope.as_ref().unwrap();
+        let u: [f32; 16] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, g0, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, self.out_gain, n, g1, 0.0, 0.0];
         self.queue.write_buffer(&s.du, 0, bytemuck::cast_slice(&u));
-        let mut p = pass_load(enc, "scope draw", target); p.set_pipeline(&s.draw); p.set_bind_group(0, &s.draw_bind, &[]); p.draw(0..6, 0..1);
+        let mut p = pass_load(enc, "scope draw", target); p.set_pipeline(&s.draw); p.set_bind_group(0, bind.as_ref().unwrap_or(&s.draw_bind), &[]); p.draw(0..6, 0..1);
+    }
+    fn scope_bind(&self, a: &wgpu::Buffer, b: &wgpu::Buffer) -> wgpu::BindGroup {
+        let s = self.scope.as_ref().unwrap();
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope draw dual"), layout: &s.draw_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: s.du.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: a.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: b.as_entire_binding() }] })
     }
     /// The newest frame's waveform peaks (QCView's ScopePeaks): the level (Y′ 0..1 on SDR, nits on HDR) and the brightest channel
     /// (encoded 0..1 on SDR, nits on HDR) — read a frame or two late, never by stalling. None until one has landed.
@@ -421,11 +456,11 @@ impl Engine {
     /// The waveform's last histogram (512 × 512, row 0 = the top of the scale) — tests and probes.
     #[doc(hidden)] pub fn scope_counts(&self) -> Option<Vec<u32>> { let s = self.scope.as_ref()?; let b = readback::read_buffer(&self.device, &self.queue, &s.hist, 512 * 512 * 4); Some(bytemuck::cast_slice(&b).to_vec()) }
     /// The viewer aids on the screen pass (a uniform write).
-    pub fn set_viewer_aids(&mut self, a: ViewerAids) { if a != self.aids { self.aids = a; self.write_uniforms(); } }
+    pub fn set_viewer_aids(&mut self, a: ViewerAids) { if a != self.aids { self.aids = a; self.write_uniforms(); self.relayout_dual(); } }
     pub fn viewer_aids(&self) -> ViewerAids { self.aids }
     /// Scale the screen's extended-linear output (Windows scRGB: 1.0 = 80 nits, so SDR white needs the user's SDR level ÷ 80).
     /// The screen pass only — snapshots and the waveform never see it.
-    pub fn set_output_gain(&mut self, g: f32) { let g = if g.is_finite() && g > 0.0 { g } else { 1.0 }; if (g - self.out_gain).abs() > 1e-4 { self.out_gain = g; self.write_uniforms(); } }
+    pub fn set_output_gain(&mut self, g: f32) { let g = if g.is_finite() && g > 0.0 { g } else { 1.0 }; if (g - self.out_gain).abs() > 1e-4 { self.out_gain = g; self.write_uniforms(); self.relayout_dual(); } }
     pub fn output_gain(&self) -> f32 { self.out_gain }
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
@@ -571,11 +606,17 @@ impl Engine {
             let mut p = pass_load(enc, "stage 4 overlay", target); p.set_pipeline(&self.overlay_pipeline); p.set_bind_group(0, bg, &[]); p.draw(0..6, 0..1);
         }
         // the waveform over the UI, in its card (row 203)
-        if let (Some(v), true) = (self.scope_view, self.shown.is_some()) { self.draw_scope(enc, target, v); }
+        if let (Some(v), true) = (self.scope_view, self.shown.is_some() || self.dual.is_some()) { self.draw_scope(enc, target, v); }
     }
     fn encode_video(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         // stage 0: the background over the whole viewport (clears it); the picture passes load and blend over it
         { let mut p = pass(enc, "stage 0 background", target); p.set_pipeline(&self.bg_pipeline); p.set_bind_group(0, &self.bg_bind, &[]); p.draw(0..6, 0..1); }
+        // dual view (row 150 / 173): the two side engines draw the pictures; this engine keeps the window's own layers
+        if let Some(mut d) = self.dual.take() { d.encode(enc, target); self.dual = Some(d); return }
+        self.encode_picture(enc, target, None);
+    }
+    /// The picture alone (no background) into `target`, optionally cut to `scissor` (x, y, w, h px) — a dual side's draw.
+    pub fn encode_picture(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, scissor: Option<[u32; 4]>) {
         let Some(variant) = self.shown.as_ref().map(|s| s.variant) else { return };
         if self.color_pass.is_some() {
             self.ensure_inter();
@@ -592,7 +633,7 @@ impl Engine {
                 if let Some((tap, m)) = self.color_pass.as_ref().unwrap().scope_tap() { self.accumulate_scope(enc, &tap, m, v); }
             }
             let Inter { bind, .. } = self.inter.as_ref().unwrap();
-            let mut p = pass_load(enc, "stage 3", target); p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..6, 0..1);
+            let mut p = pass_load(enc, "stage 3", target); if let Some(s) = scissor { p.set_scissor_rect(s[0], s[1], s[2].max(1), s[3].max(1)); } p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..6, 0..1);
         } else {
             if let Some(v) = self.scope_view {
                 // bypass: stage 1's decode of the file's tags (QCView's Assumed tier), linear Rec.709, at the tap's size
@@ -606,7 +647,7 @@ impl Engine {
                 self.accumulate_scope(enc, &tap, REC709_TO_2020, v);
             }
             let shown = self.shown.as_ref().unwrap();
-            let mut p = pass_load(enc, "present", target); p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..6, 0..1);
+            let mut p = pass_load(enc, "present", target); if let Some(s) = scissor { p.set_scissor_rect(s[0], s[1], s[2].max(1), s[3].max(1)); } p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..6, 0..1);
         }
     }
     /// Render the shown frame 1:1 at the video size into an `Rgba16Float` texture and read it back (RGBA f32).
@@ -904,5 +945,63 @@ mod tests {
         e.set_transfer_override(TransferChoice::Linear); let (linr, _, _) = e.snapshot(Snapshot::Display).unwrap();
         for x in (0..256).step_by(17) { assert!((linr[x * 4] - enc[x * 4]).abs() < 2e-3, "linear override at {x}: {} vs {}", linr[x * 4], enc[x * 4]); }
         e.set_transfer_override(TransferChoice::Auto); assert_eq!(e.transfer_override(), TransferChoice::Auto);
+    }
+
+    /// A flat grey frame (8-bit limited Y′ = `y`, neutral chroma).
+    fn flat_frame(w: u32, h: u32, y: u8) -> Frame {
+        let plane = |pw: u32, ph: u32, v: u8| { let pitch = pw.div_ceil(256) * 256; Plane::owned(vec![v; (pitch * ph) as usize], pw, ph, pitch) };
+        Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![plane(w, h, y), plane(w / 2, h, 128), plane(w / 2, h, 128)], layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+    }
+    #[test]
+    fn dual_view_composes_the_four_modes() {
+        use crate::dual::CompareMode;
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        e.set_dual(true);
+        { let d = e.dual_mut().unwrap(); d.a.show(&flat_frame(16, 16, 60)).unwrap(); d.b.show(&flat_frame(16, 16, 200)).unwrap(); }
+        let (dark, bright) = { let mut probe = Engine::headless(wgpu::TextureFormat::Rgba16Float).unwrap(); probe.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+            probe.show(&flat_frame(16, 16, 60)).unwrap(); let a = probe.render_offscreen(16, 16).unwrap()[8 * 16 * 4 + 32];
+            probe.show(&flat_frame(16, 16, 200)).unwrap(); let b = probe.render_offscreen(16, 16).unwrap()[8 * 16 * 4 + 32]; (a, b) };
+        assert!(bright > dark * 2.0 && dark > 0.0, "{dark} {bright}");
+        let at = |out: &[f32], w: usize, x: usize| out[(8 * w + x) * 4];
+        let near = |a: f32, b: f32| (a - b).abs() < 2e-3;
+        // side by side: two 16×16 pictures each in a 32×16 half of a 64×16 window
+        e.dual_mut().unwrap().mode = CompareMode::SideBySide; e.relayout_dual();
+        let out = e.render_offscreen(64, 16).unwrap();
+        assert!(near(at(&out, 64, 16), dark) && near(at(&out, 64, 48), bright), "SBS {} {}", at(&out, 64, 16), at(&out, 64, 48));
+        assert!(at(&out, 64, 2) == 0.0 && at(&out, 64, 29) == 0.0 && at(&out, 64, 34) == 0.0 && at(&out, 64, 61) == 0.0, "each picture letterboxed in its half");
+        // split wipe at 25 %: one 16×16 picture in a 16×16 window, A left of x = 4, B from 4
+        { let d = e.dual_mut().unwrap(); d.mode = CompareMode::Split; d.seam = 0.25; } e.relayout_dual();
+        let out = e.render_offscreen(16, 16).unwrap();
+        assert!(near(at(&out, 16, 2), dark) && near(at(&out, 16, 5), bright) && near(at(&out, 16, 14), bright), "split {} {} {}", at(&out, 16, 2), at(&out, 16, 5), at(&out, 16, 14));
+        // single: A alone
+        e.dual_mut().unwrap().mode = CompareMode::Single; e.relayout_dual();
+        let out = e.render_offscreen(16, 16).unwrap();
+        assert!(near(at(&out, 16, 2), dark) && near(at(&out, 16, 14), dark));
+        // difference: |oetf(A) − oetf(B)| × gain, decoded; identical sides are black at any gain
+        { let d = e.dual_mut().unwrap(); d.mode = CompareMode::Difference; d.gain = 1.0; } e.relayout_dual();
+        let out = e.render_offscreen(16, 16).unwrap();
+        let oetf = |c: f32| if c <= 0.0031308 { 12.92 * c } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+        let eotf = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let want = eotf((oetf(bright) - oetf(dark)).abs());
+        assert!(near(at(&out, 16, 8), want), "difference {} want {want}", at(&out, 16, 8));
+        e.dual_mut().unwrap().b.show(&flat_frame(16, 16, 60)).unwrap();
+        e.dual_mut().unwrap().gain = 8.0;
+        let out = e.render_offscreen(16, 16).unwrap();
+        assert!(at(&out, 16, 8).abs() < 1e-4, "identical sides → black at gain 8: {}", at(&out, 16, 8));
+        // the waveform: one histogram per side, drawn overlaid — A cyan, B orange (QCView's dual scope)
+        { let d = e.dual_mut().unwrap(); d.mode = CompareMode::SideBySide; d.a.show(&flat_frame(512, 8, 60)).unwrap(); d.b.show(&flat_frame(512, 8, 200)).unwrap(); } e.relayout_dual();
+        e.set_scope(Some(ScopeView { rect: [0.0, 0.0, 512.0, 512.0], hdr: false, peak_nits: 1000.0, brightness: 1.0 }));
+        let out = e.render_offscreen(1024, 512).unwrap();
+        let (ca, cb) = (e.dual().unwrap().a.scope_counts().unwrap(), e.dual().unwrap().b.scope_counts().unwrap());
+        assert_eq!(ca.iter().map(|&c| c as u64).sum::<u64>(), 512 * 8); assert_eq!(cb.iter().map(|&c| c as u64).sum::<u64>(), 512 * 8);
+        let row = |h: &[u32]| (0..512).find(|&r| h[r * 512 + 100] > 0).unwrap();
+        let (ya, yb) = (row(&ca), row(&cb));
+        assert!(yb < ya, "B (brighter) sits higher: A row {ya} B row {yb}");
+        let px = |y: usize| { let o = (y * 1024 + 100) * 4; [out[o], out[o + 1], out[o + 2]] };
+        let (pa, pb) = (px(ya), px(yb));
+        assert!(pa[2] > pa[0] + 0.1, "A's trace is cyan: {pa:?}"); assert!(pb[0] > pb[2] + 0.1, "B's trace is orange: {pb:?}");
+        e.set_scope(None);
+        e.set_dual(false); assert!(e.dual().is_none());
     }
 }

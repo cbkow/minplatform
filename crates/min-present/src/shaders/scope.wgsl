@@ -45,9 +45,11 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
 
 // The draw: the histogram over the UI, in the card's rect. Count → 1 − e^(−gain·count) (QCView resolveDraw); bins out of
 // the scale's range (SDR above 100 % / below 0 %, HDR at the top row) tinted red.
-struct D { rect: vec4<f32>, vp: vec4<f32>, p: vec4<f32> };   // rect px (x, y, w, h); viewport px; x = gain, y = HDR, z = HDR top nits, w = the output's SDR-white gain
+// q: x = sides (1, or 2 = dual view's A + B overlay, QCView cyan / orange), y = B's gain
+struct D { rect: vec4<f32>, vp: vec4<f32>, p: vec4<f32>, q: vec4<f32> };   // rect px (x, y, w, h); viewport px; x = gain, y = HDR, z = HDR top nits, w = the output's SDR-white gain
 @group(0) @binding(0) var<uniform> d: D;
 @group(0) @binding(1) var<storage, read> h: array<u32>;
+@group(0) @binding(2) var<storage, read> h2: array<u32>;
 struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 @vertex fn vs(@builtin(vertex_index) i: u32) -> V {
   let q = array<vec2<f32>, 6>(vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0));
@@ -56,11 +58,19 @@ struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 }
 @fragment fn fs(v: V) -> @location(0) vec4<f32> {
   let bx = min(u32(v.uv.x * f32(GRID)), GRID - 1u); let by = min(u32(v.uv.y * f32(GRID)), GRID - 1u);
-  let n = f32(h[by * GRID + bx]);
-  let a = 1.0 - exp(-d.p.x * n);
   let level_frac = (f32(by) + 0.5) / f32(GRID);   // 0 top … 1 bottom
   var out_of_range = false;
   if (d.p.y > 0.5) { out_of_range = by == 0u; } else { let y = 1.1 - level_frac * 1.2; out_of_range = y > 1.0 || y < 0.0; }
-  let col = select(vec3(0.86, 0.88, 0.86), vec3(1.0, 0.33, 0.28), out_of_range) * select(1.0, d.p.w, d.p.w > 0.0);   // the SDR-white gain (row 184)
-  return vec4(col * a, a);
+  let red = vec3(1.0, 0.33, 0.28);
+  let k = select(1.0, d.p.w, d.p.w > 0.0);   // the SDR-white gain (row 184)
+  let a0 = 1.0 - exp(-d.p.x * f32(h[by * GRID + bx]));
+  if (d.q.x < 1.5) {
+    return vec4(select(vec3(0.86, 0.88, 0.86), red, out_of_range) * k * a0, a0);
+  }
+  // dual (QCView scope_draw, sides == 2): each side tinted, summed, alpha = the brighter; premultiplied
+  let a1 = 1.0 - exp(-d.q.y * f32(h2[by * GRID + bx]));
+  var col = select(vec3(0.30, 0.85, 1.0), red, out_of_range) * a0 + select(vec3(1.0, 0.62, 0.25), red, out_of_range) * a1;
+  let a = max(a0, a1);
+  col = min(col, vec3(a));
+  return vec4(col * k, a);
 }

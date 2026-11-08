@@ -11,6 +11,7 @@
 //! No FFmpeg and no window toolkit in here: a `Frame` is planes or a platform handle, and the app owns the surface.
 pub mod frame;
 pub mod engine;
+pub mod dual;
 pub mod presenter;
 pub mod readback;
 pub mod import;
