@@ -14,7 +14,9 @@
 //! THE LOADED PLAYLIST'S TREE (the user 2026-11-08: "go with the tree") — QCView's Inspector card "Playlist Contents" moved here:
 //! the loaded playlist's row opens into its clips, indented, each with its type glyph; the playing clip in the quiet selected
 //! grey (no blue); a click seeks to it (QCView `seekToPlaylistItem`); the clip count + canvas ride the playlist row in the
-//! subdued voice. A view only — reorder / trim / remove stay on the clip bar, Delete here still means the project's rows.
+//! subdued voice. Dragging a clip row reorders the playlist (the user 2026-11-08: "is it possible to drag/drop reorder in this
+//! tree?") — an insertion line between the rows, the row's chip under the pointer, ONE undoable move on release (the clip bar's
+//! edit); a click without a drag seeks, on release. Trim / remove stay on the clip bar; Delete here still means the project's rows.
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{anim::{mix, Ramp}, paint, ActionButton, Tooltips, Event, FieldResponse, Family, Fonts, ImeEvent, KeyEvent, Menu, MenuItem, Section, TextButton, TextField, Variant};
@@ -27,15 +29,18 @@ pub enum Cmd { Load(String), Remove(Vec<String>), AddMedia, /// QCView `createPl
     CreatePlaylist(Vec<String>), /// QCView `createEmptyPlaylistAndRename`
     NewPlaylist, Rename(String, String), /// rows dragged out of the bin and released at (x, y) — the shell resolves the target
     DropRows(Vec<String>, f64, f64), /// a clip row of the loaded playlist's tree: seek to the n-th clip (QCView `seekToPlaylistItem`)
-    SeekClip(usize) }
+    SeekClip(usize), /// a tree row dragged to insertion slot `to` (0..=n among the playlist's clips)
+    MoveClip { clip: String, to: usize } }
 
 struct Row { id: String, name: String, media_type: MediaType, rect: Rect, hovered: bool, hover: Ramp, failed: bool, /// QCView's `unsupported`: the codec has no decoder, or the load failed → the warning badge
     unsupported: bool }
 struct Group { label: &'static str, icon: &'static str, kind: MediaType, header: Rect, rows: Vec<Row> }
 /// The loaded playlist's contents as the shell reads them off the transport.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TreeModel { pub playlist: String, pub clips: Vec<(String, MediaType)>, pub current: Option<usize>, pub info: String }
-struct Tree { model: TreeModel, rows: Vec<Rect>, hover: Option<usize> }
+/// `clips` = (clip id, name, kind) in playlist order.
+pub struct TreeModel { pub playlist: String, pub clips: Vec<(String, String, MediaType)>, pub current: Option<usize>, pub info: String }
+struct Tree { model: TreeModel, rows: Vec<Rect>, hover: Option<usize>, /// a press on row i at (x, y); past the threshold it becomes the drag (row, pointer)
+    press: Option<(usize, f64, f64)>, drag: Option<(usize, (f64, f64))> }
 
 pub struct ProjectPanel {
     pub section: Section,
@@ -64,7 +69,8 @@ impl ProjectPanel {
     /// The loaded playlist's tree (None = no playlist loaded); true when it changed.
     pub fn set_tree(&mut self, m: Option<TreeModel>) -> bool {
         if self.tree.as_ref().map(|t| &t.model) == m.as_ref() { return false }
-        self.tree = m.map(|model| Tree { model, rows: vec![], hover: None }); true
+        let keep = self.tree.as_ref().map(|t| (t.press, t.drag)).unwrap_or((None, None));
+        self.tree = m.map(|model| Tree { model, rows: vec![], hover: None, press: keep.0, drag: keep.1 }); true
     }
     /// Mirror the project when it changed (the manager's revision).
     pub fn sync(&mut self, pm: &ProjectManager, active_loaded_id: &str) -> bool {
@@ -87,7 +93,11 @@ impl ProjectPanel {
         true
     }
     /// A row drag is in flight: the shell routes every pointer event here until the release (QCView's MouseArea drag).
-    pub fn is_dragging(&self) -> bool { self.drag.is_some() }
+    pub fn is_dragging(&self) -> bool { self.drag.is_some() || self.tree.as_ref().is_some_and(|t| t.drag.is_some() || t.press.is_some()) }
+    /// The harness: the tree's clip rows.
+    pub fn tree_rows(&self) -> Vec<Rect> { self.tree.as_ref().map(|t| t.rows.clone()).unwrap_or_default() }
+    /// The insertion slot (0..=n) for pointer y over the tree: past each row's middle.
+    fn tree_slot(tr: &Tree, y: f64) -> usize { tr.rows.iter().filter(|r| y > r.center().y).count() }
     /// QCView's drag payload: the dragged row alone, or — when it is part of a multi-selection — every selected non-playlist
     /// row in bin order. Playlists are never dragged (no on-disk path).
     fn drag_payload(&self, id: &str) -> Vec<String> {
@@ -224,10 +234,25 @@ impl ProjectPanel {
         { let over = e.pos().filter(|_| !matches!(e, Event::Leave)).and_then(|(x, y)| self.badge_rects.iter().find(|(_, r)| r.contains(kurbo::Point::new(x, y)))).map(|(_, r)| (7u64, *r, "Can’t be played here: unsupported format or un-debayered camera raw"));
           if self.tooltips.hover(over, now) { dirty = true; } if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); } }
         if let Some(tr) = self.tree.as_mut() {
+            // a tree drag owns the pointer until the release
+            if let Some((i, _)) = tr.drag {
+                match *e {
+                    Event::Move { x, y } => { tr.drag = Some((i, (x, y))); return (cmds, true) }
+                    Event::Up { y, .. } => { let to = Self::tree_slot(tr, y); if to != i && to != i + 1 { cmds.push(Cmd::MoveClip { clip: tr.model.clips[i].0.clone(), to }); } tr.drag = None; tr.press = None; return (cmds, true) }
+                    _ => return (cmds, false),
+                }
+            }
+            if let Some((i, px, py)) = tr.press {
+                match *e {
+                    Event::Move { x, y } if ((x - px).powi(2) + (y - py).powi(2)).sqrt() > 6.0 * scale => { tr.drag = Some((i, (x, y))); return (cmds, true) }
+                    Event::Up { .. } => { tr.press = None; cmds.push(Cmd::SeekClip(i)); return (cmds, true) }   // a click: seek on release
+                    _ => {}
+                }
+            }
             let at = |x: f64, y: f64| tr.rows.iter().position(|r| r.contains(kurbo::Point::new(x, y)));
             let h = match *e { Event::Leave => None, _ => e.pos().and_then(|(x, y)| at(x, y)) };
             if h != tr.hover { tr.hover = h; dirty = true; }
-            if let Event::Down { x, y, button: min_ui::Button::Primary } = *e && let Some(i) = at(x, y) { cmds.push(Cmd::SeekClip(i)); return (cmds, true) }
+            if let Event::Down { x, y, button: min_ui::Button::Primary } = *e && let Some(i) = at(x, y) { tr.press = Some((i, x, y)); return (cmds, true) }
         }
         if let Event::Down { x, y, button: min_ui::Button::Primary } = *e {
             let hit = self.groups.iter().flat_map(|g| g.rows.iter()).find(|r| r.rect.contains(kurbo::Point::new(x, y))).map(|r| r.id.clone());
@@ -296,7 +321,7 @@ impl ProjectPanel {
                 min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((x, r.rect.y0 + (r.rect.height() - l.height() as f64) / 2.0)));
                 // the clips: glyph + name, the playing one in the quiet selected grey (blue stays on the loaded row, canon row 162)
                 if let Some(tr) = tree {
-                    for (i, ((name, kind), rr)) in tr.model.clips.iter().zip(&tr.rows).enumerate() {
+                    for (i, ((_, name, kind), rr)) in tr.model.clips.iter().zip(&tr.rows).enumerate() {
                         let cur = tr.model.current == Some(i);
                         let bg = if cur { t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT } else if tr.hover == Some(i) { t::HOVER_BACKGROUND_COLOR } else { t::HOVER_BACKGROUND_COLOR_IDLE };
                         if bg.a > 0.0 { paint::rounded(scene, *rr, radius, bg); }
@@ -316,7 +341,15 @@ impl ProjectPanel {
         self.tooltips.paint(scene, fonts, scale, bounds, now);
         self.menu.paint(scene, fonts, scale);
         // the drag ghost: the row's chip under the pointer (QCView's `Drag.Automatic` image)
-        if let Some((_, label, (x, y))) = &self.drag {
+        // the tree drag: the insertion line between the rows (the clip bar's insert colour) + the row's chip under the pointer
+        let tree_ghost = self.tree.as_ref().and_then(|tr| tr.drag.map(|(i, p)| { let to = Self::tree_slot(tr, p.1); (tr.model.clips[i].1.clone(), p, to, tr.rows.clone()) }));
+        if let Some((_, _, to, rows)) = &tree_ghost && let (Some(first), Some(last)) = (rows.first(), rows.last()) {
+            let gap = t::RAIL_ROW_GAP as f64 * scale;
+            let y = if *to < rows.len() { rows[*to].y0 - gap / 2.0 } else { last.y1 + gap / 2.0 };
+            paint::rect(scene, Rect::new(first.x0, y - scale, first.x1, y + scale), t::PLAYLIST_BAR_INSERT_COLOR);
+        }
+        let ghost = self.drag.as_ref().map(|(_, l, p)| (l.clone(), *p)).or_else(|| tree_ghost.map(|(l, p, _, _)| (l, p)));
+        if let Some((label, (x, y))) = &ghost {
             let l = fonts.layout(label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_ROW_ACTIVE_LABEL));
             let pad = t::SPACING_100 as f64 * scale; let h = t::COMPONENT_HEIGHT_75 as f64 * scale;
             let r = Rect::new(x + 12.0 * scale, y + 8.0 * scale, x + 12.0 * scale + l.width() as f64 + 2.0 * pad, y + 8.0 * scale + h);

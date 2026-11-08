@@ -354,7 +354,7 @@ impl App {
                     let current = p.timeline.tracks.first().and_then(|t| t.clips.get(active)).filter(|c| !c.is_gap).and_then(|ac| clips.iter().position(|c| c.id == ac.id));
                     let kind = |k: qcv_timeline::ClipMediaKind| match k { qcv_timeline::ClipMediaKind::ImageSequence => qcv_project::MediaType::ImageSequence, qcv_timeline::ClipMediaKind::Audio => qcv_project::MediaType::Audio, _ => qcv_project::MediaType::Video };
                     let n = clips.len();
-                    project_panel::TreeModel { playlist: self.loaded_item.clone(), clips: clips.iter().map(|c| (c.name.clone(), kind(c.media_kind))).collect(), current, info: format!("{n} clip{} · {}×{}", if n == 1 { "" } else { "s" }, p.timeline.canvas_width, p.timeline.canvas_height) }
+                    project_panel::TreeModel { playlist: self.loaded_item.clone(), clips: clips.iter().map(|c| (c.id.clone(), c.name.clone(), kind(c.media_kind))).collect(), current, info: format!("{n} clip{} · {}×{}", if n == 1 { "" } else { "s" }, p.timeline.canvas_width, p.timeline.canvas_height) }
                 });
                 if g.project_panel.set_tree(tree) { g.ui_dirty = true; }
                 if let Some(id) = g.project_panel.pending_rename.take() { if g.project_panel.begin_rename(&id, &mut g.fonts) { set_ime(&**g.window, true); g.ui_dirty = true; } }
@@ -693,6 +693,11 @@ impl App {
         match c {
             project_panel::Cmd::Load(id) => self.load_item(&id),
             // QCView `seekToPlaylistItem`: the n-th clip's start on the playlist timeline
+            // a tree reorder = the clip bar's move: insertion slot `to` among the playlist's clips → the clip array's index
+            project_panel::Cmd::MoveClip { clip, to } => {
+                let idx = self.pl_editor.as_ref().and_then(|ed| ed.timeline.tracks.first()).map(|t| { let real: Vec<usize> = t.clips.iter().enumerate().filter(|(_, c)| !c.is_gap).map(|(k, _)| k).collect(); real.get(to).copied().unwrap_or(t.clips.len()) });
+                if let Some(index) = idx { self.bar_cmd(clip_bar::BarCmd::Move { clip, index }); }
+            }
             project_panel::Cmd::SeekClip(i) => { if let Some(p) = self.player.as_mut() { let start = p.timeline.tracks.first().and_then(|t| t.clips.iter().filter(|c| !c.is_gap).nth(i)).map(|c| c.start); let fps = p.rate().as_f64(); if let Some(s) = start && fps > 0.0 { p.seek_to_time(s as f64 / fps); } } }
             project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let first_name = ids.first().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_default(); let n = self.project.remove_media_items(&ids); if n > 0 { self.toast_action(&if n == 1 { format!("Removed {first_name}") } else { format!("Removed {n} items") }, min_ui::ToastKind::Notice, "Undo", "undo-media-delete"); } if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::AddMedia => self.open_media_dialog(),
@@ -1269,12 +1274,20 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     // `QCV_UI_SNAP_TREE=1`: a playlist of three clips loaded, its tree open on the second (the snapshot of the Media tree)
     let loaded = if std::env::var_os("QCV_UI_SNAP_TREE").is_some() {
         let pid = project.create_playlist(&[], "Review_01", 24.0, 1920, 1080, 0, 0).0;
-        pp.set_tree(Some(project_panel::TreeModel { playlist: pid.clone(), clips: vec![("shot_010_v003.mov".into(), qcv_project::MediaType::Video), ("render_[1001-1048]".into(), qcv_project::MediaType::ImageSequence), ("shot_020_comp_v012_with_a_long_name.mov".into(), qcv_project::MediaType::Video)], current: Some(1), info: "3 clips · 1920×1080".into() }));
+        pp.set_tree(Some(project_panel::TreeModel { playlist: pid.clone(), clips: vec![("a".into(), "shot_010_v003.mov".into(), qcv_project::MediaType::Video), ("b".into(), "render_[1001-1048]".into(), qcv_project::MediaType::ImageSequence), ("c".into(), "shot_020_comp_v012_with_a_long_name.mov".into(), qcv_project::MediaType::Video)], current: Some(1), info: "3 clips · 1920×1080".into() }));
         pid
     } else { loaded };
     let _ = pp.sync(&project, &loaded);
     let mut bgp = background_panel::BackgroundPanel::new(); bgp.sync(2); engine.set_background(2); engine.set_ui_scale(scale as f32);
     let lc = left.content_rect(); let pph = pp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph + bh, scale); left.content_height = pph + bh + ph;
+    // the tree drag, scripted: clip 0 dragged below the last row → MoveClip to slot 3; then pressed + dragged again for the snap
+    if std::env::var_os("QCV_UI_SNAP_TREE").is_some() && let (Some(r0), Some(r2)) = (pp.tree_rows().first().copied(), pp.tree_rows().last().copied()) {
+        let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); let ev = |pp: &mut project_panel::ProjectPanel, fonts: &mut min_ui::Fonts, e: min_ui::Event| pp.event(&e, t0, false, false, fonts, b, scale).0;
+        let (cx, y0, y1) = (r0.center().x, r0.center().y, r2.y1 + 2.0 * scale);
+        ev(&mut pp, &mut fonts, min_ui::Event::Down { x: cx, y: y0, button: min_ui::Button::Primary }); ev(&mut pp, &mut fonts, min_ui::Event::Move { x: cx, y: y1 });
+        println!("tree drag: {:?}", ev(&mut pp, &mut fonts, min_ui::Event::Up { x: cx, y: y1, button: min_ui::Button::Primary }));
+        ev(&mut pp, &mut fonts, min_ui::Event::Down { x: cx, y: y0, button: min_ui::Button::Primary }); ev(&mut pp, &mut fonts, min_ui::Event::Move { x: cx + 30.0 * scale, y: (r2.center().y + r2.y1) / 2.0 + 4.0 * scale });
+    }
     let mut inspector = inspector_panel::InspectorPanel::new(); let _ = inspector.sync(player.as_ref());
     if let Some(p) = player.as_ref() { let path = p.path().to_string(); inspector.set_video_meta(&path, qcv_meta::extract(&path)); inspector.set_adobe_meta(&path, qcv_meta::xmp::read_adobe_metadata(&path)); let _ = inspector.sync(player.as_ref()); }
     // an EXR sequence: the layer tiles as the project would fill them (discovery on the first frame), thumbnails awaited
@@ -1348,6 +1361,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         let _ = fi;
         ui_sketch::bands(scene, w, h, scale, 0.0, 0.0);
         for (rail, is_left) in [(&left, true), (&right, false)] { rail.paint_background(scene, shown_at); rail.push_clip(scene); if is_left { pp.paint(scene, &mut fonts, scale, shown_at, true); bgp.paint(scene, &mut fonts, scale, shown_at, false); panel.paint(scene, &mut fonts, scale, shown_at, false); } else { inspector.paint(scene, &mut fonts, scale, shown_at); } rail.pop_clip(scene); rail.paint_foreground(scene, &mut fonts, scale, shown_at); }
+        pp.paint_menu(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);   // the drag ghost / insertion line / menu, over the rails
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
         scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });
