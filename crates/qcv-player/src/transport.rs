@@ -20,7 +20,7 @@
 //! holds the integrator until the sought frame lands and re-seats the timer there (QCView's decoder re-baselines its
 //! pacing on that same frame); the loop wrap is the timer's; FrameLocked advances one frame per refresh only when the
 //! decoder has delivered it ("playback slows rather than skipping").
-use crate::{ffmpeg::{OpenOptions, SeqOptions, SessionInfo}, frame_handle::FrameHandle, frame_index::FrameIndex, hw::HwDevice, key_map::Action, playback_timer::{ClockPolicy, PlaybackTimer}, scrub_decoder::{ScrubDecoder, ScrubOptions}, source::Source, video_decoder::{Policy, State, VideoDecoder}, Error};
+use crate::{ffmpeg::{OpenOptions, SeqOptions, SessionInfo}, frame_handle::FrameHandle, frame_index::FrameIndex, hw::HwDevice, key_map::Action, playback_timer::{ClockPolicy, PlaybackTimer}, scrub_decoder::{ScrubDecoder, ScrubOptions}, sequence_decoder::{cache_reads, SequenceDecoder, SlotDecoder}, image_sequence_cache::StreamingConfig, source::Source, video_decoder::{Policy, State, VideoDecoder}, Error};
 use qcv_meta::VideoMetadata;
 use qcv_timeline::{rescale, Clip, ClipMediaKind, Editor, InOutRange, MediaInfo, Rate, Timeline};
 use std::{collections::BTreeMap, sync::{mpsc, Arc}, thread, time::{Duration, Instant}};
@@ -99,8 +99,9 @@ pub struct TransportOptions { pub hw: Option<HwDevice>, /// the intra-codec devi
     pub hw_intra: Option<HwDevice>, pub threads: i32, /// None = no scrub decoder (tests)
     pub scrub: Option<ScrubOptions>, /// QCView: `playback/loopEnabled`, default ON ("press play, watch a cycle, scrub, watch again")
     pub loop_enabled: bool, pub clock_policy: ClockPolicy, /// one refresh in ms — the "late" threshold
-    pub refresh_ms: f32 }
-impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0 } } }
+    pub refresh_ms: f32, /// image sequences: the cache's window + IO threads (Settings ▸ Performance)
+    pub seq: StreamingConfig }
+impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0, seq: StreamingConfig::default() } } }
 
 /// What a pending swap does once its clip has opened: the latest scrub target, a seek (timeline frame, source frame), or rest
 /// at the in-point it was opened on.
@@ -111,11 +112,20 @@ struct Pending { clip: usize, rx: mpsc::Receiver<Result<Slot, Error>>, autoplay:
 fn drop_off_thread(s: Slot) { thread::Builder::new().name("qcv-slot-drop".into()).spawn(move || drop(s)).ok(); }
 
 /// A decoder slot: one clip's streaming decoder (+ its scrub decoder), with the clip's source window.
-pub struct Slot { pub clip: usize, pub decoder: VideoDecoder, pub scrub: Option<ScrubDecoder>, pub info: SessionInfo, pub index: Arc<FrameIndex>, pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, /// parked on its in-point with the lookahead queued (a prewarmed slot); false once it has played
+pub struct Slot { pub clip: usize, pub decoder: SlotDecoder, pub scrub: Option<ScrubDecoder>, pub info: SessionInfo, pub index: Arc<FrameIndex>, pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, /// parked on its in-point with the lookahead queued (a prewarmed slot); false once it has played
     pub positioned_at_in: bool }
 impl Slot {
     fn open(clip_index: usize, clip: &Clip, opts: &TransportOptions) -> Result<Slot, Error> {
         let src = if clip.media_kind == ClipMediaKind::ImageSequence { Source::Sequence { pattern: clip.media_path.clone(), rate: clip.source_rate, start: clip.sequence_start_frame, end: clip.sequence_end_frame, label: clip.name.clone() } } else { Source::File(clip.media_path.clone()) };
+        // An image sequence min-image reads goes through QCView's sequence cache (step 2c); DPX / TGA / BMP stay on FFmpeg's image2.
+        // `QCV_SEQ_FFMPEG=1` forces the image2 route (the A/B against the cache).
+        if let Source::Sequence { pattern, rate, start, end, .. } = &src && cache_reads(pattern) && std::env::var_os("QCV_SEQ_FFMPEG").is_none() {
+            let d = SequenceDecoder::open(pattern, *rate, *start, *end, opts.seq, "")?;
+            // the cache's wrap follows the loop from the open (QCView set it only on a toggle: a fresh sequence wrapped with loop off)
+            d.cache().set_looping(opts.loop_enabled);
+            let (info, index) = (d.info.clone(), d.frame_index().clone());
+            return Ok(Slot { clip: clip_index, decoder: SlotDecoder::Sequence(d), scrub: None, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
+        }
         let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), hw_intra: opts.hw_intra.clone(), seq: match &src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None }, fast: false };
         let mut decoder = VideoDecoder::new(Policy::Clocked { lookahead: LOOKAHEAD });
         decoder.open(src.path(), &open)?;
@@ -125,7 +135,7 @@ impl Slot {
             (Some(so), Source::File(_)) => { let so = ScrubOptions { hw: opts.hw.clone(), hw_intra: opts.hw_intra.clone(), ..so.clone() }; match ScrubDecoder::open(src.path(), &so, index.clone(), decoder.external_sink()) { Ok(s) => Some(s), Err(e) => { log::warn!("Transport: no scrub decoder: {e}"); None } } }
             _ => None,
         };
-        Ok(Slot { clip: clip_index, decoder, scrub, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
+        Ok(Slot { clip: clip_index, decoder: SlotDecoder::Video(decoder), scrub, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
     }
 }
 
@@ -156,7 +166,7 @@ pub struct Transport {
 impl Transport {
     /// Single media: a one-clip locked timeline around the file (QCView's `loadSingleMedia`).
     pub fn open(src: &Source, opts: TransportOptions) -> Result<Transport, Error> {
-        let probe_clip = Clip { media_path: src.path().to_string(), media_kind: if matches!(src, Source::Sequence { .. }) { ClipMediaKind::ImageSequence } else { ClipMediaKind::Video }, source_rate: match src { Source::Sequence { rate, .. } => *rate, _ => Rate::new(24, 1) }, sequence_start_frame: match src { Source::Sequence { start, .. } => *start as i64, _ => 1 }, ..Clip::empty() };
+        let probe_clip = Clip { media_path: src.path().to_string(), media_kind: if matches!(src, Source::Sequence { .. }) { ClipMediaKind::ImageSequence } else { ClipMediaKind::Video }, source_rate: match src { Source::Sequence { rate, .. } => *rate, _ => Rate::new(24, 1) }, sequence_start_frame: match src { Source::Sequence { start, .. } => *start as i64, _ => 1 }, sequence_end_frame: match src { Source::Sequence { end, .. } => *end as i64, _ => 1 }, ..Clip::empty() };
         let slot = Slot::open(0, &probe_clip, &opts)?;
         let rate = slot.info.rate(); let frames = slot.info.frame_count as i64;
         let mut editor = Editor::default();
@@ -208,7 +218,7 @@ impl Transport {
     pub fn info(&self) -> &SessionInfo { &self.slots[self.active].info }
     /// The active clip's metadata (the Inspector's rows come from `qcv-meta` on the project side; this is the session's).
     pub fn probe(&self) -> VideoMetadata { qcv_meta::extract(&self.slots[self.active].path) }
-    pub fn decoder(&self) -> &VideoDecoder { &self.slots[self.active].decoder }
+    pub fn decoder(&self) -> &SlotDecoder { &self.slots[self.active].decoder }
     pub fn scrub(&mut self) -> Option<&mut ScrubDecoder> { self.slots[self.active].scrub.as_mut() }
     pub fn active_slot(&self) -> &Slot { &self.slots[self.active] }
     pub fn frame_index(&self) -> &Arc<FrameIndex> { &self.slots[self.active].index }
@@ -419,7 +429,7 @@ impl Transport {
         if clip != self.slots[self.active].clip { if !self.swap_to(clip, false) { self.set_after(After::Scrub(src as i32)); if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); } self.seek_gate = None; return } }
         else { self.pending = None; }
         let s = &mut self.slots[self.active];
-        if let Some(sd) = &mut s.scrub { sd.request_frame(src as i32); } else { s.decoder.seek_to_frame(src as i32); }
+        if let Some(sd) = &mut s.scrub { sd.request_frame(src as i32); } else { s.decoder.scrub_to(src as i32); }
         if self.fps > 0.0 { self.timer.seek(tl as f64 / self.fps); }
         self.seek_gate = None;
     }
@@ -502,6 +512,13 @@ impl Transport {
         // network read-ahead: loop on + a range → hydrate the whole range under review; otherwise the playhead window only
         let hydrate = self.loop_enabled && self.has_in_out_range() && !self.playlist_active;
         self.slots[self.active].decoder.set_read_ahead_range(if hydrate { self.in_point } else { -1 }, if hydrate { self.out_point } else { -1 });
+        // an image sequence's cache: wrap with the loop, fill only [in, out] when a range is set (QCView's `setLoopRange` —
+        // "save disk I/O for long sequences where the user is reviewing a small region"); off in playlist mode
+        if let Some(seq) = self.slots[self.active].decoder.as_sequence() {
+            let c = seq.cache();
+            c.set_looping(self.loop_enabled);
+            if self.has_in_out_range() && !self.playlist_active { c.set_loop_range(self.in_point, self.out_point) } else { c.clear_loop_range() }
+        }
     }
 
     // ---- the shuttle (hold-to-fast-seek) ----------------------------------------------------------------------------

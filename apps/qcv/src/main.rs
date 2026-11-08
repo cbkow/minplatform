@@ -34,7 +34,8 @@ mod playlist;
 mod clip_bar;
 mod clip_popover;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool,
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
+    seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
     /// the playlist's clip bar (canon row 167), shown while a playlist is loaded
@@ -203,7 +204,8 @@ impl App {
         let threads = if self.o.threads != 0 { self.o.threads } else { st.int(settings::k::FFMPEG_THREADS) as i32 };
         let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), stats: *TRACE_SCRUB, ..Default::default() });
         let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
-        TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }
+        let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(st.int(settings::k::IMAGE_SEQ_THREADS) as i32, st.int(settings::k::IMAGE_SEQ_READ_AHEAD) as i32);   // QCView reads them at each sequence load
+        TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, ..Default::default() }
     }
     fn open(&mut self, path: &str) -> bool {
         if self.gpu.is_none() { return false }
@@ -276,6 +278,13 @@ impl App {
             g.bar.sync(self.player.as_ref(), now);
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
+            // the sequence cache's band + failed ticks: repaint when they change (QCView polls the cache at 33 ms, emits on change)
+            let seq_status = self.player.as_ref().and_then(|p| p.decoder().as_sequence().map(|s| { let c = s.cache(); (c.buffered_behind_coverage(), c.buffered_ahead_coverage(), c.failed_count(), c.looping()) }));
+            if seq_status != g.seq_status {
+                if seq_status.map(|s| s.2) != g.seq_status.map(|s| s.2) { g.scrubber.failed = self.player.as_ref().map(sequence_failed_on_timeline).unwrap_or_default(); }
+                g.scrubber.cache_wraps = seq_status.is_some_and(|s| s.3);
+                g.seq_status = seq_status; g.ui_dirty = true;
+            }
             let st = scrub_state(self.player.as_ref());
             let bar_h = if self.pl_editor.is_some() && !g.compact { clip_bar::ClipBar::height(scale) } else { 0.0 };   // +20 for a playlist (row 169)
             let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
@@ -794,10 +803,20 @@ fn to_key_event(event: &winit::event::KeyEvent, mods: qcv_player::Mods) -> min_u
 }
 fn st_hit(p: Option<&Transport>, sc: &min_ui::Scrubber, pos: Option<(f64, f64)>) -> bool { p.is_some_and(|p| p.frame_count() > 0) && pos.is_some_and(|(x, y)| sc.hit(x, y)) }
 
+/// The active image sequence's failed / missing frames as TIMELINE frames (a playlist clip: offset by its start).
+fn sequence_failed_on_timeline(p: &Transport) -> Vec<i32> {
+    let Some(seq) = p.decoder().as_sequence() else { return vec![] };
+    let slot = p.active_slot();
+    let start = p.timeline.tracks.first().and_then(|t| t.clips.get(slot.clip)).map(|c| c.start).unwrap_or(0);
+    let (lo, hi) = (slot.src_in, slot.src_out);
+    seq.cache().failed_frames().into_iter().filter(|&f| !p.is_playlist() || (f as i64 >= lo && (f as i64) < hi)).map(|f| if p.is_playlist() { (start + f as i64 - lo) as i32 } else { f }).collect()
+}
+
 /// The scrubber's view of the Transport.
 fn scrub_state(p: Option<&Transport>) -> min_ui::ScrubState {
     let Some(p) = p else { return Default::default() };
-    min_ui::ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached: None }
+    let cached = p.decoder().as_sequence().map(|s| (s.cache().buffered_behind_coverage(), s.cache().buffered_ahead_coverage()));   // the band: sequences only (QCView's `currentMediaKind === 1`)
+    min_ui::ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached }
 }
 
 /// The video's rect: everything above the three bottom bands (canon §25 row 169).
@@ -878,7 +897,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
@@ -1250,9 +1269,11 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     strip.stage(status_strip::Mode::Timecode, "1000", &mut fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
     let mut scrubber = min_ui::Scrubber::new();
     let mut thumbs = hover_thumbs::HoverThumbs::new();
+    // an image sequence: let the cache fill so the band + failed ticks are in the snap
+    if let Some(p) = player.as_ref() && p.decoder().as_sequence().is_some() { std::thread::sleep(std::time::Duration::from_millis(600)); scrubber.failed = sequence_failed_on_timeline(p); scrubber.cache_wraps = p.decoder().as_sequence().unwrap().cache().looping(); }
     let st = scrub_state(player.as_ref());
     scrubber.layout(kurbo::Rect::new(0.0, h as f64 - t::SCRUBBER_HEIGHT as f64 * scale, w as f64, h as f64), scale);
-    scrubber.wheel(w as f64 * 0.4, 600.0, false, &st, scale);   // zoomed in about 40 % — frame ticks + the extent marker
+    if std::env::var_os("QCV_UI_SNAP_FIT").is_none() { scrubber.wheel(w as f64 * 0.4, 600.0, false, &st, scale); }   // zoomed in about 40 % — frame ticks + the extent marker (`QCV_UI_SNAP_FIT=1`: the whole timeline)
     scrubber.event(&min_ui::Event::Move { x: w as f64 * 0.62, y: h as f64 - 10.0 }, t0, &st, scale);
     if let Some(p) = player.as_mut() { thumbs.on_open(p); let deadline = Instant::now() + std::time::Duration::from_millis(1500); while Instant::now() < deadline { thumbs.tick(Some(p), scrubber.hover_frame, Instant::now()); if thumbs_shown(&thumbs) { break } std::thread::sleep(std::time::Duration::from_millis(20)); } }
     let content = engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap();
@@ -1369,9 +1390,11 @@ fn run_scrub_bench(o: Opts) {
     let src = Source::from_path(&file, None);
     let t_open = Instant::now();
     let sopts = ScrubOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), hw_inter_scrub: o.scrub_hw || cfg!(windows), stats: true, threads: std::env::var("QCV_SCRUB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(0), budget_bytes: std::env::var("QCV_SCRUB_CACHE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512) << 20, ..Default::default() };
-    let mut p = match Transport::open(&src, TransportOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), threads: o.threads, loop_enabled: false, scrub: Some(sopts), ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(std::env::var("QCV_SEQ_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(16), std::env::var("QCV_SEQ_AHEAD").ok().and_then(|v| v.parse().ok()).unwrap_or(72));
+    let mut p = match Transport::open(&src, TransportOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), threads: o.threads, loop_enabled: false, scrub: Some(sopts), seq, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     let index = p.frame_index().clone();
     let total = index.total_frames();
+    if p.decoder().as_sequence().is_some() { return run_sequence_bench(o, p, engine, total, t_open) }
     let (hw_active, intra_direct, served) = match p.scrub() { Some(sd) => (sd.hw_active, sd.intra_direct, sd.served.clone().unwrap()), None => { println!("no scrub decoder"); return } };
     println!("opened {} — {}; scrub decoder: {} (intra-direct {}), transport opened in {:.0} ms", src.display(), describe(&p), if hw_active { p.scrub().map(|sd| sd.hw_name()).unwrap_or("hw") } else { "software" }, intra_direct, t_open.elapsed().as_secs_f32() * 1000.0);
     // the open's own first frame lands through the transport's seek gate (paused at open)
@@ -1433,6 +1456,50 @@ fn run_scrub_bench(o: Opts) {
     }
     println!("CPU {:.0} % of one core over the run; max RSS {:.0} MB", 100.0 * qcv_player::process_cpu_seconds() / t_open.elapsed().as_secs_f64(), qcv_player::max_rss_mb());
     p.end_scrub();
+}
+
+/// `--seeks` / `--scrub` on an image sequence (step 2c): the cache has no scrub decoder — a seek is `updatePlayhead(f, force)`
+/// and lands when the frame is cached; a drag moves the playhead without forcing. `QCV_SEQ_AHEAD` shrinks the window
+/// (24 = QCView's minimum) so random seeks leave it.
+fn run_sequence_bench(o: Opts, mut p: Transport, mut engine: min_present::engine::Engine, total: i32, t_open: Instant) {
+    let c = p.decoder().as_sequence().unwrap().cache();
+    println!("opened {} — sequence cache: {} IO threads, window {} ahead / {} behind; transport opened in {:.0} ms", describe(&p), c.config().threads, c.config().read_ahead, c.config().read_behind, t_open.elapsed().as_secs_f32() * 1000.0);
+    let land = |p: &mut Transport, engine: &mut min_present::engine::Engine| { let t = Instant::now(); while p.seek_in_flight() && t.elapsed().as_secs() < 10 { if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); } else { std::thread::sleep(std::time::Duration::from_micros(200)); } } t.elapsed().as_secs_f32() * 1000.0 };
+    println!("first frame landed in {:.1} ms", land(&mut p, &mut engine));
+    let mut rng = 0x9E3779B97F4A7C15u64; let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
+    if let Some(n) = o.seeks {
+        let (mut cold, mut warm) = (vec![], vec![]);
+        for _ in 0..n {
+            let target = (next() % total.max(1) as u64) as i32;
+            let cached = p.decoder().as_sequence().unwrap().cache().frame(target).is_some();
+            if o.seek_gap_ms > 0 { std::thread::sleep(std::time::Duration::from_millis(o.seek_gap_ms)); }
+            p.seek_to_frame(target);
+            let ms = land(&mut p, &mut engine);
+            if let Some(h) = p.current() && h.frame_no != target { println!("  MISMATCH: asked {target} got {}", h.frame_no); }
+            if cached { warm.push(ms) } else { cold.push(ms) }
+        }
+        println!("seeks ({} random, {total} frames): cold n={} landed ms p50 {:.1} p95 {:.1} max {:.1}; cached n={} p50 {:.2} max {:.2}", cold.len() + warm.len(), cold.len(), pct(&mut cold, 50.0), pct(&mut cold, 95.0), pct(&mut cold, 100.0), warm.len(), pct(&mut warm, 50.0), pct(&mut warm, 100.0));
+    }
+    if let Some((a, b, ms)) = o.scrub {
+        let (a, b) = (a.clamp(0, total - 1), b.clamp(0, total - 1));
+        p.seek_to_frame(a); land(&mut p, &mut engine);
+        p.begin_scrub();
+        let period = std::time::Duration::from_secs_f32(ms / 1000.0);
+        let sweep = std::time::Duration::from_secs(2); let t = Instant::now();
+        let (mut behind, mut reqs, mut shown) = (vec![], 0u32, 0u32);
+        let mut tick = t;
+        while t.elapsed() < sweep {
+            let frac = (t.elapsed().as_secs_f32() / sweep.as_secs_f32()).min(1.0);
+            let pointer = a + ((b - a) as f32 * frac).round() as i32;
+            p.scrub_to_frame(pointer); reqs += 1;
+            tick += period; let now = Instant::now(); if tick > now { std::thread::sleep(tick - now); }
+            if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); shown += 1; }
+            behind.push((pointer - p.current().map(|h| h.frame_no).unwrap_or(a)).abs() as f32);
+        }
+        p.end_scrub(); land(&mut p, &mut engine);
+        println!("scrub {a}→{b} @ {ms:.1} ms: {reqs} moves, {shown} frames shown; frames behind the pointer p50 {:.0} p95 {:.0} max {:.0}; landed on {:?}", pct(&mut behind, 50.0), pct(&mut behind, 95.0), pct(&mut behind, 100.0), p.current().map(|h| h.frame_no));
+    }
+    println!("CPU {:.0} % of one core over the run; max RSS {:.0} MB", 100.0 * qcv_player::process_cpu_seconds() / t_open.elapsed().as_secs_f64(), qcv_player::max_rss_mb());
 }
 
 /// `--hover N`: the hover-thumbnail cache (QCView's `TimelineThumbnailCache` + `VideoImageLoader`) — N random hover frames

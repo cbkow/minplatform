@@ -45,8 +45,8 @@ impl SettingsPanel {
         hw.windows_only = true;   // QCView: `visible: Qt.platform.os === "windows"` (VideoToolbox is always on where it applies)
         let groups = vec![
             Group { title: "Performance", header: Rect::ZERO, rows: vec![
-                num(k::IMAGE_SEQ_THREADS, "Image-seq decode threads", "Applies on the next sequence load.", false, 1, 64, 1),
-                num(k::IMAGE_SEQ_READ_AHEAD, "Image-seq cache window", "Frames cached ahead of the playhead for image sequences.", false, 24, 240, 6),
+                num(k::IMAGE_SEQ_THREADS, "Image-seq decode threads", "Applies on the next sequence load.", true, 1, 64, 1),
+                num(k::IMAGE_SEQ_READ_AHEAD, "Image-seq cache window", "Frames cached ahead of the playhead for image sequences.", true, 24, 240, 6),
                 threads,
                 hw,
                 num(k::SCRUB_CACHE_MB, "Scrub cache size (MB)", "Decoded frames kept near the playhead while scrubbing; applies on the next open.", true, 128, 4096, 128),

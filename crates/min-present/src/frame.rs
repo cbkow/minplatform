@@ -38,8 +38,15 @@ impl ColorMeta {
     }
 }
 
+/// The bytes behind a CPU plane: the decoder's own buffer, or one SHARED with a cache — an image sequence's frame stays
+/// in the sequence cache while it is shown, and the presenter reads it there (no 50-MB copy per 4K EXR frame).
+pub type PlaneBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
 /// One CPU plane, rows padded to a 256-byte pitch (wgpu's `write_texture` requirement) by whoever decoded it.
-pub struct Plane { pub data: Vec<u8>, pub width: u32, pub height: u32, pub pitch: u32 }
+pub struct Plane { pub data: PlaneBytes, pub width: u32, pub height: u32, pub pitch: u32 }
+impl Plane {
+    pub fn owned(data: Vec<u8>, width: u32, height: u32, pitch: u32) -> Plane { Plane { data: Arc::new(data), width, height, pitch } }
+    pub fn bytes(&self) -> &[u8] { (*self.data).as_ref() }
+}
 
 /// Plane layouts (QCView's `YuvPlanarDesc`): levels are computed in CODE values — `code_bits` = depth + shift (10 for
 /// LSB-aligned yuv422p10le, 16 for MSB-aligned P010 / VideoToolbox 10-bit), `bytes_per_sample` 1 or 2 (R8 / R16 textures).

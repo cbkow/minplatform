@@ -43,12 +43,17 @@ pub struct Scrubber {
     last_press: Option<(Instant, f64)>,
     /// The timeline frame under the resting pointer (the hover thumbnail's request), when any.
     pub hover_frame: Option<i32>,
+    /// Frames an image sequence could not show (missing on disk / failed to decode), timeline frames, sorted —
+    /// QCView's red ticks, ≥ 1 px each so a hole reads at any zoom. Not drawn in compact mode.
+    pub failed: Vec<i32>,
+    /// The cache band wraps around the whole timeline (looping) — QCView's split of the overflow to the far edge.
+    pub cache_wraps: bool,
 }
 
 impl Default for Scrubber { fn default() -> Self { Scrubber::new() } }
 
 impl Scrubber {
-    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None } }
+    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn is_fit(&self) -> bool { self.pps.is_none() }
@@ -194,12 +199,29 @@ impl Scrubber {
             if let Some(a) = ix { paint::rect(scene, Rect::new(a, top, a + hair, r.y1), t::SCRUBBER_IN_POINT_COLOR); paint::rect(scene, Rect::new(a, r.y1 - fh, a + fw, r.y1), t::SCRUBBER_IN_POINT_COLOR); }
             if let Some(b) = ox { paint::rect(scene, Rect::new(b - hair, top, b, r.y1), t::SCRUBBER_OUT_POINT_COLOR); paint::rect(scene, Rect::new(b - fw, r.y1 - fh, b, r.y1), t::SCRUBBER_OUT_POINT_COLOR); }
         }
-        // the cache underline: decoded coverage around the playhead
-        if let Some((behind, ahead)) = s.cached {
+        // the cache underline: cached coverage around the playhead (QCView's band: behind dimmer than ahead; when the cache
+        // wraps — looping — the overflow past an edge continues from the opposite edge, the in / out zone's when one is set)
+        if let Some((behind, ahead)) = s.cached && s.fps > 0.0 {
             let th = t::SCRUBBER_CACHE_BAND_THICKNESS as f64 * scale;
-            let (a, b, c) = (self.x_of_time((s.current - behind).max(0) as f64 / s.fps, s, scale), self.x_of_time(s.current as f64 / s.fps, s, scale), self.x_of_time((s.current + ahead).min(s.frames) as f64 / s.fps, s, scale));
-            paint::rect(scene, Rect::new(a.max(tx0), r.y1 - th, b.min(tx1), r.y1), t::SCRUBBER_CACHE_BEHIND_COLOR);
-            paint::rect(scene, Rect::new(b.max(tx0), r.y1 - th, c.min(tx1), r.y1), t::SCRUBBER_CACHE_AHEAD_COLOR);
+            let (lo, hi) = if s.in_point >= 0 && s.out_point > s.in_point { (s.in_point, s.out_point + 1) } else { (0, s.frames) };
+            let mut span = |a: i32, b: i32, color| { let (x0, x1) = (self.x_of_frame(a as i64, s, scale), self.x_of_frame(b as i64, s, scale)); if x1 > x0 { paint::rect(scene, Rect::new(x0.max(tx0), r.y1 - th, x1.min(tx1), r.y1), color); } };
+            let cur = s.current.clamp(lo, hi - 1);
+            let (b0, a1) = (cur - behind, cur + ahead + 1);
+            span(b0.max(lo), cur, t::SCRUBBER_CACHE_BEHIND_COLOR);
+            span(cur, a1.min(hi), t::SCRUBBER_CACHE_AHEAD_COLOR);
+            if self.cache_wraps {
+                if b0 < lo { span(hi - (lo - b0), hi, t::SCRUBBER_CACHE_BEHIND_COLOR); }
+                if a1 > hi { span(lo, lo + (a1 - hi), t::SCRUBBER_CACHE_AHEAD_COLOR); }
+            }
+        }
+        // failed / missing frames on top of the band, ≥ 1 px wide
+        if !self.failed.is_empty() && s.fps > 0.0 {
+            let th = t::SCRUBBER_CACHE_BAND_THICKNESS as f64 * scale;
+            for &f in &self.failed {
+                let (x0, x1) = (self.x_of_frame(f as i64, s, scale), self.x_of_frame(f as i64 + 1, s, scale));
+                if x1 < tx0 || x0 > tx1 { continue }
+                paint::rect(scene, Rect::new(x0, r.y1 - th, x1.max(x0 + scale), r.y1), t::SCRUBBER_FAILED_FRAME_COLOR);
+            }
         }
         // the extent marker when zoomed
         if self.pps.is_some() {

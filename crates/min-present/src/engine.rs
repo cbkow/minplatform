@@ -334,7 +334,7 @@ impl Engine {
                     self.planar_tex = planes.iter().zip(&fmts).map(|(p, f)| self.device.create_texture(&wgpu::TextureDescriptor { label: Some("plane"), size: wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: *f, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] })).collect();
                 }
                 for (tex, p) in self.planar_tex.iter().zip(planes) {
-                    self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, &p.data, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
+                    self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, p.bytes(), wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
                 }
                 self.set_base(Base { levels, meta: frame.meta });
                 if !same || self.shown.as_ref().map(|s| s.variant != variant).unwrap_or(true) {
@@ -457,7 +457,7 @@ mod tests {
     use super::*;
     /// A synthetic 8-bit 4:2:2 planar frame: a horizontal luma ramp, flat chroma — enough to exercise every stage.
     fn ramp_frame(w: u32, h: u32) -> Frame {
-        let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane { data, width: pw, height: ph, pitch } };
+        let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane::owned(data, pw, ph, pitch) };
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128)];
         Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
     }
@@ -495,7 +495,7 @@ mod tests {
     }
     /// As `ramp_frame`, with an alpha plane: opaque on the left half, transparent on the right.
     fn alpha_frame(w: u32, h: u32) -> Frame {
-        let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane { data, width: pw, height: ph, pitch } };
+        let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane::owned(data, pw, ph, pitch) };
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128), plane(w, h, &|x, _| if x < w / 2 { 255 } else { 0 })];
         Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: true } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
     }
@@ -612,7 +612,7 @@ mod tests {
     fn stage1_is_unclamped() {
         // code 250 luma in 8-bit limited = 1.07 encoded: survives into the linear snapshot (QCView: a range chart reads 109 %, not 100 %)
         let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { return };
-        let plane = |pw: u32, ph: u32, v: u8| { let pitch = pw.div_ceil(256) * 256; Plane { data: vec![v; (pitch * ph) as usize], width: pw, height: ph, pitch } };
+        let plane = |pw: u32, ph: u32, v: u8| { let pitch = pw.div_ceil(256) * 256; Plane::owned(vec![v; (pitch * ph) as usize], pw, ph, pitch) };
         let f = Frame { width: 64, height: 4, pixels: Pixels::Planar { planes: vec![plane(64, 4, 250), plane(32, 4, 128), plane(32, 4, 128)], layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } };
         e.show(&f).unwrap();
         let (enc, _, _) = e.snapshot(Snapshot::Encoded).unwrap(); assert!(enc[0] > 1.05, "encoded {}", enc[0]);

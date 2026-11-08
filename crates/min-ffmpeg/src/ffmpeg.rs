@@ -312,7 +312,7 @@ impl Session {
             let mut data = vec![0u8; (pitch * ph) as usize];
             let src = f.data[l.data_index[p]]; let ls = f.linesize[l.data_index[p]] as usize;
             for y in 0..ph as usize { ptr::copy_nonoverlapping(src.add(y * ls), data.as_mut_ptr().add(y * pitch as usize), row as usize); }
-            planes.push(Plane { data, width: pw, height: ph, pitch });
+            planes.push(Plane::owned(data, pw, ph, pitch));
         }
         Ok(FrameHandle { frame: Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout }, meta }, pts, pts_us: self.pts_to_us(pts), frame_no: index.frame_for_pts(pts), keyframe, decode_ms: t0.elapsed().as_secs_f32() * 1000.0 })
     } }
