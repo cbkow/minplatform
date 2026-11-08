@@ -77,6 +77,16 @@ struct Shared {
 }
 
 pub struct ImageSequenceCache { sh: Arc<Shared>, threads: Vec<thread::JoinHandle<()>> }
+/// A read-only handle on the cache's frames + playhead for another thread (the GPU upload-ahead thread).
+#[derive(Clone)]
+pub struct CacheReader { sh: Arc<Shared> }
+impl CacheReader {
+    pub fn frame(&self, n: i32) -> Option<Arc<Image>> { self.sh.lru.peek(&n) }
+    pub fn playhead(&self) -> i32 { self.sh.playhead.load(Acquire) }
+    pub fn frame_count(&self) -> i32 { self.sh.frame_count }
+    pub fn looping(&self) -> bool { self.sh.looping.load(Relaxed) }
+    pub fn loop_range(&self) -> Option<(i32, i32)> { self.sh.has_range.load(Acquire).then(|| (self.sh.loop_in.load(Acquire), self.sh.loop_out.load(Acquire))) }
+}
 
 /// QCView's `snprintf(pattern, fileFrame)` for the patterns sequence detection writes: `%d`, `%0Nd`, `%Nd`, `%%`.
 pub fn format_frame(pattern: &str, n: i32) -> String {
@@ -132,6 +142,7 @@ impl ImageSequenceCache {
     /// The cached frame, or None (the caller falls through to [`Self::closest_frame`]). Sentinels come back too.
     pub fn frame(&self, n: i32) -> Option<Arc<Image>> { self.sh.lru.peek(&n) }
     /// The nearest cached frame by absolute distance (ties → the lower frame, QCView's `std::map` order).
+    pub fn reader(&self) -> CacheReader { CacheReader { sh: self.sh.clone() } }
     pub fn closest_frame(&self, n: i32) -> Option<(i32, Arc<Image>)> {
         let mut keys = self.sh.lru.keys(); keys.sort_unstable();
         let best = keys.iter().copied().min_by_key(|k| (k - n).abs())?;

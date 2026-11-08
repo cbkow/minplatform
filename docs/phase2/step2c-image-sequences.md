@@ -120,3 +120,20 @@ Open for the user / later pieces:
   takes them at add (`set_exr_import_metadata`, the first layer current), the cache opens at the item's layer, the card's LAYER
   grid = QCView's tiles (first frame per layer, two columns) with the selection as a FILL one grey step up (the user 2026-11-08,
   not QCView's accent border — blue stays rationed, row 162); a click = `Transport::set_sequence_layer` + the item.
+
+## Formats, thumbnails, the upload thread (2026-11-08, the user's list)
+
+- **Formats** (canon rows 189–191): native DPX (`dpx.rs`, 13 layouts IDENTICAL to FFmpeg), TGA + BMP (the `image` crate, those two
+  only; IDENTICAL), and the libtiff fallback for the TIFFs the `tiff` crate refuses (palette = FFmpeg's decode; YCbCr 4:4:4 /
+  4:2:2 / 4:2:0 / 4:1:1 = libtiff's `tiff2rgba`). DPX / TGA / BMP joined the image table, so they detect as sequences.
+- **Playlist sequence clips** carry the item's EXR layer and gaps on disk; the decoder's seed survives the open's positioning seek.
+- **Thumbnail fast paths** (`min_image::load_thumbnail`, QCView's `loadThumbnail`): 4K stills, per thumbnail — DPX 41 → 0.8 ms
+  (only the sampled rows are read), JPEG 16 → 6 ms (DCT scaling 1/8), striped TIFF 28 → 19 ms, PNG 40 → 31 ms (rows still
+  inflate), EXR unchanged (29 ms: ZIP / DWA chunks hold every sampled row — QCView's scanline skip only pays on 1-line chunks).
+  Tested: the row-skipping paths hold exactly the full decode's samples.
+- **The GPU upload thread** (QCView's, sized down): `min_present::engine::Uploader` (device + queue clones) and `Pixels::Gpu`;
+  the sequence decoder starts a thread on the first PLAY (at the open it delayed the first frame's decode, median 104 vs 32 ms)
+  that copies the next 3 cached frames into a pool of ≤ 10 reused texture sets and submits them itself; a frame that is ready
+  arrives bound-only. 4K EXR headless, 3 runs: show p50 6.3 → 2.2 ms, ~65 / 70 frames arrive uploaded, frame 30 encoded- and
+  display-identical, drops unchanged. Open: the worst show is higher (78–108 vs 35–59 ms), at the play start while the thread's
+  first copies overlap the presenter's own — watch it on the walk. `QCV_SEQ_GPU_UPLOAD=0` turns it off.

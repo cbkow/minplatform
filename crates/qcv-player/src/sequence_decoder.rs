@@ -24,6 +24,8 @@ pub struct SequenceDecoder {
     want: Mutex<Option<i32>>,
     /// the detector's gaps, re-seeded after the open's positioning seek (that seek's amnesty would clear them)
     seed: Mutex<Option<Vec<i32>>>,
+    /// QCView's GPU upload thread: while playing, the next frames' planes are copied to the GPU ahead of their show
+    ahead: Mutex<Option<(Arc<Ahead>, std::thread::JoinHandle<()>)>>, uploader: Mutex<Option<min_present::engine::Uploader>>,
     /// the frame `fetch_due` handed out last (each frame comes back once)
     last: AtomicI32,
     shown: Mutex<Option<(i32, Arc<Image>)>>,
@@ -53,7 +55,7 @@ impl SequenceDecoder {
             duration_secs: frames as f64 / rate.as_f64() };
         let index = Arc::new(FrameIndex::new(rate.den as i32, rate.num as i32, rate.num as i32, rate.den as i32, frames, true));
         Ok(SequenceDecoder { cache, info, index, fps: rate.as_f64(), playing: AtomicBool::new(false), seeks: AtomicU32::new(0), published: AtomicU64::new(0), current: AtomicI32::new(-1),
-            want: Mutex::new(Some(0)), seed: Mutex::new(None), last: AtomicI32::new(-1), shown: Mutex::new(None) })
+            want: Mutex::new(Some(0)), seed: Mutex::new(None), ahead: Mutex::new(None), uploader: Mutex::new(None), last: AtomicI32::new(-1), shown: Mutex::new(None) })
     }
     pub fn cache(&self) -> &ImageSequenceCache { &self.cache }
     /// The inspector's frame-rate chips (QCView `TimelineController::setFrameRate`): the frame count stays, the cache keeps its frames.
@@ -73,8 +75,24 @@ impl SequenceDecoder {
     }
     pub fn frame_index(&self) -> &Arc<FrameIndex> { &self.index }
 
-    pub fn play(&self) { self.playing.store(true, Release) }
-    pub fn pause(&self) { self.playing.store(false, Release) }
+    pub fn play(&self) {
+        self.playing.store(true, Release);
+        // the upload thread starts on the first play (at the open it measurably delayed the first frame's decode)
+        let mut ahead = self.ahead.lock().unwrap();
+        if ahead.is_none() && let Some(up) = self.uploader.lock().unwrap().take() {
+            let a = Arc::new(Ahead { map: Mutex::new(std::collections::HashMap::new()), cv: std::sync::Condvar::new(), active: AtomicBool::new(true), stop: AtomicBool::new(false), uploads: AtomicU64::new(0), ready: AtomicBool::new(self.published_seq() > 0) });
+            let (a2, reader) = (a.clone(), self.cache.reader());
+            if let Ok(h) = std::thread::Builder::new().name("qcv-seq-upload".into()).spawn(move || upload_ahead(a2, reader, up)) { *ahead = Some((a, h)); }
+        }
+        if let Some((a, _)) = ahead.as_ref() { a.active.store(true, Release); a.cv.notify_one(); }
+    }
+    pub fn pause(&self) { self.playing.store(false, Release); if let Some((a, _)) = self.ahead.lock().unwrap().as_ref() { a.active.store(false, Release); } }
+    /// Start the upload-ahead thread on the presenter's [`min_present::engine::Uploader`] (QCView: frames land in the cache, a
+    /// GPU thread uploads them, the renderer binds). Ours keeps it to the next [`AHEAD`] frames while playing — the copy leaves
+    /// the presenter's thread, the GPU holds a few frames instead of the whole window.
+    pub fn set_uploader(&mut self, up: min_present::engine::Uploader) { *self.uploader.lock().unwrap() = Some(up); }
+    /// frames shown from the upload-ahead textures (diagnostics)
+    pub fn gpu_uploads(&self) -> u64 { self.ahead.lock().unwrap().as_ref().map(|(a, _)| a.uploads.load(Relaxed)).unwrap_or(0) }
     pub fn is_playing(&self) -> bool { self.playing.load(Acquire) }
     pub fn state(&self) -> State { State::Decoding }
     pub fn seeks_performed(&self) -> u32 { self.seeks.load(Acquire) }
@@ -117,10 +135,56 @@ impl SequenceDecoder {
         self.published.fetch_add(1, AcqRel);
         if img.sentinel.is_some() { return None }
         *self.shown.lock().unwrap() = Some((f, img.clone()));
+        if let Some((a, _)) = self.ahead.lock().unwrap().as_ref() {
+            a.ready.store(true, Release);
+            let up = a.map.lock().unwrap().remove(&f);
+            a.cv.notify_one();
+            if let Some(g) = up { a.uploads.fetch_add(1, Relaxed); return Some(gpu_handle(g, &img, f, self.fps)) }
+        }
         Some(handle(img, f, self.fps))
     }
     /// The frame shown last (diagnostics: `fetch_latest`).
     pub fn fetch_latest(&self) -> Option<FrameHandle> { self.shown.lock().unwrap().clone().map(|(f, i)| handle(i, f, self.fps)) }
+}
+
+/// How many frames past the playhead the upload thread keeps on the GPU.
+pub const AHEAD: i32 = 3;
+struct Ahead { map: Mutex<std::collections::HashMap<i32, Arc<min_present::GpuPlanes>>>, cv: std::sync::Condvar, active: AtomicBool, stop: AtomicBool, uploads: AtomicU64, /// the first frame has been shown (uploading ahead before it only competes with its own upload)
+    ready: AtomicBool }
+/// Texture sets the upload thread made, reused once nothing but the pool holds them (the presenter keeps the last few it bound).
+const POOL: usize = 10;
+
+/// The upload-ahead loop: the next AHEAD frames after the playhead (wrapping like the cache when it loops), each uploaded once
+/// it is cached; anything else the map holds is dropped.
+fn upload_ahead(a: Arc<Ahead>, r: crate::image_sequence_cache::CacheReader, up: min_present::engine::Uploader) {
+    let n = r.frame_count();
+    let mut pool: Vec<Arc<min_present::GpuPlanes>> = vec![];
+    while !a.stop.load(Acquire) {
+        if !a.active.load(Acquire) || !a.ready.load(Acquire) { let mut g = a.map.lock().unwrap(); g.clear(); let _ = a.cv.wait_timeout(g, std::time::Duration::from_millis(50)); continue }
+        let ph = r.playhead();
+        let (lo, hi) = r.loop_range().filter(|(i, o)| *o > *i).unwrap_or((0, n - 1));
+        let targets: Vec<i32> = (1..=AHEAD).filter_map(|k| { let t = ph + k; if t <= hi { Some(t) } else if r.looping() { Some(lo + (t - hi - 1) % (hi - lo + 1)) } else { None } }).collect();
+        a.map.lock().unwrap().retain(|k, _| targets.contains(k));
+        for &t in &targets {
+            if a.stop.load(Acquire) || !a.active.load(Acquire) { break }
+            if a.map.lock().unwrap().contains_key(&t) { continue }
+            let Some(img) = r.frame(t).filter(|i| i.sentinel.is_none()) else { continue };
+            let (planes, layout) = planes_of(&img);
+            // a free set (only the pool holds it) of the right shape takes the copy; else a new one while the pool has room
+            pool.retain(|g| Arc::strong_count(g) > 1 || (g.layout == layout && g.textures.first().is_some_and(|x| x.width() == img.width && x.height() == img.height)));
+            let set = match pool.iter().find(|g| Arc::strong_count(g) == 1) {
+                Some(g) if up.write(g, &planes, layout) => Some(g.clone()),
+                _ if pool.len() < POOL => up.upload(&planes, layout).map(Arc::new).inspect(|g| pool.push(g.clone())),
+                _ => None,
+            };
+            if let Some(g) = set { a.map.lock().unwrap().insert(t, g); }
+        }
+        let g = a.map.lock().unwrap(); let _ = a.cv.wait_timeout(g, std::time::Duration::from_millis(4));
+    }
+}
+
+impl Drop for SequenceDecoder {
+    fn drop(&mut self) { if let Some((a, h)) = self.ahead.lock().unwrap().take() { a.stop.store(true, Release); a.cv.notify_all(); let _ = h.join(); } }
 }
 
 /// QCView's still pipeline is RGB at full range; 8 / 16-bit stills are display-referred sRGB, half floats linear light.
@@ -130,10 +194,19 @@ fn rgb_meta(s: Sample) -> ColorMeta {
 }
 
 /// A cached frame as the presenter's planar RGB frame, its planes read in place.
-pub fn handle(img: Arc<Image>, f: i32, fps: f64) -> FrameHandle {
+fn planes_of(img: &Arc<Image>) -> (Vec<Plane>, PlanarLayout) {
     let (bps, code_bits, float) = match img.sample { Sample::U8 => (1, 8, false), Sample::U16 => (2, 16, false), Sample::F16 => (2, 16, true) };
     let planes = (0..img.planes.len()).map(|i| Plane { data: Arc::new(PlaneOf(img.clone(), i)), width: img.width, height: img.height, pitch: img.pitch }).collect();
-    let frame = Frame { width: img.width, height: img.height, pixels: Pixels::Planar { planes, layout: PlanarLayout::Rgb { bytes_per_sample: bps, code_bits, float, alpha: img.alpha, legal_expand: false } }, meta: rgb_meta(img.sample) };
+    (planes, PlanarLayout::Rgb { bytes_per_sample: bps, code_bits, float, alpha: img.alpha, legal_expand: false })
+}
+pub fn handle(img: Arc<Image>, f: i32, fps: f64) -> FrameHandle {
+    let (planes, layout) = planes_of(&img);
+    let frame = Frame { width: img.width, height: img.height, pixels: Pixels::Planar { planes, layout }, meta: rgb_meta(img.sample) };
+    FrameHandle { frame, pts: f as i64, pts_us: if fps > 0.0 { (f as f64 / fps * 1e6) as i64 } else { 0 }, frame_no: f, keyframe: true, decode_ms: 0.0 }
+}
+/// A frame whose planes the upload thread already put on the GPU.
+fn gpu_handle(g: Arc<min_present::GpuPlanes>, img: &Image, f: i32, fps: f64) -> FrameHandle {
+    let frame = Frame { width: img.width, height: img.height, pixels: Pixels::Gpu(g), meta: rgb_meta(img.sample) };
     FrameHandle { frame, pts: f as i64, pts_us: if fps > 0.0 { (f as f64 / fps * 1e6) as i64 } else { 0 }, frame_no: f, keyframe: true, decode_ms: 0.0 }
 }
 

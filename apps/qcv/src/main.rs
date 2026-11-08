@@ -223,7 +223,7 @@ impl App {
         let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), stats: *TRACE_SCRUB, ..Default::default() });
         let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
         let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(st.int(settings::k::IMAGE_SEQ_THREADS) as i32, st.int(settings::k::IMAGE_SEQ_READ_AHEAD) as i32);   // QCView reads them at each sequence load
-        TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, ..Default::default() }
+        TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, uploader: self.gpu.as_ref().map(|g| g.presenter.engine.uploader()), ..Default::default() }
     }
     fn open(&mut self, path: &str) -> bool { self.open_source(Source::from_path(path, None), path) }
     fn open_source(&mut self, src: Source, path: &str) -> bool { self.open_source_layer(src, path, "") }
@@ -1368,7 +1368,7 @@ fn run_headless(o: Opts) {
     println!("headless engine: zero-copy {} · decode {}", engine.zero_copy_available(), hw.as_ref().map(|h| h.name()).unwrap_or("software"));
     let src = Source::from_path(&file, None);
     let t = Instant::now();
-    let mut p = match Transport::open(&src, TransportOptions { hw, hw_intra, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let mut p = match Transport::open(&src, TransportOptions { hw, hw_intra, threads: o.threads, loop_enabled: false, scrub: None, uploader: Some(engine.uploader()), ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
     p.play();
     let mut first: Option<f32> = None; let mut show_ms = vec![];
@@ -1402,6 +1402,7 @@ fn run_headless(o: Opts) {
         println!("frame index: tier 2 {:?} ({} frames built), keyframes {}, tier-1 formula disagrees on {mism} of {n} frames (worst {worst} ticks); keyframe before frame {} = pts {}; read-ahead pages touched {}",
             idx.scan_state(), idx.scan_frames_built(), idx.keyframe_count(), n / 2, idx.keyframe_pts_before(n / 2), qcv_player::read_ahead::ReadAhead::instance().touched_pages.load(std::sync::atomic::Ordering::Relaxed));
     }
+    if let Some(sq) = p.decoder().as_sequence() { println!("sequence: {} of the frames shown arrived uploaded ahead (GPU upload thread)", sq.gpu_uploads()); }
     let s = &mut p.stats;
     println!("headless: {} frames shown (open → first frame on the engine {:.0} ms), show ms p50 {:.2} max {:.2}, decode ms p50 {:.1} max {:.1}, dropped {}; CPU {:.0} % of one core; max RSS {:.0} MB",
         s.shown, first.unwrap_or(f32::NAN), pct(&mut show_ms, 50.0), pct(&mut show_ms, 100.0), pct(&mut s.decode_ms, 50.0), pct(&mut s.decode_ms, 100.0), s.dropped, 100.0 * qcv_player::process_cpu_seconds() / t.elapsed().as_secs_f64(), qcv_player::max_rss_mb());

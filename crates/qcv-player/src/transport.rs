@@ -101,8 +101,9 @@ pub struct TransportOptions { pub hw: Option<HwDevice>, /// the intra-codec devi
     pub loop_enabled: bool, pub clock_policy: ClockPolicy, /// one refresh in ms — the "late" threshold
     pub refresh_ms: f32, /// image sequences: the cache's window + IO threads (Settings ▸ Performance)
     pub seq: StreamingConfig, /// a single sequence's EXR layer at open (the item's; QCView `startImageSequence`); "" = the default
-    pub seq_layer: String }
-impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0, seq: StreamingConfig::default(), seq_layer: String::new() } } }
+    pub seq_layer: String, /// the presenter's uploader: sequences copy the next frames to the GPU ahead (QCView's GPU upload thread)
+    pub uploader: Option<min_present::engine::Uploader> }
+impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0, seq: StreamingConfig::default(), seq_layer: String::new(), uploader: None } } }
 
 /// What a pending swap does once its clip has opened: the latest scrub target, a seek (timeline frame, source frame), or rest
 /// at the in-point it was opened on.
@@ -126,6 +127,8 @@ impl Slot {
             // the cache's wrap follows the loop from the open (QCView set it only on a toggle: a fresh sequence wrapped with loop off)
             d.cache().set_looping(opts.loop_enabled);
             d.seed_missing(&clip.sequence_missing);
+            let mut d = d;
+            if let Some(u) = &opts.uploader && std::env::var("QCV_SEQ_GPU_UPLOAD").as_deref() != Ok("0") { d.set_uploader(u.clone()); }
             let (info, index) = (d.info.clone(), d.frame_index().clone());
             return Ok(Slot { clip: clip_index, decoder: SlotDecoder::Sequence(d), scrub: None, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
         }

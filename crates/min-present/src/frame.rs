@@ -74,7 +74,13 @@ unsafe impl Sync for NativeFrame {}
 /// 16-bit textures, 8 in 8-bit). `fence` / `fence_value`: the presenter waits before sampling.
 pub struct Dx12FrameHandle { pub resource: *mut c_void, pub fence: *mut c_void, pub fence_value: u64, pub planes: [*mut c_void; 4], pub plane_count: u8, pub interleaved_chroma: bool, pub code_bits: u8 }
 
-pub enum Pixels { Planar { planes: Vec<Plane>, layout: PlanarLayout }, Native(NativeFrame) }
+pub enum Pixels { Planar { planes: Vec<Plane>, layout: PlanarLayout }, Native(NativeFrame), /// planes an [`crate::engine::Uploader`]
+    /// already copied to the GPU off the presenter's thread (QCView's GPU upload thread) — the presenter only binds them
+    Gpu(std::sync::Arc<GpuPlanes>) }
+
+/// Plane textures uploaded ahead of their show, in the planar layout's order and formats.
+#[derive(Clone)]
+pub struct GpuPlanes { pub textures: Vec<wgpu::Texture>, pub layout: PlanarLayout }
 
 pub struct Frame { pub width: u32, pub height: u32, pub pixels: Pixels, pub meta: ColorMeta }
 impl Frame {

@@ -76,6 +76,54 @@ struct Shown { variant: Variant, binds: Vec<wgpu::BindGroup> }
 struct Held { _imp: Imported, _keep: Arc<dyn Any + Send + Sync> }
 struct Inter { a: wgpu::Texture, b: wgpu::Texture, bind: wgpu::BindGroup, size: (u32, u32) }
 
+/// The levels, bind variant and per-plane texture formats of a planar layout (shared by the CPU upload and the [`Uploader`]).
+fn planar_spec(layout: PlanarLayout, meta: &ColorMeta) -> (Levels, Variant, Vec<wgpu::TextureFormat>) {
+    match layout {
+        PlanarLayout::Rgb { bytes_per_sample, code_bits, float, alpha, legal_expand } => {
+            let mut l = if float { Levels::float_rgb() } else { Levels::new(code_bits, bytes_per_sample, true, Matrix::Identity) };
+            l.rgb_expand = legal_expand && !float;
+            let f = if float { wgpu::TextureFormat::R16Float } else if bytes_per_sample == 2 { wgpu::TextureFormat::R16Unorm } else { wgpu::TextureFormat::R8Unorm };
+            (l, if alpha { Variant::Planar4 } else { Variant::Planar3 }, vec![f; if alpha { 4 } else { 3 }])
+        }
+        PlanarLayout::Ycc { bytes_per_sample, code_bits, interleaved_chroma, alpha } => {
+            let l = Levels::new(code_bits, bytes_per_sample, meta.range == Range::Full, meta.matrix);
+            let (one, two) = if bytes_per_sample == 2 { (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm) } else { (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm) };
+            if interleaved_chroma { (l, Variant::Biplanar, vec![one, two]) }   // an alpha plane with interleaved chroma has no FFmpeg format
+            else if alpha { (l, Variant::Planar4, vec![one; 4]) } else { (l, Variant::Planar3, vec![one; 3]) }
+        }
+    }
+}
+
+/// QCView's GPU upload thread, in wgpu: the device + queue handles (cheap clones, thread-safe) so a producer copies planes
+/// into fresh textures on ITS thread; the copies ride the presenter's next submit. [`Engine::uploader`].
+#[derive(Clone)]
+pub struct Uploader { device: wgpu::Device, queue: wgpu::Queue }
+impl Uploader {
+    /// `write_texture` parks its copy on the queue's pending-writes encoder, which the NEXT submit carries — from any thread.
+    /// Submitting here puts the copies on the uploader's thread, so the presenter's frame never carries them.
+    fn flush(&self) { self.queue.submit(std::iter::empty()); let _ = self.device.poll(wgpu::PollType::Poll); }
+    /// Copy `planes` into a set made earlier by [`Self::upload`] when it matches (no allocation); false when it does not.
+    pub fn write(&self, g: &crate::frame::GpuPlanes, planes: &[crate::frame::Plane], layout: PlanarLayout) -> bool {
+        if g.layout != layout || g.textures.len() != planes.len() || g.textures.iter().zip(planes).any(|(t, p)| t.width() != p.width || t.height() != p.height) { return false }
+        for (tex, p) in g.textures.iter().zip(planes) {
+            self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, p.bytes(), wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
+        }
+        self.flush();
+        true
+    }
+    pub fn upload(&self, planes: &[crate::frame::Plane], layout: PlanarLayout) -> Option<crate::frame::GpuPlanes> {
+        let (_, _, fmts) = planar_spec(layout, &ColorMeta::default());
+        if planes.len() != fmts.len() { return None }
+        let textures = planes.iter().zip(&fmts).map(|(p, f)| {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("plane (uploaded ahead)"), size: wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: *f, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] });
+            self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, p.bytes(), wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
+            tex
+        }).collect();
+        self.flush();
+        Some(crate::frame::GpuPlanes { textures, layout })
+    }
+}
+
 pub struct Engine {
     /// No presenter will submit after `show` (a headless engine): flush + maintain per show.
     pub standalone: bool,
@@ -95,7 +143,9 @@ pub struct Engine {
     /// Where the video fits inside the viewport (physical px; `None` = the whole viewport): the shell's bands take the rest.
     content: Option<(u32, u32, u32, u32)>,
     planar_tex: Vec<wgpu::Texture>,
-    shown: Option<Shown>, held: VecDeque<Held>,
+    shown: Option<Shown>, held: VecDeque<Held>, /// uploaded-ahead planes recently bound (kept while the GPU may still sample them)
+    gpu_held: VecDeque<std::sync::Arc<crate::frame::GpuPlanes>>, /// the CPU plane textures are what `shown` binds
+    planar_bound: bool,
     color_pass: Option<Box<dyn ColorPass>>, inter: Option<Inter>,
     imports: Imports, imports_n: u32,
     /// The last `show`'s import / upload cost on the calling thread, ms.
@@ -202,7 +252,7 @@ impl Engine {
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
         let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
-            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
+            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
     }
@@ -294,6 +344,8 @@ impl Engine {
     pub fn dx12_device_raw(&self) -> Option<*mut std::ffi::c_void> { crate::import::dx12::Dx12Import::raw_device(&self.device) }
 
     /// Upload / import `frame` and make it the one every `encode` draws until the next `show`.
+    /// The handle a producer uploads planes ahead with ([`Uploader`]).
+    pub fn uploader(&self) -> Uploader { Uploader { device: self.device.clone(), queue: self.queue.clone() } }
     pub fn show(&mut self, frame: &Frame) -> Result<(), Error> {
         let t = Instant::now();
         if self.video != (frame.width, frame.height) { self.video = (frame.width, frame.height); self.base = None; self.inter = None; }
@@ -313,21 +365,17 @@ impl Engine {
                 while self.held.len() > HELD { self.held.pop_front(); }
                 self.imports_n += 1; if self.imports_n % 60 == 0 { self.imports.flush(); }
             }
+            Pixels::Gpu(g) => {
+                let (levels, variant, _) = planar_spec(g.layout, &frame.meta);
+                let views: Vec<_> = g.textures.iter().map(|t| t.create_view(&Default::default())).collect();
+                let binds = self.binds(variant, &views);
+                self.set_base(Base { levels, meta: frame.meta });
+                self.shown = Some(Shown { variant, binds });
+                self.gpu_held.push_back(g.clone()); while self.gpu_held.len() > HELD { self.gpu_held.pop_front(); }   // alive until the ring has moved on
+                self.planar_bound = false;   // the CPU planes are kept (a miss falls back without reallocating) but must re-bind
+            }
             Pixels::Planar { planes, layout } => {
-                let (levels, variant, fmts): (Levels, Variant, Vec<wgpu::TextureFormat>) = match *layout {
-                    PlanarLayout::Rgb { bytes_per_sample, code_bits, float, alpha, legal_expand } => {
-                        let mut l = if float { Levels::float_rgb() } else { Levels::new(code_bits, bytes_per_sample, true, Matrix::Identity) };
-                        l.rgb_expand = legal_expand && !float;
-                        let f = if float { wgpu::TextureFormat::R16Float } else if bytes_per_sample == 2 { wgpu::TextureFormat::R16Unorm } else { wgpu::TextureFormat::R8Unorm };
-                        (l, if alpha { Variant::Planar4 } else { Variant::Planar3 }, vec![f; if alpha { 4 } else { 3 }])
-                    }
-                    PlanarLayout::Ycc { bytes_per_sample, code_bits, interleaved_chroma, alpha } => {
-                        let l = Levels::new(code_bits, bytes_per_sample, frame.meta.range == Range::Full, frame.meta.matrix);
-                        let (one, two) = if bytes_per_sample == 2 { (wgpu::TextureFormat::R16Unorm, wgpu::TextureFormat::Rg16Unorm) } else { (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm) };
-                        if interleaved_chroma { (l, Variant::Biplanar, vec![one, two]) }   // an alpha plane with interleaved chroma has no FFmpeg format
-                        else if alpha { (l, Variant::Planar4, vec![one; 4]) } else { (l, Variant::Planar3, vec![one; 3]) }
-                    }
-                };
+                let (levels, variant, fmts) = planar_spec(*layout, &frame.meta);
                 if planes.len() != fmts.len() { return Err(Error::Import(format!("{} planes for {variant:?}", planes.len()))) }
                 let same = self.planar_tex.len() == planes.len() && self.planar_tex.iter().zip(planes).zip(&fmts).all(|((t, p), f)| t.format() == *f && t.width() == p.width && t.height() == p.height);
                 if !same {
@@ -337,7 +385,8 @@ impl Engine {
                     self.queue.write_texture(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, p.bytes(), wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(p.pitch), rows_per_image: Some(p.height) }, wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 });
                 }
                 self.set_base(Base { levels, meta: frame.meta });
-                if !same || self.shown.as_ref().map(|s| s.variant != variant).unwrap_or(true) {
+                if !same || !self.planar_bound || self.shown.as_ref().map(|s| s.variant != variant).unwrap_or(true) {
+                    self.planar_bound = true;
                     let views: Vec<_> = self.planar_tex.iter().map(|t| t.create_view(&Default::default())).collect();
                     let binds = self.binds(variant, &views);
                     self.shown = Some(Shown { variant, binds });
