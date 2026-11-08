@@ -6,9 +6,11 @@ use min_ui::paint;
 use vello::Scene;
 
 /// `slide` = how far the bands are pushed below the window (fullscreen's hidden state), physical px.
-pub fn bands(scene: &mut Scene, w: u32, h: u32, scale: f64, slide: f64) {
+/// `below`: px of band under the scrubber (the playlist's 20-px clip bar, row 169), so the status + transport backing
+/// stacks on top of it.
+pub fn bands(scene: &mut Scene, w: u32, h: u32, scale: f64, slide: f64, below: f64) {
     scene.reset();
-    let (w, h) = (w as f64, h as f64 + slide);
+    let (w, h) = (w as f64, h as f64 + slide - below);
     let scrub_h = t::SCRUBBER_HEIGHT as f64 * scale;
     let top = h - scrub_h - (t::STATUS_STRIP_HEIGHT + t::TRANSPORT_BAR_HEIGHT) as f64 * scale;
     paint::rect(scene, Rect::new(0.0, top, w, h - scrub_h), t::BAND_BACKGROUND_COLOR);

@@ -316,7 +316,7 @@ impl App {
                     g.compact_strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                     g.ui_shown_frame = key; g.ui_dirty = false;
                 } else {
-                ui_sketch::bands(scene, w, h, scale, slide);
+                ui_sketch::bands(scene, w, h, scale, slide, bar_h);
                 if !g.fullscreen {
                     for (rail, is_left) in [(&g.left, true), (&g.right, false)] {
                         rail.paint_background(scene, now);
@@ -1216,7 +1216,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         let t = Instant::now();
         let scene = ui.scene_mut();
         let _ = fi;
-        ui_sketch::bands(scene, w, h, scale, 0.0);
+        ui_sketch::bands(scene, w, h, scale, 0.0, 0.0);
         for (rail, is_left) in [(&left, true), (&right, false)] { rail.paint_background(scene, shown_at); rail.push_clip(scene); if is_left { pp.paint(scene, &mut fonts, scale, shown_at, true); bgp.paint(scene, &mut fonts, scale, shown_at, false); panel.paint(scene, &mut fonts, scale, shown_at, false); } else { inspector.paint(scene, &mut fonts, scale, shown_at); } rail.pop_clip(scene); rail.paint_foreground(scene, &mut fonts, scale, shown_at); }
         strip.paint(scene, &mut fonts, scale, shown_at);
         bar.paint(scene, &mut fonts, scale, shown_at);
