@@ -192,15 +192,16 @@ impl ColorDrawer {
             // the View column takes what is left once the Knee has its width (the names are long: "… (Rec.709 D60 in Rec.709 D65)")
             self.ocfg.layout(Rect::new(x, body.y0, x + 130.0 * scale, body.y1), scale); x += 130.0 * scale + gap;
             self.oinput.layout_with(fonts, Rect::new(x, body.y0, x + 210.0 * scale, body.y1), scale); x += 210.0 * scale + gap;
-            self.olook.layout(Rect::new(x, body.y0, x + 130.0 * scale, body.y1), scale); x += 130.0 * scale + gap;
+            self.olook.layout(Rect::new(x, body.y0, x + 230.0 * scale, body.y1), scale); x += 230.0 * scale + gap;   // Blender's looks: "AgX - Very High Contrast" …
             let vw = (body.x1 - x - gap - self.knee.width() * scale).max(180.0 * scale);
             self.oview.layout(Rect::new(x, body.y0, x + vw, body.y1), scale); x += vw + gap;
             self.knee.layout(fonts, x, body.y0, body.y1, scale);
         } else {
             for l in [&mut self.gamut, &mut self.transfer] { l.layout(Rect::new(x, body.y0, x + LIST_W * scale, body.y1), scale); x += LIST_W * scale + gap; }
             x += self.knee.layout(fonts, x, body.y0, body.y1, scale) + gap;
-            x += self.agx.layout(fonts, x, body.y0, body.y1, scale) + gap;
-            self.render.layout(Rect::new(x, body.y0, x + (body.x1 - x).clamp(140.0 * scale, LIST_W * scale), body.y1), scale);
+            self.agx.layout(fonts, x, body.y0, body.y1, scale);
+            // no Rendering column (the user 2026-11-08: "our rendering column isn't needed for mincolor anymore"): un-tone-mapped
+            // is the rendering, AgX is its own column; a chain carrying an OpenDRT look keeps rendering with it
         }
     }
 
@@ -290,8 +291,6 @@ impl ColorDrawer {
         if mc {
             let r = self.gamut.event(e, now, None); dirty |= r.dirty; if let Some(i) = r.clicked { cmds.extend(self.edited(|c| c.in_gamut = i as i32)); }
             let r = self.transfer.event(e, now, None); dirty |= r.dirty; if let Some(i) = r.clicked { cmds.extend(self.edited(|c| c.in_transfer = i as i32)); }
-            let r = self.render.event(e, now, None); dirty |= r.dirty;
-            if let Some(i) = r.clicked { cmds.extend(self.edited(|c| match i { 0 => { c.agx_on = 0; c.open_drt = 0; } _ => { c.agx_on = 0; c.open_drt = 1; } })); }
             let (c, d) = self.knee.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
             let (c, d) = self.agx.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
         }
@@ -375,7 +374,6 @@ impl ColorDrawer {
             ClipChain::MinColor(_) => {
                 self.gamut.paint(scene, fonts, now); self.transfer.paint(scene, fonts, now);
                 self.knee.paint(scene, fonts, now); self.agx.paint(scene, fonts, now);
-                self.render.paint(scene, fonts, now);
             }
             ClipChain::Ocio(_) => {
                 if v.ocio.is_some() { for l in [&mut self.ocfg, &mut self.oinput, &mut self.olook, &mut self.oview] { l.paint(scene, fonts, now); } self.knee.paint(scene, fonts, now); }
