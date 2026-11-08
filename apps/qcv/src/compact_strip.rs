@@ -21,9 +21,12 @@ pub struct CompactStrip {
     pub scrub_rect: Rect,
 }
 
+/// QCView's catalog context (canon row 195).
+fn tr(s: &str) -> String { min_i18n::trc_hint("CompactStrip", s) }
+
 impl CompactStrip {
     pub fn new() -> CompactStrip {
-        CompactStrip { play: ActionButton::new("play", "Play (Space)").size_s(), pin: ActionButton::new("push-pin", "Always on Top (Ctrl+Alt+T)").size_s(), exit: ActionButton::new("arrows-out-simple", "Leave Compact Mode (Ctrl+Shift+C, Esc)").size_s(),
+        CompactStrip { play: ActionButton::new("play", &tr("Play (Space)")).size_s(), pin: ActionButton::new("push-pin", &tr("Always on Top (Ctrl+Alt+T)")).size_s(), exit: ActionButton::new("arrows-out-simple", &tr("Leave Compact Mode (Ctrl+Shift+C, Esc)")).size_s(),
             tc: String::new(), tc_rect: Rect::ZERO, tc_hover: false, tooltips: Tooltips::default(), rect: Rect::ZERO, scrub_rect: Rect::ZERO }
     }
     pub fn layout(&mut self, fonts: &mut Fonts, w: f64, y: f64, scale: f64) {
@@ -43,7 +46,7 @@ impl CompactStrip {
     pub fn sync(&mut self, p: Option<&Transport>, tc: &str, pinned: bool, now: Instant) {
         let has = p.is_some();
         if self.play.enabled != has { self.play.enabled = has; if !has { self.play.reset(now); } }
-        if let Some(p) = p { self.play.icon = if p.is_playing() { "pause" } else { "play" }; self.play.tooltip = if p.is_playing() { "Pause (Space)".into() } else { "Play (Space)".into() }; }
+        if let Some(p) = p { self.play.icon = if p.is_playing() { "pause" } else { "play" }; self.play.tooltip = tr(if p.is_playing() { "Pause (Space)" } else { "Play (Space)" }); }
         self.tc = tc.to_string();
         self.pin.selected = pinned;
     }

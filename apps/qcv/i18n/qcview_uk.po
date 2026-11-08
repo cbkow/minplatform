@@ -1,0 +1,3825 @@
+msgid ""
+msgstr ""
+"Language: uk\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"X-Source: QCView translations/qcview_uk.ts (ts2po.py)\n"
+
+msgctxt "ColorPanel"
+msgid "Choose LUT"
+msgstr "Вибрати LUT"
+
+msgctxt "ColorPanel"
+msgid "LUT / CDL files (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+msgstr "Файли LUT / CDL (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+
+msgctxt "ColorPanel"
+msgid "All files (*)"
+msgstr "Усі файли (*)"
+
+msgctxt "ColorPanel"
+msgid "LUT files (*.cube *.3dl *.csp)"
+msgstr "Файли LUT (*.cube *.3dl *.csp)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT…"
+msgstr "Експортувати LUT…"
+
+msgctxt "ColorPanel"
+msgid "3D LUT (*.cube)"
+msgstr "3D LUT (*.cube)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT failed — %1"
+msgstr "Не вдалося експортувати LUT — %1"
+
+msgctxt "ColorPanel"
+msgid "LUT exported: %1"
+msgstr "LUT експортовано: %1"
+
+msgctxt "ColorPanel"
+msgid "Save preset as…"
+msgstr "Зберегти пресет як…"
+
+msgctxt "ColorPanel"
+msgid "Preset name"
+msgstr "Назва пресету"
+
+msgctxt "ColorPanel"
+msgid "Cancel"
+msgstr "Скасувати"
+
+msgctxt "ColorPanel"
+msgid "Save"
+msgstr "Зберегти"
+
+msgctxt "ColorPanel"
+msgid "Preset saved: %1"
+msgstr "Пресет збережено: %1"
+
+msgctxt "ColorPanel"
+msgid "Couldn't save preset “%1” — try another name"
+msgstr "Не вдалося зберегти пресет «%1» — спробуйте іншу назву"
+
+#. Panel title
+msgctxt "ColorPanel"
+msgid "Color"
+msgstr "Колір"
+
+msgctxt "ColorPanel"
+msgid "minColor · linear conversions, AgX, no OCIO"
+msgstr "minColor · лінійні перетворення, AgX, без OCIO"
+
+msgctxt "ColorPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+msgctxt "ColorPanel"
+msgid "Colour through the OpenColorIO chain (Input · Look · LUTs · Output · View)"
+msgstr "Колір через ланцюжок OpenColorIO (Вхід · Look · LUT · Вихід · Вид)"
+
+msgctxt "ColorPanel"
+msgid "minColor"
+msgstr "minColor"
+
+msgctxt "ColorPanel"
+msgid "Colour through the minColor engine: Input → Knee → AgX → Display, no OCIO"
+msgstr "Колір через рушій minColor: Вхід → Knee → AgX → Дисплей, без OCIO"
+
+msgctxt "ColorPanel"
+msgid "Previous preset"
+msgstr "Попередній пресет"
+
+msgctxt "ColorPanel"
+msgid "(no preset)"
+msgstr "(без пресету)"
+
+msgctxt "ColorPanel"
+msgid "%1 — modified"
+msgstr "%1 — змінено"
+
+msgctxt "ColorPanel"
+msgid "Next preset"
+msgstr "Наступний пресет"
+
+msgctxt "ColorPanel"
+msgid "Overwrite the active user preset"
+msgstr "Перезаписати активний користувацький пресет"
+
+msgctxt "ColorPanel"
+msgid "Save as…"
+msgstr "Зберегти як…"
+
+msgctxt "ColorPanel"
+msgid "Delete"
+msgstr "Видалити"
+
+msgctxt "ColorPanel"
+msgid "Delete the active user preset"
+msgstr "Видалити активний користувацький пресет"
+
+msgctxt "ColorPanel"
+msgid "Select a user preset to delete"
+msgstr "Виберіть користувацький пресет для видалення"
+
+msgctxt "ColorPanel"
+msgid "Preset deleted: %1"
+msgstr "Пресет видалено: %1"
+
+#. Button in the toast after deleting a preset
+msgctxt "ColorPanel"
+msgid "Undo"
+msgstr "Повернути"
+
+#. Tab: the Color panel's setup column (presets and config)
+msgctxt "ColorPanel"
+msgid "Setup"
+msgstr "Налаштування"
+
+#. Tab
+msgctxt "ColorPanel"
+msgid "Presets"
+msgstr "Пресети"
+
+msgctxt "ColorPanel"
+msgid "A preset sets both groups: its clip half on the selected clip, its view half on the View"
+msgstr "Пресет задає обидві групи: свою частину кліпу на вибраному кліпі, а частину виду — у Виді"
+
+msgctxt "ColorPanel"
+msgid "Config · %1"
+msgstr "Конфігурація · %1"
+
+msgctxt "ColorPanel"
+msgid "The OCIO config — the colourspace, display and view names every column uses"
+msgstr "Конфігурація OCIO — назви колірних просторів, дисплеїв і видів, які використовує кожен стовпець"
+
+#. Color panel caption: the clip follows the host Blender's display device and view
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (emulated)"
+msgstr "Дисплей хоста: %1 · %2 (емуляція)"
+
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (off)"
+msgstr "Дисплей хоста: %1 · %2 (вимк.)"
+
+msgctxt "ColorPanel"
+msgid "Use my View instead of the host's display"
+msgstr "Використати мій Вид замість дисплея хоста"
+
+msgctxt "ColorPanel"
+msgid "Sets clip + view"
+msgstr "Задає кліп + вид"
+
+msgctxt "ColorPanel"
+msgid "Names every column uses"
+msgstr "Назви для всіх стовпців"
+
+#. Placeholder of a filter field over a list
+msgctxt "ColorPanel"
+msgid "Filter…"
+msgstr "Фільтр…"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "SDR"
+msgstr "SDR"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+#. Column header: the per-clip half of the colour chain (Input, Look, LUTs)
+msgctxt "ColorPanel"
+msgid "Clip"
+msgstr "Кліп"
+
+msgctxt "ColorPanel"
+msgid "no clip"
+msgstr "немає кліпу"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"A's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"Кліп A — зміни залишаються з цим кліпом"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"Changes here stay with this clip"
+msgstr ""
+"%1\n"
+"Зміни тут залишаються з цим кліпом"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"B's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"Кліп B — зміни залишаються з цим кліпом"
+
+msgctxt "ColorPanel"
+msgid "Input gamut"
+msgstr "Вхідний гамут"
+
+msgctxt "ColorPanel"
+msgid "Input transfer"
+msgstr "Вхідний трансфер"
+
+#. OCIO input: the clip's source colourspace
+msgctxt "ColorPanel"
+msgid "Input"
+msgstr "Вхід"
+
+#. OCIO look: a creative transform from the config
+msgctxt "ColorPanel"
+msgid "Look"
+msgstr "Look"
+
+#. Picker entry: nothing selected
+msgctxt "ColorPanel"
+msgid "(none)"
+msgstr "(немає)"
+
+#. A LUT applied in scene-linear space, before the view
+msgctxt "ColorPanel"
+msgid "Scene LUT"
+msgstr "LUT сцени"
+
+#. OCIO view: the display-side transform
+msgctxt "ColorPanel"
+msgid "View"
+msgstr "Вид"
+
+#. Caption: the clip chain applies to both sides of the dual view
+msgctxt "ColorPanel"
+msgid "both sides"
+msgstr "обидві сторони"
+
+msgctxt "ColorPanel"
+msgid "everything"
+msgstr "усе"
+
+#. minColor's rendering stage
+msgctxt "ColorPanel"
+msgid "Rendering · AgX"
+msgstr "Рендеринг · AgX"
+
+msgctxt "ColorPanel"
+msgid "Rendering"
+msgstr "Рендеринг"
+
+#. Rendering choice: no tone mapping applied
+msgctxt "ColorPanel"
+msgid "Un-tone-mapped"
+msgstr "Без тонмапінгу"
+
+#. OCIO display: the target display
+msgctxt "ColorPanel"
+msgid "Display"
+msgstr "Дисплей"
+
+#. Column header: the output (display) half of the chain
+msgctxt "ColorPanel"
+msgid "Output"
+msgstr "Вихід"
+
+msgctxt "ColorPanel"
+msgid "Display LUT"
+msgstr "LUT дисплея"
+
+#. %1 is the engine name (OCIO or minColor)
+msgctxt "ColorPanel"
+msgid "%1 On"
+msgstr "%1 увімк."
+
+msgctxt "ColorPanel"
+msgid "%1 Off"
+msgstr "%1 вимк."
+
+#. Viewer aid slider, in stops
+msgctxt "ColorPanel"
+msgid "Exposure"
+msgstr "Експозиція"
+
+#. Viewer aid slider
+msgctxt "ColorPanel"
+msgid "Gamma"
+msgstr "Гамма"
+
+msgctxt "ColorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "ColorPanel"
+msgid "All channels"
+msgstr "Усі канали"
+
+msgctxt "ColorPanel"
+msgid "Red"
+msgstr "Червоний"
+
+msgctxt "ColorPanel"
+msgid "Green"
+msgstr "Зелений"
+
+msgctxt "ColorPanel"
+msgid "Blue"
+msgstr "Синій"
+
+#. Channel view: the alpha channel shown as a matte
+msgctxt "ColorPanel"
+msgid "Alpha matte"
+msgstr "Альфа-маска"
+
+msgctxt "ColorPanel"
+msgid "Luma (output primaries)"
+msgstr "Luma (первинні кольори виходу)"
+
+msgctxt "ColorPanel"
+msgid "Reset exposure, gamma and channel"
+msgstr "Скинути експозицію, гамму й канал"
+
+msgctxt "ColorPanel"
+msgid "SDR — sRGB"
+msgstr "SDR — sRGB"
+
+msgctxt "ColorPanel"
+msgid "SDR — Display P3"
+msgstr "SDR — Display P3"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear sRGB"
+msgstr "EDR — лінійний sRGB"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear P3"
+msgstr "EDR — лінійний P3"
+
+msgctxt "ColorPanel"
+msgid "HDR10 PQ"
+msgstr "HDR10 PQ"
+
+msgctxt "ColorPanel"
+msgid "Extended Linear sRGB"
+msgstr "Розширений лінійний sRGB"
+
+msgctxt "ColorPanel"
+msgid "Bake the active OCIO chain to a 65³ .cube LUT"
+msgstr "Запекти активний ланцюжок OCIO у LUT .cube 65³"
+
+msgctxt "ColorPanel"
+msgid "Configure input / display / view first"
+msgstr "Спочатку налаштуйте вхід / дисплей / вид"
+
+msgctxt "ColorPanel"
+msgid "Set on this clip — click to go back to the default"
+msgstr "Задано на цьому кліпі — натисніть, щоб повернутися до типового"
+
+#. Button: fold this section
+msgctxt "ColorPanel"
+msgid "Collapse"
+msgstr "Згорнути"
+
+msgctxt "ColorPanel"
+msgid "%1 — click to expand"
+msgstr "%1 — натисніть, щоб розгорнути"
+
+#. Section title: the highlight compression stage
+msgctxt "ColorPanel"
+msgid "Highlight Knee"
+msgstr "Knee світлих тонів"
+
+#. Toggle state
+msgctxt "ColorPanel"
+msgid "On"
+msgstr "Увімк."
+
+msgctxt "ColorPanel"
+msgid "Off"
+msgstr "Вимк."
+
+msgctxt "ColorPanel"
+msgid "Not available for this chain (data view, or the config has no interchange role)."
+msgstr "Недоступно для цього ланцюжка (вид даних, або в конфігурації немає ролі interchange)."
+
+#. Highlight Knee: the brightest level the source carries, in nits
+msgctxt "ColorPanel"
+msgid "Source peak"
+msgstr "Пік джерела"
+
+#. Unit suffix
+msgctxt "ColorPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "ColorPanel"
+msgid "+%1 stops over SDR white"
+msgstr "+%1 EV над білим SDR"
+
+msgctxt "ColorPanel"
+msgid "Use file MaxCLL (%1)"
+msgstr "Використати MaxCLL файлу (%1)"
+
+msgctxt "ColorPanel"
+msgid "Use mastering peak (%1)"
+msgstr "Використати пік мастерингу (%1)"
+
+msgctxt "ColorPanel"
+msgid "No MaxCLL in file"
+msgstr "У файлі немає MaxCLL"
+
+msgctxt "ColorPanel"
+msgid "Set the source peak from the file's HDR10 metadata"
+msgstr "Задати пік джерела з метаданих HDR10 файлу"
+
+#. Highlight Knee: the brightest level the display shows, in nits
+msgctxt "ColorPanel"
+msgid "Target peak"
+msgstr "Цільовий пік"
+
+msgctxt "ColorPanel"
+msgid "100 nits · SDR display"
+msgstr "100 nits · дисплей SDR"
+
+#. Highlight Knee: the nits level where highlight compression begins
+msgctxt "ColorPanel"
+msgid "Knee start"
+msgstr "Початок knee"
+
+msgctxt "ColorPanel"
+msgid "%1 nits"
+msgstr "%1 nits"
+
+msgctxt "ColorPanel"
+msgid "BT.2390"
+msgstr "BT.2390"
+
+msgctxt "ColorPanel"
+msgid "Reset knee start to BT.2390"
+msgstr "Скинути початок knee до BT.2390"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — on, %1 → %2 nits"
+msgstr "Knee світлих тонів — увімк., %1 → %2 nits"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — off, click to expand"
+msgstr "Knee світлих тонів — вимк., натисніть, щоб розгорнути"
+
+msgctxt "ColorPanel"
+msgid "AgX"
+msgstr "AgX"
+
+msgctxt "ColorPanel"
+msgid "Blender's AgX at the defaults; HDR above 100 nits."
+msgstr "AgX із Blender з типовими параметрами; HDR понад 100 nits."
+
+msgctxt "ColorPanel"
+msgid "Target gamut"
+msgstr "Цільовий гамут"
+
+msgctxt "ColorPanel"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "ColorPanel"
+msgid "Rec.709"
+msgstr "Rec.709"
+
+msgctxt "ColorPanel"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "ColorPanel"
+msgid "Peak luminance"
+msgstr "Пікова яскравість"
+
+msgctxt "ColorPanel"
+msgid "White (EV over grey)"
+msgstr "Білий (EV над сірим)"
+
+msgctxt "ColorPanel"
+msgid "Black (EV under grey)"
+msgstr "Чорний (EV під сірим)"
+
+msgctxt "ColorPanel"
+msgid "Contrast"
+msgstr "Контраст"
+
+#. AgX curve control: the dark end of the tone curve
+msgctxt "ColorPanel"
+msgid "Toe power"
+msgstr "Показник носка (toe)"
+
+#. AgX curve control: the bright end of the tone curve
+msgctxt "ColorPanel"
+msgid "Shoulder power"
+msgstr "Показник плеча (shoulder)"
+
+#. AgX control: how much of the original hue is kept in bright areas
+msgctxt "ColorPanel"
+msgid "Hue restore"
+msgstr "Відновлення відтінку"
+
+#. AgX control: saturation kept above SDR white
+msgctxt "ColorPanel"
+msgid "HDR purity"
+msgstr "Чистота HDR"
+
+msgctxt "ColorPanel"
+msgid "AgX — on, %1 nits"
+msgstr "AgX — увімк., %1 nits"
+
+msgctxt "ColorPanel"
+msgid "AgX — off, click to expand"
+msgstr "AgX — вимк., натисніть, щоб розгорнути"
+
+#. Button on a filled LUT slot
+msgctxt "ColorPanel"
+msgid "Replace LUT"
+msgstr "Замінити LUT"
+
+#. Button on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "+ Add LUT"
+msgstr "+ Додати LUT"
+
+#. Field: the id of the first correction inside a CDL file
+msgctxt "ColorPanel"
+msgid "Correction ID (first)"
+msgstr "ID корекції (першої)"
+
+#. Tooltip on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "click to choose"
+msgstr "натисніть, щоб вибрати"
+
+#. Button
+msgctxt "ColorPanel"
+msgid "Clear LUT"
+msgstr "Очистити LUT"
+
+msgctxt "ColorPanel"
+msgid "%1 — %2"
+msgstr "%1 — %2"
+
+#. Colour as a hexadecimal code
+msgctxt "ColorPickerInline"
+msgid "Hex"
+msgstr "Hex"
+
+#. Red channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "R"
+msgstr "R"
+
+#. Green channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "G"
+msgstr "G"
+
+#. Blue channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "B"
+msgstr "B"
+
+msgctxt "CompactStrip"
+msgid "Pause (Space)"
+msgstr "Пауза (Space)"
+
+msgctxt "CompactStrip"
+msgid "Play (Space)"
+msgstr "Відтворити (Space)"
+
+msgctxt "CompactStrip"
+msgid "Drag to move the window"
+msgstr "Перетягніть, щоб перемістити вікно"
+
+#. Badge: a live source is playing
+msgctxt "CompactStrip"
+msgid "LIVE"
+msgstr "НАЖИВО"
+
+#. Current frame / total frames
+msgctxt "CompactStrip"
+msgid "%1 / %2"
+msgstr "%1 / %2"
+
+msgctxt "CompactStrip"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "Поверх усіх вікон — натисніть, щоб відкріпити (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "Поверх усіх вікон (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Exit Compact Mode (Esc)"
+msgstr "Вийти з компактного режиму (Esc)"
+
+msgctxt "FFmpegMetadataExtractor"
+msgid "Image sequence"
+msgstr "Послідовність зображень"
+
+#. Media kind
+msgctxt "FFmpegMetadataExtractor"
+msgid "Unknown"
+msgstr "Невідомо"
+
+msgctxt "ImageSequenceInspector"
+msgid "Image Sequence"
+msgstr "Послідовність зображень"
+
+msgctxt "ImageSequenceInspector"
+msgid "Frame rate"
+msgstr "Частота кадрів"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "ImageSequenceInspector"
+msgid "Transfer"
+msgstr "Трансфер"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (Linear, EXR)"
+msgstr "Авто (лінійний, EXR)"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (sRGB)"
+msgstr "Авто (sRGB)"
+
+#. Choice: decided from the file
+msgctxt "ImageSequenceInspector"
+msgid "Auto"
+msgstr "Авто"
+
+msgctxt "ImageSequenceInspector"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "ImageSequenceInspector"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "ImageSequenceInspector"
+msgid "Linear"
+msgstr "Лінійний"
+
+#. Frame number range
+msgctxt "ImageSequenceInspector"
+msgid "Range"
+msgstr "Діапазон"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 – %2 (%3 frames)"
+msgstr "%1 – %2 (кадрів: %3)"
+
+#. The file name pattern of the sequence
+msgctxt "ImageSequenceInspector"
+msgid "Pattern"
+msgstr "Шаблон"
+
+msgctxt "ImageSequenceInspector"
+msgid "Resolution"
+msgstr "Роздільна здатність"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 × %2"
+msgstr "%1 × %2"
+
+msgctxt "ImageSequenceInspector"
+msgid "(probing…)"
+msgstr "(аналіз…)"
+
+#. EXR compression
+msgctxt "ImageSequenceInspector"
+msgid "Compression"
+msgstr "Стиснення"
+
+msgctxt "ImageSequenceInspector"
+msgid "Duration"
+msgstr "Тривалість"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache stride"
+msgstr "Крок кешу"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every Frame (Full)"
+msgstr "Кожен кадр (повний)"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every %1 Frames"
+msgstr "Кожен %1-й кадр"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache ahead"
+msgstr "Кеш уперед"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 / %2 frames"
+msgstr "%1 / %2 кадрів"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache behind"
+msgstr "Кеш назад"
+
+#. EXR layer
+msgctxt "ImageSequenceInspector"
+msgid "Layer"
+msgstr "Шар"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Video"
+msgstr "Відео"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Audio"
+msgstr "Аудіо"
+
+#. Media kind: a single still image
+msgctxt "InspectorPanel"
+msgid "Image"
+msgstr "Зображення"
+
+msgctxt "InspectorPanel"
+msgid "Image Sequence"
+msgstr "Послідовність зображень"
+
+msgctxt "InspectorPanel"
+msgid "Playlist"
+msgstr "Плейлист"
+
+msgctxt "InspectorPanel"
+msgid "Dual View"
+msgstr "Подвійний перегляд"
+
+#. Media kind: a live stream or bridge feed
+msgctxt "InspectorPanel"
+msgid "Live"
+msgstr "Наживо"
+
+#. Media kind: generic
+msgctxt "InspectorPanel"
+msgid "Media"
+msgstr "Медіа"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "File"
+msgstr "Файл"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Colour"
+msgstr "Колір"
+
+#. Section: video levels, full or limited
+msgctxt "InspectorPanel"
+msgid "Range"
+msgstr "Діапазон"
+
+#. Row: whether the file has an alpha channel
+msgctxt "InspectorPanel"
+msgid "Alpha"
+msgstr "Альфа"
+
+#. File container format (QuickTime, MXF)
+msgctxt "InspectorPanel"
+msgid "Container"
+msgstr "Контейнер"
+
+msgctxt "InspectorPanel"
+msgid "Encoder"
+msgstr "Кодер"
+
+msgctxt "InspectorPanel"
+msgid "Copy URL"
+msgstr "Копіювати URL"
+
+msgctxt "InspectorPanel"
+msgid "Copy path"
+msgstr "Копіювати шлях"
+
+#. Button: show the file in Finder / Explorer
+msgctxt "InspectorPanel"
+msgid "Reveal"
+msgstr "Показати в папці"
+
+msgctxt "InspectorPanel"
+msgid "Reading metadata…"
+msgstr "Читання метаданих…"
+
+msgctxt "InspectorPanel"
+msgid "Resolution"
+msgstr "Роздільна здатність"
+
+msgctxt "InspectorPanel"
+msgid "Frame rate"
+msgstr "Частота кадрів"
+
+msgctxt "InspectorPanel"
+msgid "Total frames"
+msgstr "Усього кадрів"
+
+msgctxt "InspectorPanel"
+msgid "Codec"
+msgstr "Кодек"
+
+#. Codec profile (e.g. ProRes 422 HQ)
+msgctxt "InspectorPanel"
+msgid "Profile"
+msgstr "Профіль"
+
+msgctxt "InspectorPanel"
+msgid "Bitrate"
+msgstr "Бітрейт"
+
+msgctxt "InspectorPanel"
+msgid "file avg %1"
+msgstr "сер. за файлом %1"
+
+msgctxt "InspectorPanel"
+msgid "file avg"
+msgstr "сер. за файлом"
+
+msgctxt "InspectorPanel"
+msgid "Pixel format"
+msgstr "Формат пікселів"
+
+#. Pixel format summary: the file is RGB, not YUV
+msgctxt "InspectorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "InspectorPanel"
+msgid "Bit depth"
+msgstr "Бітова глибина"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit + alpha"
+msgstr "%1 біт + альфа"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit"
+msgstr "%1 біт"
+
+msgctxt "InspectorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+msgctxt "InspectorPanel"
+msgid "Yes — %1"
+msgstr "Так — %1"
+
+#. Section title: dimensions, aspect, rotation
+msgctxt "InspectorPanel"
+msgid "Geometry"
+msgstr "Геометрія"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto (%1°)"
+msgstr "Авто (%1°)"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto"
+msgstr "Авто"
+
+msgctxt "InspectorPanel"
+msgid "Aspect"
+msgstr "Пропорції"
+
+#. Pixel aspect choice: square pixels
+msgctxt "InspectorPanel"
+msgid "Square"
+msgstr "Квадратні"
+
+#. Pixel aspect choice: the aspect found in the file
+msgctxt "InspectorPanel"
+msgid "Detected"
+msgstr "Виявлені"
+
+#. Pixel aspect choice: a value typed by the user
+msgctxt "InspectorPanel"
+msgid "Custom"
+msgstr "Власні"
+
+msgctxt "InspectorPanel"
+msgid "Detected %1:%2"
+msgstr "Виявлено %1:%2"
+
+msgctxt "InspectorPanel"
+msgid "%1:%2 (non-square)"
+msgstr "%1:%2 (неквадратні)"
+
+msgctxt "InspectorPanel"
+msgid "1:1 (square)"
+msgstr "1:1 (квадратні)"
+
+#. Row: display aspect
+msgctxt "InspectorPanel"
+msgid "Display"
+msgstr "Кадр"
+
+msgctxt "InspectorPanel"
+msgid "Rotation"
+msgstr "Поворот"
+
+msgctxt "InspectorPanel"
+msgid "Pixel aspect"
+msgstr "Пропорції пікселя"
+
+msgctxt "InspectorPanel"
+msgid "Display aspect"
+msgstr "Пропорції кадру"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Color"
+msgstr "Колір"
+
+msgctxt "InspectorPanel"
+msgid "Colorspace"
+msgstr "Колірний простір"
+
+#. Colour primaries
+msgctxt "InspectorPanel"
+msgid "Primaries"
+msgstr "Первинні кольори"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "InspectorPanel"
+msgid "Transfer"
+msgstr "Трансфер"
+
+msgctxt "InspectorPanel"
+msgid "HDR metadata"
+msgstr "Метадані HDR"
+
+msgctxt "InspectorPanel"
+msgid "MaxCLL %1"
+msgstr "MaxCLL %1"
+
+msgctxt "InspectorPanel"
+msgid "MaxFALL %1"
+msgstr "MaxFALL %1"
+
+msgctxt "InspectorPanel"
+msgid "mastering %1 nits"
+msgstr "мастеринг %1 nits"
+
+msgctxt "InspectorPanel"
+msgid "NCLC tag"
+msgstr "Тег NCLC"
+
+msgctxt "InspectorPanel"
+msgid "Range tag"
+msgstr "Тег діапазону"
+
+#. The file carries no range tag
+msgctxt "InspectorPanel"
+msgid "untagged"
+msgstr "без тегу"
+
+msgctxt "InspectorPanel"
+msgid "decoder: %1"
+msgstr "декодер: %1"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes full"
+msgstr "Авто припускає повний"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes limited"
+msgstr "Авто припускає обмежений"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full)"
+msgstr "Авто (повний)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited)"
+msgstr "Авто (обмежений)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full, assumed)"
+msgstr "Авто (повний, припущення)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited, assumed)"
+msgstr "Авто (обмежений, припущення)"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Full"
+msgstr "Повний"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Limited"
+msgstr "Обмежений"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ P3)"
+msgstr "Авто (PQ P3)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ 2020)"
+msgstr "Авто (PQ 2020)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (HLG)"
+msgstr "Авто (HLG)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR, untagged)"
+msgstr "Авто (SDR, без тегу)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR)"
+msgstr "Авто (SDR)"
+
+msgctxt "InspectorPanel"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "InspectorPanel"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "InspectorPanel"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "InspectorPanel"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "InspectorPanel"
+msgid "Linear"
+msgstr "Лінійний"
+
+#. Row: the bridge's current state
+msgctxt "InspectorPanel"
+msgid "State"
+msgstr "Стан"
+
+#. Bridge state: the Transmit device is disabled in the host application
+msgctxt "InspectorPanel"
+msgid "Off in the host"
+msgstr "Вимк. у хості"
+
+#. Bridge state: nothing is being sent
+msgctxt "InspectorPanel"
+msgid "Idle"
+msgstr "Простій"
+
+#. Bridge state: the host is sending frames
+msgctxt "InspectorPanel"
+msgid "Pushing"
+msgstr "Передає"
+
+#. Bridge state: the host is scrubbing
+msgctxt "InspectorPanel"
+msgid "Scrubbing"
+msgstr "Скрабінг"
+
+msgctxt "InspectorPanel"
+msgid "No audio"
+msgstr "Без звуку"
+
+msgctxt "InspectorPanel"
+msgid "Sample rate"
+msgstr "Частота дискретизації"
+
+msgctxt "InspectorPanel"
+msgid "%1 Hz"
+msgstr "%1 Hz"
+
+msgctxt "InspectorPanel"
+msgid "Channels"
+msgstr "Канали"
+
+msgctxt "InspectorPanel"
+msgid "%1 (stereo)"
+msgstr "%1 (стерео)"
+
+msgctxt "InspectorPanel"
+msgid "%1 (mono)"
+msgstr "%1 (моно)"
+
+#. Audio channel layout (stereo, 5.1)
+msgctxt "InspectorPanel"
+msgid "Layout"
+msgstr "Розкладка"
+
+#. Toggle: play the bridge's audio in QCView
+msgctxt "InspectorPanel"
+msgid "Listen in QCView"
+msgstr "Слухати в QCView"
+
+#. Row label for the bridge's audio
+msgctxt "InspectorPanel"
+msgid "Audio Stream"
+msgstr "Аудіопотік"
+
+msgctxt "InspectorPanel"
+msgid "off: tick it in Premiere ▸ Preferences ▸ Playback"
+msgstr "вимк.: позначте в Premiere ▸ Preferences ▸ Playback"
+
+#. Audio downmix choice
+msgctxt "InspectorPanel"
+msgid "Mix"
+msgstr "Мікс"
+
+msgctxt "InspectorPanel"
+msgid "Auto — picks the right mix per source"
+msgstr "Авто — добирає потрібний мікс для кожного джерела"
+
+msgctxt "InspectorPanel"
+msgid "5.1 → Stereo (BS.775 downmix from channels 1-6)"
+msgstr "5.1 → Стерео (даунмікс BS.775 з каналів 1-6)"
+
+msgctxt "InspectorPanel"
+msgid "Channels 7-8 (broadcast stereo bounce)"
+msgstr "Канали 7-8 (стереозведення для ефіру)"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Timecode"
+msgstr "Таймкод"
+
+#. Timecode origin: counting from the start of the file
+msgctxt "InspectorPanel"
+msgid "From start"
+msgstr "Від початку"
+
+#. Timecode origin: the timecode track in the file
+msgctxt "InspectorPanel"
+msgid "Embedded"
+msgstr "Вбудований"
+
+#. Timecode origin: the QuickTime start timecode
+msgctxt "InspectorPanel"
+msgid "QT Start"
+msgstr "Початок QT"
+
+msgctxt "InspectorPanel"
+msgid "QT TC"
+msgstr "QT TC"
+
+msgctxt "InspectorPanel"
+msgid "XMP Alt"
+msgstr "XMP Alt"
+
+#. Row: where the timecode comes from
+msgctxt "InspectorPanel"
+msgid "Origin"
+msgstr "Походження"
+
+#. Row: which metadata the timecode was read from
+msgctxt "InspectorPanel"
+msgid "Source"
+msgstr "Джерело"
+
+msgctxt "InspectorPanel"
+msgid "(frame %1)"
+msgstr "(кадр %1)"
+
+msgctxt "InspectorPanel"
+msgid "QT TimeCode"
+msgstr "QT TimeCode"
+
+#. Row: file creation date
+msgctxt "InspectorPanel"
+msgid "Created"
+msgstr "Створено"
+
+#. Row: the media's own creation date from its metadata
+msgctxt "InspectorPanel"
+msgid "Media Created"
+msgstr "Створено (медіа)"
+
+#. Section title: project files that reference this media
+msgctxt "InspectorPanel"
+msgid "Linked Projects"
+msgstr "Пов’язані проєкти"
+
+msgctxt "InspectorPanel"
+msgid "After Effects"
+msgstr "After Effects"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Mac)"
+msgstr "Premiere (Mac)"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Windows)"
+msgstr "Premiere (Windows)"
+
+#. Button: open the linked project in its application
+msgctxt "InspectorPanel"
+msgid "Open"
+msgstr "Відкрити"
+
+#. Button: copy the project path
+msgctxt "InspectorPanel"
+msgid "Copy"
+msgstr "Копіювати"
+
+msgctxt "InspectorPanel"
+msgid "Playlist Contents"
+msgstr "Вміст плейлиста"
+
+msgctxt "InspectorPanel"
+msgid "%1 clips"
+msgstr "Кліпів: %1"
+
+msgctxt "InspectorPanel"
+msgid "(missing)"
+msgstr "(відсутній)"
+
+msgctxt "InspectorPanel"
+msgid "Open in single mode"
+msgstr "Відкрити в одиночному режимі"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Videos"
+msgstr "Відео"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Audio"
+msgstr "Аудіо"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Images"
+msgstr "Зображення"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Image Sequences"
+msgstr "Послідовності зображень"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Playlists"
+msgstr "Плейлисти"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Dual Views"
+msgstr "Подвійні перегляди"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Live"
+msgstr "Наживо"
+
+msgctxt "LeftRail"
+msgid "Add Media"
+msgstr "Додати медіа"
+
+#. Tooltip on the warning badge of a media row the player cannot decode
+msgctxt "LeftRail"
+msgid "Can’t be played here: unsupported format or un-debayered camera raw"
+msgstr "Тут не відтворюється: непідтримуваний формат або камерний RAW без дебаєризації"
+
+msgctxt "LeftRail"
+msgid "Create Playlist from Selection"
+msgstr "Створити плейлист із вибраного"
+
+#. Context menu: set the OCIO input colourspace of the selected clips
+msgctxt "LeftRail"
+msgid "Input"
+msgstr "Вхід"
+
+#. Picker group header: inputs already used in the project
+msgctxt "LeftRail"
+msgid "In this project"
+msgstr "У цьому проєкті"
+
+#. Picker group header: every input in the config
+msgctxt "LeftRail"
+msgid "All"
+msgstr "Усі"
+
+msgctxt "LeftRail"
+msgid "Input for 1 clip"
+msgstr "Вхід для 1 кліпу"
+
+msgctxt "LeftRail"
+msgid "Input for %1 clips"
+msgstr "Вхід для вибраних кліпів (%1)"
+
+msgctxt "LeftRail"
+msgid "Filter…"
+msgstr "Фільтр…"
+
+#. Picker entry: use the config's default input
+msgctxt "LeftRail"
+msgid "default"
+msgstr "типовий"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of “%1”"
+msgstr "Використати ланцюжок кліпу «%1»"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of the Clip on Screen"
+msgstr "Використати ланцюжок кліпу на екрані"
+
+msgctxt "LeftRail"
+msgid "Reset Clip Chain"
+msgstr "Скинути ланцюжок кліпу"
+
+msgctxt "LeftRail"
+msgid "Delete"
+msgstr "Видалити"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Expand panel"
+msgstr "Розгорнути панель"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Collapse panel"
+msgstr "Згорнути панель"
+
+#. Rail title
+msgctxt "LeftRail"
+msgid "Project"
+msgstr "Проєкт"
+
+#. Count of items, in parentheses
+msgctxt "LeftRail"
+msgid "(%1)"
+msgstr "(%1)"
+
+#. Section title: the project's media bins
+msgctxt "LeftRail"
+msgid "Media"
+msgstr "Медіа"
+
+msgctxt "LeftRail"
+msgid "Drop media here to add to the project"
+msgstr "Перетягніть медіа сюди, щоб додати до проєкту"
+
+#. Default name of a new playlist
+msgctxt "LeftRail"
+msgid "New playlist"
+msgstr "Новий плейлист"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Safety Guides"
+msgstr "Безпечні зони"
+
+#. Row: which safety guide to show
+msgctxt "LeftRail"
+msgid "Guide"
+msgstr "Зона"
+
+msgctxt "LeftRail"
+msgid "(none)"
+msgstr "(немає)"
+
+#. Row: guide opacity
+msgctxt "LeftRail"
+msgid "Opacity"
+msgstr "Непрозорість"
+
+#. Row: guide line width
+msgctxt "LeftRail"
+msgid "Width"
+msgstr "Товщина"
+
+#. Row: guide line colour
+msgctxt "LeftRail"
+msgid "Color"
+msgstr "Колір"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Background"
+msgstr "Тло"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Black"
+msgstr "Чорне"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Dark Gray"
+msgstr "Темно-сіре"
+
+#. Background choice: a dark checkerboard
+msgctxt "LeftRail"
+msgid "Dark Check"
+msgstr "Темна шахівниця"
+
+#. Background choice: a light checkerboard
+msgctxt "LeftRail"
+msgid "Light Check"
+msgstr "Світла шахівниця"
+
+#. Section: installed outputs (NDI, AJA, streaming)
+msgctxt "LeftRail"
+msgid "Output"
+msgstr "Вихід"
+
+#. Chip: silence the audio sent to outputs
+msgctxt "LeftRail"
+msgid "Mute feed"
+msgstr "Вихід без звуку"
+
+msgctxt "LeftRail"
+msgid "Silence the audio sent to outputs while you keep listening. The master mute (M) silences both."
+msgstr "Вимикає звук, що надсилається на виходи, а ви продовжуєте слухати. Головне вимкнення звуку (M) вимикає обидва."
+
+#. Chip: send the safety guides to outputs
+msgctxt "LeftRail"
+msgid "Guides"
+msgstr "Зони"
+
+msgctxt "LeftRail"
+msgid "Draw the safety guides into the outputs that ask for them."
+msgstr "Малює безпечні зони у виходах, які їх запитують."
+
+#. Chip: send note strokes to outputs
+msgctxt "LeftRail"
+msgid "Notes"
+msgstr "Нотатки"
+
+msgctxt "LeftRail"
+msgid "Draw note strokes into the outputs that ask for them."
+msgstr "Малює штрихи нотаток у виходах, які їх запитують."
+
+#. Button on an output card
+msgctxt "LeftRail"
+msgid "Stop"
+msgstr "Зупинити"
+
+msgctxt "LeftRail"
+msgid "Start"
+msgstr "Запустити"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "PQ Rec.2100"
+msgstr "PQ Rec.2100"
+
+msgctxt "LeftRail"
+msgid "HLG Rec.2100"
+msgstr "HLG Rec.2100"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "SDR Rec.709"
+msgstr "SDR Rec.709"
+
+#. Output resolution choice
+msgctxt "LeftRail"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "LeftRail"
+msgid "UHD"
+msgstr "UHD"
+
+#. Output resolution choice
+#. ----------
+#. Choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto"
+msgstr "Авто"
+
+#. Output state: the sink is receiving
+msgctxt "LeftRail"
+msgid "attached"
+msgstr "підключено"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "waiting for the sink"
+msgstr "очікування приймача"
+
+msgctxt "LeftRail"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "LeftRail"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "LeftRail"
+msgid "%1 / %2 / %3 nits"
+msgstr "%1 / %2 / %3 nits"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "live"
+msgstr "наживо"
+
+#. Output state: the sink refused the connection
+msgctxt "LeftRail"
+msgid "refused"
+msgstr "відхилено"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "starting"
+msgstr "запуск"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "not installed"
+msgstr "не встановлено"
+
+msgctxt "LeftRail"
+msgid "Publish the viewport and the mixed audio to this output. The sink runs as its own application; QCView starts it with Start and stops it with Stop."
+msgstr "Публікує область перегляду та зведений звук у цей вихід. Приймач працює як окремий застосунок; QCView запускає його кнопкою «Запустити» й зупиняє кнопкою «Зупинити»."
+
+#. Caption under three number fields
+msgctxt "LeftRail"
+msgid "peak · MaxCLL · MaxFALL nits"
+msgstr "пік · MaxCLL · MaxFALL nits"
+
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in Application Support/QCView/Outputs."
+msgstr "Виходи не встановлено. Вихід реєструє себе в Application Support/QCView/Outputs."
+
+#. Output state
+msgctxt "LeftRail"
+msgid "streaming"
+msgstr "трансляція"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "reconnecting"
+msgstr "перепідключення"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "connecting"
+msgstr "підключення"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "failed"
+msgstr "помилка"
+
+msgctxt "LeftRail"
+msgid "%1 kbps"
+msgstr "%1 kbps"
+
+msgctxt "LeftRail"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+msgctxt "LeftRail"
+msgid "%n encoded"
+msgid_plural "%n encoded"
+msgstr[0] "%n закодований"
+msgstr[1] "%n закодовані"
+msgstr[2] "%n закодованих"
+
+msgctxt "LeftRail"
+msgid "%n repeated"
+msgid_plural "%n repeated"
+msgstr[0] "%n повторений"
+msgstr[1] "%n повторені"
+msgstr[2] "%n повторених"
+
+msgctxt "LeftRail"
+msgid "%n skipped"
+msgid_plural "%n skipped"
+msgstr[0] "%n пропущений"
+msgstr[1] "%n пропущені"
+msgstr[2] "%n пропущених"
+
+msgctxt "LeftRail"
+msgid "%n dropped"
+msgid_plural "%n dropped"
+msgstr[0] "%n втрачений"
+msgstr[1] "%n втрачені"
+msgstr[2] "%n втрачених"
+
+msgctxt "LeftRail"
+msgid "%n send error(s)"
+msgid_plural "%n send error(s)"
+msgstr[0] "%n помилка надсилання"
+msgstr[1] "%n помилки надсилання"
+msgstr[2] "%n помилок надсилання"
+
+msgctxt "LeftRail"
+msgid "%n reconnect(s)"
+msgid_plural "%n reconnect(s)"
+msgstr[0] "%n перепідключення"
+msgstr[1] "%n перепідключення"
+msgstr[2] "%n перепідключень"
+
+#. Frame rate choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto fps"
+msgstr "Авто fps"
+
+#. H.264 profile name, keep in English
+msgctxt "LeftRail"
+msgid "Main"
+msgstr "Main"
+
+msgctxt "LeftRail"
+msgid "Baseline"
+msgstr "Baseline"
+
+#. Summary: the stream sends video only
+msgctxt "LeftRail"
+msgid "no audio"
+msgstr "без звуку"
+
+msgctxt "LeftRail"
+msgid "AAC %1"
+msgstr "AAC %1"
+
+msgctxt "LeftRail"
+msgid "SRT %1 ms"
+msgstr "SRT %1 ms"
+
+#. Card title: the SRT / RTMP streaming output
+msgctxt "LeftRail"
+msgid "Stream"
+msgstr "Трансляція"
+
+#. Output state: this machine cannot encode
+msgctxt "LeftRail"
+msgid "no hardware encoder"
+msgstr "немає апаратного кодера"
+
+msgctxt "LeftRail"
+msgid "Send the viewport and the mixed audio to a streaming server (Louper, or any SRT or RTMP server) as H.264 + AAC, encoded on the GPU. srt://host:port with the key as the stream id, or rtmp://host/app with the key as the stream name. A dropped connection reconnects on its own. The picture is the same Rec.709 SDR picture the output bus serves; the frame rate is fixed for the session (a paused viewport repeats its last frame)."
+msgstr "Надсилає область перегляду та зведений звук на сервер трансляції (Louper або будь-який сервер SRT чи RTMP) як H.264 + AAC, закодовані на GPU. srt://host:port із ключем як ідентифікатором потоку або rtmp://host/app із ключем як назвою потоку. Розірване з’єднання відновлюється самостійно. Зображення — той самий Rec.709 SDR, що його віддає шина виходів; частота кадрів фіксується на сеанс (область перегляду на паузі повторює останній кадр)."
+
+msgctxt "LeftRail"
+msgid "srt://host:port"
+msgstr "srt://host:port"
+
+msgctxt "LeftRail"
+msgid "Stream key (SRT stream id)"
+msgstr "Ключ потоку (SRT stream id)"
+
+msgctxt "LeftRail"
+msgid "Hide the key"
+msgstr "Сховати ключ"
+
+msgctxt "LeftRail"
+msgid "Show the key"
+msgstr "Показати ключ"
+
+msgctxt "LeftRail"
+msgid "Bitrate (kbps)"
+msgstr "Бітрейт (kbps)"
+
+msgctxt "LeftRail"
+msgid "Constant-rate target. Louper suggests 2500–8000 at 1080p."
+msgstr "Цільовий постійний бітрейт. Louper радить 2500–8000 для 1080p."
+
+msgctxt "LeftRail"
+msgid "Resolution"
+msgstr "Роздільна здатність"
+
+msgctxt "LeftRail"
+msgid "The stream's raster; the viewport is letterboxed into it like any output."
+msgstr "Растр потоку; область перегляду вписується в нього з полями, як у будь-який вихід."
+
+msgctxt "LeftRail"
+msgid "Frame rate"
+msgstr "Частота кадрів"
+
+msgctxt "LeftRail"
+msgid "Auto takes the source's rate when the stream starts (30 when it has none) and keeps it for the session. A 23.976 source into a 30 fps clock repeats six frames a second."
+msgstr "Авто бере частоту джерела під час запуску трансляції (30, якщо її немає) і зберігає її на сеанс. Джерело 23,976 у тактуванні 30 fps повторює шість кадрів на секунду."
+
+msgctxt "LeftRail"
+msgid "H.264 profile"
+msgstr "Профіль H.264"
+
+msgctxt "LeftRail"
+msgid "Baseline is what Louper's recipe asks for; Main gives better quality per bit where the service accepts it. Never B-frames."
+msgstr "Baseline — те, чого вимагає інструкція Louper; Main дає кращу якість на біт там, де сервіс його приймає. B-кадри не використовуються ніколи."
+
+msgctxt "LeftRail"
+msgid "Audio (kbps)"
+msgstr "Аудіо (kbps)"
+
+msgctxt "LeftRail"
+msgid "AAC stereo at 48 kHz from the mixed audio, before Listen, mute and volume. Off sends video only."
+msgstr "AAC стерео 48 kHz зі зведеного звуку, до «Слухати», вимкнення звуку та гучності. «Вимк.» надсилає лише відео."
+
+#. AAC bitrate choice: no audio in the stream
+msgctxt "LeftRail"
+msgid "Off"
+msgstr "Вимк."
+
+msgctxt "LeftRail"
+msgid "SRT latency (ms)"
+msgstr "Затримка SRT (ms)"
+
+msgctxt "LeftRail"
+msgid "The SRT retransmission window, both ends negotiate the larger. 120 ms suits a LAN or a good link; raise it on a lossy one."
+msgstr "Вікно повторної передачі SRT; обидві сторони узгоджують більше значення. 120 ms достатньо для LAN або хорошого каналу; збільште на каналі з втратами."
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Settings"
+msgstr "Налаштування"
+
+msgctxt "LeftRail"
+msgid "Reset all preferences?"
+msgstr "Скинути всі параметри?"
+
+msgctxt "LeftRail"
+msgid "Every preference (recents, layout, settings, shortcuts) will be erased and the app will quit. Relaunch to continue."
+msgstr "Усі параметри (нещодавні файли, розкладка, налаштування, сполучення клавіш) буде стерто, і застосунок завершить роботу. Запустіть його знову, щоб продовжити."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Performance"
+msgstr "Продуктивність"
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq decode threads"
+msgstr "Потоки декодування послідовностей"
+
+msgctxt "LeftRail"
+msgid "Applies on next sequence load."
+msgstr "Діє з наступного завантаження послідовності."
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq cache window"
+msgstr "Вікно кешу послідовностей"
+
+msgctxt "LeftRail"
+msgid "Frames cached ahead of the playhead. Lower = less RAM."
+msgstr "Кадри, кешовані попереду курсора відтворення. Менше = менше RAM."
+
+msgctxt "LeftRail"
+msgid "Video decode threads"
+msgstr "Потоки декодування відео"
+
+msgctxt "LeftRail"
+msgid "0 = Auto. Single-video playback only; dual and scrub stay on Auto. Applies on next video load."
+msgstr "0 = Авто. Лише одиночне відтворення відео; подвійний перегляд і скраб залишаються на Авто. Діє з наступного завантаження відео."
+
+msgctxt "LeftRail"
+msgid "Enable hardware decoding"
+msgstr "Увімкнути апаратне декодування"
+
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D11VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "Декодування на GPU (Vulkan/D3D11VA), коли доступне. Вимкніть, якщо відтворення працює неправильно — примусово вмикає програмне декодування скрізь. Діє з наступного завантаження файлу."
+
+msgctxt "LeftRail"
+msgid "Scrub cache size (MB)"
+msgstr "Розмір кешу скрабу (МБ)"
+
+msgctxt "LeftRail"
+msgid "Decoded frames kept near the playhead for instant backward scrub. Higher = smoother, more RAM/VRAM. Per decoder — dual uses 2x. Applies on next file load."
+msgstr "Декодовані кадри, що зберігаються біля курсора відтворення для миттєвого скрабу назад. Більше = плавніше, більше RAM/VRAM. На кожен декодер — подвійний перегляд використовує 2x. Діє з наступного завантаження файлу."
+
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265 (experimental)"
+msgstr "Апаратний скраб для h264/h265 (експериментально)"
+
+msgctxt "LeftRail"
+msgid "GPU decode while scrubbing h264/h265, not just all-intra (ProRes). Experimental — turn off if scrubbed frames look wrong. Applies on next file load."
+msgstr "Декодування на GPU під час скрабу h264/h265, а не лише all-intra (ProRes). Експериментально — вимкніть, якщо кадри під час скрабу виглядають неправильно. Діє з наступного завантаження файлу."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Interface"
+msgstr "Інтерфейс"
+
+msgctxt "LeftRail"
+msgid "Language"
+msgstr "Мова"
+
+msgctxt "LeftRail"
+msgid "Language of the interface. System default follows the OS setting. Applies at once."
+msgstr "Мова інтерфейсу. «Системна» відповідає налаштуванню ОС. Діє одразу."
+
+msgctxt "LeftRail"
+msgid "Always open in minimal mode"
+msgstr "Завжди відкривати в мінімальному режимі"
+
+msgctxt "LeftRail"
+msgid "Launch with the rails collapsed and the color panel hidden, ignoring the last-used layout. Applies on next launch."
+msgstr "Запускає зі згорнутими бічними панелями та прихованою панеллю «Колір», ігноруючи останню розкладку. Діє з наступного запуску."
+
+msgctxt "LeftRail"
+msgid "Timeline hover thumbnails"
+msgstr "Мініатюри при наведенні на таймлайн"
+
+msgctxt "LeftRail"
+msgid "Drag viewport to move window"
+msgstr "Перетягування області перегляду переміщує вікно"
+
+msgctxt "LeftRail"
+msgid "Timeline audio waveforms"
+msgstr "Хвильові форми звуку на таймлайні"
+
+msgctxt "LeftRail"
+msgid "Draw an audio waveform over timeline clips. Peaks decode lazily in the background for the visible range and pause during playback."
+msgstr "Малює хвильову форму звуку на кліпах таймлайна. Піки декодуються ліниво у фоні для видимого діапазону і призупиняються під час відтворення."
+
+msgctxt "LeftRail"
+msgid "Screenshot format"
+msgstr "Формат знімка екрана"
+
+msgctxt "LeftRail"
+msgid "Format for Desktop screenshots. JPEG is lossy; PNG/TIFF lossless. Notes always use PNG."
+msgstr "Формат знімків екрана на Робочому столі. JPEG із втратами; PNG/TIFF без втрат. Нотатки завжди використовують PNG."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Updates"
+msgstr "Оновлення"
+
+msgctxt "LeftRail"
+msgid "Automatically check for updates"
+msgstr "Автоматично перевіряти оновлення"
+
+msgctxt "LeftRail"
+msgid "Checks daily for updates, sending only your IP and app/OS version. Update manually anytime from the About menu."
+msgstr "Щодня перевіряє оновлення, надсилаючи лише вашу IP-адресу та версію застосунку/ОС. Перевірити вручну можна будь-коли в меню «Про програму»."
+
+#. Audio/video offset setting for single-clip playback
+msgctxt "LeftRail"
+msgid "A/V sync (Single)"
+msgstr "Синхронізація A/V (одиночний)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play."
+msgstr "Додатні значення затримують звук, компенсуючи затримку конвеєра/дисплея. Налаштовуйте на слух; діє з наступного переходу або відтворення."
+
+#. Audio/video offset setting for dual view
+msgctxt "LeftRail"
+msgid "A/V sync (Dual)"
+msgstr "Синхронізація A/V (подвійний)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play."
+msgstr "Додатні значення затримують звук, компенсуючи затримку конвеєра/дисплея. У подвійному перегляді затримка більша, ніж в одиночному. Налаштовуйте на слух; діє з наступного переходу або відтворення."
+
+msgctxt "LeftRail"
+msgid "Mute scrub audio"
+msgstr "Вимкнути звук під час скрабу"
+
+msgctxt "LeftRail"
+msgid "Silence the audio feedback while dragging the timeline or holding fast-forward/rewind. Scrubbing itself is unaffected."
+msgstr "Вимикає звуковий відгук під час перетягування таймлайна або утримання перемотування вперед/назад. На сам скраб це не впливає."
+
+msgctxt "LeftRail"
+msgid "Listen to live audio"
+msgstr "Слухати звук наживо"
+
+msgctxt "LeftRail"
+msgid "Play audio pushed by Premiere Pro over QCBridge in QCView. Off by default: Premiere is already playing it. Meters run either way."
+msgstr "Відтворює в QCView звук, який Premiere Pro передає через QCBridge. Типово вимкнено: Premiere уже його відтворює. Індикатори рівня працюють у будь-якому разі."
+
+#. Setting: watch for a QCBridge (Blender) session on this machine
+msgctxt "LeftRail"
+msgid "Blender sessions"
+msgstr "Сеанси Blender"
+
+msgctxt "LeftRail"
+msgid "Off at every launch. On (also File ▸ Connect to Blender): QCView watches for the card the QCBridge host add-on on this machine writes when a session starts, listens on its port and shows the replica's stream. Off again stops listening."
+msgstr "Після кожного запуску вимкнено. Увімкнено (також Файл ▸ Підключитися до Blender): QCView стежить за карткою, яку хост-додаток QCBridge на цьому комп’ютері записує на початку сеансу, слухає її порт і показує потік репліки. Повторне вимкнення припиняє прослуховування."
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Live from %1 on port %2"
+msgstr "Наживо з %1 на порту %2"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Listening for %1 on port %2"
+msgstr "Очікування %1 на порту %2"
+
+#. Blender input state: a card exists but another clip is on screen
+msgctxt "LeftRail"
+msgid "%1 is streaming on port %2 — select the Blender clip"
+msgstr "%1 транслює на порту %2 — виберіть кліп Blender"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Blender session ended"
+msgstr "Сеанс Blender завершено"
+
+#. Blender input state: no card yet
+msgctxt "LeftRail"
+msgid "No Blender session on this machine yet"
+msgstr "На цьому комп’ютері ще немає сеансу Blender"
+
+#. Audio/video offset setting for bridge feeds
+msgctxt "LeftRail"
+msgid "A/V sync (Live)"
+msgstr "Синхронізація A/V (наживо)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear."
+msgstr "Додатні значення затримують звук із QCBridge; від’ємні — затримують зображення. Зберігається окремо для кожного хост-застосунку. Налаштовуйте на слух."
+
+msgctxt "LeftRail"
+msgid "Live audio buffer"
+msgstr "Буфер звуку наживо"
+
+msgctxt "LeftRail"
+msgid "How much bridge audio is queued before it plays. Raise it if live audio stutters; lower it for less delay."
+msgstr "Скільки звуку з QCBridge накопичується в черзі перед відтворенням. Збільште, якщо звук наживо заїкається; зменште для меншої затримки."
+
+msgctxt "LeftRail"
+msgid "Reset all preferences…"
+msgstr "Скинути всі параметри…"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "LiveStrip"
+msgid "REVIEW · %1"
+msgstr "ПЕРЕГЛЯД · %1"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "LIVE"
+msgstr "НАЖИВО"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "PAUSED"
+msgstr "ПАУЗА"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "WAITING"
+msgstr "ОЧІКУВАННЯ"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "RECONNECTING"
+msgstr "ПЕРЕПІДКЛЮЧЕННЯ"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "CONNECTING"
+msgstr "ПІДКЛЮЧЕННЯ"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "OFFLINE"
+msgstr "ОФЛАЙН"
+
+#. Transport of a bridge feed
+msgctxt "LiveStrip"
+msgid "shared memory"
+msgstr "спільна пам’ять"
+
+#. Warning: the frame contains non-finite pixel values
+msgctxt "LiveStrip"
+msgid "inf/NaN in frame"
+msgstr "inf/NaN у кадрі"
+
+#. Count of times the host application went away and came back
+msgctxt "LiveStrip"
+msgid "%n restart(s)"
+msgid_plural "%n restart(s)"
+msgstr[0] "%n перезапуск"
+msgstr[1] "%n перезапуски"
+msgstr[2] "%n перезапусків"
+
+#. Count of stream drops followed by a reconnect
+msgctxt "LiveStrip"
+msgid "%n drop(s)"
+msgid_plural "%n drop(s)"
+msgstr[0] "%n обрив"
+msgstr[1] "%n обриви"
+msgstr[2] "%n обривів"
+
+#. Transfer override choice: follow the feed's tags
+msgctxt "LiveStrip"
+msgid "Auto"
+msgstr "Авто"
+
+msgctxt "LiveStrip"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "LiveStrip"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "LiveStrip"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "LiveStrip"
+msgid "Linear"
+msgstr "Лінійний"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ P3"
+msgstr "Авто · PQ P3"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ 2020"
+msgstr "Авто · PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "Auto · HLG"
+msgstr "Авто · HLG"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR, untagged"
+msgstr "Авто · SDR, без тегу"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR"
+msgstr "Авто · SDR"
+
+msgctxt "LiveStrip"
+msgid "How the scopes read this feed (Transfer override)"
+msgstr "Як вектороскоп і осцилограма читають цей сигнал (перевизначення трансферу)"
+
+#. Live strip chip: the host Blender's display device and view are being emulated
+msgctxt "LiveStrip"
+msgid "Host display %1 · %2"
+msgstr "Дисплей хоста %1 · %2"
+
+#. Live strip chip: host-display emulation is pinned but switched off
+msgctxt "LiveStrip"
+msgid "Host display off"
+msgstr "Дисплей хоста вимк."
+
+#. Live strip chip: the link named a view QCView could not apply
+msgctxt "LiveStrip"
+msgid "View %1 not applied"
+msgstr "Вид %1 не застосовано"
+
+msgctxt "LiveStrip"
+msgid "The Blender host's view, rendered for its display device, shown here (click for options)"
+msgstr "Вид хоста Blender, відрендерений для його дисплея, показано тут (натисніть для параметрів)"
+
+#. Menu: switch host-display emulation on or off for this stream
+msgctxt "LiveStrip"
+msgid "Emulate the host display"
+msgstr "Емулювати дисплей хоста"
+
+#. Menu: convert the host display's colourspace to ours instead of showing its codes as sRGB
+msgctxt "LiveStrip"
+msgid "True emulation (display to display)"
+msgstr "Точна емуляція (з дисплея на дисплей)"
+
+#. Menu: drop the host-display pin; this machine's own View applies
+msgctxt "LiveStrip"
+msgid "Use my View instead"
+msgstr "Натомість використати мій Вид"
+
+msgctxt "LiveStrip"
+msgid "Color panel (⌃3)"
+msgstr "Панель «Колір» (⌃3)"
+
+msgctxt "LiveStrip"
+msgid "Notes panel (⌃4)"
+msgstr "Панель «Нотатки» (⌃4)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "Знімок екрана в буфер обміну (⌥T)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to Desktop (T)"
+msgstr "Знімок екрана на Робочий стіл (T)"
+
+msgctxt "Main"
+msgid "Open Media…"
+msgstr "Відкрити медіа…"
+
+msgctxt "Main"
+msgid "Open Project…"
+msgstr "Відкрити проєкт…"
+
+msgctxt "Main"
+msgid "QCView Project (*.qcvproj)"
+msgstr "Проєкт QCView (*.qcvproj)"
+
+msgctxt "Main"
+msgid "Save Project As…"
+msgstr "Зберегти проєкт як…"
+
+msgctxt "Main"
+msgid "Project error"
+msgstr "Помилка проєкту"
+
+msgctxt "Main"
+msgid "OK"
+msgstr "OK"
+
+msgctxt "Main"
+msgid "Open Stream"
+msgstr "Відкрити потік"
+
+msgctxt "Main"
+msgid "Stream URL"
+msgstr "URL потоку"
+
+msgctxt "Main"
+msgid "Name (optional)"
+msgstr "Назва (необов’язково)"
+
+msgctxt "Main"
+msgid "defaults to host:port"
+msgstr "типово host:port"
+
+msgctxt "Main"
+msgid "Passphrase (optional)"
+msgstr "Парольна фраза (необов’язково)"
+
+msgctxt "Main"
+msgid "Cancel"
+msgstr "Скасувати"
+
+msgctxt "Main"
+msgid "Connect"
+msgstr "Підключитися"
+
+msgctxt "Main"
+msgid "About QCView"
+msgstr "Про QCView"
+
+msgctxt "Main"
+msgid "QCView"
+msgstr "QCView"
+
+msgctxt "Main"
+msgid "Version %1"
+msgstr "Версія %1"
+
+msgctxt "Main"
+msgid "Color-accurate review player."
+msgstr "Плеєр для перегляду з точною передачею кольору."
+
+#. Button: open the documentation website
+msgctxt "Main"
+msgid "Docs"
+msgstr "Документація"
+
+msgctxt "Main"
+msgid "Check for Updates…"
+msgstr "Перевірити оновлення…"
+
+#. Button
+msgctxt "Main"
+msgid "Close"
+msgstr "Закрити"
+
+msgctxt "Main"
+msgid "&File"
+msgstr "&Файл"
+
+msgctxt "Main"
+msgid "Open Stream…"
+msgstr "Відкрити потік…"
+
+msgctxt "Main"
+msgid "Connect to After Effects"
+msgstr "Підключитися до After Effects"
+
+msgctxt "Main"
+msgid "Connect to Premiere Pro"
+msgstr "Підключитися до Premiere Pro"
+
+msgctxt "Main"
+msgid "Connect to Blender"
+msgstr "Підключитися до Blender"
+
+msgctxt "Main"
+msgid "Open Recent Media"
+msgstr "Відкрити нещодавні медіа"
+
+msgctxt "Main"
+msgid "(none)"
+msgstr "(немає)"
+
+msgctxt "Main"
+msgid "Clear Menu"
+msgstr "Очистити меню"
+
+msgctxt "Main"
+msgid "New Project"
+msgstr "Новий проєкт"
+
+msgctxt "Main"
+msgid "Open Recent Project"
+msgstr "Відкрити нещодавній проєкт"
+
+msgctxt "Main"
+msgid "Save Project"
+msgstr "Зберегти проєкт"
+
+msgctxt "Main"
+msgid "Copy Project Link"
+msgstr "Копіювати посилання на проєкт"
+
+msgctxt "Main"
+msgid "E&xit"
+msgstr "Ви&хід"
+
+msgctxt "Main"
+msgid "&View"
+msgstr "&Вигляд"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Minimal Mode"
+msgstr "Мінімальний режим"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Compact Mode"
+msgstr "Компактний режим"
+
+msgctxt "Main"
+msgid "Always on Top"
+msgstr "Поверх усіх вікон"
+
+#. View menu
+msgctxt "Main"
+msgid "Show All Panels"
+msgstr "Показати всі панелі"
+
+msgctxt "Main"
+msgid "Zoom In Timeline"
+msgstr "Збільшити таймлайн"
+
+msgctxt "Main"
+msgid "Zoom Out Timeline"
+msgstr "Зменшити таймлайн"
+
+msgctxt "Main"
+msgid "Fullscreen"
+msgstr "На весь екран"
+
+#. View menu: reset the window geometry; && is a literal ampersand
+msgctxt "Main"
+msgid "Default Size && Position"
+msgstr "Типовий розмір і положення"
+
+#. View menu: toggle the left side panel
+msgctxt "Main"
+msgid "Left Rail"
+msgstr "Ліва панель"
+
+#. View menu: toggle the right side panel
+msgctxt "Main"
+msgid "Right Rail"
+msgstr "Права панель"
+
+msgctxt "Main"
+msgid "Color Panel"
+msgstr "Панель «Колір»"
+
+msgctxt "Main"
+msgid "Timeline"
+msgstr "Таймлайн"
+
+msgctxt "Main"
+msgid "Notes"
+msgstr "Нотатки"
+
+msgctxt "Main"
+msgid "Status Bar"
+msgstr "Рядок стану"
+
+msgctxt "Main"
+msgid "&Tools"
+msgstr "&Інструменти"
+
+msgctxt "Main"
+msgid "Background"
+msgstr "Тло"
+
+msgctxt "Main"
+msgid "Safety Guides"
+msgstr "Безпечні зони"
+
+msgctxt "Main"
+msgid "Keyboard Shortcuts"
+msgstr "Сполучення клавіш"
+
+msgctxt "Main"
+msgid "Settings…"
+msgstr "Налаштування…"
+
+msgctxt "Main"
+msgid "&About"
+msgstr "&Про програму"
+
+msgctxt "Main"
+msgid "About QCView…"
+msgstr "Про QCView…"
+
+msgctxt "Main"
+msgid "Open media"
+msgstr "Відкрити медіа"
+
+#. Title of the separate player window
+msgctxt "Main"
+msgid "Player detached"
+msgstr "Плеєр від’єднано"
+
+msgctxt "Main"
+msgid "Click 'Reattach' to dock back"
+msgstr "Натисніть «Приєднати», щоб повернути в док"
+
+#. File dialog filter; %1 = the list of patterns
+msgctxt "MediaFilters"
+msgid "All media (%1)"
+msgstr "Усі медіа (%1)"
+
+msgctxt "MediaFilters"
+msgid "Video files (%1)"
+msgstr "Відеофайли (%1)"
+
+msgctxt "MediaFilters"
+msgid "Audio files (%1)"
+msgstr "Аудіофайли (%1)"
+
+msgctxt "MediaFilters"
+msgid "Image / sequence files (%1)"
+msgstr "Файли зображень / послідовностей (%1)"
+
+msgctxt "MediaFilters"
+msgid "All files (*)"
+msgstr "Усі файли (*)"
+
+#. Toggle: apply the look
+msgctxt "MinColor"
+msgid "Use look"
+msgstr "Застосувати look"
+
+#. Tooltip on a dialog's close button
+msgctxt "ModalHost"
+msgid "Close"
+msgstr "Закрити"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "NotesPanel"
+msgid "REVIEW · %1"
+msgstr "ПЕРЕГЛЯД · %1"
+
+#. Badge: the feed is live
+msgctxt "NotesPanel"
+msgid "LIVE"
+msgstr "НАЖИВО"
+
+#. Hover hint on the review pill: a click returns to the live feed
+msgctxt "NotesPanel"
+msgid "back to live"
+msgstr "назад в ефір"
+
+#. Hover hint on the review pill: a click holds the current frame
+msgctxt "NotesPanel"
+msgid "freeze"
+msgstr "заморозити"
+
+msgctxt "NotesPanel"
+msgid "Save the project to keep notes for this stream"
+msgstr "Збережіть проєкт, щоб зберігати нотатки для цього потоку"
+
+#. The add-note tile's label
+msgctxt "NotesPanel"
+msgid "Add note here"
+msgstr "Додати нотатку тут"
+
+#. Add-note tile when the project must be saved first
+msgctxt "NotesPanel"
+msgid "Save…"
+msgstr "Зберегти…"
+
+#. Caption under Add note: the note captures the frozen frame
+msgctxt "NotesPanel"
+msgid "on the frozen frame"
+msgstr "на замороженому кадрі"
+
+#. Caption under Add note: adding a note freezes the live feed
+msgctxt "NotesPanel"
+msgid "freezes the feed"
+msgstr "заморожує сигнал"
+
+#. Caption under Add note
+msgctxt "NotesPanel"
+msgid "captures current frame"
+msgstr "захоплює поточний кадр"
+
+msgctxt "NotesPanel"
+msgid "Export notes"
+msgstr "Експортувати нотатки"
+
+msgctxt "NotesPanel"
+msgid "Export folder (Markdown)"
+msgstr "Папка експорту (Markdown)"
+
+msgctxt "NotesPanel"
+msgid "Save HTML…"
+msgstr "Зберегти HTML…"
+
+msgctxt "NotesPanel"
+msgid "HTML (*.html)"
+msgstr "HTML (*.html)"
+
+msgctxt "NotesPanel"
+msgid "Save PDF…"
+msgstr "Зберегти PDF…"
+
+msgctxt "NotesPanel"
+msgid "PDF (*.pdf)"
+msgstr "PDF (*.pdf)"
+
+msgctxt "NotesPanel"
+msgid "Save DOCX…"
+msgstr "Зберегти DOCX…"
+
+msgctxt "NotesPanel"
+msgid "Word document (*.docx)"
+msgstr "Документ Word (*.docx)"
+
+msgctxt "NotesPanel"
+msgid "%1 notes will be exported."
+msgstr "Буде експортовано нотаток: %1."
+
+msgctxt "NotesPanel"
+msgid "No notes to export yet."
+msgstr "Нотаток для експорту ще немає."
+
+msgctxt "NotesPanel"
+msgid "Markdown folder…"
+msgstr "Папка Markdown…"
+
+msgctxt "NotesPanel"
+msgid "Folder + linked images.  Type any name to set the output dir; the export creates a timestamped subfolder there."
+msgstr "Папка + пов’язані зображення.  Введіть будь-яку назву, щоб задати вихідну папку; експорт створить там підпапку з часовою міткою."
+
+msgctxt "NotesPanel"
+msgid "HTML (single file)…"
+msgstr "HTML (один файл)…"
+
+msgctxt "NotesPanel"
+msgid "PDF…"
+msgstr "PDF…"
+
+msgctxt "NotesPanel"
+msgid "DOCX…"
+msgstr "DOCX…"
+
+msgctxt "NotesPanel"
+msgid "Open in minNotes"
+msgstr "Відкрити в minNotes"
+
+msgctxt "NotesPanel"
+msgid "Open this stream's notes folder in minNotes"
+msgstr "Відкрити папку нотаток цього потоку в minNotes"
+
+msgctxt "NotesPanel"
+msgid "minNotes is not installed"
+msgstr "minNotes не встановлено"
+
+msgctxt "NotesPanel"
+msgid "Cancel"
+msgstr "Скасувати"
+
+#. No thumbnail
+msgctxt "NotesPanel"
+msgid "(no thumb)"
+msgstr "(без мініатюри)"
+
+#. Badge: the note was captured with viewer aids active
+msgctxt "NotesPanel"
+msgid "VIEWER"
+msgstr "VIEWER"
+
+#. Badge: the note was captured through OCIO
+msgctxt "NotesPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+#. Button: mark this note as dealt with
+msgctxt "NotesPanel"
+msgid "Mark addressed"
+msgstr "Позначити опрацьованою"
+
+msgctxt "NotesPanel"
+msgid "Delete note"
+msgstr "Видалити нотатку"
+
+#. Placeholder of the note text field
+msgctxt "NotesPanel"
+msgid "Note…"
+msgstr "Нотатка…"
+
+msgctxt "NotesPanel"
+msgid "Select (drag to move, corners to scale, Del to remove; click again to exit)"
+msgstr "Виділення (перетягуйте, щоб перемістити; кути — масштаб; Del — видалити; натисніть ще раз, щоб вийти)"
+
+msgctxt "NotesPanel"
+msgid "Freehand"
+msgstr "Від руки"
+
+msgctxt "NotesPanel"
+msgid "Rectangle"
+msgstr "Прямокутник"
+
+msgctxt "NotesPanel"
+msgid "Oval"
+msgstr "Овал"
+
+msgctxt "NotesPanel"
+msgid "Arrow"
+msgstr "Стрілка"
+
+msgctxt "NotesPanel"
+msgid "Line"
+msgstr "Лінія"
+
+msgctxt "NotesPanel"
+msgid "Erase stroke (click strokes to remove)"
+msgstr "Стерти штрих (натискайте на штрихи, щоб видалити)"
+
+#. Stroke width label
+msgctxt "NotesPanel"
+msgid "Width:"
+msgstr "Товщина:"
+
+msgctxt "PlayerWindow"
+msgid "Player — Phase 1.7 (compositor: %1)"
+msgstr "Плеєр — фаза 1.7 (композитор: %1)"
+
+msgctxt "PlayerWindow"
+msgid "Window: %1×%2"
+msgstr "Вікно: %1×%2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Save: empty path."
+msgstr "Збереження: порожній шлях."
+
+msgctxt "ProjectIo"
+msgid "Save: cannot open '%1' for write: %2"
+msgstr "Збереження: не вдалося відкрити «%1» для запису: %2"
+
+msgctxt "ProjectIo"
+msgid "Save: write to '%1' truncated: %2"
+msgstr "Збереження: запис у «%1» обірвано: %2"
+
+msgctxt "ProjectIo"
+msgid "Save: commit to '%1' failed: %2"
+msgstr "Збереження: не вдалося зафіксувати «%1»: %2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Open: cannot read '%1': %2"
+msgstr "Відкриття: не вдалося прочитати «%1»: %2"
+
+msgctxt "ProjectIo"
+msgid "Open: parse error in '%1': %2"
+msgstr "Відкриття: помилка розбору в «%1»: %2"
+
+#. Undo action name: trim the clip's start
+msgctxt "QObject"
+msgid "Trim head"
+msgstr "Обрізати початок"
+
+#. Undo action name: trim the clip's end
+msgctxt "QObject"
+msgid "Trim tail"
+msgstr "Обрізати кінець"
+
+#. Undo action name: move the clip without changing its content
+msgctxt "QObject"
+msgid "Slide clip"
+msgstr "Зсунути кліп"
+
+#. Undo action name: shift the clip's content without moving it
+msgctxt "QObject"
+msgid "Slip clip"
+msgstr "Сліп кліпу"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Cut clip"
+msgstr "Розрізати кліп"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Delete clip"
+msgstr "Видалити кліп"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Add clip"
+msgstr "Додати кліп"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Reorder clip"
+msgstr "Переставити кліп"
+
+#. Panel title
+msgctxt "RightRail"
+msgid "Inspector"
+msgstr "Інспектор"
+
+msgctxt "RightRail"
+msgid "Expand panel"
+msgstr "Розгорнути панель"
+
+msgctxt "RightRail"
+msgid "Collapse panel"
+msgstr "Згорнути панель"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Vectorscope"
+msgstr "Вектороскоп"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Waveform"
+msgstr "Осцилограма"
+
+msgctxt "RightRail"
+msgid "Keyboard Shortcuts"
+msgstr "Сполучення клавіш"
+
+msgctxt "ScopePanel"
+msgid "Zoom %1× — magnifies the centre"
+msgstr "Масштаб %1× — збільшує центр"
+
+#. Toggle: colour the trace by hue
+msgctxt "ScopePanel"
+msgid "Color"
+msgstr "Колір"
+
+msgctxt "ScopePanel"
+msgid "Colour the trace by hue"
+msgstr "Розфарбувати слід за відтінком"
+
+msgctxt "ScopePanel"
+msgid "Signal tier draws mono — the colour space isn't known"
+msgstr "Рівень «Сигнал» малює монохромно — колірний простір невідомий"
+
+msgctxt "ScopePanel"
+msgid "Trace brightness"
+msgstr "Яскравість сліду"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "DUAL"
+msgstr "ПОДВІЙНИЙ"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "PLAYLIST"
+msgstr "ПЛЕЙЛИСТ"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "IMAGE SEQ"
+msgstr "СЕКВЕНЦІЯ"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "SINGLE"
+msgstr "ОДИНОЧНИЙ"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "idle"
+msgstr "простій"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "opening…"
+msgstr "відкриття…"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "decoding"
+msgstr "декодування"
+
+#. Decoder state: end of file
+msgctxt "StatusStrip"
+msgid "EOF"
+msgstr "EOF"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "ERROR"
+msgstr "ПОМИЛКА"
+
+msgctxt "StatusStrip"
+msgid "%1  %2  %3"
+msgstr "%1  %2  %3"
+
+#. Hardware decoder in use
+msgctxt "StatusStrip"
+msgid "HW: %1"
+msgstr "HW: %1"
+
+#. No hardware decoder
+msgctxt "StatusStrip"
+msgid "HW: software"
+msgstr "HW: програмно"
+
+msgctxt "StatusStrip"
+msgid "OCIO: %1"
+msgstr "OCIO: %1"
+
+#. Timecode, drop frame
+msgctxt "StatusStrip"
+msgid "TC: %1 DF"
+msgstr "TC: %1 DF"
+
+msgctxt "StatusStrip"
+msgid "TC: %1"
+msgstr "TC: %1"
+
+#. Decoder error count
+msgctxt "StatusStrip"
+msgid "%1 errors"
+msgstr "помилок: %1"
+
+#. Trim badge: the clip's head was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "head %1"
+msgstr "поч. %1"
+
+#. Trim badge: the clip's tail was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "tail %1"
+msgstr "кін. %1"
+
+#. Badge: the clip's start moved by %1 frames
+msgctxt "TimelinePanel"
+msgid "start %1"
+msgstr "старт %1"
+
+#. Badge: the clip's content slipped by %1 frames
+msgctxt "TimelinePanel"
+msgid "slip %1"
+msgstr "сліп %1"
+
+#. Drag badge: the clip will move to playlist position %1 of %2
+msgctxt "TimelinePanel"
+msgid "→ slot %1/%2"
+msgstr "→ позиція %1/%2"
+
+msgctxt "TimelinePanel"
+msgid "Edit mode ON — click to disable"
+msgstr "Режим редагування УВІМК. — натисніть, щоб вимкнути"
+
+#. Tooltip on the track's edit toggle
+msgctxt "TimelinePanel"
+msgid "Edit this track"
+msgstr "Редагувати цю доріжку"
+
+msgctxt "TimelinePanel"
+msgid "Drop media here to add to the playlist"
+msgstr "Перетягніть медіа сюди, щоб додати до плейлиста"
+
+msgctxt "TimelinePanel"
+msgid "Drop media onto a lane, or a side of the viewport, to compare"
+msgstr "Перетягніть медіа на доріжку або на бік області перегляду, щоб порівняти"
+
+msgctxt "TimelinePanel"
+msgid "Open a video to enable the timeline."
+msgstr "Відкрийте відео, щоб увімкнути таймлайн."
+
+#. Swap glyph, do not translate
+msgctxt "TimelinePanel"
+msgid "⇄"
+msgstr "⇄"
+
+msgctxt "TimelinePanel"
+msgid "Audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "Аудіофайли не можна додавати до плейлистів — натомість додано в розділ «Аудіо»"
+
+msgctxt "TimelinePanel"
+msgid "%1 audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "Аудіофайли (%1) не можна додавати до плейлистів — натомість додано в розділ «Аудіо»"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Time —"
+msgstr "Час —"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Frame —"
+msgstr "Кадр —"
+
+msgctxt "TimelineStatus"
+msgid "Frame %1 / %2"
+msgstr "Кадр %1 / %2"
+
+#. Badge: an in/out range is set
+msgctxt "TimelineStatus"
+msgid "RANGE"
+msgstr "ДІАПАЗОН"
+
+#. Range length in frames, abbreviated
+msgctxt "TimelineStatus"
+msgid "%1 fr"
+msgstr "%1 к."
+
+#. Range length in seconds
+msgctxt "TimelineStatus"
+msgid "%1 s"
+msgstr "%1 с"
+
+msgctxt "TimelineStatus"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO FRAME"
+msgstr "ПЕРЕЙТИ ДО КАДРУ"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIMECODE"
+msgstr "ПЕРЕЙТИ ДО ТАЙМКОДУ"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIME"
+msgstr "ПЕРЕЙТИ ДО ЧАСУ"
+
+#. Field placeholder
+msgctxt "TimelineStatus"
+msgid "frame number"
+msgstr "номер кадру"
+
+#. Field placeholder: timecode
+msgctxt "TimelineStatus"
+msgid "HH:MM:SS:FF"
+msgstr "HH:MM:SS:FF"
+
+#. Field placeholder: time
+msgctxt "TimelineStatus"
+msgid "MM:SS.mmm"
+msgstr "MM:SS.mmm"
+
+msgctxt "TransportBar"
+msgid "Open media…"
+msgstr "Відкрити медіа…"
+
+msgctxt "TransportBar"
+msgid "Previous clip"
+msgstr "Попередній кліп"
+
+msgctxt "TransportBar"
+msgid "Skip to start"
+msgstr "На початок"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Rewind (hold)"
+msgstr "Перемотати назад (утримуйте)"
+
+msgctxt "TransportBar"
+msgid "Step back 1 frame"
+msgstr "На 1 кадр назад"
+
+msgctxt "TransportBar"
+msgid "Pause"
+msgstr "Пауза"
+
+msgctxt "TransportBar"
+msgid "Play"
+msgstr "Відтворити"
+
+msgctxt "TransportBar"
+msgid "Step forward 1 frame"
+msgstr "На 1 кадр уперед"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Fast-forward (hold)"
+msgstr "Перемотати вперед (утримуйте)"
+
+msgctxt "TransportBar"
+msgid "Skip to end"
+msgstr "У кінець"
+
+msgctxt "TransportBar"
+msgid "Next clip"
+msgstr "Наступний кліп"
+
+msgctxt "TransportBar"
+msgid "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)"
+msgstr "Швидкість перегляду — натисніть, щоб перемикати (R), Shift+клік для 1× (Shift+R)"
+
+msgctxt "TransportBar"
+msgid "In point not available in playlist mode"
+msgstr "Точка входу недоступна в режимі плейлиста"
+
+msgctxt "TransportBar"
+msgid "Set in point (I)"
+msgstr "Задати точку входу (I)"
+
+msgctxt "TransportBar"
+msgid "Out point not available in playlist mode"
+msgstr "Точка виходу недоступна в режимі плейлиста"
+
+msgctxt "TransportBar"
+msgid "Set out point (O)"
+msgstr "Задати точку виходу (O)"
+
+msgctxt "TransportBar"
+msgid "Clear in/out points (Shift+I)"
+msgstr "Очистити точки входу/виходу (Shift+I)"
+
+msgctxt "TransportBar"
+msgid "Loop (L)"
+msgstr "Цикл (L)"
+
+msgctxt "TransportBar"
+msgid "Fullscreen (F)"
+msgstr "На весь екран (F)"
+
+msgctxt "TransportBar"
+msgid "Compact Mode (Ctrl+Shift+C)"
+msgstr "Компактний режим (Ctrl+Shift+C)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "Знімок екрана в буфер обміну (⌥T)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to Desktop (T)"
+msgstr "Знімок екрана на Робочий стіл (T)"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Safety guides"
+msgstr "Безпечні зони"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Background"
+msgstr "Тло"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (on)"
+msgstr "Мініатюри при наведенні на таймлайн (увімк.)"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (off)"
+msgstr "Мініатюри при наведенні на таймлайн (вимк.)"
+
+msgctxt "TransportBar"
+msgid "Color panel (⌃3)"
+msgstr "Панель «Колір» (⌃3)"
+
+msgctxt "TransportBar"
+msgid "Notes panel (⌃4)"
+msgstr "Панель «Нотатки» (⌃4)"
+
+msgctxt "TransportBar"
+msgid "Unmute (M)"
+msgstr "Увімкнути звук (M)"
+
+msgctxt "TransportBar"
+msgid "Mute (M)"
+msgstr "Вимкнути звук (M)"
+
+msgctxt "TransportBar"
+msgid "Volume — %1%"
+msgstr "Гучність — %1%"
+
+msgctxt "TransportBar"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "Поверх усіх вікон — натисніть, щоб відкріпити (Ctrl+Alt+T)"
+
+msgctxt "TransportBar"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "Поверх усіх вікон (Ctrl+Alt+T)"
+
+msgctxt "ViewportOverlay"
+msgid "Untitled Dual View"
+msgstr "Подвійний перегляд без назви"
+
+#. Picker entry: nothing selected
+msgctxt "ViewportOverlay"
+msgid "(none)"
+msgstr "(немає)"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view saved: %1"
+msgstr "Подвійний перегляд збережено: %1"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't save dual view"
+msgstr "Не вдалося зберегти подвійний перегляд"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view updated"
+msgstr "Подвійний перегляд оновлено"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't update dual view"
+msgstr "Не вдалося оновити подвійний перегляд"
+
+#. Chip label for a live source
+msgctxt "ViewportOverlay"
+msgid "Live source"
+msgstr "Джерело наживо"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "A"
+msgstr "A"
+
+#. Placeholder in the empty A chip
+msgctxt "ViewportOverlay"
+msgid "(drop a file…)"
+msgstr "(перетягніть файл…)"
+
+msgctxt "ViewportOverlay"
+msgid "A audio muted — click to unmute"
+msgstr "Звук A вимкнено — натисніть, щоб увімкнути"
+
+msgctxt "ViewportOverlay"
+msgid "A audio on — click to mute"
+msgstr "Звук A увімкнено — натисніть, щоб вимкнути"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't load that file as Source B"
+msgstr "Не вдалося завантажити цей файл як джерело B"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "B"
+msgstr "B"
+
+msgctxt "ViewportOverlay"
+msgid "(drop a video, sequence or stream…)"
+msgstr "(перетягніть відео, послідовність або потік…)"
+
+msgctxt "ViewportOverlay"
+msgid "B audio muted — click to unmute"
+msgstr "Звук B вимкнено — натисніть, щоб увімкнути"
+
+msgctxt "ViewportOverlay"
+msgid "B audio on — click to mute"
+msgstr "Звук B увімкнено — натисніть, щоб вимкнути"
+
+msgctxt "ViewportOverlay"
+msgid "Close source B"
+msgstr "Закрити джерело B"
+
+#. Pill: Highlight Knee is on
+msgctxt "ViewportOverlay"
+msgid "KNEE"
+msgstr "KNEE"
+
+msgctxt "ViewportOverlay"
+msgid "Highlight Knee on: %1 → %2 nits. Highlights are compressed — the picture is not 1:1."
+msgstr "Knee світлих тонів увімк.: %1 → %2 nits. Світлі тони стиснуто — зображення не 1:1."
+
+#. Pill: viewer aids are active
+msgctxt "ViewportOverlay"
+msgid "VIEWER"
+msgstr "VIEWER"
+
+msgctxt "ViewportOverlay"
+msgid "%1 — click to reset"
+msgstr "%1 — натисніть, щоб скинути"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Single view"
+msgstr "Одиночний перегляд"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Side-by-side"
+msgstr "Поруч"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Split wipe"
+msgstr "Шторка"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Difference"
+msgstr "Різниця"
+
+msgctxt "ViewportOverlay"
+msgid "Update this saved dual view"
+msgstr "Оновити цей збережений подвійний перегляд"
+
+msgctxt "ViewportOverlay"
+msgid "Save as a new dual view"
+msgstr "Зберегти як новий подвійний перегляд"
+
+msgctxt "ViewportOverlay"
+msgid "Save dual view"
+msgstr "Зберегти подвійний перегляд"
+
+#. Field label when saving a dual view
+msgctxt "ViewportOverlay"
+msgid "Name"
+msgstr "Назва"
+
+msgctxt "ViewportOverlay"
+msgid "e.g. ‘US30 v001 vs v002’"
+msgstr "напр. «US30 v001 vs v002»"
+
+msgctxt "ViewportOverlay"
+msgid "Save"
+msgstr "Зберегти"
+
+msgctxt "ViewportOverlay"
+msgid "Cancel"
+msgstr "Скасувати"
+
+msgctxt "ViewportOverlay"
+msgid "Show project panel"
+msgstr "Показати панель проєкту"
+
+msgctxt "ViewportOverlay"
+msgid "Show inspector panel"
+msgstr "Показати панель інспектора"
+
+#. Scale mode: nits on a reference display
+msgctxt "WaveformPanel"
+msgid "nits · reference"
+msgstr "nits · еталонний"
+
+msgctxt "WaveformPanel"
+msgid "% Y′"
+msgstr "% Y′"
+
+msgctxt "WaveformPanel"
+msgid "What the file encodes on a reference display, not what this screen emits. SDR white = 100 nits (BT.1886 reference)."
+msgstr "Те, що кодує файл на еталонному дисплеї, а не те, що випромінює цей екран. Білий SDR = 100 nits (еталон BT.1886)."
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b> nits"
+msgstr "Кадр <b>%1</b>  ·  Макс. <b>%2</b> nits"
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b>"
+msgstr "Кадр <b>%1</b>  ·  Макс. <b>%2</b>"
+
+#. Button: reset the running maximum
+msgctxt "WaveformPanel"
+msgid "Reset"
+msgstr "Скинути"
+
+#. Tooltip on Reset: restart the running maximum
+msgctxt "WaveformPanel"
+msgid "Start Max over"
+msgstr "Почати відлік Макс. заново"
+
+#. Scale choice
+msgctxt "WaveformPanel"
+msgid "Auto"
+msgstr "Авто"
+
+msgctxt "WaveformPanel"
+msgid "Scale from the interpretation"
+msgstr "Шкала з інтерпретації"
+
+msgctxt "WaveformPanel"
+msgid "Force the SDR percent scale (the signal's own Y′)"
+msgstr "Примусово відсоткова шкала SDR (власне Y′ сигналу)"
+
+#. Scale choice button
+msgctxt "WaveformPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "WaveformPanel"
+msgid "Force the nits scale (SDR white at 100)"
+msgstr "Примусово шкала в nits (білий SDR на 100)"
+
+msgctxt "WaveformPanel"
+msgid "Top of scale %1 nits"
+msgstr "Верх шкали %1 nits"
+
+msgctxt "WaveformPanel"
+msgid "Trace brightness"
+msgstr "Яскравість сліду"
+
+msgctxt "qcv::HostBridgeSource"
+msgid "Waiting for %1 (QCBridge Transmit device not publishing)"
+msgstr "Очікування %1 (пристрій QCBridge Transmit не публікує)"
+
+msgctxt "qcv::I18n"
+msgid "System default"
+msgstr "Системна"
+
+#. Suffix after a language name whose catalog is machine translated and not yet checked by a person
+msgctxt "qcv::I18n"
+msgid "machine translation"
+msgstr "машинний переклад"
+
+#. Live input state: an SRT listener with no sender yet
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender on port %1"
+msgstr "Очікування відправника на порту %1"
+
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender"
+msgstr "Очікування відправника"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Knee"
+msgstr "Knee"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Clip chain"
+msgstr "Ланцюжок кліпу"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Set on this clip (minColor):"
+msgstr "Задано на цьому кліпі (minColor):"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Input: %1 · %2%3"
+msgstr "Вхід: %1 · %2%3"
+
+#. Suffix appended to the Input line
+msgctxt "qcv::MinColorEngine"
+msgid " · limited range"
+msgstr " · обмежений діапазон"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "Knee світлих тонів: увімк. · %1 → %2 nits"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: off"
+msgstr "Knee світлих тонів: вимк."
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Output path is empty"
+msgstr "Вихідний шлях порожній"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Cube size must be ≥ 2 (got %1)"
+msgstr "Розмір куба має бути ≥ 2 (отримано %1)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "No OCIO config loaded"
+msgstr "Конфігурацію OCIO не завантажено"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Chain build failed"
+msgstr "Не вдалося побудувати ланцюжок"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1 (transfer %2 vs %3)"
+msgstr "найближчий дисплей %1 (трансфер %2 проти %3)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1"
+msgstr "найближчий дисплей %1"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look"
+msgstr "Look"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "CDL"
+msgstr "CDL"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "LUT"
+msgstr "LUT"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Knee"
+msgstr "Knee"
+
+#. Badge name in the viewport's chain summary: the host Blender's display device is emulated
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display"
+msgstr "Дисплей хоста"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Clip chain"
+msgstr "Ланцюжок кліпу"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Set on this clip:"
+msgstr "Задано на цьому кліпі:"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Input: %1"
+msgstr "Вхід: %1"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "(none)"
+msgstr "(немає)"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look: %1"
+msgstr "Look: %1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Scene LUT: %1"
+msgstr "LUT сцени: %1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "Knee світлих тонів: увімк. · %1 → %2 nits"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: off"
+msgstr "Knee світлих тонів: вимк."
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (emulated%3)"
+msgstr "Дисплей хоста: %1 · %2 (емуляція%3)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid ", display to display"
+msgstr ", з дисплея на дисплей"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (off)"
+msgstr "Дисплей хоста: %1 · %2 (вимк.)"
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed: no path provided."
+msgstr "Збереження не вдалося: шлях не вказано."
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed."
+msgstr "Збереження не вдалося."
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed: no path provided."
+msgstr "Відкриття не вдалося: шлях не вказано."
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed."
+msgstr "Відкриття не вдалося."
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (linear Rec.2020): frame %1 · max %2 nits"
+msgstr "Найяскравіший канал (лінійний Rec.2020): кадр %1 · макс. %2 nits"
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (code value): frame %1 · max %2"
+msgstr "Найяскравіший канал (кодове значення): кадр %1 · макс. %2"
+
+#. Why the scopes assume this colourspace: the user set it
+msgctxt "qcv::ScopeController"
+msgid "set"
+msgstr "задано"
+
+#. Why the scopes assume this colourspace: the EXR default (linear)
+msgctxt "qcv::ScopeController"
+msgid "EXR default"
+msgstr "типово для EXR"
+
+#. Why the scopes assume this colourspace: it is a still image
+msgctxt "qcv::ScopeController"
+msgid "still"
+msgstr "статичне зображення"
+
+#. Why the scopes assume this colourspace: the file's colour tags
+msgctxt "qcv::ScopeController"
+msgid "tags"
+msgstr "теги"
+
+msgctxt "qcv::ScopeController"
+msgid "untagged"
+msgstr "без тегу"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1"
+msgstr "Вхід · minColor %1"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1 (built-in config)"
+msgstr "Вхід · minColor %1 (вбудована конфігурація)"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · minColor Input not convertible"
+msgstr "Сигнал · вхід minColor не перетворюється"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · %1"
+msgstr "Вхід · %1"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 · Input: %2"
+msgstr "⚠ Задано %1 · Вхід: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 · Input: %2"
+msgstr "⚠ Файл позначено %1 · Вхід: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 — not in this config · Input: %2"
+msgstr "⚠ Задано %1 — немає в цій конфігурації · Вхід: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 — not in this config · Input: %2"
+msgstr "⚠ Файл позначено %1 — немає в цій конфігурації · Вхід: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2)"
+msgstr "Припущення · %1 (%2)"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2, built-in config)"
+msgstr "Припущення · %1 (%2, вбудована конфігурація)"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · RGB, nominal curve"
+msgstr "Сигнал · RGB, номінальна крива"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · YUV"
+msgstr "Сигнал · YUV"
+
+msgctxt "qcv::ScopeController"
+msgid "A %1  ·  B %2"
+msgstr "A %1  ·  B %2"
+
+msgctxt "qcv::ScopeController"
+msgid "SDR · Rec.709"
+msgstr "SDR · Rec.709"
+
+msgctxt "qcv::ScopeController"
+msgid "HDR · PQ Rec.2020"
+msgstr "HDR · PQ Rec.2020"
+
+msgctxt "qcv::ScopeController"
+msgid " (manual)"
+msgstr " (вручну)"
+
+msgctxt "qcv::ScopeController"
+msgid "%1 matrix"
+msgstr "матриця %1"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal Y′ · %1 matrix"
+msgstr "Сигнал Y′ · матриця %1"
+
+msgctxt "qcv::ScopeController"
+msgid " · luminance"
+msgstr " · яскравість"
+
+msgctxt "qcv::VideoDecoder"
+msgid "File not found: %1"
+msgstr "Файл не знайдено: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_open_input failed: %1"
+msgstr "помилка avformat_open_input: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_find_stream_info failed: %1"
+msgstr "помилка avformat_find_stream_info: %1"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No video stream found"
+msgstr "Відеопотік не знайдено"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No decoder available for codec id %1"
+msgstr "Немає декодера для кодека з id %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_alloc_context3 failed"
+msgstr "помилка avcodec_alloc_context3"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_open2 failed: %1"
+msgstr "помилка avcodec_open2: %1"
+
+#. FFmpeg library name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "swscale context init failed"
+msgstr "не вдалося ініціалізувати контекст swscale"
+
+msgctxt "qcv::VideoDecoder"
+msgid "Vulkan device lost — restart to recover hardware decode"
+msgstr "Пристрій Vulkan втрачено — перезапустіть, щоб відновити апаратне декодування"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_read_frame error: %1"
+msgstr "помилка av_read_frame: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "send_packet: %1"
+msgstr "send_packet: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_receive_frame: %1"
+msgstr "avcodec_receive_frame: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data fallback failed"
+msgstr "резервний hwframe_transfer_data не вдався"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data: %1"
+msgstr "hwframe_transfer_data: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_seek_frame failed for frame %1"
+msgstr "av_seek_frame не вдався для кадру %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "read_frame after seek: %1"
+msgstr "read_frame після переходу: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "No clip under the playhead to compare"
+msgstr "Під курсором відтворення немає кліпу для порівняння"
+
+#. Toast after opening an ARRIRAW file. %1 = camera + "ARRIRAW" ("ALEXA 35 ARRIRAW"), %2 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 — %2 can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool."
+msgstr "%1 — %2 тут не відтворюється: камерний RAW без дебаєризації. Перегляньте ProRes / dailies або конвертуйте в DaVinci Resolve чи ARRI Reference Tool."
+
+#. Toast after opening a file no decoder can play. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 can’t be played here: unsupported format."
+msgstr "%1 тут не відтворюється: непідтримуваний формат."
+
+#. Toast after opening or dropping a Windows shortcut (.lnk) whose target no longer exists. %1 = the shortcut's file name
+msgctxt "qcv::WindowManager"
+msgid "%1 points to a file that isn’t there any more."
+msgstr "%1 вказує на файл, якого більше немає."
+
+#. Toast after dropping or opening a folder. %1 = folder name
+msgctxt "qcv::WindowManager"
+msgid "%1 is a folder — drop a file, or any frame of an image sequence."
+msgstr "%1 — це папка; перетягніть файл або будь-який кадр послідовності зображень."
+
+#. Toast after dropping or opening a file type QCView does not open. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 isn’t a file type QCView opens."
+msgstr "%1 — не той тип файлу, який відкриває QCView."
+
+#. Stands in for a suffix in the skipped-files toast
+msgctxt "qcv::WindowManager"
+msgid "broken shortcut"
+msgstr "неробочий ярлик"
+
+msgctxt "qcv::WindowManager"
+msgid "folder"
+msgstr "папка"
+
+msgctxt "qcv::WindowManager"
+msgid "no extension"
+msgstr "без розширення"
+
+#. Toast after a batch drop/open; %1 = skipped count, %2 = total, %3 = the suffixes
+msgctxt "qcv::WindowManager"
+msgid "%1 of %2 files skipped — not file types QCView opens (%3)."
+msgstr "Пропущено %1 з %2 файлів — типи, яких QCView не відкриває (%3)."
+
+msgctxt "qcv::WindowManager"
+msgid "Blender: not listening"
+msgstr "Blender: прослуховування вимкнено"
+
+msgctxt "qcv::WindowManager"
+msgid "Listening for a Blender session on this machine: start one from the QCBridge host panel"
+msgstr "Очікування сеансу Blender на цьому комп’ютері: запустіть його з панелі хоста QCBridge"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender"
+msgstr "Blender"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender session ended"
+msgstr "Сеанс Blender завершено"
+
+msgctxt "qcv::WindowManager"
+msgid "After Effects / Premiere live view is not available on this platform yet"
+msgstr "Перегляд наживо з After Effects / Premiere на цій платформі ще недоступний"
+
+#. Toast; %1 = the stream URL
+msgctxt "qcv::WindowManager"
+msgid "Could not open stream: %1"
+msgstr "Не вдалося відкрити потік: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "This note has no captured frame"
+msgstr "У цієї нотатки немає захопленого кадру"
+
+msgctxt "qcv::WindowManager"
+msgid "No frame to freeze yet"
+msgstr "Ще немає кадру для заморожування"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1"
+msgstr "Видалено %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1 items"
+msgstr "Видалено елементів: %1"
+
+#. Toast button
+msgctxt "qcv::WindowManager"
+msgid "Undo"
+msgstr "Повернути"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to capture — load media first"
+msgstr "Нічого захоплювати — спочатку завантажте медіа"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot copied to clipboard"
+msgstr "Знімок екрана скопійовано в буфер обміну"
+
+msgctxt "qcv::WindowManager"
+msgid "Couldn't resolve the Desktop folder"
+msgstr "Не вдалося визначити папку «Робочий стіл»"
+
+msgctxt "qcv::WindowManager"
+msgid "Saving screenshot…"
+msgstr "Збереження знімка екрана…"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot saved (%1)"
+msgstr "Знімок екрана збережено (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot export failed"
+msgstr "Не вдалося експортувати знімок екрана"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to restore"
+msgstr "Нічого відновлювати"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1"
+msgstr "Відновлено %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1 items"
+msgstr "Відновлено елементів: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Preset restored: %1"
+msgstr "Пресет відновлено: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "minNotes is not installed"
+msgstr "minNotes не встановлено"
+
+msgctxt "qcv::WindowManager"
+msgid "The stream names a wire this QCView does not know (%1); set the Input yourself"
+msgstr "Потік називає кодування (wire), невідоме цьому QCView (%1); задайте Вхід самостійно"
+
+msgctxt "qcv::WindowManager"
+msgid "unknown wire %1"
+msgstr "невідоме кодування %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Colour management turned on for the Blender stream"
+msgstr "Керування кольором увімкнено для потоку Blender"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: its view and display resolve in the Blender 5.2 config"
+msgstr "Потік Blender: його вид і дисплей є в конфігурації Blender 5.2"
+
+msgctxt "qcv::WindowManager"
+msgid "Switch"
+msgstr "Перемкнути"
+
+msgctxt "qcv::WindowManager"
+msgid "view not applied: active config is %1"
+msgstr "вид не застосовано: активна конфігурація — %1"
+
+msgctxt "qcv::WindowManager"
+msgid "The host runs a non-Blender OCIO config (%1): its view cannot be reproduced; Input pinned only"
+msgstr "Хост використовує конфігурацію OCIO не від Blender (%1): його вид відтворити неможливо; закріплено лише Вхід"
+
+msgctxt "qcv::WindowManager"
+msgid "host config %1: view not reproduced"
+msgstr "конфігурація хоста %1: вид не відтворено"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the active OCIO config has no %1 input; the Blender config does"
+msgstr "Потік Blender: в активній конфігурації OCIO немає входу %1; у конфігурації Blender він є"
+
+msgctxt "qcv::WindowManager"
+msgid "no %1 input in this config"
+msgstr "немає входу %1 у цій конфігурації"
+
+msgctxt "qcv::WindowManager"
+msgid "host display %1 → %2"
+msgstr "дисплей хоста %1 → %2"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: view '%1' is not on display '%2' in the Blender config; view left as is"
+msgstr "Потік Blender: виду «%1» немає на дисплеї «%2» у конфігурації Blender; вид залишено як є"
+
+msgctxt "qcv::WindowManager"
+msgid "view %1 not on %2"
+msgstr "виду %1 немає на %2"
+
+msgctxt "qcv::WindowManager"
+msgid "look %1 not in this config"
+msgstr "look %1 відсутній у цій конфігурації"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the host's view (%1 for %2) is not reproduced on minColor; switch to the OCIO engine to match it"
+msgstr "Потік Blender: вид хоста (%1 для %2) не відтворюється в minColor; перемкніться на рушій OCIO, щоб його відтворити"
+
+msgctxt "qcv::WindowManager"
+msgid "minColor on screen: host view not reproduced"
+msgstr "minColor на екрані: вид хоста не відтворено"
+
+msgctxt "qcv::WindowManager"
+msgid "host white balance not reproduced"
+msgstr "баланс білого хоста не відтворено"
+
+msgctxt "qcv::WindowManager"
+msgid "host curves not reproduced"
+msgstr "криві хоста не відтворено"
+
+msgctxt "qcv::WindowManager"
+msgid "host HDR view: shown SDR"
+msgstr "HDR-вид хоста: показано як SDR"
+
+msgctxt "qcv::WindowManager"
+msgid "working space assumed Linear Rec.709"
+msgstr "робочий простір: припущено лінійний Rec.709"
+
+msgctxt "qcv::WindowManager"
+msgid "host and replica colour setups differ (%1)"
+msgstr "налаштування кольору хоста й репліки відрізняються (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: %1"
+msgstr "Потік Blender: %1"

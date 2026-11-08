@@ -61,13 +61,16 @@ pub struct ProjectPanel {
     tree: Option<Tree>,
 }
 
+/// QCView's catalog context (canon row 195).
+fn tr(s: &'static str) -> &'static str { min_i18n::trc("LeftRail", s) }
+
 fn type_icon(t: MediaType) -> &'static str { match t { MediaType::Video => "video", MediaType::Audio => "music-notes", MediaType::Image => "image", MediaType::ImageSequence => "film-strip", MediaType::Playlist => "playlist", MediaType::DualPair => "frame-corners", MediaType::LiveStream => "broadcast" } }
 /// QCView `sectionLabel`.
 fn section_label(t: MediaType) -> &'static str { match t { MediaType::Video => "Videos", MediaType::Audio => "Audio", MediaType::Image => "Images", MediaType::ImageSequence => "Image Sequences", MediaType::Playlist => "Playlists", MediaType::DualPair => "Dual Views", MediaType::LiveStream => "Live" } }
 const DOUBLE_CLICK_MS: u128 = 400;
 
 impl ProjectPanel {
-    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new("Media", true), add: TextButton::new("Add Media…", Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![], tree: None } }
+    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new(tr("Media"), true), add: TextButton::new(tr("Add Media…"), Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![], tree: None } }
     /// The loaded playlist's tree (None = no playlist loaded); true when it changed.
     pub fn set_tree(&mut self, m: Option<TreeModel>) -> bool {
         if self.tree.as_ref().map(|t| &t.model) == m.as_ref() { return false }
@@ -86,7 +89,7 @@ impl ProjectPanel {
             let mut rows = vec![];
             for bn in pm.bins() { for id in &bn.item_ids { if let Some(it) = pm.item(id) { if it.media_type == t { rows.push(Row { id: it.id.clone(), name: it.name.clone(), media_type: t, rect: Rect::ZERO, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), failed: it.load_failed, unsupported: (it.video.loaded && it.video.unsupported_codec) || it.load_failed }); } } } }
             // the Playlists header stays even when empty: it carries the "+" (QCView's fallback Playlists header)
-            if !rows.is_empty() || t == MediaType::Playlist { groups.push(Group { label: section_label(t), icon: type_icon(t), kind: t, header: Rect::ZERO, rows }); }
+            if !rows.is_empty() || t == MediaType::Playlist { groups.push(Group { label: tr(section_label(t)), icon: type_icon(t), kind: t, header: Rect::ZERO, rows }); }
         }
         self.groups = groups;
         let ids: Vec<String> = self.groups.iter().flat_map(|g| g.rows.iter().map(|r| r.id.clone())).collect();
@@ -236,7 +239,7 @@ impl ProjectPanel {
             if let Some(id) = self.groups.iter().flat_map(|g| g.rows.iter()).find(|r| r.rect.contains(kurbo::Point::new(x, y))).map(|r| r.id.clone()) {
                 if !self.selected.contains(&id) { self.selected = vec![id.clone()]; self.last_selected = Some(id); }
                 let can_playlist = !self.playlistable_selection().is_empty();
-                self.menu.open_at(vec![MenuItem::action("Create Playlist from Selection", can_playlist), MenuItem::Separator, MenuItem::with_shortcut("Delete", !self.selected.is_empty(), "Del")], fonts, x, y, bounds, scale);
+                self.menu.open_at(vec![MenuItem::action(tr("Create Playlist from Selection"), can_playlist), MenuItem::Separator, MenuItem::with_shortcut(tr("Delete"), !self.selected.is_empty(), "Del")], fonts, x, y, bounds, scale);
                 return (cmds, true)
             }
         }
@@ -246,7 +249,7 @@ impl ProjectPanel {
             if inside != r.hovered { r.hovered = inside; r.hover.set_target(if inside { 1.0 } else { 0.0 }, now); dirty = true; }
         } }
         // QCView's badge tooltip
-        { let over = e.pos().filter(|_| !matches!(e, Event::Leave)).and_then(|(x, y)| self.badge_rects.iter().find(|(_, r)| r.contains(kurbo::Point::new(x, y)))).map(|(_, r)| (7u64, *r, "Can’t be played here: unsupported format or un-debayered camera raw"));
+        { let over = e.pos().filter(|_| !matches!(e, Event::Leave)).and_then(|(x, y)| self.badge_rects.iter().find(|(_, r)| r.contains(kurbo::Point::new(x, y)))).map(|(_, r)| (7u64, *r, tr("Can’t be played here: unsupported format or un-debayered camera raw")));
           if self.tooltips.hover(over, now) { dirty = true; } if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); } }
         if let Some(tr) = self.tree.as_mut() {
             // a tree drag owns the pointer until the release
@@ -304,7 +307,7 @@ impl ProjectPanel {
         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((self.section.rect.x0 + pad, self.add.rect.y0 + (self.add.rect.height() - l.height() as f64) / 2.0)));
         self.add.paint(scene, fonts, scale, now);
         if self.groups.is_empty() {
-            let l = fonts.layout("Drop media here to add to the project", Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
+            let l = fonts.layout(tr("Drop media here to add to the project"), Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
             min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((self.section.rect.x0 + pad, self.add.rect.y1 + pad + (t::COMPONENT_HEIGHT_75 as f64 * scale - l.height() as f64) / 2.0)));
         }
         let mut badges: Vec<(String, Rect)> = vec![];

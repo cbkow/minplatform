@@ -14,6 +14,7 @@ min-present = { path = "../../crates/min-present" }
 min-ui = { path = "../../crates/min-ui" }
 min-theme = { path = "../../crates/min-theme" }
 min-settings = { path = "../../crates/min-settings" }
+min-i18n = { path = "../../crates/min-i18n" }
 vello = { workspace = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }

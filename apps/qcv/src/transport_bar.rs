@@ -36,9 +36,12 @@ pub struct TransportBar {
     pub rect: Rect,
 }
 
+/// QCView's catalog context (canon row 195); our tooltips add the key in parentheses, kept as written when only the head is in the catalog.
+fn tr(s: &str) -> String { min_i18n::trc_hint("TransportBar", s) }
+
 impl TransportBar {
     pub fn new() -> TransportBar {
-        let b = |icon, tip| ActionButton::new(icon, tip);
+        let b = |icon, tip| ActionButton::new(icon, &tr(tip));
         let groups: Vec<(bool, Vec<(ActionButton, Bind)>)> = vec![
             (false, vec![(b("folder-simple", "Open media…"), Bind::Open)]),
             (true, vec![
@@ -82,7 +85,7 @@ impl TransportBar {
             let g = ActionGroup::new(buttons); gs.push(if compact { g.compact() } else { g }); binds.push(bs);
         }
         let pin = ActionGroup::new(vec![b("push-pin", "Always on Top (Ctrl+Alt+T)")]);
-        let mut volume = Slider::new(1.0); volume.tooltip = "Volume".into();
+        let mut volume = Slider::new(1.0); volume.tooltip = tr("Volume");
         TransportBar { groups: gs, binds, pin, volume, speed: SpeedChip { rect: Rect::ZERO, text: "1×".into(), off_unity: false, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), enabled: false }, shift: false, tooltips: Tooltips::default(), rect: Rect::ZERO }
     }
 
@@ -121,12 +124,12 @@ impl TransportBar {
                 if b.enabled != enabled { b.enabled = enabled; if !enabled { b.reset(now); } }
                 if let (Some(p), Bind::Act(a)) = (p, bind) {
                     match a {
-                        Action::TogglePlayback => { b.icon = if p.is_playing() { "pause" } else { "play" }; b.tooltip = if p.is_playing() { "Pause (Space)".into() } else { "Play (Space)".into() }; }
+                        Action::TogglePlayback => { b.icon = if p.is_playing() { "pause" } else { "play" }; b.tooltip = tr(if p.is_playing() { "Pause (Space)" } else { "Play (Space)" }); }
                         Action::SetInPoint => b.selected = p.in_point() >= 0,
                         Action::SetOutPoint => b.selected = p.out_point() >= 0,
                         Action::ClearInOut => { let on = p.in_point() >= 0 || p.out_point() >= 0; if b.enabled != on { b.enabled = on; if !on { b.reset(now); } } }
                         Action::ToggleLoop => b.selected = p.loop_enabled(),
-                        Action::ToggleMute => { let has = p.audio.has_audio(); if b.enabled != has { b.enabled = has; if !has { b.reset(now); } } let m = p.audio.is_muted(); b.icon = if m { "speaker-x" } else { "speaker-high" }; b.tooltip = if m { "Unmute (M)".into() } else { "Mute (M)".into() }; b.selected = m; }
+                        Action::ToggleMute => { let has = p.audio.has_audio(); if b.enabled != has { b.enabled = has; if !has { b.reset(now); } } let m = p.audio.is_muted(); b.icon = if m { "speaker-x" } else { "speaker-high" }; b.tooltip = tr(if m { "Unmute (M)" } else { "Mute (M)" }); b.selected = m; }
                         _ => {}
                     }
                 } else if let Bind::Act(Action::ToggleLoop) = bind { b.selected = true; }   // loop defaults ON before media opens (QCView)
@@ -134,7 +137,7 @@ impl TransportBar {
         }
         self.pin.buttons[0].enabled = true;
         if let Some(p) = p { let sp = p.review_speed(); let mut txt = format!("{sp:.2}"); while txt.ends_with('0') { txt.pop(); } if txt.ends_with('.') { txt.pop(); } self.speed.text = format!("{txt}×"); self.speed.off_unity = (sp - 1.0).abs() > 0.001; self.speed.enabled = true; } else { self.speed.enabled = false; }
-        if let Some(p) = p { let on = p.audio.has_audio() && !p.audio.is_muted(); self.volume.enabled = on; if !self.volume.dragging() { self.volume.value = p.audio.volume(); } self.volume.tooltip = format!("Volume — {}%", (p.audio.volume() * 100.0).round() as i32); } else { self.volume.enabled = false; }
+        if let Some(p) = p { let on = p.audio.has_audio() && !p.audio.is_muted(); self.volume.enabled = on; if !self.volume.dragging() { self.volume.value = p.audio.volume(); } self.volume.tooltip = min_i18n::fill(&tr("Volume — %1%"), &[&((p.audio.volume() * 100.0).round() as i32)]); } else { self.volume.enabled = false; }
     }
 
     /// Route a pointer event; the commands it produced. Also feeds the tooltip with what the pointer rests on.
@@ -176,7 +179,7 @@ impl TransportBar {
     /// The shell's modifier state (Shift-click on the chip snaps to 1×).
     pub fn set_shift(&mut self, on: bool) { self.shift = on; }
     fn hovered(&self) -> Option<(u64, Rect, &str)> {
-        if self.speed.hovered { return Some((1 << 22, self.speed.rect, "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)")) }
+        if self.speed.hovered { return Some((1 << 22, self.speed.rect, min_i18n::trc("TransportBar", "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)"))) }
         if self.volume.hovered() || self.volume.dragging() { return Some((1 << 21, self.volume.rect, &self.volume.tooltip)) }
         for (gi, g) in self.groups.iter().enumerate() { if let Some(i) = g.hovered() { let b = &g.buttons[i]; return Some(((gi as u64) << 8 | i as u64, b.rect, &b.tooltip)) } }
         self.pin.hovered().map(|i| { let b = &self.pin.buttons[i]; (1 << 20, b.rect, b.tooltip.as_str()) })

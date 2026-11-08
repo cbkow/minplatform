@@ -34,17 +34,20 @@ pub struct SettingsPanel {
 /// QCView's control column (Layout.preferredWidth: 110), logical px.
 const CONTROL_W: f64 = 110.0;
 
+/// QCView's catalog context for the left rail (canon row 195).
+fn tr(s: &'static str) -> &'static str { min_i18n::trc("LeftRail", s) }
+
 impl SettingsPanel {
     pub fn new() -> SettingsPanel {
-        let sw = |key, label, help, backed| Row { key, label, help, backed, windows_only: false, ctl: Ctl::Switch(Switch::new(false)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
-        let num = |key, label, help, backed, min, max, step| Row { key, label, help, backed, windows_only: false, ctl: Ctl::Number(NumberField::new(0, min, max, step)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
-        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label, help, backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| s.to_string()).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let sw = |key, label, help, backed| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Switch(Switch::new(false)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let num = |key, label, help, backed, min, max, step| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Number(NumberField::new(0, min, max, step)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| tr(s).to_string()).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
         let mut threads = num(k::FFMPEG_THREADS, "Video decode threads", "0 = Auto. Single-video playback only; applies on the next open.", true, 0, 32, 1);
-        if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label("Auto"); }
+        if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label(tr("Auto")); }
         let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (D3D12VA) when the format allows; applies on the next open.", true);
         hw.windows_only = true;   // QCView: `visible: Qt.platform.os === "windows"` (VideoToolbox is always on where it applies)
         let groups = vec![
-            Group { title: "Performance", header: Rect::ZERO, rows: vec![
+            Group { title: tr("Performance"), header: Rect::ZERO, rows: vec![
                 num(k::IMAGE_SEQ_THREADS, "Image-seq decode threads", "Applies on the next sequence load.", true, 1, 64, 1),
                 num(k::IMAGE_SEQ_READ_AHEAD, "Image-seq cache window", "Frames cached ahead of the playhead for image sequences.", true, 24, 240, 6),
                 threads,
@@ -52,7 +55,7 @@ impl SettingsPanel {
                 num(k::SCRUB_CACHE_MB, "Scrub cache size (MB)", "Decoded frames kept near the playhead while scrubbing; applies on the next open.", true, 128, 4096, 128),
                 sw(k::HW_SCRUB_INTER, "Hardware scrub for h264/h265 (experimental)", "GPU decode while scrubbing h264/h265; applies on the next open.", true),
             ] },
-            Group { title: "Interface", header: Rect::ZERO, rows: vec![
+            Group { title: tr("Interface"), header: Rect::ZERO, rows: vec![
                 pick(k::LANGUAGE, "Language", "Language of the interface. System follows the OS.", false, &["System"], &[""]),
                 sw(k::ALWAYS_OPEN_MINIMAL, "Always open in minimal mode", "Launch with the rails collapsed.", true),
                 sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
@@ -60,7 +63,7 @@ impl SettingsPanel {
                 sw(k::TIMELINE_WAVEFORMS, "Timeline audio waveforms", "Draw the audio waveform in the scrubber. Peaks decode lazily in the background.", true),
                 pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", false, &["PNG", "JPEG", "TIFF"], &["png", "jpeg", "tiff"]),
             ] },
-            Group { title: "Audio", header: Rect::ZERO, rows: vec![
+            Group { title: tr("Audio"), header: Rect::ZERO, rows: vec![
                 num(k::SYNC_OFFSET_MS, "A/V sync (Single)", "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
                 num(k::DUAL_SYNC_OFFSET_MS, "A/V sync (Dual)", "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play.", false, -100, 100, 1),
                 sw(k::SCRUB_MUTED, "Mute scrub audio", "Silence the audio feedback while scrubbing and shuttling.", true),
@@ -71,8 +74,8 @@ impl SettingsPanel {
             ] },
         ];
         SettingsPanel {
-            section: Section::new("Settings", true), groups, reset: TextButton::new("Reset all preferences…", Variant::Secondary).size_s(),
-            dialog: Dialog::new("Reset all preferences?", "Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open.", vec![("Cancel", Variant::Secondary), ("Reset", Variant::Negative)]),
+            section: Section::new(tr("Settings"), true), groups, reset: TextButton::new(tr("Reset all preferences…"), Variant::Secondary).size_s(),
+            dialog: Dialog::new(tr("Reset all preferences?"), tr("Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open."), vec![(tr("Cancel"), Variant::Secondary), (tr("Reset"), Variant::Negative)]),
             tooltips: Tooltips::default(), seen: u64::MAX, height: 0.0, scale: 1.0,
         }
     }

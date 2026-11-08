@@ -1,0 +1,3809 @@
+msgid ""
+msgstr ""
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"X-Source: QCView translations/qcview_ko.ts (ts2po.py)\n"
+
+msgctxt "ColorPanel"
+msgid "Choose LUT"
+msgstr "LUT 선택"
+
+msgctxt "ColorPanel"
+msgid "LUT / CDL files (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+msgstr "LUT / CDL 파일 (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+
+msgctxt "ColorPanel"
+msgid "All files (*)"
+msgstr "모든 파일 (*)"
+
+msgctxt "ColorPanel"
+msgid "LUT files (*.cube *.3dl *.csp)"
+msgstr "LUT 파일 (*.cube *.3dl *.csp)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT…"
+msgstr "LUT 내보내기…"
+
+msgctxt "ColorPanel"
+msgid "3D LUT (*.cube)"
+msgstr "3D LUT (*.cube)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT failed — %1"
+msgstr "LUT 내보내기 실패 — %1"
+
+msgctxt "ColorPanel"
+msgid "LUT exported: %1"
+msgstr "LUT 내보냄: %1"
+
+msgctxt "ColorPanel"
+msgid "Save preset as…"
+msgstr "프리셋을 다른 이름으로 저장…"
+
+msgctxt "ColorPanel"
+msgid "Preset name"
+msgstr "프리셋 이름"
+
+msgctxt "ColorPanel"
+msgid "Cancel"
+msgstr "취소"
+
+msgctxt "ColorPanel"
+msgid "Save"
+msgstr "저장"
+
+msgctxt "ColorPanel"
+msgid "Preset saved: %1"
+msgstr "프리셋 저장됨: %1"
+
+msgctxt "ColorPanel"
+msgid "Couldn't save preset “%1” — try another name"
+msgstr "프리셋 “%1”을(를) 저장할 수 없습니다 — 다른 이름을 사용하십시오"
+
+#. Panel title
+msgctxt "ColorPanel"
+msgid "Color"
+msgstr "컬러"
+
+msgctxt "ColorPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+msgctxt "ColorPanel"
+msgid "Colour through the OpenColorIO chain (Input · Look · LUTs · Output · View)"
+msgstr "OpenColorIO 체인을 통한 컬러 처리 (입력 · 룩 · LUT · 출력 · 뷰)"
+
+msgctxt "ColorPanel"
+msgid "minColor"
+msgstr "minColor"
+
+msgctxt "ColorPanel"
+msgid "minColor · linear conversions, AgX, no OCIO"
+msgstr "minColor · 선형 변환, AgX, OCIO 없음"
+
+msgctxt "ColorPanel"
+msgid "Colour through the minColor engine: Input → Knee → AgX → Display, no OCIO"
+msgstr "minColor 엔진을 통한 컬러 처리: 입력 → Knee → AgX → 디스플레이, OCIO 없음"
+
+msgctxt "ColorPanel"
+msgid "Previous preset"
+msgstr "이전 프리셋"
+
+msgctxt "ColorPanel"
+msgid "(no preset)"
+msgstr "(프리셋 없음)"
+
+msgctxt "ColorPanel"
+msgid "%1 — modified"
+msgstr "%1 — 수정됨"
+
+msgctxt "ColorPanel"
+msgid "Next preset"
+msgstr "다음 프리셋"
+
+msgctxt "ColorPanel"
+msgid "Overwrite the active user preset"
+msgstr "활성 사용자 프리셋 덮어쓰기"
+
+msgctxt "ColorPanel"
+msgid "Save as…"
+msgstr "다른 이름으로 저장…"
+
+msgctxt "ColorPanel"
+msgid "Delete"
+msgstr "삭제"
+
+msgctxt "ColorPanel"
+msgid "Delete the active user preset"
+msgstr "활성 사용자 프리셋 삭제"
+
+msgctxt "ColorPanel"
+msgid "Select a user preset to delete"
+msgstr "삭제할 사용자 프리셋을 선택하십시오"
+
+msgctxt "ColorPanel"
+msgid "Preset deleted: %1"
+msgstr "프리셋 삭제됨: %1"
+
+#. Button in the toast after deleting a preset
+msgctxt "ColorPanel"
+msgid "Undo"
+msgstr "실행 취소"
+
+#. Tab: the Color panel's setup column (presets and config)
+msgctxt "ColorPanel"
+msgid "Setup"
+msgstr "구성"
+
+#. Tab
+msgctxt "ColorPanel"
+msgid "Presets"
+msgstr "프리셋"
+
+msgctxt "ColorPanel"
+msgid "A preset sets both groups: its clip half on the selected clip, its view half on the View"
+msgstr "프리셋은 두 그룹을 모두 설정합니다. 클립 부분은 선택한 클립에, 뷰 부분은 뷰에 적용됩니다"
+
+msgctxt "ColorPanel"
+msgid "Config · %1"
+msgstr "컨피그 · %1"
+
+msgctxt "ColorPanel"
+msgid "The OCIO config — the colourspace, display and view names every column uses"
+msgstr "OCIO 컨피그 — 모든 열에서 사용하는 색 공간, 디스플레이, 뷰 이름"
+
+#. Color panel caption: the clip follows the host Blender's display device and view
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (emulated)"
+msgstr "호스트 디스플레이: %1 · %2 (에뮬레이션)"
+
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (off)"
+msgstr "호스트 디스플레이: %1 · %2 (꺼짐)"
+
+msgctxt "ColorPanel"
+msgid "Use my View instead of the host's display"
+msgstr "호스트의 디스플레이 대신 내 뷰 사용"
+
+msgctxt "ColorPanel"
+msgid "Sets clip + view"
+msgstr "클립 + 뷰 설정"
+
+msgctxt "ColorPanel"
+msgid "Names every column uses"
+msgstr "모든 열에서 사용하는 이름"
+
+#. Placeholder of a filter field over a list
+msgctxt "ColorPanel"
+msgid "Filter…"
+msgstr "필터…"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "SDR"
+msgstr "SDR"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+#. Column header: the per-clip half of the colour chain (Input, Look, LUTs)
+msgctxt "ColorPanel"
+msgid "Clip"
+msgstr "클립"
+
+msgctxt "ColorPanel"
+msgid "no clip"
+msgstr "클립 없음"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"A's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"A의 클립 — 여기서 변경한 내용은 이 클립에만 적용됩니다"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"Changes here stay with this clip"
+msgstr ""
+"%1\n"
+"여기서 변경한 내용은 이 클립에만 적용됩니다"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"B's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"B의 클립 — 여기서 변경한 내용은 이 클립에만 적용됩니다"
+
+msgctxt "ColorPanel"
+msgid "Input gamut"
+msgstr "입력 색역"
+
+msgctxt "ColorPanel"
+msgid "Input transfer"
+msgstr "입력 전달 함수"
+
+#. OCIO input: the clip's source colourspace
+msgctxt "ColorPanel"
+msgid "Input"
+msgstr "입력"
+
+#. OCIO look: a creative transform from the config
+msgctxt "ColorPanel"
+msgid "Look"
+msgstr "룩"
+
+#. Picker entry: nothing selected
+msgctxt "ColorPanel"
+msgid "(none)"
+msgstr "(없음)"
+
+#. A LUT applied in scene-linear space, before the view
+msgctxt "ColorPanel"
+msgid "Scene LUT"
+msgstr "씬 LUT"
+
+#. OCIO view: the display-side transform
+msgctxt "ColorPanel"
+msgid "View"
+msgstr "뷰"
+
+#. Caption: the clip chain applies to both sides of the dual view
+msgctxt "ColorPanel"
+msgid "both sides"
+msgstr "양쪽 모두"
+
+msgctxt "ColorPanel"
+msgid "everything"
+msgstr "전체"
+
+#. minColor's rendering stage
+msgctxt "ColorPanel"
+msgid "Rendering · AgX"
+msgstr "렌더링 · AgX"
+
+msgctxt "ColorPanel"
+msgid "Rendering"
+msgstr "렌더링"
+
+#. Rendering choice: no tone mapping applied
+msgctxt "ColorPanel"
+msgid "Un-tone-mapped"
+msgstr "톤 매핑 없음"
+
+#. OCIO display: the target display
+msgctxt "ColorPanel"
+msgid "Display"
+msgstr "디스플레이"
+
+#. Column header: the output (display) half of the chain
+msgctxt "ColorPanel"
+msgid "Output"
+msgstr "출력"
+
+msgctxt "ColorPanel"
+msgid "Display LUT"
+msgstr "디스플레이 LUT"
+
+#. %1 is the engine name (OCIO or minColor)
+msgctxt "ColorPanel"
+msgid "%1 On"
+msgstr "%1 켜짐"
+
+msgctxt "ColorPanel"
+msgid "%1 Off"
+msgstr "%1 꺼짐"
+
+#. Viewer aid slider, in stops
+msgctxt "ColorPanel"
+msgid "Exposure"
+msgstr "노출"
+
+#. Viewer aid slider
+msgctxt "ColorPanel"
+msgid "Gamma"
+msgstr "감마"
+
+msgctxt "ColorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "ColorPanel"
+msgid "All channels"
+msgstr "모든 채널"
+
+msgctxt "ColorPanel"
+msgid "Red"
+msgstr "빨강"
+
+msgctxt "ColorPanel"
+msgid "Green"
+msgstr "초록"
+
+msgctxt "ColorPanel"
+msgid "Blue"
+msgstr "파랑"
+
+#. Channel view: the alpha channel shown as a matte
+msgctxt "ColorPanel"
+msgid "Alpha matte"
+msgstr "알파 매트"
+
+msgctxt "ColorPanel"
+msgid "Luma (output primaries)"
+msgstr "루마 (출력 원색)"
+
+msgctxt "ColorPanel"
+msgid "Reset exposure, gamma and channel"
+msgstr "노출, 감마, 채널 초기화"
+
+msgctxt "ColorPanel"
+msgid "SDR — sRGB"
+msgstr "SDR — sRGB"
+
+msgctxt "ColorPanel"
+msgid "SDR — Display P3"
+msgstr "SDR — Display P3"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear sRGB"
+msgstr "EDR — 선형 sRGB"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear P3"
+msgstr "EDR — 선형 P3"
+
+msgctxt "ColorPanel"
+msgid "HDR10 PQ"
+msgstr "HDR10 PQ"
+
+msgctxt "ColorPanel"
+msgid "Extended Linear sRGB"
+msgstr "확장 선형 sRGB"
+
+msgctxt "ColorPanel"
+msgid "Bake the active OCIO chain to a 65³ .cube LUT"
+msgstr "활성 OCIO 체인을 65³ .cube LUT로 베이크"
+
+msgctxt "ColorPanel"
+msgid "Configure input / display / view first"
+msgstr "입력 / 디스플레이 / 뷰를 먼저 구성하십시오"
+
+msgctxt "ColorPanel"
+msgid "Set on this clip — click to go back to the default"
+msgstr "이 클립에 설정됨 — 클릭하면 기본값으로 돌아갑니다"
+
+#. Button: fold this section
+msgctxt "ColorPanel"
+msgid "Collapse"
+msgstr "접기"
+
+msgctxt "ColorPanel"
+msgid "%1 — click to expand"
+msgstr "%1 — 클릭하여 펼치기"
+
+#. Section title: the highlight compression stage
+msgctxt "ColorPanel"
+msgid "Highlight Knee"
+msgstr "하이라이트 니"
+
+#. Toggle state
+msgctxt "ColorPanel"
+msgid "On"
+msgstr "켜짐"
+
+msgctxt "ColorPanel"
+msgid "Off"
+msgstr "꺼짐"
+
+msgctxt "ColorPanel"
+msgid "Not available for this chain (data view, or the config has no interchange role)."
+msgstr "이 체인에서는 사용할 수 없습니다 (데이터 뷰이거나 컨피그에 interchange 역할이 없음)."
+
+#. Highlight Knee: the brightest level the source carries, in nits
+msgctxt "ColorPanel"
+msgid "Source peak"
+msgstr "소스 피크"
+
+#. Unit suffix
+msgctxt "ColorPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "ColorPanel"
+msgid "+%1 stops over SDR white"
+msgstr "SDR 화이트보다 +%1 스톱"
+
+msgctxt "ColorPanel"
+msgid "Use file MaxCLL (%1)"
+msgstr "파일의 MaxCLL 사용 (%1)"
+
+msgctxt "ColorPanel"
+msgid "Use mastering peak (%1)"
+msgstr "마스터링 피크 사용 (%1)"
+
+msgctxt "ColorPanel"
+msgid "No MaxCLL in file"
+msgstr "파일에 MaxCLL 없음"
+
+msgctxt "ColorPanel"
+msgid "Set the source peak from the file's HDR10 metadata"
+msgstr "파일의 HDR10 메타데이터로 소스 피크를 설정합니다"
+
+#. Highlight Knee: the brightest level the display shows, in nits
+msgctxt "ColorPanel"
+msgid "Target peak"
+msgstr "타깃 피크"
+
+msgctxt "ColorPanel"
+msgid "100 nits · SDR display"
+msgstr "100 nits · SDR 디스플레이"
+
+#. Highlight Knee: the nits level where highlight compression begins
+msgctxt "ColorPanel"
+msgid "Knee start"
+msgstr "니 시작점"
+
+msgctxt "ColorPanel"
+msgid "%1 nits"
+msgstr "%1 nits"
+
+msgctxt "ColorPanel"
+msgid "BT.2390"
+msgstr "BT.2390"
+
+msgctxt "ColorPanel"
+msgid "Reset knee start to BT.2390"
+msgstr "니 시작점을 BT.2390으로 초기화"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — on, %1 → %2 nits"
+msgstr "하이라이트 니 — 켜짐, %1 → %2 nits"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — off, click to expand"
+msgstr "하이라이트 니 — 꺼짐, 클릭하여 펼치기"
+
+msgctxt "ColorPanel"
+msgid "AgX"
+msgstr "AgX"
+
+msgctxt "ColorPanel"
+msgid "Blender's AgX at the defaults; HDR above 100 nits."
+msgstr "Blender의 AgX 기본값. 100 nits 이상은 HDR입니다."
+
+msgctxt "ColorPanel"
+msgid "Target gamut"
+msgstr "타깃 색역"
+
+msgctxt "ColorPanel"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "ColorPanel"
+msgid "Rec.709"
+msgstr "Rec.709"
+
+msgctxt "ColorPanel"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "ColorPanel"
+msgid "Peak luminance"
+msgstr "피크 휘도"
+
+msgctxt "ColorPanel"
+msgid "White (EV over grey)"
+msgstr "화이트 (그레이 위 EV)"
+
+msgctxt "ColorPanel"
+msgid "Black (EV under grey)"
+msgstr "블랙 (그레이 아래 EV)"
+
+msgctxt "ColorPanel"
+msgid "Contrast"
+msgstr "대비"
+
+#. AgX curve control: the dark end of the tone curve
+msgctxt "ColorPanel"
+msgid "Toe power"
+msgstr "토 파워"
+
+#. AgX curve control: the bright end of the tone curve
+msgctxt "ColorPanel"
+msgid "Shoulder power"
+msgstr "숄더 파워"
+
+#. AgX control: how much of the original hue is kept in bright areas
+msgctxt "ColorPanel"
+msgid "Hue restore"
+msgstr "색조 복원"
+
+#. AgX control: saturation kept above SDR white
+msgctxt "ColorPanel"
+msgid "HDR purity"
+msgstr "HDR 순도"
+
+msgctxt "ColorPanel"
+msgid "AgX — on, %1 nits"
+msgstr "AgX — 켜짐, %1 nits"
+
+msgctxt "ColorPanel"
+msgid "AgX — off, click to expand"
+msgstr "AgX — 꺼짐, 클릭하여 펼치기"
+
+#. Button on a filled LUT slot
+msgctxt "ColorPanel"
+msgid "Replace LUT"
+msgstr "LUT 교체"
+
+#. Button on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "+ Add LUT"
+msgstr "+ LUT 추가"
+
+#. Field: the id of the first correction inside a CDL file
+msgctxt "ColorPanel"
+msgid "Correction ID (first)"
+msgstr "보정 ID (첫 번째)"
+
+#. Tooltip on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "click to choose"
+msgstr "클릭하여 선택"
+
+#. Button
+msgctxt "ColorPanel"
+msgid "Clear LUT"
+msgstr "LUT 지우기"
+
+msgctxt "ColorPanel"
+msgid "%1 — %2"
+msgstr "%1 — %2"
+
+#. Colour as a hexadecimal code
+msgctxt "ColorPickerInline"
+msgid "Hex"
+msgstr "Hex"
+
+#. Red channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "R"
+msgstr "R"
+
+#. Green channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "G"
+msgstr "G"
+
+#. Blue channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "B"
+msgstr "B"
+
+msgctxt "CompactStrip"
+msgid "Pause (Space)"
+msgstr "일시 정지 (Space)"
+
+msgctxt "CompactStrip"
+msgid "Play (Space)"
+msgstr "재생 (Space)"
+
+msgctxt "CompactStrip"
+msgid "Drag to move the window"
+msgstr "드래그하여 창 이동"
+
+#. Badge: a live source is playing
+msgctxt "CompactStrip"
+msgid "LIVE"
+msgstr "라이브"
+
+#. Current frame / total frames
+msgctxt "CompactStrip"
+msgid "%1 / %2"
+msgstr "%1 / %2"
+
+msgctxt "CompactStrip"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "항상 위에 — 클릭하여 고정 해제 (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "항상 위에 (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Exit Compact Mode (Esc)"
+msgstr "컴팩트 모드 종료 (Esc)"
+
+msgctxt "FFmpegMetadataExtractor"
+msgid "Image sequence"
+msgstr "이미지 시퀀스"
+
+#. Media kind
+msgctxt "FFmpegMetadataExtractor"
+msgid "Unknown"
+msgstr "알 수 없음"
+
+msgctxt "ImageSequenceInspector"
+msgid "Image Sequence"
+msgstr "이미지 시퀀스"
+
+msgctxt "ImageSequenceInspector"
+msgid "Frame rate"
+msgstr "프레임 속도"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "ImageSequenceInspector"
+msgid "Transfer"
+msgstr "전달 함수"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (Linear, EXR)"
+msgstr "자동 (선형, EXR)"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (sRGB)"
+msgstr "자동 (sRGB)"
+
+#. Choice: decided from the file
+msgctxt "ImageSequenceInspector"
+msgid "Auto"
+msgstr "자동"
+
+msgctxt "ImageSequenceInspector"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "ImageSequenceInspector"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "ImageSequenceInspector"
+msgid "Linear"
+msgstr "선형"
+
+#. Frame number range
+msgctxt "ImageSequenceInspector"
+msgid "Range"
+msgstr "범위"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 – %2 (%3 frames)"
+msgstr "%1 – %2 (%3 프레임)"
+
+#. The file name pattern of the sequence
+msgctxt "ImageSequenceInspector"
+msgid "Pattern"
+msgstr "패턴"
+
+msgctxt "ImageSequenceInspector"
+msgid "Resolution"
+msgstr "해상도"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 × %2"
+msgstr "%1 × %2"
+
+msgctxt "ImageSequenceInspector"
+msgid "(probing…)"
+msgstr "(분석 중…)"
+
+#. EXR compression
+msgctxt "ImageSequenceInspector"
+msgid "Compression"
+msgstr "압축"
+
+msgctxt "ImageSequenceInspector"
+msgid "Duration"
+msgstr "길이"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache stride"
+msgstr "캐시 간격"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every Frame (Full)"
+msgstr "모든 프레임 (전체)"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every %1 Frames"
+msgstr "%1 프레임마다"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache ahead"
+msgstr "앞쪽 캐시"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 / %2 frames"
+msgstr "%1 / %2 프레임"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache behind"
+msgstr "뒤쪽 캐시"
+
+#. EXR layer
+msgctxt "ImageSequenceInspector"
+msgid "Layer"
+msgstr "레이어"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Video"
+msgstr "비디오"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Audio"
+msgstr "오디오"
+
+#. Media kind: a single still image
+msgctxt "InspectorPanel"
+msgid "Image"
+msgstr "이미지"
+
+msgctxt "InspectorPanel"
+msgid "Image Sequence"
+msgstr "이미지 시퀀스"
+
+msgctxt "InspectorPanel"
+msgid "Playlist"
+msgstr "재생 목록"
+
+msgctxt "InspectorPanel"
+msgid "Dual View"
+msgstr "듀얼 뷰"
+
+#. Media kind: a live stream or bridge feed
+msgctxt "InspectorPanel"
+msgid "Live"
+msgstr "라이브"
+
+#. Media kind: generic
+msgctxt "InspectorPanel"
+msgid "Media"
+msgstr "미디어"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "File"
+msgstr "파일"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Colour"
+msgstr "컬러"
+
+#. Section: video levels, full or limited
+msgctxt "InspectorPanel"
+msgid "Range"
+msgstr "레인지"
+
+#. Row: whether the file has an alpha channel
+msgctxt "InspectorPanel"
+msgid "Alpha"
+msgstr "알파"
+
+#. File container format (QuickTime, MXF)
+msgctxt "InspectorPanel"
+msgid "Container"
+msgstr "컨테이너"
+
+msgctxt "InspectorPanel"
+msgid "Encoder"
+msgstr "인코더"
+
+msgctxt "InspectorPanel"
+msgid "Copy URL"
+msgstr "URL 복사"
+
+msgctxt "InspectorPanel"
+msgid "Copy path"
+msgstr "경로 복사"
+
+#. Button: show the file in Finder / Explorer
+msgctxt "InspectorPanel"
+msgid "Reveal"
+msgstr "위치 열기"
+
+msgctxt "InspectorPanel"
+msgid "Reading metadata…"
+msgstr "메타데이터 읽는 중…"
+
+msgctxt "InspectorPanel"
+msgid "Resolution"
+msgstr "해상도"
+
+msgctxt "InspectorPanel"
+msgid "Frame rate"
+msgstr "프레임 속도"
+
+msgctxt "InspectorPanel"
+msgid "Total frames"
+msgstr "총 프레임 수"
+
+msgctxt "InspectorPanel"
+msgid "Codec"
+msgstr "코덱"
+
+#. Codec profile (e.g. ProRes 422 HQ)
+msgctxt "InspectorPanel"
+msgid "Profile"
+msgstr "프로파일"
+
+msgctxt "InspectorPanel"
+msgid "Bitrate"
+msgstr "비트레이트"
+
+msgctxt "InspectorPanel"
+msgid "file avg %1"
+msgstr "파일 평균 %1"
+
+msgctxt "InspectorPanel"
+msgid "file avg"
+msgstr "파일 평균"
+
+msgctxt "InspectorPanel"
+msgid "Pixel format"
+msgstr "픽셀 포맷"
+
+#. Pixel format summary: the file is RGB, not YUV
+msgctxt "InspectorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "InspectorPanel"
+msgid "Bit depth"
+msgstr "비트 심도"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit + alpha"
+msgstr "%1비트 + 알파"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit"
+msgstr "%1비트"
+
+msgctxt "InspectorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+msgctxt "InspectorPanel"
+msgid "Yes — %1"
+msgstr "예 — %1"
+
+#. Section title: dimensions, aspect, rotation
+msgctxt "InspectorPanel"
+msgid "Geometry"
+msgstr "지오메트리"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto (%1°)"
+msgstr "자동 (%1°)"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto"
+msgstr "자동"
+
+msgctxt "InspectorPanel"
+msgid "Aspect"
+msgstr "종횡비"
+
+#. Pixel aspect choice: square pixels
+msgctxt "InspectorPanel"
+msgid "Square"
+msgstr "정사각형"
+
+#. Pixel aspect choice: the aspect found in the file
+msgctxt "InspectorPanel"
+msgid "Detected"
+msgstr "감지됨"
+
+#. Pixel aspect choice: a value typed by the user
+msgctxt "InspectorPanel"
+msgid "Custom"
+msgstr "사용자 지정"
+
+msgctxt "InspectorPanel"
+msgid "Detected %1:%2"
+msgstr "감지됨 %1:%2"
+
+msgctxt "InspectorPanel"
+msgid "%1:%2 (non-square)"
+msgstr "%1:%2 (비정사각형)"
+
+msgctxt "InspectorPanel"
+msgid "1:1 (square)"
+msgstr "1:1 (정사각형)"
+
+#. Row: display aspect
+msgctxt "InspectorPanel"
+msgid "Display"
+msgstr "디스플레이"
+
+msgctxt "InspectorPanel"
+msgid "Rotation"
+msgstr "회전"
+
+msgctxt "InspectorPanel"
+msgid "Pixel aspect"
+msgstr "픽셀 종횡비"
+
+msgctxt "InspectorPanel"
+msgid "Display aspect"
+msgstr "디스플레이 종횡비"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Color"
+msgstr "컬러"
+
+msgctxt "InspectorPanel"
+msgid "Colorspace"
+msgstr "색 공간"
+
+#. Colour primaries
+msgctxt "InspectorPanel"
+msgid "Primaries"
+msgstr "원색"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "InspectorPanel"
+msgid "Transfer"
+msgstr "전달 함수"
+
+msgctxt "InspectorPanel"
+msgid "HDR metadata"
+msgstr "HDR 메타데이터"
+
+msgctxt "InspectorPanel"
+msgid "MaxCLL %1"
+msgstr "MaxCLL %1"
+
+msgctxt "InspectorPanel"
+msgid "MaxFALL %1"
+msgstr "MaxFALL %1"
+
+msgctxt "InspectorPanel"
+msgid "mastering %1 nits"
+msgstr "마스터링 %1 nits"
+
+msgctxt "InspectorPanel"
+msgid "NCLC tag"
+msgstr "NCLC 태그"
+
+msgctxt "InspectorPanel"
+msgid "Range tag"
+msgstr "레인지 태그"
+
+#. The file carries no range tag
+msgctxt "InspectorPanel"
+msgid "untagged"
+msgstr "태그 없음"
+
+msgctxt "InspectorPanel"
+msgid "decoder: %1"
+msgstr "디코더: %1"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes full"
+msgstr "자동은 풀로 간주"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes limited"
+msgstr "자동은 리미티드로 간주"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full)"
+msgstr "자동 (풀)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited)"
+msgstr "자동 (리미티드)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full, assumed)"
+msgstr "자동 (풀, 추정)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited, assumed)"
+msgstr "자동 (리미티드, 추정)"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Full"
+msgstr "풀"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Limited"
+msgstr "리미티드"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ P3)"
+msgstr "자동 (PQ P3)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ 2020)"
+msgstr "자동 (PQ 2020)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (HLG)"
+msgstr "자동 (HLG)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR, untagged)"
+msgstr "자동 (SDR, 태그 없음)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR)"
+msgstr "자동 (SDR)"
+
+msgctxt "InspectorPanel"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "InspectorPanel"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "InspectorPanel"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "InspectorPanel"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "InspectorPanel"
+msgid "Linear"
+msgstr "선형"
+
+#. Row: the bridge's current state
+msgctxt "InspectorPanel"
+msgid "State"
+msgstr "상태"
+
+#. Bridge state: the Transmit device is disabled in the host application
+msgctxt "InspectorPanel"
+msgid "Off in the host"
+msgstr "호스트에서 꺼짐"
+
+#. Bridge state: nothing is being sent
+msgctxt "InspectorPanel"
+msgid "Idle"
+msgstr "대기"
+
+#. Bridge state: the host is sending frames
+msgctxt "InspectorPanel"
+msgid "Pushing"
+msgstr "전송 중"
+
+#. Bridge state: the host is scrubbing
+msgctxt "InspectorPanel"
+msgid "Scrubbing"
+msgstr "스크럽 중"
+
+msgctxt "InspectorPanel"
+msgid "No audio"
+msgstr "오디오 없음"
+
+msgctxt "InspectorPanel"
+msgid "Sample rate"
+msgstr "샘플 레이트"
+
+msgctxt "InspectorPanel"
+msgid "%1 Hz"
+msgstr "%1 Hz"
+
+msgctxt "InspectorPanel"
+msgid "Channels"
+msgstr "채널"
+
+msgctxt "InspectorPanel"
+msgid "%1 (stereo)"
+msgstr "%1 (스테레오)"
+
+msgctxt "InspectorPanel"
+msgid "%1 (mono)"
+msgstr "%1 (모노)"
+
+#. Audio channel layout (stereo, 5.1)
+msgctxt "InspectorPanel"
+msgid "Layout"
+msgstr "레이아웃"
+
+#. Toggle: play the bridge's audio in QCView
+msgctxt "InspectorPanel"
+msgid "Listen in QCView"
+msgstr "QCView에서 듣기"
+
+#. Row label for the bridge's audio
+msgctxt "InspectorPanel"
+msgid "Audio Stream"
+msgstr "오디오 스트림"
+
+msgctxt "InspectorPanel"
+msgid "off: tick it in Premiere ▸ Preferences ▸ Playback"
+msgstr "꺼짐: Premiere ▸ 환경 설정 ▸ 재생에서 켜십시오"
+
+#. Audio downmix choice
+msgctxt "InspectorPanel"
+msgid "Mix"
+msgstr "믹스"
+
+msgctxt "InspectorPanel"
+msgid "Auto — picks the right mix per source"
+msgstr "자동 — 소스별로 알맞은 믹스 선택"
+
+msgctxt "InspectorPanel"
+msgid "5.1 → Stereo (BS.775 downmix from channels 1-6)"
+msgstr "5.1 → 스테레오 (채널 1-6의 BS.775 다운믹스)"
+
+msgctxt "InspectorPanel"
+msgid "Channels 7-8 (broadcast stereo bounce)"
+msgstr "채널 7-8 (방송용 스테레오 바운스)"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Timecode"
+msgstr "타임코드"
+
+#. Timecode origin: counting from the start of the file
+msgctxt "InspectorPanel"
+msgid "From start"
+msgstr "시작부터"
+
+#. Timecode origin: the timecode track in the file
+msgctxt "InspectorPanel"
+msgid "Embedded"
+msgstr "내장"
+
+#. Timecode origin: the QuickTime start timecode
+msgctxt "InspectorPanel"
+msgid "QT Start"
+msgstr "QT 시작"
+
+msgctxt "InspectorPanel"
+msgid "QT TC"
+msgstr "QT TC"
+
+msgctxt "InspectorPanel"
+msgid "XMP Alt"
+msgstr "XMP Alt"
+
+#. Row: where the timecode comes from
+msgctxt "InspectorPanel"
+msgid "Origin"
+msgstr "기준"
+
+#. Row: which metadata the timecode was read from
+msgctxt "InspectorPanel"
+msgid "Source"
+msgstr "소스"
+
+msgctxt "InspectorPanel"
+msgid "(frame %1)"
+msgstr "(프레임 %1)"
+
+msgctxt "InspectorPanel"
+msgid "QT TimeCode"
+msgstr "QT TimeCode"
+
+#. Row: file creation date
+msgctxt "InspectorPanel"
+msgid "Created"
+msgstr "생성일"
+
+#. Row: the media's own creation date from its metadata
+msgctxt "InspectorPanel"
+msgid "Media Created"
+msgstr "미디어 생성일"
+
+#. Section title: project files that reference this media
+msgctxt "InspectorPanel"
+msgid "Linked Projects"
+msgstr "연결된 프로젝트"
+
+msgctxt "InspectorPanel"
+msgid "After Effects"
+msgstr "After Effects"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Mac)"
+msgstr "Premiere (Mac)"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Windows)"
+msgstr "Premiere (Windows)"
+
+#. Button: open the linked project in its application
+msgctxt "InspectorPanel"
+msgid "Open"
+msgstr "열기"
+
+#. Button: copy the project path
+msgctxt "InspectorPanel"
+msgid "Copy"
+msgstr "복사"
+
+msgctxt "InspectorPanel"
+msgid "Playlist Contents"
+msgstr "재생 목록 내용"
+
+msgctxt "InspectorPanel"
+msgid "%1 clips"
+msgstr "클립 %1개"
+
+msgctxt "InspectorPanel"
+msgid "(missing)"
+msgstr "(누락)"
+
+msgctxt "InspectorPanel"
+msgid "Open in single mode"
+msgstr "단일 모드로 열기"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Videos"
+msgstr "비디오"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Audio"
+msgstr "오디오"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Images"
+msgstr "이미지"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Image Sequences"
+msgstr "이미지 시퀀스"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Playlists"
+msgstr "재생 목록"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Dual Views"
+msgstr "듀얼 뷰"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Live"
+msgstr "라이브"
+
+msgctxt "LeftRail"
+msgid "Add Media"
+msgstr "미디어 추가"
+
+#. Tooltip on the warning badge of a media row the player cannot decode
+msgctxt "LeftRail"
+msgid "Can’t be played here: unsupported format or un-debayered camera raw"
+msgstr "여기서는 재생할 수 없습니다: 지원하지 않는 형식이거나 디베이어되지 않은 카메라 RAW입니다"
+
+msgctxt "LeftRail"
+msgid "Create Playlist from Selection"
+msgstr "선택 항목으로 재생 목록 만들기"
+
+#. Context menu: set the OCIO input colourspace of the selected clips
+msgctxt "LeftRail"
+msgid "Input"
+msgstr "입력"
+
+#. Picker group header: inputs already used in the project
+msgctxt "LeftRail"
+msgid "In this project"
+msgstr "이 프로젝트에서 사용 중"
+
+#. Picker group header: every input in the config
+msgctxt "LeftRail"
+msgid "All"
+msgstr "전체"
+
+msgctxt "LeftRail"
+msgid "Input for 1 clip"
+msgstr "클립 1개의 입력"
+
+msgctxt "LeftRail"
+msgid "Input for %1 clips"
+msgstr "클립 %1개의 입력"
+
+msgctxt "LeftRail"
+msgid "Filter…"
+msgstr "필터…"
+
+#. Picker entry: use the config's default input
+msgctxt "LeftRail"
+msgid "default"
+msgstr "기본값"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of “%1”"
+msgstr "“%1”의 클립 체인 사용"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of the Clip on Screen"
+msgstr "화면에 표시된 클립의 클립 체인 사용"
+
+msgctxt "LeftRail"
+msgid "Reset Clip Chain"
+msgstr "클립 체인 초기화"
+
+msgctxt "LeftRail"
+msgid "Delete"
+msgstr "삭제"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Expand panel"
+msgstr "패널 펼치기"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Collapse panel"
+msgstr "패널 접기"
+
+#. Rail title
+msgctxt "LeftRail"
+msgid "Project"
+msgstr "프로젝트"
+
+#. Count of items, in parentheses
+msgctxt "LeftRail"
+msgid "(%1)"
+msgstr "(%1)"
+
+#. Section title: the project's media bins
+msgctxt "LeftRail"
+msgid "Media"
+msgstr "미디어"
+
+msgctxt "LeftRail"
+msgid "Drop media here to add to the project"
+msgstr "여기에 미디어를 놓아 프로젝트에 추가"
+
+#. Default name of a new playlist
+msgctxt "LeftRail"
+msgid "New playlist"
+msgstr "새 재생 목록"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Safety Guides"
+msgstr "안전 가이드"
+
+#. Row: which safety guide to show
+msgctxt "LeftRail"
+msgid "Guide"
+msgstr "가이드"
+
+msgctxt "LeftRail"
+msgid "(none)"
+msgstr "(없음)"
+
+#. Row: guide opacity
+msgctxt "LeftRail"
+msgid "Opacity"
+msgstr "불투명도"
+
+#. Row: guide line width
+msgctxt "LeftRail"
+msgid "Width"
+msgstr "두께"
+
+#. Row: guide line colour
+msgctxt "LeftRail"
+msgid "Color"
+msgstr "색상"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Background"
+msgstr "배경"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Black"
+msgstr "검정"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Dark Gray"
+msgstr "어두운 회색"
+
+#. Background choice: a dark checkerboard
+msgctxt "LeftRail"
+msgid "Dark Check"
+msgstr "어두운 체크"
+
+#. Background choice: a light checkerboard
+msgctxt "LeftRail"
+msgid "Light Check"
+msgstr "밝은 체크"
+
+#. Section: installed outputs (NDI, AJA, streaming)
+msgctxt "LeftRail"
+msgid "Output"
+msgstr "출력"
+
+#. Chip: silence the audio sent to outputs
+msgctxt "LeftRail"
+msgid "Mute feed"
+msgstr "피드 음소거"
+
+msgctxt "LeftRail"
+msgid "Silence the audio sent to outputs while you keep listening. The master mute (M) silences both."
+msgstr "계속 들으면서 출력으로 보내는 오디오만 음소거합니다. 마스터 음소거(M)는 둘 다 음소거합니다."
+
+#. Chip: send the safety guides to outputs
+msgctxt "LeftRail"
+msgid "Guides"
+msgstr "가이드"
+
+msgctxt "LeftRail"
+msgid "Draw the safety guides into the outputs that ask for them."
+msgstr "가이드를 요청하는 출력에 안전 가이드를 그립니다."
+
+#. Chip: send note strokes to outputs
+msgctxt "LeftRail"
+msgid "Notes"
+msgstr "노트"
+
+msgctxt "LeftRail"
+msgid "Draw note strokes into the outputs that ask for them."
+msgstr "노트를 요청하는 출력에 노트 스트로크를 그립니다."
+
+#. Button on an output card
+msgctxt "LeftRail"
+msgid "Stop"
+msgstr "중지"
+
+msgctxt "LeftRail"
+msgid "Start"
+msgstr "시작"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "PQ Rec.2100"
+msgstr "PQ Rec.2100"
+
+msgctxt "LeftRail"
+msgid "HLG Rec.2100"
+msgstr "HLG Rec.2100"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "SDR Rec.709"
+msgstr "SDR Rec.709"
+
+#. Output resolution choice
+msgctxt "LeftRail"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "LeftRail"
+msgid "UHD"
+msgstr "UHD"
+
+#. Output resolution choice
+#. ----------
+#. Choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto"
+msgstr "자동"
+
+#. Output state: the sink is receiving
+msgctxt "LeftRail"
+msgid "attached"
+msgstr "연결됨"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "waiting for the sink"
+msgstr "싱크 대기 중"
+
+msgctxt "LeftRail"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "LeftRail"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "LeftRail"
+msgid "%1 / %2 / %3 nits"
+msgstr "%1 / %2 / %3 nits"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "live"
+msgstr "라이브"
+
+#. Output state: the sink refused the connection
+msgctxt "LeftRail"
+msgid "refused"
+msgstr "거부됨"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "starting"
+msgstr "시작 중"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "not installed"
+msgstr "설치되지 않음"
+
+msgctxt "LeftRail"
+msgid "Publish the viewport and the mixed audio to this output. The sink runs as its own application; QCView starts it with Start and stops it with Stop."
+msgstr "뷰포트와 믹스된 오디오를 이 출력으로 보냅니다. 싱크는 별도의 응용 프로그램으로 실행되며, QCView의 시작 버튼으로 실행하고 중지 버튼으로 종료합니다."
+
+#. Caption under three number fields
+msgctxt "LeftRail"
+msgid "peak · MaxCLL · MaxFALL nits"
+msgstr "피크 · MaxCLL · MaxFALL nits"
+
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in Application Support/QCView/Outputs."
+msgstr "설치된 출력이 없습니다. 출력은 Application Support/QCView/Outputs에 스스로 등록됩니다."
+
+#. Output state
+msgctxt "LeftRail"
+msgid "streaming"
+msgstr "스트리밍 중"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "reconnecting"
+msgstr "재연결 중"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "connecting"
+msgstr "연결 중"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "failed"
+msgstr "실패"
+
+msgctxt "LeftRail"
+msgid "%1 kbps"
+msgstr "%1 kbps"
+
+msgctxt "LeftRail"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+msgctxt "LeftRail"
+msgid "%n encoded"
+msgid_plural "%n encoded"
+msgstr[0] "인코딩 %n"
+
+msgctxt "LeftRail"
+msgid "%n repeated"
+msgid_plural "%n repeated"
+msgstr[0] "반복 %n"
+
+msgctxt "LeftRail"
+msgid "%n skipped"
+msgid_plural "%n skipped"
+msgstr[0] "건너뜀 %n"
+
+msgctxt "LeftRail"
+msgid "%n dropped"
+msgid_plural "%n dropped"
+msgstr[0] "드롭 %n"
+
+msgctxt "LeftRail"
+msgid "%n send error(s)"
+msgid_plural "%n send error(s)"
+msgstr[0] "전송 오류 %n회"
+
+msgctxt "LeftRail"
+msgid "%n reconnect(s)"
+msgid_plural "%n reconnect(s)"
+msgstr[0] "재연결 %n회"
+
+#. Frame rate choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto fps"
+msgstr "자동 fps"
+
+#. H.264 profile name, keep in English
+msgctxt "LeftRail"
+msgid "Main"
+msgstr "Main"
+
+msgctxt "LeftRail"
+msgid "Baseline"
+msgstr "Baseline"
+
+#. Summary: the stream sends video only
+msgctxt "LeftRail"
+msgid "no audio"
+msgstr "오디오 없음"
+
+msgctxt "LeftRail"
+msgid "AAC %1"
+msgstr "AAC %1"
+
+msgctxt "LeftRail"
+msgid "SRT %1 ms"
+msgstr "SRT %1 ms"
+
+#. Card title: the SRT / RTMP streaming output
+msgctxt "LeftRail"
+msgid "Stream"
+msgstr "스트림"
+
+#. Output state: this machine cannot encode
+msgctxt "LeftRail"
+msgid "no hardware encoder"
+msgstr "하드웨어 인코더 없음"
+
+msgctxt "LeftRail"
+msgid "Send the viewport and the mixed audio to a streaming server (Louper, or any SRT or RTMP server) as H.264 + AAC, encoded on the GPU. srt://host:port with the key as the stream id, or rtmp://host/app with the key as the stream name. A dropped connection reconnects on its own. The picture is the same Rec.709 SDR picture the output bus serves; the frame rate is fixed for the session (a paused viewport repeats its last frame)."
+msgstr "뷰포트와 믹스된 오디오를 GPU에서 H.264 + AAC로 인코딩하여 스트리밍 서버(Louper 또는 모든 SRT/RTMP 서버)로 보냅니다. srt://host:port에는 키를 스트림 ID로, rtmp://host/app에는 키를 스트림 이름으로 사용합니다. 연결이 끊기면 자동으로 다시 연결됩니다. 영상은 출력 버스가 제공하는 것과 같은 Rec.709 SDR 영상이며, 프레임 속도는 세션 동안 고정됩니다 (일시 정지된 뷰포트는 마지막 프레임을 반복합니다)."
+
+msgctxt "LeftRail"
+msgid "srt://host:port"
+msgstr "srt://host:port"
+
+msgctxt "LeftRail"
+msgid "Stream key (SRT stream id)"
+msgstr "스트림 키 (SRT 스트림 ID)"
+
+msgctxt "LeftRail"
+msgid "Hide the key"
+msgstr "키 숨기기"
+
+msgctxt "LeftRail"
+msgid "Show the key"
+msgstr "키 표시"
+
+msgctxt "LeftRail"
+msgid "Bitrate (kbps)"
+msgstr "비트레이트 (kbps)"
+
+msgctxt "LeftRail"
+msgid "Constant-rate target. Louper suggests 2500–8000 at 1080p."
+msgstr "고정 비트레이트 목표값입니다. Louper는 1080p에서 2500–8000을 권장합니다."
+
+msgctxt "LeftRail"
+msgid "Resolution"
+msgstr "해상도"
+
+msgctxt "LeftRail"
+msgid "The stream's raster; the viewport is letterboxed into it like any output."
+msgstr "스트림의 래스터 크기입니다. 다른 출력과 마찬가지로 뷰포트가 레터박스로 맞춰집니다."
+
+msgctxt "LeftRail"
+msgid "Frame rate"
+msgstr "프레임 속도"
+
+msgctxt "LeftRail"
+msgid "Auto takes the source's rate when the stream starts (30 when it has none) and keeps it for the session. A 23.976 source into a 30 fps clock repeats six frames a second."
+msgstr "자동은 스트림 시작 시 소스의 프레임 속도를 가져와(없으면 30) 세션 동안 유지합니다. 23.976 소스를 30 fps 클록에 보내면 초당 여섯 프레임이 반복됩니다."
+
+msgctxt "LeftRail"
+msgid "H.264 profile"
+msgstr "H.264 프로파일"
+
+msgctxt "LeftRail"
+msgid "Baseline is what Louper's recipe asks for; Main gives better quality per bit where the service accepts it. Never B-frames."
+msgstr "Baseline은 Louper의 권장 설정입니다. Main은 서비스가 지원하는 경우 비트당 더 나은 화질을 제공합니다. B 프레임은 사용하지 않습니다."
+
+msgctxt "LeftRail"
+msgid "Audio (kbps)"
+msgstr "오디오 (kbps)"
+
+msgctxt "LeftRail"
+msgid "AAC stereo at 48 kHz from the mixed audio, before Listen, mute and volume. Off sends video only."
+msgstr "듣기, 음소거, 볼륨을 거치기 전의 믹스된 오디오를 48 kHz AAC 스테레오로 보냅니다. 끄면 비디오만 보냅니다."
+
+#. AAC bitrate choice: no audio in the stream
+msgctxt "LeftRail"
+msgid "Off"
+msgstr "끄기"
+
+msgctxt "LeftRail"
+msgid "SRT latency (ms)"
+msgstr "SRT 지연 시간 (ms)"
+
+msgctxt "LeftRail"
+msgid "The SRT retransmission window, both ends negotiate the larger. 120 ms suits a LAN or a good link; raise it on a lossy one."
+msgstr "SRT 재전송 윈도우입니다. 양쪽 중 큰 값으로 협상됩니다. LAN이나 양호한 회선에는 120 ms가 적당하며, 손실이 많은 회선에서는 높이십시오."
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Settings"
+msgstr "설정"
+
+msgctxt "LeftRail"
+msgid "Reset all preferences?"
+msgstr "모든 환경 설정을 초기화하시겠습니까?"
+
+msgctxt "LeftRail"
+msgid "Every preference (recents, layout, settings, shortcuts) will be erased and the app will quit. Relaunch to continue."
+msgstr "모든 환경 설정(최근 항목, 레이아웃, 설정, 단축키)이 지워지고 앱이 종료됩니다. 계속하려면 다시 실행하십시오."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Performance"
+msgstr "성능"
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq decode threads"
+msgstr "이미지 시퀀스 디코드 스레드"
+
+msgctxt "LeftRail"
+msgid "Applies on next sequence load."
+msgstr "다음 시퀀스 로드 시 적용됩니다."
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq cache window"
+msgstr "이미지 시퀀스 캐시 범위"
+
+msgctxt "LeftRail"
+msgid "Frames cached ahead of the playhead. Lower = less RAM."
+msgstr "재생 헤드 앞쪽에 캐시할 프레임 수입니다. 낮을수록 RAM을 덜 사용합니다."
+
+msgctxt "LeftRail"
+msgid "Video decode threads"
+msgstr "비디오 디코드 스레드"
+
+msgctxt "LeftRail"
+msgid "0 = Auto. Single-video playback only; dual and scrub stay on Auto. Applies on next video load."
+msgstr "0 = 자동. 단일 비디오 재생에만 적용되며, 듀얼과 스크럽은 자동을 유지합니다. 다음 비디오 로드 시 적용됩니다."
+
+msgctxt "LeftRail"
+msgid "Enable hardware decoding"
+msgstr "하드웨어 디코딩 사용"
+
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D11VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "가능한 경우 GPU 디코딩(Vulkan/D3D11VA)을 사용합니다. 재생에 문제가 있으면 끄십시오 — 모든 경우에 소프트웨어 디코딩을 강제합니다. 다음 파일 로드 시 적용됩니다."
+
+msgctxt "LeftRail"
+msgid "Scrub cache size (MB)"
+msgstr "스크럽 캐시 크기 (MB)"
+
+msgctxt "LeftRail"
+msgid "Decoded frames kept near the playhead for instant backward scrub. Higher = smoother, more RAM/VRAM. Per decoder — dual uses 2x. Applies on next file load."
+msgstr "즉각적인 역방향 스크럽을 위해 재생 헤드 주변에 보관하는 디코딩된 프레임입니다. 높을수록 부드럽지만 RAM/VRAM을 더 사용합니다. 디코더당 값이며, 듀얼은 2배를 사용합니다. 다음 파일 로드 시 적용됩니다."
+
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265 (experimental)"
+msgstr "h264/h265 하드웨어 스크럽 (실험적)"
+
+msgctxt "LeftRail"
+msgid "GPU decode while scrubbing h264/h265, not just all-intra (ProRes). Experimental — turn off if scrubbed frames look wrong. Applies on next file load."
+msgstr "올인트라(ProRes)뿐 아니라 h264/h265 스크럽 중에도 GPU 디코딩을 사용합니다. 실험적 기능입니다 — 스크럽한 프레임이 이상하게 보이면 끄십시오. 다음 파일 로드 시 적용됩니다."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Interface"
+msgstr "인터페이스"
+
+msgctxt "LeftRail"
+msgid "Language"
+msgstr "언어"
+
+msgctxt "LeftRail"
+msgid "Language of the interface. System default follows the OS setting. Applies at once."
+msgstr "인터페이스 언어입니다. 시스템 기본값은 OS 설정을 따릅니다. 즉시 적용됩니다."
+
+msgctxt "LeftRail"
+msgid "Always open in minimal mode"
+msgstr "항상 미니멀 모드로 열기"
+
+msgctxt "LeftRail"
+msgid "Launch with the rails collapsed and the color panel hidden, ignoring the last-used layout. Applies on next launch."
+msgstr "마지막 레이아웃을 무시하고 패널을 접고 컬러 패널을 숨긴 상태로 실행합니다. 다음 실행 시 적용됩니다."
+
+msgctxt "LeftRail"
+msgid "Timeline hover thumbnails"
+msgstr "타임라인 마우스 오버 썸네일"
+
+msgctxt "LeftRail"
+msgid "Drag viewport to move window"
+msgstr "뷰포트를 드래그하여 창 이동"
+
+msgctxt "LeftRail"
+msgid "Timeline audio waveforms"
+msgstr "타임라인 오디오 파형"
+
+msgctxt "LeftRail"
+msgid "Draw an audio waveform over timeline clips. Peaks decode lazily in the background for the visible range and pause during playback."
+msgstr "타임라인 클립 위에 오디오 파형을 그립니다. 피크는 보이는 범위에 대해 백그라운드에서 필요할 때 디코딩되며, 재생 중에는 일시 중지됩니다."
+
+msgctxt "LeftRail"
+msgid "Screenshot format"
+msgstr "스크린샷 형식"
+
+msgctxt "LeftRail"
+msgid "Format for Desktop screenshots. JPEG is lossy; PNG/TIFF lossless. Notes always use PNG."
+msgstr "데스크톱 스크린샷의 형식입니다. JPEG는 손실 압축, PNG/TIFF는 무손실입니다. 노트는 항상 PNG를 사용합니다."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Updates"
+msgstr "업데이트"
+
+msgctxt "LeftRail"
+msgid "Automatically check for updates"
+msgstr "자동으로 업데이트 확인"
+
+msgctxt "LeftRail"
+msgid "Checks daily for updates, sending only your IP and app/OS version. Update manually anytime from the About menu."
+msgstr "매일 업데이트를 확인하며 IP와 앱/OS 버전만 전송합니다. 정보 메뉴에서 언제든 수동으로 업데이트할 수 있습니다."
+
+#. Audio/video offset setting for single-clip playback
+msgctxt "LeftRail"
+msgid "A/V sync (Single)"
+msgstr "A/V 동기화 (단일)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play."
+msgstr "양수 값은 파이프라인/디스플레이 지연을 보정하기 위해 오디오를 늦춥니다. 귀로 들으며 조정하십시오. 다음 탐색 또는 재생 시 적용됩니다."
+
+#. Audio/video offset setting for dual view
+msgctxt "LeftRail"
+msgid "A/V sync (Dual)"
+msgstr "A/V 동기화 (듀얼)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play."
+msgstr "양수 값은 파이프라인/디스플레이 지연을 보정하기 위해 오디오를 늦춥니다. 듀얼은 단일보다 지연이 더 큽니다. 귀로 들으며 조정하십시오. 다음 탐색 또는 재생 시 적용됩니다."
+
+msgctxt "LeftRail"
+msgid "Mute scrub audio"
+msgstr "스크럽 오디오 음소거"
+
+msgctxt "LeftRail"
+msgid "Silence the audio feedback while dragging the timeline or holding fast-forward/rewind. Scrubbing itself is unaffected."
+msgstr "타임라인을 드래그하거나 빨리 감기/되감기를 누르고 있는 동안 오디오 피드백을 음소거합니다. 스크럽 자체에는 영향이 없습니다."
+
+msgctxt "LeftRail"
+msgid "Listen to live audio"
+msgstr "라이브 오디오 듣기"
+
+msgctxt "LeftRail"
+msgid "Play audio pushed by Premiere Pro over QCBridge in QCView. Off by default: Premiere is already playing it. Meters run either way."
+msgstr "Premiere Pro가 QCBridge로 보내는 오디오를 QCView에서 재생합니다. Premiere가 이미 재생하고 있으므로 기본값은 꺼짐입니다. 미터는 어느 쪽이든 동작합니다."
+
+#. Setting: watch for a QCBridge (Blender) session on this machine
+msgctxt "LeftRail"
+msgid "Blender sessions"
+msgstr "Blender 세션"
+
+msgctxt "LeftRail"
+msgid "Off at every launch. On (also File ▸ Connect to Blender): QCView watches for the card the QCBridge host add-on on this machine writes when a session starts, listens on its port and shows the replica's stream. Off again stops listening."
+msgstr "실행할 때마다 꺼짐 상태로 시작합니다. 켜면(파일 ▸ Blender에 연결로도 가능) 이 컴퓨터의 QCBridge 호스트 애드온이 세션 시작 시 기록하는 카드를 QCView가 감시하고, 해당 포트에서 수신 대기하며 복제본의 스트림을 표시합니다. 다시 끄면 수신 대기를 중지합니다."
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Live from %1 on port %2"
+msgstr "%1에서 라이브 수신 중 (포트 %2)"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Listening for %1 on port %2"
+msgstr "%1 수신 대기 중 (포트 %2)"
+
+#. Blender input state: a card exists but another clip is on screen
+msgctxt "LeftRail"
+msgid "%1 is streaming on port %2 — select the Blender clip"
+msgstr "%1이(가) 포트 %2에서 스트리밍 중입니다 — Blender 클립을 선택하십시오"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Blender session ended"
+msgstr "Blender 세션 종료됨"
+
+#. Blender input state: no card yet
+msgctxt "LeftRail"
+msgid "No Blender session on this machine yet"
+msgstr "이 컴퓨터에 아직 Blender 세션이 없습니다"
+
+#. Audio/video offset setting for bridge feeds
+msgctxt "LeftRail"
+msgid "A/V sync (Live)"
+msgstr "A/V 동기화 (라이브)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear."
+msgstr "양수 값은 브리지 오디오를 늦추고, 음수 값은 영상을 늦춥니다. 호스트 응용 프로그램별로 저장됩니다. 귀로 들으며 조정하십시오."
+
+msgctxt "LeftRail"
+msgid "Live audio buffer"
+msgstr "라이브 오디오 버퍼"
+
+msgctxt "LeftRail"
+msgid "How much bridge audio is queued before it plays. Raise it if live audio stutters; lower it for less delay."
+msgstr "재생 전에 대기열에 쌓아 둘 브리지 오디오의 양입니다. 라이브 오디오가 끊기면 높이고, 지연을 줄이려면 낮추십시오."
+
+msgctxt "LeftRail"
+msgid "Reset all preferences…"
+msgstr "모든 환경 설정 초기화…"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "LiveStrip"
+msgid "REVIEW · %1"
+msgstr "리뷰 · %1"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "LIVE"
+msgstr "라이브"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "PAUSED"
+msgstr "일시 정지"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "WAITING"
+msgstr "대기 중"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "RECONNECTING"
+msgstr "재연결 중"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "CONNECTING"
+msgstr "연결 중"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "OFFLINE"
+msgstr "오프라인"
+
+#. Transport of a bridge feed
+msgctxt "LiveStrip"
+msgid "shared memory"
+msgstr "공유 메모리"
+
+#. Warning: the frame contains non-finite pixel values
+msgctxt "LiveStrip"
+msgid "inf/NaN in frame"
+msgstr "프레임에 inf/NaN 있음"
+
+#. Count of times the host application went away and came back
+msgctxt "LiveStrip"
+msgid "%n restart(s)"
+msgid_plural "%n restart(s)"
+msgstr[0] "재시작 %n회"
+
+#. Count of stream drops followed by a reconnect
+msgctxt "LiveStrip"
+msgid "%n drop(s)"
+msgid_plural "%n drop(s)"
+msgstr[0] "드롭 %n회"
+
+#. Transfer override choice: follow the feed's tags
+msgctxt "LiveStrip"
+msgid "Auto"
+msgstr "자동"
+
+msgctxt "LiveStrip"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "LiveStrip"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "LiveStrip"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "LiveStrip"
+msgid "Linear"
+msgstr "선형"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ P3"
+msgstr "자동 · PQ P3"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ 2020"
+msgstr "자동 · PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "Auto · HLG"
+msgstr "자동 · HLG"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR, untagged"
+msgstr "자동 · SDR, 태그 없음"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR"
+msgstr "자동 · SDR"
+
+msgctxt "LiveStrip"
+msgid "How the scopes read this feed (Transfer override)"
+msgstr "스코프가 이 피드를 해석하는 방식 (전달 함수 재정의)"
+
+#. Live strip chip: the host Blender's display device and view are being emulated
+msgctxt "LiveStrip"
+msgid "Host display %1 · %2"
+msgstr "호스트 디스플레이 %1 · %2"
+
+#. Live strip chip: host-display emulation is pinned but switched off
+msgctxt "LiveStrip"
+msgid "Host display off"
+msgstr "호스트 디스플레이 꺼짐"
+
+#. Live strip chip: the link named a view QCView could not apply
+msgctxt "LiveStrip"
+msgid "View %1 not applied"
+msgstr "뷰 %1 적용 안 됨"
+
+msgctxt "LiveStrip"
+msgid "The Blender host's view, rendered for its display device, shown here (click for options)"
+msgstr "Blender 호스트의 뷰를 호스트의 디스플레이 장치 기준으로 렌더링하여 여기에 표시합니다 (클릭하여 옵션 보기)"
+
+#. Menu: switch host-display emulation on or off for this stream
+msgctxt "LiveStrip"
+msgid "Emulate the host display"
+msgstr "호스트 디스플레이 에뮬레이션"
+
+#. Menu: convert the host display's colourspace to ours instead of showing its codes as sRGB
+msgctxt "LiveStrip"
+msgid "True emulation (display to display)"
+msgstr "실제 에뮬레이션 (디스플레이 → 디스플레이)"
+
+#. Menu: drop the host-display pin; this machine's own View applies
+msgctxt "LiveStrip"
+msgid "Use my View instead"
+msgstr "대신 내 뷰 사용"
+
+msgctxt "LiveStrip"
+msgid "Color panel (⌃3)"
+msgstr "컬러 패널 (⌃3)"
+
+msgctxt "LiveStrip"
+msgid "Notes panel (⌃4)"
+msgstr "노트 패널 (⌃4)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "스크린샷을 클립보드로 (⌥T)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to Desktop (T)"
+msgstr "스크린샷을 데스크톱으로 (T)"
+
+msgctxt "Main"
+msgid "Open Media…"
+msgstr "미디어 열기…"
+
+msgctxt "Main"
+msgid "Open Project…"
+msgstr "프로젝트 열기…"
+
+msgctxt "Main"
+msgid "QCView Project (*.qcvproj)"
+msgstr "QCView 프로젝트 (*.qcvproj)"
+
+msgctxt "Main"
+msgid "Save Project As…"
+msgstr "프로젝트를 다른 이름으로 저장…"
+
+msgctxt "Main"
+msgid "Project error"
+msgstr "프로젝트 오류"
+
+msgctxt "Main"
+msgid "OK"
+msgstr "확인"
+
+msgctxt "Main"
+msgid "Open Stream"
+msgstr "스트림 열기"
+
+msgctxt "Main"
+msgid "Stream URL"
+msgstr "스트림 URL"
+
+msgctxt "Main"
+msgid "Name (optional)"
+msgstr "이름 (선택 사항)"
+
+msgctxt "Main"
+msgid "defaults to host:port"
+msgstr "기본값은 host:port"
+
+msgctxt "Main"
+msgid "Passphrase (optional)"
+msgstr "암호 (선택 사항)"
+
+msgctxt "Main"
+msgid "Cancel"
+msgstr "취소"
+
+msgctxt "Main"
+msgid "Connect"
+msgstr "연결"
+
+msgctxt "Main"
+msgid "About QCView"
+msgstr "QCView 정보"
+
+msgctxt "Main"
+msgid "QCView"
+msgstr "QCView"
+
+msgctxt "Main"
+msgid "Version %1"
+msgstr "버전 %1"
+
+msgctxt "Main"
+msgid "Color-accurate review player."
+msgstr "색 정확도를 갖춘 리뷰 플레이어."
+
+#. Button: open the documentation website
+msgctxt "Main"
+msgid "Docs"
+msgstr "문서"
+
+msgctxt "Main"
+msgid "Check for Updates…"
+msgstr "업데이트 확인…"
+
+#. Button
+msgctxt "Main"
+msgid "Close"
+msgstr "닫기"
+
+msgctxt "Main"
+msgid "&File"
+msgstr "파일(&F)"
+
+msgctxt "Main"
+msgid "Open Stream…"
+msgstr "스트림 열기…"
+
+msgctxt "Main"
+msgid "Connect to After Effects"
+msgstr "After Effects에 연결"
+
+msgctxt "Main"
+msgid "Connect to Premiere Pro"
+msgstr "Premiere Pro에 연결"
+
+msgctxt "Main"
+msgid "Connect to Blender"
+msgstr "Blender에 연결"
+
+msgctxt "Main"
+msgid "Open Recent Media"
+msgstr "최근 미디어 열기"
+
+msgctxt "Main"
+msgid "(none)"
+msgstr "(없음)"
+
+msgctxt "Main"
+msgid "Clear Menu"
+msgstr "메뉴 지우기"
+
+msgctxt "Main"
+msgid "New Project"
+msgstr "새 프로젝트"
+
+msgctxt "Main"
+msgid "Open Recent Project"
+msgstr "최근 프로젝트 열기"
+
+msgctxt "Main"
+msgid "Save Project"
+msgstr "프로젝트 저장"
+
+msgctxt "Main"
+msgid "Copy Project Link"
+msgstr "프로젝트 링크 복사"
+
+msgctxt "Main"
+msgid "E&xit"
+msgstr "종료(&X)"
+
+msgctxt "Main"
+msgid "&View"
+msgstr "보기(&V)"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Minimal Mode"
+msgstr "미니멀 모드"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Compact Mode"
+msgstr "컴팩트 모드"
+
+msgctxt "Main"
+msgid "Always on Top"
+msgstr "항상 위에"
+
+#. View menu
+msgctxt "Main"
+msgid "Show All Panels"
+msgstr "모든 패널 표시"
+
+msgctxt "Main"
+msgid "Zoom In Timeline"
+msgstr "타임라인 확대"
+
+msgctxt "Main"
+msgid "Zoom Out Timeline"
+msgstr "타임라인 축소"
+
+msgctxt "Main"
+msgid "Fullscreen"
+msgstr "전체 화면"
+
+#. View menu: reset the window geometry; && is a literal ampersand
+msgctxt "Main"
+msgid "Default Size && Position"
+msgstr "기본 크기 및 위치"
+
+#. View menu: toggle the left side panel
+msgctxt "Main"
+msgid "Left Rail"
+msgstr "왼쪽 패널"
+
+#. View menu: toggle the right side panel
+msgctxt "Main"
+msgid "Right Rail"
+msgstr "오른쪽 패널"
+
+msgctxt "Main"
+msgid "Color Panel"
+msgstr "컬러 패널"
+
+msgctxt "Main"
+msgid "Timeline"
+msgstr "타임라인"
+
+msgctxt "Main"
+msgid "Notes"
+msgstr "노트"
+
+msgctxt "Main"
+msgid "Status Bar"
+msgstr "상태 표시줄"
+
+msgctxt "Main"
+msgid "&Tools"
+msgstr "도구(&T)"
+
+msgctxt "Main"
+msgid "Background"
+msgstr "배경"
+
+msgctxt "Main"
+msgid "Safety Guides"
+msgstr "안전 가이드"
+
+msgctxt "Main"
+msgid "Keyboard Shortcuts"
+msgstr "키보드 단축키"
+
+msgctxt "Main"
+msgid "Settings…"
+msgstr "설정…"
+
+msgctxt "Main"
+msgid "&About"
+msgstr "정보(&A)"
+
+msgctxt "Main"
+msgid "About QCView…"
+msgstr "QCView 정보"
+
+msgctxt "Main"
+msgid "Open media"
+msgstr "미디어 열기"
+
+#. Title of the separate player window
+msgctxt "Main"
+msgid "Player detached"
+msgstr "플레이어 분리됨"
+
+msgctxt "Main"
+msgid "Click 'Reattach' to dock back"
+msgstr "'다시 연결'을 클릭하면 다시 도킹됩니다"
+
+#. File dialog filter; %1 = the list of patterns
+msgctxt "MediaFilters"
+msgid "All media (%1)"
+msgstr "모든 미디어 (%1)"
+
+msgctxt "MediaFilters"
+msgid "Video files (%1)"
+msgstr "비디오 파일 (%1)"
+
+msgctxt "MediaFilters"
+msgid "Audio files (%1)"
+msgstr "오디오 파일 (%1)"
+
+msgctxt "MediaFilters"
+msgid "Image / sequence files (%1)"
+msgstr "이미지 / 시퀀스 파일 (%1)"
+
+msgctxt "MediaFilters"
+msgid "All files (*)"
+msgstr "모든 파일 (*)"
+
+#. Toggle: apply the look
+msgctxt "MinColor"
+msgid "Use look"
+msgstr "룩 사용"
+
+#. Tooltip on a dialog's close button
+msgctxt "ModalHost"
+msgid "Close"
+msgstr "닫기"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "NotesPanel"
+msgid "REVIEW · %1"
+msgstr "리뷰 · %1"
+
+#. Badge: the feed is live
+msgctxt "NotesPanel"
+msgid "LIVE"
+msgstr "라이브"
+
+#. Hover hint on the review pill: a click returns to the live feed
+msgctxt "NotesPanel"
+msgid "back to live"
+msgstr "라이브로 돌아가기"
+
+#. Hover hint on the review pill: a click holds the current frame
+msgctxt "NotesPanel"
+msgid "freeze"
+msgstr "고정"
+
+msgctxt "NotesPanel"
+msgid "Save the project to keep notes for this stream"
+msgstr "이 스트림의 노트를 보관하려면 프로젝트를 저장하십시오"
+
+#. The add-note tile's label
+msgctxt "NotesPanel"
+msgid "Add note here"
+msgstr "여기에 노트 추가"
+
+#. Add-note tile when the project must be saved first
+msgctxt "NotesPanel"
+msgid "Save…"
+msgstr "저장…"
+
+#. Caption under Add note: the note captures the frozen frame
+msgctxt "NotesPanel"
+msgid "on the frozen frame"
+msgstr "고정된 프레임에"
+
+#. Caption under Add note: adding a note freezes the live feed
+msgctxt "NotesPanel"
+msgid "freezes the feed"
+msgstr "피드를 고정합니다"
+
+#. Caption under Add note
+msgctxt "NotesPanel"
+msgid "captures current frame"
+msgstr "현재 프레임을 캡처합니다"
+
+msgctxt "NotesPanel"
+msgid "Export notes"
+msgstr "노트 내보내기"
+
+msgctxt "NotesPanel"
+msgid "Export folder (Markdown)"
+msgstr "내보내기 폴더 (Markdown)"
+
+msgctxt "NotesPanel"
+msgid "Save HTML…"
+msgstr "HTML 저장…"
+
+msgctxt "NotesPanel"
+msgid "HTML (*.html)"
+msgstr "HTML (*.html)"
+
+msgctxt "NotesPanel"
+msgid "Save PDF…"
+msgstr "PDF 저장…"
+
+msgctxt "NotesPanel"
+msgid "PDF (*.pdf)"
+msgstr "PDF (*.pdf)"
+
+msgctxt "NotesPanel"
+msgid "Save DOCX…"
+msgstr "DOCX 저장…"
+
+msgctxt "NotesPanel"
+msgid "Word document (*.docx)"
+msgstr "Word 문서 (*.docx)"
+
+msgctxt "NotesPanel"
+msgid "%1 notes will be exported."
+msgstr "노트 %1개를 내보냅니다."
+
+msgctxt "NotesPanel"
+msgid "No notes to export yet."
+msgstr "아직 내보낼 노트가 없습니다."
+
+msgctxt "NotesPanel"
+msgid "Markdown folder…"
+msgstr "Markdown 폴더…"
+
+msgctxt "NotesPanel"
+msgid "Folder + linked images.  Type any name to set the output dir; the export creates a timestamped subfolder there."
+msgstr "폴더 + 연결된 이미지.  아무 이름이나 입력하면 출력 디렉터리가 설정되며, 내보내기는 그 안에 타임스탬프가 붙은 하위 폴더를 만듭니다."
+
+msgctxt "NotesPanel"
+msgid "HTML (single file)…"
+msgstr "HTML (단일 파일)…"
+
+msgctxt "NotesPanel"
+msgid "PDF…"
+msgstr "PDF…"
+
+msgctxt "NotesPanel"
+msgid "DOCX…"
+msgstr "DOCX…"
+
+msgctxt "NotesPanel"
+msgid "Open in minNotes"
+msgstr "minNotes에서 열기"
+
+msgctxt "NotesPanel"
+msgid "Open this stream's notes folder in minNotes"
+msgstr "이 스트림의 노트 폴더를 minNotes에서 엽니다"
+
+msgctxt "NotesPanel"
+msgid "minNotes is not installed"
+msgstr "minNotes가 설치되어 있지 않습니다"
+
+msgctxt "NotesPanel"
+msgid "Cancel"
+msgstr "취소"
+
+#. No thumbnail
+msgctxt "NotesPanel"
+msgid "(no thumb)"
+msgstr "(썸네일 없음)"
+
+#. Badge: the note was captured with viewer aids active
+msgctxt "NotesPanel"
+msgid "VIEWER"
+msgstr "뷰어"
+
+#. Badge: the note was captured through OCIO
+msgctxt "NotesPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+#. Button: mark this note as dealt with
+msgctxt "NotesPanel"
+msgid "Mark addressed"
+msgstr "처리됨으로 표시"
+
+msgctxt "NotesPanel"
+msgid "Delete note"
+msgstr "노트 삭제"
+
+#. Placeholder of the note text field
+msgctxt "NotesPanel"
+msgid "Note…"
+msgstr "노트…"
+
+msgctxt "NotesPanel"
+msgid "Select (drag to move, corners to scale, Del to remove; click again to exit)"
+msgstr "선택 (드래그로 이동, 모서리로 크기 조절, Del로 삭제, 다시 클릭하면 종료)"
+
+msgctxt "NotesPanel"
+msgid "Freehand"
+msgstr "자유 곡선"
+
+msgctxt "NotesPanel"
+msgid "Rectangle"
+msgstr "사각형"
+
+msgctxt "NotesPanel"
+msgid "Oval"
+msgstr "타원"
+
+msgctxt "NotesPanel"
+msgid "Arrow"
+msgstr "화살표"
+
+msgctxt "NotesPanel"
+msgid "Line"
+msgstr "직선"
+
+msgctxt "NotesPanel"
+msgid "Erase stroke (click strokes to remove)"
+msgstr "스트로크 지우기 (스트로크를 클릭하여 삭제)"
+
+#. Stroke width label
+msgctxt "NotesPanel"
+msgid "Width:"
+msgstr "두께:"
+
+msgctxt "PlayerWindow"
+msgid "Player — Phase 1.7 (compositor: %1)"
+msgstr "플레이어 — Phase 1.7 (컴포지터: %1)"
+
+msgctxt "PlayerWindow"
+msgid "Window: %1×%2"
+msgstr "창: %1×%2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Save: empty path."
+msgstr "저장: 경로가 비어 있습니다."
+
+msgctxt "ProjectIo"
+msgid "Save: cannot open '%1' for write: %2"
+msgstr "저장: '%1'을(를) 쓰기용으로 열 수 없습니다: %2"
+
+msgctxt "ProjectIo"
+msgid "Save: write to '%1' truncated: %2"
+msgstr "저장: '%1'에 쓰기가 잘렸습니다: %2"
+
+msgctxt "ProjectIo"
+msgid "Save: commit to '%1' failed: %2"
+msgstr "저장: '%1'에 커밋하지 못했습니다: %2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Open: cannot read '%1': %2"
+msgstr "열기: '%1'을(를) 읽을 수 없습니다: %2"
+
+msgctxt "ProjectIo"
+msgid "Open: parse error in '%1': %2"
+msgstr "열기: '%1' 구문 분석 오류: %2"
+
+#. Undo action name: trim the clip's start
+msgctxt "QObject"
+msgid "Trim head"
+msgstr "헤드 트리밍"
+
+#. Undo action name: trim the clip's end
+msgctxt "QObject"
+msgid "Trim tail"
+msgstr "테일 트리밍"
+
+#. Undo action name: move the clip without changing its content
+msgctxt "QObject"
+msgid "Slide clip"
+msgstr "클립 슬라이드"
+
+#. Undo action name: shift the clip's content without moving it
+msgctxt "QObject"
+msgid "Slip clip"
+msgstr "클립 슬립"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Cut clip"
+msgstr "클립 자르기"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Delete clip"
+msgstr "클립 삭제"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Add clip"
+msgstr "클립 추가"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Reorder clip"
+msgstr "클립 순서 변경"
+
+#. Panel title
+msgctxt "RightRail"
+msgid "Inspector"
+msgstr "인스펙터"
+
+msgctxt "RightRail"
+msgid "Expand panel"
+msgstr "패널 펼치기"
+
+msgctxt "RightRail"
+msgid "Collapse panel"
+msgstr "패널 접기"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Vectorscope"
+msgstr "벡터스코프"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Waveform"
+msgstr "파형"
+
+msgctxt "RightRail"
+msgid "Keyboard Shortcuts"
+msgstr "키보드 단축키"
+
+msgctxt "ScopePanel"
+msgid "Zoom %1× — magnifies the centre"
+msgstr "확대 %1× — 중앙을 확대합니다"
+
+#. Toggle: colour the trace by hue
+msgctxt "ScopePanel"
+msgid "Color"
+msgstr "컬러"
+
+msgctxt "ScopePanel"
+msgid "Colour the trace by hue"
+msgstr "트레이스를 색조별로 채색합니다"
+
+msgctxt "ScopePanel"
+msgid "Signal tier draws mono — the colour space isn't known"
+msgstr "신호 모드에서는 단색으로 표시됩니다 — 색 공간을 알 수 없습니다"
+
+msgctxt "ScopePanel"
+msgid "Trace brightness"
+msgstr "트레이스 밝기"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "DUAL"
+msgstr "듀얼"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "PLAYLIST"
+msgstr "재생 목록"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "IMAGE SEQ"
+msgstr "이미지 시퀀스"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "SINGLE"
+msgstr "단일"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "idle"
+msgstr "대기"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "opening…"
+msgstr "여는 중…"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "decoding"
+msgstr "디코딩 중"
+
+#. Decoder state: end of file
+msgctxt "StatusStrip"
+msgid "EOF"
+msgstr "EOF"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "ERROR"
+msgstr "오류"
+
+msgctxt "StatusStrip"
+msgid "%1  %2  %3"
+msgstr "%1  %2  %3"
+
+#. Hardware decoder in use
+msgctxt "StatusStrip"
+msgid "HW: %1"
+msgstr "HW: %1"
+
+#. No hardware decoder
+msgctxt "StatusStrip"
+msgid "HW: software"
+msgstr "HW: 소프트웨어"
+
+msgctxt "StatusStrip"
+msgid "OCIO: %1"
+msgstr "OCIO: %1"
+
+#. Timecode, drop frame
+msgctxt "StatusStrip"
+msgid "TC: %1 DF"
+msgstr "TC: %1 DF"
+
+msgctxt "StatusStrip"
+msgid "TC: %1"
+msgstr "TC: %1"
+
+#. Decoder error count
+msgctxt "StatusStrip"
+msgid "%1 errors"
+msgstr "오류 %1개"
+
+#. Trim badge: the clip's head was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "head %1"
+msgstr "헤드 %1"
+
+#. Trim badge: the clip's tail was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "tail %1"
+msgstr "테일 %1"
+
+#. Badge: the clip's start moved by %1 frames
+msgctxt "TimelinePanel"
+msgid "start %1"
+msgstr "시작 %1"
+
+#. Badge: the clip's content slipped by %1 frames
+msgctxt "TimelinePanel"
+msgid "slip %1"
+msgstr "슬립 %1"
+
+#. Drag badge: the clip will move to playlist position %1 of %2
+msgctxt "TimelinePanel"
+msgid "→ slot %1/%2"
+msgstr "→ 슬롯 %1/%2"
+
+msgctxt "TimelinePanel"
+msgid "Edit mode ON — click to disable"
+msgstr "편집 모드 켜짐 — 클릭하여 끄기"
+
+#. Tooltip on the track's edit toggle
+msgctxt "TimelinePanel"
+msgid "Edit this track"
+msgstr "이 트랙 편집"
+
+msgctxt "TimelinePanel"
+msgid "Drop media here to add to the playlist"
+msgstr "여기에 미디어를 놓아 재생 목록에 추가"
+
+msgctxt "TimelinePanel"
+msgid "Drop media onto a lane, or a side of the viewport, to compare"
+msgstr "레인 또는 뷰포트의 한쪽에 미디어를 놓아 비교"
+
+msgctxt "TimelinePanel"
+msgid "Open a video to enable the timeline."
+msgstr "타임라인을 사용하려면 비디오를 여십시오."
+
+#. Swap glyph, do not translate
+msgctxt "TimelinePanel"
+msgid "⇄"
+msgstr "⇄"
+
+msgctxt "TimelinePanel"
+msgid "Audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "오디오 파일은 재생 목록에 추가할 수 없습니다 — 대신 오디오 빈에 추가했습니다"
+
+msgctxt "TimelinePanel"
+msgid "%1 audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "오디오 파일 %1개는 재생 목록에 추가할 수 없습니다 — 대신 오디오 빈에 추가했습니다"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Time —"
+msgstr "시간 —"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Frame —"
+msgstr "프레임 —"
+
+msgctxt "TimelineStatus"
+msgid "Frame %1 / %2"
+msgstr "프레임 %1 / %2"
+
+#. Badge: an in/out range is set
+msgctxt "TimelineStatus"
+msgid "RANGE"
+msgstr "범위"
+
+#. Range length in frames, abbreviated
+msgctxt "TimelineStatus"
+msgid "%1 fr"
+msgstr "%1프레임"
+
+#. Range length in seconds
+msgctxt "TimelineStatus"
+msgid "%1 s"
+msgstr "%1초"
+
+msgctxt "TimelineStatus"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO FRAME"
+msgstr "프레임으로 이동"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIMECODE"
+msgstr "타임코드로 이동"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIME"
+msgstr "시간으로 이동"
+
+#. Field placeholder
+msgctxt "TimelineStatus"
+msgid "frame number"
+msgstr "프레임 번호"
+
+#. Field placeholder: timecode
+msgctxt "TimelineStatus"
+msgid "HH:MM:SS:FF"
+msgstr "HH:MM:SS:FF"
+
+#. Field placeholder: time
+msgctxt "TimelineStatus"
+msgid "MM:SS.mmm"
+msgstr "MM:SS.mmm"
+
+msgctxt "TransportBar"
+msgid "Open media…"
+msgstr "미디어 열기…"
+
+msgctxt "TransportBar"
+msgid "Previous clip"
+msgstr "이전 클립"
+
+msgctxt "TransportBar"
+msgid "Skip to start"
+msgstr "처음으로"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Rewind (hold)"
+msgstr "되감기 (길게 누름)"
+
+msgctxt "TransportBar"
+msgid "Step back 1 frame"
+msgstr "1프레임 뒤로"
+
+msgctxt "TransportBar"
+msgid "Pause"
+msgstr "일시 정지"
+
+msgctxt "TransportBar"
+msgid "Play"
+msgstr "재생"
+
+msgctxt "TransportBar"
+msgid "Step forward 1 frame"
+msgstr "1프레임 앞으로"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Fast-forward (hold)"
+msgstr "빨리 감기 (길게 누름)"
+
+msgctxt "TransportBar"
+msgid "Skip to end"
+msgstr "끝으로"
+
+msgctxt "TransportBar"
+msgid "Next clip"
+msgstr "다음 클립"
+
+msgctxt "TransportBar"
+msgid "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)"
+msgstr "리뷰 속도 — 클릭하여 순환 (R), Shift+클릭으로 1× (Shift+R)"
+
+msgctxt "TransportBar"
+msgid "In point not available in playlist mode"
+msgstr "재생 목록 모드에서는 시작점을 사용할 수 없습니다"
+
+msgctxt "TransportBar"
+msgid "Set in point (I)"
+msgstr "시작점 설정 (I)"
+
+msgctxt "TransportBar"
+msgid "Out point not available in playlist mode"
+msgstr "재생 목록 모드에서는 종료점을 사용할 수 없습니다"
+
+msgctxt "TransportBar"
+msgid "Set out point (O)"
+msgstr "종료점 설정 (O)"
+
+msgctxt "TransportBar"
+msgid "Clear in/out points (Shift+I)"
+msgstr "시작/종료점 지우기 (Shift+I)"
+
+msgctxt "TransportBar"
+msgid "Loop (L)"
+msgstr "반복 (L)"
+
+msgctxt "TransportBar"
+msgid "Fullscreen (F)"
+msgstr "전체 화면 (F)"
+
+msgctxt "TransportBar"
+msgid "Compact Mode (Ctrl+Shift+C)"
+msgstr "컴팩트 모드 (Ctrl+Shift+C)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "스크린샷을 클립보드로 (⌥T)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to Desktop (T)"
+msgstr "스크린샷을 데스크톱으로 (T)"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Safety guides"
+msgstr "안전 가이드"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Background"
+msgstr "배경"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (on)"
+msgstr "타임라인 마우스 오버 썸네일 (켜짐)"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (off)"
+msgstr "타임라인 마우스 오버 썸네일 (꺼짐)"
+
+msgctxt "TransportBar"
+msgid "Color panel (⌃3)"
+msgstr "컬러 패널 (⌃3)"
+
+msgctxt "TransportBar"
+msgid "Notes panel (⌃4)"
+msgstr "노트 패널 (⌃4)"
+
+msgctxt "TransportBar"
+msgid "Unmute (M)"
+msgstr "음소거 해제 (M)"
+
+msgctxt "TransportBar"
+msgid "Mute (M)"
+msgstr "음소거 (M)"
+
+msgctxt "TransportBar"
+msgid "Volume — %1%"
+msgstr "볼륨 — %1%"
+
+msgctxt "TransportBar"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "항상 위에 — 클릭하여 고정 해제 (Ctrl+Alt+T)"
+
+msgctxt "TransportBar"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "항상 위에 (Ctrl+Alt+T)"
+
+msgctxt "ViewportOverlay"
+msgid "Untitled Dual View"
+msgstr "제목 없는 듀얼 뷰"
+
+#. Picker entry: nothing selected
+msgctxt "ViewportOverlay"
+msgid "(none)"
+msgstr "(없음)"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view saved: %1"
+msgstr "듀얼 뷰 저장됨: %1"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't save dual view"
+msgstr "듀얼 뷰를 저장할 수 없습니다"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view updated"
+msgstr "듀얼 뷰 업데이트됨"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't update dual view"
+msgstr "듀얼 뷰를 업데이트할 수 없습니다"
+
+#. Chip label for a live source
+msgctxt "ViewportOverlay"
+msgid "Live source"
+msgstr "라이브 소스"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "A"
+msgstr "A"
+
+#. Placeholder in the empty A chip
+msgctxt "ViewportOverlay"
+msgid "(drop a file…)"
+msgstr "(파일을 놓으십시오…)"
+
+msgctxt "ViewportOverlay"
+msgid "A audio muted — click to unmute"
+msgstr "A 오디오 음소거됨 — 클릭하여 해제"
+
+msgctxt "ViewportOverlay"
+msgid "A audio on — click to mute"
+msgstr "A 오디오 켜짐 — 클릭하여 음소거"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't load that file as Source B"
+msgstr "해당 파일을 소스 B로 불러올 수 없습니다"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "B"
+msgstr "B"
+
+msgctxt "ViewportOverlay"
+msgid "(drop a video, sequence or stream…)"
+msgstr "(비디오, 시퀀스 또는 스트림을 놓으십시오…)"
+
+msgctxt "ViewportOverlay"
+msgid "B audio muted — click to unmute"
+msgstr "B 오디오 음소거됨 — 클릭하여 해제"
+
+msgctxt "ViewportOverlay"
+msgid "B audio on — click to mute"
+msgstr "B 오디오 켜짐 — 클릭하여 음소거"
+
+msgctxt "ViewportOverlay"
+msgid "Close source B"
+msgstr "소스 B 닫기"
+
+#. Pill: Highlight Knee is on
+msgctxt "ViewportOverlay"
+msgid "KNEE"
+msgstr "KNEE"
+
+msgctxt "ViewportOverlay"
+msgid "Highlight Knee on: %1 → %2 nits. Highlights are compressed — the picture is not 1:1."
+msgstr "하이라이트 니 켜짐: %1 → %2 nits. 하이라이트가 압축되어 있어 영상이 1:1이 아닙니다."
+
+#. Pill: viewer aids are active
+msgctxt "ViewportOverlay"
+msgid "VIEWER"
+msgstr "뷰어"
+
+msgctxt "ViewportOverlay"
+msgid "%1 — click to reset"
+msgstr "%1 — 클릭하여 초기화"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Single view"
+msgstr "단일 뷰"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Side-by-side"
+msgstr "나란히 보기"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Split wipe"
+msgstr "분할 와이프"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Difference"
+msgstr "차이"
+
+msgctxt "ViewportOverlay"
+msgid "Update this saved dual view"
+msgstr "저장된 이 듀얼 뷰 업데이트"
+
+msgctxt "ViewportOverlay"
+msgid "Save as a new dual view"
+msgstr "새 듀얼 뷰로 저장"
+
+msgctxt "ViewportOverlay"
+msgid "Save dual view"
+msgstr "듀얼 뷰 저장"
+
+#. Field label when saving a dual view
+msgctxt "ViewportOverlay"
+msgid "Name"
+msgstr "이름"
+
+msgctxt "ViewportOverlay"
+msgid "e.g. ‘US30 v001 vs v002’"
+msgstr "예: ‘US30 v001 vs v002’"
+
+msgctxt "ViewportOverlay"
+msgid "Save"
+msgstr "저장"
+
+msgctxt "ViewportOverlay"
+msgid "Cancel"
+msgstr "취소"
+
+msgctxt "ViewportOverlay"
+msgid "Show project panel"
+msgstr "프로젝트 패널 표시"
+
+msgctxt "ViewportOverlay"
+msgid "Show inspector panel"
+msgstr "인스펙터 패널 표시"
+
+#. Scale mode: nits on a reference display
+msgctxt "WaveformPanel"
+msgid "nits · reference"
+msgstr "nits · 레퍼런스"
+
+msgctxt "WaveformPanel"
+msgid "% Y′"
+msgstr "% Y′"
+
+msgctxt "WaveformPanel"
+msgid "What the file encodes on a reference display, not what this screen emits. SDR white = 100 nits (BT.1886 reference)."
+msgstr "이 화면이 내는 빛이 아니라 파일이 레퍼런스 디스플레이에서 인코딩하는 값입니다. SDR 화이트 = 100 nits (BT.1886 기준)."
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b> nits"
+msgstr "프레임 <b>%1</b>  ·  최대 <b>%2</b> nits"
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b>"
+msgstr "프레임 <b>%1</b>  ·  최대 <b>%2</b>"
+
+#. Button: reset the running maximum
+msgctxt "WaveformPanel"
+msgid "Reset"
+msgstr "초기화"
+
+#. Tooltip on Reset: restart the running maximum
+msgctxt "WaveformPanel"
+msgid "Start Max over"
+msgstr "최대값 다시 측정"
+
+#. Scale choice
+msgctxt "WaveformPanel"
+msgid "Auto"
+msgstr "자동"
+
+msgctxt "WaveformPanel"
+msgid "Scale from the interpretation"
+msgstr "해석에 따른 스케일"
+
+msgctxt "WaveformPanel"
+msgid "Force the SDR percent scale (the signal's own Y′)"
+msgstr "SDR 퍼센트 스케일 강제 (신호 자체의 Y′)"
+
+#. Scale choice button
+msgctxt "WaveformPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "WaveformPanel"
+msgid "Force the nits scale (SDR white at 100)"
+msgstr "nits 스케일 강제 (SDR 화이트 = 100)"
+
+msgctxt "WaveformPanel"
+msgid "Top of scale %1 nits"
+msgstr "스케일 상단 %1 nits"
+
+msgctxt "WaveformPanel"
+msgid "Trace brightness"
+msgstr "트레이스 밝기"
+
+msgctxt "qcv::HostBridgeSource"
+msgid "Waiting for %1 (QCBridge Transmit device not publishing)"
+msgstr "%1 대기 중 (QCBridge Transmit 장치가 전송하지 않음)"
+
+msgctxt "qcv::I18n"
+msgid "System default"
+msgstr "시스템 기본값"
+
+#. Suffix after a language name whose catalog is machine translated and not yet checked by a person
+msgctxt "qcv::I18n"
+msgid "machine translation"
+msgstr "기계 번역"
+
+#. Live input state: an SRT listener with no sender yet
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender on port %1"
+msgstr "포트 %1에서 송신자 대기 중"
+
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender"
+msgstr "송신자 대기 중"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Knee"
+msgstr "Knee"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Clip chain"
+msgstr "클립 체인"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Set on this clip (minColor):"
+msgstr "이 클립에 설정됨 (minColor):"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Input: %1 · %2%3"
+msgstr "입력: %1 · %2%3"
+
+#. Suffix appended to the Input line
+msgctxt "qcv::MinColorEngine"
+msgid " · limited range"
+msgstr " · 리미티드 레인지"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "하이라이트 니: 켜짐 · %1 → %2 nits"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: off"
+msgstr "하이라이트 니: 꺼짐"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Output path is empty"
+msgstr "출력 경로가 비어 있습니다"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Cube size must be ≥ 2 (got %1)"
+msgstr "큐브 크기는 2 이상이어야 합니다 (입력값 %1)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "No OCIO config loaded"
+msgstr "로드된 OCIO 컨피그가 없습니다"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Chain build failed"
+msgstr "체인 빌드 실패"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1 (transfer %2 vs %3)"
+msgstr "가장 가까운 디스플레이 %1 (전달 함수 %2 vs %3)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1"
+msgstr "가장 가까운 디스플레이 %1"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look"
+msgstr "룩"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "CDL"
+msgstr "CDL"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "LUT"
+msgstr "LUT"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Knee"
+msgstr "Knee"
+
+#. Badge name in the viewport's chain summary: the host Blender's display device is emulated
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display"
+msgstr "호스트 디스플레이"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Clip chain"
+msgstr "클립 체인"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Set on this clip:"
+msgstr "이 클립에 설정됨:"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Input: %1"
+msgstr "입력: %1"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "(none)"
+msgstr "(없음)"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look: %1"
+msgstr "룩: %1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Scene LUT: %1"
+msgstr "씬 LUT: %1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "하이라이트 니: 켜짐 · %1 → %2 nits"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: off"
+msgstr "하이라이트 니: 꺼짐"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (emulated%3)"
+msgstr "호스트 디스플레이: %1 · %2 (에뮬레이션%3)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid ", display to display"
+msgstr ", 디스플레이 → 디스플레이"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (off)"
+msgstr "호스트 디스플레이: %1 · %2 (꺼짐)"
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed: no path provided."
+msgstr "저장 실패: 경로가 지정되지 않았습니다."
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed."
+msgstr "저장 실패."
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed: no path provided."
+msgstr "열기 실패: 경로가 지정되지 않았습니다."
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed."
+msgstr "열기 실패."
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (linear Rec.2020): frame %1 · max %2 nits"
+msgstr "가장 밝은 채널 (선형 Rec.2020): 프레임 %1 · 최대 %2 nits"
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (code value): frame %1 · max %2"
+msgstr "가장 밝은 채널 (코드 값): 프레임 %1 · 최대 %2"
+
+#. Why the scopes assume this colourspace: the user set it
+msgctxt "qcv::ScopeController"
+msgid "set"
+msgstr "설정됨"
+
+#. Why the scopes assume this colourspace: the EXR default (linear)
+msgctxt "qcv::ScopeController"
+msgid "EXR default"
+msgstr "EXR 기본값"
+
+#. Why the scopes assume this colourspace: it is a still image
+msgctxt "qcv::ScopeController"
+msgid "still"
+msgstr "스틸"
+
+#. Why the scopes assume this colourspace: the file's colour tags
+msgctxt "qcv::ScopeController"
+msgid "tags"
+msgstr "태그"
+
+msgctxt "qcv::ScopeController"
+msgid "untagged"
+msgstr "태그 없음"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1"
+msgstr "입력 · minColor %1"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1 (built-in config)"
+msgstr "입력 · minColor %1 (내장 컨피그)"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · minColor Input not convertible"
+msgstr "신호 · minColor 입력을 변환할 수 없음"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · %1"
+msgstr "입력 · %1"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 · Input: %2"
+msgstr "⚠ %1(으)로 설정됨 · 입력: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 · Input: %2"
+msgstr "⚠ 파일 태그 %1 · 입력: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 — not in this config · Input: %2"
+msgstr "⚠ %1(으)로 설정됨 — 이 컨피그에 없음 · 입력: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 — not in this config · Input: %2"
+msgstr "⚠ 파일 태그 %1 — 이 컨피그에 없음 · 입력: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2)"
+msgstr "추정 · %1 (%2)"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2, built-in config)"
+msgstr "추정 · %1 (%2, 내장 컨피그)"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · RGB, nominal curve"
+msgstr "신호 · RGB, 공칭 커브"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · YUV"
+msgstr "신호 · YUV"
+
+msgctxt "qcv::ScopeController"
+msgid "A %1  ·  B %2"
+msgstr "A %1  ·  B %2"
+
+msgctxt "qcv::ScopeController"
+msgid "SDR · Rec.709"
+msgstr "SDR · Rec.709"
+
+msgctxt "qcv::ScopeController"
+msgid "HDR · PQ Rec.2020"
+msgstr "HDR · PQ Rec.2020"
+
+msgctxt "qcv::ScopeController"
+msgid " (manual)"
+msgstr " (수동)"
+
+msgctxt "qcv::ScopeController"
+msgid "%1 matrix"
+msgstr "%1 매트릭스"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal Y′ · %1 matrix"
+msgstr "신호 Y′ · %1 매트릭스"
+
+msgctxt "qcv::ScopeController"
+msgid " · luminance"
+msgstr " · 휘도"
+
+msgctxt "qcv::VideoDecoder"
+msgid "File not found: %1"
+msgstr "파일을 찾을 수 없음: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_open_input failed: %1"
+msgstr "avformat_open_input 실패: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_find_stream_info failed: %1"
+msgstr "avformat_find_stream_info 실패: %1"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No video stream found"
+msgstr "비디오 스트림을 찾을 수 없음"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No decoder available for codec id %1"
+msgstr "코덱 ID %1에 사용할 수 있는 디코더 없음"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_alloc_context3 failed"
+msgstr "avcodec_alloc_context3 실패"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_open2 failed: %1"
+msgstr "avcodec_open2 실패: %1"
+
+#. FFmpeg library name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "swscale context init failed"
+msgstr "swscale 컨텍스트 초기화 실패"
+
+msgctxt "qcv::VideoDecoder"
+msgid "Vulkan device lost — restart to recover hardware decode"
+msgstr "Vulkan 장치 손실 — 하드웨어 디코딩을 복구하려면 다시 시작하십시오"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_read_frame error: %1"
+msgstr "av_read_frame 오류: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "send_packet: %1"
+msgstr "send_packet: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_receive_frame: %1"
+msgstr "avcodec_receive_frame: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data fallback failed"
+msgstr "hwframe_transfer_data 대체 경로 실패"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data: %1"
+msgstr "hwframe_transfer_data: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_seek_frame failed for frame %1"
+msgstr "프레임 %1에 대한 av_seek_frame 실패"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "read_frame after seek: %1"
+msgstr "탐색 후 read_frame: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "No clip under the playhead to compare"
+msgstr "재생 헤드 위치에 비교할 클립이 없습니다"
+
+#. Toast after opening an ARRIRAW file. %1 = camera + "ARRIRAW" ("ALEXA 35 ARRIRAW"), %2 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 — %2 can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool."
+msgstr "%1 — %2은(는) 여기서 재생할 수 없습니다: 디베이어되지 않은 카메라 RAW입니다. ProRes / 데일리를 검토하거나 DaVinci Resolve 또는 ARRI Reference Tool에서 변환하십시오."
+
+#. Toast after opening a file no decoder can play. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 can’t be played here: unsupported format."
+msgstr "%1은(는) 여기서 재생할 수 없습니다: 지원하지 않는 형식입니다."
+
+#. Toast after opening or dropping a Windows shortcut (.lnk) whose target no longer exists. %1 = the shortcut's file name
+msgctxt "qcv::WindowManager"
+msgid "%1 points to a file that isn’t there any more."
+msgstr "%1이(가) 가리키는 파일이 더 이상 존재하지 않습니다."
+
+#. Toast after dropping or opening a folder. %1 = folder name
+msgctxt "qcv::WindowManager"
+msgid "%1 is a folder — drop a file, or any frame of an image sequence."
+msgstr "%1은(는) 폴더입니다 — 파일 하나 또는 이미지 시퀀스의 아무 프레임이나 놓으십시오."
+
+#. Toast after dropping or opening a file type QCView does not open. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 isn’t a file type QCView opens."
+msgstr "%1은(는) QCView에서 여는 파일 형식이 아닙니다."
+
+#. Stands in for a suffix in the skipped-files toast
+msgctxt "qcv::WindowManager"
+msgid "broken shortcut"
+msgstr "깨진 바로 가기"
+
+msgctxt "qcv::WindowManager"
+msgid "folder"
+msgstr "폴더"
+
+msgctxt "qcv::WindowManager"
+msgid "no extension"
+msgstr "확장자 없음"
+
+#. Toast after a batch drop/open; %1 = skipped count, %2 = total, %3 = the suffixes
+msgctxt "qcv::WindowManager"
+msgid "%1 of %2 files skipped — not file types QCView opens (%3)."
+msgstr "파일 %2개 중 %1개를 건너뛰었습니다 — QCView에서 여는 파일 형식이 아닙니다 (%3)."
+
+msgctxt "qcv::WindowManager"
+msgid "Blender: not listening"
+msgstr "Blender: 수신 대기 안 함"
+
+msgctxt "qcv::WindowManager"
+msgid "Listening for a Blender session on this machine: start one from the QCBridge host panel"
+msgstr "이 컴퓨터의 Blender 세션을 수신 대기 중입니다. QCBridge 호스트 패널에서 세션을 시작하십시오"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender"
+msgstr "Blender"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender session ended"
+msgstr "Blender 세션이 종료되었습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "After Effects / Premiere live view is not available on this platform yet"
+msgstr "After Effects / Premiere 라이브 뷰는 아직 이 플랫폼에서 사용할 수 없습니다"
+
+#. Toast; %1 = the stream URL
+msgctxt "qcv::WindowManager"
+msgid "Could not open stream: %1"
+msgstr "스트림을 열 수 없습니다: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "This note has no captured frame"
+msgstr "이 노트에는 캡처된 프레임이 없습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "No frame to freeze yet"
+msgstr "아직 고정할 프레임이 없습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1"
+msgstr "%1 제거됨"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1 items"
+msgstr "항목 %1개 제거됨"
+
+#. Toast button
+msgctxt "qcv::WindowManager"
+msgid "Undo"
+msgstr "실행 취소"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to capture — load media first"
+msgstr "캡처할 것이 없습니다 — 먼저 미디어를 불러오십시오"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot copied to clipboard"
+msgstr "스크린샷을 클립보드에 복사했습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "Couldn't resolve the Desktop folder"
+msgstr "데스크톱 폴더를 찾을 수 없습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "Saving screenshot…"
+msgstr "스크린샷 저장 중…"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot saved (%1)"
+msgstr "스크린샷 저장됨 (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot export failed"
+msgstr "스크린샷 내보내기 실패"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to restore"
+msgstr "복원할 것이 없습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1"
+msgstr "%1 복원됨"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1 items"
+msgstr "항목 %1개 복원됨"
+
+msgctxt "qcv::WindowManager"
+msgid "Preset restored: %1"
+msgstr "프리셋 복원됨: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "minNotes is not installed"
+msgstr "minNotes가 설치되어 있지 않습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "The stream names a wire this QCView does not know (%1); set the Input yourself"
+msgstr "이 스트림이 지정한 신호 인코딩(%1)을 이 QCView가 알지 못합니다. 입력을 직접 설정하십시오"
+
+msgctxt "qcv::WindowManager"
+msgid "unknown wire %1"
+msgstr "알 수 없는 신호 인코딩 %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Colour management turned on for the Blender stream"
+msgstr "Blender 스트림에 컬러 관리를 켰습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: its view and display resolve in the Blender 5.2 config"
+msgstr "Blender 스트림: 뷰와 디스플레이는 Blender 5.2 컨피그에서 찾을 수 있습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "Switch"
+msgstr "전환"
+
+msgctxt "qcv::WindowManager"
+msgid "view not applied: active config is %1"
+msgstr "뷰 적용 안 됨: 활성 컨피그는 %1"
+
+msgctxt "qcv::WindowManager"
+msgid "The host runs a non-Blender OCIO config (%1): its view cannot be reproduced; Input pinned only"
+msgstr "호스트가 Blender가 아닌 OCIO 컨피그(%1)를 사용합니다. 그 뷰는 재현할 수 없으며 입력만 고정됩니다"
+
+msgctxt "qcv::WindowManager"
+msgid "host config %1: view not reproduced"
+msgstr "호스트 컨피그 %1: 뷰 재현 안 됨"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the active OCIO config has no %1 input; the Blender config does"
+msgstr "Blender 스트림: 활성 OCIO 컨피그에 %1 입력이 없습니다. Blender 컨피그에는 있습니다"
+
+msgctxt "qcv::WindowManager"
+msgid "no %1 input in this config"
+msgstr "이 컨피그에 %1 입력 없음"
+
+msgctxt "qcv::WindowManager"
+msgid "host display %1 → %2"
+msgstr "호스트 디스플레이 %1 → %2"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: view '%1' is not on display '%2' in the Blender config; view left as is"
+msgstr "Blender 스트림: Blender 컨피그에서 뷰 '%1'은(는) 디스플레이 '%2'에 없습니다. 뷰를 그대로 둡니다"
+
+msgctxt "qcv::WindowManager"
+msgid "view %1 not on %2"
+msgstr "뷰 %1은(는) %2에 없음"
+
+msgctxt "qcv::WindowManager"
+msgid "look %1 not in this config"
+msgstr "룩 %1은(는) 이 컨피그에 없음"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the host's view (%1 for %2) is not reproduced on minColor; switch to the OCIO engine to match it"
+msgstr "Blender 스트림: 호스트의 뷰(%2용 %1)는 minColor에서 재현되지 않습니다. 맞추려면 OCIO 엔진으로 전환하십시오"
+
+msgctxt "qcv::WindowManager"
+msgid "minColor on screen: host view not reproduced"
+msgstr "minColor로 표시 중: 호스트 뷰 재현 안 됨"
+
+msgctxt "qcv::WindowManager"
+msgid "host white balance not reproduced"
+msgstr "호스트 화이트 밸런스 재현 안 됨"
+
+msgctxt "qcv::WindowManager"
+msgid "host curves not reproduced"
+msgstr "호스트 커브 재현 안 됨"
+
+msgctxt "qcv::WindowManager"
+msgid "host HDR view: shown SDR"
+msgstr "호스트 HDR 뷰: SDR로 표시"
+
+msgctxt "qcv::WindowManager"
+msgid "working space assumed Linear Rec.709"
+msgstr "작업 색 공간을 Linear Rec.709로 추정"
+
+msgctxt "qcv::WindowManager"
+msgid "host and replica colour setups differ (%1)"
+msgstr "호스트와 복제본의 컬러 설정이 다릅니다 (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: %1"
+msgstr "Blender 스트림: %1"

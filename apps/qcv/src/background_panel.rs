@@ -9,14 +9,17 @@ use min_ui::{action_button::Corners, paint, ActionButton, Event, Fonts, Response
 use std::time::Instant;
 use vello::Scene;
 
+/// QCView's catalog context (canon row 195).
+fn tr(s: &str) -> &str { min_i18n::trc("LeftRail", s) }
+
 pub const LABELS: [&str; 4] = ["Black", "Dark Gray", "Dark Check", "Light Check"];
 
 pub struct BackgroundPanel { pub section: Section, buttons: Vec<ActionButton>, mode: u8, height: f64 }
 
 impl BackgroundPanel {
     pub fn new() -> BackgroundPanel {
-        let buttons = LABELS.iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", &format!("{l} background")).size_s(); b.label = Some(l.to_string()); b.selected = i == 0; b }).collect();
-        BackgroundPanel { section: Section::new("Background", true), buttons, mode: 0, height: 0.0 }
+        let buttons = LABELS.iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", tr(l)).size_s(); b.label = Some(tr(l).to_string()); b.selected = i == 0; b }).collect();
+        BackgroundPanel { section: Section::new(tr("Background"), true), buttons, mode: 0, height: 0.0 }
     }
     pub fn sync(&mut self, mode: u8) { self.mode = mode.min(3); for (i, b) in self.buttons.iter_mut().enumerate() { b.selected = i as u8 == self.mode; } }
     pub fn layout(&mut self, _fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {

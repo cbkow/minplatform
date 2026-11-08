@@ -38,6 +38,12 @@ mod project_panel;
 mod playlist;
 mod clip_bar;
 mod clip_popover;
+mod i18n;
+
+/// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
+fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
+fn trm(s: &'static str) -> &'static str { min_i18n::trc("Main", s) }
+use min_i18n::fill;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
@@ -167,7 +173,7 @@ impl App {
     fn toast_action_invoked(&mut self, id: &str) {
         if id == "undo-media-delete" {
             let names = self.project.restore_last_removed();
-            match names.len() { 0 => self.toast("Nothing to restore", min_ui::ToastKind::Notice), 1 => self.toast(&format!("Restored {}", names[0]), min_ui::ToastKind::Positive), n => self.toast(&format!("Restored {n} items"), min_ui::ToastKind::Positive) }
+            match names.len() { 0 => self.toast(trw("Nothing to restore"), min_ui::ToastKind::Notice), 1 => self.toast(&fill(trw("Restored %1"), &[&names[0]]), min_ui::ToastKind::Positive), n => self.toast(&fill(trw("Restored %1 items"), &[&n]), min_ui::ToastKind::Positive) }
         }
     }
     /// QCView `admitMediaPaths`: the file-type gate on every way media comes in (open, drops, the command line). Refused paths
@@ -185,13 +191,13 @@ impl App {
         let name = |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string());
         if refused.len() == 1 && paths.len() == 1 {
             let p = &refused[0];
-            let msg = if dead_shortcut { format!("{} points to a file that isn’t there any more.", name(p)) } else if std::path::Path::new(p).is_dir() { format!("{} is a folder — drop a file, or any frame of an image sequence.", name(p)) } else { format!("{} isn’t a file type QCView opens.", name(p)) };
+            let msg = if dead_shortcut { fill(trw("%1 points to a file that isn’t there any more."), &[&name(p)]) } else if std::path::Path::new(p).is_dir() { fill(trw("%1 is a folder — drop a file, or any frame of an image sequence."), &[&name(p)]) } else { fill(trw("%1 isn’t a file type QCView opens."), &[&name(p)]) };
             self.toast(&msg, min_ui::ToastKind::Notice);
         } else {
             let mut kinds: Vec<String> = vec![];
-            for p in &refused { let k = if std::path::Path::new(p).is_dir() { "folder".to_string() } else { match qcv_project::extensions::suffix_lower(p) { s if s.is_empty() => "no extension".into(), s => format!(".{s}") } }; if !kinds.contains(&k) { kinds.push(k); } }
+            for p in &refused { let k = if std::path::Path::new(p).is_dir() { trw("folder").to_string() } else { match qcv_project::extensions::suffix_lower(p) { s if s.is_empty() => trw("no extension").into(), s => format!(".{s}") } }; if !kinds.contains(&k) { kinds.push(k); } }
             let mut shown = kinds.iter().take(4).cloned().collect::<Vec<_>>().join(", "); if kinds.len() > 4 { shown.push_str(" …"); }
-            self.toast(&format!("{} of {} files skipped — not file types QCView opens ({shown}).", refused.len(), paths.len()), min_ui::ToastKind::Notice);
+            self.toast(&fill(trw("%1 of %2 files skipped — not file types QCView opens (%3)."), &[&refused.len(), &paths.len(), &shown]), min_ui::ToastKind::Notice);
         }
         admitted
     }
@@ -204,19 +210,19 @@ impl App {
         if self.unsupported_toast.as_ref().is_some_and(|(i, n)| i == id && (*n || !named)) { return }
         self.unsupported_toast = Some((id.to_string(), named));
         let name = std::path::Path::new(&item.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let text = if named { let cam = if v.camera_model.is_empty() { "ARRIRAW".to_string() } else { format!("{} ARRIRAW", v.camera_model) }; format!("{cam} — {name} can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool.") }
-                   else { format!("{name} can’t be played here: unsupported format.") };
+        let text = if named { let cam = if v.camera_model.is_empty() { "ARRIRAW".to_string() } else { format!("{} ARRIRAW", v.camera_model) }; fill(trw("%1 — %2 can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool."), &[&cam, &name]) }
+                   else { fill(trw("%1 can’t be played here: unsupported format."), &[&name]) };
         self.toast(&text, min_ui::ToastKind::Notice);
     }
     fn open_media_dialog(&mut self) {
         let all: Vec<&str> = qcv_project::extensions::VIDEO.iter().chain(qcv_project::extensions::AUDIO).chain(qcv_project::extensions::IMAGE).copied().collect();
-        let picked = rfd::FileDialog::new().set_title("Open Media").add_filter("All media", &all).add_filter("Video files", qcv_project::extensions::VIDEO).add_filter("Audio files", qcv_project::extensions::AUDIO).add_filter("Image / sequence files", qcv_project::extensions::IMAGE).pick_files();
+        let picked = rfd::FileDialog::new().set_title(trm("Open Media")).add_filter(trm("All media"), &all).add_filter(trm("Video files"), qcv_project::extensions::VIDEO).add_filter(trm("Audio files"), qcv_project::extensions::AUDIO).add_filter(trm("Image / sequence files"), qcv_project::extensions::IMAGE).pick_files();
         let Some(paths) = picked else { return };
         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let mut first = true;
         for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } }
     }
-    fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title("Open Project").add_filter("QCView Project", &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
+    fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title(trm("Open Project")).add_filter(trm("QCView Project"), &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
     fn open_project(&mut self, path: &str) {
         match self.project.open_project(path) {
             Ok(probes) => { self.schedule_probes(probes); self.note_recent_project(path); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
@@ -227,7 +233,7 @@ impl App {
     fn save_project(&mut self) { if self.project.file_path().is_empty() { self.save_project_as(); } else { let p = self.project.file_path().to_string(); match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") } } }
     fn save_project_as(&mut self) {
         let suggested = if self.project.file_path().is_empty() { format!("{}.qcvproj", self.project.name()) } else { Path::new(self.project.file_path()).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() };
-        if let Some(p) = rfd::FileDialog::new().set_title("Save Project As").add_filter("QCView Project", &["qcvproj"]).set_file_name(&suggested).save_file() {
+        if let Some(p) = rfd::FileDialog::new().set_title(trm("Save Project As")).add_filter(trm("QCView Project"), &["qcvproj"]).set_file_name(&suggested).save_file() {
             let mut p = p.to_string_lossy().to_string(); if !p.to_lowercase().ends_with(".qcvproj") { p.push_str(".qcvproj"); }
             match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") }
         }
@@ -571,7 +577,7 @@ impl App {
                     // QCView: the timeline retunes live (`TimelineController::setFrameRate`) and the item keeps the rate (`setImageSeqFrameRate`)
                     // QCView `setImageSeqLayer`: the cache reloads at the layer, the item keeps it
                     // QCView copyTextToClipboard / revealInFileManager / openExternalPath
-                    inspector_panel::Cmd::Copy(text) => { match os_actions::copy(&text) { Ok(()) => g.toast.show("Copied to the clipboard", min_ui::ToastKind::Positive, now), Err(e) => g.toast.show(&format!("Couldn’t copy: {e}"), min_ui::ToastKind::Negative, now) } g.ui_dirty = true; }
+                    inspector_panel::Cmd::Copy(text) => { match os_actions::copy(&text) { Ok(()) => g.toast.show(trw("Copied to the clipboard"), min_ui::ToastKind::Positive, now), Err(e) => g.toast.show(&fill(trw("Couldn’t copy: %1"), &[&e]), min_ui::ToastKind::Negative, now) } g.ui_dirty = true; }
                     inspector_panel::Cmd::Reveal(p) => { if let Err(e) = os_actions::reveal(&p) { log::warn!("reveal: {e}"); } }
                     inspector_panel::Cmd::Open(p) => { if let Err(e) = os_actions::open(&p) { log::warn!("open: {e}"); } }
                     inspector_panel::Cmd::Layer(l) => { if let Some(p) = self.player.as_mut() { p.set_sequence_layer(&l); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_sequence_layer(&id, &l); } g.ui_dirty = true; }
@@ -747,7 +753,7 @@ impl App {
                 if let Some(index) = idx { self.bar_cmd(clip_bar::BarCmd::Move { clip, index }); }
             }
             project_panel::Cmd::SeekClip(i) => { if let Some(p) = self.player.as_mut() { let start = p.timeline.tracks.first().and_then(|t| t.clips.iter().filter(|c| !c.is_gap).nth(i)).map(|c| c.start); let fps = p.rate().as_f64(); if let Some(s) = start && fps > 0.0 { p.seek_to_time(s as f64 / fps); } } }
-            project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let first_name = ids.first().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_default(); let n = self.project.remove_media_items(&ids); if n > 0 { self.toast_action(&if n == 1 { format!("Removed {first_name}") } else { format!("Removed {n} items") }, min_ui::ToastKind::Notice, "Undo", "undo-media-delete"); } if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let first_name = ids.first().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_default(); let n = self.project.remove_media_items(&ids); if n > 0 { self.toast_action(&if n == 1 { fill(trw("Removed %1"), &[&first_name]) } else { fill(trw("Removed %1 items"), &[&n]) }, min_ui::ToastKind::Notice, trw("Undo"), "undo-media-delete"); } if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::AddMedia => self.open_media_dialog(),
             // QCView createPlaylistFromSelection / createEmptyPlaylistAndRename: auto-named Playlist_NN at 24 fps 1920×1080, gap 0;
             // the new row is selected and its rename opens (activation waits for playlist loading in the shell)
@@ -805,8 +811,8 @@ impl App {
             M::OpenProject => self.open_project_dialog(),
             M::SaveProject => self.save_project(),
             M::SaveProjectAs => self.save_project_as(),
-            M::RecentMedia(p) => { if std::path::Path::new(&p).exists() { for a in self.admit_media_paths(&[p]) { self.add_and_load(&a, true); } } else { self.toast("That file is no longer there", min_ui::ToastKind::Notice); } }
-            M::RecentProject(p) => { if std::path::Path::new(&p).exists() { self.open_project(&p); } else { self.toast("That project is no longer there", min_ui::ToastKind::Notice); } }
+            M::RecentMedia(p) => { if std::path::Path::new(&p).exists() { for a in self.admit_media_paths(&[p]) { self.add_and_load(&a, true); } } else { self.toast(trw("That file is no longer there"), min_ui::ToastKind::Notice); } }
+            M::RecentProject(p) => { if std::path::Path::new(&p).exists() { self.open_project(&p); } else { self.toast(trw("That project is no longer there"), min_ui::ToastKind::Notice); } }
             M::ClearRecentMedia => { self.settings.set_str(settings::k::RECENT_MEDIA, ""); }
             M::ClearRecentProjects => { self.settings.set_str(settings::k::RECENT_PROJECTS, ""); }
             M::Quit => { self.finish(); el.exit(); }
@@ -846,7 +852,7 @@ impl App {
         let mut files = vec![];
         for a in args {
             if a.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("qcview://")) { self.open_project_link(&a); }
-            else if a.contains("://") { self.toast("Live streams arrive with the stream step", min_ui::ToastKind::Notice); }
+            else if a.contains("://") { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); }
             else if a.to_lowercase().ends_with(".qcvproj") { self.open_project(&a); }
             else { files.push(a); }
         }
@@ -865,15 +871,15 @@ impl App {
                 if let Some(m) = media_id && self.project.item(&m).is_some() { self.load_item(&m); }
                 true
             }
-            Some(min_paths::links::QcviewLink::Stream { .. }) => { self.toast("Live streams arrive with the stream step", min_ui::ToastKind::Notice); false }
+            Some(min_paths::links::QcviewLink::Stream { .. }) => { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); false }
             None => { log::warn!("openProjectLink: not a qcview:// link"); false }
         }
     }
     /// QCView `copyProjectLinkToClipboard` → `buildProjectLink`: `qcview://<project uuid>/<loaded media id>`.
     fn copy_project_link(&mut self) {
         match min_paths::links::qcview_project_link(self.project.uuid(), &self.loaded_item) {
-            Some(link) => { match os_actions::copy(&link) { Ok(()) => self.toast("Project link copied", min_ui::ToastKind::Positive), Err(e) => self.toast(&format!("Couldn’t copy: {e}"), min_ui::ToastKind::Negative) } }
-            None => self.toast("Load an item to copy its link", min_ui::ToastKind::Notice),
+            Some(link) => { match os_actions::copy(&link) { Ok(()) => self.toast(trw("Project link copied"), min_ui::ToastKind::Positive), Err(e) => self.toast(&fill(trw("Couldn’t copy: %1"), &[&e]), min_ui::ToastKind::Negative) } }
+            None => self.toast(trw("Load an item to copy its link"), min_ui::ToastKind::Notice),
         }
     }
     /// QCView `viewMinimal`: both rails collapsed (their reopen tabs stay), the status strip hidden.
@@ -1114,7 +1120,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
-            about: min_ui::Dialog::new("QCView", &format!("Version {}\n\nColor-accurate review player.", env!("CARGO_PKG_VERSION")), vec![("Docs", min_ui::Variant::Secondary), ("Close", min_ui::Variant::Primary)]) });
+            about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
         // the menu bar (QCView's MenuBar, row 143): the app's native menu on macOS; QCView's in-window bar on Windows (row 194)
@@ -1348,6 +1354,7 @@ fn main() {
     // the window logs to a file too (QCView's installFileLogger, after the single-instance handoff below); the harness modes stderr
     let harness = args.iter().any(|a| ["--headless", "--ui-bench", "--audio-bench"].contains(&a.as_str()));
     if harness { env_logger::init(); }
+    i18n::install();   // canon row 195: before any panel builds its labels
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
     let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; if f.is_none() { f = Some(a.clone()); } } f };

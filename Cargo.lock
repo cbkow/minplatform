@@ -1880,6 +1880,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-i18n"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "min-image"
 version = "0.1.0"
 dependencies = [
@@ -2949,6 +2956,7 @@ dependencies = [
  "jiff",
  "kurbo",
  "log",
+ "min-i18n",
  "min-paths",
  "min-present",
  "min-settings",

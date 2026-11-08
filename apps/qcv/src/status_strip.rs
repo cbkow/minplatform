@@ -37,18 +37,21 @@ pub struct StatusStrip {
 
 const POPOVER_W: f64 = 210.0;   // QCView's go-to popup width (logical), padding included
 
+/// QCView's catalog context (canon row 195).
+fn tr(s: &str) -> &str { min_i18n::trc("TimelineStatus", s) }
+
 impl StatusStrip {
     pub fn new() -> StatusStrip {
         let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S);
-        field.placeholder = "frame number".into();
-        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, origin: None, rect: Rect::ZERO, popover: Popover::new("Go to frame"), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
+        field.placeholder = tr("frame number").into();
+        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, origin: None, rect: Rect::ZERO, popover: Popover::new(tr("GO TO FRAME")), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
     }
     pub fn is_open(&self) -> bool { self.popover.open }
     /// The SMPTE readout's text (compact mode shows it in its own band).
     pub fn timecode_text(&self) -> &str { &self.tc.text }
     /// QCView's bindings: the frame well = the active clock's frame, the SMPTE well = the formatter at the source's start timecode.
     pub fn sync(&mut self, p: Option<&Transport>) {
-        let Some(p) = p else { self.frame.text = "Frame —".into(); self.tc.text = "—".into(); self.fps.clear(); self.fmt = None; self.frame_count = 0; return };
+        let Some(p) = p else { self.frame.text = tr("Frame —").into(); self.tc.text = "—".into(); self.fps.clear(); self.fmt = None; self.frame_count = 0; return };
         let i = p.info();
         let (num, den) = i.frame_rate;
         let fmt = TimecodeFormatter::new(num, den, i.drop_frame);
@@ -57,9 +60,9 @@ impl StatusStrip {
         self.start = origin.filter(|o| !o.is_empty()).map(|tc| fmt.parse(tc).max(0)).unwrap_or(0);
         self.frame_count = p.frame_count(); self.duration_s = i.duration_secs; self.drop_frame = i.drop_frame;
         let cur = p.current_frame();
-        self.frame.text = if self.frame_count > 0 { format!("Frame {cur} / {}", self.frame_count - 1) } else { "Frame —".into() };
+        self.frame.text = if self.frame_count > 0 { min_i18n::fill(tr("Frame %1 / %2"), &[&cur, &(self.frame_count - 1)]) } else { tr("Frame —").into() };
         self.tc.text = if fmt.is_valid() { fmt.format(self.start + cur) } else { "—".into() };
-        self.fps = format!("{:.2} fps", p.rate().as_f64());
+        self.fps = min_i18n::fill(tr("%1 fps"), &[&format!("{:.2}", p.rate().as_f64())]);
         self.fmt = fmt.is_valid().then_some(fmt);
     }
     pub fn layout(&mut self, w: f64, y: f64, scale: f64) {
@@ -74,8 +77,8 @@ impl StatusStrip {
     fn open(&mut self, mode: Mode, fonts: &mut Fonts, bounds: Rect, scale: f64) {
         let anchor = if mode == Mode::Frame { self.frame.rect } else { self.tc.rect };
         self.mode = mode; self.error = false; self.field.error = false;
-        self.popover.title = match mode { Mode::Frame => "Go to frame", Mode::Timecode => "Go to timecode", Mode::Time => "Go to time" }.into();
-        self.field.placeholder = match mode { Mode::Frame => "frame number", Mode::Timecode => "HH:MM:SS:FF", Mode::Time => "MM:SS.mmm" }.into();
+        self.popover.title = tr(match mode { Mode::Frame => "GO TO FRAME", Mode::Timecode => "GO TO TIMECODE", Mode::Time => "GO TO TIME" }).into();
+        self.field.placeholder = tr(match mode { Mode::Frame => "frame number", Mode::Timecode => "HH:MM:SS:FF", Mode::Time => "MM:SS.mmm" }).into();
         let content_w = POPOVER_W - 2.0 * t::POPOVER_PADDING as f64;
         let field_h = t::FIELD_HEIGHT_S as f64;
         self.popover.open_at(fonts, anchor, content_w, field_h, bounds, scale);
@@ -107,9 +110,9 @@ impl StatusStrip {
             if self.frame.hit(x, y) && self.frame_count > 0 { self.open(Mode::Frame, fonts, bounds, scale); dirty = true; consumed = true; }
             else if self.tc.hit(x, y) && self.fmt.is_some() { self.open(Mode::Timecode, fonts, bounds, scale); dirty = true; consumed = true; }
         }
-        let over: Option<(u64, Rect, String)> = if self.frame.hovered { Some((1, self.frame.rect, if self.frame_count > 0 { "Frame number — click to go to a frame".into() } else { "Frame number".into() })) }
-            else if self.tc.hovered { Some((2, self.tc.rect, match (self.fmt.is_some(), self.drop_frame) { (true, true) => "Timecode (drop-frame) — click to go to a timecode".into(), (true, false) => "Timecode — click to go to a timecode".into(), _ => "Timecode".into() })) }
-            else if e.pos().is_some_and(|(x, y)| self.fps_rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave) { Some((3, self.fps_rect, "Frame rate of the open media".into())) } else { None };
+        let over: Option<(u64, Rect, String)> = if self.frame.hovered { Some((1, self.frame.rect, if self.frame_count > 0 { tr("Frame number — click to go to a frame").into() } else { tr("Frame number").into() })) }
+            else if self.tc.hovered { Some((2, self.tc.rect, match (self.fmt.is_some(), self.drop_frame) { (true, true) => tr("Timecode (drop-frame) — click to go to a timecode").into(), (true, false) => tr("Timecode — click to go to a timecode").into(), _ => tr("Timecode").into() })) }
+            else if e.pos().is_some_and(|(x, y)| self.fps_rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave) { Some((3, self.fps_rect, tr("Frame rate of the open media").into())) } else { None };
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         (dirty, consumed)
     }

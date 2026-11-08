@@ -10,6 +10,9 @@ use qcv_meta::TimecodeFormatter;
 use qcv_timeline::{rescale, Clip, Rate};
 use vello::Scene;
 
+/// QCView's catalog context (canon row 195).
+fn tr(s: &str) -> &str { min_i18n::trc("TimelinePanel", s) }
+
 const LABELS: [&str; 3] = ["Source in", "Source out", "Duration"];
 const LABEL_W: f64 = 76.0; const FIELD_W: f64 = 120.0; const GAP: f64 = 6.0;
 
@@ -18,7 +21,7 @@ pub struct ClipPopover { pub popover: Popover, fields: [TextField; 3], focus: us
 impl ClipPopover {
     pub fn new() -> ClipPopover {
         let f = || TextField::new(Family::Mono, t::CODE_SIZE_S);
-        ClipPopover { popover: Popover::new("Clip"), fields: [f(), f(), f()], focus: 0, clip: None, master: Rate::new(24, 1), fmt: TimecodeFormatter::new(24, 1, false), rows: [Rect::ZERO; 3] }
+        ClipPopover { popover: Popover::new(tr("Clip")), fields: [f(), f(), f()], focus: 0, clip: None, master: Rate::new(24, 1), fmt: TimecodeFormatter::new(24, 1, false), rows: [Rect::ZERO; 3] }
     }
     pub fn is_open(&self) -> bool { self.popover.open }
     pub fn close(&mut self) { self.popover.close(); for f in &mut self.fields { f.focused = false; } self.clip = None; }
@@ -74,7 +77,7 @@ impl ClipPopover {
         if !self.popover.open { return }
         self.popover.paint(scene, fonts, scale);
         for i in 0..3 {
-            let l = fonts.layout(LABELS[i], Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
+            let l = fonts.layout(tr(LABELS[i]), Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
             let r = self.rows[i]; min_ui::fonts::draw_layout(scene, &l, Affine::translate((r.x0, r.y0 + (r.height() - l.height() as f64) / 2.0)));
             self.fields[i].paint(scene, fonts, scale);
         }

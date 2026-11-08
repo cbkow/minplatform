@@ -1,0 +1,13 @@
+[package]
+name = "min-i18n"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "The family's interface translations (canon rows 195-197): gettext .po catalogs keyed by the English, a process-wide active language, Qt's plural rules, %1..%9 filling"
+
+[dependencies]
+log = { workspace = true }

@@ -1,0 +1,3809 @@
+msgid ""
+msgstr ""
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"X-Source: QCView translations/qcview_zh_CN.ts (ts2po.py)\n"
+
+msgctxt "ColorPanel"
+msgid "Choose LUT"
+msgstr "选择 LUT"
+
+msgctxt "ColorPanel"
+msgid "LUT / CDL files (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+msgstr "LUT / CDL 文件 (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+
+msgctxt "ColorPanel"
+msgid "All files (*)"
+msgstr "所有文件 (*)"
+
+msgctxt "ColorPanel"
+msgid "LUT files (*.cube *.3dl *.csp)"
+msgstr "LUT 文件 (*.cube *.3dl *.csp)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT…"
+msgstr "导出 LUT…"
+
+msgctxt "ColorPanel"
+msgid "3D LUT (*.cube)"
+msgstr "3D LUT (*.cube)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT failed — %1"
+msgstr "导出 LUT 失败 — %1"
+
+msgctxt "ColorPanel"
+msgid "LUT exported: %1"
+msgstr "LUT 已导出：%1"
+
+msgctxt "ColorPanel"
+msgid "Save preset as…"
+msgstr "预设另存为…"
+
+msgctxt "ColorPanel"
+msgid "Preset name"
+msgstr "预设名称"
+
+msgctxt "ColorPanel"
+msgid "Cancel"
+msgstr "取消"
+
+msgctxt "ColorPanel"
+msgid "Save"
+msgstr "保存"
+
+msgctxt "ColorPanel"
+msgid "Preset saved: %1"
+msgstr "预设已保存：%1"
+
+msgctxt "ColorPanel"
+msgid "Couldn't save preset “%1” — try another name"
+msgstr "无法保存预设“%1”，请换一个名称"
+
+#. Panel title
+msgctxt "ColorPanel"
+msgid "Color"
+msgstr "色彩"
+
+msgctxt "ColorPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+msgctxt "ColorPanel"
+msgid "Colour through the OpenColorIO chain (Input · Look · LUTs · Output · View)"
+msgstr "通过 OpenColorIO 链处理色彩（输入 · Look · LUT · 输出 · 视图）"
+
+msgctxt "ColorPanel"
+msgid "minColor"
+msgstr "minColor"
+
+msgctxt "ColorPanel"
+msgid "minColor · linear conversions, AgX, no OCIO"
+msgstr "minColor · 线性转换、AgX，不使用 OCIO"
+
+msgctxt "ColorPanel"
+msgid "Colour through the minColor engine: Input → Knee → AgX → Display, no OCIO"
+msgstr "通过 minColor 引擎处理色彩：输入 → 拐点 → AgX → 显示，不使用 OCIO"
+
+msgctxt "ColorPanel"
+msgid "Previous preset"
+msgstr "上一个预设"
+
+msgctxt "ColorPanel"
+msgid "(no preset)"
+msgstr "（无预设）"
+
+msgctxt "ColorPanel"
+msgid "%1 — modified"
+msgstr "%1 — 已修改"
+
+msgctxt "ColorPanel"
+msgid "Next preset"
+msgstr "下一个预设"
+
+msgctxt "ColorPanel"
+msgid "Overwrite the active user preset"
+msgstr "覆盖当前用户预设"
+
+msgctxt "ColorPanel"
+msgid "Save as…"
+msgstr "另存为…"
+
+msgctxt "ColorPanel"
+msgid "Delete"
+msgstr "删除"
+
+msgctxt "ColorPanel"
+msgid "Delete the active user preset"
+msgstr "删除当前用户预设"
+
+msgctxt "ColorPanel"
+msgid "Select a user preset to delete"
+msgstr "请选择要删除的用户预设"
+
+msgctxt "ColorPanel"
+msgid "Preset deleted: %1"
+msgstr "预设已删除：%1"
+
+#. Button in the toast after deleting a preset
+msgctxt "ColorPanel"
+msgid "Undo"
+msgstr "撤销"
+
+#. Tab: the Color panel's setup column (presets and config)
+msgctxt "ColorPanel"
+msgid "Setup"
+msgstr "设定"
+
+#. Tab
+msgctxt "ColorPanel"
+msgid "Presets"
+msgstr "预设"
+
+msgctxt "ColorPanel"
+msgid "A preset sets both groups: its clip half on the selected clip, its view half on the View"
+msgstr "预设同时设定两组：片段部分应用于所选片段，视图部分应用于视图"
+
+msgctxt "ColorPanel"
+msgid "Config · %1"
+msgstr "配置 · %1"
+
+msgctxt "ColorPanel"
+msgid "The OCIO config — the colourspace, display and view names every column uses"
+msgstr "OCIO 配置——各列所用的色彩空间、显示和视图名称均来自于此"
+
+#. Color panel caption: the clip follows the host Blender's display device and view
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (emulated)"
+msgstr "宿主显示：%1 · %2（模拟）"
+
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (off)"
+msgstr "宿主显示：%1 · %2（关）"
+
+msgctxt "ColorPanel"
+msgid "Use my View instead of the host's display"
+msgstr "改用我的视图，而非宿主的显示"
+
+msgctxt "ColorPanel"
+msgid "Sets clip + view"
+msgstr "设定片段 + 视图"
+
+msgctxt "ColorPanel"
+msgid "Names every column uses"
+msgstr "各列所用的名称"
+
+#. Placeholder of a filter field over a list
+msgctxt "ColorPanel"
+msgid "Filter…"
+msgstr "筛选…"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "SDR"
+msgstr "SDR"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+#. Column header: the per-clip half of the colour chain (Input, Look, LUTs)
+msgctxt "ColorPanel"
+msgid "Clip"
+msgstr "片段"
+
+msgctxt "ColorPanel"
+msgid "no clip"
+msgstr "无片段"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"A's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"A 的片段——更改仅随此片段保存"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"Changes here stay with this clip"
+msgstr ""
+"%1\n"
+"此处的更改仅随此片段保存"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"B's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"B 的片段——更改仅随此片段保存"
+
+msgctxt "ColorPanel"
+msgid "Input gamut"
+msgstr "输入色域"
+
+msgctxt "ColorPanel"
+msgid "Input transfer"
+msgstr "输入传递函数"
+
+#. OCIO input: the clip's source colourspace
+msgctxt "ColorPanel"
+msgid "Input"
+msgstr "输入"
+
+#. OCIO look: a creative transform from the config
+msgctxt "ColorPanel"
+msgid "Look"
+msgstr "Look"
+
+#. Picker entry: nothing selected
+msgctxt "ColorPanel"
+msgid "(none)"
+msgstr "（无）"
+
+#. A LUT applied in scene-linear space, before the view
+msgctxt "ColorPanel"
+msgid "Scene LUT"
+msgstr "场景 LUT"
+
+#. OCIO view: the display-side transform
+msgctxt "ColorPanel"
+msgid "View"
+msgstr "视图"
+
+#. Caption: the clip chain applies to both sides of the dual view
+msgctxt "ColorPanel"
+msgid "both sides"
+msgstr "两侧"
+
+msgctxt "ColorPanel"
+msgid "everything"
+msgstr "全部"
+
+#. minColor's rendering stage
+msgctxt "ColorPanel"
+msgid "Rendering · AgX"
+msgstr "渲染 · AgX"
+
+msgctxt "ColorPanel"
+msgid "Rendering"
+msgstr "渲染"
+
+#. Rendering choice: no tone mapping applied
+msgctxt "ColorPanel"
+msgid "Un-tone-mapped"
+msgstr "无色调映射"
+
+#. OCIO display: the target display
+msgctxt "ColorPanel"
+msgid "Display"
+msgstr "显示"
+
+#. Column header: the output (display) half of the chain
+msgctxt "ColorPanel"
+msgid "Output"
+msgstr "输出"
+
+msgctxt "ColorPanel"
+msgid "Display LUT"
+msgstr "显示 LUT"
+
+#. %1 is the engine name (OCIO or minColor)
+msgctxt "ColorPanel"
+msgid "%1 On"
+msgstr "%1 开"
+
+msgctxt "ColorPanel"
+msgid "%1 Off"
+msgstr "%1 关"
+
+#. Viewer aid slider, in stops
+msgctxt "ColorPanel"
+msgid "Exposure"
+msgstr "曝光"
+
+#. Viewer aid slider
+msgctxt "ColorPanel"
+msgid "Gamma"
+msgstr "伽马"
+
+msgctxt "ColorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "ColorPanel"
+msgid "All channels"
+msgstr "所有通道"
+
+msgctxt "ColorPanel"
+msgid "Red"
+msgstr "红"
+
+msgctxt "ColorPanel"
+msgid "Green"
+msgstr "绿"
+
+msgctxt "ColorPanel"
+msgid "Blue"
+msgstr "蓝"
+
+#. Channel view: the alpha channel shown as a matte
+msgctxt "ColorPanel"
+msgid "Alpha matte"
+msgstr "Alpha 遮罩"
+
+msgctxt "ColorPanel"
+msgid "Luma (output primaries)"
+msgstr "亮度（输出原色）"
+
+msgctxt "ColorPanel"
+msgid "Reset exposure, gamma and channel"
+msgstr "重置曝光、伽马和通道"
+
+msgctxt "ColorPanel"
+msgid "SDR — sRGB"
+msgstr "SDR — sRGB"
+
+msgctxt "ColorPanel"
+msgid "SDR — Display P3"
+msgstr "SDR — Display P3"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear sRGB"
+msgstr "EDR — 线性 sRGB"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear P3"
+msgstr "EDR — 线性 P3"
+
+msgctxt "ColorPanel"
+msgid "HDR10 PQ"
+msgstr "HDR10 PQ"
+
+msgctxt "ColorPanel"
+msgid "Extended Linear sRGB"
+msgstr "扩展线性 sRGB"
+
+msgctxt "ColorPanel"
+msgid "Bake the active OCIO chain to a 65³ .cube LUT"
+msgstr "将当前 OCIO 链烘焙为 65³ 的 .cube LUT"
+
+msgctxt "ColorPanel"
+msgid "Configure input / display / view first"
+msgstr "请先配置输入 / 显示 / 视图"
+
+msgctxt "ColorPanel"
+msgid "Set on this clip — click to go back to the default"
+msgstr "已在此片段上设定——点击恢复默认"
+
+#. Button: fold this section
+msgctxt "ColorPanel"
+msgid "Collapse"
+msgstr "折叠"
+
+msgctxt "ColorPanel"
+msgid "%1 — click to expand"
+msgstr "%1 — 点击展开"
+
+#. Section title: the highlight compression stage
+msgctxt "ColorPanel"
+msgid "Highlight Knee"
+msgstr "高光拐点"
+
+#. Toggle state
+msgctxt "ColorPanel"
+msgid "On"
+msgstr "开"
+
+msgctxt "ColorPanel"
+msgid "Off"
+msgstr "关"
+
+msgctxt "ColorPanel"
+msgid "Not available for this chain (data view, or the config has no interchange role)."
+msgstr "此链不可用（数据视图，或该配置没有 interchange 角色）。"
+
+#. Highlight Knee: the brightest level the source carries, in nits
+msgctxt "ColorPanel"
+msgid "Source peak"
+msgstr "源峰值"
+
+#. Unit suffix
+msgctxt "ColorPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "ColorPanel"
+msgid "+%1 stops over SDR white"
+msgstr "高于 SDR 白 +%1 档"
+
+msgctxt "ColorPanel"
+msgid "Use file MaxCLL (%1)"
+msgstr "使用文件 MaxCLL (%1)"
+
+msgctxt "ColorPanel"
+msgid "Use mastering peak (%1)"
+msgstr "使用母版峰值 (%1)"
+
+msgctxt "ColorPanel"
+msgid "No MaxCLL in file"
+msgstr "文件中无 MaxCLL"
+
+msgctxt "ColorPanel"
+msgid "Set the source peak from the file's HDR10 metadata"
+msgstr "根据文件的 HDR10 元数据设定源峰值"
+
+#. Highlight Knee: the brightest level the display shows, in nits
+msgctxt "ColorPanel"
+msgid "Target peak"
+msgstr "目标峰值"
+
+msgctxt "ColorPanel"
+msgid "100 nits · SDR display"
+msgstr "100 nits · SDR 显示器"
+
+#. Highlight Knee: the nits level where highlight compression begins
+msgctxt "ColorPanel"
+msgid "Knee start"
+msgstr "拐点起点"
+
+msgctxt "ColorPanel"
+msgid "%1 nits"
+msgstr "%1 nits"
+
+msgctxt "ColorPanel"
+msgid "BT.2390"
+msgstr "BT.2390"
+
+msgctxt "ColorPanel"
+msgid "Reset knee start to BT.2390"
+msgstr "将拐点起点重置为 BT.2390"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — on, %1 → %2 nits"
+msgstr "高光拐点 — 开，%1 → %2 nits"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — off, click to expand"
+msgstr "高光拐点 — 关，点击展开"
+
+msgctxt "ColorPanel"
+msgid "AgX"
+msgstr "AgX"
+
+msgctxt "ColorPanel"
+msgid "Blender's AgX at the defaults; HDR above 100 nits."
+msgstr "Blender 的 AgX，默认参数；100 nits 以上为 HDR。"
+
+msgctxt "ColorPanel"
+msgid "Target gamut"
+msgstr "目标色域"
+
+msgctxt "ColorPanel"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "ColorPanel"
+msgid "Rec.709"
+msgstr "Rec.709"
+
+msgctxt "ColorPanel"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "ColorPanel"
+msgid "Peak luminance"
+msgstr "峰值亮度"
+
+msgctxt "ColorPanel"
+msgid "White (EV over grey)"
+msgstr "白（高于灰的 EV）"
+
+msgctxt "ColorPanel"
+msgid "Black (EV under grey)"
+msgstr "黑（低于灰的 EV）"
+
+msgctxt "ColorPanel"
+msgid "Contrast"
+msgstr "对比度"
+
+#. AgX curve control: the dark end of the tone curve
+msgctxt "ColorPanel"
+msgid "Toe power"
+msgstr "趾部指数"
+
+#. AgX curve control: the bright end of the tone curve
+msgctxt "ColorPanel"
+msgid "Shoulder power"
+msgstr "肩部指数"
+
+#. AgX control: how much of the original hue is kept in bright areas
+msgctxt "ColorPanel"
+msgid "Hue restore"
+msgstr "色相还原"
+
+#. AgX control: saturation kept above SDR white
+msgctxt "ColorPanel"
+msgid "HDR purity"
+msgstr "HDR 纯度"
+
+msgctxt "ColorPanel"
+msgid "AgX — on, %1 nits"
+msgstr "AgX — 开，%1 nits"
+
+msgctxt "ColorPanel"
+msgid "AgX — off, click to expand"
+msgstr "AgX — 关，点击展开"
+
+#. Button on a filled LUT slot
+msgctxt "ColorPanel"
+msgid "Replace LUT"
+msgstr "替换 LUT"
+
+#. Button on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "+ Add LUT"
+msgstr "+ 添加 LUT"
+
+#. Field: the id of the first correction inside a CDL file
+msgctxt "ColorPanel"
+msgid "Correction ID (first)"
+msgstr "校正 ID（第一个）"
+
+#. Tooltip on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "click to choose"
+msgstr "点击选择"
+
+#. Button
+msgctxt "ColorPanel"
+msgid "Clear LUT"
+msgstr "清除 LUT"
+
+msgctxt "ColorPanel"
+msgid "%1 — %2"
+msgstr "%1 — %2"
+
+#. Colour as a hexadecimal code
+msgctxt "ColorPickerInline"
+msgid "Hex"
+msgstr "十六进制"
+
+#. Red channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "R"
+msgstr "R"
+
+#. Green channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "G"
+msgstr "G"
+
+#. Blue channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "B"
+msgstr "B"
+
+msgctxt "CompactStrip"
+msgid "Pause (Space)"
+msgstr "暂停 (Space)"
+
+msgctxt "CompactStrip"
+msgid "Play (Space)"
+msgstr "播放 (Space)"
+
+msgctxt "CompactStrip"
+msgid "Drag to move the window"
+msgstr "拖动以移动窗口"
+
+#. Badge: a live source is playing
+msgctxt "CompactStrip"
+msgid "LIVE"
+msgstr "实时"
+
+#. Current frame / total frames
+msgctxt "CompactStrip"
+msgid "%1 / %2"
+msgstr "%1 / %2"
+
+msgctxt "CompactStrip"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "始终置顶 — 点击取消固定 (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "始终置顶 (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Exit Compact Mode (Esc)"
+msgstr "退出紧凑模式 (Esc)"
+
+msgctxt "FFmpegMetadataExtractor"
+msgid "Image sequence"
+msgstr "图像序列"
+
+#. Media kind
+msgctxt "FFmpegMetadataExtractor"
+msgid "Unknown"
+msgstr "未知"
+
+msgctxt "ImageSequenceInspector"
+msgid "Image Sequence"
+msgstr "图像序列"
+
+msgctxt "ImageSequenceInspector"
+msgid "Frame rate"
+msgstr "帧率"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "ImageSequenceInspector"
+msgid "Transfer"
+msgstr "传递函数"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (Linear, EXR)"
+msgstr "自动（线性，EXR）"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (sRGB)"
+msgstr "自动 (sRGB)"
+
+#. Choice: decided from the file
+msgctxt "ImageSequenceInspector"
+msgid "Auto"
+msgstr "自动"
+
+msgctxt "ImageSequenceInspector"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "ImageSequenceInspector"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "ImageSequenceInspector"
+msgid "Linear"
+msgstr "线性"
+
+#. Frame number range
+msgctxt "ImageSequenceInspector"
+msgid "Range"
+msgstr "范围"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 – %2 (%3 frames)"
+msgstr "%1 – %2（%3 帧）"
+
+#. The file name pattern of the sequence
+msgctxt "ImageSequenceInspector"
+msgid "Pattern"
+msgstr "文件名模式"
+
+msgctxt "ImageSequenceInspector"
+msgid "Resolution"
+msgstr "分辨率"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 × %2"
+msgstr "%1 × %2"
+
+msgctxt "ImageSequenceInspector"
+msgid "(probing…)"
+msgstr "（探测中…）"
+
+#. EXR compression
+msgctxt "ImageSequenceInspector"
+msgid "Compression"
+msgstr "压缩"
+
+msgctxt "ImageSequenceInspector"
+msgid "Duration"
+msgstr "时长"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache stride"
+msgstr "缓存步长"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every Frame (Full)"
+msgstr "每帧（全部）"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every %1 Frames"
+msgstr "每 %1 帧"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache ahead"
+msgstr "向前缓存"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 / %2 frames"
+msgstr "%1 / %2 帧"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache behind"
+msgstr "向后缓存"
+
+#. EXR layer
+msgctxt "ImageSequenceInspector"
+msgid "Layer"
+msgstr "图层"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Video"
+msgstr "视频"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Audio"
+msgstr "音频"
+
+#. Media kind: a single still image
+msgctxt "InspectorPanel"
+msgid "Image"
+msgstr "图像"
+
+msgctxt "InspectorPanel"
+msgid "Image Sequence"
+msgstr "图像序列"
+
+msgctxt "InspectorPanel"
+msgid "Playlist"
+msgstr "播放列表"
+
+msgctxt "InspectorPanel"
+msgid "Dual View"
+msgstr "双画面"
+
+#. Media kind: a live stream or bridge feed
+msgctxt "InspectorPanel"
+msgid "Live"
+msgstr "实时源"
+
+#. Media kind: generic
+msgctxt "InspectorPanel"
+msgid "Media"
+msgstr "媒体"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "File"
+msgstr "文件"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Colour"
+msgstr "色彩"
+
+#. Section: video levels, full or limited
+msgctxt "InspectorPanel"
+msgid "Range"
+msgstr "范围"
+
+#. Row: whether the file has an alpha channel
+msgctxt "InspectorPanel"
+msgid "Alpha"
+msgstr "Alpha"
+
+#. File container format (QuickTime, MXF)
+msgctxt "InspectorPanel"
+msgid "Container"
+msgstr "容器"
+
+msgctxt "InspectorPanel"
+msgid "Encoder"
+msgstr "编码器"
+
+msgctxt "InspectorPanel"
+msgid "Copy URL"
+msgstr "复制 URL"
+
+msgctxt "InspectorPanel"
+msgid "Copy path"
+msgstr "复制路径"
+
+#. Button: show the file in Finder / Explorer
+msgctxt "InspectorPanel"
+msgid "Reveal"
+msgstr "显示位置"
+
+msgctxt "InspectorPanel"
+msgid "Reading metadata…"
+msgstr "正在读取元数据…"
+
+msgctxt "InspectorPanel"
+msgid "Resolution"
+msgstr "分辨率"
+
+msgctxt "InspectorPanel"
+msgid "Frame rate"
+msgstr "帧率"
+
+msgctxt "InspectorPanel"
+msgid "Total frames"
+msgstr "总帧数"
+
+msgctxt "InspectorPanel"
+msgid "Codec"
+msgstr "编解码器"
+
+#. Codec profile (e.g. ProRes 422 HQ)
+msgctxt "InspectorPanel"
+msgid "Profile"
+msgstr "配置文件"
+
+msgctxt "InspectorPanel"
+msgid "Bitrate"
+msgstr "比特率"
+
+msgctxt "InspectorPanel"
+msgid "file avg %1"
+msgstr "文件平均 %1"
+
+msgctxt "InspectorPanel"
+msgid "file avg"
+msgstr "文件平均"
+
+msgctxt "InspectorPanel"
+msgid "Pixel format"
+msgstr "像素格式"
+
+#. Pixel format summary: the file is RGB, not YUV
+msgctxt "InspectorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "InspectorPanel"
+msgid "Bit depth"
+msgstr "位深度"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit + alpha"
+msgstr "%1 位 + Alpha"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit"
+msgstr "%1 位"
+
+msgctxt "InspectorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+msgctxt "InspectorPanel"
+msgid "Yes — %1"
+msgstr "是 — %1"
+
+#. Section title: dimensions, aspect, rotation
+msgctxt "InspectorPanel"
+msgid "Geometry"
+msgstr "几何"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto (%1°)"
+msgstr "自动 (%1°)"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto"
+msgstr "自动"
+
+msgctxt "InspectorPanel"
+msgid "Aspect"
+msgstr "宽高比"
+
+#. Pixel aspect choice: square pixels
+msgctxt "InspectorPanel"
+msgid "Square"
+msgstr "方形"
+
+#. Pixel aspect choice: the aspect found in the file
+msgctxt "InspectorPanel"
+msgid "Detected"
+msgstr "检测值"
+
+#. Pixel aspect choice: a value typed by the user
+msgctxt "InspectorPanel"
+msgid "Custom"
+msgstr "自定义"
+
+msgctxt "InspectorPanel"
+msgid "Detected %1:%2"
+msgstr "检测到 %1:%2"
+
+msgctxt "InspectorPanel"
+msgid "%1:%2 (non-square)"
+msgstr "%1:%2（非方形）"
+
+msgctxt "InspectorPanel"
+msgid "1:1 (square)"
+msgstr "1:1（方形）"
+
+#. Row: display aspect
+msgctxt "InspectorPanel"
+msgid "Display"
+msgstr "显示"
+
+msgctxt "InspectorPanel"
+msgid "Rotation"
+msgstr "旋转"
+
+msgctxt "InspectorPanel"
+msgid "Pixel aspect"
+msgstr "像素宽高比"
+
+msgctxt "InspectorPanel"
+msgid "Display aspect"
+msgstr "显示宽高比"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Color"
+msgstr "色彩"
+
+msgctxt "InspectorPanel"
+msgid "Colorspace"
+msgstr "色彩空间"
+
+#. Colour primaries
+msgctxt "InspectorPanel"
+msgid "Primaries"
+msgstr "原色"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "InspectorPanel"
+msgid "Transfer"
+msgstr "传递函数"
+
+msgctxt "InspectorPanel"
+msgid "HDR metadata"
+msgstr "HDR 元数据"
+
+msgctxt "InspectorPanel"
+msgid "MaxCLL %1"
+msgstr "MaxCLL %1"
+
+msgctxt "InspectorPanel"
+msgid "MaxFALL %1"
+msgstr "MaxFALL %1"
+
+msgctxt "InspectorPanel"
+msgid "mastering %1 nits"
+msgstr "母版 %1 nits"
+
+msgctxt "InspectorPanel"
+msgid "NCLC tag"
+msgstr "NCLC 标签"
+
+msgctxt "InspectorPanel"
+msgid "Range tag"
+msgstr "范围标签"
+
+#. The file carries no range tag
+msgctxt "InspectorPanel"
+msgid "untagged"
+msgstr "未标记"
+
+msgctxt "InspectorPanel"
+msgid "decoder: %1"
+msgstr "解码器：%1"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes full"
+msgstr "自动视为全范围"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes limited"
+msgstr "自动视为有限范围"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full)"
+msgstr "自动（全范围）"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited)"
+msgstr "自动（有限范围）"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full, assumed)"
+msgstr "自动（全范围，假定）"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited, assumed)"
+msgstr "自动（有限范围，假定）"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Full"
+msgstr "全范围"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Limited"
+msgstr "有限范围"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ P3)"
+msgstr "自动 (PQ P3)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ 2020)"
+msgstr "自动 (PQ 2020)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (HLG)"
+msgstr "自动 (HLG)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR, untagged)"
+msgstr "自动（SDR，未标记）"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR)"
+msgstr "自动 (SDR)"
+
+msgctxt "InspectorPanel"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "InspectorPanel"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "InspectorPanel"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "InspectorPanel"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "InspectorPanel"
+msgid "Linear"
+msgstr "线性"
+
+#. Row: the bridge's current state
+msgctxt "InspectorPanel"
+msgid "State"
+msgstr "状态"
+
+#. Bridge state: the Transmit device is disabled in the host application
+msgctxt "InspectorPanel"
+msgid "Off in the host"
+msgstr "宿主中已关闭"
+
+#. Bridge state: nothing is being sent
+msgctxt "InspectorPanel"
+msgid "Idle"
+msgstr "空闲"
+
+#. Bridge state: the host is sending frames
+msgctxt "InspectorPanel"
+msgid "Pushing"
+msgstr "推送中"
+
+#. Bridge state: the host is scrubbing
+msgctxt "InspectorPanel"
+msgid "Scrubbing"
+msgstr "搓擦中"
+
+msgctxt "InspectorPanel"
+msgid "No audio"
+msgstr "无音频"
+
+msgctxt "InspectorPanel"
+msgid "Sample rate"
+msgstr "采样率"
+
+msgctxt "InspectorPanel"
+msgid "%1 Hz"
+msgstr "%1 Hz"
+
+msgctxt "InspectorPanel"
+msgid "Channels"
+msgstr "声道"
+
+msgctxt "InspectorPanel"
+msgid "%1 (stereo)"
+msgstr "%1（立体声）"
+
+msgctxt "InspectorPanel"
+msgid "%1 (mono)"
+msgstr "%1（单声道）"
+
+#. Audio channel layout (stereo, 5.1)
+msgctxt "InspectorPanel"
+msgid "Layout"
+msgstr "声道布局"
+
+#. Toggle: play the bridge's audio in QCView
+msgctxt "InspectorPanel"
+msgid "Listen in QCView"
+msgstr "在 QCView 中收听"
+
+#. Row label for the bridge's audio
+msgctxt "InspectorPanel"
+msgid "Audio Stream"
+msgstr "音频流"
+
+msgctxt "InspectorPanel"
+msgid "off: tick it in Premiere ▸ Preferences ▸ Playback"
+msgstr "关闭：请在 Premiere ▸ 首选项 ▸ 回放 中勾选"
+
+#. Audio downmix choice
+msgctxt "InspectorPanel"
+msgid "Mix"
+msgstr "混音"
+
+msgctxt "InspectorPanel"
+msgid "Auto — picks the right mix per source"
+msgstr "自动 — 按源选择合适的混音"
+
+msgctxt "InspectorPanel"
+msgid "5.1 → Stereo (BS.775 downmix from channels 1-6)"
+msgstr "5.1 → 立体声（声道 1-6 按 BS.775 下混）"
+
+msgctxt "InspectorPanel"
+msgid "Channels 7-8 (broadcast stereo bounce)"
+msgstr "声道 7-8（广播立体声混缩）"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Timecode"
+msgstr "时间码"
+
+#. Timecode origin: counting from the start of the file
+msgctxt "InspectorPanel"
+msgid "From start"
+msgstr "从文件开头"
+
+#. Timecode origin: the timecode track in the file
+msgctxt "InspectorPanel"
+msgid "Embedded"
+msgstr "内嵌"
+
+#. Timecode origin: the QuickTime start timecode
+msgctxt "InspectorPanel"
+msgid "QT Start"
+msgstr "QT 起始"
+
+msgctxt "InspectorPanel"
+msgid "QT TC"
+msgstr "QT TC"
+
+msgctxt "InspectorPanel"
+msgid "XMP Alt"
+msgstr "XMP Alt"
+
+#. Row: where the timecode comes from
+msgctxt "InspectorPanel"
+msgid "Origin"
+msgstr "基准"
+
+#. Row: which metadata the timecode was read from
+msgctxt "InspectorPanel"
+msgid "Source"
+msgstr "来源"
+
+msgctxt "InspectorPanel"
+msgid "(frame %1)"
+msgstr "（第 %1 帧）"
+
+msgctxt "InspectorPanel"
+msgid "QT TimeCode"
+msgstr "QT TimeCode"
+
+#. Row: file creation date
+msgctxt "InspectorPanel"
+msgid "Created"
+msgstr "创建时间"
+
+#. Row: the media's own creation date from its metadata
+msgctxt "InspectorPanel"
+msgid "Media Created"
+msgstr "媒体创建时间"
+
+#. Section title: project files that reference this media
+msgctxt "InspectorPanel"
+msgid "Linked Projects"
+msgstr "关联项目"
+
+msgctxt "InspectorPanel"
+msgid "After Effects"
+msgstr "After Effects"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Mac)"
+msgstr "Premiere (Mac)"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Windows)"
+msgstr "Premiere (Windows)"
+
+#. Button: open the linked project in its application
+msgctxt "InspectorPanel"
+msgid "Open"
+msgstr "打开"
+
+#. Button: copy the project path
+msgctxt "InspectorPanel"
+msgid "Copy"
+msgstr "复制"
+
+msgctxt "InspectorPanel"
+msgid "Playlist Contents"
+msgstr "播放列表内容"
+
+msgctxt "InspectorPanel"
+msgid "%1 clips"
+msgstr "%1 个片段"
+
+msgctxt "InspectorPanel"
+msgid "(missing)"
+msgstr "（缺失）"
+
+msgctxt "InspectorPanel"
+msgid "Open in single mode"
+msgstr "以单画面模式打开"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Videos"
+msgstr "视频"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Audio"
+msgstr "音频"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Images"
+msgstr "图像"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Image Sequences"
+msgstr "图像序列"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Playlists"
+msgstr "播放列表"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Dual Views"
+msgstr "双画面"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Live"
+msgstr "实时源"
+
+msgctxt "LeftRail"
+msgid "Add Media"
+msgstr "添加媒体"
+
+#. Tooltip on the warning badge of a media row the player cannot decode
+msgctxt "LeftRail"
+msgid "Can’t be played here: unsupported format or un-debayered camera raw"
+msgstr "无法在此播放：格式不受支持，或为未去拜耳的摄影机 RAW"
+
+msgctxt "LeftRail"
+msgid "Create Playlist from Selection"
+msgstr "从所选项创建播放列表"
+
+#. Context menu: set the OCIO input colourspace of the selected clips
+msgctxt "LeftRail"
+msgid "Input"
+msgstr "输入"
+
+#. Picker group header: inputs already used in the project
+msgctxt "LeftRail"
+msgid "In this project"
+msgstr "本项目中"
+
+#. Picker group header: every input in the config
+msgctxt "LeftRail"
+msgid "All"
+msgstr "全部"
+
+msgctxt "LeftRail"
+msgid "Input for 1 clip"
+msgstr "1 个片段的输入"
+
+msgctxt "LeftRail"
+msgid "Input for %1 clips"
+msgstr "%1 个片段的输入"
+
+msgctxt "LeftRail"
+msgid "Filter…"
+msgstr "筛选…"
+
+#. Picker entry: use the config's default input
+msgctxt "LeftRail"
+msgid "default"
+msgstr "默认"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of “%1”"
+msgstr "使用“%1”的片段链"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of the Clip on Screen"
+msgstr "使用当前显示片段的片段链"
+
+msgctxt "LeftRail"
+msgid "Reset Clip Chain"
+msgstr "重置片段链"
+
+msgctxt "LeftRail"
+msgid "Delete"
+msgstr "删除"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Expand panel"
+msgstr "展开面板"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Collapse panel"
+msgstr "折叠面板"
+
+#. Rail title
+msgctxt "LeftRail"
+msgid "Project"
+msgstr "项目"
+
+#. Count of items, in parentheses
+msgctxt "LeftRail"
+msgid "(%1)"
+msgstr "(%1)"
+
+#. Section title: the project's media bins
+msgctxt "LeftRail"
+msgid "Media"
+msgstr "媒体"
+
+msgctxt "LeftRail"
+msgid "Drop media here to add to the project"
+msgstr "将媒体拖放到此处以添加到项目"
+
+#. Default name of a new playlist
+msgctxt "LeftRail"
+msgid "New playlist"
+msgstr "新播放列表"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Safety Guides"
+msgstr "安全框"
+
+#. Row: which safety guide to show
+msgctxt "LeftRail"
+msgid "Guide"
+msgstr "安全框"
+
+msgctxt "LeftRail"
+msgid "(none)"
+msgstr "（无）"
+
+#. Row: guide opacity
+msgctxt "LeftRail"
+msgid "Opacity"
+msgstr "不透明度"
+
+#. Row: guide line width
+msgctxt "LeftRail"
+msgid "Width"
+msgstr "线宽"
+
+#. Row: guide line colour
+msgctxt "LeftRail"
+msgid "Color"
+msgstr "颜色"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Background"
+msgstr "背景"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Black"
+msgstr "黑色"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Dark Gray"
+msgstr "深灰"
+
+#. Background choice: a dark checkerboard
+msgctxt "LeftRail"
+msgid "Dark Check"
+msgstr "深色棋盘格"
+
+#. Background choice: a light checkerboard
+msgctxt "LeftRail"
+msgid "Light Check"
+msgstr "浅色棋盘格"
+
+#. Section: installed outputs (NDI, AJA, streaming)
+msgctxt "LeftRail"
+msgid "Output"
+msgstr "输出"
+
+#. Chip: silence the audio sent to outputs
+msgctxt "LeftRail"
+msgid "Mute feed"
+msgstr "输出静音"
+
+msgctxt "LeftRail"
+msgid "Silence the audio sent to outputs while you keep listening. The master mute (M) silences both."
+msgstr "使发送到输出的音频静音，您仍可继续收听。主静音 (M) 会同时静音两者。"
+
+#. Chip: send the safety guides to outputs
+msgctxt "LeftRail"
+msgid "Guides"
+msgstr "安全框"
+
+msgctxt "LeftRail"
+msgid "Draw the safety guides into the outputs that ask for them."
+msgstr "在需要的输出中绘制安全框。"
+
+#. Chip: send note strokes to outputs
+msgctxt "LeftRail"
+msgid "Notes"
+msgstr "批注"
+
+msgctxt "LeftRail"
+msgid "Draw note strokes into the outputs that ask for them."
+msgstr "在需要的输出中绘制批注笔迹。"
+
+#. Button on an output card
+msgctxt "LeftRail"
+msgid "Stop"
+msgstr "停止"
+
+msgctxt "LeftRail"
+msgid "Start"
+msgstr "启动"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "PQ Rec.2100"
+msgstr "PQ Rec.2100"
+
+msgctxt "LeftRail"
+msgid "HLG Rec.2100"
+msgstr "HLG Rec.2100"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "SDR Rec.709"
+msgstr "SDR Rec.709"
+
+#. Output resolution choice
+msgctxt "LeftRail"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "LeftRail"
+msgid "UHD"
+msgstr "UHD"
+
+#. Output resolution choice
+#. ----------
+#. Choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto"
+msgstr "自动"
+
+#. Output state: the sink is receiving
+msgctxt "LeftRail"
+msgid "attached"
+msgstr "已连接"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "waiting for the sink"
+msgstr "等待接收端"
+
+msgctxt "LeftRail"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "LeftRail"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "LeftRail"
+msgid "%1 / %2 / %3 nits"
+msgstr "%1 / %2 / %3 nits"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "live"
+msgstr "运行中"
+
+#. Output state: the sink refused the connection
+msgctxt "LeftRail"
+msgid "refused"
+msgstr "被拒绝"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "starting"
+msgstr "启动中"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "not installed"
+msgstr "未安装"
+
+msgctxt "LeftRail"
+msgid "Publish the viewport and the mixed audio to this output. The sink runs as its own application; QCView starts it with Start and stops it with Stop."
+msgstr "将视口和混合音频发布到此输出。接收端作为独立应用运行；QCView 通过“启动”启动它，通过“停止”停止它。"
+
+#. Caption under three number fields
+msgctxt "LeftRail"
+msgid "peak · MaxCLL · MaxFALL nits"
+msgstr "峰值 · MaxCLL · MaxFALL nits"
+
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in Application Support/QCView/Outputs."
+msgstr "未安装任何输出。输出程序会在 Application Support/QCView/Outputs 中自行注册。"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "streaming"
+msgstr "推流中"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "reconnecting"
+msgstr "重连中"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "connecting"
+msgstr "连接中"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "failed"
+msgstr "失败"
+
+msgctxt "LeftRail"
+msgid "%1 kbps"
+msgstr "%1 kbps"
+
+msgctxt "LeftRail"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+msgctxt "LeftRail"
+msgid "%n encoded"
+msgid_plural "%n encoded"
+msgstr[0] "已编码 %n"
+
+msgctxt "LeftRail"
+msgid "%n repeated"
+msgid_plural "%n repeated"
+msgstr[0] "重复 %n"
+
+msgctxt "LeftRail"
+msgid "%n skipped"
+msgid_plural "%n skipped"
+msgstr[0] "跳过 %n"
+
+msgctxt "LeftRail"
+msgid "%n dropped"
+msgid_plural "%n dropped"
+msgstr[0] "丢弃 %n"
+
+msgctxt "LeftRail"
+msgid "%n send error(s)"
+msgid_plural "%n send error(s)"
+msgstr[0] "%n 次发送错误"
+
+msgctxt "LeftRail"
+msgid "%n reconnect(s)"
+msgid_plural "%n reconnect(s)"
+msgstr[0] "%n 次重连"
+
+#. Frame rate choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto fps"
+msgstr "自动帧率"
+
+#. H.264 profile name, keep in English
+msgctxt "LeftRail"
+msgid "Main"
+msgstr "Main"
+
+msgctxt "LeftRail"
+msgid "Baseline"
+msgstr "Baseline"
+
+#. Summary: the stream sends video only
+msgctxt "LeftRail"
+msgid "no audio"
+msgstr "无音频"
+
+msgctxt "LeftRail"
+msgid "AAC %1"
+msgstr "AAC %1"
+
+msgctxt "LeftRail"
+msgid "SRT %1 ms"
+msgstr "SRT %1 ms"
+
+#. Card title: the SRT / RTMP streaming output
+msgctxt "LeftRail"
+msgid "Stream"
+msgstr "推流"
+
+#. Output state: this machine cannot encode
+msgctxt "LeftRail"
+msgid "no hardware encoder"
+msgstr "无硬件编码器"
+
+msgctxt "LeftRail"
+msgid "Send the viewport and the mixed audio to a streaming server (Louper, or any SRT or RTMP server) as H.264 + AAC, encoded on the GPU. srt://host:port with the key as the stream id, or rtmp://host/app with the key as the stream name. A dropped connection reconnects on its own. The picture is the same Rec.709 SDR picture the output bus serves; the frame rate is fixed for the session (a paused viewport repeats its last frame)."
+msgstr "将视口和混合音频以 H.264 + AAC 的形式发送到流媒体服务器（Louper，或任意 SRT / RTMP 服务器），由 GPU 编码。srt://host:port 以推流码作为 stream id，或 rtmp://host/app 以推流码作为流名称。连接中断后会自动重连。画面与输出总线提供的 Rec.709 SDR 画面相同；帧率在会话期间固定（视口暂停时重复最后一帧）。"
+
+msgctxt "LeftRail"
+msgid "srt://host:port"
+msgstr "srt://host:port"
+
+msgctxt "LeftRail"
+msgid "Stream key (SRT stream id)"
+msgstr "推流码（SRT stream id）"
+
+msgctxt "LeftRail"
+msgid "Hide the key"
+msgstr "隐藏推流码"
+
+msgctxt "LeftRail"
+msgid "Show the key"
+msgstr "显示推流码"
+
+msgctxt "LeftRail"
+msgid "Bitrate (kbps)"
+msgstr "比特率 (kbps)"
+
+msgctxt "LeftRail"
+msgid "Constant-rate target. Louper suggests 2500–8000 at 1080p."
+msgstr "恒定码率目标。Louper 建议 1080p 使用 2500–8000。"
+
+msgctxt "LeftRail"
+msgid "Resolution"
+msgstr "分辨率"
+
+msgctxt "LeftRail"
+msgid "The stream's raster; the viewport is letterboxed into it like any output."
+msgstr "流的画幅；视口会像其他输出一样以信箱模式嵌入其中。"
+
+msgctxt "LeftRail"
+msgid "Frame rate"
+msgstr "帧率"
+
+msgctxt "LeftRail"
+msgid "Auto takes the source's rate when the stream starts (30 when it has none) and keeps it for the session. A 23.976 source into a 30 fps clock repeats six frames a second."
+msgstr "“自动”在推流开始时采用源的帧率（若无则为 30）并在会话期间保持。23.976 的源进入 30 fps 时钟时每秒重复六帧。"
+
+msgctxt "LeftRail"
+msgid "H.264 profile"
+msgstr "H.264 配置文件"
+
+msgctxt "LeftRail"
+msgid "Baseline is what Louper's recipe asks for; Main gives better quality per bit where the service accepts it. Never B-frames."
+msgstr "Baseline 是 Louper 方案所要求的；在服务支持的情况下，Main 的每比特画质更好。从不使用 B 帧。"
+
+msgctxt "LeftRail"
+msgid "Audio (kbps)"
+msgstr "音频 (kbps)"
+
+msgctxt "LeftRail"
+msgid "AAC stereo at 48 kHz from the mixed audio, before Listen, mute and volume. Off sends video only."
+msgstr "来自混合音频的 48 kHz AAC 立体声，位于收听、静音和音量之前。关闭则只发送视频。"
+
+#. AAC bitrate choice: no audio in the stream
+msgctxt "LeftRail"
+msgid "Off"
+msgstr "关"
+
+msgctxt "LeftRail"
+msgid "SRT latency (ms)"
+msgstr "SRT 延迟 (ms)"
+
+msgctxt "LeftRail"
+msgid "The SRT retransmission window, both ends negotiate the larger. 120 ms suits a LAN or a good link; raise it on a lossy one."
+msgstr "SRT 重传窗口，两端协商取较大值。120 ms 适合局域网或良好链路；丢包多时请调高。"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Settings"
+msgstr "设置"
+
+msgctxt "LeftRail"
+msgid "Reset all preferences?"
+msgstr "重置所有偏好设置？"
+
+msgctxt "LeftRail"
+msgid "Every preference (recents, layout, settings, shortcuts) will be erased and the app will quit. Relaunch to continue."
+msgstr "所有偏好设置（最近项目、布局、设置、快捷键）都将被清除，应用随后退出。重新启动以继续。"
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Performance"
+msgstr "性能"
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq decode threads"
+msgstr "图像序列解码线程"
+
+msgctxt "LeftRail"
+msgid "Applies on next sequence load."
+msgstr "下次加载序列时生效。"
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq cache window"
+msgstr "图像序列缓存窗口"
+
+msgctxt "LeftRail"
+msgid "Frames cached ahead of the playhead. Lower = less RAM."
+msgstr "沿播放方向预先缓存的帧数。数值越低占用内存越少。"
+
+msgctxt "LeftRail"
+msgid "Video decode threads"
+msgstr "视频解码线程"
+
+msgctxt "LeftRail"
+msgid "0 = Auto. Single-video playback only; dual and scrub stay on Auto. Applies on next video load."
+msgstr "0 = 自动。仅用于单视频播放；双画面和搓擦保持自动。下次加载视频时生效。"
+
+msgctxt "LeftRail"
+msgid "Enable hardware decoding"
+msgstr "启用硬件解码"
+
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D11VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "可用时使用 GPU 解码 (Vulkan/D3D11VA)。播放异常时请关闭——将全部强制为软件解码。下次加载文件时生效。"
+
+msgctxt "LeftRail"
+msgid "Scrub cache size (MB)"
+msgstr "搓擦缓存大小 (MB)"
+
+msgctxt "LeftRail"
+msgid "Decoded frames kept near the playhead for instant backward scrub. Higher = smoother, more RAM/VRAM. Per decoder — dual uses 2x. Applies on next file load."
+msgstr "保留在播放头附近的已解码帧，用于即时向后搓擦。越高越流畅，但占用更多内存/显存。每个解码器各自计算——双画面为 2 倍。下次加载文件时生效。"
+
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265 (experimental)"
+msgstr "h264/h265 硬件搓擦（实验性）"
+
+msgctxt "LeftRail"
+msgid "GPU decode while scrubbing h264/h265, not just all-intra (ProRes). Experimental — turn off if scrubbed frames look wrong. Applies on next file load."
+msgstr "搓擦 h264/h265 时也使用 GPU 解码，而不只是全帧内编码 (ProRes)。实验性功能——若搓擦帧显示异常请关闭。下次加载文件时生效。"
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Interface"
+msgstr "界面"
+
+msgctxt "LeftRail"
+msgid "Language"
+msgstr "语言"
+
+msgctxt "LeftRail"
+msgid "Language of the interface. System default follows the OS setting. Applies at once."
+msgstr "界面语言。“系统默认”跟随操作系统设置。立即生效。"
+
+msgctxt "LeftRail"
+msgid "Always open in minimal mode"
+msgstr "始终以极简模式打开"
+
+msgctxt "LeftRail"
+msgid "Launch with the rails collapsed and the color panel hidden, ignoring the last-used layout. Applies on next launch."
+msgstr "启动时折叠侧栏并隐藏色彩面板，忽略上次使用的布局。下次启动时生效。"
+
+msgctxt "LeftRail"
+msgid "Timeline hover thumbnails"
+msgstr "时间线悬停缩略图"
+
+msgctxt "LeftRail"
+msgid "Drag viewport to move window"
+msgstr "拖动视口移动窗口"
+
+msgctxt "LeftRail"
+msgid "Timeline audio waveforms"
+msgstr "时间线音频波形"
+
+msgctxt "LeftRail"
+msgid "Draw an audio waveform over timeline clips. Peaks decode lazily in the background for the visible range and pause during playback."
+msgstr "在时间线片段上绘制音频波形。峰值按可见范围在后台延迟解码，播放时暂停。"
+
+msgctxt "LeftRail"
+msgid "Screenshot format"
+msgstr "截图格式"
+
+msgctxt "LeftRail"
+msgid "Format for Desktop screenshots. JPEG is lossy; PNG/TIFF lossless. Notes always use PNG."
+msgstr "桌面截图的格式。JPEG 有损；PNG/TIFF 无损。批注始终使用 PNG。"
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Updates"
+msgstr "更新"
+
+msgctxt "LeftRail"
+msgid "Automatically check for updates"
+msgstr "自动检查更新"
+
+msgctxt "LeftRail"
+msgid "Checks daily for updates, sending only your IP and app/OS version. Update manually anytime from the About menu."
+msgstr "每天检查更新，仅发送您的 IP 和应用/系统版本。随时可从“关于”菜单手动更新。"
+
+#. Audio/video offset setting for single-clip playback
+msgctxt "LeftRail"
+msgid "A/V sync (Single)"
+msgstr "音画同步（单画面）"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play."
+msgstr "正值延迟音频，以补偿管线/显示延迟。凭听感调整；下次定位或播放时生效。"
+
+#. Audio/video offset setting for dual view
+msgctxt "LeftRail"
+msgid "A/V sync (Dual)"
+msgstr "音画同步（双画面）"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play."
+msgstr "正值延迟音频，以补偿管线/显示延迟。双画面的延迟比单画面更大。凭听感调整；下次定位或播放时生效。"
+
+msgctxt "LeftRail"
+msgid "Mute scrub audio"
+msgstr "搓擦音频静音"
+
+msgctxt "LeftRail"
+msgid "Silence the audio feedback while dragging the timeline or holding fast-forward/rewind. Scrubbing itself is unaffected."
+msgstr "拖动时间线或按住快进/快退时静音音频反馈。搓擦本身不受影响。"
+
+msgctxt "LeftRail"
+msgid "Listen to live audio"
+msgstr "收听实时音频"
+
+msgctxt "LeftRail"
+msgid "Play audio pushed by Premiere Pro over QCBridge in QCView. Off by default: Premiere is already playing it. Meters run either way."
+msgstr "在 QCView 中播放 Premiere Pro 通过 QCBridge 推送的音频。默认关闭：Premiere 已在播放。电平表始终运行。"
+
+#. Setting: watch for a QCBridge (Blender) session on this machine
+msgctxt "LeftRail"
+msgid "Blender sessions"
+msgstr "Blender 会话"
+
+msgctxt "LeftRail"
+msgid "Off at every launch. On (also File ▸ Connect to Blender): QCView watches for the card the QCBridge host add-on on this machine writes when a session starts, listens on its port and shows the replica's stream. Off again stops listening."
+msgstr "每次启动时均为关闭。开启后（也可通过 文件 ▸ 连接到 Blender）：QCView 会监视本机 QCBridge 宿主插件在会话开始时写入的会话卡片，监听其端口并显示副本的流。再次关闭即停止监听。"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Live from %1 on port %2"
+msgstr "来自 %1 的实时流（端口 %2）"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Listening for %1 on port %2"
+msgstr "正在监听 %1（端口 %2）"
+
+#. Blender input state: a card exists but another clip is on screen
+msgctxt "LeftRail"
+msgid "%1 is streaming on port %2 — select the Blender clip"
+msgstr "%1 正在通过端口 %2 推流——请选择 Blender 片段"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Blender session ended"
+msgstr "Blender 会话已结束"
+
+#. Blender input state: no card yet
+msgctxt "LeftRail"
+msgid "No Blender session on this machine yet"
+msgstr "本机尚无 Blender 会话"
+
+#. Audio/video offset setting for bridge feeds
+msgctxt "LeftRail"
+msgid "A/V sync (Live)"
+msgstr "音画同步（实时）"
+
+msgctxt "LeftRail"
+msgid "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear."
+msgstr "正值延迟桥接音频；负值延迟画面。按宿主应用分别保存。凭听感调整。"
+
+msgctxt "LeftRail"
+msgid "Live audio buffer"
+msgstr "实时音频缓冲"
+
+msgctxt "LeftRail"
+msgid "How much bridge audio is queued before it plays. Raise it if live audio stutters; lower it for less delay."
+msgstr "桥接音频在播放前的排队量。实时音频卡顿时调高；想要更低延迟则调低。"
+
+msgctxt "LeftRail"
+msgid "Reset all preferences…"
+msgstr "重置所有偏好设置…"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "LiveStrip"
+msgid "REVIEW · %1"
+msgstr "审阅 · %1"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "LIVE"
+msgstr "实时"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "PAUSED"
+msgstr "已暂停"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "WAITING"
+msgstr "等待中"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "RECONNECTING"
+msgstr "重连中"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "CONNECTING"
+msgstr "连接中"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "OFFLINE"
+msgstr "离线"
+
+#. Transport of a bridge feed
+msgctxt "LiveStrip"
+msgid "shared memory"
+msgstr "共享内存"
+
+#. Warning: the frame contains non-finite pixel values
+msgctxt "LiveStrip"
+msgid "inf/NaN in frame"
+msgstr "帧内含 inf/NaN"
+
+#. Count of times the host application went away and came back
+msgctxt "LiveStrip"
+msgid "%n restart(s)"
+msgid_plural "%n restart(s)"
+msgstr[0] "%n 次重启"
+
+#. Count of stream drops followed by a reconnect
+msgctxt "LiveStrip"
+msgid "%n drop(s)"
+msgid_plural "%n drop(s)"
+msgstr[0] "%n 次掉线"
+
+#. Transfer override choice: follow the feed's tags
+msgctxt "LiveStrip"
+msgid "Auto"
+msgstr "自动"
+
+msgctxt "LiveStrip"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "LiveStrip"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "LiveStrip"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "LiveStrip"
+msgid "Linear"
+msgstr "线性"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ P3"
+msgstr "自动 · PQ P3"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ 2020"
+msgstr "自动 · PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "Auto · HLG"
+msgstr "自动 · HLG"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR, untagged"
+msgstr "自动 · SDR，未标记"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR"
+msgstr "自动 · SDR"
+
+msgctxt "LiveStrip"
+msgid "How the scopes read this feed (Transfer override)"
+msgstr "示波器如何解读此源（传递函数覆盖）"
+
+#. Live strip chip: the host Blender's display device and view are being emulated
+msgctxt "LiveStrip"
+msgid "Host display %1 · %2"
+msgstr "宿主显示 %1 · %2"
+
+#. Live strip chip: host-display emulation is pinned but switched off
+msgctxt "LiveStrip"
+msgid "Host display off"
+msgstr "宿主显示：关"
+
+#. Live strip chip: the link named a view QCView could not apply
+msgctxt "LiveStrip"
+msgid "View %1 not applied"
+msgstr "视图 %1 未应用"
+
+msgctxt "LiveStrip"
+msgid "The Blender host's view, rendered for its display device, shown here (click for options)"
+msgstr "此处显示 Blender 宿主的视图，按其显示设备渲染（点击查看选项）"
+
+#. Menu: switch host-display emulation on or off for this stream
+msgctxt "LiveStrip"
+msgid "Emulate the host display"
+msgstr "模拟宿主显示"
+
+#. Menu: convert the host display's colourspace to ours instead of showing its codes as sRGB
+msgctxt "LiveStrip"
+msgid "True emulation (display to display)"
+msgstr "真实模拟（显示到显示）"
+
+#. Menu: drop the host-display pin; this machine's own View applies
+msgctxt "LiveStrip"
+msgid "Use my View instead"
+msgstr "改用我的视图"
+
+msgctxt "LiveStrip"
+msgid "Color panel (⌃3)"
+msgstr "色彩面板 (⌃3)"
+
+msgctxt "LiveStrip"
+msgid "Notes panel (⌃4)"
+msgstr "批注面板 (⌃4)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "截图到剪贴板 (⌥T)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to Desktop (T)"
+msgstr "截图到桌面 (T)"
+
+msgctxt "Main"
+msgid "Open Media…"
+msgstr "打开媒体…"
+
+msgctxt "Main"
+msgid "Open Project…"
+msgstr "打开项目…"
+
+msgctxt "Main"
+msgid "QCView Project (*.qcvproj)"
+msgstr "QCView 项目 (*.qcvproj)"
+
+msgctxt "Main"
+msgid "Save Project As…"
+msgstr "项目另存为…"
+
+msgctxt "Main"
+msgid "Project error"
+msgstr "项目错误"
+
+msgctxt "Main"
+msgid "OK"
+msgstr "确定"
+
+msgctxt "Main"
+msgid "Open Stream"
+msgstr "打开网络流"
+
+msgctxt "Main"
+msgid "Stream URL"
+msgstr "流 URL"
+
+msgctxt "Main"
+msgid "Name (optional)"
+msgstr "名称（可选）"
+
+msgctxt "Main"
+msgid "defaults to host:port"
+msgstr "默认为 host:port"
+
+msgctxt "Main"
+msgid "Passphrase (optional)"
+msgstr "密码短语（可选）"
+
+msgctxt "Main"
+msgid "Cancel"
+msgstr "取消"
+
+msgctxt "Main"
+msgid "Connect"
+msgstr "连接"
+
+msgctxt "Main"
+msgid "About QCView"
+msgstr "关于 QCView"
+
+msgctxt "Main"
+msgid "QCView"
+msgstr "QCView"
+
+msgctxt "Main"
+msgid "Version %1"
+msgstr "版本 %1"
+
+msgctxt "Main"
+msgid "Color-accurate review player."
+msgstr "色彩精准的审片播放器。"
+
+#. Button: open the documentation website
+msgctxt "Main"
+msgid "Docs"
+msgstr "文档"
+
+msgctxt "Main"
+msgid "Check for Updates…"
+msgstr "检查更新…"
+
+#. Button
+msgctxt "Main"
+msgid "Close"
+msgstr "关闭"
+
+msgctxt "Main"
+msgid "&File"
+msgstr "文件(&F)"
+
+msgctxt "Main"
+msgid "Open Stream…"
+msgstr "打开网络流…"
+
+msgctxt "Main"
+msgid "Connect to After Effects"
+msgstr "连接到 After Effects"
+
+msgctxt "Main"
+msgid "Connect to Premiere Pro"
+msgstr "连接到 Premiere Pro"
+
+msgctxt "Main"
+msgid "Connect to Blender"
+msgstr "连接到 Blender"
+
+msgctxt "Main"
+msgid "Open Recent Media"
+msgstr "打开最近的媒体"
+
+msgctxt "Main"
+msgid "(none)"
+msgstr "（无）"
+
+msgctxt "Main"
+msgid "Clear Menu"
+msgstr "清除菜单"
+
+msgctxt "Main"
+msgid "New Project"
+msgstr "新建项目"
+
+msgctxt "Main"
+msgid "Open Recent Project"
+msgstr "打开最近的项目"
+
+msgctxt "Main"
+msgid "Save Project"
+msgstr "保存项目"
+
+msgctxt "Main"
+msgid "Copy Project Link"
+msgstr "复制项目链接"
+
+msgctxt "Main"
+msgid "E&xit"
+msgstr "退出(&X)"
+
+msgctxt "Main"
+msgid "&View"
+msgstr "视图(&V)"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Minimal Mode"
+msgstr "极简模式"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Compact Mode"
+msgstr "紧凑模式"
+
+msgctxt "Main"
+msgid "Always on Top"
+msgstr "始终置顶"
+
+#. View menu
+msgctxt "Main"
+msgid "Show All Panels"
+msgstr "显示所有面板"
+
+msgctxt "Main"
+msgid "Zoom In Timeline"
+msgstr "放大时间线"
+
+msgctxt "Main"
+msgid "Zoom Out Timeline"
+msgstr "缩小时间线"
+
+msgctxt "Main"
+msgid "Fullscreen"
+msgstr "全屏"
+
+#. View menu: reset the window geometry; && is a literal ampersand
+msgctxt "Main"
+msgid "Default Size && Position"
+msgstr "默认大小和位置"
+
+#. View menu: toggle the left side panel
+msgctxt "Main"
+msgid "Left Rail"
+msgstr "左侧栏"
+
+#. View menu: toggle the right side panel
+msgctxt "Main"
+msgid "Right Rail"
+msgstr "右侧栏"
+
+msgctxt "Main"
+msgid "Color Panel"
+msgstr "色彩面板"
+
+msgctxt "Main"
+msgid "Timeline"
+msgstr "时间线"
+
+msgctxt "Main"
+msgid "Notes"
+msgstr "批注"
+
+msgctxt "Main"
+msgid "Status Bar"
+msgstr "状态栏"
+
+msgctxt "Main"
+msgid "&Tools"
+msgstr "工具(&T)"
+
+msgctxt "Main"
+msgid "Background"
+msgstr "背景"
+
+msgctxt "Main"
+msgid "Safety Guides"
+msgstr "安全框"
+
+msgctxt "Main"
+msgid "Keyboard Shortcuts"
+msgstr "键盘快捷键"
+
+msgctxt "Main"
+msgid "Settings…"
+msgstr "设置…"
+
+msgctxt "Main"
+msgid "&About"
+msgstr "关于(&A)"
+
+msgctxt "Main"
+msgid "About QCView…"
+msgstr "关于 QCView…"
+
+msgctxt "Main"
+msgid "Open media"
+msgstr "打开媒体"
+
+#. Title of the separate player window
+msgctxt "Main"
+msgid "Player detached"
+msgstr "播放器已分离"
+
+msgctxt "Main"
+msgid "Click 'Reattach' to dock back"
+msgstr "点击“重新附加”以重新停靠"
+
+#. File dialog filter; %1 = the list of patterns
+msgctxt "MediaFilters"
+msgid "All media (%1)"
+msgstr "所有媒体 (%1)"
+
+msgctxt "MediaFilters"
+msgid "Video files (%1)"
+msgstr "视频文件 (%1)"
+
+msgctxt "MediaFilters"
+msgid "Audio files (%1)"
+msgstr "音频文件 (%1)"
+
+msgctxt "MediaFilters"
+msgid "Image / sequence files (%1)"
+msgstr "图像 / 序列文件 (%1)"
+
+msgctxt "MediaFilters"
+msgid "All files (*)"
+msgstr "所有文件 (*)"
+
+#. Toggle: apply the look
+msgctxt "MinColor"
+msgid "Use look"
+msgstr "使用 Look"
+
+#. Tooltip on a dialog's close button
+msgctxt "ModalHost"
+msgid "Close"
+msgstr "关闭"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "NotesPanel"
+msgid "REVIEW · %1"
+msgstr "审阅 · %1"
+
+#. Badge: the feed is live
+msgctxt "NotesPanel"
+msgid "LIVE"
+msgstr "实时"
+
+#. Hover hint on the review pill: a click returns to the live feed
+msgctxt "NotesPanel"
+msgid "back to live"
+msgstr "返回实时"
+
+#. Hover hint on the review pill: a click holds the current frame
+msgctxt "NotesPanel"
+msgid "freeze"
+msgstr "冻结"
+
+msgctxt "NotesPanel"
+msgid "Save the project to keep notes for this stream"
+msgstr "保存项目以保留此流的批注"
+
+#. The add-note tile's label
+msgctxt "NotesPanel"
+msgid "Add note here"
+msgstr "在此添加批注"
+
+#. Add-note tile when the project must be saved first
+msgctxt "NotesPanel"
+msgid "Save…"
+msgstr "保存…"
+
+#. Caption under Add note: the note captures the frozen frame
+msgctxt "NotesPanel"
+msgid "on the frozen frame"
+msgstr "在冻结帧上"
+
+#. Caption under Add note: adding a note freezes the live feed
+msgctxt "NotesPanel"
+msgid "freezes the feed"
+msgstr "会冻结画面"
+
+#. Caption under Add note
+msgctxt "NotesPanel"
+msgid "captures current frame"
+msgstr "捕获当前帧"
+
+msgctxt "NotesPanel"
+msgid "Export notes"
+msgstr "导出批注"
+
+msgctxt "NotesPanel"
+msgid "Export folder (Markdown)"
+msgstr "导出文件夹 (Markdown)"
+
+msgctxt "NotesPanel"
+msgid "Save HTML…"
+msgstr "保存 HTML…"
+
+msgctxt "NotesPanel"
+msgid "HTML (*.html)"
+msgstr "HTML (*.html)"
+
+msgctxt "NotesPanel"
+msgid "Save PDF…"
+msgstr "保存 PDF…"
+
+msgctxt "NotesPanel"
+msgid "PDF (*.pdf)"
+msgstr "PDF (*.pdf)"
+
+msgctxt "NotesPanel"
+msgid "Save DOCX…"
+msgstr "保存 DOCX…"
+
+msgctxt "NotesPanel"
+msgid "Word document (*.docx)"
+msgstr "Word 文档 (*.docx)"
+
+msgctxt "NotesPanel"
+msgid "%1 notes will be exported."
+msgstr "将导出 %1 条批注。"
+
+msgctxt "NotesPanel"
+msgid "No notes to export yet."
+msgstr "尚无可导出的批注。"
+
+msgctxt "NotesPanel"
+msgid "Markdown folder…"
+msgstr "Markdown 文件夹…"
+
+msgctxt "NotesPanel"
+msgid "Folder + linked images.  Type any name to set the output dir; the export creates a timestamped subfolder there."
+msgstr "文件夹 + 关联图像。输入任意名称以设定输出目录；导出时会在其中创建带时间戳的子文件夹。"
+
+msgctxt "NotesPanel"
+msgid "HTML (single file)…"
+msgstr "HTML（单个文件）…"
+
+msgctxt "NotesPanel"
+msgid "PDF…"
+msgstr "PDF…"
+
+msgctxt "NotesPanel"
+msgid "DOCX…"
+msgstr "DOCX…"
+
+msgctxt "NotesPanel"
+msgid "Open in minNotes"
+msgstr "在 minNotes 中打开"
+
+msgctxt "NotesPanel"
+msgid "Open this stream's notes folder in minNotes"
+msgstr "在 minNotes 中打开此流的批注文件夹"
+
+msgctxt "NotesPanel"
+msgid "minNotes is not installed"
+msgstr "未安装 minNotes"
+
+msgctxt "NotesPanel"
+msgid "Cancel"
+msgstr "取消"
+
+#. No thumbnail
+msgctxt "NotesPanel"
+msgid "(no thumb)"
+msgstr "（无缩略图）"
+
+#. Badge: the note was captured with viewer aids active
+msgctxt "NotesPanel"
+msgid "VIEWER"
+msgstr "查看辅助"
+
+#. Badge: the note was captured through OCIO
+msgctxt "NotesPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+#. Button: mark this note as dealt with
+msgctxt "NotesPanel"
+msgid "Mark addressed"
+msgstr "标记为已处理"
+
+msgctxt "NotesPanel"
+msgid "Delete note"
+msgstr "删除批注"
+
+#. Placeholder of the note text field
+msgctxt "NotesPanel"
+msgid "Note…"
+msgstr "批注…"
+
+msgctxt "NotesPanel"
+msgid "Select (drag to move, corners to scale, Del to remove; click again to exit)"
+msgstr "选择（拖动移动，拖角缩放，Del 删除；再次点击退出）"
+
+msgctxt "NotesPanel"
+msgid "Freehand"
+msgstr "自由绘制"
+
+msgctxt "NotesPanel"
+msgid "Rectangle"
+msgstr "矩形"
+
+msgctxt "NotesPanel"
+msgid "Oval"
+msgstr "椭圆"
+
+msgctxt "NotesPanel"
+msgid "Arrow"
+msgstr "箭头"
+
+msgctxt "NotesPanel"
+msgid "Line"
+msgstr "直线"
+
+msgctxt "NotesPanel"
+msgid "Erase stroke (click strokes to remove)"
+msgstr "擦除笔迹（点击笔迹以删除）"
+
+#. Stroke width label
+msgctxt "NotesPanel"
+msgid "Width:"
+msgstr "线宽："
+
+msgctxt "PlayerWindow"
+msgid "Player — Phase 1.7 (compositor: %1)"
+msgstr "播放器 — Phase 1.7（合成器：%1）"
+
+msgctxt "PlayerWindow"
+msgid "Window: %1×%2"
+msgstr "窗口：%1×%2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Save: empty path."
+msgstr "保存：路径为空。"
+
+msgctxt "ProjectIo"
+msgid "Save: cannot open '%1' for write: %2"
+msgstr "保存：无法打开“%1”进行写入：%2"
+
+msgctxt "ProjectIo"
+msgid "Save: write to '%1' truncated: %2"
+msgstr "保存：写入“%1”被截断：%2"
+
+msgctxt "ProjectIo"
+msgid "Save: commit to '%1' failed: %2"
+msgstr "保存：提交到“%1”失败：%2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Open: cannot read '%1': %2"
+msgstr "打开：无法读取“%1”：%2"
+
+msgctxt "ProjectIo"
+msgid "Open: parse error in '%1': %2"
+msgstr "打开：解析“%1”出错：%2"
+
+#. Undo action name: trim the clip's start
+msgctxt "QObject"
+msgid "Trim head"
+msgstr "修剪头部"
+
+#. Undo action name: trim the clip's end
+msgctxt "QObject"
+msgid "Trim tail"
+msgstr "修剪尾部"
+
+#. Undo action name: move the clip without changing its content
+msgctxt "QObject"
+msgid "Slide clip"
+msgstr "滑动片段"
+
+#. Undo action name: shift the clip's content without moving it
+msgctxt "QObject"
+msgid "Slip clip"
+msgstr "滑移片段"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Cut clip"
+msgstr "切割片段"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Delete clip"
+msgstr "删除片段"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Add clip"
+msgstr "添加片段"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Reorder clip"
+msgstr "重新排序片段"
+
+#. Panel title
+msgctxt "RightRail"
+msgid "Inspector"
+msgstr "检查器"
+
+msgctxt "RightRail"
+msgid "Expand panel"
+msgstr "展开面板"
+
+msgctxt "RightRail"
+msgid "Collapse panel"
+msgstr "折叠面板"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Vectorscope"
+msgstr "矢量示波器"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Waveform"
+msgstr "波形"
+
+msgctxt "RightRail"
+msgid "Keyboard Shortcuts"
+msgstr "键盘快捷键"
+
+msgctxt "ScopePanel"
+msgid "Zoom %1× — magnifies the centre"
+msgstr "缩放 %1× — 放大中心区域"
+
+#. Toggle: colour the trace by hue
+msgctxt "ScopePanel"
+msgid "Color"
+msgstr "彩色"
+
+msgctxt "ScopePanel"
+msgid "Colour the trace by hue"
+msgstr "按色相为迹线着色"
+
+msgctxt "ScopePanel"
+msgid "Signal tier draws mono — the colour space isn't known"
+msgstr "信号层以单色绘制——色彩空间未知"
+
+msgctxt "ScopePanel"
+msgid "Trace brightness"
+msgstr "迹线亮度"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "DUAL"
+msgstr "双画面"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "PLAYLIST"
+msgstr "播放列表"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "IMAGE SEQ"
+msgstr "图像序列"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "SINGLE"
+msgstr "单画面"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "idle"
+msgstr "空闲"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "opening…"
+msgstr "打开中…"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "decoding"
+msgstr "解码中"
+
+#. Decoder state: end of file
+msgctxt "StatusStrip"
+msgid "EOF"
+msgstr "EOF"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "ERROR"
+msgstr "错误"
+
+msgctxt "StatusStrip"
+msgid "%1  %2  %3"
+msgstr "%1  %2  %3"
+
+#. Hardware decoder in use
+msgctxt "StatusStrip"
+msgid "HW: %1"
+msgstr "解码：%1"
+
+#. No hardware decoder
+msgctxt "StatusStrip"
+msgid "HW: software"
+msgstr "解码：软件"
+
+msgctxt "StatusStrip"
+msgid "OCIO: %1"
+msgstr "OCIO：%1"
+
+#. Timecode, drop frame
+msgctxt "StatusStrip"
+msgid "TC: %1 DF"
+msgstr "TC：%1 DF"
+
+msgctxt "StatusStrip"
+msgid "TC: %1"
+msgstr "TC：%1"
+
+#. Decoder error count
+msgctxt "StatusStrip"
+msgid "%1 errors"
+msgstr "%1 个错误"
+
+#. Trim badge: the clip's head was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "head %1"
+msgstr "头 %1"
+
+#. Trim badge: the clip's tail was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "tail %1"
+msgstr "尾 %1"
+
+#. Badge: the clip's start moved by %1 frames
+msgctxt "TimelinePanel"
+msgid "start %1"
+msgstr "起点 %1"
+
+#. Badge: the clip's content slipped by %1 frames
+msgctxt "TimelinePanel"
+msgid "slip %1"
+msgstr "滑移 %1"
+
+#. Drag badge: the clip will move to playlist position %1 of %2
+msgctxt "TimelinePanel"
+msgid "→ slot %1/%2"
+msgstr "→ 位置 %1/%2"
+
+msgctxt "TimelinePanel"
+msgid "Edit mode ON — click to disable"
+msgstr "编辑模式已开启 — 点击关闭"
+
+#. Tooltip on the track's edit toggle
+msgctxt "TimelinePanel"
+msgid "Edit this track"
+msgstr "编辑此轨道"
+
+msgctxt "TimelinePanel"
+msgid "Drop media here to add to the playlist"
+msgstr "将媒体拖放到此处以添加到播放列表"
+
+msgctxt "TimelinePanel"
+msgid "Drop media onto a lane, or a side of the viewport, to compare"
+msgstr "将媒体拖放到某个轨道或视口的一侧以进行对比"
+
+msgctxt "TimelinePanel"
+msgid "Open a video to enable the timeline."
+msgstr "打开视频以启用时间线。"
+
+#. Swap glyph, do not translate
+msgctxt "TimelinePanel"
+msgid "⇄"
+msgstr "⇄"
+
+msgctxt "TimelinePanel"
+msgid "Audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "音频文件无法添加到播放列表——已改为添加到音频素材箱"
+
+msgctxt "TimelinePanel"
+msgid "%1 audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "%1 个音频文件无法添加到播放列表——已改为添加到音频素材箱"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Time —"
+msgstr "时间 —"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Frame —"
+msgstr "帧 —"
+
+msgctxt "TimelineStatus"
+msgid "Frame %1 / %2"
+msgstr "帧 %1 / %2"
+
+#. Badge: an in/out range is set
+msgctxt "TimelineStatus"
+msgid "RANGE"
+msgstr "范围"
+
+#. Range length in frames, abbreviated
+msgctxt "TimelineStatus"
+msgid "%1 fr"
+msgstr "%1 帧"
+
+#. Range length in seconds
+msgctxt "TimelineStatus"
+msgid "%1 s"
+msgstr "%1 秒"
+
+msgctxt "TimelineStatus"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO FRAME"
+msgstr "跳转到帧"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIMECODE"
+msgstr "跳转到时间码"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIME"
+msgstr "跳转到时间"
+
+#. Field placeholder
+msgctxt "TimelineStatus"
+msgid "frame number"
+msgstr "帧号"
+
+#. Field placeholder: timecode
+msgctxt "TimelineStatus"
+msgid "HH:MM:SS:FF"
+msgstr "HH:MM:SS:FF"
+
+#. Field placeholder: time
+msgctxt "TimelineStatus"
+msgid "MM:SS.mmm"
+msgstr "MM:SS.mmm"
+
+msgctxt "TransportBar"
+msgid "Open media…"
+msgstr "打开媒体…"
+
+msgctxt "TransportBar"
+msgid "Previous clip"
+msgstr "上一个片段"
+
+msgctxt "TransportBar"
+msgid "Skip to start"
+msgstr "跳到开头"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Rewind (hold)"
+msgstr "快退（按住）"
+
+msgctxt "TransportBar"
+msgid "Step back 1 frame"
+msgstr "后退 1 帧"
+
+msgctxt "TransportBar"
+msgid "Pause"
+msgstr "暂停"
+
+msgctxt "TransportBar"
+msgid "Play"
+msgstr "播放"
+
+msgctxt "TransportBar"
+msgid "Step forward 1 frame"
+msgstr "前进 1 帧"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Fast-forward (hold)"
+msgstr "快进（按住）"
+
+msgctxt "TransportBar"
+msgid "Skip to end"
+msgstr "跳到结尾"
+
+msgctxt "TransportBar"
+msgid "Next clip"
+msgstr "下一个片段"
+
+msgctxt "TransportBar"
+msgid "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)"
+msgstr "审阅速度 — 点击循环切换 (R)，Shift+点击恢复 1× (Shift+R)"
+
+msgctxt "TransportBar"
+msgid "In point not available in playlist mode"
+msgstr "播放列表模式下不可标记入点"
+
+msgctxt "TransportBar"
+msgid "Set in point (I)"
+msgstr "标记入点 (I)"
+
+msgctxt "TransportBar"
+msgid "Out point not available in playlist mode"
+msgstr "播放列表模式下不可标记出点"
+
+msgctxt "TransportBar"
+msgid "Set out point (O)"
+msgstr "标记出点 (O)"
+
+msgctxt "TransportBar"
+msgid "Clear in/out points (Shift+I)"
+msgstr "清除入点/出点 (Shift+I)"
+
+msgctxt "TransportBar"
+msgid "Loop (L)"
+msgstr "循环 (L)"
+
+msgctxt "TransportBar"
+msgid "Fullscreen (F)"
+msgstr "全屏 (F)"
+
+msgctxt "TransportBar"
+msgid "Compact Mode (Ctrl+Shift+C)"
+msgstr "紧凑模式 (Ctrl+Shift+C)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "截图到剪贴板 (⌥T)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to Desktop (T)"
+msgstr "截图到桌面 (T)"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Safety guides"
+msgstr "安全框"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Background"
+msgstr "背景"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (on)"
+msgstr "时间线悬停缩略图（开）"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (off)"
+msgstr "时间线悬停缩略图（关）"
+
+msgctxt "TransportBar"
+msgid "Color panel (⌃3)"
+msgstr "色彩面板 (⌃3)"
+
+msgctxt "TransportBar"
+msgid "Notes panel (⌃4)"
+msgstr "批注面板 (⌃4)"
+
+msgctxt "TransportBar"
+msgid "Unmute (M)"
+msgstr "取消静音 (M)"
+
+msgctxt "TransportBar"
+msgid "Mute (M)"
+msgstr "静音 (M)"
+
+msgctxt "TransportBar"
+msgid "Volume — %1%"
+msgstr "音量 — %1%"
+
+msgctxt "TransportBar"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "始终置顶 — 点击取消固定 (Ctrl+Alt+T)"
+
+msgctxt "TransportBar"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "始终置顶 (Ctrl+Alt+T)"
+
+msgctxt "ViewportOverlay"
+msgid "Untitled Dual View"
+msgstr "未命名双画面"
+
+#. Picker entry: nothing selected
+msgctxt "ViewportOverlay"
+msgid "(none)"
+msgstr "（无）"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view saved: %1"
+msgstr "双画面已保存：%1"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't save dual view"
+msgstr "无法保存双画面"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view updated"
+msgstr "双画面已更新"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't update dual view"
+msgstr "无法更新双画面"
+
+#. Chip label for a live source
+msgctxt "ViewportOverlay"
+msgid "Live source"
+msgstr "实时源"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "A"
+msgstr "A"
+
+#. Placeholder in the empty A chip
+msgctxt "ViewportOverlay"
+msgid "(drop a file…)"
+msgstr "（拖放文件…）"
+
+msgctxt "ViewportOverlay"
+msgid "A audio muted — click to unmute"
+msgstr "A 音频已静音 — 点击取消静音"
+
+msgctxt "ViewportOverlay"
+msgid "A audio on — click to mute"
+msgstr "A 音频开启 — 点击静音"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't load that file as Source B"
+msgstr "无法将该文件加载为源 B"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "B"
+msgstr "B"
+
+msgctxt "ViewportOverlay"
+msgid "(drop a video, sequence or stream…)"
+msgstr "（拖放视频、序列或流…）"
+
+msgctxt "ViewportOverlay"
+msgid "B audio muted — click to unmute"
+msgstr "B 音频已静音 — 点击取消静音"
+
+msgctxt "ViewportOverlay"
+msgid "B audio on — click to mute"
+msgstr "B 音频开启 — 点击静音"
+
+msgctxt "ViewportOverlay"
+msgid "Close source B"
+msgstr "关闭源 B"
+
+#. Pill: Highlight Knee is on
+msgctxt "ViewportOverlay"
+msgid "KNEE"
+msgstr "拐点"
+
+msgctxt "ViewportOverlay"
+msgid "Highlight Knee on: %1 → %2 nits. Highlights are compressed — the picture is not 1:1."
+msgstr "高光拐点已开启：%1 → %2 nits。高光被压缩——画面并非 1:1。"
+
+#. Pill: viewer aids are active
+msgctxt "ViewportOverlay"
+msgid "VIEWER"
+msgstr "查看辅助"
+
+msgctxt "ViewportOverlay"
+msgid "%1 — click to reset"
+msgstr "%1 — 点击重置"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Single view"
+msgstr "单画面"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Side-by-side"
+msgstr "并排"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Split wipe"
+msgstr "划像"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Difference"
+msgstr "差值"
+
+msgctxt "ViewportOverlay"
+msgid "Update this saved dual view"
+msgstr "更新此已保存的双画面"
+
+msgctxt "ViewportOverlay"
+msgid "Save as a new dual view"
+msgstr "另存为新的双画面"
+
+msgctxt "ViewportOverlay"
+msgid "Save dual view"
+msgstr "保存双画面"
+
+#. Field label when saving a dual view
+msgctxt "ViewportOverlay"
+msgid "Name"
+msgstr "名称"
+
+msgctxt "ViewportOverlay"
+msgid "e.g. ‘US30 v001 vs v002’"
+msgstr "例如“US30 v001 vs v002”"
+
+msgctxt "ViewportOverlay"
+msgid "Save"
+msgstr "保存"
+
+msgctxt "ViewportOverlay"
+msgid "Cancel"
+msgstr "取消"
+
+msgctxt "ViewportOverlay"
+msgid "Show project panel"
+msgstr "显示项目面板"
+
+msgctxt "ViewportOverlay"
+msgid "Show inspector panel"
+msgstr "显示检查器面板"
+
+#. Scale mode: nits on a reference display
+msgctxt "WaveformPanel"
+msgid "nits · reference"
+msgstr "nits · 参考"
+
+msgctxt "WaveformPanel"
+msgid "% Y′"
+msgstr "% Y′"
+
+msgctxt "WaveformPanel"
+msgid "What the file encodes on a reference display, not what this screen emits. SDR white = 100 nits (BT.1886 reference)."
+msgstr "文件在参考显示器上的编码值，而非此屏幕的实际输出。SDR 白 = 100 nits（BT.1886 参考）。"
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b> nits"
+msgstr "帧 <b>%1</b>  ·  最大 <b>%2</b> nits"
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b>"
+msgstr "帧 <b>%1</b>  ·  最大 <b>%2</b>"
+
+#. Button: reset the running maximum
+msgctxt "WaveformPanel"
+msgid "Reset"
+msgstr "重置"
+
+#. Tooltip on Reset: restart the running maximum
+msgctxt "WaveformPanel"
+msgid "Start Max over"
+msgstr "重新开始统计最大值"
+
+#. Scale choice
+msgctxt "WaveformPanel"
+msgid "Auto"
+msgstr "自动"
+
+msgctxt "WaveformPanel"
+msgid "Scale from the interpretation"
+msgstr "根据解读方式确定刻度"
+
+msgctxt "WaveformPanel"
+msgid "Force the SDR percent scale (the signal's own Y′)"
+msgstr "强制使用 SDR 百分比刻度（信号自身的 Y′）"
+
+#. Scale choice button
+msgctxt "WaveformPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "WaveformPanel"
+msgid "Force the nits scale (SDR white at 100)"
+msgstr "强制使用 nits 刻度（SDR 白为 100）"
+
+msgctxt "WaveformPanel"
+msgid "Top of scale %1 nits"
+msgstr "刻度上限 %1 nits"
+
+msgctxt "WaveformPanel"
+msgid "Trace brightness"
+msgstr "迹线亮度"
+
+msgctxt "qcv::HostBridgeSource"
+msgid "Waiting for %1 (QCBridge Transmit device not publishing)"
+msgstr "正在等待 %1（QCBridge Transmit 设备未发布）"
+
+msgctxt "qcv::I18n"
+msgid "System default"
+msgstr "系统默认"
+
+#. Suffix after a language name whose catalog is machine translated and not yet checked by a person
+msgctxt "qcv::I18n"
+msgid "machine translation"
+msgstr "机器翻译"
+
+#. Live input state: an SRT listener with no sender yet
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender on port %1"
+msgstr "正在等待发送端（端口 %1）"
+
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender"
+msgstr "正在等待发送端"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Knee"
+msgstr "拐点"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Clip chain"
+msgstr "片段链"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Set on this clip (minColor):"
+msgstr "此片段上的设定 (minColor)："
+
+msgctxt "qcv::MinColorEngine"
+msgid "Input: %1 · %2%3"
+msgstr "输入：%1 · %2%3"
+
+#. Suffix appended to the Input line
+msgctxt "qcv::MinColorEngine"
+msgid " · limited range"
+msgstr " · 有限范围"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "高光拐点：开 · %1 → %2 nits"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: off"
+msgstr "高光拐点：关"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Output path is empty"
+msgstr "输出路径为空"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Cube size must be ≥ 2 (got %1)"
+msgstr "Cube 尺寸必须 ≥ 2（当前为 %1）"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "No OCIO config loaded"
+msgstr "未加载 OCIO 配置"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Chain build failed"
+msgstr "链构建失败"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1 (transfer %2 vs %3)"
+msgstr "最接近的显示 %1（传递函数 %2 vs %3）"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1"
+msgstr "最接近的显示 %1"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look"
+msgstr "Look"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "CDL"
+msgstr "CDL"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "LUT"
+msgstr "LUT"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Knee"
+msgstr "拐点"
+
+#. Badge name in the viewport's chain summary: the host Blender's display device is emulated
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display"
+msgstr "宿主显示"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Clip chain"
+msgstr "片段链"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Set on this clip:"
+msgstr "此片段上的设定："
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Input: %1"
+msgstr "输入：%1"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "(none)"
+msgstr "（无）"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look: %1"
+msgstr "Look：%1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Scene LUT: %1"
+msgstr "场景 LUT：%1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "高光拐点：开 · %1 → %2 nits"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: off"
+msgstr "高光拐点：关"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (emulated%3)"
+msgstr "宿主显示：%1 · %2（模拟%3）"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid ", display to display"
+msgstr "，显示到显示"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (off)"
+msgstr "宿主显示：%1 · %2（关）"
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed: no path provided."
+msgstr "保存失败：未提供路径。"
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed."
+msgstr "保存失败。"
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed: no path provided."
+msgstr "打开失败：未提供路径。"
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed."
+msgstr "打开失败。"
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (linear Rec.2020): frame %1 · max %2 nits"
+msgstr "最亮通道（线性 Rec.2020）：帧 %1 · 最大 %2 nits"
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (code value): frame %1 · max %2"
+msgstr "最亮通道（码值）：帧 %1 · 最大 %2"
+
+#. Why the scopes assume this colourspace: the user set it
+msgctxt "qcv::ScopeController"
+msgid "set"
+msgstr "手动设定"
+
+#. Why the scopes assume this colourspace: the EXR default (linear)
+msgctxt "qcv::ScopeController"
+msgid "EXR default"
+msgstr "EXR 默认"
+
+#. Why the scopes assume this colourspace: it is a still image
+msgctxt "qcv::ScopeController"
+msgid "still"
+msgstr "静态图像"
+
+#. Why the scopes assume this colourspace: the file's colour tags
+msgctxt "qcv::ScopeController"
+msgid "tags"
+msgstr "标签"
+
+msgctxt "qcv::ScopeController"
+msgid "untagged"
+msgstr "未标记"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1"
+msgstr "输入 · minColor %1"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1 (built-in config)"
+msgstr "输入 · minColor %1（内置配置）"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · minColor Input not convertible"
+msgstr "信号 · minColor 输入无法转换"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · %1"
+msgstr "输入 · %1"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 · Input: %2"
+msgstr "⚠ 已设为 %1 · 输入：%2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 · Input: %2"
+msgstr "⚠ 文件标记为 %1 · 输入：%2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 — not in this config · Input: %2"
+msgstr "⚠ 已设为 %1——不在此配置中 · 输入：%2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 — not in this config · Input: %2"
+msgstr "⚠ 文件标记为 %1——不在此配置中 · 输入：%2"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2)"
+msgstr "假定 · %1（%2）"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2, built-in config)"
+msgstr "假定 · %1（%2，内置配置）"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · RGB, nominal curve"
+msgstr "信号 · RGB，标称曲线"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · YUV"
+msgstr "信号 · YUV"
+
+msgctxt "qcv::ScopeController"
+msgid "A %1  ·  B %2"
+msgstr "A %1  ·  B %2"
+
+msgctxt "qcv::ScopeController"
+msgid "SDR · Rec.709"
+msgstr "SDR · Rec.709"
+
+msgctxt "qcv::ScopeController"
+msgid "HDR · PQ Rec.2020"
+msgstr "HDR · PQ Rec.2020"
+
+msgctxt "qcv::ScopeController"
+msgid " (manual)"
+msgstr "（手动）"
+
+msgctxt "qcv::ScopeController"
+msgid "%1 matrix"
+msgstr "%1 矩阵"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal Y′ · %1 matrix"
+msgstr "信号 Y′ · %1 矩阵"
+
+msgctxt "qcv::ScopeController"
+msgid " · luminance"
+msgstr " · 亮度"
+
+msgctxt "qcv::VideoDecoder"
+msgid "File not found: %1"
+msgstr "文件未找到：%1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_open_input failed: %1"
+msgstr "avformat_open_input 失败：%1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_find_stream_info failed: %1"
+msgstr "avformat_find_stream_info 失败：%1"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No video stream found"
+msgstr "未找到视频流"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No decoder available for codec id %1"
+msgstr "没有可用于编解码器 id %1 的解码器"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_alloc_context3 failed"
+msgstr "avcodec_alloc_context3 失败"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_open2 failed: %1"
+msgstr "avcodec_open2 失败：%1"
+
+#. FFmpeg library name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "swscale context init failed"
+msgstr "swscale 上下文初始化失败"
+
+msgctxt "qcv::VideoDecoder"
+msgid "Vulkan device lost — restart to recover hardware decode"
+msgstr "Vulkan 设备丢失——重新启动以恢复硬件解码"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_read_frame error: %1"
+msgstr "av_read_frame 错误：%1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "send_packet: %1"
+msgstr "send_packet：%1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_receive_frame: %1"
+msgstr "avcodec_receive_frame：%1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data fallback failed"
+msgstr "hwframe_transfer_data 回退失败"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data: %1"
+msgstr "hwframe_transfer_data：%1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_seek_frame failed for frame %1"
+msgstr "av_seek_frame 定位第 %1 帧失败"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "read_frame after seek: %1"
+msgstr "定位后 read_frame：%1"
+
+msgctxt "qcv::WindowManager"
+msgid "No clip under the playhead to compare"
+msgstr "播放头下没有可对比的片段"
+
+#. Toast after opening an ARRIRAW file. %1 = camera + "ARRIRAW" ("ALEXA 35 ARRIRAW"), %2 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 — %2 can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool."
+msgstr "%1 — %2 无法在此播放：未去拜耳的摄影机 RAW。请审阅 ProRes / 样片，或在 DaVinci Resolve 或 ARRI Reference Tool 中转换。"
+
+#. Toast after opening a file no decoder can play. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 can’t be played here: unsupported format."
+msgstr "%1 无法在此播放：格式不受支持。"
+
+#. Toast after opening or dropping a Windows shortcut (.lnk) whose target no longer exists. %1 = the shortcut's file name
+msgctxt "qcv::WindowManager"
+msgid "%1 points to a file that isn’t there any more."
+msgstr "%1 指向的文件已不存在。"
+
+#. Toast after dropping or opening a folder. %1 = folder name
+msgctxt "qcv::WindowManager"
+msgid "%1 is a folder — drop a file, or any frame of an image sequence."
+msgstr "%1 是一个文件夹——请拖放文件，或图像序列中的任意一帧。"
+
+#. Toast after dropping or opening a file type QCView does not open. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 isn’t a file type QCView opens."
+msgstr "%1 不是 QCView 可打开的文件类型。"
+
+#. Stands in for a suffix in the skipped-files toast
+msgctxt "qcv::WindowManager"
+msgid "broken shortcut"
+msgstr "失效的快捷方式"
+
+msgctxt "qcv::WindowManager"
+msgid "folder"
+msgstr "文件夹"
+
+msgctxt "qcv::WindowManager"
+msgid "no extension"
+msgstr "无扩展名"
+
+#. Toast after a batch drop/open; %1 = skipped count, %2 = total, %3 = the suffixes
+msgctxt "qcv::WindowManager"
+msgid "%1 of %2 files skipped — not file types QCView opens (%3)."
+msgstr "已跳过 %2 个文件中的 %1 个——不是 QCView 可打开的文件类型（%3）。"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender: not listening"
+msgstr "Blender：未监听"
+
+msgctxt "qcv::WindowManager"
+msgid "Listening for a Blender session on this machine: start one from the QCBridge host panel"
+msgstr "正在监听本机的 Blender 会话：请从 QCBridge 宿主面板启动一个会话"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender"
+msgstr "Blender"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender session ended"
+msgstr "Blender 会话已结束"
+
+msgctxt "qcv::WindowManager"
+msgid "After Effects / Premiere live view is not available on this platform yet"
+msgstr "此平台暂不支持 After Effects / Premiere 实时视图"
+
+#. Toast; %1 = the stream URL
+msgctxt "qcv::WindowManager"
+msgid "Could not open stream: %1"
+msgstr "无法打开流：%1"
+
+msgctxt "qcv::WindowManager"
+msgid "This note has no captured frame"
+msgstr "此批注没有捕获的帧"
+
+msgctxt "qcv::WindowManager"
+msgid "No frame to freeze yet"
+msgstr "尚无可冻结的帧"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1"
+msgstr "已移除 %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1 items"
+msgstr "已移除 %1 项"
+
+#. Toast button
+msgctxt "qcv::WindowManager"
+msgid "Undo"
+msgstr "撤销"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to capture — load media first"
+msgstr "没有可捕获的内容——请先加载媒体"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot copied to clipboard"
+msgstr "截图已复制到剪贴板"
+
+msgctxt "qcv::WindowManager"
+msgid "Couldn't resolve the Desktop folder"
+msgstr "无法找到桌面文件夹"
+
+msgctxt "qcv::WindowManager"
+msgid "Saving screenshot…"
+msgstr "正在保存截图…"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot saved (%1)"
+msgstr "截图已保存 (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot export failed"
+msgstr "截图导出失败"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to restore"
+msgstr "没有可恢复的内容"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1"
+msgstr "已恢复 %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1 items"
+msgstr "已恢复 %1 项"
+
+msgctxt "qcv::WindowManager"
+msgid "Preset restored: %1"
+msgstr "预设已恢复：%1"
+
+msgctxt "qcv::WindowManager"
+msgid "minNotes is not installed"
+msgstr "未安装 minNotes"
+
+msgctxt "qcv::WindowManager"
+msgid "The stream names a wire this QCView does not know (%1); set the Input yourself"
+msgstr "该流声明的传输编码（%1）此版本 QCView 无法识别；请自行设定输入"
+
+msgctxt "qcv::WindowManager"
+msgid "unknown wire %1"
+msgstr "未知传输编码 %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Colour management turned on for the Blender stream"
+msgstr "已为 Blender 流开启色彩管理"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: its view and display resolve in the Blender 5.2 config"
+msgstr "Blender 流：其视图与显示只能在 Blender 5.2 配置中解析"
+
+msgctxt "qcv::WindowManager"
+msgid "Switch"
+msgstr "切换"
+
+msgctxt "qcv::WindowManager"
+msgid "view not applied: active config is %1"
+msgstr "视图未应用：当前配置为 %1"
+
+msgctxt "qcv::WindowManager"
+msgid "The host runs a non-Blender OCIO config (%1): its view cannot be reproduced; Input pinned only"
+msgstr "宿主运行的是非 Blender 的 OCIO 配置（%1）：其视图无法重现；仅设定了输入"
+
+msgctxt "qcv::WindowManager"
+msgid "host config %1: view not reproduced"
+msgstr "宿主配置 %1：视图未重现"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the active OCIO config has no %1 input; the Blender config does"
+msgstr "Blender 流：当前 OCIO 配置没有 %1 输入；Blender 配置中有"
+
+msgctxt "qcv::WindowManager"
+msgid "no %1 input in this config"
+msgstr "此配置中没有 %1 输入"
+
+msgctxt "qcv::WindowManager"
+msgid "host display %1 → %2"
+msgstr "宿主显示 %1 → %2"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: view '%1' is not on display '%2' in the Blender config; view left as is"
+msgstr "Blender 流：在 Blender 配置中，视图“%1”不属于显示“%2”；视图保持不变"
+
+msgctxt "qcv::WindowManager"
+msgid "view %1 not on %2"
+msgstr "视图 %1 不在 %2 上"
+
+msgctxt "qcv::WindowManager"
+msgid "look %1 not in this config"
+msgstr "此配置中没有 Look %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the host's view (%1 for %2) is not reproduced on minColor; switch to the OCIO engine to match it"
+msgstr "Blender 流：宿主的视图（%2 上的 %1）未在 minColor 上重现；切换到 OCIO 引擎即可匹配"
+
+msgctxt "qcv::WindowManager"
+msgid "minColor on screen: host view not reproduced"
+msgstr "当前引擎为 minColor：宿主视图未重现"
+
+msgctxt "qcv::WindowManager"
+msgid "host white balance not reproduced"
+msgstr "宿主白平衡未重现"
+
+msgctxt "qcv::WindowManager"
+msgid "host curves not reproduced"
+msgstr "宿主曲线未重现"
+
+msgctxt "qcv::WindowManager"
+msgid "host HDR view: shown SDR"
+msgstr "宿主 HDR 视图：以 SDR 显示"
+
+msgctxt "qcv::WindowManager"
+msgid "working space assumed Linear Rec.709"
+msgstr "工作空间假定为 Linear Rec.709"
+
+msgctxt "qcv::WindowManager"
+msgid "host and replica colour setups differ (%1)"
+msgstr "宿主与副本的色彩设置不同（%1）"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: %1"
+msgstr "Blender 流：%1"

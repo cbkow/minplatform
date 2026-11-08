@@ -32,6 +32,9 @@ pub struct ClipBar {
     drop_hint: Option<(usize, f64)>, pointer: (f64, f64),
 }
 
+/// QCView's catalog context (canon row 195).
+fn tr(s: &str) -> &str { min_i18n::trc("TimelinePanel", s) }
+
 impl ClipBar {
     pub fn new() -> ClipBar { ClipBar { rect: Rect::ZERO, selected: None, hover: None, press: None, last_click: None, drop_hint: None, pointer: (0.0, 0.0) } }
     pub fn height(scale: f64) -> f64 { t::PLAYLIST_BAR_HEIGHT as f64 * scale }
@@ -132,7 +135,7 @@ impl ClipBar {
         let inset = 2.0 * scale; let radius = t::CORNER_RADIUS_SMALL_DEFAULT as f64 * scale; let y0 = r.y0 + inset; let y1 = r.y1 - inset;
         let clips = Self::clips(tl);
         if !clips.iter().any(|c| !c.is_gap) {
-            let l = fonts.layout("Drop media here to add to the playlist", Family::Sans, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
+            let l = fonts.layout(tr("Drop media here to add to the playlist"), Family::Sans, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((r.x0 + (r.width() - l.width() as f64) / 2.0, r.y0 + (r.height() - l.height() as f64) / 2.0)));
         }
         let g = self.press.as_ref().filter(|g| g.active);

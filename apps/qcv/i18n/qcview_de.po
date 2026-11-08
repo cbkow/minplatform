@@ -1,0 +1,3817 @@
+msgid ""
+msgstr ""
+"Language: de\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Source: QCView translations/qcview_de.ts (ts2po.py)\n"
+
+msgctxt "ColorPanel"
+msgid "Choose LUT"
+msgstr "LUT wählen"
+
+msgctxt "ColorPanel"
+msgid "LUT / CDL files (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+msgstr "LUT-/CDL-Dateien (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"
+
+msgctxt "ColorPanel"
+msgid "All files (*)"
+msgstr "Alle Dateien (*)"
+
+msgctxt "ColorPanel"
+msgid "LUT files (*.cube *.3dl *.csp)"
+msgstr "LUT-Dateien (*.cube *.3dl *.csp)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT…"
+msgstr "LUT exportieren…"
+
+msgctxt "ColorPanel"
+msgid "3D LUT (*.cube)"
+msgstr "3D-LUT (*.cube)"
+
+msgctxt "ColorPanel"
+msgid "Export LUT failed — %1"
+msgstr "LUT-Export fehlgeschlagen — %1"
+
+msgctxt "ColorPanel"
+msgid "LUT exported: %1"
+msgstr "LUT exportiert: %1"
+
+msgctxt "ColorPanel"
+msgid "Save preset as…"
+msgstr "Preset speichern unter…"
+
+msgctxt "ColorPanel"
+msgid "Preset name"
+msgstr "Preset-Name"
+
+msgctxt "ColorPanel"
+msgid "Cancel"
+msgstr "Abbrechen"
+
+msgctxt "ColorPanel"
+msgid "Save"
+msgstr "Speichern"
+
+msgctxt "ColorPanel"
+msgid "Preset saved: %1"
+msgstr "Preset gespeichert: %1"
+
+msgctxt "ColorPanel"
+msgid "Couldn't save preset “%1” — try another name"
+msgstr "Preset „%1“ konnte nicht gespeichert werden — bitte einen anderen Namen wählen"
+
+#. Panel title
+msgctxt "ColorPanel"
+msgid "Color"
+msgstr "Farbe"
+
+msgctxt "ColorPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+msgctxt "ColorPanel"
+msgid "Colour through the OpenColorIO chain (Input · Look · LUTs · Output · View)"
+msgstr "Farbe über die OpenColorIO-Kette (Input · Look · LUTs · Ausgabe · View)"
+
+msgctxt "ColorPanel"
+msgid "minColor"
+msgstr "minColor"
+
+msgctxt "ColorPanel"
+msgid "minColor · linear conversions, AgX, no OCIO"
+msgstr "minColor · lineare Konvertierungen, AgX, ohne OCIO"
+
+msgctxt "ColorPanel"
+msgid "Colour through the minColor engine: Input → Knee → AgX → Display, no OCIO"
+msgstr "Farbe über die minColor-Engine: Input → Knee → AgX → Display, ohne OCIO"
+
+msgctxt "ColorPanel"
+msgid "Previous preset"
+msgstr "Vorheriges Preset"
+
+msgctxt "ColorPanel"
+msgid "(no preset)"
+msgstr "(kein Preset)"
+
+msgctxt "ColorPanel"
+msgid "%1 — modified"
+msgstr "%1 — geändert"
+
+msgctxt "ColorPanel"
+msgid "Next preset"
+msgstr "Nächstes Preset"
+
+msgctxt "ColorPanel"
+msgid "Overwrite the active user preset"
+msgstr "Aktives Benutzer-Preset überschreiben"
+
+msgctxt "ColorPanel"
+msgid "Save as…"
+msgstr "Speichern unter…"
+
+msgctxt "ColorPanel"
+msgid "Delete"
+msgstr "Löschen"
+
+msgctxt "ColorPanel"
+msgid "Delete the active user preset"
+msgstr "Aktives Benutzer-Preset löschen"
+
+msgctxt "ColorPanel"
+msgid "Select a user preset to delete"
+msgstr "Zum Löschen ein Benutzer-Preset auswählen"
+
+msgctxt "ColorPanel"
+msgid "Preset deleted: %1"
+msgstr "Preset gelöscht: %1"
+
+#. Button in the toast after deleting a preset
+msgctxt "ColorPanel"
+msgid "Undo"
+msgstr "Rückgängig"
+
+#. Tab: the Color panel's setup column (presets and config)
+msgctxt "ColorPanel"
+msgid "Setup"
+msgstr "Setup"
+
+#. Tab
+msgctxt "ColorPanel"
+msgid "Presets"
+msgstr "Presets"
+
+msgctxt "ColorPanel"
+msgid "A preset sets both groups: its clip half on the selected clip, its view half on the View"
+msgstr "Ein Preset setzt beide Gruppen: seine Clip-Hälfte auf den ausgewählten Clip, seine View-Hälfte auf den View"
+
+msgctxt "ColorPanel"
+msgid "Config · %1"
+msgstr "Config · %1"
+
+msgctxt "ColorPanel"
+msgid "The OCIO config — the colourspace, display and view names every column uses"
+msgstr "Die OCIO-Config — die Farbraum-, Display- und View-Namen, die jede Spalte verwendet"
+
+#. Color panel caption: the clip follows the host Blender's display device and view
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (emulated)"
+msgstr "Host-Display: %1 · %2 (emuliert)"
+
+msgctxt "ColorPanel"
+msgid "Host display: %1 · %2 (off)"
+msgstr "Host-Display: %1 · %2 (aus)"
+
+msgctxt "ColorPanel"
+msgid "Use my View instead of the host's display"
+msgstr "Meinen View statt des Host-Displays verwenden"
+
+msgctxt "ColorPanel"
+msgid "Sets clip + view"
+msgstr "Setzt Clip + View"
+
+msgctxt "ColorPanel"
+msgid "Names every column uses"
+msgstr "Namen für alle Spalten"
+
+#. Placeholder of a filter field over a list
+msgctxt "ColorPanel"
+msgid "Filter…"
+msgstr "Filtern…"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "SDR"
+msgstr "SDR"
+
+#. Preset list badge: the preset's target
+msgctxt "ColorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+#. Column header: the per-clip half of the colour chain (Input, Look, LUTs)
+msgctxt "ColorPanel"
+msgid "Clip"
+msgstr "Clip"
+
+msgctxt "ColorPanel"
+msgid "no clip"
+msgstr "kein Clip"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"A's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"Clip von A — Änderungen bleiben bei diesem Clip"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"Changes here stay with this clip"
+msgstr ""
+"%1\n"
+"Änderungen hier bleiben bei diesem Clip"
+
+msgctxt "ColorPanel"
+msgid ""
+"%1\n"
+"B's clip — changes stay with this clip"
+msgstr ""
+"%1\n"
+"Clip von B — Änderungen bleiben bei diesem Clip"
+
+msgctxt "ColorPanel"
+msgid "Input gamut"
+msgstr "Input-Gamut"
+
+msgctxt "ColorPanel"
+msgid "Input transfer"
+msgstr "Input-Transfer"
+
+#. OCIO input: the clip's source colourspace
+msgctxt "ColorPanel"
+msgid "Input"
+msgstr "Input"
+
+#. OCIO look: a creative transform from the config
+msgctxt "ColorPanel"
+msgid "Look"
+msgstr "Look"
+
+#. Picker entry: nothing selected
+msgctxt "ColorPanel"
+msgid "(none)"
+msgstr "(ohne)"
+
+#. A LUT applied in scene-linear space, before the view
+msgctxt "ColorPanel"
+msgid "Scene LUT"
+msgstr "Szenen-LUT"
+
+#. OCIO view: the display-side transform
+msgctxt "ColorPanel"
+msgid "View"
+msgstr "View"
+
+#. Caption: the clip chain applies to both sides of the dual view
+msgctxt "ColorPanel"
+msgid "both sides"
+msgstr "beide Seiten"
+
+msgctxt "ColorPanel"
+msgid "everything"
+msgstr "alles"
+
+#. minColor's rendering stage
+msgctxt "ColorPanel"
+msgid "Rendering · AgX"
+msgstr "Rendering · AgX"
+
+msgctxt "ColorPanel"
+msgid "Rendering"
+msgstr "Rendering"
+
+#. Rendering choice: no tone mapping applied
+msgctxt "ColorPanel"
+msgid "Un-tone-mapped"
+msgstr "Ohne Tone-Mapping"
+
+#. OCIO display: the target display
+msgctxt "ColorPanel"
+msgid "Display"
+msgstr "Display"
+
+#. Column header: the output (display) half of the chain
+msgctxt "ColorPanel"
+msgid "Output"
+msgstr "Ausgabe"
+
+msgctxt "ColorPanel"
+msgid "Display LUT"
+msgstr "Display-LUT"
+
+#. %1 is the engine name (OCIO or minColor)
+msgctxt "ColorPanel"
+msgid "%1 On"
+msgstr "%1 ein"
+
+msgctxt "ColorPanel"
+msgid "%1 Off"
+msgstr "%1 aus"
+
+#. Viewer aid slider, in stops
+msgctxt "ColorPanel"
+msgid "Exposure"
+msgstr "Belichtung"
+
+#. Viewer aid slider
+msgctxt "ColorPanel"
+msgid "Gamma"
+msgstr "Gamma"
+
+msgctxt "ColorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "ColorPanel"
+msgid "All channels"
+msgstr "Alle Kanäle"
+
+msgctxt "ColorPanel"
+msgid "Red"
+msgstr "Rot"
+
+msgctxt "ColorPanel"
+msgid "Green"
+msgstr "Grün"
+
+msgctxt "ColorPanel"
+msgid "Blue"
+msgstr "Blau"
+
+#. Channel view: the alpha channel shown as a matte
+msgctxt "ColorPanel"
+msgid "Alpha matte"
+msgstr "Alpha-Matte"
+
+msgctxt "ColorPanel"
+msgid "Luma (output primaries)"
+msgstr "Luma (Ausgabe-Primärvalenzen)"
+
+msgctxt "ColorPanel"
+msgid "Reset exposure, gamma and channel"
+msgstr "Belichtung, Gamma und Kanal zurücksetzen"
+
+msgctxt "ColorPanel"
+msgid "SDR — sRGB"
+msgstr "SDR — sRGB"
+
+msgctxt "ColorPanel"
+msgid "SDR — Display P3"
+msgstr "SDR — Display P3"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear sRGB"
+msgstr "EDR — Lineares sRGB"
+
+msgctxt "ColorPanel"
+msgid "EDR — Linear P3"
+msgstr "EDR — Lineares P3"
+
+msgctxt "ColorPanel"
+msgid "HDR10 PQ"
+msgstr "HDR10 PQ"
+
+msgctxt "ColorPanel"
+msgid "Extended Linear sRGB"
+msgstr "Erweitertes lineares sRGB"
+
+msgctxt "ColorPanel"
+msgid "Bake the active OCIO chain to a 65³ .cube LUT"
+msgstr "Aktive OCIO-Kette in eine 65³-.cube-LUT backen"
+
+msgctxt "ColorPanel"
+msgid "Configure input / display / view first"
+msgstr "Zuerst Input / Display / View konfigurieren"
+
+msgctxt "ColorPanel"
+msgid "Set on this clip — click to go back to the default"
+msgstr "Auf diesem Clip gesetzt — zum Zurücksetzen auf den Standard klicken"
+
+#. Button: fold this section
+msgctxt "ColorPanel"
+msgid "Collapse"
+msgstr "Einklappen"
+
+msgctxt "ColorPanel"
+msgid "%1 — click to expand"
+msgstr "%1 — zum Ausklappen klicken"
+
+#. Section title: the highlight compression stage
+msgctxt "ColorPanel"
+msgid "Highlight Knee"
+msgstr "Highlight Knee"
+
+#. Toggle state
+msgctxt "ColorPanel"
+msgid "On"
+msgstr "Ein"
+
+msgctxt "ColorPanel"
+msgid "Off"
+msgstr "Aus"
+
+msgctxt "ColorPanel"
+msgid "Not available for this chain (data view, or the config has no interchange role)."
+msgstr "Für diese Kette nicht verfügbar (Daten-View, oder die Config hat keine Interchange-Rolle)."
+
+#. Highlight Knee: the brightest level the source carries, in nits
+msgctxt "ColorPanel"
+msgid "Source peak"
+msgstr "Quell-Peak"
+
+#. Unit suffix
+msgctxt "ColorPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "ColorPanel"
+msgid "+%1 stops over SDR white"
+msgstr "+%1 Blenden über SDR-Weiß"
+
+msgctxt "ColorPanel"
+msgid "Use file MaxCLL (%1)"
+msgstr "MaxCLL der Datei verwenden (%1)"
+
+msgctxt "ColorPanel"
+msgid "Use mastering peak (%1)"
+msgstr "Mastering-Peak verwenden (%1)"
+
+msgctxt "ColorPanel"
+msgid "No MaxCLL in file"
+msgstr "Kein MaxCLL in der Datei"
+
+msgctxt "ColorPanel"
+msgid "Set the source peak from the file's HDR10 metadata"
+msgstr "Quell-Peak aus den HDR10-Metadaten der Datei setzen"
+
+#. Highlight Knee: the brightest level the display shows, in nits
+msgctxt "ColorPanel"
+msgid "Target peak"
+msgstr "Ziel-Peak"
+
+msgctxt "ColorPanel"
+msgid "100 nits · SDR display"
+msgstr "100 nits · SDR-Display"
+
+#. Highlight Knee: the nits level where highlight compression begins
+msgctxt "ColorPanel"
+msgid "Knee start"
+msgstr "Knee-Beginn"
+
+msgctxt "ColorPanel"
+msgid "%1 nits"
+msgstr "%1 nits"
+
+msgctxt "ColorPanel"
+msgid "BT.2390"
+msgstr "BT.2390"
+
+msgctxt "ColorPanel"
+msgid "Reset knee start to BT.2390"
+msgstr "Knee-Beginn auf BT.2390 zurücksetzen"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — on, %1 → %2 nits"
+msgstr "Highlight Knee — ein, %1 → %2 nits"
+
+msgctxt "ColorPanel"
+msgid "Highlight Knee — off, click to expand"
+msgstr "Highlight Knee — aus, zum Ausklappen klicken"
+
+msgctxt "ColorPanel"
+msgid "AgX"
+msgstr "AgX"
+
+msgctxt "ColorPanel"
+msgid "Blender's AgX at the defaults; HDR above 100 nits."
+msgstr "Blenders AgX mit Standardwerten; HDR oberhalb von 100 nits."
+
+msgctxt "ColorPanel"
+msgid "Target gamut"
+msgstr "Ziel-Gamut"
+
+msgctxt "ColorPanel"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "ColorPanel"
+msgid "Rec.709"
+msgstr "Rec.709"
+
+msgctxt "ColorPanel"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "ColorPanel"
+msgid "Peak luminance"
+msgstr "Spitzenleuchtdichte"
+
+msgctxt "ColorPanel"
+msgid "White (EV over grey)"
+msgstr "Weiß (EV über Grau)"
+
+msgctxt "ColorPanel"
+msgid "Black (EV under grey)"
+msgstr "Schwarz (EV unter Grau)"
+
+msgctxt "ColorPanel"
+msgid "Contrast"
+msgstr "Kontrast"
+
+#. AgX curve control: the dark end of the tone curve
+msgctxt "ColorPanel"
+msgid "Toe power"
+msgstr "Toe-Exponent"
+
+#. AgX curve control: the bright end of the tone curve
+msgctxt "ColorPanel"
+msgid "Shoulder power"
+msgstr "Shoulder-Exponent"
+
+#. AgX control: how much of the original hue is kept in bright areas
+msgctxt "ColorPanel"
+msgid "Hue restore"
+msgstr "Farbton-Erhalt"
+
+#. AgX control: saturation kept above SDR white
+msgctxt "ColorPanel"
+msgid "HDR purity"
+msgstr "HDR-Reinheit"
+
+msgctxt "ColorPanel"
+msgid "AgX — on, %1 nits"
+msgstr "AgX — ein, %1 nits"
+
+msgctxt "ColorPanel"
+msgid "AgX — off, click to expand"
+msgstr "AgX — aus, zum Ausklappen klicken"
+
+#. Button on a filled LUT slot
+msgctxt "ColorPanel"
+msgid "Replace LUT"
+msgstr "LUT ersetzen"
+
+#. Button on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "+ Add LUT"
+msgstr "+ LUT hinzufügen"
+
+#. Field: the id of the first correction inside a CDL file
+msgctxt "ColorPanel"
+msgid "Correction ID (first)"
+msgstr "Korrektur-ID (erste)"
+
+#. Tooltip on an empty LUT slot
+msgctxt "ColorPanel"
+msgid "click to choose"
+msgstr "zum Auswählen klicken"
+
+#. Button
+msgctxt "ColorPanel"
+msgid "Clear LUT"
+msgstr "LUT entfernen"
+
+msgctxt "ColorPanel"
+msgid "%1 — %2"
+msgstr "%1 — %2"
+
+#. Colour as a hexadecimal code
+msgctxt "ColorPickerInline"
+msgid "Hex"
+msgstr "Hex"
+
+#. Red channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "R"
+msgstr "R"
+
+#. Green channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "G"
+msgstr "G"
+
+#. Blue channel field, one letter
+msgctxt "ColorPickerInline"
+msgid "B"
+msgstr "B"
+
+msgctxt "CompactStrip"
+msgid "Pause (Space)"
+msgstr "Pause (Space)"
+
+msgctxt "CompactStrip"
+msgid "Play (Space)"
+msgstr "Wiedergabe (Space)"
+
+msgctxt "CompactStrip"
+msgid "Drag to move the window"
+msgstr "Ziehen, um das Fenster zu verschieben"
+
+#. Badge: a live source is playing
+msgctxt "CompactStrip"
+msgid "LIVE"
+msgstr "LIVE"
+
+#. Current frame / total frames
+msgctxt "CompactStrip"
+msgid "%1 / %2"
+msgstr "%1 / %2"
+
+msgctxt "CompactStrip"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "Immer im Vordergrund — zum Lösen klicken (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "Immer im Vordergrund (Ctrl+Alt+T)"
+
+msgctxt "CompactStrip"
+msgid "Exit Compact Mode (Esc)"
+msgstr "Kompaktmodus beenden (Esc)"
+
+msgctxt "FFmpegMetadataExtractor"
+msgid "Image sequence"
+msgstr "Bildsequenz"
+
+#. Media kind
+msgctxt "FFmpegMetadataExtractor"
+msgid "Unknown"
+msgstr "Unbekannt"
+
+msgctxt "ImageSequenceInspector"
+msgid "Image Sequence"
+msgstr "Bildsequenz"
+
+msgctxt "ImageSequenceInspector"
+msgid "Frame rate"
+msgstr "Bildrate"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "ImageSequenceInspector"
+msgid "Transfer"
+msgstr "Transfer"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (Linear, EXR)"
+msgstr "Auto (Linear, EXR)"
+
+msgctxt "ImageSequenceInspector"
+msgid "Auto (sRGB)"
+msgstr "Auto (sRGB)"
+
+#. Choice: decided from the file
+msgctxt "ImageSequenceInspector"
+msgid "Auto"
+msgstr "Auto"
+
+msgctxt "ImageSequenceInspector"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "ImageSequenceInspector"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "ImageSequenceInspector"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "ImageSequenceInspector"
+msgid "Linear"
+msgstr "Linear"
+
+#. Frame number range
+msgctxt "ImageSequenceInspector"
+msgid "Range"
+msgstr "Bereich"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 – %2 (%3 frames)"
+msgstr "%1 – %2 (%3 Frames)"
+
+#. The file name pattern of the sequence
+msgctxt "ImageSequenceInspector"
+msgid "Pattern"
+msgstr "Muster"
+
+msgctxt "ImageSequenceInspector"
+msgid "Resolution"
+msgstr "Auflösung"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 × %2"
+msgstr "%1 × %2"
+
+msgctxt "ImageSequenceInspector"
+msgid "(probing…)"
+msgstr "(wird gelesen…)"
+
+#. EXR compression
+msgctxt "ImageSequenceInspector"
+msgid "Compression"
+msgstr "Kompression"
+
+msgctxt "ImageSequenceInspector"
+msgid "Duration"
+msgstr "Dauer"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache stride"
+msgstr "Cache-Schrittweite"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every Frame (Full)"
+msgstr "Jeder Frame (voll)"
+
+msgctxt "ImageSequenceInspector"
+msgid "Every %1 Frames"
+msgstr "Alle %1 Frames"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache ahead"
+msgstr "Cache voraus"
+
+msgctxt "ImageSequenceInspector"
+msgid "%1 / %2 frames"
+msgstr "%1 / %2 Frames"
+
+msgctxt "ImageSequenceInspector"
+msgid "Cache behind"
+msgstr "Cache zurück"
+
+#. EXR layer
+msgctxt "ImageSequenceInspector"
+msgid "Layer"
+msgstr "Layer"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Video"
+msgstr "Video"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Audio"
+msgstr "Audio"
+
+#. Media kind: a single still image
+msgctxt "InspectorPanel"
+msgid "Image"
+msgstr "Bild"
+
+msgctxt "InspectorPanel"
+msgid "Image Sequence"
+msgstr "Bildsequenz"
+
+msgctxt "InspectorPanel"
+msgid "Playlist"
+msgstr "Playlist"
+
+msgctxt "InspectorPanel"
+msgid "Dual View"
+msgstr "Dual-Ansicht"
+
+#. Media kind: a live stream or bridge feed
+msgctxt "InspectorPanel"
+msgid "Live"
+msgstr "Live"
+
+#. Media kind: generic
+msgctxt "InspectorPanel"
+msgid "Media"
+msgstr "Medium"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "File"
+msgstr "Datei"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Colour"
+msgstr "Farbe"
+
+#. Section: video levels, full or limited
+msgctxt "InspectorPanel"
+msgid "Range"
+msgstr "Range"
+
+#. Row: whether the file has an alpha channel
+msgctxt "InspectorPanel"
+msgid "Alpha"
+msgstr "Alpha"
+
+#. File container format (QuickTime, MXF)
+msgctxt "InspectorPanel"
+msgid "Container"
+msgstr "Container"
+
+msgctxt "InspectorPanel"
+msgid "Encoder"
+msgstr "Encoder"
+
+msgctxt "InspectorPanel"
+msgid "Copy URL"
+msgstr "URL kopieren"
+
+msgctxt "InspectorPanel"
+msgid "Copy path"
+msgstr "Pfad kopieren"
+
+#. Button: show the file in Finder / Explorer
+msgctxt "InspectorPanel"
+msgid "Reveal"
+msgstr "Zeigen"
+
+msgctxt "InspectorPanel"
+msgid "Reading metadata…"
+msgstr "Metadaten werden gelesen…"
+
+msgctxt "InspectorPanel"
+msgid "Resolution"
+msgstr "Auflösung"
+
+msgctxt "InspectorPanel"
+msgid "Frame rate"
+msgstr "Bildrate"
+
+msgctxt "InspectorPanel"
+msgid "Total frames"
+msgstr "Frames gesamt"
+
+msgctxt "InspectorPanel"
+msgid "Codec"
+msgstr "Codec"
+
+#. Codec profile (e.g. ProRes 422 HQ)
+msgctxt "InspectorPanel"
+msgid "Profile"
+msgstr "Profil"
+
+msgctxt "InspectorPanel"
+msgid "Bitrate"
+msgstr "Bitrate"
+
+msgctxt "InspectorPanel"
+msgid "file avg %1"
+msgstr "Datei-Ø %1"
+
+msgctxt "InspectorPanel"
+msgid "file avg"
+msgstr "Datei-Ø"
+
+msgctxt "InspectorPanel"
+msgid "Pixel format"
+msgstr "Pixelformat"
+
+#. Pixel format summary: the file is RGB, not YUV
+msgctxt "InspectorPanel"
+msgid "RGB"
+msgstr "RGB"
+
+msgctxt "InspectorPanel"
+msgid "Bit depth"
+msgstr "Bittiefe"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit + alpha"
+msgstr "%1 Bit + Alpha"
+
+msgctxt "InspectorPanel"
+msgid "%1 bit"
+msgstr "%1 Bit"
+
+msgctxt "InspectorPanel"
+msgid "HDR"
+msgstr "HDR"
+
+msgctxt "InspectorPanel"
+msgid "Yes — %1"
+msgstr "Ja — %1"
+
+#. Section title: dimensions, aspect, rotation
+msgctxt "InspectorPanel"
+msgid "Geometry"
+msgstr "Geometrie"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto (%1°)"
+msgstr "Auto (%1°)"
+
+#. Choice: decided from the file
+msgctxt "InspectorPanel"
+msgid "Auto"
+msgstr "Auto"
+
+msgctxt "InspectorPanel"
+msgid "Aspect"
+msgstr "Seitenverhältnis"
+
+#. Pixel aspect choice: square pixels
+msgctxt "InspectorPanel"
+msgid "Square"
+msgstr "Quadratisch"
+
+#. Pixel aspect choice: the aspect found in the file
+msgctxt "InspectorPanel"
+msgid "Detected"
+msgstr "Erkannt"
+
+#. Pixel aspect choice: a value typed by the user
+msgctxt "InspectorPanel"
+msgid "Custom"
+msgstr "Benutzerdefiniert"
+
+msgctxt "InspectorPanel"
+msgid "Detected %1:%2"
+msgstr "Erkannt %1:%2"
+
+msgctxt "InspectorPanel"
+msgid "%1:%2 (non-square)"
+msgstr "%1:%2 (nicht quadratisch)"
+
+msgctxt "InspectorPanel"
+msgid "1:1 (square)"
+msgstr "1:1 (quadratisch)"
+
+#. Row: display aspect
+msgctxt "InspectorPanel"
+msgid "Display"
+msgstr "Anzeige"
+
+msgctxt "InspectorPanel"
+msgid "Rotation"
+msgstr "Drehung"
+
+msgctxt "InspectorPanel"
+msgid "Pixel aspect"
+msgstr "Pixel-Seitenverhältnis"
+
+msgctxt "InspectorPanel"
+msgid "Display aspect"
+msgstr "Anzeige-Seitenverhältnis"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Color"
+msgstr "Farbe"
+
+msgctxt "InspectorPanel"
+msgid "Colorspace"
+msgstr "Farbraum"
+
+#. Colour primaries
+msgctxt "InspectorPanel"
+msgid "Primaries"
+msgstr "Primärvalenzen"
+
+#. Transfer function (PQ, HLG, sRGB)
+msgctxt "InspectorPanel"
+msgid "Transfer"
+msgstr "Transfer"
+
+msgctxt "InspectorPanel"
+msgid "HDR metadata"
+msgstr "HDR-Metadaten"
+
+msgctxt "InspectorPanel"
+msgid "MaxCLL %1"
+msgstr "MaxCLL %1"
+
+msgctxt "InspectorPanel"
+msgid "MaxFALL %1"
+msgstr "MaxFALL %1"
+
+msgctxt "InspectorPanel"
+msgid "mastering %1 nits"
+msgstr "Mastering %1 nits"
+
+msgctxt "InspectorPanel"
+msgid "NCLC tag"
+msgstr "NCLC-Tag"
+
+msgctxt "InspectorPanel"
+msgid "Range tag"
+msgstr "Range-Tag"
+
+#. The file carries no range tag
+msgctxt "InspectorPanel"
+msgid "untagged"
+msgstr "ungetaggt"
+
+msgctxt "InspectorPanel"
+msgid "decoder: %1"
+msgstr "Decoder: %1"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes full"
+msgstr "Auto nimmt Full an"
+
+msgctxt "InspectorPanel"
+msgid "Auto assumes limited"
+msgstr "Auto nimmt Limited an"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full)"
+msgstr "Auto (Full)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited)"
+msgstr "Auto (Limited)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Full, assumed)"
+msgstr "Auto (Full, angenommen)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (Limited, assumed)"
+msgstr "Auto (Limited, angenommen)"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Full"
+msgstr "Full"
+
+#. Video levels
+msgctxt "InspectorPanel"
+msgid "Limited"
+msgstr "Limited"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ P3)"
+msgstr "Auto (PQ P3)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (PQ 2020)"
+msgstr "Auto (PQ 2020)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (HLG)"
+msgstr "Auto (HLG)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR, untagged)"
+msgstr "Auto (SDR, ungetaggt)"
+
+msgctxt "InspectorPanel"
+msgid "Auto (SDR)"
+msgstr "Auto (SDR)"
+
+msgctxt "InspectorPanel"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "InspectorPanel"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "InspectorPanel"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "InspectorPanel"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "InspectorPanel"
+msgid "Linear"
+msgstr "Linear"
+
+#. Row: the bridge's current state
+msgctxt "InspectorPanel"
+msgid "State"
+msgstr "Status"
+
+#. Bridge state: the Transmit device is disabled in the host application
+msgctxt "InspectorPanel"
+msgid "Off in the host"
+msgstr "Im Host aus"
+
+#. Bridge state: nothing is being sent
+msgctxt "InspectorPanel"
+msgid "Idle"
+msgstr "Inaktiv"
+
+#. Bridge state: the host is sending frames
+msgctxt "InspectorPanel"
+msgid "Pushing"
+msgstr "Sendet"
+
+#. Bridge state: the host is scrubbing
+msgctxt "InspectorPanel"
+msgid "Scrubbing"
+msgstr "Scrubbt"
+
+msgctxt "InspectorPanel"
+msgid "No audio"
+msgstr "Kein Audio"
+
+msgctxt "InspectorPanel"
+msgid "Sample rate"
+msgstr "Abtastrate"
+
+msgctxt "InspectorPanel"
+msgid "%1 Hz"
+msgstr "%1 Hz"
+
+msgctxt "InspectorPanel"
+msgid "Channels"
+msgstr "Kanäle"
+
+msgctxt "InspectorPanel"
+msgid "%1 (stereo)"
+msgstr "%1 (Stereo)"
+
+msgctxt "InspectorPanel"
+msgid "%1 (mono)"
+msgstr "%1 (Mono)"
+
+#. Audio channel layout (stereo, 5.1)
+msgctxt "InspectorPanel"
+msgid "Layout"
+msgstr "Layout"
+
+#. Toggle: play the bridge's audio in QCView
+msgctxt "InspectorPanel"
+msgid "Listen in QCView"
+msgstr "In QCView anhören"
+
+#. Row label for the bridge's audio
+msgctxt "InspectorPanel"
+msgid "Audio Stream"
+msgstr "Audiostream"
+
+msgctxt "InspectorPanel"
+msgid "off: tick it in Premiere ▸ Preferences ▸ Playback"
+msgstr "aus: in Premiere ▸ Voreinstellungen ▸ Wiedergabe aktivieren"
+
+#. Audio downmix choice
+msgctxt "InspectorPanel"
+msgid "Mix"
+msgstr "Mix"
+
+msgctxt "InspectorPanel"
+msgid "Auto — picks the right mix per source"
+msgstr "Auto — wählt pro Quelle den passenden Mix"
+
+msgctxt "InspectorPanel"
+msgid "5.1 → Stereo (BS.775 downmix from channels 1-6)"
+msgstr "5.1 → Stereo (BS.775-Downmix aus Kanälen 1-6)"
+
+msgctxt "InspectorPanel"
+msgid "Channels 7-8 (broadcast stereo bounce)"
+msgstr "Kanäle 7-8 (Broadcast-Stereo-Bounce)"
+
+#. Section title
+msgctxt "InspectorPanel"
+msgid "Timecode"
+msgstr "Timecode"
+
+#. Timecode origin: counting from the start of the file
+msgctxt "InspectorPanel"
+msgid "From start"
+msgstr "Ab Dateianfang"
+
+#. Timecode origin: the timecode track in the file
+msgctxt "InspectorPanel"
+msgid "Embedded"
+msgstr "Eingebettet"
+
+#. Timecode origin: the QuickTime start timecode
+msgctxt "InspectorPanel"
+msgid "QT Start"
+msgstr "QT-Start"
+
+msgctxt "InspectorPanel"
+msgid "QT TC"
+msgstr "QT TC"
+
+msgctxt "InspectorPanel"
+msgid "XMP Alt"
+msgstr "XMP Alt"
+
+#. Row: where the timecode comes from
+msgctxt "InspectorPanel"
+msgid "Origin"
+msgstr "Ursprung"
+
+#. Row: which metadata the timecode was read from
+msgctxt "InspectorPanel"
+msgid "Source"
+msgstr "Quelle"
+
+msgctxt "InspectorPanel"
+msgid "(frame %1)"
+msgstr "(Frame %1)"
+
+msgctxt "InspectorPanel"
+msgid "QT TimeCode"
+msgstr "QT TimeCode"
+
+#. Row: file creation date
+msgctxt "InspectorPanel"
+msgid "Created"
+msgstr "Erstellt"
+
+#. Row: the media's own creation date from its metadata
+msgctxt "InspectorPanel"
+msgid "Media Created"
+msgstr "Medium erstellt"
+
+#. Section title: project files that reference this media
+msgctxt "InspectorPanel"
+msgid "Linked Projects"
+msgstr "Verknüpfte Projekte"
+
+msgctxt "InspectorPanel"
+msgid "After Effects"
+msgstr "After Effects"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Mac)"
+msgstr "Premiere (Mac)"
+
+msgctxt "InspectorPanel"
+msgid "Premiere (Windows)"
+msgstr "Premiere (Windows)"
+
+#. Button: open the linked project in its application
+msgctxt "InspectorPanel"
+msgid "Open"
+msgstr "Öffnen"
+
+#. Button: copy the project path
+msgctxt "InspectorPanel"
+msgid "Copy"
+msgstr "Kopieren"
+
+msgctxt "InspectorPanel"
+msgid "Playlist Contents"
+msgstr "Playlist-Inhalt"
+
+msgctxt "InspectorPanel"
+msgid "%1 clips"
+msgstr "%1 Clips"
+
+msgctxt "InspectorPanel"
+msgid "(missing)"
+msgstr "(fehlt)"
+
+msgctxt "InspectorPanel"
+msgid "Open in single mode"
+msgstr "Im Einzelmodus öffnen"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Videos"
+msgstr "Videos"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Audio"
+msgstr "Audio"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Images"
+msgstr "Bilder"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Image Sequences"
+msgstr "Bildsequenzen"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Playlists"
+msgstr "Playlists"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Dual Views"
+msgstr "Dual-Ansichten"
+
+#. Media bin heading
+msgctxt "LeftRail"
+msgid "Live"
+msgstr "Live"
+
+msgctxt "LeftRail"
+msgid "Add Media"
+msgstr "Medien hinzufügen"
+
+#. Tooltip on the warning badge of a media row the player cannot decode
+msgctxt "LeftRail"
+msgid "Can’t be played here: unsupported format or un-debayered camera raw"
+msgstr "Kann hier nicht abgespielt werden: nicht unterstütztes Format oder nicht debayertes Kamera-Raw"
+
+msgctxt "LeftRail"
+msgid "Create Playlist from Selection"
+msgstr "Playlist aus Auswahl erstellen"
+
+#. Context menu: set the OCIO input colourspace of the selected clips
+msgctxt "LeftRail"
+msgid "Input"
+msgstr "Input"
+
+#. Picker group header: inputs already used in the project
+msgctxt "LeftRail"
+msgid "In this project"
+msgstr "In diesem Projekt"
+
+#. Picker group header: every input in the config
+msgctxt "LeftRail"
+msgid "All"
+msgstr "Alle"
+
+msgctxt "LeftRail"
+msgid "Input for 1 clip"
+msgstr "Input für 1 Clip"
+
+msgctxt "LeftRail"
+msgid "Input for %1 clips"
+msgstr "Input für %1 Clips"
+
+msgctxt "LeftRail"
+msgid "Filter…"
+msgstr "Filtern…"
+
+#. Picker entry: use the config's default input
+msgctxt "LeftRail"
+msgid "default"
+msgstr "Standard"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of “%1”"
+msgstr "Clip-Kette von „%1“ verwenden"
+
+msgctxt "LeftRail"
+msgid "Use Clip Chain of the Clip on Screen"
+msgstr "Clip-Kette des angezeigten Clips verwenden"
+
+msgctxt "LeftRail"
+msgid "Reset Clip Chain"
+msgstr "Clip-Kette zurücksetzen"
+
+msgctxt "LeftRail"
+msgid "Delete"
+msgstr "Löschen"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Expand panel"
+msgstr "Panel ausklappen"
+
+#. Tooltip on the rail's edge button
+msgctxt "LeftRail"
+msgid "Collapse panel"
+msgstr "Panel einklappen"
+
+#. Rail title
+msgctxt "LeftRail"
+msgid "Project"
+msgstr "Projekt"
+
+#. Count of items, in parentheses
+msgctxt "LeftRail"
+msgid "(%1)"
+msgstr "(%1)"
+
+#. Section title: the project's media bins
+msgctxt "LeftRail"
+msgid "Media"
+msgstr "Medien"
+
+msgctxt "LeftRail"
+msgid "Drop media here to add to the project"
+msgstr "Medien hierher ziehen, um sie dem Projekt hinzuzufügen"
+
+#. Default name of a new playlist
+msgctxt "LeftRail"
+msgid "New playlist"
+msgstr "Neue Playlist"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Safety Guides"
+msgstr "Sichere Bereiche"
+
+#. Row: which safety guide to show
+msgctxt "LeftRail"
+msgid "Guide"
+msgstr "Hilfslinien"
+
+msgctxt "LeftRail"
+msgid "(none)"
+msgstr "(ohne)"
+
+#. Row: guide opacity
+msgctxt "LeftRail"
+msgid "Opacity"
+msgstr "Deckkraft"
+
+#. Row: guide line width
+msgctxt "LeftRail"
+msgid "Width"
+msgstr "Breite"
+
+#. Row: guide line colour
+msgctxt "LeftRail"
+msgid "Color"
+msgstr "Farbe"
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Background"
+msgstr "Hintergrund"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Black"
+msgstr "Schwarz"
+
+#. Background choice
+msgctxt "LeftRail"
+msgid "Dark Gray"
+msgstr "Dunkelgrau"
+
+#. Background choice: a dark checkerboard
+msgctxt "LeftRail"
+msgid "Dark Check"
+msgstr "Dunkles Schachbrett"
+
+#. Background choice: a light checkerboard
+msgctxt "LeftRail"
+msgid "Light Check"
+msgstr "Helles Schachbrett"
+
+#. Section: installed outputs (NDI, AJA, streaming)
+msgctxt "LeftRail"
+msgid "Output"
+msgstr "Ausgabe"
+
+#. Chip: silence the audio sent to outputs
+msgctxt "LeftRail"
+msgid "Mute feed"
+msgstr "Feed stumm"
+
+msgctxt "LeftRail"
+msgid "Silence the audio sent to outputs while you keep listening. The master mute (M) silences both."
+msgstr "Den an die Ausgänge gesendeten Ton stummschalten, während Sie weiter hören. Die Haupt-Stummschaltung (M) schaltet beides stumm."
+
+#. Chip: send the safety guides to outputs
+msgctxt "LeftRail"
+msgid "Guides"
+msgstr "Hilfslinien"
+
+msgctxt "LeftRail"
+msgid "Draw the safety guides into the outputs that ask for them."
+msgstr "Die sicheren Bereiche in die Ausgänge zeichnen, die sie anfordern."
+
+#. Chip: send note strokes to outputs
+msgctxt "LeftRail"
+msgid "Notes"
+msgstr "Notizen"
+
+msgctxt "LeftRail"
+msgid "Draw note strokes into the outputs that ask for them."
+msgstr "Notiz-Striche in die Ausgänge zeichnen, die sie anfordern."
+
+#. Button on an output card
+msgctxt "LeftRail"
+msgid "Stop"
+msgstr "Stopp"
+
+msgctxt "LeftRail"
+msgid "Start"
+msgstr "Start"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "PQ Rec.2100"
+msgstr "PQ Rec.2100"
+
+msgctxt "LeftRail"
+msgid "HLG Rec.2100"
+msgstr "HLG Rec.2100"
+
+#. Output transfer choice
+msgctxt "LeftRail"
+msgid "SDR Rec.709"
+msgstr "SDR Rec.709"
+
+#. Output resolution choice
+msgctxt "LeftRail"
+msgid "1080p"
+msgstr "1080p"
+
+msgctxt "LeftRail"
+msgid "UHD"
+msgstr "UHD"
+
+#. Output resolution choice
+#. ----------
+#. Choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto"
+msgstr "Auto"
+
+#. Output state: the sink is receiving
+msgctxt "LeftRail"
+msgid "attached"
+msgstr "verbunden"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "waiting for the sink"
+msgstr "wartet auf den Sink"
+
+msgctxt "LeftRail"
+msgid "P3-D65"
+msgstr "P3-D65"
+
+msgctxt "LeftRail"
+msgid "Rec.2020"
+msgstr "Rec.2020"
+
+msgctxt "LeftRail"
+msgid "%1 / %2 / %3 nits"
+msgstr "%1 / %2 / %3 nits"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "live"
+msgstr "live"
+
+#. Output state: the sink refused the connection
+msgctxt "LeftRail"
+msgid "refused"
+msgstr "abgelehnt"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "starting"
+msgstr "startet"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "not installed"
+msgstr "nicht installiert"
+
+msgctxt "LeftRail"
+msgid "Publish the viewport and the mixed audio to this output. The sink runs as its own application; QCView starts it with Start and stops it with Stop."
+msgstr "Viewport und gemischten Ton an diesen Ausgang senden. Der Sink läuft als eigene Anwendung; QCView startet ihn mit Start und beendet ihn mit Stopp."
+
+#. Caption under three number fields
+msgctxt "LeftRail"
+msgid "peak · MaxCLL · MaxFALL nits"
+msgstr "Peak · MaxCLL · MaxFALL nits"
+
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in Application Support/QCView/Outputs."
+msgstr "Keine Ausgänge installiert. Ein Ausgang registriert sich in Application Support/QCView/Outputs."
+
+#. Output state
+msgctxt "LeftRail"
+msgid "streaming"
+msgstr "streamt"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "reconnecting"
+msgstr "verbindet neu"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "connecting"
+msgstr "verbindet"
+
+#. Output state
+msgctxt "LeftRail"
+msgid "failed"
+msgstr "fehlgeschlagen"
+
+msgctxt "LeftRail"
+msgid "%1 kbps"
+msgstr "%1 kbps"
+
+msgctxt "LeftRail"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+msgctxt "LeftRail"
+msgid "%n encoded"
+msgid_plural "%n encoded"
+msgstr[0] "%n kodiert"
+msgstr[1] "%n kodiert"
+
+msgctxt "LeftRail"
+msgid "%n repeated"
+msgid_plural "%n repeated"
+msgstr[0] "%n wiederholt"
+msgstr[1] "%n wiederholt"
+
+msgctxt "LeftRail"
+msgid "%n skipped"
+msgid_plural "%n skipped"
+msgstr[0] "%n übersprungen"
+msgstr[1] "%n übersprungen"
+
+msgctxt "LeftRail"
+msgid "%n dropped"
+msgid_plural "%n dropped"
+msgstr[0] "%n verworfen"
+msgstr[1] "%n verworfen"
+
+msgctxt "LeftRail"
+msgid "%n send error(s)"
+msgid_plural "%n send error(s)"
+msgstr[0] "%n Sendefehler"
+msgstr[1] "%n Sendefehler"
+
+msgctxt "LeftRail"
+msgid "%n reconnect(s)"
+msgid_plural "%n reconnect(s)"
+msgstr[0] "%n Neuverbindung"
+msgstr[1] "%n Neuverbindungen"
+
+#. Frame rate choice: follow the source
+msgctxt "LeftRail"
+msgid "Auto fps"
+msgstr "Auto fps"
+
+#. H.264 profile name, keep in English
+msgctxt "LeftRail"
+msgid "Main"
+msgstr "Main"
+
+msgctxt "LeftRail"
+msgid "Baseline"
+msgstr "Baseline"
+
+#. Summary: the stream sends video only
+msgctxt "LeftRail"
+msgid "no audio"
+msgstr "kein Audio"
+
+msgctxt "LeftRail"
+msgid "AAC %1"
+msgstr "AAC %1"
+
+msgctxt "LeftRail"
+msgid "SRT %1 ms"
+msgstr "SRT %1 ms"
+
+#. Card title: the SRT / RTMP streaming output
+msgctxt "LeftRail"
+msgid "Stream"
+msgstr "Stream"
+
+#. Output state: this machine cannot encode
+msgctxt "LeftRail"
+msgid "no hardware encoder"
+msgstr "kein Hardware-Encoder"
+
+msgctxt "LeftRail"
+msgid "Send the viewport and the mixed audio to a streaming server (Louper, or any SRT or RTMP server) as H.264 + AAC, encoded on the GPU. srt://host:port with the key as the stream id, or rtmp://host/app with the key as the stream name. A dropped connection reconnects on its own. The picture is the same Rec.709 SDR picture the output bus serves; the frame rate is fixed for the session (a paused viewport repeats its last frame)."
+msgstr "Viewport und gemischten Ton als H.264 + AAC, auf der GPU kodiert, an einen Streaming-Server senden (Louper oder jeden SRT- oder RTMP-Server). srt://host:port mit dem Key als Stream-ID oder rtmp://host/app mit dem Key als Stream-Name. Eine abgebrochene Verbindung wird von selbst neu aufgebaut. Das Bild ist dasselbe Rec.709-SDR-Bild, das der Ausgabebus liefert; die Bildrate ist für die Sitzung fest (ein pausierter Viewport wiederholt seinen letzten Frame)."
+
+msgctxt "LeftRail"
+msgid "srt://host:port"
+msgstr "srt://host:port"
+
+msgctxt "LeftRail"
+msgid "Stream key (SRT stream id)"
+msgstr "Stream-Key (SRT-Stream-ID)"
+
+msgctxt "LeftRail"
+msgid "Hide the key"
+msgstr "Key verbergen"
+
+msgctxt "LeftRail"
+msgid "Show the key"
+msgstr "Key anzeigen"
+
+msgctxt "LeftRail"
+msgid "Bitrate (kbps)"
+msgstr "Bitrate (kbps)"
+
+msgctxt "LeftRail"
+msgid "Constant-rate target. Louper suggests 2500–8000 at 1080p."
+msgstr "Ziel bei konstanter Rate. Louper empfiehlt 2500–8000 bei 1080p."
+
+msgctxt "LeftRail"
+msgid "Resolution"
+msgstr "Auflösung"
+
+msgctxt "LeftRail"
+msgid "The stream's raster; the viewport is letterboxed into it like any output."
+msgstr "Das Raster des Streams; der Viewport wird wie bei jedem Ausgang per Letterbox eingepasst."
+
+msgctxt "LeftRail"
+msgid "Frame rate"
+msgstr "Bildrate"
+
+msgctxt "LeftRail"
+msgid "Auto takes the source's rate when the stream starts (30 when it has none) and keeps it for the session. A 23.976 source into a 30 fps clock repeats six frames a second."
+msgstr "Auto übernimmt beim Start des Streams die Rate der Quelle (30, wenn sie keine hat) und behält sie für die Sitzung. Eine 23,976-Quelle in einem 30-fps-Takt wiederholt sechs Frames pro Sekunde."
+
+msgctxt "LeftRail"
+msgid "H.264 profile"
+msgstr "H.264-Profil"
+
+msgctxt "LeftRail"
+msgid "Baseline is what Louper's recipe asks for; Main gives better quality per bit where the service accepts it. Never B-frames."
+msgstr "Loupers Anleitung verlangt Baseline; Main liefert bessere Qualität pro Bit, wo der Dienst es akzeptiert. Nie B-Frames."
+
+msgctxt "LeftRail"
+msgid "Audio (kbps)"
+msgstr "Audio (kbps)"
+
+msgctxt "LeftRail"
+msgid "AAC stereo at 48 kHz from the mixed audio, before Listen, mute and volume. Off sends video only."
+msgstr "AAC-Stereo mit 48 kHz aus dem gemischten Ton, vor Anhören, Stummschaltung und Lautstärke. Aus sendet nur Video."
+
+#. AAC bitrate choice: no audio in the stream
+msgctxt "LeftRail"
+msgid "Off"
+msgstr "Aus"
+
+msgctxt "LeftRail"
+msgid "SRT latency (ms)"
+msgstr "SRT-Latenz (ms)"
+
+msgctxt "LeftRail"
+msgid "The SRT retransmission window, both ends negotiate the larger. 120 ms suits a LAN or a good link; raise it on a lossy one."
+msgstr "Das SRT-Neuübertragungsfenster; beide Seiten handeln den größeren Wert aus. 120 ms passen für ein LAN oder eine gute Verbindung; bei Paketverlust erhöhen."
+
+#. Section title
+msgctxt "LeftRail"
+msgid "Settings"
+msgstr "Einstellungen"
+
+msgctxt "LeftRail"
+msgid "Reset all preferences?"
+msgstr "Alle Einstellungen zurücksetzen?"
+
+msgctxt "LeftRail"
+msgid "Every preference (recents, layout, settings, shortcuts) will be erased and the app will quit. Relaunch to continue."
+msgstr "Alle Einstellungen (zuletzt verwendet, Layout, Optionen, Tastenkürzel) werden gelöscht und die App wird beendet. Zum Fortfahren neu starten."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Performance"
+msgstr "Leistung"
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq decode threads"
+msgstr "Bildseq.-Decode-Threads"
+
+msgctxt "LeftRail"
+msgid "Applies on next sequence load."
+msgstr "Gilt ab dem nächsten Laden einer Sequenz."
+
+#. Image-seq = image sequence
+msgctxt "LeftRail"
+msgid "Image-seq cache window"
+msgstr "Bildseq.-Cache-Fenster"
+
+msgctxt "LeftRail"
+msgid "Frames cached ahead of the playhead. Lower = less RAM."
+msgstr "Frames, die vor dem Abspielkopf gecacht werden. Niedriger = weniger RAM."
+
+msgctxt "LeftRail"
+msgid "Video decode threads"
+msgstr "Video-Decode-Threads"
+
+msgctxt "LeftRail"
+msgid "0 = Auto. Single-video playback only; dual and scrub stay on Auto. Applies on next video load."
+msgstr "0 = Auto. Nur Einzelvideo-Wiedergabe; Dual und Scrubben bleiben auf Auto. Gilt ab dem nächsten Laden eines Videos."
+
+msgctxt "LeftRail"
+msgid "Enable hardware decoding"
+msgstr "Hardware-Decoding aktivieren"
+
+msgctxt "LeftRail"
+msgid "GPU decode (Vulkan/D3D11VA) when available. Turn off if playback misbehaves — forces software decode everywhere. Applies on next file load."
+msgstr "GPU-Decoding (Vulkan/D3D11VA), wenn verfügbar. Abschalten, falls die Wiedergabe Probleme macht — erzwingt überall Software-Decoding. Gilt ab dem nächsten Laden einer Datei."
+
+msgctxt "LeftRail"
+msgid "Scrub cache size (MB)"
+msgstr "Scrub-Cache-Größe (MB)"
+
+msgctxt "LeftRail"
+msgid "Decoded frames kept near the playhead for instant backward scrub. Higher = smoother, more RAM/VRAM. Per decoder — dual uses 2x. Applies on next file load."
+msgstr "Dekodierte Frames, die nahe dem Abspielkopf für sofortiges Rückwärts-Scrubben gehalten werden. Höher = flüssiger, mehr RAM/VRAM. Pro Decoder — Dual braucht 2x. Gilt ab dem nächsten Laden einer Datei."
+
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265 (experimental)"
+msgstr "Hardware-Scrubben für h264/h265 (experimentell)"
+
+msgctxt "LeftRail"
+msgid "GPU decode while scrubbing h264/h265, not just all-intra (ProRes). Experimental — turn off if scrubbed frames look wrong. Applies on next file load."
+msgstr "GPU-Decoding beim Scrubben von h264/h265, nicht nur bei All-Intra (ProRes). Experimentell — abschalten, falls gescrubbte Frames falsch aussehen. Gilt ab dem nächsten Laden einer Datei."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Interface"
+msgstr "Oberfläche"
+
+msgctxt "LeftRail"
+msgid "Language"
+msgstr "Sprache"
+
+msgctxt "LeftRail"
+msgid "Language of the interface. System default follows the OS setting. Applies at once."
+msgstr "Sprache der Oberfläche. Systemstandard folgt der Einstellung des Betriebssystems. Gilt sofort."
+
+msgctxt "LeftRail"
+msgid "Always open in minimal mode"
+msgstr "Immer im Minimalmodus öffnen"
+
+msgctxt "LeftRail"
+msgid "Launch with the rails collapsed and the color panel hidden, ignoring the last-used layout. Applies on next launch."
+msgstr "Mit eingeklappten Seitenleisten und ausgeblendetem Farb-Panel starten, unabhängig vom zuletzt verwendeten Layout. Gilt ab dem nächsten Start."
+
+msgctxt "LeftRail"
+msgid "Timeline hover thumbnails"
+msgstr "Timeline-Vorschaubilder"
+
+msgctxt "LeftRail"
+msgid "Drag viewport to move window"
+msgstr "Fenster am Viewport ziehen"
+
+msgctxt "LeftRail"
+msgid "Timeline audio waveforms"
+msgstr "Timeline-Wellenformen"
+
+msgctxt "LeftRail"
+msgid "Draw an audio waveform over timeline clips. Peaks decode lazily in the background for the visible range and pause during playback."
+msgstr "Eine Audio-Wellenform über die Timeline-Clips zeichnen. Pegelspitzen werden für den sichtbaren Bereich bei Bedarf im Hintergrund dekodiert und pausieren während der Wiedergabe."
+
+msgctxt "LeftRail"
+msgid "Screenshot format"
+msgstr "Screenshot-Format"
+
+msgctxt "LeftRail"
+msgid "Format for Desktop screenshots. JPEG is lossy; PNG/TIFF lossless. Notes always use PNG."
+msgstr "Format für Desktop-Screenshots. JPEG ist verlustbehaftet; PNG/TIFF verlustfrei. Notizen verwenden immer PNG."
+
+#. Settings group header
+msgctxt "LeftRail"
+msgid "Updates"
+msgstr "Updates"
+
+msgctxt "LeftRail"
+msgid "Automatically check for updates"
+msgstr "Updates automatisch suchen"
+
+msgctxt "LeftRail"
+msgid "Checks daily for updates, sending only your IP and app/OS version. Update manually anytime from the About menu."
+msgstr "Sucht täglich nach Updates und sendet dabei nur Ihre IP und die App-/OS-Version. Manuell jederzeit über das Menü „Über“."
+
+#. Audio/video offset setting for single-clip playback
+msgctxt "LeftRail"
+msgid "A/V sync (Single)"
+msgstr "A/V-Sync (Einzel)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play."
+msgstr "Positive Werte verzögern den Ton, um Pipeline-/Display-Latenz auszugleichen. Nach Gehör einstellen; gilt ab dem nächsten Sprung oder Abspielen."
+
+#. Audio/video offset setting for dual view
+msgctxt "LeftRail"
+msgid "A/V sync (Dual)"
+msgstr "A/V-Sync (Dual)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play."
+msgstr "Positive Werte verzögern den Ton, um Pipeline-/Display-Latenz auszugleichen. In Dual ist die Latenz höher als in Einzel. Nach Gehör einstellen; gilt ab dem nächsten Sprung oder Abspielen."
+
+msgctxt "LeftRail"
+msgid "Mute scrub audio"
+msgstr "Scrub-Audio stumm"
+
+msgctxt "LeftRail"
+msgid "Silence the audio feedback while dragging the timeline or holding fast-forward/rewind. Scrubbing itself is unaffected."
+msgstr "Die Ton-Rückmeldung beim Ziehen in der Timeline oder bei gehaltenem Vor-/Rücklauf stummschalten. Das Scrubben selbst bleibt unverändert."
+
+msgctxt "LeftRail"
+msgid "Listen to live audio"
+msgstr "Live-Audio anhören"
+
+msgctxt "LeftRail"
+msgid "Play audio pushed by Premiere Pro over QCBridge in QCView. Off by default: Premiere is already playing it. Meters run either way."
+msgstr "Von Premiere Pro über QCBridge gesendeten Ton in QCView abspielen. Standardmäßig aus: Premiere spielt ihn bereits ab. Die Pegelanzeigen laufen in jedem Fall."
+
+#. Setting: watch for a QCBridge (Blender) session on this machine
+msgctxt "LeftRail"
+msgid "Blender sessions"
+msgstr "Blender-Sitzungen"
+
+msgctxt "LeftRail"
+msgid "Off at every launch. On (also File ▸ Connect to Blender): QCView watches for the card the QCBridge host add-on on this machine writes when a session starts, listens on its port and shows the replica's stream. Off again stops listening."
+msgstr "Bei jedem Start aus. Ein (auch über Datei ▸ Mit Blender verbinden): QCView achtet auf die Karte, die das QCBridge-Host-Add-on auf diesem Rechner beim Start einer Sitzung schreibt, lauscht auf deren Port und zeigt den Stream der Replica. Aus beendet das Lauschen wieder."
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Live from %1 on port %2"
+msgstr "Live von %1 auf Port %2"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Listening for %1 on port %2"
+msgstr "Wartet auf %1 (Port %2)"
+
+#. Blender input state: a card exists but another clip is on screen
+msgctxt "LeftRail"
+msgid "%1 is streaming on port %2 — select the Blender clip"
+msgstr "%1 streamt auf Port %2 — wählen Sie den Blender-Clip aus"
+
+#. Blender input state
+msgctxt "LeftRail"
+msgid "Blender session ended"
+msgstr "Blender-Sitzung beendet"
+
+#. Blender input state: no card yet
+msgctxt "LeftRail"
+msgid "No Blender session on this machine yet"
+msgstr "Noch keine Blender-Sitzung auf diesem Rechner"
+
+#. Audio/video offset setting for bridge feeds
+msgctxt "LeftRail"
+msgid "A/V sync (Live)"
+msgstr "A/V-Sync (Live)"
+
+msgctxt "LeftRail"
+msgid "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear."
+msgstr "Positive Werte verzögern den Bridge-Ton; negative Werte halten das Bild zurück. Wird pro Host-Anwendung gespeichert. Nach Gehör einstellen."
+
+msgctxt "LeftRail"
+msgid "Live audio buffer"
+msgstr "Live-Audio-Puffer"
+
+msgctxt "LeftRail"
+msgid "How much bridge audio is queued before it plays. Raise it if live audio stutters; lower it for less delay."
+msgstr "Wie viel Bridge-Ton gepuffert wird, bevor er abgespielt wird. Erhöhen, wenn Live-Audio stottert; verringern für weniger Verzögerung."
+
+msgctxt "LeftRail"
+msgid "Reset all preferences…"
+msgstr "Alle Einstellungen zurücksetzen…"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "LiveStrip"
+msgid "REVIEW · %1"
+msgstr "REVIEW · %1"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "LIVE"
+msgstr "LIVE"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "PAUSED"
+msgstr "PAUSE"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "WAITING"
+msgstr "WARTET"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "RECONNECTING"
+msgstr "VERBINDET NEU"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "CONNECTING"
+msgstr "VERBINDET"
+
+#. Live feed state badge, upper case
+msgctxt "LiveStrip"
+msgid "OFFLINE"
+msgstr "OFFLINE"
+
+#. Transport of a bridge feed
+msgctxt "LiveStrip"
+msgid "shared memory"
+msgstr "Shared Memory"
+
+#. Warning: the frame contains non-finite pixel values
+msgctxt "LiveStrip"
+msgid "inf/NaN in frame"
+msgstr "inf/NaN im Frame"
+
+#. Count of times the host application went away and came back
+msgctxt "LiveStrip"
+msgid "%n restart(s)"
+msgid_plural "%n restart(s)"
+msgstr[0] "%n Neustart"
+msgstr[1] "%n Neustarts"
+
+#. Count of stream drops followed by a reconnect
+msgctxt "LiveStrip"
+msgid "%n drop(s)"
+msgid_plural "%n drop(s)"
+msgstr[0] "%n Abbruch"
+msgstr[1] "%n Abbrüche"
+
+#. Transfer override choice: follow the feed's tags
+msgctxt "LiveStrip"
+msgid "Auto"
+msgstr "Auto"
+
+msgctxt "LiveStrip"
+msgid "SDR 709"
+msgstr "SDR 709"
+
+msgctxt "LiveStrip"
+msgid "PQ 2020"
+msgstr "PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "PQ P3"
+msgstr "PQ P3"
+
+msgctxt "LiveStrip"
+msgid "HLG"
+msgstr "HLG"
+
+msgctxt "LiveStrip"
+msgid "Linear"
+msgstr "Linear"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ P3"
+msgstr "Auto · PQ P3"
+
+msgctxt "LiveStrip"
+msgid "Auto · PQ 2020"
+msgstr "Auto · PQ 2020"
+
+msgctxt "LiveStrip"
+msgid "Auto · HLG"
+msgstr "Auto · HLG"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR, untagged"
+msgstr "Auto · SDR, ungetaggt"
+
+msgctxt "LiveStrip"
+msgid "Auto · SDR"
+msgstr "Auto · SDR"
+
+msgctxt "LiveStrip"
+msgid "How the scopes read this feed (Transfer override)"
+msgstr "Wie die Scopes diesen Feed lesen (Transfer-Override)"
+
+#. Live strip chip: the host Blender's display device and view are being emulated
+msgctxt "LiveStrip"
+msgid "Host display %1 · %2"
+msgstr "Host-Display %1 · %2"
+
+#. Live strip chip: host-display emulation is pinned but switched off
+msgctxt "LiveStrip"
+msgid "Host display off"
+msgstr "Host-Display aus"
+
+#. Live strip chip: the link named a view QCView could not apply
+msgctxt "LiveStrip"
+msgid "View %1 not applied"
+msgstr "View %1 nicht angewendet"
+
+msgctxt "LiveStrip"
+msgid "The Blender host's view, rendered for its display device, shown here (click for options)"
+msgstr "Hier zu sehen: der View des Blender-Hosts, gerendert für dessen Display (Klick für Optionen)"
+
+#. Menu: switch host-display emulation on or off for this stream
+msgctxt "LiveStrip"
+msgid "Emulate the host display"
+msgstr "Host-Display emulieren"
+
+#. Menu: convert the host display's colourspace to ours instead of showing its codes as sRGB
+msgctxt "LiveStrip"
+msgid "True emulation (display to display)"
+msgstr "Echte Emulation (Display zu Display)"
+
+#. Menu: drop the host-display pin; this machine's own View applies
+msgctxt "LiveStrip"
+msgid "Use my View instead"
+msgstr "Stattdessen meinen View verwenden"
+
+msgctxt "LiveStrip"
+msgid "Color panel (⌃3)"
+msgstr "Farb-Panel (⌃3)"
+
+msgctxt "LiveStrip"
+msgid "Notes panel (⌃4)"
+msgstr "Notizen-Panel (⌃4)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "Screenshot in die Zwischenablage (⌥T)"
+
+msgctxt "LiveStrip"
+msgid "Screenshot to Desktop (T)"
+msgstr "Screenshot auf den Desktop (T)"
+
+msgctxt "Main"
+msgid "Open Media…"
+msgstr "Medien öffnen…"
+
+msgctxt "Main"
+msgid "Open Project…"
+msgstr "Projekt öffnen…"
+
+msgctxt "Main"
+msgid "QCView Project (*.qcvproj)"
+msgstr "QCView-Projekt (*.qcvproj)"
+
+msgctxt "Main"
+msgid "Save Project As…"
+msgstr "Projekt speichern unter…"
+
+msgctxt "Main"
+msgid "Project error"
+msgstr "Projektfehler"
+
+msgctxt "Main"
+msgid "OK"
+msgstr "OK"
+
+msgctxt "Main"
+msgid "Open Stream"
+msgstr "Stream öffnen"
+
+msgctxt "Main"
+msgid "Stream URL"
+msgstr "Stream-URL"
+
+msgctxt "Main"
+msgid "Name (optional)"
+msgstr "Name (optional)"
+
+msgctxt "Main"
+msgid "defaults to host:port"
+msgstr "Standard: host:port"
+
+msgctxt "Main"
+msgid "Passphrase (optional)"
+msgstr "Passphrase (optional)"
+
+msgctxt "Main"
+msgid "Cancel"
+msgstr "Abbrechen"
+
+msgctxt "Main"
+msgid "Connect"
+msgstr "Verbinden"
+
+msgctxt "Main"
+msgid "About QCView"
+msgstr "Über QCView"
+
+msgctxt "Main"
+msgid "QCView"
+msgstr "QCView"
+
+msgctxt "Main"
+msgid "Version %1"
+msgstr "Version %1"
+
+msgctxt "Main"
+msgid "Color-accurate review player."
+msgstr "Farbgenauer Review-Player."
+
+#. Button: open the documentation website
+msgctxt "Main"
+msgid "Docs"
+msgstr "Doku"
+
+msgctxt "Main"
+msgid "Check for Updates…"
+msgstr "Nach Updates suchen…"
+
+#. Button
+msgctxt "Main"
+msgid "Close"
+msgstr "Schließen"
+
+msgctxt "Main"
+msgid "&File"
+msgstr "&Datei"
+
+msgctxt "Main"
+msgid "Open Stream…"
+msgstr "Stream öffnen…"
+
+msgctxt "Main"
+msgid "Connect to After Effects"
+msgstr "Mit After Effects verbinden"
+
+msgctxt "Main"
+msgid "Connect to Premiere Pro"
+msgstr "Mit Premiere Pro verbinden"
+
+msgctxt "Main"
+msgid "Connect to Blender"
+msgstr "Mit Blender verbinden"
+
+msgctxt "Main"
+msgid "Open Recent Media"
+msgstr "Zuletzt verwendete Medien"
+
+msgctxt "Main"
+msgid "(none)"
+msgstr "(keine)"
+
+msgctxt "Main"
+msgid "Clear Menu"
+msgstr "Einträge löschen"
+
+msgctxt "Main"
+msgid "New Project"
+msgstr "Neues Projekt"
+
+msgctxt "Main"
+msgid "Open Recent Project"
+msgstr "Zuletzt verwendete Projekte"
+
+msgctxt "Main"
+msgid "Save Project"
+msgstr "Projekt speichern"
+
+msgctxt "Main"
+msgid "Copy Project Link"
+msgstr "Projektlink kopieren"
+
+msgctxt "Main"
+msgid "E&xit"
+msgstr "&Beenden"
+
+msgctxt "Main"
+msgid "&View"
+msgstr "&Ansicht"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Minimal Mode"
+msgstr "Minimalmodus"
+
+#. View menu: a layout mode
+msgctxt "Main"
+msgid "Compact Mode"
+msgstr "Kompaktmodus"
+
+msgctxt "Main"
+msgid "Always on Top"
+msgstr "Immer im Vordergrund"
+
+#. View menu
+msgctxt "Main"
+msgid "Show All Panels"
+msgstr "Alle Panels einblenden"
+
+msgctxt "Main"
+msgid "Zoom In Timeline"
+msgstr "Timeline vergrößern"
+
+msgctxt "Main"
+msgid "Zoom Out Timeline"
+msgstr "Timeline verkleinern"
+
+msgctxt "Main"
+msgid "Fullscreen"
+msgstr "Vollbild"
+
+#. View menu: reset the window geometry; && is a literal ampersand
+msgctxt "Main"
+msgid "Default Size && Position"
+msgstr "Standardgröße && -position"
+
+#. View menu: toggle the left side panel
+msgctxt "Main"
+msgid "Left Rail"
+msgstr "Linke Seitenleiste"
+
+#. View menu: toggle the right side panel
+msgctxt "Main"
+msgid "Right Rail"
+msgstr "Rechte Seitenleiste"
+
+msgctxt "Main"
+msgid "Color Panel"
+msgstr "Farb-Panel"
+
+msgctxt "Main"
+msgid "Timeline"
+msgstr "Timeline"
+
+msgctxt "Main"
+msgid "Notes"
+msgstr "Notizen"
+
+msgctxt "Main"
+msgid "Status Bar"
+msgstr "Statusleiste"
+
+msgctxt "Main"
+msgid "&Tools"
+msgstr "&Werkzeuge"
+
+msgctxt "Main"
+msgid "Background"
+msgstr "Hintergrund"
+
+msgctxt "Main"
+msgid "Safety Guides"
+msgstr "Sichere Bereiche"
+
+msgctxt "Main"
+msgid "Keyboard Shortcuts"
+msgstr "Tastenkürzel"
+
+msgctxt "Main"
+msgid "Settings…"
+msgstr "Einstellungen…"
+
+msgctxt "Main"
+msgid "&About"
+msgstr "&Über"
+
+msgctxt "Main"
+msgid "About QCView…"
+msgstr "Über QCView…"
+
+msgctxt "Main"
+msgid "Open media"
+msgstr "Medien öffnen"
+
+#. Title of the separate player window
+msgctxt "Main"
+msgid "Player detached"
+msgstr "Player abgedockt"
+
+msgctxt "Main"
+msgid "Click 'Reattach' to dock back"
+msgstr "Auf „Reattach“ klicken, um wieder anzudocken"
+
+#. File dialog filter; %1 = the list of patterns
+msgctxt "MediaFilters"
+msgid "All media (%1)"
+msgstr "Alle Medien (%1)"
+
+msgctxt "MediaFilters"
+msgid "Video files (%1)"
+msgstr "Videodateien (%1)"
+
+msgctxt "MediaFilters"
+msgid "Audio files (%1)"
+msgstr "Audiodateien (%1)"
+
+msgctxt "MediaFilters"
+msgid "Image / sequence files (%1)"
+msgstr "Bild-/Sequenzdateien (%1)"
+
+msgctxt "MediaFilters"
+msgid "All files (*)"
+msgstr "Alle Dateien (*)"
+
+#. Toggle: apply the look
+msgctxt "MinColor"
+msgid "Use look"
+msgstr "Look verwenden"
+
+#. Tooltip on a dialog's close button
+msgctxt "ModalHost"
+msgid "Close"
+msgstr "Schließen"
+
+#. Badge: the feed is frozen for review; %1 is the frame or time
+msgctxt "NotesPanel"
+msgid "REVIEW · %1"
+msgstr "REVIEW · %1"
+
+#. Badge: the feed is live
+msgctxt "NotesPanel"
+msgid "LIVE"
+msgstr "LIVE"
+
+#. Hover hint on the review pill: a click returns to the live feed
+msgctxt "NotesPanel"
+msgid "back to live"
+msgstr "zurück zu Live"
+
+#. Hover hint on the review pill: a click holds the current frame
+msgctxt "NotesPanel"
+msgid "freeze"
+msgstr "einfrieren"
+
+msgctxt "NotesPanel"
+msgid "Save the project to keep notes for this stream"
+msgstr "Projekt speichern, um Notizen zu diesem Stream zu behalten"
+
+#. The add-note tile's label
+msgctxt "NotesPanel"
+msgid "Add note here"
+msgstr "Notiz hier hinzufügen"
+
+#. Add-note tile when the project must be saved first
+msgctxt "NotesPanel"
+msgid "Save…"
+msgstr "Speichern…"
+
+#. Caption under Add note: the note captures the frozen frame
+msgctxt "NotesPanel"
+msgid "on the frozen frame"
+msgstr "auf dem eingefrorenen Frame"
+
+#. Caption under Add note: adding a note freezes the live feed
+msgctxt "NotesPanel"
+msgid "freezes the feed"
+msgstr "friert den Feed ein"
+
+#. Caption under Add note
+msgctxt "NotesPanel"
+msgid "captures current frame"
+msgstr "erfasst den aktuellen Frame"
+
+msgctxt "NotesPanel"
+msgid "Export notes"
+msgstr "Notizen exportieren"
+
+msgctxt "NotesPanel"
+msgid "Export folder (Markdown)"
+msgstr "Exportordner (Markdown)"
+
+msgctxt "NotesPanel"
+msgid "Save HTML…"
+msgstr "HTML speichern…"
+
+msgctxt "NotesPanel"
+msgid "HTML (*.html)"
+msgstr "HTML (*.html)"
+
+msgctxt "NotesPanel"
+msgid "Save PDF…"
+msgstr "PDF speichern…"
+
+msgctxt "NotesPanel"
+msgid "PDF (*.pdf)"
+msgstr "PDF (*.pdf)"
+
+msgctxt "NotesPanel"
+msgid "Save DOCX…"
+msgstr "DOCX speichern…"
+
+msgctxt "NotesPanel"
+msgid "Word document (*.docx)"
+msgstr "Word-Dokument (*.docx)"
+
+msgctxt "NotesPanel"
+msgid "%1 notes will be exported."
+msgstr "%1 Notizen werden exportiert."
+
+msgctxt "NotesPanel"
+msgid "No notes to export yet."
+msgstr "Noch keine Notizen zum Exportieren."
+
+msgctxt "NotesPanel"
+msgid "Markdown folder…"
+msgstr "Markdown-Ordner…"
+
+msgctxt "NotesPanel"
+msgid "Folder + linked images.  Type any name to set the output dir; the export creates a timestamped subfolder there."
+msgstr "Ordner + verknüpfte Bilder.  Geben Sie einen beliebigen Namen ein, um den Zielordner festzulegen; der Export legt dort einen Unterordner mit Zeitstempel an."
+
+msgctxt "NotesPanel"
+msgid "HTML (single file)…"
+msgstr "HTML (eine Datei)…"
+
+msgctxt "NotesPanel"
+msgid "PDF…"
+msgstr "PDF…"
+
+msgctxt "NotesPanel"
+msgid "DOCX…"
+msgstr "DOCX…"
+
+msgctxt "NotesPanel"
+msgid "Open in minNotes"
+msgstr "In minNotes öffnen"
+
+msgctxt "NotesPanel"
+msgid "Open this stream's notes folder in minNotes"
+msgstr "Notizordner dieses Streams in minNotes öffnen"
+
+msgctxt "NotesPanel"
+msgid "minNotes is not installed"
+msgstr "minNotes ist nicht installiert"
+
+msgctxt "NotesPanel"
+msgid "Cancel"
+msgstr "Abbrechen"
+
+#. No thumbnail
+msgctxt "NotesPanel"
+msgid "(no thumb)"
+msgstr "(kein Vorschaubild)"
+
+#. Badge: the note was captured with viewer aids active
+msgctxt "NotesPanel"
+msgid "VIEWER"
+msgstr "VIEWER"
+
+#. Badge: the note was captured through OCIO
+msgctxt "NotesPanel"
+msgid "OCIO"
+msgstr "OCIO"
+
+#. Button: mark this note as dealt with
+msgctxt "NotesPanel"
+msgid "Mark addressed"
+msgstr "Als erledigt markieren"
+
+msgctxt "NotesPanel"
+msgid "Delete note"
+msgstr "Notiz löschen"
+
+#. Placeholder of the note text field
+msgctxt "NotesPanel"
+msgid "Note…"
+msgstr "Notiz…"
+
+msgctxt "NotesPanel"
+msgid "Select (drag to move, corners to scale, Del to remove; click again to exit)"
+msgstr "Auswählen (ziehen zum Verschieben, Ecken zum Skalieren, Entf zum Entfernen; erneut klicken zum Beenden)"
+
+msgctxt "NotesPanel"
+msgid "Freehand"
+msgstr "Freihand"
+
+msgctxt "NotesPanel"
+msgid "Rectangle"
+msgstr "Rechteck"
+
+msgctxt "NotesPanel"
+msgid "Oval"
+msgstr "Oval"
+
+msgctxt "NotesPanel"
+msgid "Arrow"
+msgstr "Pfeil"
+
+msgctxt "NotesPanel"
+msgid "Line"
+msgstr "Linie"
+
+msgctxt "NotesPanel"
+msgid "Erase stroke (click strokes to remove)"
+msgstr "Strich löschen (Striche anklicken, um sie zu entfernen)"
+
+#. Stroke width label
+msgctxt "NotesPanel"
+msgid "Width:"
+msgstr "Breite:"
+
+msgctxt "PlayerWindow"
+msgid "Player — Phase 1.7 (compositor: %1)"
+msgstr "Player — Phase 1.7 (Compositor: %1)"
+
+msgctxt "PlayerWindow"
+msgid "Window: %1×%2"
+msgstr "Fenster: %1×%2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Save: empty path."
+msgstr "Speichern: leerer Pfad."
+
+msgctxt "ProjectIo"
+msgid "Save: cannot open '%1' for write: %2"
+msgstr "Speichern: „%1“ kann nicht zum Schreiben geöffnet werden: %2"
+
+msgctxt "ProjectIo"
+msgid "Save: write to '%1' truncated: %2"
+msgstr "Speichern: Schreiben nach „%1“ abgeschnitten: %2"
+
+msgctxt "ProjectIo"
+msgid "Save: commit to '%1' failed: %2"
+msgstr "Speichern: Commit nach „%1“ fehlgeschlagen: %2"
+
+#. The prefix names the operation
+msgctxt "ProjectIo"
+msgid "Open: cannot read '%1': %2"
+msgstr "Öffnen: „%1“ kann nicht gelesen werden: %2"
+
+msgctxt "ProjectIo"
+msgid "Open: parse error in '%1': %2"
+msgstr "Öffnen: Parse-Fehler in „%1“: %2"
+
+#. Undo action name: trim the clip's start
+msgctxt "QObject"
+msgid "Trim head"
+msgstr "Anfang trimmen"
+
+#. Undo action name: trim the clip's end
+msgctxt "QObject"
+msgid "Trim tail"
+msgstr "Ende trimmen"
+
+#. Undo action name: move the clip without changing its content
+msgctxt "QObject"
+msgid "Slide clip"
+msgstr "Clip verschieben (Slide)"
+
+#. Undo action name: shift the clip's content without moving it
+msgctxt "QObject"
+msgid "Slip clip"
+msgstr "Clip unterschieben (Slip)"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Cut clip"
+msgstr "Clip schneiden"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Delete clip"
+msgstr "Clip löschen"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Add clip"
+msgstr "Clip hinzufügen"
+
+#. Undo action name
+msgctxt "QObject"
+msgid "Reorder clip"
+msgstr "Clip umsortieren"
+
+#. Panel title
+msgctxt "RightRail"
+msgid "Inspector"
+msgstr "Inspektor"
+
+msgctxt "RightRail"
+msgid "Expand panel"
+msgstr "Panel ausklappen"
+
+msgctxt "RightRail"
+msgid "Collapse panel"
+msgstr "Panel einklappen"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Vectorscope"
+msgstr "Vektorskop"
+
+#. Section title
+msgctxt "RightRail"
+msgid "Waveform"
+msgstr "Waveform"
+
+msgctxt "RightRail"
+msgid "Keyboard Shortcuts"
+msgstr "Tastenkürzel"
+
+msgctxt "ScopePanel"
+msgid "Zoom %1× — magnifies the centre"
+msgstr "Zoom %1× — vergrößert die Mitte"
+
+#. Toggle: colour the trace by hue
+msgctxt "ScopePanel"
+msgid "Color"
+msgstr "Farbe"
+
+msgctxt "ScopePanel"
+msgid "Colour the trace by hue"
+msgstr "Trace nach Farbton einfärben"
+
+msgctxt "ScopePanel"
+msgid "Signal tier draws mono — the colour space isn't known"
+msgstr "Signal-Stufe zeichnet einfarbig — der Farbraum ist nicht bekannt"
+
+msgctxt "ScopePanel"
+msgid "Trace brightness"
+msgstr "Trace-Helligkeit"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "DUAL"
+msgstr "DUAL"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "PLAYLIST"
+msgstr "PLAYLIST"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "IMAGE SEQ"
+msgstr "BILDSEQ"
+
+#. Status bar mode badge, upper case, keep short
+msgctxt "StatusStrip"
+msgid "SINGLE"
+msgstr "EINZEL"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "idle"
+msgstr "inaktiv"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "opening…"
+msgstr "öffnet…"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "decoding"
+msgstr "dekodiert"
+
+#. Decoder state: end of file
+msgctxt "StatusStrip"
+msgid "EOF"
+msgstr "EOF"
+
+#. Decoder state
+msgctxt "StatusStrip"
+msgid "ERROR"
+msgstr "FEHLER"
+
+msgctxt "StatusStrip"
+msgid "%1  %2  %3"
+msgstr "%1  %2  %3"
+
+#. Hardware decoder in use
+msgctxt "StatusStrip"
+msgid "HW: %1"
+msgstr "HW: %1"
+
+#. No hardware decoder
+msgctxt "StatusStrip"
+msgid "HW: software"
+msgstr "HW: Software"
+
+msgctxt "StatusStrip"
+msgid "OCIO: %1"
+msgstr "OCIO: %1"
+
+#. Timecode, drop frame
+msgctxt "StatusStrip"
+msgid "TC: %1 DF"
+msgstr "TC: %1 DF"
+
+msgctxt "StatusStrip"
+msgid "TC: %1"
+msgstr "TC: %1"
+
+#. Decoder error count
+msgctxt "StatusStrip"
+msgid "%1 errors"
+msgstr "%1 Fehler"
+
+#. Trim badge: the clip's head was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "head %1"
+msgstr "Anfang %1"
+
+#. Trim badge: the clip's tail was trimmed by %1 frames
+msgctxt "TimelinePanel"
+msgid "tail %1"
+msgstr "Ende %1"
+
+#. Badge: the clip's start moved by %1 frames
+msgctxt "TimelinePanel"
+msgid "start %1"
+msgstr "Start %1"
+
+#. Badge: the clip's content slipped by %1 frames
+msgctxt "TimelinePanel"
+msgid "slip %1"
+msgstr "Slip %1"
+
+#. Drag badge: the clip will move to playlist position %1 of %2
+msgctxt "TimelinePanel"
+msgid "→ slot %1/%2"
+msgstr "→ Platz %1/%2"
+
+msgctxt "TimelinePanel"
+msgid "Edit mode ON — click to disable"
+msgstr "Bearbeitungsmodus EIN — zum Deaktivieren klicken"
+
+#. Tooltip on the track's edit toggle
+msgctxt "TimelinePanel"
+msgid "Edit this track"
+msgstr "Diese Spur bearbeiten"
+
+msgctxt "TimelinePanel"
+msgid "Drop media here to add to the playlist"
+msgstr "Medien hierher ziehen, um sie der Playlist hinzuzufügen"
+
+msgctxt "TimelinePanel"
+msgid "Drop media onto a lane, or a side of the viewport, to compare"
+msgstr "Medien auf eine Spur oder eine Seite des Viewports ziehen, um zu vergleichen"
+
+msgctxt "TimelinePanel"
+msgid "Open a video to enable the timeline."
+msgstr "Ein Video öffnen, um die Timeline zu aktivieren."
+
+#. Swap glyph, do not translate
+msgctxt "TimelinePanel"
+msgid "⇄"
+msgstr "⇄"
+
+msgctxt "TimelinePanel"
+msgid "Audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "Audiodateien können nicht in Playlists aufgenommen werden — stattdessen zum Audio-Bin hinzugefügt"
+
+msgctxt "TimelinePanel"
+msgid "%1 audio files can't be added to playlists — added to the Audio bin instead"
+msgstr "%1 Audiodateien können nicht in Playlists aufgenommen werden — stattdessen zum Audio-Bin hinzugefügt"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Time —"
+msgstr "Zeit —"
+
+#. Status well with no value yet
+msgctxt "TimelineStatus"
+msgid "Frame —"
+msgstr "Frame —"
+
+msgctxt "TimelineStatus"
+msgid "Frame %1 / %2"
+msgstr "Frame %1 / %2"
+
+#. Badge: an in/out range is set
+msgctxt "TimelineStatus"
+msgid "RANGE"
+msgstr "BEREICH"
+
+#. Range length in frames, abbreviated
+msgctxt "TimelineStatus"
+msgid "%1 fr"
+msgstr "%1 Fr"
+
+#. Range length in seconds
+msgctxt "TimelineStatus"
+msgid "%1 s"
+msgstr "%1 s"
+
+msgctxt "TimelineStatus"
+msgid "%1 fps"
+msgstr "%1 fps"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO FRAME"
+msgstr "GEHE ZU FRAME"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIMECODE"
+msgstr "GEHE ZU TIMECODE"
+
+#. Popup title
+msgctxt "TimelineStatus"
+msgid "GO TO TIME"
+msgstr "GEHE ZU ZEIT"
+
+#. Field placeholder
+msgctxt "TimelineStatus"
+msgid "frame number"
+msgstr "Framenummer"
+
+#. Field placeholder: timecode
+msgctxt "TimelineStatus"
+msgid "HH:MM:SS:FF"
+msgstr "HH:MM:SS:FF"
+
+#. Field placeholder: time
+msgctxt "TimelineStatus"
+msgid "MM:SS.mmm"
+msgstr "MM:SS.mmm"
+
+msgctxt "TransportBar"
+msgid "Open media…"
+msgstr "Medien öffnen…"
+
+msgctxt "TransportBar"
+msgid "Previous clip"
+msgstr "Vorheriger Clip"
+
+msgctxt "TransportBar"
+msgid "Skip to start"
+msgstr "Zum Anfang"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Rewind (hold)"
+msgstr "Rücklauf (halten)"
+
+msgctxt "TransportBar"
+msgid "Step back 1 frame"
+msgstr "1 Frame zurück"
+
+msgctxt "TransportBar"
+msgid "Pause"
+msgstr "Pause"
+
+msgctxt "TransportBar"
+msgid "Play"
+msgstr "Wiedergabe"
+
+msgctxt "TransportBar"
+msgid "Step forward 1 frame"
+msgstr "1 Frame vor"
+
+#. Tooltip: hold the button
+msgctxt "TransportBar"
+msgid "Fast-forward (hold)"
+msgstr "Vorlauf (halten)"
+
+msgctxt "TransportBar"
+msgid "Skip to end"
+msgstr "Zum Ende"
+
+msgctxt "TransportBar"
+msgid "Next clip"
+msgstr "Nächster Clip"
+
+msgctxt "TransportBar"
+msgid "Review speed — click to cycle (R), Shift+click for 1× (Shift+R)"
+msgstr "Review-Geschwindigkeit — Klick wechselt (R), Shift+Klick für 1× (Shift+R)"
+
+msgctxt "TransportBar"
+msgid "In point not available in playlist mode"
+msgstr "In-Punkt im Playlist-Modus nicht verfügbar"
+
+msgctxt "TransportBar"
+msgid "Set in point (I)"
+msgstr "In-Punkt setzen (I)"
+
+msgctxt "TransportBar"
+msgid "Out point not available in playlist mode"
+msgstr "Out-Punkt im Playlist-Modus nicht verfügbar"
+
+msgctxt "TransportBar"
+msgid "Set out point (O)"
+msgstr "Out-Punkt setzen (O)"
+
+msgctxt "TransportBar"
+msgid "Clear in/out points (Shift+I)"
+msgstr "In-/Out-Punkte löschen (Shift+I)"
+
+msgctxt "TransportBar"
+msgid "Loop (L)"
+msgstr "Schleife (L)"
+
+msgctxt "TransportBar"
+msgid "Fullscreen (F)"
+msgstr "Vollbild (F)"
+
+msgctxt "TransportBar"
+msgid "Compact Mode (Ctrl+Shift+C)"
+msgstr "Kompaktmodus (Ctrl+Shift+C)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to clipboard (⌥T)"
+msgstr "Screenshot in die Zwischenablage (⌥T)"
+
+msgctxt "TransportBar"
+msgid "Screenshot to Desktop (T)"
+msgstr "Screenshot auf den Desktop (T)"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Safety guides"
+msgstr "Sichere Bereiche"
+
+#. Tooltip
+msgctxt "TransportBar"
+msgid "Background"
+msgstr "Hintergrund"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (on)"
+msgstr "Timeline-Vorschaubilder (ein)"
+
+msgctxt "TransportBar"
+msgid "Timeline hover thumbnails (off)"
+msgstr "Timeline-Vorschaubilder (aus)"
+
+msgctxt "TransportBar"
+msgid "Color panel (⌃3)"
+msgstr "Farb-Panel (⌃3)"
+
+msgctxt "TransportBar"
+msgid "Notes panel (⌃4)"
+msgstr "Notizen-Panel (⌃4)"
+
+msgctxt "TransportBar"
+msgid "Unmute (M)"
+msgstr "Ton ein (M)"
+
+msgctxt "TransportBar"
+msgid "Mute (M)"
+msgstr "Stumm (M)"
+
+msgctxt "TransportBar"
+msgid "Volume — %1%"
+msgstr "Lautstärke — %1%"
+
+msgctxt "TransportBar"
+msgid "Always on Top — click to unpin (Ctrl+Alt+T)"
+msgstr "Immer im Vordergrund — zum Lösen klicken (Ctrl+Alt+T)"
+
+msgctxt "TransportBar"
+msgid "Always on Top (Ctrl+Alt+T)"
+msgstr "Immer im Vordergrund (Ctrl+Alt+T)"
+
+msgctxt "ViewportOverlay"
+msgid "Untitled Dual View"
+msgstr "Unbenannte Dual-Ansicht"
+
+#. Picker entry: nothing selected
+msgctxt "ViewportOverlay"
+msgid "(none)"
+msgstr "(ohne)"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view saved: %1"
+msgstr "Dual-Ansicht gespeichert: %1"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't save dual view"
+msgstr "Dual-Ansicht konnte nicht gespeichert werden"
+
+msgctxt "ViewportOverlay"
+msgid "Dual view updated"
+msgstr "Dual-Ansicht aktualisiert"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't update dual view"
+msgstr "Dual-Ansicht konnte nicht aktualisiert werden"
+
+#. Chip label for a live source
+msgctxt "ViewportOverlay"
+msgid "Live source"
+msgstr "Live-Quelle"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "A"
+msgstr "A"
+
+#. Placeholder in the empty A chip
+msgctxt "ViewportOverlay"
+msgid "(drop a file…)"
+msgstr "(Datei ablegen…)"
+
+msgctxt "ViewportOverlay"
+msgid "A audio muted — click to unmute"
+msgstr "Audio A stumm — zum Einschalten klicken"
+
+msgctxt "ViewportOverlay"
+msgid "A audio on — click to mute"
+msgstr "Audio A ein — zum Stummschalten klicken"
+
+msgctxt "ViewportOverlay"
+msgid "Couldn't load that file as Source B"
+msgstr "Datei konnte nicht als Quelle B geladen werden"
+
+#. Source letter, do not translate
+msgctxt "ViewportOverlay"
+msgid "B"
+msgstr "B"
+
+msgctxt "ViewportOverlay"
+msgid "(drop a video, sequence or stream…)"
+msgstr "(Video, Sequenz oder Stream ablegen…)"
+
+msgctxt "ViewportOverlay"
+msgid "B audio muted — click to unmute"
+msgstr "Audio B stumm — zum Einschalten klicken"
+
+msgctxt "ViewportOverlay"
+msgid "B audio on — click to mute"
+msgstr "Audio B ein — zum Stummschalten klicken"
+
+msgctxt "ViewportOverlay"
+msgid "Close source B"
+msgstr "Quelle B schließen"
+
+#. Pill: Highlight Knee is on
+msgctxt "ViewportOverlay"
+msgid "KNEE"
+msgstr "KNEE"
+
+msgctxt "ViewportOverlay"
+msgid "Highlight Knee on: %1 → %2 nits. Highlights are compressed — the picture is not 1:1."
+msgstr "Highlight Knee ein: %1 → %2 nits. Lichter werden komprimiert — das Bild ist nicht 1:1."
+
+#. Pill: viewer aids are active
+msgctxt "ViewportOverlay"
+msgid "VIEWER"
+msgstr "VIEWER"
+
+msgctxt "ViewportOverlay"
+msgid "%1 — click to reset"
+msgstr "%1 — zum Zurücksetzen klicken"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Single view"
+msgstr "Einzelansicht"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Side-by-side"
+msgstr "Nebeneinander"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Split wipe"
+msgstr "Wipe"
+
+#. Dual view mode
+msgctxt "ViewportOverlay"
+msgid "Difference"
+msgstr "Differenz"
+
+msgctxt "ViewportOverlay"
+msgid "Update this saved dual view"
+msgstr "Diese gespeicherte Dual-Ansicht aktualisieren"
+
+msgctxt "ViewportOverlay"
+msgid "Save as a new dual view"
+msgstr "Als neue Dual-Ansicht speichern"
+
+msgctxt "ViewportOverlay"
+msgid "Save dual view"
+msgstr "Dual-Ansicht speichern"
+
+#. Field label when saving a dual view
+msgctxt "ViewportOverlay"
+msgid "Name"
+msgstr "Name"
+
+msgctxt "ViewportOverlay"
+msgid "e.g. ‘US30 v001 vs v002’"
+msgstr "z. B. „US30 v001 vs v002“"
+
+msgctxt "ViewportOverlay"
+msgid "Save"
+msgstr "Speichern"
+
+msgctxt "ViewportOverlay"
+msgid "Cancel"
+msgstr "Abbrechen"
+
+msgctxt "ViewportOverlay"
+msgid "Show project panel"
+msgstr "Projekt-Panel anzeigen"
+
+msgctxt "ViewportOverlay"
+msgid "Show inspector panel"
+msgstr "Inspektor-Panel anzeigen"
+
+#. Scale mode: nits on a reference display
+msgctxt "WaveformPanel"
+msgid "nits · reference"
+msgstr "nits · Referenz"
+
+msgctxt "WaveformPanel"
+msgid "% Y′"
+msgstr "% Y′"
+
+msgctxt "WaveformPanel"
+msgid "What the file encodes on a reference display, not what this screen emits. SDR white = 100 nits (BT.1886 reference)."
+msgstr "Was die Datei auf einem Referenz-Display kodiert, nicht was dieser Bildschirm ausgibt. SDR-Weiß = 100 nits (BT.1886-Referenz)."
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b> nits"
+msgstr "Frame <b>%1</b>  ·  Max <b>%2</b> nits"
+
+msgctxt "WaveformPanel"
+msgid "Frame <b>%1</b>  ·  Max <b>%2</b>"
+msgstr "Frame <b>%1</b>  ·  Max <b>%2</b>"
+
+#. Button: reset the running maximum
+msgctxt "WaveformPanel"
+msgid "Reset"
+msgstr "Zurücksetzen"
+
+#. Tooltip on Reset: restart the running maximum
+msgctxt "WaveformPanel"
+msgid "Start Max over"
+msgstr "Max neu beginnen"
+
+#. Scale choice
+msgctxt "WaveformPanel"
+msgid "Auto"
+msgstr "Auto"
+
+msgctxt "WaveformPanel"
+msgid "Scale from the interpretation"
+msgstr "Skala aus der Interpretation"
+
+msgctxt "WaveformPanel"
+msgid "Force the SDR percent scale (the signal's own Y′)"
+msgstr "SDR-Prozentskala erzwingen (das eigene Y′ des Signals)"
+
+#. Scale choice button
+msgctxt "WaveformPanel"
+msgid "nits"
+msgstr "nits"
+
+msgctxt "WaveformPanel"
+msgid "Force the nits scale (SDR white at 100)"
+msgstr "nits-Skala erzwingen (SDR-Weiß bei 100)"
+
+msgctxt "WaveformPanel"
+msgid "Top of scale %1 nits"
+msgstr "Skalenende %1 nits"
+
+msgctxt "WaveformPanel"
+msgid "Trace brightness"
+msgstr "Trace-Helligkeit"
+
+msgctxt "qcv::HostBridgeSource"
+msgid "Waiting for %1 (QCBridge Transmit device not publishing)"
+msgstr "Warten auf %1 (QCBridge-Transmit-Gerät sendet nicht)"
+
+msgctxt "qcv::I18n"
+msgid "System default"
+msgstr "Systemstandard"
+
+#. Suffix after a language name whose catalog is machine translated and not yet checked by a person
+msgctxt "qcv::I18n"
+msgid "machine translation"
+msgstr "maschinelle Übersetzung"
+
+#. Live input state: an SRT listener with no sender yet
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender on port %1"
+msgstr "Wartet auf einen Sender auf Port %1"
+
+msgctxt "qcv::LiveStreamDecoder"
+msgid "Waiting for a sender"
+msgstr "Wartet auf einen Sender"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Knee"
+msgstr "Knee"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::MinColorEngine"
+msgid "Clip chain"
+msgstr "Clip-Kette"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Set on this clip (minColor):"
+msgstr "Auf diesem Clip gesetzt (minColor):"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Input: %1 · %2%3"
+msgstr "Input: %1 · %2%3"
+
+#. Suffix appended to the Input line
+msgctxt "qcv::MinColorEngine"
+msgid " · limited range"
+msgstr " · Limited Range"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "Highlight Knee: ein · %1 → %2 nits"
+
+msgctxt "qcv::MinColorEngine"
+msgid "Highlight Knee: off"
+msgstr "Highlight Knee: aus"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Output path is empty"
+msgstr "Ausgabepfad ist leer"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Cube size must be ≥ 2 (got %1)"
+msgstr "Cube-Größe muss ≥ 2 sein (erhalten: %1)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "No OCIO config loaded"
+msgstr "Keine OCIO-Config geladen"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Chain build failed"
+msgstr "Kettenaufbau fehlgeschlagen"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1 (transfer %2 vs %3)"
+msgstr "ähnlichstes Display %1 (Transfer %2 vs. %3)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "nearest display %1"
+msgstr "ähnlichstes Display %1"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look"
+msgstr "Look"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "CDL"
+msgstr "CDL"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "LUT"
+msgstr "LUT"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Knee"
+msgstr "Knee"
+
+#. Badge name in the viewport's chain summary: the host Blender's display device is emulated
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display"
+msgstr "Host-Display"
+
+#. Badge name in the viewport's chain summary
+msgctxt "qcv::OCIOConfigManager"
+msgid "Clip chain"
+msgstr "Clip-Kette"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Set on this clip:"
+msgstr "Auf diesem Clip gesetzt:"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Input: %1"
+msgstr "Input: %1"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "(none)"
+msgstr "(ohne)"
+
+#. No input set
+msgctxt "qcv::OCIOConfigManager"
+msgid "Look: %1"
+msgstr "Look: %1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Scene LUT: %1"
+msgstr "Szenen-LUT: %1"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: on · %1 → %2 nits"
+msgstr "Highlight Knee: ein · %1 → %2 nits"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Highlight Knee: off"
+msgstr "Highlight Knee: aus"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (emulated%3)"
+msgstr "Host-Display: %1 · %2 (emuliert%3)"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid ", display to display"
+msgstr ", Display zu Display"
+
+msgctxt "qcv::OCIOConfigManager"
+msgid "Host display: %1 · %2 (off)"
+msgstr "Host-Display: %1 · %2 (aus)"
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed: no path provided."
+msgstr "Speichern fehlgeschlagen: kein Pfad angegeben."
+
+msgctxt "qcv::ProjectManager"
+msgid "Save failed."
+msgstr "Speichern fehlgeschlagen."
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed: no path provided."
+msgstr "Öffnen fehlgeschlagen: kein Pfad angegeben."
+
+msgctxt "qcv::ProjectManager"
+msgid "Open failed."
+msgstr "Öffnen fehlgeschlagen."
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (linear Rec.2020): frame %1 · max %2 nits"
+msgstr "Hellster Kanal (linear Rec.2020): Frame %1 · Max %2 nits"
+
+msgctxt "qcv::ScopeController"
+msgid "Brightest channel (code value): frame %1 · max %2"
+msgstr "Hellster Kanal (Codewert): Frame %1 · Max %2"
+
+#. Why the scopes assume this colourspace: the user set it
+msgctxt "qcv::ScopeController"
+msgid "set"
+msgstr "gesetzt"
+
+#. Why the scopes assume this colourspace: the EXR default (linear)
+msgctxt "qcv::ScopeController"
+msgid "EXR default"
+msgstr "EXR-Standard"
+
+#. Why the scopes assume this colourspace: it is a still image
+msgctxt "qcv::ScopeController"
+msgid "still"
+msgstr "Standbild"
+
+#. Why the scopes assume this colourspace: the file's colour tags
+msgctxt "qcv::ScopeController"
+msgid "tags"
+msgstr "Tags"
+
+msgctxt "qcv::ScopeController"
+msgid "untagged"
+msgstr "ungetaggt"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1"
+msgstr "Input · minColor %1"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · minColor %1 (built-in config)"
+msgstr "Input · minColor %1 (eingebaute Config)"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · minColor Input not convertible"
+msgstr "Signal · minColor-Input nicht konvertierbar"
+
+msgctxt "qcv::ScopeController"
+msgid "Input · %1"
+msgstr "Input · %1"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 · Input: %2"
+msgstr "⚠ Gesetzt auf %1 · Input: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 · Input: %2"
+msgstr "⚠ Datei getaggt %1 · Input: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ Set to %1 — not in this config · Input: %2"
+msgstr "⚠ Gesetzt auf %1 — nicht in dieser Config · Input: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "⚠ File tagged %1 — not in this config · Input: %2"
+msgstr "⚠ Datei getaggt %1 — nicht in dieser Config · Input: %2"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2)"
+msgstr "Angenommen · %1 (%2)"
+
+msgctxt "qcv::ScopeController"
+msgid "Assumed · %1 (%2, built-in config)"
+msgstr "Angenommen · %1 (%2, eingebaute Config)"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · RGB, nominal curve"
+msgstr "Signal · RGB, nominelle Kurve"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal · YUV"
+msgstr "Signal · YUV"
+
+msgctxt "qcv::ScopeController"
+msgid "A %1  ·  B %2"
+msgstr "A %1  ·  B %2"
+
+msgctxt "qcv::ScopeController"
+msgid "SDR · Rec.709"
+msgstr "SDR · Rec.709"
+
+msgctxt "qcv::ScopeController"
+msgid "HDR · PQ Rec.2020"
+msgstr "HDR · PQ Rec.2020"
+
+msgctxt "qcv::ScopeController"
+msgid " (manual)"
+msgstr " (manuell)"
+
+msgctxt "qcv::ScopeController"
+msgid "%1 matrix"
+msgstr "%1-Matrix"
+
+msgctxt "qcv::ScopeController"
+msgid "Signal Y′ · %1 matrix"
+msgstr "Signal Y′ · %1-Matrix"
+
+msgctxt "qcv::ScopeController"
+msgid " · luminance"
+msgstr " · Leuchtdichte"
+
+msgctxt "qcv::VideoDecoder"
+msgid "File not found: %1"
+msgstr "Datei nicht gefunden: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_open_input failed: %1"
+msgstr "avformat_open_input fehlgeschlagen: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avformat_find_stream_info failed: %1"
+msgstr "avformat_find_stream_info fehlgeschlagen: %1"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No video stream found"
+msgstr "Kein Videostream gefunden"
+
+msgctxt "qcv::VideoDecoder"
+msgid "No decoder available for codec id %1"
+msgstr "Kein Decoder für Codec-ID %1 verfügbar"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_alloc_context3 failed"
+msgstr "avcodec_alloc_context3 fehlgeschlagen"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_open2 failed: %1"
+msgstr "avcodec_open2 fehlgeschlagen: %1"
+
+#. FFmpeg library name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "swscale context init failed"
+msgstr "swscale-Kontext konnte nicht initialisiert werden"
+
+msgctxt "qcv::VideoDecoder"
+msgid "Vulkan device lost — restart to recover hardware decode"
+msgstr "Vulkan-Gerät verloren — Neustart stellt Hardware-Decoding wieder her"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_read_frame error: %1"
+msgstr "av_read_frame-Fehler: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "send_packet: %1"
+msgstr "send_packet: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "avcodec_receive_frame: %1"
+msgstr "avcodec_receive_frame: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data fallback failed"
+msgstr "hwframe_transfer_data-Fallback fehlgeschlagen"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "hwframe_transfer_data: %1"
+msgstr "hwframe_transfer_data: %1"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "av_seek_frame failed for frame %1"
+msgstr "av_seek_frame für Frame %1 fehlgeschlagen"
+
+#. FFmpeg function name, keep as written
+msgctxt "qcv::VideoDecoder"
+msgid "read_frame after seek: %1"
+msgstr "read_frame nach Seek: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "No clip under the playhead to compare"
+msgstr "Kein Clip unter dem Abspielkopf zum Vergleichen"
+
+#. Toast after opening an ARRIRAW file. %1 = camera + "ARRIRAW" ("ALEXA 35 ARRIRAW"), %2 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 — %2 can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool."
+msgstr "%1 — %2 kann hier nicht abgespielt werden: nicht debayertes Kamera-Raw. Sichten Sie stattdessen die ProRes-Fassung / Dailies, oder konvertieren Sie in DaVinci Resolve oder im ARRI Reference Tool."
+
+#. Toast after opening a file no decoder can play. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 can’t be played here: unsupported format."
+msgstr "%1 kann hier nicht abgespielt werden: nicht unterstütztes Format."
+
+#. Toast after opening or dropping a Windows shortcut (.lnk) whose target no longer exists. %1 = the shortcut's file name
+msgctxt "qcv::WindowManager"
+msgid "%1 points to a file that isn’t there any more."
+msgstr "%1 verweist auf eine Datei, die nicht mehr vorhanden ist."
+
+#. Toast after dropping or opening a folder. %1 = folder name
+msgctxt "qcv::WindowManager"
+msgid "%1 is a folder — drop a file, or any frame of an image sequence."
+msgstr "%1 ist ein Ordner — legen Sie eine Datei ab oder einen beliebigen Frame einer Bildsequenz."
+
+#. Toast after dropping or opening a file type QCView does not open. %1 = file name
+msgctxt "qcv::WindowManager"
+msgid "%1 isn’t a file type QCView opens."
+msgstr "%1 ist kein Dateityp, den QCView öffnet."
+
+#. Stands in for a suffix in the skipped-files toast
+msgctxt "qcv::WindowManager"
+msgid "broken shortcut"
+msgstr "defekte Verknüpfung"
+
+msgctxt "qcv::WindowManager"
+msgid "folder"
+msgstr "Ordner"
+
+msgctxt "qcv::WindowManager"
+msgid "no extension"
+msgstr "ohne Endung"
+
+#. Toast after a batch drop/open; %1 = skipped count, %2 = total, %3 = the suffixes
+msgctxt "qcv::WindowManager"
+msgid "%1 of %2 files skipped — not file types QCView opens (%3)."
+msgstr "%1 von %2 Dateien übersprungen — keine Dateitypen, die QCView öffnet (%3)."
+
+msgctxt "qcv::WindowManager"
+msgid "Blender: not listening"
+msgstr "Blender: wartet nicht mehr"
+
+msgctxt "qcv::WindowManager"
+msgid "Listening for a Blender session on this machine: start one from the QCBridge host panel"
+msgstr "Wartet auf eine Blender-Sitzung auf diesem Rechner: Starten Sie eine im QCBridge-Host-Panel"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender"
+msgstr "Blender"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender session ended"
+msgstr "Blender-Sitzung beendet"
+
+msgctxt "qcv::WindowManager"
+msgid "After Effects / Premiere live view is not available on this platform yet"
+msgstr "Die Live-Ansicht für After Effects / Premiere ist auf dieser Plattform noch nicht verfügbar"
+
+#. Toast; %1 = the stream URL
+msgctxt "qcv::WindowManager"
+msgid "Could not open stream: %1"
+msgstr "Stream konnte nicht geöffnet werden: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "This note has no captured frame"
+msgstr "Diese Notiz hat keinen erfassten Frame"
+
+msgctxt "qcv::WindowManager"
+msgid "No frame to freeze yet"
+msgstr "Noch kein Frame zum Einfrieren"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1"
+msgstr "%1 entfernt"
+
+msgctxt "qcv::WindowManager"
+msgid "Removed %1 items"
+msgstr "%1 Elemente entfernt"
+
+#. Toast button
+msgctxt "qcv::WindowManager"
+msgid "Undo"
+msgstr "Rückgängig"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to capture — load media first"
+msgstr "Nichts zum Aufnehmen — zuerst Medien laden"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot copied to clipboard"
+msgstr "Screenshot in die Zwischenablage kopiert"
+
+msgctxt "qcv::WindowManager"
+msgid "Couldn't resolve the Desktop folder"
+msgstr "Desktop-Ordner konnte nicht ermittelt werden"
+
+msgctxt "qcv::WindowManager"
+msgid "Saving screenshot…"
+msgstr "Screenshot wird gespeichert…"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot saved (%1)"
+msgstr "Screenshot gespeichert (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Screenshot export failed"
+msgstr "Screenshot-Export fehlgeschlagen"
+
+msgctxt "qcv::WindowManager"
+msgid "Nothing to restore"
+msgstr "Nichts wiederherzustellen"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1"
+msgstr "%1 wiederhergestellt"
+
+msgctxt "qcv::WindowManager"
+msgid "Restored %1 items"
+msgstr "%1 Elemente wiederhergestellt"
+
+msgctxt "qcv::WindowManager"
+msgid "Preset restored: %1"
+msgstr "Preset wiederhergestellt: %1"
+
+msgctxt "qcv::WindowManager"
+msgid "minNotes is not installed"
+msgstr "minNotes ist nicht installiert"
+
+msgctxt "qcv::WindowManager"
+msgid "The stream names a wire this QCView does not know (%1); set the Input yourself"
+msgstr "Der Stream meldet eine Signalkodierung (Wire), die dieses QCView nicht kennt (%1); stellen Sie den Input selbst ein"
+
+msgctxt "qcv::WindowManager"
+msgid "unknown wire %1"
+msgstr "unbekanntes Wire %1"
+
+msgctxt "qcv::WindowManager"
+msgid "Colour management turned on for the Blender stream"
+msgstr "Farbmanagement für den Blender-Stream eingeschaltet"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: its view and display resolve in the Blender 5.2 config"
+msgstr "Blender-Stream: View und Display sind in der Blender-5.2-Config vorhanden"
+
+msgctxt "qcv::WindowManager"
+msgid "Switch"
+msgstr "Wechseln"
+
+msgctxt "qcv::WindowManager"
+msgid "view not applied: active config is %1"
+msgstr "View nicht angewendet: aktive Config ist %1"
+
+msgctxt "qcv::WindowManager"
+msgid "The host runs a non-Blender OCIO config (%1): its view cannot be reproduced; Input pinned only"
+msgstr "Der Host nutzt eine OCIO-Config, die nicht von Blender stammt (%1): Sein View lässt sich nicht nachbilden; nur der Input wird übernommen"
+
+msgctxt "qcv::WindowManager"
+msgid "host config %1: view not reproduced"
+msgstr "Host-Config %1: View nicht nachgebildet"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the active OCIO config has no %1 input; the Blender config does"
+msgstr "Blender-Stream: Die aktive OCIO-Config hat keinen Input %1; die Blender-Config schon"
+
+msgctxt "qcv::WindowManager"
+msgid "no %1 input in this config"
+msgstr "kein Input %1 in dieser Config"
+
+msgctxt "qcv::WindowManager"
+msgid "host display %1 → %2"
+msgstr "Host-Display %1 → %2"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: view '%1' is not on display '%2' in the Blender config; view left as is"
+msgstr "Blender-Stream: View „%1“ gibt es in der Blender-Config nicht auf Display „%2“; View bleibt unverändert"
+
+msgctxt "qcv::WindowManager"
+msgid "view %1 not on %2"
+msgstr "View %1 nicht auf %2"
+
+msgctxt "qcv::WindowManager"
+msgid "look %1 not in this config"
+msgstr "Look %1 nicht in dieser Config"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: the host's view (%1 for %2) is not reproduced on minColor; switch to the OCIO engine to match it"
+msgstr "Blender-Stream: Der View des Hosts (%1 für %2) wird mit minColor nicht nachgebildet; wechseln Sie zur OCIO-Engine, um ihn nachzubilden"
+
+msgctxt "qcv::WindowManager"
+msgid "minColor on screen: host view not reproduced"
+msgstr "minColor aktiv: Host-View nicht nachgebildet"
+
+msgctxt "qcv::WindowManager"
+msgid "host white balance not reproduced"
+msgstr "Host-Weißabgleich nicht nachgebildet"
+
+msgctxt "qcv::WindowManager"
+msgid "host curves not reproduced"
+msgstr "Host-Kurven nicht nachgebildet"
+
+msgctxt "qcv::WindowManager"
+msgid "host HDR view: shown SDR"
+msgstr "Host-HDR-View: als SDR gezeigt"
+
+msgctxt "qcv::WindowManager"
+msgid "working space assumed Linear Rec.709"
+msgstr "Arbeitsfarbraum als Linear Rec.709 angenommen"
+
+msgctxt "qcv::WindowManager"
+msgid "host and replica colour setups differ (%1)"
+msgstr "Farbsetups von Host und Replica unterscheiden sich (%1)"
+
+msgctxt "qcv::WindowManager"
+msgid "Blender stream: %1"
+msgstr "Blender-Stream: %1"
