@@ -33,7 +33,8 @@ struct Dx12Keep { _frame: HwFrame, _handle: Box<min_present::Dx12FrameHandle> }
 #[cfg(windows)] unsafe impl Sync for Dx12Keep {}
 /// The Vulkan bridge's plane set: the bridge's ring owns the AVFrame until the slot is reused; the handle rides alone.
 #[cfg(windows)]
-struct VkKeep { _handle: Box<min_present::Dx12FrameHandle> }
+struct VkKeep { _handle: Box<min_present::Dx12FrameHandle>, /// the bridge slot's token: while this lives the slot's textures are not overwritten
+    _token: std::sync::Arc<()> }
 #[cfg(windows)] unsafe impl Send for VkKeep {}
 #[cfg(windows)] unsafe impl Sync for VkKeep {}
 
@@ -233,10 +234,10 @@ impl Session {
                 {
                     if self.vk_bridge.is_none() && !self.vk_bridge_tried { self.vk_bridge_tried = true; if let Some(hw) = self._hw.clone() { self.vk_bridge = crate::vk_bridge::VkBridge::new(&hw); } }
                     if let Some(b) = self.vk_bridge.as_mut() {
-                        if let Some(handle) = b.export(frame, HwFrame(ff::av_frame_clone(frame))) {
+                        if let Some((handle, token)) = b.export(frame, HwFrame(ff::av_frame_clone(frame))) {
                             if !self.logged_native { log::info!("Vulkan → D3D12 bridge publish ({w}x{h}, {} planes)", handle.plane_count); self.logged_native = true; }
                             let p = &*handle as *const _ as *mut std::ffi::c_void;
-                            return Ok(fin(Frame { width: w, height: h, pixels: Pixels::Native(NativeFrame { handle: p, keep: std::sync::Arc::new(VkKeep { _handle: handle }) }), meta }, self));
+                            return Ok(fin(Frame { width: w, height: h, pixels: Pixels::Native(NativeFrame { handle: p, keep: std::sync::Arc::new(VkKeep { _handle: handle, _token: token }) }), meta }, self));
                         }
                     }
                 }

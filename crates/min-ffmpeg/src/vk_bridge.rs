@@ -29,14 +29,15 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 const RING: usize = 4;
 
 struct PlaneRes { res: ID3D12Resource, raw: *mut c_void, image: vk::Image, memory: vk::DeviceMemory, w: u32, h: u32, _handle: HANDLE }
-struct Slot { planes: Vec<PlaneRes>, key: (i32, u32, u32, u8), busy_until: u64, keep: Option<HwFrame>, cmd: vk::CommandBuffer }
+struct Slot { planes: Vec<PlaneRes>, key: (i32, u32, u32, u8), busy_until: u64, keep: Option<HwFrame>, cmd: vk::CommandBuffer, /// cloned into every handle's keep: the presenter still samples these textures while the count is above one
+    token: std::sync::Arc<()> }
 
 pub struct VkBridge {
     instance: ash::Instance, device: ash::Device, ext_sem: ash::khr::external_semaphore_win32::Device,
     hwdev: *mut ff::AVHWDeviceContext, vkctx: *const ff::AVVulkanDeviceContext,
     qf: u32, queue: vk::Queue, pool: vk::CommandPool, mem_props: vk::PhysicalDeviceMemoryProperties,
     d3d: ID3D12Device, fence: ID3D12Fence, fence_raw: *mut c_void, sem: vk::Semaphore, fence_value: u64,
-    slots: Vec<Slot>, next: usize, logged: bool,
+    slots: Vec<Slot>, next: usize, logged: bool, logged_grow: bool,
     _hw: HwDevice,
 }
 unsafe impl Send for VkBridge {}
@@ -83,9 +84,9 @@ impl VkBridge {
             let sem = device.create_semaphore(&vk::SemaphoreCreateInfo::default().push_next(&mut ty), None).ok()?;
             ext_sem.import_semaphore_win32_handle(&vk::ImportSemaphoreWin32HandleInfoKHR::default().semaphore(sem).handle_type(vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE).handle(fh.0 as isize)).ok()?;
             let fence_raw = fence.as_raw();
-            let slots = cmds.into_iter().map(|cmd| Slot { planes: vec![], key: (0, 0, 0, 0), busy_until: 0, keep: None, cmd }).collect();
+            let slots = cmds.into_iter().map(|cmd| Slot { planes: vec![], key: (0, 0, 0, 0), busy_until: 0, keep: None, cmd, token: std::sync::Arc::new(()) }).collect();
             log::info!("vk bridge: up on queue family {qf} — {RING}-slot ring of shared D3D12 plane textures, one shared fence");
-            Some(VkBridge { instance, device, ext_sem, hwdev, vkctx, qf, queue, pool, mem_props, d3d, fence, fence_raw, sem, fence_value: 0, slots, next: 0, logged: false, _hw: hw.clone() })
+            Some(VkBridge { instance, device, ext_sem, hwdev, vkctx, qf, queue, pool, mem_props, d3d, fence, fence_raw, sem, fence_value: 0, slots, next: 0, logged: false, logged_grow: false, _hw: hw.clone() })
         }
     }
 
@@ -140,11 +141,19 @@ impl VkBridge {
 
     /// Copy one decoded Vulkan frame into the ring and hand back the D3D12 plane set the presenter imports. `keep` is the
     /// AVFrame reference the slot holds until the copy has completed and the slot is reused. None = fall back to readback.
-    pub unsafe fn export(&mut self, frame: *mut ff::AVFrame, keep: HwFrame) -> Option<Box<Dx12FrameHandle>> { unsafe {
+    pub unsafe fn export(&mut self, frame: *mut ff::AVFrame, keep: HwFrame) -> Option<(Box<Dx12FrameHandle>, std::sync::Arc<()>)> { unsafe {
         let lay = self.layout(frame)?;
         if !self.logged { log::info!("vk bridge: {}x{} {} — {} VkImage(s){}, {} destination plane(s), {}-bit", lay.w, lay.h, std::ffi::CStr::from_ptr(ff::av_get_pix_fmt_name(lay.sw_format)).to_string_lossy(), lay.n_img, if lay.multiplane_2 { " (2-plane multiplane)" } else if lay.n_img == 1 { " (multiplane)" } else { "" }, lay.planes.len(), lay.depth); self.logged = true; }
         let dev = self.device.clone();
-        let idx = self.next; self.next = (self.next + 1) % RING;
+        // a slot is reusable only when the presenter has let go of its textures (the token is unique again) — otherwise the
+        // next copy would overwrite the frame on screen (the 4K garbage of 2026-11-07); grow the ring when none is free
+        let free = (0..self.slots.len()).map(|k| (self.next + k) % self.slots.len()).find(|&k| std::sync::Arc::strong_count(&self.slots[k].token) == 1);
+        let idx = match free { Some(k) => k, None => {
+            let cmd = dev.allocate_command_buffers(&vk::CommandBufferAllocateInfo::default().command_pool(self.pool).level(vk::CommandBufferLevel::PRIMARY).command_buffer_count(1)).ok()?[0];
+            self.slots.push(Slot { planes: vec![], key: (0, 0, 0, 0), busy_until: 0, keep: None, cmd, token: std::sync::Arc::new(()) });
+            if self.slots.len() > 8 && !self.logged_grow { log::info!("vk bridge: ring grew to {} slots (the presenter holds frames longer than the copies)", self.slots.len()); self.logged_grow = true; }
+            self.slots.len() - 1 } };
+        self.next = (idx + 1) % self.slots.len();
         // the slot's previous copy must have completed before its textures and its AVFrame are reused
         if self.slots[idx].busy_until > 0 { let v = [self.slots[idx].busy_until]; let s = [self.sem]; let _ = dev.wait_semaphores(&vk::SemaphoreWaitInfo::default().semaphores(&s).values(&v), u64::MAX); }
         self.slots[idx].keep = None;
@@ -210,7 +219,7 @@ impl VkBridge {
         self.slots[idx].busy_until = next_value; self.slots[idx].keep = Some(keep);
         let mut planes = [std::ptr::null_mut(); 4];
         for (i, p) in self.slots[idx].planes.iter().enumerate().take(4) { planes[i] = p.raw; }
-        Some(Box::new(Dx12FrameHandle { resource: std::ptr::null_mut(), fence: self.fence_raw, fence_value: next_value, planes, plane_count: self.slots[idx].planes.len() as u8, interleaved_chroma: lay.multiplane_2, code_bits: lay.depth }))
+        Some((Box::new(Dx12FrameHandle { resource: std::ptr::null_mut(), fence: self.fence_raw, fence_value: next_value, planes, plane_count: self.slots[idx].planes.len() as u8, interleaved_chroma: lay.multiplane_2, code_bits: lay.depth }), self.slots[idx].token.clone()))
     } }
 }
 

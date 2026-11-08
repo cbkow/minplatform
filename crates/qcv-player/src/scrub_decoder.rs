@@ -44,7 +44,7 @@ struct Shared { pending: AtomicU64, stop: AtomicBool, cv: Condvar, lock: Mutex<(
 
 pub struct ScrubDecoder {
     shared: Arc<Shared>, thread: Option<thread::JoinHandle<()>>, next_id: u64, cache: Arc<SimpleLru<i32, Arc<ScrubCacheEntry>>>,
-    pub served: Option<crossbeam_channel::Receiver<Served>>, pub intra_direct: bool, pub hw_active: bool,
+    pub served: Option<crossbeam_channel::Receiver<Served>>, pub intra_direct: bool, pub hw_active: bool, hw_name: &'static str,
 }
 
 impl ScrubDecoder {
@@ -62,13 +62,14 @@ impl ScrubDecoder {
         let mut session = Session::open(path, &session_opts)?;
         session.range_override = opts.range_override;
         let hw_active = !session.info.hw_accel.is_empty();
+        let hw_name: &'static str = match session.info.hw_accel.as_str() { "VideoToolbox" => "VideoToolbox", "D3D12VA" => "D3D12VA", "Vulkan" => "Vulkan", _ => "software" };
         if hw_active && !probe_intra { log::info!("ScrubDecoder: hardware scrub enabled for an inter codec (hw_inter_scrub)"); }
         let shared = Arc::new(Shared { pending: AtomicU64::new(0), stop: AtomicBool::new(false), cv: Condvar::new(), lock: Mutex::new(()), range_override: AtomicU8::new(opts.range_override as u8), cache_invalidate: AtomicBool::new(false), last_shown: AtomicI32::new(-1), issued: Mutex::new(vec![]) });
         let (stx, srx) = if opts.stats { let (a, b) = crossbeam_channel::unbounded(); (Some(a), Some(b)) } else { (None, None) };
         let cache: Arc<SimpleLru<i32, Arc<ScrubCacheEntry>>> = Arc::new(SimpleLru::new(opts.budget_bytes));
         let (sh, c, intra_direct) = (shared.clone(), cache.clone(), probe_intra);
         let thread = thread::Builder::new().name("qcv-scrub".into()).spawn(move || worker(session, sh, index, sink, c, intra_direct, stx)).map_err(|e| Error::Open(e.to_string()))?;
-        Ok(ScrubDecoder { shared, thread: Some(thread), next_id: 0, cache, served: srx, intra_direct, hw_active })
+        Ok(ScrubDecoder { shared, thread: Some(thread), next_id: 0, cache, served: srx, intra_direct, hw_active, hw_name })
     }
     /// Latest target wins; cheap at slider-drag rate. Returns the request id (the harness matches `Served` on it).
     pub fn request_frame(&mut self, frame_no: i32) -> u64 {
@@ -79,6 +80,8 @@ impl ScrubDecoder {
         self.next_id
     }
     pub fn last_shown(&self) -> i32 { self.shared.last_shown.load(Ordering::Acquire) }
+    /// The scrub session's hwaccel name ("VideoToolbox" / "D3D12VA" / "Vulkan"), "software" when none.
+    pub fn hw_name(&self) -> &'static str { self.hw_name }
     /// The hover thumbnail's first stop (the platform's addition beside QCView's loader): a frame already in the GOP cache
     /// becomes an RGBA8 thumbnail on the calling thread (`peek`: never touches the LRU, never decodes; ~1–2 ms for 4K via
     /// swscale). Only planar entries convert here; a VideoToolbox entry (and a miss) returns None and the loader answers.
@@ -174,7 +177,9 @@ fn make_entry(s: &mut Session, f: *mut ff::AVFrame, pts: i64, w: u32, h: u32) ->
         if min_ffmpeg::hw::is_hw_format(fmt) {
             #[cfg(target_os = "macos")]
             { let pix = (*f).data[3] as *mut std::ffi::c_void; if min_present::import::metal::zero_copy_supported(pix) { return Some(ScrubCacheEntry::native(HwFrame(ff::av_frame_clone(f)), w, h, pts)) } }
-            // pool-based (D3D12VA), Vulkan (until S6's bridge) or an unbridged VT layout: read back
+            // Vulkan (S6): the entry holds FFmpeg's pool frame; the bridge copies it into D3D12 at publish — zero readback
+            if fmt == ff::AVPixelFormat::AV_PIX_FMT_VULKAN { return Some(ScrubCacheEntry::native(HwFrame(ff::av_frame_clone(f)), w, h, pts)) }
+            // pool-based (D3D12VA) or an unbridged VT layout: read back
             let sw = s.hw_readback(f)?;
             let bytes = ff::av_image_get_buffer_size(std::mem::transmute::<i32, ff::AVPixelFormat>((*sw).format), (*sw).width, (*sw).height, 1);
             return Some(ScrubCacheEntry::planar(HwFrame(ff::av_frame_clone(sw)), pts, if bytes > 0 { bytes as usize } else { (w as usize) * (h as usize) * 2 }));
