@@ -78,6 +78,30 @@ impl DualTransport {
         if let Some(t) = self.sides[i].as_mut() { let sf = side_frame(f, self.fps, t.rate().as_f64()); t.follow(sf); if t.has_picture_at(sf) { t.seek_to_frame(sf as i32); } if self.user_wants_playback { t.play(); } }
         Ok(())
     }
+    /// Follow an edited dual timeline (row 212; tracks A / B at the master rate): each side takes its track at its own rate,
+    /// the master re-times (the longer side), both sides re-seek to the playhead.
+    /// `structural` (a split / delete — the sides' decoder slots are indexed by clip) reopens each side on its new timeline
+    /// (A's audio carried); trims / slides / slips re-seat in place.
+    pub fn set_timeline(&mut self, tl: &qcv_timeline::Timeline, structural: bool) {
+        let sec = self.timer.position();
+        for (i, id) in [(0usize, qcv_timeline::TRACK_A), (1, qcv_timeline::TRACK_B)] {
+            let Some(t) = self.sides[i].as_mut() else { continue };
+            let side = tl.side_timeline(id, t.rate());
+            if !structural || side.tracks[0].clips.is_empty() { t.set_timeline(side); continue }
+            match Transport::open_playlist(side, self.opts.clone()) {
+                Ok(mut n) => {
+                    n.set_follower(true); n.set_loop_enabled(self.loop_enabled); n.set_review_speed(self.review_speed);
+                    let mut old = self.sides[i].take().unwrap();
+                    if i == 0 { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); n.set_audio(au); }
+                    if self.user_wants_playback { n.play(); }
+                    drop_off_thread(old); self.sides[i] = Some(n);
+                }
+                Err(e) => log::warn!("Dual: side {id} rebuild: {e}"),
+            }
+        }
+        self.retime(sec);
+        let f = self.current_frame(); self.seek_to_frame(f);
+    }
     /// QCView `masterFps` = the higher clocked side's (24 with none); length = the longer side in seconds × that rate.
     fn retime(&mut self, keep_sec: f64) {
         let rates: Vec<Rate> = self.sides.iter().flatten().map(|t| t.rate()).collect();
@@ -332,6 +356,26 @@ mod tests {
         assert_eq!(d.rate().as_f64().round() as i32, 24, "both sides 24 now");
         assert_eq!(d.current_frame(), 40, "the playhead keeps its time (50 @ 30 → 40 @ 24)");
         assert_eq!((d.in_point(), d.out_point()), (37, 40), "in / out keep their times");
+        for p in [a, b] { let _ = std::fs::remove_file(p); }
+    }
+    #[test]
+    fn an_edited_timeline_moves_what_a_side_shows() {
+        let (Some(a), Some(b)) = (clip("ea", "24", 2.0), clip("eb", "24", 2.0)) else { eprintln!("ffmpeg missing: skipped"); return };
+        let (ma, mb) = (media_info(&a).unwrap(), media_info(&b).unwrap());
+        let mut d = DualTransport::open(Some(ma.clone()), Some(mb.clone()), TransportOptions { scrub: None, ..Default::default() }).unwrap();
+        let mut ed = qcv_timeline::Editor::default(); ed.load_dual(Some(&ma), Some(&mb), d.rate());
+        // ⌘K on B at 12, the second half slid +6 (carrying): at master 20, B shows its frame 14; A its 20
+        assert!(ed.split_clip_at(qcv_timeline::TRACK_B, 12));
+        let id = ed.timeline.track(qcv_timeline::TRACK_B).unwrap().clips[1].id.clone();
+        assert_eq!(ed.shift_clips(qcv_timeline::TRACK_B, &id, 6, true), 6);
+        d.set_timeline(&ed.timeline, true);
+        assert_eq!(d.frame_count(), 54, "the master grew to B's new end");
+        d.seek_to_frame(20); settle(&mut d);
+        assert_eq!(d.side(Side::A).unwrap().current().unwrap().frame_no, 20);
+        assert_eq!(d.side(Side::B).unwrap().current().unwrap().frame_no, 14);
+        // in the 6-frame hole B blanks
+        d.seek_to_frame(15); let mut blank = false; for _ in 0..100 { if d.tick(Instant::now())[1] == SideUpdate::Blank { blank = true; } std::thread::sleep(Duration::from_millis(3)); }
+        assert!(blank, "B is in its gap at master 15");
         for p in [a, b] { let _ = std::fs::remove_file(p); }
     }
     #[test]

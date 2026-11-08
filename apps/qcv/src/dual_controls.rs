@@ -15,7 +15,8 @@ use vello::Scene;
 fn tr(s: &str) -> &str { min_i18n::trc("ViewportOverlay", s) }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Mode(CompareMode), ClearB, Seam(f32), Gain(f32), Save, Update }
+pub enum Cmd { Mode(CompareMode), ClearB, Seam(f32), Gain(f32), Save, Update, /// a chip clicked: its side takes ⌘K and the edit keys (row 212)
+    Target(Side) }
 
 /// QCView's gain range (`diffGain` 1..16).
 pub const GAIN_MAX: f32 = 16.0;
@@ -30,7 +31,7 @@ pub struct DualControls {
     active: bool, available: bool, saved: bool, mode: CompareMode, seam: f32, gain: f32,
     a: Chip, b: Chip, close_b: ActionButton, modes: ActionGroup, slider: Slider, readout: String, readout_rect: Rect,
     update: ActionButton, save: ActionButton,
-    drop_side: Option<Side>,
+    drop_side: Option<Side>, target: Side,
     pub tooltips: Tooltips,
 }
 
@@ -42,7 +43,7 @@ impl DualControls {
         DualControls { rect: Rect::ZERO, active: false, available: true, saved: false, mode: CompareMode::Single, seam: 0.5, gain: 1.0,
             a: Chip::new(), b: Chip::new(), close_b: ActionButton::new("x", tr("Close source B")).size_s(), modes, slider: Slider::new(0.5), readout: String::new(), readout_rect: Rect::ZERO,
             update: ActionButton::new("floppy-disk", tr("Update this saved dual view")).size_s(), save: ActionButton::new("floppy-disk", tr("Save dual view")).size_s(),
-            drop_side: None, tooltips: Tooltips::default() }
+            drop_side: None, target: Side::B, tooltips: Tooltips::default() }
     }
     /// The state to show; returns true when something visible changed.
     #[allow(clippy::too_many_arguments)]
@@ -97,12 +98,15 @@ impl DualControls {
         if self.a.rect.contains(p) { Some(Side::A) } else if self.b.rect.contains(p) { Some(Side::B) } else { None }
     }
     /// A drag hovering a chip (the accent outline); returns true when it changed.
+    /// The edit target (row 212): its chip carries a hairline in the side colour while dual is on.
+    pub fn set_target(&mut self, s: Side) -> bool { if self.target == s { return false } self.target = s; true }
     pub fn set_drop_side(&mut self, s: Option<Side>) -> bool { if self.drop_side == s { return false } self.drop_side = s; true }
     /// Returns (commands, redraw needed, consumed).
     pub fn event(&mut self, e: &Event, now: Instant, scale: f64) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let mut dirty = false;
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave);
         for c in [&mut self.a, &mut self.b] { let h = inside && e.pos().is_some_and(|(x, y)| c.rect.contains(kurbo::Point::new(x, y))); if h != c.hovered { c.hovered = h; c.hover.set_target(if h { 1.0 } else { 0.0 }, now); dirty = true; } }
+        if let Event::Down { x, y, button: min_ui::Button::Primary } = *e { if !self.close_b.hit(x, y) && self.shows_b() { if let Some(s) = self.chip_at(x, y) { cmds.push(Cmd::Target(s)); dirty = true; } } }
         if self.close_b.rect.area() > 0.0 { match self.close_b.event(e, now) { min_ui::Response::Clicked => { cmds.push(Cmd::ClearB); dirty = true; } min_ui::Response::None => {} _ => dirty = true } }
         for (i, r) in self.modes.event(e, now) { dirty = true; if r == min_ui::Response::Clicked { cmds.push(Cmd::Mode(MODES[i])); } }
         if self.slider.rect.area() > 0.0 {
@@ -146,6 +150,10 @@ impl DualControls {
             };
             let nl = crate::project_panel::elided(fonts, &text, weight, color, (right - nx).max(0.0), scale);
             min_ui::fonts::draw_layout(scene, &nl, Affine::translate((nx, c.rect.y0 + (c.rect.height() - nl.height() as f64) / 2.0)));
+            if self.shows_b() && self.target == side && self.drop_side.is_none() {
+                let bw = scale.max(1.0);
+                scene.stroke(&Stroke::new(bw), Affine::IDENTITY, paint::color(letter_c), None, &RoundedRect::from_rect(c.rect.inset(-bw / 2.0), r));
+            }
             if self.drop_side == Some(side) {
                 let bw = 2.0 * scale;
                 scene.stroke(&Stroke::new(bw), Affine::IDENTITY, paint::color(t::FOCUS_INDICATOR_COLOR), None, &RoundedRect::from_rect(c.rect.inset(-bw / 2.0), r));

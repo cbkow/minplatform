@@ -49,6 +49,7 @@ mod color_drawer;
 mod color_columns;
 mod sdr_white;
 mod dual_controls;
+mod dual_bars;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -58,7 +59,8 @@ use min_i18n::fill;
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
     mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
     drawer: color_drawer::ColorDrawer, /// dual view's controls on the status strip + the Save dialog + the seam's grab (row 173)
-    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// the pointer's last movement (the floating tabs fade when it parks over the picture)
+    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// dual's A / B lanes (row 212) + the side the precision popover edits
+    dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the pointer's last movement (the floating tabs fade when it parks over the picture)
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
     clip_peak: Option<[f32; 2]>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
@@ -96,7 +98,8 @@ struct App {
     meta: qcv_meta::MetadataService,
     /// QCView's project (row 141): the media pool, the bins, the per-clip choices; `loaded_item` = the media id in the player.
     project: qcv_project::ProjectManager, loaded_item: String, /// the saved Dual View this session came from (QCView `activeDualViewId`: Update overwrites it)
-    active_dual_view: String,
+    active_dual_view: String, /// dual view's edit model: tracks A / B at the master rate (row 212); None outside dual
+    dual_editor: Option<qcv_timeline::Editor>,
     /// the native menu bar (row 143)
     #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>,
     /// Alt went down with nothing else since: its release alone focuses the in-window bar (Windows' Alt tap)
@@ -162,6 +165,7 @@ impl App {
             if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::ImageSequence) {
                 let info = self.dual_media(id);
                 let ok = self.dual.as_mut().map(|d| d.set_side(qcv_player::Side::A, info).is_ok()).unwrap_or(false);
+                if ok { self.dual_side_changed(qcv_player::Side::A); }
                 self.project.set_load_failed(id, !ok);
                 if ok { self.project.set_active_item(id); self.loaded_item = id.to_string(); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
                 return
@@ -331,6 +335,9 @@ impl App {
                     if std::env::var_os("QCV_NO_AUDIO").is_none() && let Ok(au) = qcv_player::AudioPlayer::new() { d.set_audio(Box::new(au)); }
                     let f = (sec * d.rate().as_f64()).round() as i32; d.seek_to_frame(f);   // the single view's time carries into A
                     println!("dual: master {:.3} fps, {} frames", d.rate().as_f64(), d.frame_count());
+                    let mut ed = qcv_timeline::Editor::default(); ed.load_dual(d.media(qcv_player::Side::A), d.media(qcv_player::Side::B), d.rate());
+                    self.dual_editor = Some(ed);
+                    if let Some(g) = self.gpu.as_mut() { g.dual_bars.selected = None; g.dual_bars.target = qcv_player::Side::B; }
                     self.dual = Some(d);
                     if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(true); }
                 }
@@ -344,7 +351,8 @@ impl App {
         let Some(d) = self.dual.take() else { return };
         let sec = d.current_frame() as f64 / d.rate().as_f64().max(1e-9);
         d.retire();
-        self.active_dual_view.clear();
+        self.active_dual_view.clear(); self.dual_editor = None;
+        if let Some(g) = self.gpu.as_mut() { if g.popover_side.take().is_some() { g.clip_popover.close(); } }
         if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(false); g.seam_hot = false; g.seam_drag = false; g.ui_dirty = true; }
         let id = self.loaded_item.clone();
         if !id.is_empty() { self.load_item(&id); if let Some(p) = self.player.as_mut() { let f = (sec * p.rate().as_f64()).round() as i32; p.seek_to_frame(f); } }
@@ -355,6 +363,7 @@ impl App {
         if info.is_none() { self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false }
         self.project.set_b_source_media_id(id);
         if let Some(d) = self.dual.as_mut() { if let Err(e) = d.set_side(qcv_player::Side::B, info) { println!("dual B: {e}"); self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false } }
+        self.dual_side_changed(qcv_player::Side::B);
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
         true
     }
@@ -362,6 +371,7 @@ impl App {
     fn clear_b_source(&mut self) {
         self.project.set_b_source_media_id("");
         if let Some(d) = self.dual.as_mut() { let _ = d.set_side(qcv_player::Side::B, None); }
+        self.dual_side_changed(qcv_player::Side::B);
         if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.b.clear_frame(); } g.ui_dirty = true; }
     }
     /// A drop on a side (a chip, or the picture by mode): B takes the first path, the rest go to the bins; A loads the first.
@@ -389,24 +399,115 @@ impl App {
             let (a, b) = (self.dual_media(&dp.media_id_a), self.dual_media(&dp.media_id_b));
             self.loaded_item = dp.media_id_a.clone(); self.project.set_active_item(&dp.media_id_a);
             if let Some(d) = self.dual.as_mut() { let _ = d.set_side(qcv_player::Side::A, a); let _ = d.set_side(qcv_player::Side::B, b); }
+            self.dual_side_changed(qcv_player::Side::A); self.dual_side_changed(qcv_player::Side::B);
             self.set_compare_mode(CompareMode::SideBySide);
         } else {
             if self.project.item(&dp.media_id_a).is_some() { self.loaded_item = dp.media_id_a.clone(); self.project.set_active_item(&dp.media_id_a); }
             self.set_compare_mode(CompareMode::SideBySide);
         }
-        if let Some(d) = self.dual.as_mut() { d.set_in_out(dp.in_point, dp.out_point); }
+        // QCView `loadDualView`: the saved clip maps replace each non-empty track (empty = the full clip, as QCView skips them)
+        if let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_mut()) {
+            let rate = ed.timeline.rate; let mut any = false;
+            for (tr, maps) in [(qcv_timeline::TRACK_A, &dp.clips_a), (qcv_timeline::TRACK_B, &dp.clips_b)] { if !maps.is_empty() { ed.set_track_clips(tr, maps.iter().filter_map(|v| clip_from_qcview(v, rate)).collect()); any = true; } }
+            if any { d.set_timeline(&ed.timeline, true); }
+            d.set_in_out(dp.in_point, dp.out_point);
+        }
         self.active_dual_view = id.to_string();
     }
     fn dual_pair_data(&self) -> Option<qcv_project::DualPairData> {
         let d = self.dual.as_ref()?;
         let fps = d.rate().as_f64();
-        Some(qcv_project::DualPairData { media_id_a: self.loaded_item.clone(), media_id_b: self.project.b_source_media_id().to_string(), master_fps: fps, master_duration: d.frame_count() as f64 / fps.max(1e-9), clips_a: vec![], clips_b: vec![], in_point: d.in_point(), out_point: d.out_point() })
+        // QCView `saveCurrentDualView`: each track's clips as clip maps (seconds), so QCView opens the view with the same edits
+        let maps = |tr: &str| self.dual_editor.as_ref().and_then(|ed| ed.timeline.track(tr).map(|t| t.clips.iter().filter(|c| !c.is_gap).map(|c| clip_to_qcview(c, ed.timeline.rate)).collect())).unwrap_or_default();
+        Some(qcv_project::DualPairData { media_id_a: self.loaded_item.clone(), media_id_b: self.project.b_source_media_id().to_string(), master_fps: fps, master_duration: d.frame_count() as f64 / fps.max(1e-9), clips_a: maps(qcv_timeline::TRACK_A), clips_b: maps(qcv_timeline::TRACK_B), in_point: d.in_point(), out_point: d.out_point() })
+    }
+    /// A side's media changed in place: its track becomes the full clip; the master rate re-times the other side's edits.
+    fn dual_side_changed(&mut self, side: qcv_player::Side) {
+        let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_mut()) else { return };
+        if ed.timeline.rate != d.rate() { ed.retime_master(d.rate()); }
+        ed.set_track_media(dual_bars::track(side), d.media(side));
+        d.set_timeline(&ed.timeline, false);
+        if let Some(g) = self.gpu.as_mut() { if g.dual_bars.selected.as_ref().is_some_and(|(s, _)| *s == side) { g.dual_bars.selected = None; } g.ui_dirty = true; }
+    }
+    /// An edit landed in the dual editor: the transport follows (a split / delete reopens the sides).
+    fn after_dual_edit(&mut self, structural: bool) {
+        if let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_ref()) { d.set_timeline(&ed.timeline, structural); }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+    }
+    fn dual_lane_cmd(&mut self, c: dual_bars::LaneCmd) {
+        use dual_bars::{track, LaneCmd};
+        let Some(ed) = self.dual_editor.as_mut() else { return };
+        let changed = match c {
+            LaneCmd::Seek(f) => { if let Some(d) = self.dual.as_mut() { d.seek_to_frame(f as i32); } false }
+            LaneCmd::Select(sel) => { if let Some(g) = self.gpu.as_mut() { if sel.is_some() { g.project_panel.selected.clear(); } g.dual_bars.selected = sel; } false }
+            LaneCmd::Target(s) => { if let Some(g) = self.gpu.as_mut() { g.dual_bars.target = s; } false }
+            LaneCmd::TrimHead { side, clip, new_start, new_source_in } => ed.trim_clip_head(track(side), &clip, new_start, new_source_in),
+            LaneCmd::TrimTail { side, clip, new_source_out } => ed.trim_clip_tail(track(side), &clip, new_source_out),
+            LaneCmd::Slide { side, clip, delta, carry } => ed.shift_clips(track(side), &clip, delta, carry) != 0,
+            LaneCmd::Slip { side, clip, new_in, new_out } => ed.slip_clip(track(side), &clip, new_in, new_out),
+            LaneCmd::Precision(side, id) => {
+                if let (Some(g), Some(c)) = (self.gpu.as_mut(), ed.timeline.track(track(side)).and_then(|t| t.clip(&id)).cloned()) {
+                    let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor(); let (w, h) = g.window.surface_size().into();
+                    let lane_h = g.dual_bars.rect.height() / 2.0; let y0 = g.dual_bars.rect.y0 + if side == qcv_player::Side::B { lane_h } else { 0.0 };
+                    let anchor = kurbo::Rect::new(g.scrubber.x_of_frame(c.start, &st, scale), y0, g.scrubber.x_of_frame(c.end(), &st, scale), y0 + lane_h);
+                    g.clip_popover.open(&c, ed.timeline.rate, anchor, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w, h), scale); g.popover_side = Some(side); set_ime(&**g.window, true);
+                }
+                false
+            }
+        };
+        if changed { self.after_dual_edit(false); }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+    }
+    /// The clip the dual keys act on (row 212): the selected clip, else the target side's clip under the playhead — or, for
+    /// a head trim from a gap, the next clip; for a tail trim, the previous one.
+    fn dual_key_clip(&self, prefer: i32) -> Option<(qcv_player::Side, qcv_timeline::Clip)> {
+        let (g, ed, d) = (self.gpu.as_ref()?, self.dual_editor.as_ref()?, self.dual.as_ref()?);
+        if let Some((s, id)) = &g.dual_bars.selected { if let Some(c) = ed.timeline.track(dual_bars::track(*s)).and_then(|t| t.clip(id)) { return Some((*s, c.clone())) } }
+        let side = g.dual_bars.target; let p = d.current_frame() as i64;
+        let mut clips: Vec<&qcv_timeline::Clip> = ed.timeline.track(dual_bars::track(side))?.clips.iter().filter(|c| !c.is_gap).collect(); clips.sort_by_key(|c| c.start);
+        clips.iter().find(|c| c.contains(p)).or_else(|| if prefer > 0 { clips.iter().find(|c| c.start > p) } else if prefer < 0 { clips.iter().rev().find(|c| c.end() <= p) } else { None }).map(|c| (side, (*c).clone()))
+    }
+    /// Dual's keys (row 212): `[` / `]` trim to the playhead, ⌘K cuts the target side, Alt+← / → slides (Shift ×10),
+    /// Delete leaves a gap / Shift+Delete closes it. Returns true when the key was dual's.
+    fn dual_key(&mut self, key: &winit::keyboard::Key) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.dual.is_none() || self.dual_editor.is_none() { return false }
+        let m = self.mods; let p = self.dual.as_ref().unwrap().current_frame() as i64;
+        let ch = |c: &str| matches!(key, Key::Character(k) if k.as_str() == c);
+        let (edit, structural) = if !m.ctrl && !m.alt && ch("[") {
+            let Some((s, c)) = self.dual_key_clip(1) else { return true };
+            let rate = self.dual_editor.as_ref().unwrap().timeline.rate;
+            let inn = c.source_in + qcv_timeline::rescale(p - c.start, rate, c.source_rate);
+            (p < c.end() && inn >= 0 && self.dual_editor.as_mut().unwrap().trim_clip_head(dual_bars::track(s), &c.id, p, inn), false)
+        } else if !m.ctrl && !m.alt && ch("]") {
+            let Some((s, c)) = self.dual_key_clip(-1) else { return true };
+            let rate = self.dual_editor.as_ref().unwrap().timeline.rate;
+            let out = c.source_in + qcv_timeline::rescale(p + 1 - c.start, rate, c.source_rate);   // the playhead's frame stays: the clip's last
+            (p >= c.start && out > c.source_in && self.dual_editor.as_mut().unwrap().trim_clip_tail(dual_bars::track(s), &c.id, out), false)
+        } else if m.ctrl && !m.shift && (ch("k") || ch("K")) {
+            let side = self.gpu.as_ref().map(|g| g.dual_bars.target).unwrap_or(qcv_player::Side::B);
+            (self.dual_editor.as_mut().unwrap().split_clip_at(dual_bars::track(side), p), true)
+        } else if m.alt && !m.ctrl && matches!(key, Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)) {
+            let Some((s, c)) = self.dual_key_clip(0) else { return true };
+            let n = if m.shift { 10 } else { 1 } * if matches!(key, Key::Named(NamedKey::ArrowLeft)) { -1 } else { 1 };
+            (self.dual_editor.as_mut().unwrap().shift_clips(dual_bars::track(s), &c.id, n, true) != 0, false)
+        } else if !m.ctrl && !m.alt && matches!(key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) {
+            let Some((s, id)) = self.gpu.as_ref().and_then(|g| g.dual_bars.selected.clone()) else { return false };   // no dual selection: the bins' Delete
+            let ed = self.dual_editor.as_mut().unwrap();
+            let ok = if m.shift { ed.delete_and_close(dual_bars::track(s), &id) } else { ed.delete_clip(dual_bars::track(s), &id) };
+            if ok { if let Some(g) = self.gpu.as_mut() { g.dual_bars.selected = None; } }
+            (ok, true)
+        } else { return false };
+        if edit { self.after_dual_edit(structural); }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+        true
     }
     fn dual_cmd(&mut self, c: dual_controls::Cmd) {
         use dual_controls::Cmd;
         match c {
             Cmd::Mode(m) => self.set_compare_mode(m),
             Cmd::ClearB => self.clear_b_source(),
+            Cmd::Target(sd) => if let Some(g) = self.gpu.as_mut() { g.dual_bars.target = sd; g.ui_dirty = true; },
             Cmd::Seam(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.seam = v.clamp(0.0, 1.0); } g.ui_dirty = true; },
             Cmd::Gain(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.gain = v.clamp(1.0, dual_controls::GAIN_MAX); } g.ui_dirty = true; },
             Cmd::Save => {
@@ -538,6 +639,7 @@ impl App {
                 let b = self.dual.as_ref().filter(|d| d.media(qcv_player::Side::B).is_some()).and_then(|_| name(self.project.b_source_media_id()));
                 let (mode, seam, gain) = g.presenter.engine.dual().map(|d| (d.mode, d.seam, d.gain)).unwrap_or((CompareMode::Single, 0.5, 1.0));
                 if g.dualc.sync(self.dual.is_some(), self.pl_editor.is_none(), mode, a, b, seam, gain, !self.active_dual_view.is_empty()) { g.ui_dirty = true; }
+                if g.dualc.set_target(g.dual_bars.target) { g.ui_dirty = true; }
                 if g.dualc.tick(now) || g.dualc.animating(now) { g.ui_dirty = true; }
             }
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
@@ -550,7 +652,7 @@ impl App {
                 g.seq_status = seq_status; g.ui_dirty = true;
             }
             let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
-            let bar_h = if self.pl_editor.is_some() && !g.compact { clip_bar::ClipBar::height(scale) } else { 0.0 };   // +20 for a playlist (row 169)
+            let bar_h = if g.compact { 0.0 } else if self.pl_editor.is_some() { clip_bar::ClipBar::height(scale) } else if self.dual.is_some() { dual_bars::DualBars::height(scale) } else { 0.0 };   // +28 a playlist, +24 dual (row 169)   // +20 for a playlist (row 169)
             let strip_h = if g.strip_hidden { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
             let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
@@ -639,7 +741,7 @@ impl App {
             if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
             g.scrubber.compact = g.compact;
             if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
-            else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); g.clip_bar.rect = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; }
+            else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); let lanes = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; g.clip_bar.rect = if self.pl_editor.is_some() { lanes } else { kurbo::Rect::ZERO }; g.dual_bars.rect = if self.dual.is_some() { lanes } else { kurbo::Rect::ZERO }; }
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
             if let Some(p) = self.player.as_ref() { if p.audio.has_audio() && g.waveform_enabled {
@@ -693,6 +795,7 @@ impl App {
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
+                if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 g.thumbs.paint(scene, content, scale, Some(g.pointer.0));
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
@@ -748,7 +851,7 @@ impl App {
         if g.about.open { let (b, _) = g.about.event(&e, now); match b { Some(0) => { let _ = os_actions::open("https://qcview.app/"); g.about.cancel(); } Some(_) => g.about.cancel(), None => {} } g.ui_dirty = true; return }
         // QCView's in-window menu bar (row 194): an open menu takes everything (its click-eater), the strip its own presses;
         // a band node's grab (a scrub released over the bar) is never the bar's
-        if !g.compact && !g.fullscreen && !(matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag)) {
+        if !g.compact && !g.fullscreen && !(matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag || g.dual_bars.is_pressed())) {
             if let Some(mb) = g.menu_bar.as_mut() {
                 let (id, d, consumed) = mb.bar.event(&e, &mut g.fonts); if d { g.ui_dirty = true; }
                 if let Some(c) = id.and_then(|i| mb.cmd(i)) { self.menu_queue.push(c); }
@@ -790,7 +893,7 @@ impl App {
             if consumed || closed_now { return }
         }
         let Some(g) = self.gpu.as_mut() else { return };
-        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag);
+        let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag || g.dual_bars.is_pressed());
         // the Color drawer (row 199): its menu / naming popover take everything; its tab over the picture; its own presses
         if !g.fullscreen && !g.compact && !grabbed {
             let mut cmds = vec![];
@@ -898,6 +1001,14 @@ impl App {
         } }
         if matches!(e, min_ui::Event::Up { .. }) { if let Some(p) = self.player.as_mut() { p.end_edit_preview(); } }
         if !bcmds.is_empty() || g.clip_bar.is_pressed() { for c in bcmds { self.bar_cmd(c); } return }
+        // dual's lanes (row 212): Shift moves a clip alone, Ctrl / Cmd slips; while one is pressed they own the pointer
+        let mut lcmds = vec![];
+        if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { if g.dual_bars.is_pressed() || e.pos().is_some_and(|(x, y)| g.dual_bars.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
+            let (c, d) = g.dual_bars.event(&e, now, self.mods.ctrl, self.mods.shift, &ed.timeline, &g.scrubber, &st, scale); if d { g.ui_dirty = true; } lcmds = c;
+            let want = match g.dual_bars.hover_zone() { Some(dual_bars::Zone::Head) | Some(dual_bars::Zone::Tail) => winit::cursor::CursorIcon::ColResize, Some(dual_bars::Zone::Body) => winit::cursor::CursorIcon::Grab, None => winit::cursor::CursorIcon::Default };
+            if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
+        } }
+        if !lcmds.is_empty() || g.dual_bars.is_pressed() { for c in lcmds { self.dual_lane_cmd(c); } return }
         let g = self.gpu.as_mut().unwrap();
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
         if sd { g.ui_dirty = true; }
@@ -957,6 +1068,13 @@ impl App {
     /// A clip-bar command: seeks / selection, or one undoable timeline edit followed by the sync.
     fn bar_cmd(&mut self, c: clip_bar::BarCmd) {
         use clip_bar::{BarCmd, TRACK};
+        // dual: the precision popover edits the clip on the lane that opened it
+        if self.dual.is_some() {
+            let side = self.gpu.as_ref().and_then(|g| g.popover_side).unwrap_or(qcv_player::Side::B);
+            let lc = match c { BarCmd::TrimHead { clip, new_start, new_source_in } => Some(dual_bars::LaneCmd::TrimHead { side, clip, new_start, new_source_in }), BarCmd::TrimTail { clip, new_source_out } => Some(dual_bars::LaneCmd::TrimTail { side, clip, new_source_out }), BarCmd::Slip { clip, new_in, new_out } => Some(dual_bars::LaneCmd::Slip { side, clip, new_in, new_out }), BarCmd::Seek(f) => Some(dual_bars::LaneCmd::Seek(f)), _ => None };
+            if let Some(lc) = lc { self.dual_lane_cmd(lc); }
+            return
+        }
         let Some(ed) = self.pl_editor.as_mut() else { return };
         let (changed, structural) = match c {
             BarCmd::Seek(f) => { if let Some(p) = self.player.as_mut() { let fps = p.rate().as_f64(); if fps > 0.0 { p.seek_to_time(f as f64 / fps); } } (false, false) }
@@ -1366,6 +1484,20 @@ fn write_png_display(path: &str, px: &[f32], w: u32, h: u32, linear_surface: boo
 enum DropTarget { Bin, Viewport, /// dual view: a chip, or the picture by mode (QCView `dropMediaAt` / the chips' DropAreas)
     Side(qcv_player::Side), /// a playlist is loaded and the drop is over the scrubber or the clip bar: insert at x (QCView's playlistDropArea)
     Playlist(i32) }
+/// QCView's `clipToMap` (a saved Dual View's `clipsA` / `clipsB`): times in SECONDS at the master rate / the source fps.
+fn clip_to_qcview(c: &qcv_timeline::Clip, master: qcv_timeline::Rate) -> serde_json::Value {
+    let sf = c.source_rate.as_f64().max(1e-9); let mf = master.as_f64().max(1e-9);
+    serde_json::json!({ "id": c.id, "name": c.name, "startTime": c.start as f64 / mf, "duration": c.duration as f64 / mf, "sourceIn": c.source_in as f64 / sf, "sourceOut": c.source_out as f64 / sf, "isGap": c.is_gap,
+        "mediaKind": match c.media_kind { qcv_timeline::ClipMediaKind::Video => 0, qcv_timeline::ClipMediaKind::ImageSequence => 1, qcv_timeline::ClipMediaKind::Audio => 2 },
+        "mediaPath": c.media_path, "mediaItemId": c.media_item_id, "sourceFps": c.source_rate.as_f64(), "sourceDuration": c.source_duration as f64 / sf, "hasAudio": c.has_audio })
+}
+/// QCView's `clipFromMap`: back to frames (the master rate for positions, the clip's fps for its source window).
+fn clip_from_qcview(v: &serde_json::Value, master: qcv_timeline::Rate) -> Option<qcv_timeline::Clip> {
+    let o = v.as_object()?; let f = |k: &str| o.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0); let st = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let sr = qcv_timeline::Rate::from_f64(if f("sourceFps") > 0.0 { f("sourceFps") } else { master.as_f64() }); let (sf, mf) = (sr.as_f64(), master.as_f64());
+    let kind = match o.get("mediaKind").and_then(|x| x.as_i64()).unwrap_or(0) { 1 => qcv_timeline::ClipMediaKind::ImageSequence, 2 => qcv_timeline::ClipMediaKind::Audio, _ => qcv_timeline::ClipMediaKind::Video };
+    Some(qcv_timeline::Clip { id: if st("id").is_empty() { qcv_timeline::fresh_id() } else { st("id") }, name: st("name"), start: (f("startTime") * mf).round() as i64, duration: (f("duration") * mf).round() as i64, source_in: (f("sourceIn") * sf).round() as i64, source_out: (f("sourceOut") * sf).round() as i64, is_gap: o.get("isGap").and_then(|x| x.as_bool()).unwrap_or(false), media_kind: kind, media_path: st("mediaPath"), media_item_id: st("mediaItemId"), source_rate: sr, source_duration: (f("sourceDuration") * sf).round() as i64, has_audio: o.get("hasAudio").and_then(|x| x.as_bool()).unwrap_or(false), ..qcv_timeline::Clip::empty() })
+}
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {
     let bytes: Vec<u8> = px.chunks(4).flat_map(|c| [(c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect();
     let Ok(file) = std::fs::File::create(path) else { println!("cannot write {path}"); return };
@@ -1423,7 +1555,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }   // the waveform's A / B (row 173)
@@ -1568,6 +1700,8 @@ impl ApplicationHandler for App {
                     ("n", false) => { self.new_project(); return }   // QCView's New Project has no shortcut (a menu item); Ctrl+N stands in until the menu bar exists
                     _ => {}
                 } } }
+                // dual view's edit keys (row 212) — no text field has the keys by here
+                if pressed && self.dual.is_some() { let typing = self.gpu.as_ref().is_some_and(|g| g.settings_panel.has_focus() || g.inspector.has_focus() || g.project_panel.is_editing() || g.strip.is_open() || g.drawer.has_focus()); if !typing && self.dual_key(&event.logical_key) { return } }
                 // a loaded playlist: Delete / Backspace removes the selected clip (no ripple close, QCView), Ctrl/Cmd+K splits at the playhead
                 if pressed && !event.repeat && self.pl_editor.is_some() { if let Some(g) = self.gpu.as_mut() { if !g.settings_panel.has_focus() && !g.inspector.has_focus() && !g.project_panel.is_editing() && !g.strip.is_open() {
                     let del = matches!(event.logical_key, Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace));
@@ -1587,7 +1721,7 @@ impl ApplicationHandler for App {
                         let commit = g.strip.key(&k, &mut g.fonts);
                         g.ui_dirty = true;
                         if !g.strip.is_open() { set_ime(&**g.window, false); }
-                        match commit { Some(status_strip::Commit::Frame(f)) => { if let Some(p) = self.player.as_mut() { p.seek_to_frame(f); } } Some(status_strip::Commit::Time(s)) => { if let Some(p) = self.player.as_mut() { p.seek_to_time(s); } } None => {} }
+                        match commit { Some(status_strip::Commit::Frame(f)) => { if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { p.seek_to_frame(f); } } Some(status_strip::Commit::Time(sec)) => { if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { let f = (sec * p.rate().as_f64()).round() as i32; p.seek_to_frame(f); } } None => {} }
                     }
                     return
                 } }
@@ -1605,6 +1739,10 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
+                    else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.dual_editor.is_some() && self.dual.is_some() {
+                        let ed = self.dual_editor.as_mut().unwrap(); let ok = if a == Action::AnnotationUndo { ed.undo_edit() } else { ed.redo_edit() };
+                        if ok { self.after_dual_edit(true); }
+                    }
                     else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.pl_editor.is_some() {
                         // a loaded playlist owns Ctrl/Cmd+Z (QCView: the timeline's undoEdit / redoEdit in an editable mode)
                         let ed = self.pl_editor.as_mut().unwrap(); let ok = if a == Action::AnnotationUndo { ed.undo_edit() } else { ed.redo_edit() };
@@ -1707,7 +1845,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { dual: None, active_dual_view: String::new(), colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { dual: None, active_dual_view: String::new(), dual_editor: None, colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -2320,5 +2458,19 @@ fn run_cut_bench(o: Opts) {
     for b in &boundaries {
         let after = shown_at.iter().find(|(f, _)| *f >= *b); let before = after.and_then(|(_, ra)| shown_at.iter().rev().find(|(f, r)| *f < *b && r < ra));
         match (before, after) { (Some((fb, rb)), Some((fa, ra))) => println!("  boundary {b}: frame {fb} at refresh {rb} → frame {fa} at refresh {ra} ({} refreshes apart; a 2/3 cadence = gapless, no duplicate)", ra - rb), _ => println!("  boundary {b}: not crossed") }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_dual_clip_survives_qcviews_clip_map() {
+        // QCView writes seconds; a 24-fps clip on a 30-fps master: start 45 (1.5 s), duration 60, source 36..84 at 24
+        let c = qcv_timeline::Clip { id: "x".into(), name: "b".into(), start: 45, duration: 60, source_in: 36, source_out: 84, media_path: "/m/b.mov".into(), media_item_id: "m".into(), source_rate: qcv_timeline::Rate::new(24, 1), source_duration: 240, ..qcv_timeline::Clip::empty() };
+        let v = clip_to_qcview(&c, qcv_timeline::Rate::new(30, 1));
+        assert_eq!(v["startTime"].as_f64(), Some(1.5)); assert_eq!(v["sourceIn"].as_f64(), Some(1.5)); assert_eq!(v["sourceFps"].as_f64(), Some(24.0));
+        let back = clip_from_qcview(&v, qcv_timeline::Rate::new(30, 1)).unwrap();
+        assert_eq!((back.start, back.duration, back.source_in, back.source_out, back.source_duration, back.source_rate), (45, 60, 36, 84, 240, qcv_timeline::Rate::new(24, 1)));
     }
 }
