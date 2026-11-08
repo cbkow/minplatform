@@ -130,3 +130,19 @@ Proposed and taken ("go"): 1 loading · 2 the bar · 3 gestures · 4 drops · 5 
   on a thread (`pending`), the picture holds, the latest scrub / seek target applies on landing, a return to the active clip
   cancels it, and replaced slots are dropped off-thread (their decoders join). Bench: 12 random cross-clip seeks all land,
   p50 62 ms incl. the 50-ms debounce; playback across cuts unchanged (0 dropped, all prewarmed).
+
+## The Media section finished: toasts, the file-type gate, the unsupported badge (2026-11-08)
+- The section is titled **Media** (the user: "rename … to Media or Bins or something more logical" — QCView's own word for the
+  list; "Bins" would promise folders that don't exist). The "Add Media…" pill stays.
+- **`min_ui::Toast`** (QCView `Toast.qml`): one at a time (a new one replaces), top-right of the content rect, 3.4 s — 5.6 s with
+  an action button, a click on it dismisses, presses elsewhere go on; positive / notice / negative = the status colour on the
+  icon only; popover surface + elevation; 120-ms fade in; long text wraps at 360 px. Test included.
+- **The file-type gate** (QCView `admitMediaPaths`) on every way media comes in — Open Media…, the command line, OS drops on the
+  bin / viewport / playlist: one path → "X isn’t a file type QCView opens." or "X is a folder — drop a file, or any frame of an
+  image sequence."; a batch → "N of M files skipped — not file types QCView opens (.ext, …)." `.qcvproj` drops still open the
+  project. Owed: Windows `.lnk` resolution (refused like any unknown suffix for now).
+- **Removal** toasts "Removed X" / "Removed N items" with **Undo** (QCView `undo-media-delete` → "Restored …" / "Nothing to
+  restore"); the Ctrl+Z bin-restore stand-in RETIRED (Ctrl+Z belongs to the playlist's timeline undo).
+- **Unsupported media** (QCView `reportUnsupportedMedia`): a failed load sets the row badge and toasts once per item per load —
+  "X can’t be played here: unsupported format." or the ARRIRAW camera-named line; the row badge (QCView's `unsupported` =
+  `video.unsupported_codec || load_failed`) is a warning glyph at the row's right edge with QCView's tooltip.

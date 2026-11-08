@@ -1,4 +1,4 @@
-//! The left rail's Add Media section — QCView's `LeftRail.qml` media card carried: the project's name in the header, the
+//! The left rail's Media section (titled "Add Media" until 2026-11-08 — the user: "rename … to Media … more logical"; QCView's own word for the list) — QCView's `LeftRail.qml` media card carried: the project's name in the header, the
 //! "Media" list grouped by QCView's section labels (Videos · Audio · Images · Image Sequences · Playlists · Dual Views ·
 //! Live) with the type glyph + a count on the bin header (the user 2026-11-07: "move the icons from the media items to the
 //! bins too, we don't need so many icons"), rows = the name elided in the middle; the LOADED row carries QCView's treatment
@@ -13,7 +13,7 @@
 //! Reset Clip Chain) arrive with the colour chain (canon §18.6) — they would be inert here.
 use kurbo::Rect;
 use min_theme::tokens as t;
-use min_ui::{anim::{mix, Ramp}, paint, ActionButton, Event, FieldResponse, Family, Fonts, ImeEvent, KeyEvent, Menu, MenuItem, Section, TextButton, TextField, Variant};
+use min_ui::{anim::{mix, Ramp}, paint, ActionButton, Tooltips, Event, FieldResponse, Family, Fonts, ImeEvent, KeyEvent, Menu, MenuItem, Section, TextButton, TextField, Variant};
 use qcv_project::{MediaType, ProjectManager};
 use std::time::Instant;
 use vello::Scene;
@@ -24,7 +24,8 @@ pub enum Cmd { Load(String), Remove(Vec<String>), AddMedia, /// QCView `createPl
     NewPlaylist, Rename(String, String), /// rows dragged out of the bin and released at (x, y) — the shell resolves the target
     DropRows(Vec<String>, f64, f64) }
 
-struct Row { id: String, name: String, media_type: MediaType, rect: Rect, hovered: bool, hover: Ramp, failed: bool }
+struct Row { id: String, name: String, media_type: MediaType, rect: Rect, hovered: bool, hover: Ramp, failed: bool, /// QCView's `unsupported`: the codec has no decoder, or the load failed → the warning badge
+    unsupported: bool }
 struct Group { label: &'static str, icon: &'static str, kind: MediaType, header: Rect, rows: Vec<Row> }
 
 pub struct ProjectPanel {
@@ -40,6 +41,7 @@ pub struct ProjectPanel {
     pub pending_rename: Option<String>, new_playlist: ActionButton,
     /// a press on a row (id, x, y) that becomes a drag past the threshold; the drag: (ids in bin order, label, pointer)
     press: Option<(String, f64, f64)>, drag: Option<(Vec<String>, String, (f64, f64))>,
+    tooltips: Tooltips, badge_rects: Vec<(String, Rect)>,
 }
 
 fn type_icon(t: MediaType) -> &'static str { match t { MediaType::Video => "video", MediaType::Audio => "music-notes", MediaType::Image => "image", MediaType::ImageSequence => "film-strip", MediaType::Playlist => "playlist", MediaType::DualPair => "frame-corners", MediaType::LiveStream => "broadcast" } }
@@ -48,7 +50,7 @@ fn section_label(t: MediaType) -> &'static str { match t { MediaType::Video => "
 const DOUBLE_CLICK_MS: u128 = 400;
 
 impl ProjectPanel {
-    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new("Add Media", true), add: TextButton::new("Add Media…", Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None } }
+    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new("Media", true), add: TextButton::new("Add Media…", Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![] } }
     /// Mirror the project when it changed (the manager's revision).
     pub fn sync(&mut self, pm: &ProjectManager, active_loaded_id: &str) -> bool {
         if pm.revision() == self.revision_seen && self.active == active_loaded_id { return false }
@@ -59,7 +61,7 @@ impl ProjectPanel {
         let mut groups: Vec<Group> = vec![];
         for t in order {
             let mut rows = vec![];
-            for bn in pm.bins() { for id in &bn.item_ids { if let Some(it) = pm.item(id) { if it.media_type == t { rows.push(Row { id: it.id.clone(), name: it.name.clone(), media_type: t, rect: Rect::ZERO, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), failed: it.load_failed }); } } } }
+            for bn in pm.bins() { for id in &bn.item_ids { if let Some(it) = pm.item(id) { if it.media_type == t { rows.push(Row { id: it.id.clone(), name: it.name.clone(), media_type: t, rect: Rect::ZERO, hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), failed: it.load_failed, unsupported: (it.video.loaded && it.video.unsupported_codec) || it.load_failed }); } } } }
             // the Playlists header stays even when empty: it carries the "+" (QCView's fallback Playlists header)
             if !rows.is_empty() || t == MediaType::Playlist { groups.push(Group { label: section_label(t), icon: type_icon(t), kind: t, header: Rect::ZERO, rows }); }
         }
@@ -195,6 +197,9 @@ impl ProjectPanel {
             let inside = e.pos().is_some_and(|(x, y)| r.rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave);
             if inside != r.hovered { r.hovered = inside; r.hover.set_target(if inside { 1.0 } else { 0.0 }, now); dirty = true; }
         } }
+        // QCView's badge tooltip
+        { let over = e.pos().filter(|_| !matches!(e, Event::Leave)).and_then(|(x, y)| self.badge_rects.iter().find(|(_, r)| r.contains(kurbo::Point::new(x, y)))).map(|(_, r)| (7u64, *r, "Can’t be played here: unsupported format or un-debayered camera raw"));
+          if self.tooltips.hover(over, now) { dirty = true; } if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); } }
         if let Event::Down { x, y, button: min_ui::Button::Primary } = *e {
             let hit = self.groups.iter().flat_map(|g| g.rows.iter()).find(|r| r.rect.contains(kurbo::Point::new(x, y))).map(|r| r.id.clone());
             if let Some(id) = hit {
@@ -215,6 +220,8 @@ impl ProjectPanel {
     }
     /// Delete / Backspace with a selection → remove them (QCView's Delete menu item).
     pub fn remove_selection(&mut self) -> Option<Cmd> { if self.selected.is_empty() { None } else { Some(Cmd::Remove(std::mem::take(&mut self.selected))) } }
+    /// The badge tooltip's delay / timeout clock (true = redraw).
+    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
     pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.add.animating(now) || self.new_playlist.animating(now) || self.groups.iter().any(|g| g.rows.iter().any(|r| r.hover.animating(now))) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
         self.section.paint(scene, fonts, scale, now, first);
@@ -229,6 +236,7 @@ impl ProjectPanel {
             let l = fonts.layout("Drop media here to add to the project", Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
             min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((self.section.rect.x0 + pad, self.add.rect.y1 + pad + (t::COMPONENT_HEIGHT_75 as f64 * scale - l.height() as f64) / 2.0)));
         }
+        let mut badges: Vec<(String, Rect)> = vec![];
         for g in &self.groups {
             // the bin header: the type glyph once, then "Label (n)" — the rows carry no icon
             let mut hx = g.header.x0;
@@ -244,7 +252,9 @@ impl ProjectPanel {
                 if bg.a > 0.0 { paint::rounded(scene, r.rect, radius, bg); }
                 let c = if r.failed { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
                 let x = r.rect.x0 + pad;
-                let avail = (r.rect.x1 - pad - x).max(20.0);
+                let mut right = r.rect.x1 - pad;
+                if r.unsupported { if let Some(g) = fonts.icon("warning", t::ICON_SIZE_SMALL * scale as f32, paint::color(t::NOTICE_VISUAL_COLOR)) { let gx = right - g.width() as f64; let gy = r.rect.y0 + (r.rect.height() - g.height() as f64) / 2.0; min_ui::fonts::draw_layout(scene, &g, kurbo::Affine::translate((gx, gy))); badges.push((r.id.clone(), Rect::new(gx, gy, right, gy + g.height() as f64))); right = gx - t::SPACING_75 as f64 * scale; } }
+                let avail = (right - x).max(20.0);
                 let weight = if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32;   // Spectrum 2 marks the current item with fill + weight, never an outline (a ring = keyboard focus)
                 let mut l = fonts.layout(&r.name, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, weight, paint::color(c));
                 if l.width() as f64 > avail {
@@ -256,9 +266,11 @@ impl ProjectPanel {
             }
         }
             if let Some((_, f)) = self.editing.as_mut() { f.paint(scene, fonts, scale); }
+        self.badge_rects = badges;
     }
     /// The row menu, drawn after every panel so it sits on top.
-    pub fn paint_menu(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64) {
+    pub fn paint_menu(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) {
+        self.tooltips.paint(scene, fonts, scale, bounds, now);
         self.menu.paint(scene, fonts, scale);
         // the drag ghost: the row's chip under the pointer (QCView's `Drag.Automatic` image)
         if let Some((_, label, (x, y))) = &self.drag {

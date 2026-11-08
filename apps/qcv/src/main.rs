@@ -39,6 +39,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
     /// the playlist's clip bar (canon row 167), shown while a playlist is loaded
     clip_bar: clip_bar::ClipBar, clip_popover: clip_popover::ClipPopover,
+    /// QCView's single outcome voice (Toast.qml)
+    toast: min_ui::Toast,
     /// Compact mode (canon row 172; QCView's chromeless + CompactStrip): the picture and one 32-px band, no title bar.
     compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
@@ -51,6 +53,8 @@ struct App {
     scrub_last_req: Option<(i32, Instant)>,
     /// the loaded playlist's timeline model + its undo (qcv-timeline's Editor); None when a single file is loaded
     pl_editor: Option<qcv_timeline::Editor>,
+    /// QCView reportUnsupportedMedia: one report per item per load (the camera-named line may replace a generic one once)
+    unsupported_toast: Option<(String, bool)>,
     last_tick: Instant,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
@@ -103,7 +107,8 @@ impl App {
         }
         let ok = self.open(&item.path);
         self.project.set_load_failed(id, !ok);
-        if !ok { return }
+        if !ok { self.report_unsupported(id); return }
+        if self.unsupported_toast.as_ref().is_some_and(|(i, _)| i != id) { self.unsupported_toast = None; }
         self.loaded_item = id.to_string();
         if let Some(p) = self.player.as_mut() {
             p.set_range_override(match item.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto });
@@ -121,12 +126,55 @@ impl App {
     fn note_recent_media(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_MEDIA).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_MEDIA, &list.join("\n")); }
     fn note_recent_project(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_PROJECTS).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_PROJECTS, &list.join("\n")); }
     /// QCView's media file filters (`mediaext::nameFilters`).
+    fn toast(&mut self, text: &str, kind: min_ui::ToastKind) { if let Some(g) = self.gpu.as_mut() { g.toast.show(text, kind, Instant::now()); g.ui_dirty = true; } }
+    fn toast_action(&mut self, text: &str, kind: min_ui::ToastKind, label: &str, id: &str) { if let Some(g) = self.gpu.as_mut() { g.toast.show_action(text, kind, label, id, Instant::now()); g.ui_dirty = true; } }
+    /// QCView `invokeToastAction`.
+    fn toast_action_invoked(&mut self, id: &str) {
+        if id == "undo-media-delete" {
+            let names = self.project.restore_last_removed();
+            match names.len() { 0 => self.toast("Nothing to restore", min_ui::ToastKind::Notice), 1 => self.toast(&format!("Restored {}", names[0]), min_ui::ToastKind::Positive), n => self.toast(&format!("Restored {n} items"), min_ui::ToastKind::Positive) }
+        }
+    }
+    /// QCView `admitMediaPaths`: the file-type gate on every way media comes in (open, drops, the command line). Refused paths
+    /// are toasted once — one line for a single path, a summary by suffix for a batch. (Windows shortcuts resolve in QCView;
+    /// `.lnk` resolution is still owed here and they are refused like any unknown suffix.)
+    fn admit_media_paths(&mut self, paths: &[String]) -> Vec<String> {
+        let mut admitted = vec![]; let mut refused: Vec<String> = vec![];
+        for p in paths { if p.is_empty() { continue } if p.contains("://") || qcv_project::extensions::is_supported_media_file(p) { admitted.push(p.clone()) } else { refused.push(p.clone()) } }
+        if refused.is_empty() { return admitted }
+        let name = |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string());
+        if refused.len() == 1 && paths.len() == 1 {
+            let p = &refused[0];
+            let msg = if std::path::Path::new(p).is_dir() { format!("{} is a folder — drop a file, or any frame of an image sequence.", name(p)) } else { format!("{} isn’t a file type QCView opens.", name(p)) };
+            self.toast(&msg, min_ui::ToastKind::Notice);
+        } else {
+            let mut kinds: Vec<String> = vec![];
+            for p in &refused { let k = if std::path::Path::new(p).is_dir() { "folder".to_string() } else { match qcv_project::extensions::suffix_lower(p) { s if s.is_empty() => "no extension".into(), s => format!(".{s}") } }; if !kinds.contains(&k) { kinds.push(k); } }
+            let mut shown = kinds.iter().take(4).cloned().collect::<Vec<_>>().join(", "); if kinds.len() > 4 { shown.push_str(" …"); }
+            self.toast(&format!("{} of {} files skipped — not file types QCView opens ({shown}).", refused.len(), paths.len()), min_ui::ToastKind::Notice);
+        }
+        admitted
+    }
+    /// QCView `reportUnsupportedMedia`: the row badge + one toast per item per load (ARRIRAW gets the camera-named line).
+    fn report_unsupported(&mut self, id: &str) {
+        self.project.set_load_failed(id, true);
+        let Some(item) = self.project.item(id).cloned() else { return };
+        let v = &item.video;
+        let named = v.camera_vendor.eq_ignore_ascii_case("ARRI") || v.camera_model.to_uppercase().starts_with("ALEXA") || v.camera_model.to_uppercase().starts_with("AMIRA");
+        if self.unsupported_toast.as_ref().is_some_and(|(i, n)| i == id && (*n || !named)) { return }
+        self.unsupported_toast = Some((id.to_string(), named));
+        let name = std::path::Path::new(&item.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = if named { let cam = if v.camera_model.is_empty() { "ARRIRAW".to_string() } else { format!("{} ARRIRAW", v.camera_model) }; format!("{cam} — {name} can’t be played here: un-debayered camera raw. Review the ProRes / dailies, or convert in DaVinci Resolve or the ARRI Reference Tool.") }
+                   else { format!("{name} can’t be played here: unsupported format.") };
+        self.toast(&text, min_ui::ToastKind::Notice);
+    }
     fn open_media_dialog(&mut self) {
         let all: Vec<&str> = qcv_project::extensions::VIDEO.iter().chain(qcv_project::extensions::AUDIO).chain(qcv_project::extensions::IMAGE).copied().collect();
         let picked = rfd::FileDialog::new().set_title("Open Media").add_filter("All media", &all).add_filter("Video files", qcv_project::extensions::VIDEO).add_filter("Audio files", qcv_project::extensions::AUDIO).add_filter("Image / sequence files", qcv_project::extensions::IMAGE).pick_files();
         let Some(paths) = picked else { return };
+        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
         let mut first = true;
-        for p in paths { let p = p.to_string_lossy().to_string(); if self.add_and_load(&p, first).is_some() { first = false; } }
+        for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } }
     }
     fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title("Open Project").add_filter("QCView Project", &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
     fn open_project(&mut self, path: &str) {
@@ -226,7 +274,7 @@ impl App {
             let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
             let key = frame.map(|(c, n, _)| (c, n));
             g.bar.sync(self.player.as_ref(), now);
-            if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) { g.ui_dirty = true; }
+            if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
             let st = scrub_state(self.player.as_ref());
             let bar_h = if self.pl_editor.is_some() && !g.compact { clip_bar::ClipBar::height(scale) } else { 0.0 };   // +20 for a playlist (row 169)
@@ -338,8 +386,9 @@ impl App {
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
-                if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale); }
+                if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
+                g.toast.paint(scene, &mut g.fonts, content, scale, now);
                 g.ui_shown_frame = key; g.ui_dirty = false;
                 }
             }
@@ -397,6 +446,9 @@ impl App {
         // playhead (to the end of the clip when the mouse went right), a held fast-forward never saw its release-on-leave and
         // shuttled to the end — the user's "scrubbing overruns until the end" (2026-11-07 night), and the parked Windows
         // "clicks lost after leaving and returning" is the same swallow.
+        // the toast: a press ON it dismisses (its action button fires); presses elsewhere go on
+        { let (id, d, consumed) = g.toast.event(&e); if d { g.ui_dirty = true; } if let Some(id) = id { self.toast_action_invoked(&id); return } if consumed { return } }
+        let Some(g) = self.gpu.as_mut() else { return };
         // the clip popover takes everything while open; a press outside commits it
         if g.clip_popover.is_open() {
             let (c, d, consumed) = g.clip_popover.event(&e, &mut g.fonts); if d { g.ui_dirty = true; }
@@ -589,7 +641,7 @@ impl App {
     fn project_cmd(&mut self, c: project_panel::Cmd) {
         match c {
             project_panel::Cmd::Load(id) => self.load_item(&id),
-            project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let n = self.project.remove_media_items(&ids); if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let first_name = ids.first().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_default(); let n = self.project.remove_media_items(&ids); if n > 0 { self.toast_action(&if n == 1 { format!("Removed {first_name}") } else { format!("Removed {n} items") }, min_ui::ToastKind::Notice, "Undo", "undo-media-delete"); } if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::AddMedia => self.open_media_dialog(),
             // QCView createPlaylistFromSelection / createEmptyPlaylistAndRename: auto-named Playlist_NN at 24 fps 1920×1080, gap 0;
             // the new row is selected and its rename opens (activation waits for playlist loading in the shell)
@@ -823,12 +875,12 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
-        if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { self.add_and_load(&f, true); } }
+        if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { for p in self.admit_media_paths(&[f.clone()]) { self.add_and_load(&p, true); } } }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); return } }
@@ -965,7 +1017,7 @@ impl ApplicationHandler for App {
                         let ed = self.pl_editor.as_mut().unwrap(); let ok = if a == Action::AnnotationUndo { ed.undo_edit() } else { ed.redo_edit() };
                         if ok { self.after_playlist_edit(true); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
                     }
-                    else if a == Action::AnnotationUndo { let names = self.project.restore_last_removed(); if !names.is_empty() { log::info!("restored {names:?}"); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
+                    // (the bin-restore stand-in on Ctrl+Z retired 2026-11-08: the removal toast's Undo is QCView's way)
                 }
             }
             WindowEvent::PointerMoved { position, .. } => self.pointer(min_ui::Event::Move { x: position.x, y: position.y }),
@@ -1010,7 +1062,7 @@ impl ApplicationHandler for App {
                 if let Some(t) = target { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, t); } }
             }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if p.to_lowercase().ends_with(".qcvproj") { self.open_project(&p); first = false; continue } if self.add_and_load(&p, first).is_some() { first = false; } } } }
+                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { let raw: Vec<String> = uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)).collect(); let projects: Vec<String> = raw.iter().filter(|p| p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let media: Vec<String> = raw.iter().filter(|p| !p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let admitted = if media.is_empty() { vec![] } else { self.admit_media_paths(&media) }; for p in &projects { self.open_project(p); } if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in admitted.iter().cloned() { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport && projects.is_empty(); for p in admitted { if self.add_and_load(&p, first).is_some() { first = false; } } } }
             }
             _ => {}
         }
@@ -1039,7 +1091,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
