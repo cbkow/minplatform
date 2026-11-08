@@ -16,7 +16,9 @@
 //! grey (no blue); a click seeks to it (QCView `seekToPlaylistItem`); the clip count + canvas ride the playlist row in the
 //! subdued voice. Dragging a clip row reorders the playlist (the user 2026-11-08: "is it possible to drag/drop reorder in this
 //! tree?") — an insertion line between the rows, the row's chip under the pointer, ONE undoable move on release (the clip bar's
-//! edit); a click without a drag seeks, on release. Trim / remove stay on the clip bar; Delete here still means the project's rows.
+//! edit); a click without a drag seeks, on release. Media rows dragged out of the bin DROP INTO the tree (the user 2026-11-08:
+//! "accept drag drops from the main media bin to add new items to the playlist" — ours, QCView's bin took no drops on a
+//! playlist): over a clip row they insert at the line, on the playlist row they append — the clip bar's undoable insert. Trim / remove stay on the clip bar; Delete here still means the project's rows.
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{anim::{mix, Ramp}, paint, ActionButton, Tooltips, Event, FieldResponse, Family, Fonts, ImeEvent, KeyEvent, Menu, MenuItem, Section, TextButton, TextField, Variant};
@@ -94,6 +96,19 @@ impl ProjectPanel {
     }
     /// A row drag is in flight: the shell routes every pointer event here until the release (QCView's MouseArea drag).
     pub fn is_dragging(&self) -> bool { self.drag.is_some() || self.tree.as_ref().is_some_and(|t| t.drag.is_some() || t.press.is_some()) }
+    /// A bin drag released at (x, y): the loaded playlist's insertion slot (0..=n) when it lands on the tree, or n on the
+    /// playlist's own row (append); None elsewhere.
+    pub fn tree_drop_slot(&self, x: f64, y: f64) -> Option<usize> {
+        let tr = self.tree.as_ref()?;
+        let p = kurbo::Point::new(x, y);
+        let n = tr.model.clips.len();
+        if self.groups.iter().flat_map(|g| g.rows.iter()).any(|r| r.id == tr.model.playlist && r.rect.contains(p)) { return Some(n) }
+        let (first, last) = (tr.rows.first()?, tr.rows.last()?);
+        let half = t::COMPONENT_HEIGHT_75 as f64 / 4.0;
+        (x >= first.x0 && x <= first.x1 && y >= first.y0 - half && y <= last.y1 + half).then(|| Self::tree_slot(tr, y))
+    }
+    /// The harness: every bin row's (name, rect).
+    pub fn row_rects(&self) -> Vec<(String, Rect)> { self.groups.iter().flat_map(|g| g.rows.iter().map(|r| (r.name.clone(), r.rect))).collect() }
     /// The harness: the tree's clip rows.
     pub fn tree_rows(&self) -> Vec<Rect> { self.tree.as_ref().map(|t| t.rows.clone()).unwrap_or_default() }
     /// The insertion slot (0..=n) for pointer y over the tree: past each row's middle.
@@ -343,7 +358,9 @@ impl ProjectPanel {
         // the drag ghost: the row's chip under the pointer (QCView's `Drag.Automatic` image)
         // the tree drag: the insertion line between the rows (the clip bar's insert colour) + the row's chip under the pointer
         let tree_ghost = self.tree.as_ref().and_then(|tr| tr.drag.map(|(i, p)| { let to = Self::tree_slot(tr, p.1); (tr.model.clips[i].1.clone(), p, to, tr.rows.clone()) }));
-        if let Some((_, _, to, rows)) = &tree_ghost && let (Some(first), Some(last)) = (rows.first(), rows.last()) {
+        // a bin drag over the tree: the same line where the rows would land
+        let bin_slot = self.drag.as_ref().and_then(|(_, _, (x, y))| self.tree_drop_slot(*x, *y)).and_then(|to| self.tree.as_ref().map(|tr| (to, tr.rows.clone())));
+        if let Some((to, rows)) = tree_ghost.as_ref().map(|(_, _, to, rows)| (*to, rows.clone())).or(bin_slot).as_ref().map(|(to, rows)| (to, rows)) && let (Some(first), Some(last)) = (rows.first(), rows.last()) {
             let gap = t::RAIL_ROW_GAP as f64 * scale;
             let y = if *to < rows.len() { rows[*to].y0 - gap / 2.0 } else { last.y1 + gap / 2.0 };
             paint::rect(scene, Rect::new(first.x0, y - scale, first.x1, y + scale), t::PLAYLIST_BAR_INSERT_COLOR);
