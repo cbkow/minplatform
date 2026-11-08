@@ -38,5 +38,8 @@ build — a stock build loses them:
 `external/ffmpeg/macos-arm64`, ~3 min). Check: an Avid DNxHR 444 file probes `gbrp12le,tv` with
 `external/ffmpeg/macos-arm64/bin/ffprobe` (stock: `yuv444p12le,unknown`).
 
-**Windows:** owed — the pinned BtbN zip is stock. QCView builds its patched zip with BtbN's recipe in WSL2 + Docker
-(`QCView-Player/dependencies.md` §2); rhombus has neither.
+**Windows:** `tools/ffmpeg/build-win64-wsl.sh` in WSL2 Ubuntu + Docker on rhombus (set up 2026-11-08: the WSL + VM Platform
+features, the WSL package, Ubuntu-24.04, docker.io) → `n9.0.2-48-gd4070a14ce` + the patches (~6 min), extracted to
+`external/ffmpeg/win64` (the stock tree kept as `win64-stock`). Checked 2026-11-08: the four "Applied patch … cleanly." lines,
+Vulkan + libplacebo still on, the GPU ProRes path still zero-copy, FFmpeg's own DNxHR 444 tagged limited (stock: unknown).
+The Avid ACT path itself wants an Avid DNxHR 444 file on the box (FFmpeg's encoder never mixes RGB / YCbCr macroblocks).

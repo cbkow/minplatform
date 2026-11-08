@@ -6,10 +6,15 @@ FFMPEG_VERSION=9.0.2
 # ahead of Homebrew's (2026-11-08: Homebrew's stock build decoded Avid DNxHR 444 as yuv444p12le — the speckle). Homebrew's
 # `ffmpeg` CLI stays for the tests' fixture generation.
 MACOS_SOURCE=source-patched
-# Windows: BtbN's gpl-shared build — STOCK, the three patches NOT applied yet (the patched build is owed, canon row 187); (Vulkan + libplacebo on, so the ProRes Vulkan hwaccel is present; d3d12va too).
+# Windows: BtbN's gpl-shared RECIPE built with the three patches (tools/ffmpeg/build-win64-wsl.sh, 2026-11-08) — same source as
+# the stock asset below (n9.0.2-48-gd4070a14ce), patched; the zip is self-built, not downloadable: it lives on rhombus
+# (C:\qcb-lab\…-patched.zip) and its hash is PATCHED_SHA256. fetch-win64.ps1 fetches the STOCK zip (no patches) — a fallback only. (Vulkan + libplacebo on, so the ProRes Vulkan hwaccel is present; d3d12va too).
 # Pinned to the DATED release asset — BtbN's `latest` asset is re-zipped daily and its sha256 drifts.
 WIN64_BUILD=n9.0.2-48-gd4070a14ce-20261107
 WIN64_TAG=autobuild-2026-11-07-12-47
 WIN64_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-07-12-47/ffmpeg-n9.0.2-48-gd4070a14ce-win64-gpl-shared-9.0.zip
 WIN64_SHA256=43F3DA864A1BDFC89926FA250183593C301CED599F22AD5BFCB3D18D45CAEB3F
 WIN64_BYTES=85978068
+PATCHED_ZIP=ffmpeg-n9.0.2-48-gd4070a14ce-win64-gpl-shared-9.0-patched.zip
+PATCHED_SHA256=DAE4CA804534BCEA6702E7408A70450AB0232CF46BD0636A9DFA924957DA0B99
+PATCHED_BYTES=85884850
