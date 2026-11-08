@@ -260,7 +260,7 @@ impl InspectorPanel {
             for (label, val) in [("Created", &am.qt_creation_date), ("Media Created", &am.qt_media_create_date)] { if !val.is_empty() { tc.push(row(label, val.clone(), false)); } }
         }
         tc.push(row("Drop frame", if i.drop_frame { "yes" } else { "no" }.to_string(), false));   // ours
-        // ---- Image Sequence (QCView `ImageSequenceInspector`; its Pattern / Range rows, the EXR layer list and Compression wait for piece 5) ----
+        // ---- Image Sequence (QCView `ImageSequenceInspector`; the EXR layer list and Compression wait for piece 5) ----
         let mut sq = vec![];
         if let Some(s) = seq {
             let c = s.cache(); let cfg = c.config();
@@ -273,6 +273,10 @@ impl InspectorPanel {
             let detected_t = if is_exr { "Auto (Linear, EXR)" } else { "Auto (sRGB)" };
             sq.push(chips("Transfer", &[("auto", detected_t), ("sdr", "SDR 709"), ("pq2020", "PQ 2020"), ("pqp3", "PQ P3"), ("hlg", "HLG"), ("linear", "Linear")],
                 match self.transfer { TransferOverride::Auto => "auto", TransferOverride::SdrRec709 => "sdr", TransferOverride::Pq2020 => "pq2020", TransferOverride::PqP3D65 => "pqp3", TransferOverride::Hlg => "hlg", TransferOverride::Linear => "linear" }));
+            // QCView's readout: Range (first – last file number, the count), Pattern, Resolution, Duration
+            let n = c.frame_count();
+            sq.push(row("Range", format!("{} – {} ({} frames)", c.start_frame(), c.start_frame() + n - 1, n), true));
+            sq.push(row("Pattern", c.pattern().to_string(), true));
             sq.push(row("Resolution", format!("{} × {}", c.width(), c.height()), true));
             sq.push(row("Duration", format!("{:.2} s", i.duration_secs), true));
             let stride = c.stride().to_string();

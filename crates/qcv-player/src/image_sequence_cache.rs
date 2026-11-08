@@ -143,6 +143,9 @@ impl ImageSequenceCache {
     pub fn width(&self) -> u32 { self.sh.width }
     pub fn height(&self) -> u32 { self.sh.height }
     pub fn frame_count(&self) -> i32 { self.sh.frame_count }
+    /// the first file's number and the printf pattern (the inspector's Range / Pattern rows)
+    pub fn start_frame(&self) -> i32 { self.sh.start_frame }
+    pub fn pattern(&self) -> &str { &self.sh.pattern }
     pub fn fps(&self) -> f64 { self.sh.fps }
     pub fn config(&self) -> StreamingConfig { self.sh.config }
     pub fn buffered_ahead(&self) -> i32 { self.sh.ahead.load(Relaxed) }
