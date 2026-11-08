@@ -116,7 +116,7 @@ pub struct Slot { pub clip: usize, pub decoder: SlotDecoder, pub scrub: Option<S
     pub positioned_at_in: bool }
 impl Slot {
     fn open(clip_index: usize, clip: &Clip, opts: &TransportOptions) -> Result<Slot, Error> {
-        let src = if clip.media_kind == ClipMediaKind::ImageSequence { Source::Sequence { pattern: clip.media_path.clone(), rate: clip.source_rate, start: clip.sequence_start_frame, end: clip.sequence_end_frame, label: clip.name.clone() } } else { Source::File(clip.media_path.clone()) };
+        let src = if clip.media_kind == ClipMediaKind::ImageSequence { Source::Sequence { pattern: if clip.sequence_pattern.is_empty() { clip.media_path.clone() } else { clip.sequence_pattern.clone() }, rate: clip.source_rate, start: clip.sequence_start_frame, end: clip.sequence_end_frame, label: clip.name.clone() } } else { Source::File(clip.media_path.clone()) };
         // An image sequence min-image reads goes through QCView's sequence cache (step 2c); DPX / TGA / BMP stay on FFmpeg's image2.
         // `QCV_SEQ_FFMPEG=1` forces the image2 route (the A/B against the cache).
         if let Source::Sequence { pattern, rate, start, end, .. } = &src && cache_reads(pattern) && std::env::var_os("QCV_SEQ_FFMPEG").is_none() {
@@ -689,7 +689,21 @@ impl Transport {
     /// answer (the nearest cached through QCView's fallback while the exact one loads). Returns (entry, served by the peek).
     pub fn hover_thumbnail(&mut self, cache: &mut crate::thumbnail_cache::TimelineThumbnailCache, tl_frame: i32, max_size: u32) -> (crate::thumbnail_cache::ThumbEntry, bool) {
         let Some((clip, src)) = self.resolve(tl_frame as i64) else { return (Default::default(), false) };
-        let path = self.clip(clip).map(|c| c.media_path.clone()).unwrap_or_default();
+        let Some(c) = self.clip(clip) else { return (Default::default(), false) };
+        if c.media_kind == ClipMediaKind::ImageSequence {
+            // QCView `resolveHoverKey`'s encodeImageSeq: the key is the frame's own file at frame 0 (`?layer=` for an EXR part)
+            let pattern = if c.sequence_pattern.is_empty() { c.media_path.clone() } else { c.sequence_pattern.clone() };
+            let mut path = crate::image_sequence_cache::format_frame(&pattern, (c.sequence_start_frame + src) as i32);
+            if !c.sequence_exr_layer.is_empty() { path = format!("{path}?layer={}", c.sequence_exr_layer); }
+            if !cache.contains(&path, 0) {
+                // ours (the GOP peek's twin): a frame the sequence cache holds becomes the thumbnail without a second decode
+                if let Some(img) = self.slots.iter().find(|s| s.clip == clip).and_then(|s| s.decoder.as_sequence()).and_then(|d| d.cache().frame(src as i32)) {
+                    if let Some(px) = crate::thumbnail_cache::image_thumb(&img, max_size) { cache.offer(crate::thumbnail_cache::ThumbKey { source_path: path.clone(), source_frame: 0 }, px); return (cache.get_thumbnail(&path, 0, true), true) }
+                }
+            }
+            return (cache.get_thumbnail(&path, 0, true), false)
+        }
+        let path = c.media_path.clone();
         let key = crate::thumbnail_cache::ThumbKey { source_path: path.clone(), source_frame: src as i32 };
         if !cache.contains(&path, src as i32) {
             if let Some(sd) = self.slots.iter().find(|s| s.clip == clip).and_then(|s| s.scrub.as_ref()) { if let Some(px) = sd.peek_thumbnail(src as i32, max_size) { cache.offer(key, px); return (cache.get_thumbnail(&path, src as i32, true), true) } }

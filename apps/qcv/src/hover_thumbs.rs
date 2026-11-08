@@ -4,7 +4,8 @@
 //! FOLLOWS the pointer horizontally, sitting just above the bands and clamped to the content rect (the user 2026-11-07:
 //! QCView parked it bottom-left only because of the Qt render-thread split; "this might be more ergonomic"); dual keeps
 //! QCView's parking, A bottom-left and B bottom-right.
-//! Requests are throttled at QCView's 16 ms; playback drops the loader to one worker; the strip precaches on open.
+//! Requests are throttled at QCView's 16 ms; playback drops the loader to one worker; the strip precaches on open (video
+//! only — a sequence's thumbnails come from its cache or its frame files on hover, QCView never precached).
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::paint;
@@ -30,10 +31,10 @@ impl HoverThumbs {
     pub fn new() -> HoverThumbs {
         let images: Images = Default::default();
         let ev = images.clone();
-        let cache = TimelineThumbnailCache::new(ThumbConfig::default(), VideoThumbLoader::factory(), Box::new(move |h| { ev.borrow_mut().remove(&h); }));
+        let cache = TimelineThumbnailCache::new(ThumbConfig::default(), VideoThumbLoader::any_factory(), Box::new(move |h| { ev.borrow_mut().remove(&h); }));
         HoverThumbs { cache, images, next: 0, last_request: None, pending_frame: None, shown: None, playing: false, enabled: true }
     }
-    pub fn on_open(&mut self, p: &Transport) { self.cache.clear(); self.images.borrow_mut().clear(); self.shown = None; let path = p.path().to_string(); if !path.is_empty() { self.cache.precache_strip(&path, p.frame_count(), p.current_frame()); } }
+    pub fn on_open(&mut self, p: &Transport) { self.cache.clear(); self.images.borrow_mut().clear(); self.shown = None; let path = p.path().to_string(); if !path.is_empty() && p.decoder().as_sequence().is_none() { self.cache.precache_strip(&path, p.frame_count(), p.current_frame()); } }
     #[allow(dead_code)]
     pub fn clear(&mut self) { self.pending_frame = None; if self.shown.is_some() { self.shown = None; } }
     /// Per frame: the hovered timeline frame (or none), the uploads to adopt; true when what is shown changed.

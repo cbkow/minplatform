@@ -231,6 +231,15 @@ impl VideoThumbLoader {
         Some(VideoThumbLoader { session, fps, frames, sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0) })
     }
     pub fn factory() -> LoaderFactory { Arc::new(|path: &str| VideoThumbLoader::open(path).map(|l| Box::new(l) as Box<dyn ThumbLoader>)) }
+    /// QCView `getOrCreateLoader`: a still's key (an image-sequence frame's own file, `?layer=` for an EXR part) goes to the
+    /// image loaders, anything else to the video loader.
+    pub fn any_factory() -> LoaderFactory {
+        Arc::new(|key: &str| {
+            let (file, layer) = key.split_once("?layer=").unwrap_or((key, ""));
+            if min_image::Format::of(file).is_some() { return Some(Box::new(ImageThumbLoader { path: file.to_string(), layer: layer.to_string() }) as Box<dyn ThumbLoader>) }
+            VideoThumbLoader::open(key).map(|l| Box::new(l) as Box<dyn ThumbLoader>)
+        })
+    }
 }
 impl Drop for VideoThumbLoader { fn drop(&mut self) { unsafe { if !self.sws.is_null() { ff::sws_freeContext(self.sws); } } } }
 impl ThumbLoader for VideoThumbLoader {
@@ -299,10 +308,56 @@ impl VideoThumbLoaderSws {
     } }
 }
 
+/// QCView's still loaders' `loadThumbnail` (EXR / PNG / TIFF / JPEG): the frame's file through `min-image`. QCView's
+/// fast paths (EXR scanline skip, PNG skip-downsample, JPEG DCT scaling) are owed — this decodes the whole frame.
+pub struct ImageThumbLoader { path: String, layer: String }
+impl ThumbLoader for ImageThumbLoader {
+    fn load_thumbnail(&mut self, _source_frame: i32, max_size: u32) -> Option<ThumbPixels> { image_thumb(&min_image::load(&self.path, &self.layer, 2).ok()?, max_size) }
+}
+
+/// A decoded still reduced to a thumbnail: every Nth pixel, N = max(1, the long side / `max_size`) (QCView's EXR skip
+/// rule), RGBA8. Half floats are linear light and get the sRGB curve, so the thumbnail reads like the viewport (QCView
+/// shows linear values as code values — the banked colour question, canon §18.6). Sentinels have no thumbnail.
+pub fn image_thumb(img: &min_image::Image, max_size: u32) -> Option<ThumbPixels> {
+    if img.sentinel.is_some() || img.width == 0 || img.height == 0 || img.planes.len() < 3 { return None }
+    let skip = (img.width.max(img.height) / max_size.max(1)).max(1);
+    let (w, h) = ((img.width / skip).max(1), (img.height / skip).max(1));
+    let bps = img.sample.bytes();
+    let read = |plane: usize, x: u32, y: u32| -> u8 {
+        let o = (y * img.pitch) as usize + x as usize * bps; let p = &img.planes[plane];
+        match img.sample {
+            min_image::Sample::U8 => p[o],
+            min_image::Sample::U16 => (u16::from_ne_bytes([p[o], p[o + 1]]) >> 8) as u8,
+            min_image::Sample::F16 => {
+                let v = half::f16::from_bits(u16::from_ne_bytes([p[o], p[o + 1]])).to_f32();
+                let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+                let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+                (e * 255.0 + 0.5) as u8
+            }
+        }
+    };
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h { for x in 0..w {
+        let (sx, sy) = (x * skip, y * skip);
+        rgba.extend_from_slice(&[read(2, sx, sy), read(0, sx, sy), read(1, sx, sy), if img.alpha && img.planes.len() > 3 { if img.sample == min_image::Sample::F16 { let p = &img.planes[3]; let o = (sy * img.pitch) as usize + sx as usize * bps; (half::f16::from_bits(u16::from_ne_bytes([p[o], p[o + 1]])).to_f32().clamp(0.0, 1.0) * 255.0 + 0.5) as u8 } else { read(3, sx, sy) } } else { 255 }]);
+    } }
+    Some(ThumbPixels { width: w, height: h, rgba })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test] fn image_thumb_skips_and_encodes() {
+        use min_image::{Image, Sample};
+        // 640×360 half-float planes G, B, R: G = 0.5 linear everywhere, B = 0, R = 1.0; max 320 → every 2nd pixel
+        let (w, h) = (640u32, 360u32); let pitch = min_image::pitch_for(w, Sample::F16);
+        let plane = |v: f32| { let b = half::f16::from_f32(v).to_bits().to_ne_bytes(); let mut p = vec![0u8; (pitch * h) as usize]; for y in 0..h { for x in 0..w { let o = (y * pitch + x * 2) as usize; p[o] = b[0]; p[o + 1] = b[1]; } } p };
+        let img = Image { width: w, height: h, sample: Sample::F16, planes: vec![plane(0.5), plane(0.0), plane(1.0)], pitch, alpha: false, sentinel: None };
+        let t = image_thumb(&img, 320).unwrap();
+        assert_eq!((t.width, t.height), (320, 180));
+        assert_eq!(&t.rgba[..4], &[255, 188, 0, 255], "R 1.0, G 0.5 linear → sRGB 188, B 0, opaque");
+    }
     #[test] fn sequence_parts() {
         assert_eq!(parse_sequence_parts("/s/shot_0042.exr?layer=diffuse"), Some(("/s/shot_".into(), 42, ".exr?layer=diffuse".into())));
         assert_eq!(parse_sequence_parts("/s/clip.mov"), None);

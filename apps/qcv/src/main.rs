@@ -124,6 +124,8 @@ impl App {
             p.audio.set_routing_mode(match item.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto });
             // QCView's handler ends with seekToFrame(0): the first frame the decoder produced carried Auto, and the player opens paused — re-decode it with the item's range in force
             p.seek_to_frame(0);
+            // QCView `startImageSequence`: the detector's gaps seed the failed set, so the timeline's red ticks show before any IO
+            if let Some(s) = p.decoder().as_sequence() { s.cache().set_known_missing(&item.image_seq.missing_frames); }
         }
         if let Some(g) = self.gpu.as_mut() {
             let par = match item.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(item.custom_par_num.max(1) as u32, item.custom_par_den.max(1) as u32) };
@@ -1533,7 +1535,7 @@ fn run_hover_bench(o: Opts) {
     let textures: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, wgpu::Texture>>> = Default::default();
     let released = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let (tx, rl) = (textures.clone(), released.clone());
-    let mut cache = TimelineThumbnailCache::new(ThumbConfig { cache_size: if qcview_budget { qcv_player::thumbnail_cache::QCVIEW_CACHE_SIZE } else { ThumbConfig::default().cache_size }, ..Default::default() }, VideoThumbLoader::factory(), Box::new(move |h| { tx.borrow_mut().remove(&h); rl.set(rl.get() + 1); }));
+    let mut cache = TimelineThumbnailCache::new(ThumbConfig { cache_size: if qcview_budget { qcv_player::thumbnail_cache::QCVIEW_CACHE_SIZE } else { ThumbConfig::default().cache_size }, ..Default::default() }, VideoThumbLoader::any_factory(), Box::new(move |h| { tx.borrow_mut().remove(&h); rl.set(rl.get() + 1); }));
     let mut next_handle = 0u64;
     let mut adopt = |key: &qcv_player::ThumbKey, px: &qcv_player::ThumbPixels| -> u64 {
         let _ = key;
