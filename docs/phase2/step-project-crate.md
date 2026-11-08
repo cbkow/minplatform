@@ -65,3 +65,34 @@ Recents: `recents/media` + `recents/projects` in the store (newline-joined, 10) 
 row context menu (Create Playlist from Selection, Input, Delete), rename, drag-to-playlist, "Can't be played here" badge
 + toast, New playlist, the unsupported-codec gate at load.
 
+## The Add Media section's owed QCView pieces, part 1 (2026-11-08)
+Read first (row 131): `LeftRail.qml` (selection model, shortcuts, `rowContextMenu`, `renameClickAway`, the row `Drag` source,
+`dropZone`), `TimelinePanel.qml` (`playlistDropArea`), `ViewportOverlay.qml` / `Main.qml` (`dropMediaAt`), `ProjectManager::
+renameMediaItem`. Built:
+- **`min_ui::Menu`** (context menu at the pointer; disabled rows inert, separators, shortcuts at the right edge; picks on
+  release; a press outside closes and is consumed; clamped / flipped inside the window).
+- **The row menu**: Create Playlist from Selection (enabled when the selection holds Videos / Images / Image Sequences —
+  audio is refused, as `createPlaylist`) · Delete (Del). Right-click outside the selection replaces it, inside keeps the group.
+  DEVIATION: Input · Use Clip Chain of · Reset Clip Chain arrive with the colour chain (§18.6) — inert here.
+- **Inline rename**: F2 (exactly one row), the new-playlist flow; Enter or a click anywhere else commits (trimmed), Esc
+  dismisses, focus loss commits, empty / unchanged commits nothing (`renameMediaItem` refuses empty). IME routed.
+- **New Playlist**: the Playlists header is always shown with a "+" (QCView's fallback header); `Playlist_NN` at 24 fps
+  1920×1080, gap 0; the new row is selected and its rename opens. QCView also ACTIVATES it — waits for playlist loading.
+- **Ctrl/Cmd+A** selects every source row (playlists and dual views skipped); **Shift** ranges stay inside their list (media
+  vs Playlists), across them a plain replace.
+- **Drag and drop, all four of QCView's behaviours accounted for:**
+  1. OS drop on the BIN adds only (was add + load — the deviation is fixed); OS drop on the VIEWPORT adds and loads the
+     first (`dropMediaAt` → `openMediaPaths`); over the bands / the Inspector the OS shows a refused drop (no DropArea there,
+     `set_valid_dnd_actions` per `DragPosition`); a drop with no position from the OS falls back to the viewport.
+  2. Row drag OUT of the bin is an INTERNAL drag (6-px threshold, a ghost chip under the pointer): released over the viewport
+     it loads the first row; anywhere else, including outside the window, nothing happens — QCView restricted its OS drag to
+     Link precisely so a drop on Finder / Explorer could not move or copy files; never reaching the OS gives that by construction.
+  3. The payload is the dragged row, or every selected non-playlist row in bin order when it is part of a multi-selection; a
+     playlist row never starts a drag.
+  4. **Drag-to-playlist** = rows dropped on the TIMELINE while a playlist is loaded (QCView's `playlistDropArea`: snap to a
+     clip edge within 12 px or append; audio refused; `admitMediaPaths` gates types). It needs playlist loading in the shell
+     (`load_item` still says "selected only" for playlists) — the next piece.
+- Tests: `min_ui::menu` 1, `project_panel` 5 (menu selection rule + eligibility, drag payload, drag threshold + release,
+  range rule + select-all, rename commit).
+- Still owed in this section: playlist loading + the playlist timeline, drag-to-playlist, the "Can't be played here" badge,
+  toasts (incl. QCView's "Removed … · Undo"), the unsupported-codec gate (`admitMediaPaths`) at load and at drop.

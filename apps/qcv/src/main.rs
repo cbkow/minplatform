@@ -46,7 +46,8 @@ struct App {
     scrub_last_req: Option<(i32, Instant)>,
     last_tick: Instant,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
-    fetches: HashMap<AsyncRequestSerial, WindowId>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
+    fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
+    drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
     settings: min_settings::Settings,
     /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
     meta: qcv_meta::MetadataService,
@@ -57,6 +58,14 @@ struct App {
 impl App {
     /// A path from the command line, a drop or the Open dialog: QCView's `addMediaFile` (the extension gate, dedupe,
     /// routing to its bin, the metadata requests) and then the load of that item. Returns the item id.
+    fn drop_target(&self, x: f64, y: f64) -> Option<DropTarget> {
+        let g = self.gpu.as_ref()?;
+        if g.fullscreen || g.compact { return Some(DropTarget::Viewport) }
+        if g.left.hit(x, y) { return Some(DropTarget::Bin) }
+        if g.right.hit(x, y) { return None }
+        let (cx, cy, cw, ch) = g.presenter.engine.content_rect()?;
+        (x >= cx as f64 && x < (cx + cw) as f64 && y >= cy as f64 && y < (cy + ch) as f64).then_some(DropTarget::Viewport)
+    }
     fn add_and_load(&mut self, path: &str, load: bool) -> Option<String> {
         let (id, probes) = self.project.add_media_file(path);
         self.schedule_probes(probes);
@@ -226,6 +235,7 @@ impl App {
             if !chromeless {
                 let lc = g.left.content_rect();
                 if g.project_panel.sync(&self.project, &self.loaded_item) { g.ui_dirty = true; }
+                if let Some(id) = g.project_panel.pending_rename.take() { if g.project_panel.begin_rename(&id, &mut g.fonts) { set_ime(&**g.window, true); g.ui_dirty = true; } }
                 let ph = g.project_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);
@@ -292,6 +302,7 @@ impl App {
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
+                if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale); }
                 g.ui_shown_frame = key; g.ui_dirty = false;
                 }
             }
@@ -363,12 +374,13 @@ impl App {
             // a press on a rail's own control (the collapse arrow, the scrollbar) is the rail's, not the panel's
             let rail_ctl = matches!(e, min_ui::Event::Down { .. }) && e.pos().is_some_and(|(x, y)| g.left.over_control(x, y, now) || g.right.over_control(x, y, now));
             if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.inspector.has_focus() { let cmds = g.inspector.blur(); set_ime(&**g.window, false); g.ui_dirty = true; for c in cmds { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } } }
-            if !rail_ctl && (modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus()) {
+            let pp_modal = g.project_panel.menu_open() || g.project_panel.is_editing() || g.project_panel.is_dragging(); let pp_modal_editing = g.project_panel.is_editing();
+            if !rail_ctl && (modal || pp_modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus()) {
                 // a press outside the settings' fields commits a typed number
                 if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
                 let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more);
                 if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
-                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift); if d { g.ui_dirty = true; } pcmds.extend(p); }
+                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; } if g.project_panel.is_editing() != pp_modal_editing { set_ime(&**g.window, g.project_panel.is_editing()); } pcmds.extend(p); }
             }
             if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
             if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) {
@@ -386,7 +398,7 @@ impl App {
             }
             let _ = g; for c in cmds { self.apply_setting(c); } for c in pcmds { self.project_cmd(c); }
             let g = self.gpu.as_mut().unwrap();
-            if modal || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
+            if modal || pp_modal || g.project_panel.menu_open() || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
             let _ = g;
         }
         let g = self.gpu.as_mut().unwrap();
@@ -443,11 +455,27 @@ impl App {
             }
         }
     }
+    /// QCView createPlaylistFromSelection / createEmptyPlaylistAndRename: auto-named Playlist_NN at 24 fps 1920×1080, gap 0;
+    /// the new row is selected and its rename opens (QCView also activates it — that waits for playlist loading in the shell).
+    fn create_playlist(&mut self, paths: &[String]) {
+        let name = self.project.next_playlist_auto_name();
+        let (id, probes) = self.project.create_playlist(paths, &name, 24.0, 1920, 1080, 0, 0);
+        self.schedule_probes(probes);
+        if let Some(g) = self.gpu.as_mut() { g.project_panel.selected = vec![id.clone()]; g.project_panel.pending_rename = Some(id); g.ui_dirty = true; }
+    }
     fn project_cmd(&mut self, c: project_panel::Cmd) {
         match c {
             project_panel::Cmd::Load(id) => self.load_item(&id),
             project_panel::Cmd::Remove(ids) => { let loaded_gone = ids.iter().any(|i| *i == self.loaded_item); let n = self.project.remove_media_items(&ids); if n > 0 && loaded_gone { self.player = None; self.loaded_item.clear(); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             project_panel::Cmd::AddMedia => self.open_media_dialog(),
+            // QCView createPlaylistFromSelection / createEmptyPlaylistAndRename: auto-named Playlist_NN at 24 fps 1920×1080, gap 0;
+            // the new row is selected and its rename opens (activation waits for playlist loading in the shell)
+            project_panel::Cmd::CreatePlaylist(ids) => { let paths: Vec<String> = ids.iter().filter_map(|i| self.project.item(i).map(|m| m.path.clone())).collect(); self.create_playlist(&paths) }
+            project_panel::Cmd::NewPlaylist => self.create_playlist(&[]),
+            // rows released over the viewport load the first (QCView: the bin's drag → the viewport DropArea → openMediaPaths; the rows
+            // are already in the project, so this is the load); over the bin / the bands / outside the window nothing happens
+            project_panel::Cmd::DropRows(ids, x, y) => { if self.drop_target(x, y) == Some(DropTarget::Viewport) { if let Some(first) = ids.first() { self.load_item(first); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            project_panel::Cmd::Rename(id, name) => { if self.project.rename_media_item(&id, &name) { if id == self.loaded_item { self.source_label = name; } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
         }
     }
     /// Compact mode (QCView's `toggleCompact` / `exitCompact`): the window drops its title bar, every rail and band goes, one
@@ -613,6 +641,11 @@ fn write_png_display(path: &str, px: &[f32], w: u32, h: u32, linear_surface: boo
     let enc: Vec<f32> = px.iter().enumerate().map(|(i, v)| if i % 4 == 3 { *v } else { srgb_oetf(*v) }).collect();
     write_png_rgb8(path, &enc, w, h)
 }
+/// Where an OS drop lands (QCView's DropAreas): the bin ADDS only (`LeftRail.qml` dropZone → `addMediaPaths`, "drop into the
+/// viewport is the explicit load-now gesture"); the viewport ADDS and LOADS the first (`dropMediaAt` → `openMediaPaths`). The
+/// bands and the Inspector have no drop target — the OS shows a refused drop there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DropTarget { Bin, Viewport }
 fn write_png_rgb8(path: &str, px: &[f32], w: u32, h: u32) {
     let bytes: Vec<u8> = px.chunks(4).flat_map(|c| [(c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8, (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect();
     let Ok(file) = std::fs::File::create(path) else { println!("cannot write {path}"); return };
@@ -683,33 +716,46 @@ impl ApplicationHandler for App {
         if let Some(g) = self.gpu.as_ref() { if now.duration_since(self.last_tick) >= std::time::Duration::from_millis(16) { g.window.request_redraw(); } }
         el.set_control_flow(ControlFlow::WaitUntil(now + std::time::Duration::from_millis(16)));
     }
-    fn window_event(&mut self, el: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         // `QCV_TRACE_INPUT=1`: every pointer / focus event as the window layer delivers it (the Windows leave-and-return click report, 2026-11-07)
         if *TRACE_INPUT { match &event { WindowEvent::PointerMoved { .. } | WindowEvent::PointerButton { .. } | WindowEvent::PointerLeft { .. } | WindowEvent::PointerEntered { .. } | WindowEvent::Focused(_) | WindowEvent::MouseWheel { .. } => println!("input: {event:?}"), _ => {} } }
         match event {
             WindowEvent::CloseRequested => { self.finish(); el.exit(); }
             WindowEvent::Focused(f) => {
                 log::info!("focused {f}");
-                let mut pending: Vec<settings_panel::Cmd> = vec![];
+                let mut pending: Vec<settings_panel::Cmd> = vec![]; let mut pending_pp: Vec<project_panel::Cmd> = vec![];
                 if let Some(g) = self.gpu.as_mut() {
                     let now = Instant::now();
                     if !f {
                         if g.strip.is_open() { g.strip.close(); }
                         // the window lost focus: every typed field commits (QCView's editingFinished)
                         pending = g.settings_panel.blur(&mut self.settings);
+                        if let Some(c) = g.project_panel.commit_rename() { pending_pp.push(c); } set_ime(&**g.window, false);
                         for c in g.inspector.blur() { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } }
                         set_ime(&**g.window, false);
                         g.left.set_pointer_present(false, now); g.right.set_pointer_present(false, now);
                     } else if g.pointer.0 >= 0.0 { g.left.set_pointer_present(true, now); g.right.set_pointer_present(true, now); }
                     g.ui_dirty = true;
                 }
-                for c in pending { self.apply_setting(c); }
+                for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.project_panel.is_editing() {
+                    let k = to_key_event(&event, self.mods);
+                    let c = g.project_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.project_panel.is_editing() { set_ime(&**g.window, false); }
+                    if let Some(c) = c { self.project_cmd(c); }
+                    return
+                } } }
+                // QCView's rail shortcuts: F2 renames the single selected row; Ctrl/Cmd+A selects every source row (no text field focused)
+                if pressed && !event.repeat { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && !g.settings_panel.has_focus() && !g.inspector.has_focus() && !g.strip.is_open() {
+                    if matches!(event.logical_key, Key::Named(NamedKey::F2)) { if g.project_panel.rename_selection(&mut g.fonts) { set_ime(&**g.window, true); g.ui_dirty = true; } return }
+                    if self.mods.ctrl && !self.mods.shift && !self.mods.alt && matches!(&event.logical_key, Key::Character(c) if c == "a" || c == "A") { if g.project_panel.select_all_media() { g.ui_dirty = true; } return }
+                } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.inspector.has_focus() {
                     let k = to_key_event(&event, self.mods);
                     let cmds = g.inspector.key(&k, &mut g.fonts); g.ui_dirty = true;
@@ -800,13 +846,26 @@ impl ApplicationHandler for App {
                 self.pointer(if state == ElementState::Pressed { min_ui::Event::Down { x, y, button: b } } else { min_ui::Event::Up { x, y, button: b } });
             }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = qcv_player::Mods { shift: st.shift_key(), ctrl: st.control_key() || st.meta_key(), alt: st.alt_key(), keypad: false }; if let Some(g) = self.gpu.as_mut() { g.bar.set_shift(self.mods.shift); } }
-            WindowEvent::DragEntered { id: tid, .. } => {
-                let ok = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false);
+            WindowEvent::DragEntered { id: tid, position } => {
+                self.drag_pos = position.map(|p| (p.x, p.y));
+                let ok = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false) && self.drag_pos.is_none_or(|(x, y)| self.drop_target(x, y).is_some());
                 el.set_valid_dnd_actions(tid, if ok { &[DndAction::Copy] } else { &[] }).ok();
             }
-            WindowEvent::DragDropped { id: tid, .. } => { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, id); } }
+            // the cursor says refused over the bands / the Inspector (QCView: no DropArea there)
+            WindowEvent::DragPosition { id: tid, position, .. } => {
+                self.drag_pos = Some((position.x, position.y));
+                let ok = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false) && self.drop_target(position.x, position.y).is_some();
+                el.set_valid_dnd_actions(tid, if ok { &[DndAction::Copy] } else { &[] }).ok();
+            }
+            WindowEvent::DragLeft { .. } => { self.drag_pos = None; }
+            WindowEvent::DragDropped { id: tid, .. } => {
+                // no position from the OS at all: the viewport, as before
+                let target = match self.drag_pos { Some((x, y)) => self.drop_target(x, y), None => Some(DropTarget::Viewport) };
+                self.drag_pos = None;
+                if let Some(t) = target { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, t); } }
+            }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if self.fetches.remove(&serial).is_some() { if let Ok(uris) = value.try_as_uris() { let mut first = true; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if p.to_lowercase().ends_with(".qcvproj") { self.open_project(&p); first = false; continue } if self.add_and_load(&p, first).is_some() { first = false; } } } }
+                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { let mut first = target == DropTarget::Viewport; for p in uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)) { if p.to_lowercase().ends_with(".qcvproj") { self.open_project(&p); first = false; continue } if self.add_and_load(&p, first).is_some() { first = false; } } } }
             }
             _ => {}
         }
@@ -835,7 +894,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

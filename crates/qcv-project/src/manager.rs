@@ -190,6 +190,13 @@ impl ProjectManager {
         self.pool.push(item); self.route(&id, MediaType::Playlist); self.mark_dirty();
         (id, probes)
     }
+    /// QCView `renameMediaItem`: empty names and unknown ids are refused; the same name is a no-op that still succeeds.
+    pub fn rename_media_item(&mut self, id: &str, new_name: &str) -> bool {
+        if id.is_empty() || new_name.is_empty() { return false }
+        let Some(m) = self.item_mut(id) else { return false };
+        if m.name == new_name { return true }
+        m.name = new_name.to_string(); self.mark_dirty(); true
+    }
     /// `Playlist_NN`: one past the highest existing number, two digits.
     pub fn next_playlist_auto_name(&self) -> String {
         let max = self.pool.iter().filter(|m| m.media_type == MediaType::Playlist).filter_map(|m| m.name.strip_prefix("Playlist_").and_then(|n| n.parse::<i32>().ok())).max().unwrap_or(0);
