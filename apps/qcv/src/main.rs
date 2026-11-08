@@ -1394,7 +1394,7 @@ fn run_scrub_bench(o: Opts) {
     let mut p = match Transport::open(&src, TransportOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), threads: o.threads, loop_enabled: false, scrub: Some(sopts), seq, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     let index = p.frame_index().clone();
     let total = index.total_frames();
-    if p.decoder().as_sequence().is_some() { return run_sequence_bench(o, p, engine, total, t_open) }
+    if p.decoder().as_sequence().is_some() { return run_sequence_bench(o, p, &mut engine, total, t_open) }   // the engine stays here: the hw devices built on its D3D12 device must drop first
     let (hw_active, intra_direct, served) = match p.scrub() { Some(sd) => (sd.hw_active, sd.intra_direct, sd.served.clone().unwrap()), None => { println!("no scrub decoder"); return } };
     println!("opened {} — {}; scrub decoder: {} (intra-direct {}), transport opened in {:.0} ms", src.display(), describe(&p), if hw_active { p.scrub().map(|sd| sd.hw_name()).unwrap_or("hw") } else { "software" }, intra_direct, t_open.elapsed().as_secs_f32() * 1000.0);
     // the open's own first frame lands through the transport's seek gate (paused at open)
@@ -1461,11 +1461,11 @@ fn run_scrub_bench(o: Opts) {
 /// `--seeks` / `--scrub` on an image sequence (step 2c): the cache has no scrub decoder — a seek is `updatePlayhead(f, force)`
 /// and lands when the frame is cached; a drag moves the playhead without forcing. `QCV_SEQ_AHEAD` shrinks the window
 /// (24 = QCView's minimum) so random seeks leave it.
-fn run_sequence_bench(o: Opts, mut p: Transport, mut engine: min_present::engine::Engine, total: i32, t_open: Instant) {
+fn run_sequence_bench(o: Opts, mut p: Transport, engine: &mut min_present::engine::Engine, total: i32, t_open: Instant) {
     let c = p.decoder().as_sequence().unwrap().cache();
     println!("opened {} — sequence cache: {} IO threads, window {} ahead / {} behind; transport opened in {:.0} ms", describe(&p), c.config().threads, c.config().read_ahead, c.config().read_behind, t_open.elapsed().as_secs_f32() * 1000.0);
     let land = |p: &mut Transport, engine: &mut min_present::engine::Engine| { let t = Instant::now(); while p.seek_in_flight() && t.elapsed().as_secs() < 10 { if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); } else { std::thread::sleep(std::time::Duration::from_micros(200)); } } t.elapsed().as_secs_f32() * 1000.0 };
-    println!("first frame landed in {:.1} ms", land(&mut p, &mut engine));
+    println!("first frame landed in {:.1} ms", land(&mut p, engine));
     let mut rng = 0x9E3779B97F4A7C15u64; let mut next = || { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; rng };
     if let Some(n) = o.seeks {
         let (mut cold, mut warm) = (vec![], vec![]);
@@ -1474,7 +1474,7 @@ fn run_sequence_bench(o: Opts, mut p: Transport, mut engine: min_present::engine
             let cached = p.decoder().as_sequence().unwrap().cache().frame(target).is_some();
             if o.seek_gap_ms > 0 { std::thread::sleep(std::time::Duration::from_millis(o.seek_gap_ms)); }
             p.seek_to_frame(target);
-            let ms = land(&mut p, &mut engine);
+            let ms = land(&mut p, engine);
             if let Some(h) = p.current() && h.frame_no != target { println!("  MISMATCH: asked {target} got {}", h.frame_no); }
             if cached { warm.push(ms) } else { cold.push(ms) }
         }
@@ -1482,7 +1482,7 @@ fn run_sequence_bench(o: Opts, mut p: Transport, mut engine: min_present::engine
     }
     if let Some((a, b, ms)) = o.scrub {
         let (a, b) = (a.clamp(0, total - 1), b.clamp(0, total - 1));
-        p.seek_to_frame(a); land(&mut p, &mut engine);
+        p.seek_to_frame(a); land(&mut p, engine);
         p.begin_scrub();
         let period = std::time::Duration::from_secs_f32(ms / 1000.0);
         let sweep = std::time::Duration::from_secs(2); let t = Instant::now();
@@ -1496,7 +1496,7 @@ fn run_sequence_bench(o: Opts, mut p: Transport, mut engine: min_present::engine
             if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); shown += 1; }
             behind.push((pointer - p.current().map(|h| h.frame_no).unwrap_or(a)).abs() as f32);
         }
-        p.end_scrub(); land(&mut p, &mut engine);
+        p.end_scrub(); land(&mut p, engine);
         println!("scrub {a}→{b} @ {ms:.1} ms: {reqs} moves, {shown} frames shown; frames behind the pointer p50 {:.0} p95 {:.0} max {:.0}; landed on {:?}", pct(&mut behind, 50.0), pct(&mut behind, 95.0), pct(&mut behind, 100.0), p.current().map(|h| h.frame_no));
     }
     println!("CPU {:.0} % of one core over the run; max RSS {:.0} MB", 100.0 * qcv_player::process_cpu_seconds() / t_open.elapsed().as_secs_f64(), qcv_player::max_rss_mb());
