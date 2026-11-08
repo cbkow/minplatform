@@ -104,12 +104,13 @@ pub fn builtins() -> Vec<Preset> {
     vec![
         mk("Rec.709 video", Chain { in_gamut: id::REC709, in_transfer: id::REC1886, ..d }),
         mk("sRGB", Chain { in_gamut: id::REC709, in_transfer: id::SRGB, ..d }),
+        // the ACES pair next: more common in review than the linear working spaces (the user 2026-11-08)
+        mk("ACEScg", Chain { in_gamut: id::ACESCG, in_transfer: id::LINEAR, ..d }),
+        mk("ACES 2065-1", Chain { in_gamut: id::ACES2065, in_transfer: id::LINEAR, ..d }),
         mk("Linear Rec.709", Chain { in_gamut: id::REC709, in_transfer: id::LINEAR, ..d }),
         mk("Linear Rec.709 · AgX", Chain { in_gamut: id::REC709, in_transfer: id::LINEAR, agx_on: 1, ..d }),
         mk("Linear Rec.2020", Chain { in_gamut: id::REC2020, in_transfer: id::LINEAR, ..d }),
         mk("Linear Rec.2020 · AgX", Chain { in_gamut: id::REC2020, in_transfer: id::LINEAR, agx_on: 1, ..d }),
-        mk("ACEScg", Chain { in_gamut: id::ACESCG, in_transfer: id::LINEAR, ..d }),
-        mk("ACES 2065-1", Chain { in_gamut: id::ACES2065, in_transfer: id::LINEAR, ..d }),
         mk("P3-D65 PQ master", Chain { in_gamut: id::P3D65, in_transfer: id::PQ, ..d }),
     ]
 }
@@ -147,7 +148,7 @@ mod tests {
     use super::*;
     #[test]
     fn chains_round_trip_and_read_qcview_pins() {
-        let agx = builtins()[3].stored.clone();
+        let agx = builtins().into_iter().find(|p| p.name == "Linear Rec.709 · AgX").unwrap().stored;
         assert_eq!(Stored::from_map(&agx.to_map()), Some(agx.clone()));
         let (oc, mc) = agx.to_clip_maps(&Map::new(), &Map::new());
         assert_eq!(Stored::from_clip_maps(&oc, &mc, &fallback_default()), Some(agx));
