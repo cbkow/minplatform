@@ -1,0 +1,4 @@
+# macOS: the family's patched FFmpeg (tools/ffmpeg/build-macos.sh → external/ffmpeg/macos-arm64, canon row 187) ahead of
+# Homebrew's stock one on pkg-config's path; Windows keeps FFMPEG_DIR (a set environment variable is never overridden).
+[env]
+PKG_CONFIG_PATH = { value = "external/ffmpeg/macos-arm64/lib/pkgconfig", relative = true }

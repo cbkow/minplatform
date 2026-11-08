@@ -21,3 +21,22 @@ VideoToolbox; the Homebrew formula carries it by default.
 A point release (9.0.x): edit the pin, run the fetch on the Windows box, rebuild, run the headless harness and the scrub
 bench. A new major: a ruling first — the API assessment lives in `docs/phase2/step2c-rails-settings.md`
 ("FFmpeg upgrade + API assessment").
+
+
+## The local patches (2026-11-08)
+
+`patches/` carries QCView's three FFmpeg patches (`QCView-Player/external/patches/ffmpeg`, GPL like FFmpeg), applied on every
+build — a stock build loses them:
+
+| Patch | What breaks without it |
+|---|---|
+| 0001 DNxHR 444 adaptive colour transform | Avid DNxHR 444 (AE / Media Composer "Avid DNxHR Codec") decodes with green/magenta macroblock speckle; with it the frames come out `gbrp10/12`, tagged limited |
+| 0002 MXF RGBA ComponentMin/MaxRef | RGB essence in MXF probes range "unknown" |
+| 0003 ProRes RAW Bayer patterns | iPhone 17 Pro ProRes RAW (pattern 3) is refused |
+
+**macOS:** `zsh tools/ffmpeg/build-macos.sh` (n9.0.2 + the patches, shared, VideoToolbox + AudioToolbox + dav1d →
+`external/ffmpeg/macos-arm64`, ~3 min). Check: an Avid DNxHR 444 file probes `gbrp12le,tv` with
+`external/ffmpeg/macos-arm64/bin/ffprobe` (stock: `yuv444p12le,unknown`).
+
+**Windows:** owed — the pinned BtbN zip is stock. QCView builds its patched zip with BtbN's recipe in WSL2 + Docker
+(`QCView-Player/dependencies.md` §2); rhombus has neither.
