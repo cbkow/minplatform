@@ -137,3 +137,10 @@ Open for the user / later pieces:
   arrives bound-only. 4K EXR headless, 3 runs: show p50 6.3 → 2.2 ms, ~65 / 70 frames arrive uploaded, frame 30 encoded- and
   display-identical, drops unchanged. Open: the worst show is higher (78–108 vs 35–59 ms), at the play start while the thread's
   first copies overlap the presenter's own — watch it on the walk. `QCV_SEQ_GPU_UPLOAD=0` turns it off.
+- **Windows (rhombus, RTX 4090, D3D12), 2026-11-08** at c6b3823: build clean; min-image / qcv-player / qcv-project / qcv-timeline /
+  min-present tests green. 4K EXR, 3 runs: show p50 5.1 → 2.2 ms with upload-ahead (67–68 / 71 frames uploaded ahead), max
+  ~21 ms either way, 0 dropped — the play-start spike seen on the Mac does not show here; frame 30 encoded- and
+  display-identical with and without. Gapped 4K EXR plays (3 drops = the 3 bad frames held). 10-bit DPX through the cache
+  encoded-identical to FFmpeg's image2 route; TGA plays. Cold seeks p50 90 ms, cached 8.5 ms; the scrub keeps up (max 1 behind).
+  Recipe note: FFmpeg run over ssh waits on the console at exit — `-nostdin` on every call AND `ssh -n` (the Rust tests spawn
+  FFmpeg too); the first run sat there for an hour after writing its last frame.
