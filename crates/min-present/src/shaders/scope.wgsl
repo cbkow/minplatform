@@ -11,6 +11,9 @@ const GRID: u32 = 512u;
 @group(0) @binding(0) var tap: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> s: S;
 @group(0) @binding(2) var<storage, read_write> hist: array<atomic<u32>>;
+// QCView's ScopePeaks for the frame: [0] the waveform level (Y′ on SDR, nits on HDR), [1] the brightest channel (encoded 0..1 on
+// SDR, nits on HDR) — as f32 bits, ≥ 0, so an unsigned max orders them
+@group(0) @binding(3) var<storage, read_write> peaks: array<atomic<u32>, 2>;
 
 fn spow(x: vec3<f32>, k: f32) -> vec3<f32> { return sign(x) * pow(abs(x), vec3(k)); }
 
@@ -25,12 +28,16 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
   if (s.p.x > 0.5) {
     lo = 0.0; hi = s.p.y;
     y = s.p.z * dot(vec3(0.2627, 0.6780, 0.0593), l);
+    atomicMax(&peaks[1], bitcast<u32>(max(s.p.z * max(l.r, max(l.g, l.b)), 0.0)));
   } else {
     lo = -0.1; hi = 1.1;
     let l7 = vec3(1.6604910 * l.r - 0.5876411 * l.g - 0.0728499 * l.b, -0.1245505 * l.r + 1.1328999 * l.g - 0.0083494 * l.b, -0.0181508 * l.r - 0.1005789 * l.g + 1.1187297 * l.b);
-    y = dot(vec3(0.2126, 0.7152, 0.0722), spow(l7, 1.0 / 2.4));
+    let e = spow(l7, 1.0 / 2.4);
+    y = dot(vec3(0.2126, 0.7152, 0.0722), e);
+    if (e.r == e.r && e.g == e.g && e.b == e.b) { atomicMax(&peaks[1], bitcast<u32>(max(max(e.r, max(e.g, e.b)), 0.0))); }
   }
   if (y != y) { return; }   // NaN
+  atomicMax(&peaks[0], bitcast<u32>(max(y, 0.0)));
   let bx = min(u32(f32(id.x) / f32(gw) * f32(GRID)), GRID - 1u);
   let by = u32(clamp(floor((hi - y) / (hi - lo) * f32(GRID)), 0.0, f32(GRID - 1u)));
   atomicAdd(&hist[by * GRID + bx], 1u);

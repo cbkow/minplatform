@@ -77,6 +77,8 @@ pub struct ColorDrawer {
     wf_scale: ActionGroup, wf_peak: TextButton, wf_hdr: Option<bool>, wf_peak_nits: f32, wf_card: Rect, wf_trace: Rect, wf_src_hdr: bool, wf_col: Rect, wf_collapse: Rect, wf_expanded: bool, wf_hover: bool,
     /// the row of columns' sideways scroll (px), its full width, the body it scrolls in
     hscroll: f64, content_w: f64, body: Rect,
+    /// QCView's peak readout: the newest frame's (level, brightest channel) and the clip's peak since it loaded
+    peaks: Option<([f32; 2], [f32; 2])>,
     exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
@@ -107,7 +109,7 @@ impl ColorDrawer {
             on: Switch::new(false), on_rect: Rect::ZERO,
             wf_scale: ActionGroup::new(["SDR", "HDR"].iter().map(|l| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect()).compact(),
             wf_peak: TextButton::new("1000 nits", Variant::Secondary).size_s(),
-            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO,
+            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None,
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
@@ -282,6 +284,8 @@ impl ColorDrawer {
             ClipChain::MinColor(m) => Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(qcv_color::Chain { knee_on: c.knee_on, knee_src: c.knee_src, knee_tgt: c.knee_tgt, knee_start: c.knee_start, ..*m }), preset: v.stored.preset.clone() })),
         }
     }
+    /// The readout's numbers (now, the clip's peak); None clears it.
+    pub fn set_peaks(&mut self, p: Option<([f32; 2], [f32; 2])>) -> bool { if self.peaks == p { false } else { self.peaks = p; true } }
     fn wf_cmd(&self) -> Cmd { Cmd::Waveform(self.wf_hdr, self.wf_peak_nits, self.wf_expanded) }
     fn scope_hdr(&self) -> bool { self.wf_hdr.unwrap_or(self.wf_src_hdr) }
     fn sync_wf_chips(&mut self) {
@@ -517,6 +521,16 @@ impl ColorDrawer {
             let capr = Rect::new(self.wf_card.x0, self.wf_card.y0 - t::COMPONENT_HEIGHT_75 as f64 * s, self.wf_card.x1, self.wf_card.y0);
             let l = fonts.detail(tr("Waveform"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((capr.x0 + t::SPACING_50 as f64 * s, mid(&l, capr))));
+            // QCView's readout: now · the clip's peak · the brightest channel (nits on HDR, % of Y′ on SDR)
+            if let Some((now_v, peak)) = self.peaks {
+                let hdr = self.scope_hdr();
+                let f = |v: f32| if hdr { format!("{}", v.round() as i64) } else { format!("{}", (v * 100.0).round() as i64) };
+                let txt = format!("{} · {} {} · {} {}{}", f(now_v[0]), tr("peak"), f(peak[0]), tr("ch"), f(peak[1]), if hdr { " nits" } else { " %" });
+                let over = if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 };
+                let rl = fonts.layout(&txt, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if over { t::NOTICE_VISUAL_COLOR } else { t::RAIL_LABEL_COLOR }));
+                let rx = capr.x0 + t::SPACING_50 as f64 * s + l.width() as f64 + t::SPACING_200 as f64 * s;
+                if rx + rl.width() as f64 <= self.wf_scale.rect.x0 - t::SPACING_100 as f64 * s { min_ui::fonts::draw_layout(scene, &rl, Affine::translate((rx, mid(&rl, capr)))); }
+            }
             self.wf_scale.paint(scene, fonts, s, now); if self.scope_hdr() { self.wf_peak.paint(scene, fonts, s, now); }
             paint::rounded(scene, self.wf_card, t::CORNER_RADIUS_500 as f64 * s, t::GRAY_25);
             let tr_ = self.wf_trace;

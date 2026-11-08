@@ -34,7 +34,10 @@ pub struct ScopeView { pub rect: [f32; 4], pub hdr: bool, pub peak_nits: f32, pu
 
 /// QCView's tap cap: the waveform samples at most 960 columns.
 const SCOPE_TAP_W: u32 = 960;
-struct Scope { hist: wgpu::Buffer, su: wgpu::Buffer, du: wgpu::Buffer, acc: wgpu::ComputePipeline, acc_layout: wgpu::BindGroupLayout, draw: wgpu::RenderPipeline, draw_bind: wgpu::BindGroup, tap: Option<(wgpu::Texture, (u32, u32))>, samples: u32 }
+/// The peaks' readback: two 8-byte staging buffers, copied one frame and mapped the next (never a stall). State per buffer:
+/// 0 idle · 1 copied (map at the next encode) · 2 mapping · 3 mapped (read it).
+struct PeakReader { bufs: [wgpu::Buffer; 2], state: [std::sync::Arc<std::sync::atomic::AtomicU8>; 2], latest: Option<[f32; 2]> }
+struct Scope { peaks: wgpu::Buffer, reader: PeakReader, hist: wgpu::Buffer, su: wgpu::Buffer, du: wgpu::Buffer, acc: wgpu::ComputePipeline, acc_layout: wgpu::BindGroupLayout, draw: wgpu::RenderPipeline, draw_bind: wgpu::BindGroup, tap: Option<(wgpu::Texture, (u32, u32))>, samples: u32 }
 /// The identity chain: exercises the three-pass route (stage 1 → slot → blit) with no colour change.
 pub struct IdentityColorPass;
 impl ColorPass for IdentityColorPass {
@@ -162,7 +165,8 @@ pub struct Engine {
     /// Stage 4: the UI layer's pipeline (blended), its uniform, and the bind group for the overlay texture when one is set.
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
-    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids,
+    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
+    out_gain: f32,
     scope: Option<Scope>, scope_view: Option<ScopeView>,
     geometry: Geometry,
     transfer_override: TransferChoice,
@@ -278,7 +282,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), scope: None, scope_view: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -354,7 +358,8 @@ impl Engine {
         let acc_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope accumulate"), entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
         let apl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&acc_layout)], immediate_size: 0 });
         let acc = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("scope accumulate"), layout: Some(&apl), module: &module, entry_point: Some("accumulate"), compilation_options: Default::default(), cache: None });
         let draw_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope draw"), entries: &[
@@ -367,7 +372,10 @@ impl Engine {
             fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: self.target_format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
         let draw_bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope draw"), layout: &draw_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: du.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: hist.as_entire_binding() }] });
-        self.scope = Some(Scope { hist, su, du, acc, acc_layout, draw, draw_bind, tap: None, samples: 1 });
+        let peaks = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope peaks"), size: 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let stg = |l: &str| dev.create_buffer(&wgpu::BufferDescriptor { label: Some(l), size: 8, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let reader = PeakReader { bufs: [stg("scope peaks a"), stg("scope peaks b")], state: [Default::default(), Default::default()], latest: None };
+        self.scope = Some(Scope { peaks, reader, hist, su, du, acc, acc_layout, draw, draw_bind, tap: None, samples: 1 });
     }
     /// The tap (a texture in linear light + its matrix to linear Rec.2020) → the histogram.
     fn accumulate_scope(&mut self, enc: &mut wgpu::CommandEncoder, tap: &wgpu::Texture, to2020: [f32; 9], v: ScopeView) {
@@ -378,11 +386,15 @@ impl Engine {
         let m = to2020;
         let u: [f32; 20] = [m[0], m[1], m[2], 0.0, m[3], m[4], m[5], 0.0, m[6], m[7], m[8], 0.0, tw as f32, th as f32, gw as f32, gh as f32, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits.clamp(100.0, 10000.0), 100.0, 0.0];
         self.queue.write_buffer(&s.su, 0, bytemuck::cast_slice(&u));
-        enc.clear_buffer(&s.hist, 0, None);
+        enc.clear_buffer(&s.hist, 0, None); enc.clear_buffer(&s.peaks, 0, None);
+        // the previous frame's copy has been submitted by now: map it
+        use std::sync::atomic::Ordering;
+        for i in 0..2 { if s.reader.state[i].load(Ordering::Acquire) == 1 { s.reader.state[i].store(2, Ordering::Release); let st = s.reader.state[i].clone(); s.reader.bufs[i].slice(..).map_async(wgpu::MapMode::Read, move |r| st.store(if r.is_ok() { 3 } else { 0 }, Ordering::Release)); } }
         let tv = tap.create_view(&Default::default());
-        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope accumulate"), layout: &s.acc_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tv) }, wgpu::BindGroupEntry { binding: 1, resource: s.su.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: s.hist.as_entire_binding() }] });
-        let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope accumulate"), timestamp_writes: None });
-        p.set_pipeline(&s.acc); p.set_bind_group(0, &bind, &[]); p.dispatch_workgroups(gw.div_ceil(16), gh.div_ceil(16), 1);
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope accumulate"), layout: &s.acc_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tv) }, wgpu::BindGroupEntry { binding: 1, resource: s.su.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: s.hist.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: s.peaks.as_entire_binding() }] });
+        { let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope accumulate"), timestamp_writes: None });
+          p.set_pipeline(&s.acc); p.set_bind_group(0, &bind, &[]); p.dispatch_workgroups(gw.div_ceil(16), gh.div_ceil(16), 1); }
+        if let Some(i) = (0..2).find(|&i| s.reader.state[i].load(Ordering::Acquire) == 0) { enc.copy_buffer_to_buffer(&s.peaks, 0, &s.reader.bufs[i], 0, 8); s.reader.state[i].store(1, Ordering::Release); }
     }
     fn draw_scope(&self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, v: ScopeView) {
         let Some(s) = self.scope.as_ref() else { return };
@@ -392,11 +404,29 @@ impl Engine {
         self.queue.write_buffer(&s.du, 0, bytemuck::cast_slice(&u));
         let mut p = pass_load(enc, "scope draw", target); p.set_pipeline(&s.draw); p.set_bind_group(0, &s.draw_bind, &[]); p.draw(0..6, 0..1);
     }
+    /// The newest frame's waveform peaks (QCView's ScopePeaks): the level (Y′ 0..1 on SDR, nits on HDR) and the brightest channel
+    /// (encoded 0..1 on SDR, nits on HDR) — read a frame or two late, never by stalling. None until one has landed.
+    pub fn scope_peaks(&mut self) -> Option<[f32; 2]> {
+        use std::sync::atomic::Ordering;
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        let s = self.scope.as_mut()?;
+        for i in 0..2 { if s.reader.state[i].load(Ordering::Acquire) == 3 {
+            { let v = s.reader.bufs[i].slice(..).get_mapped_range(); if let Ok(v) = v { let u: &[u32] = bytemuck::cast_slice(&v); s.reader.latest = Some([f32::from_bits(u[0]), f32::from_bits(u[1])]); } }
+            s.reader.bufs[i].unmap(); s.reader.state[i].store(0, Ordering::Release);
+        } }
+        s.reader.latest
+    }
+    /// Forget the last peaks (a new clip: QCView resets the readout per load).
+    pub fn reset_scope_peaks(&mut self) { if let Some(s) = self.scope.as_mut() { s.reader.latest = None; } }
     /// The waveform's last histogram (512 × 512, row 0 = the top of the scale) — tests and probes.
     #[doc(hidden)] pub fn scope_counts(&self) -> Option<Vec<u32>> { let s = self.scope.as_ref()?; let b = readback::read_buffer(&self.device, &self.queue, &s.hist, 512 * 512 * 4); Some(bytemuck::cast_slice(&b).to_vec()) }
     /// The viewer aids on the screen pass (a uniform write).
     pub fn set_viewer_aids(&mut self, a: ViewerAids) { if a != self.aids { self.aids = a; self.write_uniforms(); } }
     pub fn viewer_aids(&self) -> ViewerAids { self.aids }
+    /// Scale the screen's extended-linear output (Windows scRGB: 1.0 = 80 nits, so SDR white needs the user's SDR level ÷ 80).
+    /// The screen pass only — snapshots and the waveform never see it.
+    pub fn set_output_gain(&mut self, g: f32) { let g = if g.is_finite() && g > 0.0 { g } else { 1.0 }; if (g - self.out_gain).abs() > 1e-4 { self.out_gain = g; self.write_uniforms(); } }
+    pub fn output_gain(&self) -> f32 { self.out_gain }
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
     /// The window's scale factor: the checker tile is 32 DEVICE pixels (QCView's Metal path passes the contentsScale-aware size).
@@ -501,7 +531,7 @@ impl Engine {
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
         let rot = self.rotation_quarters() as f32;
         let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear), u([1.0, 1.0], [0.0, 0.0], display_out)];
-        sets[0].rot = rot; sets[0].aids = self.aids.gpu();
+        sets[0].rot = rot; sets[0].aids = self.aids.gpu(); sets[0].pad1 = [self.out_gain, 0.0];
         // BYPASS = AS STORED (canon row 180, QCView's rule): with no chain engaged, display-referred SDR (sRGB / BT.1886 tags) is
         // linearised with the sRGB EOTF so the surface's encode is a no-op and the screen shows the stored values — on the EDR
         // layer as on an 8-bit sRGB surface. NOT a transfer opinion: the 2.2-vs-2.4 question is the chain's Input, which still
@@ -512,7 +542,7 @@ impl Engine {
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
         let rotq = self.rotation_quarters() as f32;
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [0.0, 0.0], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, 0.0], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());

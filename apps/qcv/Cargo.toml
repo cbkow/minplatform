@@ -47,4 +47,4 @@ objc2-app-kit = { workspace = true, features = ["NSMenu", "NSMenuItem", "NSAppli
 
 [target.'cfg(windows)'.dependencies]
 # Windows shortcuts (.lnk) resolve through the shell's IShellLink (QCView's QFileInfo::symLinkTarget)
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_Storage_FileSystem"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_Devices_Display"] }
