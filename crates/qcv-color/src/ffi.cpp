@@ -88,3 +88,19 @@ extern "C" const char *mc_in_gamut_name(int i) { return (i >= 0 && i < DRT_IN_GA
 extern "C" const char *mc_in_transfer_name(int i) { return (i >= 0 && i < DRT_OETF_INVERSE_FIRST) ? drt::kInOetfNames[i] : ""; }
 extern "C" int mc_in_gamut_count() { return DRT_IN_GAMUT_COUNT; }
 extern "C" int mc_in_transfer_count() { return DRT_OETF_INVERSE_FIRST; }
+
+// The Highlight Knee alone (the OCIO split's middle, canon row 204): the vendored core's knee fields, derived.
+extern "C" void mc_knee_params(float src_nits, float tgt_nits, float start, drt::DrtParams *out)
+{
+    drt::DrtParams p = drt::drt_stickshift_defaults();
+    p.kn_src = std::max(src_nits, 1.0f);
+    p.kn_tgt = std::max(tgt_nits, 1.0f);
+    p.kn_auto = start < 0.0f ? 1 : 0;
+    p.kn_start = std::clamp(start, 0.0f, 0.99f);
+    *out = drt::drt_knee_derive(p);
+}
+extern "C" void mc_knee_apply(const drt::DrtParams *p, float *rgb)
+{
+    drt::float3 c = drt::drt_knee(*p, drt::make_float3(rgb[0], rgb[1], rgb[2]));
+    rgb[0] = c.x; rgb[1] = c.y; rgb[2] = c.z;
+}

@@ -60,6 +60,13 @@ pub fn ocio_configs_dir() -> std::path::PathBuf {
     })
 }
 
+/// `QCV_KNEE=<source nits>,<target nits>[,<start>]` turns the Highlight Knee on for an OCIO harness chain.
+pub fn knee_wanted() -> qcv_color::Knee {
+    let Ok(v) = std::env::var("QCV_KNEE") else { return qcv_color::Knee::default() };
+    let n: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    qcv_color::Knee { enabled: n.len() >= 2, source_nits: *n.first().unwrap_or(&1000.0), target_nits: *n.get(1).unwrap_or(&1000.0), start: *n.get(2).unwrap_or(&-1.0) }
+}
+
 /// `QCV_OCIO=<config>|<input>|<view>[|<look>]`.
 pub fn ocio_wanted() -> Option<(String, qcv_color::ocio::Spec)> {
     let v = std::env::var("QCV_OCIO").ok()?;
@@ -74,7 +81,7 @@ pub fn ocio_build_ahead(device: &wgpu::Device, queue: &wgpu::Queue, config: Stri
     let (tx, rx) = mpsc::channel();
     let (d, q) = (device.clone(), queue.clone());
     std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
-        match qcv_color::ocio::Config::open(&config).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec)) {
+        match qcv_color::ocio::Config::open(&config).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee_wanted())) {
             Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); }
             Err(e) => log::error!("OCIO: {e}"),
         }

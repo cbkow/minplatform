@@ -148,6 +148,49 @@ OcChain *oc_chain_build(const OcConfig *c, const char *input, const char *look, 
     } catch (const std::exception &e) { put(err, errn, e.what()); return nullptr; }
 }
 
+// QCView's split (OcioChainBuilder::buildSplitTransforms): pre = [look] [scene LUT] → the interchange role; post =
+// interchange → the display's view. The Knee runs between, in linear light. side: 1 scene (aces_interchange, AP0 D60),
+// 2 display (cie_xyz_d65_interchange); both put 1.0 at 100 nits.
+int oc_chain_build_split(const OcConfig *c, const char *input, const char *look, const char *view, const char *scene_lut,
+                         int lang, OcChain **pre_out, OcChain **post_out, char *err, size_t errn)
+{
+    try {
+        std::string src = input;
+        OCIO::GroupTransformRcPtr pre = OCIO::GroupTransform::Create();
+        if (look && *look) {
+            const char *res = OCIO::LookTransform::GetLooksResultColorSpace(c->cfg, c->cfg->getCurrentContext(), look);
+            if (res && *res) { OCIO::LookTransformRcPtr lt = OCIO::LookTransform::Create(); lt->setSrc(input); lt->setDst(res); lt->setLooks(look); pre->appendTransform(lt); src = res; }
+        }
+        if (scene_lut && *scene_lut) { OCIO::FileTransformRcPtr ft = OCIO::FileTransform::Create(); ft->setSrc(scene_lut); ft->setInterpolation(OCIO::INTERP_BEST); pre->appendTransform(ft); }
+        OCIO::ConstColorSpaceRcPtr scs = c->cfg->getColorSpace(src.c_str());
+        if (!scs) { put(err, errn, "unknown input colourspace"); return 0; }
+        if (scs->isData()) { put(err, errn, "the input is a data colourspace: nothing for the Knee to act on"); return 0; }
+        const char *vcs = c->cfg->getDisplayViewColorSpaceName(kDisplay, view);
+        OCIO::ConstColorSpaceRcPtr v = vcs ? c->cfg->getColorSpace(vcs) : nullptr;
+        if (v && v->isData()) { put(err, errn, "a data view (Raw): nothing for the Knee to act on"); return 0; }
+        const bool scene = scs->getReferenceSpaceType() == OCIO::REFERENCE_SPACE_SCENE;
+        const char *role = scene ? "aces_interchange" : "cie_xyz_d65_interchange";
+        if (!c->cfg->hasRole(role)) { put(err, errn, scene ? "the config has no aces_interchange role" : "the config has no cie_xyz_d65_interchange role"); return 0; }
+        const char *ic = c->cfg->getRoleColorSpace(role);
+        OCIO::ColorSpaceTransformRcPtr to = OCIO::ColorSpaceTransform::Create(); to->setSrc(src.c_str()); to->setDst(ic); pre->appendTransform(to);
+        OCIO::DisplayViewTransformRcPtr dvt = OCIO::DisplayViewTransform::Create(); dvt->setSrc(ic); dvt->setDisplay(kDisplay); dvt->setView(view);
+        auto mk = [&](OCIO::ConstTransformRcPtr t, const char *fn, const char *prefix) {
+            auto *ch = new OcChain;
+            ch->proc = c->cfg->getProcessor(t);
+            ch->cpu = ch->proc->getDefaultCPUProcessor();
+            ch->desc = OCIO::GpuShaderDesc::CreateShaderDesc();
+            ch->desc->setLanguage(lang == 1 ? OCIO::GPU_LANGUAGE_HLSL_SM_5_0 : OCIO::GPU_LANGUAGE_MSL_2_0);
+            ch->desc->setFunctionName(fn); ch->desc->setResourcePrefix(prefix);
+            ch->proc->getDefaultGPUProcessor()->extractGpuShaderInfo(ch->desc);
+            ch->shader = ch->desc->getShaderText();
+            return ch;
+        };
+        *pre_out = mk(pre, "OCIOPre", "ocio_pre_");
+        *post_out = mk(dvt, "OCIOPost", "ocio_post_");
+        return scene ? 1 : 2;
+    } catch (const std::exception &e) { put(err, errn, e.what()); return 0; }
+}
+
 void oc_chain_free(OcChain *c) { delete c; }
 const char *oc_chain_shader(const OcChain *c) { return c->shader.c_str(); }
 unsigned oc_chain_num_uniforms(const OcChain *c) { return c->desc->getNumUniforms(); }

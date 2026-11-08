@@ -12,13 +12,13 @@ fn main() {
     for f in CORE { src += &fs::read_to_string(format!("core/{f}")).unwrap(); src.push('\n'); println!("cargo:rerun-if-changed=core/{f}"); }
     src += &fs::read_to_string("src/mincolor_main.glsl").unwrap().replace("// @AGX_LOADER@", &agx_loader());
     println!("cargo:rerun-if-changed=src/mincolor_main.glsl");
-    let mut fe = naga::front::glsl::Frontend::default();
-    let module = fe.parse(&naga::front::glsl::Options::from(naga::ShaderStage::Compute), &src)
-        .unwrap_or_else(|e| panic!("minColor GLSL: {}", e.emit_to_string(&src)));
-    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module)
-        .unwrap_or_else(|e| panic!("minColor validation: {}", e.emit_to_string(&src)));
-    let wgsl = naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty()).unwrap();
+    let wgsl = to_wgsl(&src, "minColor");
     fs::write(out.join("mincolor.wgsl"), wgsl).unwrap();
+    // the Knee alone: shim + params + knee only
+    let mut ksrc = String::from("#version 440\n");
+    for f in ["src/opendrt_shim_naga.h", "core/opendrt_params.h", "core/mincolor_knee.h", "src/knee_main.glsl"] { ksrc += &fs::read_to_string(f).unwrap(); ksrc.push('\n'); }
+    println!("cargo:rerun-if-changed=src/knee_main.glsl");
+    fs::write(out.join("knee.wgsl"), to_wgsl(&ksrc, "knee")).unwrap();
 
     cc::Build::new().cpp(true).std("c++20").include("core")
         .file("core/opendrt_presets.cpp").file("core/mincolor_agx.cpp").file("src/ffi.cpp")
@@ -62,4 +62,14 @@ fn ocio() {
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=OpenColorIO");
     if !cfg!(windows) { println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display()); }   // Windows: the OCIO DLL's folder goes on PATH
+}
+
+/// GLSL → validated WGSL through naga (a failure fails the build, with naga's report).
+fn to_wgsl(src: &str, what: &str) -> String {
+    let mut fe = naga::front::glsl::Frontend::default();
+    let module = fe.parse(&naga::front::glsl::Options::from(naga::ShaderStage::Compute), src)
+        .unwrap_or_else(|e| panic!("{what} GLSL: {}", e.emit_to_string(src)));
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module)
+        .unwrap_or_else(|e| panic!("{what} validation: {}", e.emit_to_string(src)));
+    naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty()).unwrap()
 }

@@ -23,6 +23,7 @@ unsafe extern "C" {
     fn oc_config_encoding(c: *const RawConfig, cs: *const c_char) -> *const c_char;
     fn oc_chain_build(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, lang: c_int, fn_name: *const c_char, err: *mut c_char, n: usize) -> *mut RawChain;
     fn oc_chain_free(c: *mut RawChain);
+    fn oc_chain_build_split(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, lang: c_int, pre: *mut *mut RawChain, post: *mut *mut RawChain, err: *mut c_char, n: usize) -> c_int;
     fn oc_chain_shader(c: *const RawChain) -> *const c_char;
     fn oc_chain_num_uniforms(c: *const RawChain) -> c_uint;
     fn oc_chain_num_textures(c: *const RawChain) -> c_uint;
@@ -81,6 +82,15 @@ impl Chain {
         if raw.is_null() { return Err(CStr::from_bytes_until_nul(&err).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()) }
         Ok(Chain { raw, _config: config.clone() })
     }
+    /// QCView's split around the Knee: (pre → the interchange role, post → the view, the side).
+    pub fn build_split(config: &Arc<Config>, spec: &Spec) -> Result<(Chain, Chain, crate::Side), String> {
+        let mut err = vec![0u8; 4096];
+        let (mut pre, mut post) = (std::ptr::null_mut(), std::ptr::null_mut());
+        let lang = if cfg!(windows) { 1 } else { 0 };
+        let side = unsafe { oc_chain_build_split(config.raw, cstr(&spec.input).as_ptr(), cstr(&spec.look).as_ptr(), cstr(&spec.view).as_ptr(), cstr(&spec.scene_lut).as_ptr(), lang, &mut pre, &mut post, err.as_mut_ptr() as *mut c_char, err.len()) };
+        if side == 0 { return Err(CStr::from_bytes_until_nul(&err).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()) }
+        Ok((Chain { raw: pre, _config: config.clone() }, Chain { raw: post, _config: config.clone() }, if side == 1 { crate::Side::Scene } else { crate::Side::Display }))
+    }
     pub fn shader(&self) -> String { s(unsafe { oc_chain_shader(self.raw) }) }
     pub fn num_uniforms(&self) -> u32 { unsafe { oc_chain_num_uniforms(self.raw) } }
     /// The LUT inventory: 1D / 2D first (registration order), then 3D — the order QCView declares the kernel arguments in.
@@ -119,7 +129,7 @@ fn lut_texture(device: &wgpu::Device, queue: &wgpu::Queue, l: &Lut) -> wgpu::Tex
 }
 
 /// The kernel source around OCIO's shader: QCView's compute wrapper for this backend.
-fn kernel(shader: &str, luts: &[Lut]) -> String {
+fn kernel(shader: &str, luts: &[Lut], func: &str) -> String {
     if cfg!(windows) {
         // DX12: OCIO's HLSL declares its LUT textures + samplers as globals; wgpu numbers each register class in bind-group-entry
         // order in space0 (SRV t0 = src, t1.. = LUTs; UAV u0 = dst; sampler s0) — explicit registers, every sampler the shared one.
@@ -132,7 +142,7 @@ fn kernel(shader: &str, luts: &[Lut]) -> String {
             body.push_str(&l); body.push('\n');
         }
         for sm in &samplers { body = body.replace(sm.as_str(), "src_smp"); }
-        format!("Texture2D<float4> src : register(t0);\nRWTexture2D<float4> dst : register(u0);\nSamplerState src_smp : register(s0);\n\n{body}\n[numthreads(16, 16, 1)]\nvoid ocio_apply(uint3 gid : SV_DispatchThreadID)\n{{\n    uint w, h; dst.GetDimensions(w, h);\n    if (gid.x >= w || gid.y >= h) return;\n    float4 color = src.Load(int3(gid.xy, 0));\n    color = OCIODisplay(color);\n    dst[gid.xy] = color;\n}}\n")
+        format!("Texture2D<float4> src : register(t0);\nRWTexture2D<float4> dst : register(u0);\nSamplerState src_smp : register(s0);\n\n{body}\n[numthreads(16, 16, 1)]\nvoid ocio_apply(uint3 gid : SV_DispatchThreadID)\n{{\n    uint w, h; dst.GetDimensions(w, h);\n    if (gid.x >= w || gid.y >= h) return;\n    float4 color = src.Load(int3(gid.xy, 0));\n    color = {func}(color);\n    dst[gid.xy] = color;\n}}\n")
     } else {
         let mut args = String::new(); let (mut call3, mut call2) = (vec![], vec![]);
         for (i, l) in luts.iter().enumerate() {
@@ -142,32 +152,18 @@ fn kernel(shader: &str, luts: &[Lut]) -> String {
         }
         call3.sort_by_key(|c| c.0); call2.sort_by_key(|c| c.0);
         let call: String = call3.iter().chain(call2.iter()).map(|(_, n)| format!("{n}, src_smp, ")).collect();
-        format!("#include <metal_stdlib>\nusing namespace metal;\n\n{shader}\nkernel void ocio_apply(\n    texture2d<float, access::sample> src [[texture(0)]],\n    texture2d<float, access::write> dst [[texture(1)]],\n    sampler src_smp [[sampler(0)]],\n{args}    uint2 gid [[thread_position_in_grid]])\n{{\n    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;\n    float4 color = src.read(gid);\n    color = OCIODisplay({call}color);\n    dst.write(color, gid);\n}}\n")
+        format!("#include <metal_stdlib>\nusing namespace metal;\n\n{shader}\nkernel void ocio_apply(\n    texture2d<float, access::sample> src [[texture(0)]],\n    texture2d<float, access::write> dst [[texture(1)]],\n    sampler src_smp [[sampler(0)]],\n{args}    uint2 gid [[thread_position_in_grid]])\n{{\n    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) return;\n    float4 color = src.read(gid);\n    color = {func}({call}color);\n    dst.write(color, gid);\n}}\n")
     }
 }
 
-/// OCIO in the stage-2 slot: the source's R'G'B' in (the input colourspace says what they are), linear Rec.709 out.
-pub struct OcioPass {
-    device: wgpu::Device,
-    pipeline: wgpu::ComputePipeline,
-    layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    luts: Vec<wgpu::TextureView>,
-    _lut_textures: Vec<wgpu::Texture>,
-    pub spec: Spec,
-    pub build_ms: f64,
-}
+/// One OCIO processor as a native compute pass (its shader in QCView's wrapper, its LUTs as textures).
+struct Native { pipeline: wgpu::ComputePipeline, layout: wgpu::BindGroupLayout, luts: Vec<wgpu::TextureView>, _textures: Vec<wgpu::Texture> }
 
-impl OcioPass {
-    /// Build the chain, its LUT textures and the native pipeline (run it on a worker: OCIO + the backend compile take
-    /// tens to hundreds of ms). The device must have `PASSTHROUGH_SHADERS`.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: &Arc<Config>, spec: Spec) -> Result<OcioPass, String> {
-        let t0 = std::time::Instant::now();
-        if !device.features().contains(wgpu::Features::PASSTHROUGH_SHADERS) { return Err("the device has no passthrough shaders".into()) }
-        let chain = Chain::build(config, &spec)?;
+impl Native {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, chain: &Chain, func: &str) -> Result<Native, String> {
         if chain.num_uniforms() > 0 { log::warn!("OCIO chain has {} dynamic-property uniforms — not bound yet", chain.num_uniforms()); }
         let luts = chain.luts();
-        let src = kernel(&chain.shader(), &luts);
+        let src = kernel(&chain.shader(), &luts, func);
         let mut entries = vec![
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
@@ -195,25 +191,84 @@ impl OcioPass {
             std::fs::write(&dump, &src).ok();
             return Err(format!("OCIO kernel failed (dumped to {}): {e}", dump.display()));
         }
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ocio-linear-clamp"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        let views = textures.iter().map(|t| t.create_view(&Default::default())).collect();
-        let build_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        log::info!("OCIO {}: '{}' → '{}'{} built in {build_ms:.0} ms ({} LUTs)", version(), spec.input, spec.view, if spec.look.is_empty() { String::new() } else { format!(" + look '{}'", spec.look) }, textures.len());
-        Ok(OcioPass { device: device.clone(), pipeline, layout, sampler, luts: views, _lut_textures: textures, spec, build_ms })
+        Ok(Native { pipeline, layout, luts: textures.iter().map(|t| t.create_view(&Default::default())).collect(), _textures: textures })
     }
+    fn run(&self, device: &wgpu::Device, sampler: &wgpu::Sampler, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) {
+        let sv = src.create_view(&Default::default()); let dv = dst.create_view(&Default::default());
+        let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&sv) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dv) }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) }];
+        for (i, v) in self.luts.iter().enumerate() { e.push(wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(v) }); }
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("ocio"), layout: &self.layout, entries: &e });
+        let size = dst.size();
+        let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("ocio"), timestamp_writes: None });
+        p.set_pipeline(&self.pipeline); p.set_bind_group(0, &bind, &[]);
+        p.dispatch_workgroups(size.width.div_ceil(16), size.height.div_ceil(16), 1);
+    }
+}
+
+enum Mode {
+    One(Native),
+    /// QCView's split: OCIO pre → the Knee (interchange, linear) → OCIO post; two working textures between.
+    Split { pre: Native, knee: crate::KneeStage, post: Native, side: crate::Side, tex: Option<(wgpu::Texture, wgpu::Texture, (u32, u32))> },
+}
+
+/// An SDR view targets 100 nits for the Knee (QCView: `displayIsSdr`); with one linear display the view says it.
+pub fn view_is_sdr(view: &str) -> bool { !view.contains("HDR") }
+
+/// OCIO in the stage-2 slot: the source's R'G'B' in (the input colourspace says what they are), linear Rec.709 out.
+pub struct OcioPass {
+    device: wgpu::Device,
+    sampler: wgpu::Sampler,
+    mode: Mode,
+    pub spec: Spec,
+    pub knee: crate::Knee,
+    pub build_ms: f64,
+}
+
+impl OcioPass {
+    /// Build the chain (split around the Knee when it is on), its LUT textures and the native pipelines. Run it on a worker:
+    /// OCIO + the backend compile take tens to hundreds of ms. The device must have `PASSTHROUGH_SHADERS`.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: &Arc<Config>, spec: Spec, knee: crate::Knee) -> Result<OcioPass, String> {
+        let t0 = std::time::Instant::now();
+        if !device.features().contains(wgpu::Features::PASSTHROUGH_SHADERS) { return Err("the device has no passthrough shaders".into()) }
+        let mode = if knee.enabled {
+            match Chain::build_split(config, &spec) {
+                Ok((pre, post, side)) => {
+                    let k = crate::KneeStage::new(device, queue);
+                    k.set(&knee, side, view_is_sdr(&spec.view), 1.0);
+                    Mode::Split { pre: Native::new(device, queue, &pre, "OCIOPre")?, knee: k, post: Native::new(device, queue, &post, "OCIOPost")?, side, tex: None }
+                }
+                Err(e) => { log::warn!("OCIO: no Knee for this chain ({e}); running it whole"); Mode::One(Native::new(device, queue, &Chain::build(config, &spec)?, "OCIODisplay")?) }
+            }
+        } else { Mode::One(Native::new(device, queue, &Chain::build(config, &spec)?, "OCIODisplay")?) };
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ocio-linear-clamp"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let build_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        log::info!("OCIO {}: '{}' → '{}'{}{} built in {build_ms:.0} ms", version(), spec.input, spec.view, if spec.look.is_empty() { String::new() } else { format!(" + look '{}'", spec.look) }, if matches!(mode, Mode::Split { .. }) { " + Knee (split)" } else { "" });
+        Ok(OcioPass { device: device.clone(), sampler, mode, spec, knee, build_ms })
+    }
+    /// New Knee numbers on a split chain: a buffer write, no rebuild. Turning the Knee on or off needs a new pass (`new`).
+    pub fn set_knee(&mut self, k: crate::Knee) -> bool {
+        match &self.mode { Mode::Split { knee, side, .. } if k.enabled => { knee.set(&k, *side, view_is_sdr(&self.spec.view), 1.0); self.knee = k; true } _ => false }
+    }
+    pub fn is_split(&self) -> bool { matches!(self.mode, Mode::Split { .. }) }
 }
 
 impl ColorPass for OcioPass {
     fn input(&self) -> Space { Space::Encoded(Transfer::Bt1886) }
     fn output(&self) -> Space { Space::Linear }
     fn run(&mut self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) {
-        let sv = src.create_view(&Default::default()); let dv = dst.create_view(&Default::default());
-        let mut e = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&sv) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&dv) }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) }];
-        for (i, v) in self.luts.iter().enumerate() { e.push(wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(v) }); }
-        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("ocio"), layout: &self.layout, entries: &e });
-        let size = dst.size();
-        let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("ocio"), timestamp_writes: None });
-        p.set_pipeline(&self.pipeline); p.set_bind_group(0, &bind, &[]);
-        p.dispatch_workgroups(size.width.div_ceil(16), size.height.div_ceil(16), 1);
+        match &mut self.mode {
+            Mode::One(n) => n.run(&self.device, &self.sampler, enc, src, dst),
+            Mode::Split { pre, knee, post, tex, .. } => {
+                let size = (dst.width(), dst.height());
+                if tex.as_ref().map(|t| t.2) != Some(size) {
+                    let mk = |l: &str| self.device.create_texture(&wgpu::TextureDescriptor { label: Some(l), size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+                    *tex = Some((mk("ocio-interchange"), mk("ocio-kneed"), size));
+                }
+                let (a, b, _) = tex.as_ref().unwrap();
+                pre.run(&self.device, &self.sampler, enc, src, a);
+                knee.run(enc, a, b);
+                post.run(&self.device, &self.sampler, enc, b, dst);
+            }
+        }
     }
 }

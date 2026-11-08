@@ -61,7 +61,7 @@ fn native_shaders_match_the_cpu_processor() {
         let mut px: Vec<[f32; 3]> = (0..=32).map(|i| { let x = i as f32 / 32.0; [x, x, x] }).collect();
         px.extend([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.05, 0.02], [0.18, 0.18, 0.18], [0.5, 0.4, 0.3]]);
         if hdr { for k in [2.0f32, 8.0, 40.0] { px.push([k, k, k]); px.push([k, k * 0.2, 0.0]); } }
-        let mut pass = OcioPass::new(&dev, &q, cfg, spec.clone()).unwrap_or_else(|e| panic!("{spec:?}: {e}"));
+        let mut pass = OcioPass::new(&dev, &q, cfg, spec.clone(), crate::Knee::default()).unwrap_or_else(|e| panic!("{spec:?}: {e}"));
         let got = crate::tests::run_gpu_pass(&dev, &q, &mut pass, &px);
         let chain = Chain::build(cfg, &spec).unwrap();
         let mut cpu: Vec<f32> = px.iter().flat_map(|p| [p[0], p[1], p[2], 1.0]).collect();
@@ -78,4 +78,49 @@ fn native_shaders_match_the_cpu_processor() {
         eprintln!("{} → {}: built in {:.0} ms", spec.input, spec.view, pass.build_ms);
     }
     eprintln!("OCIO native vs CPU processor: worst relative error {worst:.2e} (f16 output)");
+}
+
+#[test]
+fn the_knee_split_matches_the_cpu() {
+    let Some((dev, q)) = gpu() else { eprintln!("no GPU with passthrough — skipped"); return };
+    let Some(blender) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let aces2 = open("ACES_2.0").unwrap();
+    let hdr_view = aces2.views().into_iter().find(|v| v.contains("HDR 1000 nits (P3 D65)")).unwrap();
+    let cg = aces2.inputs().into_iter().find(|v| v.contains("ACEScg")).unwrap();
+    let cases = [
+        (&blender, Spec { input: "Linear Rec.709".into(), view: "Standard".into(), ..Default::default() }, crate::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 }),
+        (&blender, Spec { input: "Linear Rec.709".into(), view: "Standard".into(), ..Default::default() }, crate::Knee { enabled: true, source_nits: 2000.0, target_nits: 1000.0, start: 0.6 }),
+        (&aces2, Spec { input: cg, view: hdr_view.clone(), ..Default::default() }, crate::Knee { enabled: true, source_nits: 4000.0, target_nits: 1000.0, start: -1.0 }),
+    ];
+    let mut worst = 0.0f32;
+    for (cfg, spec, knee) in cases {
+        let mut px: Vec<[f32; 3]> = (0..=24).map(|i| { let x = (i as f32 / 4.0).exp2() / 64.0; [x, x, x] }).collect();   // 1/64 .. 64 (≈ 6400 nits)
+        px.extend([[20.0, 4.0, 1.0], [1.0, 30.0, 2.0], [0.5, 0.5, 9.0]]);
+        let mut pass = OcioPass::new(&dev, &q, cfg, spec.clone(), knee).unwrap_or_else(|e| panic!("{spec:?}: {e}"));
+        assert!(pass.is_split(), "{spec:?} did not split");
+        let got = crate::tests::run_gpu_pass(&dev, &q, &mut pass, &px);
+        let (pre, post, side) = Chain::build_split(cfg, &spec).unwrap();
+        let mut cpu: Vec<f32> = px.iter().flat_map(|p| [p[0], p[1], p[2], 1.0]).collect();
+        pre.apply_cpu(&mut cpu);
+        for c in cpu.chunks_mut(4) { let k = crate::knee_cpu(&knee, side, view_is_sdr(&spec.view), [c[0], c[1], c[2]]); c[..3].copy_from_slice(&k); }
+        post.apply_cpu(&mut cpu);
+        // the knee must have bitten: the brightest grey through the Knee is darker than without it
+        let mut plain = vec![64.0f32, 64.0, 64.0, 1.0]; Chain::build(cfg, &spec).unwrap().apply_cpu(&mut plain);
+        assert!(cpu[24 * 4] < plain[0] * 0.95, "{spec:?}: the Knee did nothing ({} vs {})", cpu[24 * 4], plain[0]);
+        for (i, g) in got.iter().enumerate() {
+            for c in 0..3 {
+                let w = cpu[i * 4 + c];
+                assert!(!g[c].is_nan(), "{spec:?}: NaN for {:?}", px[i]);
+                // two extra f16 hand-offs (pre → knee → post; row 202: half float, exactness not a gate). A saturated highlight's
+                // small channel comes out of the interchange → Rec.2020 matrix as a difference of large f16 values, so its error is
+                // absolute (≈ 1e-3 of the pixel's level), not relative: measure against the pixel's brightest channel too.
+                let level = cpu[i * 4..i * 4 + 3].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+                let err = (g[c] - w).abs() / w.abs().max(0.05).max(level * 0.1);
+                worst = worst.max(err);
+                assert!(err < 8e-3, "{spec:?} {knee:?}: {:?} → GPU {g:?} vs CPU {:?}", px[i], &cpu[i * 4..i * 4 + 3]);
+            }
+        }
+        eprintln!("{} → {} with {:?}: split built in {:.0} ms", spec.input, spec.view, knee, pass.build_ms);
+    }
+    eprintln!("OCIO + Knee split vs CPU: worst relative error {worst:.2e}");
 }

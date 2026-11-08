@@ -162,6 +162,88 @@ impl ColorPass for MinColorPass {
     }
 }
 
+/// The Highlight Knee's settings (QCView's `LinearStageSettings` knee fields): compress [start, source peak] onto
+/// [start, target peak] in PQ on max(R,G,B), hue held. `start` < 0 = BT.2390's (its Hermite); else a fraction of the target
+/// in PQ (the hyperbola). An SDR view always targets 100 nits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Knee { pub enabled: bool, pub source_nits: f32, pub target_nits: f32, pub start: f32 }
+impl Default for Knee { fn default() -> Knee { Knee { enabled: false, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } } }
+
+/// Which interchange role the split OCIO chain passes through (QCView's `InterchangeSide`): both put 1.0 at 100 nits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side { Scene, Display }
+
+/// QCView's fixed matrices into linear Rec.2020 and back (linear_stage.h): AP0 D60 (Bradford) / CIE XYZ D65.
+fn side_matrices(side: Side) -> ([f32; 9], [f32; 9]) {
+    match side {
+        Side::Scene => ([1.4904095205, -0.2661709193, -0.2242386013, -0.0801674999, 1.1821671211, -0.1019996212, 0.0032276312, -0.0347764757, 1.0315488446],
+                        [0.6790856347, 0.1577009146, 0.1632134506, 0.0460020031, 0.8590546730, 0.0949433239, -0.0005739432, 0.0284677684, 0.9721061748]),
+        Side::Display => ([1.7166511880, -0.3556707838, -0.2533662814, -0.6666843518, 1.6164812366, 0.0157685458, 0.0176398574, -0.0427706133, 0.9421031212],
+                          [0.6369580483, 0.1446169036, 0.1688809752, 0.2627002120, 0.6779980715, 0.0593017165, 0.0, 0.0280726930, 1.0609850577]),
+    }
+}
+
+unsafe extern "C" {
+    fn mc_knee_params(src: f32, tgt: f32, start: f32, out: *mut u8);
+    fn mc_knee_apply(p: *const u8, rgb: *mut f32);
+}
+
+/// The knee's derived block (the core's `DrtParams` with kn_* filled) for `k`; an SDR view targets 100 nits.
+fn knee_block(k: &Knee, sdr_view: bool) -> Vec<u8> {
+    let mut v = vec![0u8; PARAMS];
+    unsafe { mc_knee_params(k.source_nits, if sdr_view { 100.0 } else { k.target_nits }, k.start, v.as_mut_ptr()) };
+    v
+}
+
+/// The knee stage on the CPU (the reference): interchange-space linear in and out.
+pub fn knee_cpu(k: &Knee, side: Side, sdr_view: bool, rgb: [f32; 3]) -> [f32; 3] {
+    let (to, from) = side_matrices(side);
+    let mul = |m: &[f32; 9], c: [f32; 3]| [m[0] * c[0] + m[1] * c[1] + m[2] * c[2], m[3] * c[0] + m[4] * c[1] + m[5] * c[2], m[6] * c[0] + m[7] * c[1] + m[8] * c[2]];
+    let mut r = mul(&to, rgb);
+    if k.enabled { let b = knee_block(k, sdr_view); unsafe { mc_knee_apply(b.as_ptr(), r.as_mut_ptr()) } }
+    mul(&from, r)
+}
+
+pub const KNEE_WGSL: &str = include_str!(concat!(env!("OUT_DIR"), "/knee.wgsl"));
+
+/// The knee as a compute pass (the OCIO split's middle): parameters are bytes in a storage buffer — a change rewrites them.
+pub struct KneeStage { device: wgpu::Device, queue: wgpu::Queue, pipeline: wgpu::ComputePipeline, layout: wgpu::BindGroupLayout, buf: wgpu::Buffer, sampler: wgpu::Sampler }
+impl KneeStage {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> KneeStage {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("knee"), source: wgpu::ShaderSource::Wgsl(KNEE_WGSL.into()) });
+        let sb = |b: u32, n: u64| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(n) }, count: None };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("knee"), entries: &[sb(0, PARAMS as u64), sb(1, 112),
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None },
+            wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None }] });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("knee"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("knee"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("knee"), size: 512 + 112, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("knee"), ..Default::default() });
+        KneeStage { device: device.clone(), queue: queue.clone(), pipeline, layout, buf, sampler }
+    }
+    /// Write the settings (queued before the next submit).
+    pub fn set(&self, k: &Knee, side: Side, sdr_view: bool, gain: f32) {
+        let (to, from) = side_matrices(side);
+        let row = |m: &[f32; 9]| [m[0], m[1], m[2], 0.0, m[3], m[4], m[5], 0.0, m[6], m[7], m[8], 0.0];
+        let mut f: Vec<f32> = row(&to).to_vec(); f.extend(row(&from)); f.extend([gain, if k.enabled { 1.0 } else { 0.0 }, 0.0, 0.0]);
+        self.queue.write_buffer(&self.buf, 0, &knee_block(k, sdr_view));
+        self.queue.write_buffer(&self.buf, 512, bytemuck::cast_slice(&f));
+    }
+    pub fn run(&self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) {
+        let sv = src.create_view(&Default::default()); let dv = dst.create_view(&Default::default());
+        let b = |o: u64, n: u64| wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.buf, offset: o, size: wgpu::BufferSize::new(n) });
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("knee"), layout: &self.layout, entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: b(0, PARAMS as u64) }, wgpu::BindGroupEntry { binding: 1, resource: b(512, 112) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&sv) }, wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&dv) }] });
+        let size = dst.size();
+        let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("knee"), timestamp_writes: None });
+        p.set_pipeline(&self.pipeline); p.set_bind_group(0, &bind, &[]);
+        p.dispatch_workgroups(size.width.div_ceil(8), size.height.div_ceil(8), 1);
+    }
+}
+
 #[cfg(feature = "ocio")]
 pub mod ocio;
 
