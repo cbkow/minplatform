@@ -27,12 +27,13 @@ use std::{sync::{atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, Ordering},
 pub const FORWARD_REACH: i32 = 90;
 
 #[derive(Clone)]
-pub struct ScrubOptions { pub hw: Option<HwDevice>, /// lift the intra-only hwaccel gate for inter codecs (QCView `performance/hwScrubInterCodecs`; the platform: on for Windows)
+pub struct ScrubOptions { pub hw: Option<HwDevice>, /// the intra-codec device (Windows: Vulkan for ProRes, S6)
+    pub hw_intra: Option<HwDevice>, /// lift the intra-only hwaccel gate for inter codecs (QCView `performance/hwScrubInterCodecs`; the platform: on for Windows)
     pub hw_inter_scrub: bool, /// the GOP cache budget (QCView `performance/scrubCacheMB`, 512)
     pub budget_bytes: usize, pub range_override: RangeOverride, /// the scrub session's thread count; 0 = auto (QCView's choice) — a knob for measurement only
     pub threads: i32, /// keep per-request timing (the harness)
     pub stats: bool }
-impl Default for ScrubOptions { fn default() -> Self { ScrubOptions { hw: None, hw_inter_scrub: cfg!(windows), budget_bytes: 512 << 20, range_override: RangeOverride::Auto, threads: 0, stats: false } } }
+impl Default for ScrubOptions { fn default() -> Self { ScrubOptions { hw: None, hw_intra: None, hw_inter_scrub: cfg!(windows), budget_bytes: 512 << 20, range_override: RangeOverride::Auto, threads: 0, stats: false } } }
 
 /// One served request, for the harness: when it was issued, when the frame reached the slot, how.
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +58,7 @@ impl ScrubDecoder {
             if ff::avformat_find_stream_info(fmt, std::ptr::null_mut()) >= 0 { for i in 0..(*fmt).nb_streams { let cp = (**(*fmt).streams.add(i as usize)).codecpar; if (*cp).codec_type == ff::AVMediaType::AVMEDIA_TYPE_VIDEO { let d = ff::avcodec_descriptor_get((*cp).codec_id); intra = !d.is_null() && ((*d).props & ff::AV_CODEC_PROP_INTRA_ONLY) != 0; break } } }
             ff::avformat_close_input(&mut fmt); intra } };
         let hw_eligible = probe_intra || opts.hw_inter_scrub;
-        let session_opts = OpenOptions { threads: opts.threads, hw: if hw_eligible { opts.hw.clone() } else { None }, seq: None, fast: false };   // NOT the user's thread count: scrub runs beside the main decoder during seek bursts
+        let session_opts = OpenOptions { threads: opts.threads, hw: if hw_eligible { opts.hw.clone() } else { None }, hw_intra: if hw_eligible { opts.hw_intra.clone() } else { None }, seq: None, fast: false };   // NOT the user's thread count: scrub runs beside the main decoder during seek bursts
         let mut session = Session::open(path, &session_opts)?;
         session.range_override = opts.range_override;
         let hw_active = !session.info.hw_accel.is_empty();
@@ -170,10 +171,10 @@ fn worker(mut s: Session, sh: Arc<Shared>, index: Arc<FrameIndex>, sink: Externa
 fn make_entry(s: &mut Session, f: *mut ff::AVFrame, pts: i64, w: u32, h: u32) -> Option<Arc<ScrubCacheEntry>> {
     unsafe {
         let fmt = std::mem::transmute::<i32, ff::AVPixelFormat>((*f).format);
-        if fmt == crate::hw::HW_PIX_FMT && fmt != ff::AVPixelFormat::AV_PIX_FMT_NONE {
+        if min_ffmpeg::hw::is_hw_format(fmt) {
             #[cfg(target_os = "macos")]
             { let pix = (*f).data[3] as *mut std::ffi::c_void; if min_present::import::metal::zero_copy_supported(pix) { return Some(ScrubCacheEntry::native(HwFrame(ff::av_frame_clone(f)), w, h, pts)) } }
-            // pool-based (D3D12VA) or an unbridged VT layout: read back
+            // pool-based (D3D12VA), Vulkan (until S6's bridge) or an unbridged VT layout: read back
             let sw = s.hw_readback(f)?;
             let bytes = ff::av_image_get_buffer_size(std::mem::transmute::<i32, ff::AVPixelFormat>((*sw).format), (*sw).width, (*sw).height, 1);
             return Some(ScrubCacheEntry::planar(HwFrame(ff::av_frame_clone(sw)), pts, if bytes > 0 { bytes as usize } else { (w as usize) * (h as usize) * 2 }));

@@ -95,11 +95,12 @@ pub struct Stats {
 }
 
 #[derive(Clone)]
-pub struct TransportOptions { pub hw: Option<HwDevice>, pub threads: i32, /// None = no scrub decoder (tests)
+pub struct TransportOptions { pub hw: Option<HwDevice>, /// the intra-codec device (Windows: FFmpeg's Vulkan device for ProRes / FFV1 / APV, S6)
+    pub hw_intra: Option<HwDevice>, pub threads: i32, /// None = no scrub decoder (tests)
     pub scrub: Option<ScrubOptions>, /// QCView: `playback/loopEnabled`, default ON ("press play, watch a cycle, scrub, watch again")
     pub loop_enabled: bool, pub clock_policy: ClockPolicy, /// one refresh in ms — the "late" threshold
     pub refresh_ms: f32 }
-impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0 } } }
+impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw: None, hw_intra: None, threads: 0, scrub: Some(ScrubOptions::default()), loop_enabled: true, clock_policy: ClockPolicy::WallClock, refresh_ms: 1000.0 / 60.0 } } }
 
 /// A decoder slot: one clip's streaming decoder (+ its scrub decoder), with the clip's source window.
 pub struct Slot { pub clip: usize, pub decoder: VideoDecoder, pub scrub: Option<ScrubDecoder>, pub info: SessionInfo, pub index: Arc<FrameIndex>, pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, /// parked on its in-point with the lookahead queued (a prewarmed slot); false once it has played
@@ -107,13 +108,13 @@ pub struct Slot { pub clip: usize, pub decoder: VideoDecoder, pub scrub: Option<
 impl Slot {
     fn open(clip_index: usize, clip: &Clip, opts: &TransportOptions) -> Result<Slot, Error> {
         let src = if clip.media_kind == ClipMediaKind::ImageSequence { Source::Sequence { pattern: clip.media_path.clone(), rate: clip.source_rate, start: clip.sequence_start_frame, end: clip.sequence_end_frame, label: clip.name.clone() } } else { Source::File(clip.media_path.clone()) };
-        let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), seq: match &src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None }, fast: false };
+        let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), hw_intra: opts.hw_intra.clone(), seq: match &src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None }, fast: false };
         let mut decoder = VideoDecoder::new(Policy::Clocked { lookahead: LOOKAHEAD });
         decoder.open(src.path(), &open)?;
         let info = decoder.info.clone().unwrap();
         let index = decoder.frame_index().cloned().ok_or_else(|| Error::Open("no frame index".into()))?;
         let scrub = match (&opts.scrub, &src) {
-            (Some(so), Source::File(_)) => { let so = ScrubOptions { hw: opts.hw.clone(), ..so.clone() }; match ScrubDecoder::open(src.path(), &so, index.clone(), decoder.external_sink()) { Ok(s) => Some(s), Err(e) => { log::warn!("Transport: no scrub decoder: {e}"); None } } }
+            (Some(so), Source::File(_)) => { let so = ScrubOptions { hw: opts.hw.clone(), hw_intra: opts.hw_intra.clone(), ..so.clone() }; match ScrubDecoder::open(src.path(), &so, index.clone(), decoder.external_sink()) { Ok(s) => Some(s), Err(e) => { log::warn!("Transport: no scrub decoder: {e}"); None } } }
             _ => None,
         };
         Ok(Slot { clip: clip_index, decoder, scrub, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })

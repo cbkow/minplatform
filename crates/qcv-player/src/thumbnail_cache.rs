@@ -226,7 +226,7 @@ unsafe impl Send for VideoThumbLoader {}
 impl VideoThumbLoader {
     pub fn open(path: &str) -> Option<VideoThumbLoader> {
         // slice threads for intra codecs, frame threads at half the cores for inter ones (QCView: one thread; see the module doc)
-        let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, seq: None, fast: true }).ok()?;
+        let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: None, fast: true }).ok()?;
         let fps = session.info.rate().as_f64(); let frames = session.info.frame_count;
         Some(VideoThumbLoader { session, fps, frames, sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0) })
     }

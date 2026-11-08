@@ -41,7 +41,7 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_
     left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon }
 
 struct App {
-    o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, source_label: String, source_path: String,
+    o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, hw_intra: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
     scrub_last_req: Option<(i32, Instant)>,
     last_tick: Instant,
@@ -139,7 +139,7 @@ impl App {
         let threads = if self.o.threads != 0 { self.o.threads } else { st.int(settings::k::FFMPEG_THREADS) as i32 };
         let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), stats: *TRACE_SCRUB, ..Default::default() });
         let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
-        match Transport::open(&src, TransportOptions { hw, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }) {
+        match Transport::open(&src, TransportOptions { hw, hw_intra: self.hw_intra.clone(), threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }) {
             Ok(mut p) => {
                 // audio first, so the harness's play below starts it too (the player's hooks run inside Transport::play)
                 if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {} (device latency {:.1} ms)", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }, p.audio.device_latency_ms()); } Err(e) => println!("audio: {e}") } }
@@ -651,6 +651,7 @@ impl ApplicationHandler for App {
         #[cfg(windows)] let dev = presenter.engine.dx12_device_raw();
         #[cfg(not(windows))] let dev = None;
         self.hw = if self.o.sw { None } else { HwDevice::platform(dev) };
+        self.hw_intra = if self.o.sw { None } else { HwDevice::vulkan() };   // Windows: ProRes / FFV1 / APV on FFmpeg's Vulkan device (S6); None elsewhere
         if let Some(h) = &self.hw { println!("hardware decode: {}", h.name()); } else if !self.o.sw { println!("hardware decode unavailable — software"); }
         #[cfg(target_os = "macos")] { mac::menu_bar(); mac::activate(); }
         window.focus_window();
@@ -834,7 +835,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -1049,11 +1050,11 @@ fn run_headless(o: Opts) {
     if o.identity_chain { engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
-    let hw = if o.sw { None } else { HwDevice::platform(dev) };
+    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan() };
     println!("headless engine: zero-copy {} · decode {}", engine.zero_copy_available(), hw.as_ref().map(|h| h.name()).unwrap_or("software"));
     let src = Source::from_path(&file, None);
     let t = Instant::now();
-    let mut p = match Transport::open(&src, TransportOptions { hw, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let mut p = match Transport::open(&src, TransportOptions { hw, hw_intra, threads: o.threads, loop_enabled: false, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
     p.play();
     let mut first: Option<f32> = None; let mut show_ms = vec![];
@@ -1105,11 +1106,11 @@ fn run_scrub_bench(o: Opts) {
     engine.set_display(DisplayMode { out: OutMode::Linear, white: o.white });
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
-    let hw = if o.sw { None } else { HwDevice::platform(dev) };
+    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan() };
     let src = Source::from_path(&file, None);
     let t_open = Instant::now();
-    let sopts = ScrubOptions { hw: hw.clone(), hw_inter_scrub: o.scrub_hw || cfg!(windows), stats: true, threads: std::env::var("QCV_SCRUB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(0), budget_bytes: std::env::var("QCV_SCRUB_CACHE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512) << 20, ..Default::default() };
-    let mut p = match Transport::open(&src, TransportOptions { hw: hw.clone(), threads: o.threads, loop_enabled: false, scrub: Some(sopts), ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
+    let sopts = ScrubOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), hw_inter_scrub: o.scrub_hw || cfg!(windows), stats: true, threads: std::env::var("QCV_SCRUB_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(0), budget_bytes: std::env::var("QCV_SCRUB_CACHE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512) << 20, ..Default::default() };
+    let mut p = match Transport::open(&src, TransportOptions { hw: hw.clone(), hw_intra: hw_intra.clone(), threads: o.threads, loop_enabled: false, scrub: Some(sopts), ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open {file}: {e}"); return } };
     let index = p.frame_index().clone();
     let total = index.total_frames();
     let (hw_active, intra_direct, served) = match p.scrub() { Some(sd) => (sd.hw_active, sd.intra_direct, sd.served.clone().unwrap()), None => { println!("no scrub decoder"); return } };
@@ -1291,11 +1292,11 @@ fn run_cut_bench(o: Opts) {
     let mut engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
-    let hw = if o.sw { None } else { HwDevice::platform(dev) };
+    let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan() };
     let tl = match qcv_player::transport::playlist_from_specs(&specs) { Ok(t) => t, Err(e) => { println!("cut: {e}"); return } };
     let boundaries = tl.boundaries(); let total = tl.duration;
     let t0 = Instant::now();
-    let mut p = match Transport::open_playlist(tl, TransportOptions { hw, threads: o.threads, loop_enabled: o.looping, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open playlist: {e}"); return } };
+    let mut p = match Transport::open_playlist(tl, TransportOptions { hw, hw_intra, threads: o.threads, loop_enabled: o.looping, scrub: None, ..Default::default() }) { Ok(p) => p, Err(e) => { println!("open playlist: {e}"); return } };
     println!("playlist: {} clips, {} timeline frames at {} fps, boundaries at {:?}; opened in {:.0} ms", specs.len(), total, p.rate(), boundaries, t0.elapsed().as_secs_f32() * 1000.0);
     // let the first frame land, then play at a 60 Hz refresh cadence
     { let t = Instant::now(); while p.seek_in_flight() && t.elapsed().as_secs() < 10 { if let Some(h) = p.tick(Instant::now()) { engine.show(&h.frame).ok(); } else { std::thread::sleep(std::time::Duration::from_micros(200)); } } }

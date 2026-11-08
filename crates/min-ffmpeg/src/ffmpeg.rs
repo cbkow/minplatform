@@ -5,7 +5,7 @@
 //! packet / frame primitives, and the publish rules per frame kind (VideoToolbox zero-copy when the pixel buffer's
 //! layout is bridged, else `av_hwframe_transfer_data` to planes; D3D12VA native; software planes through
 //! `yuv_planar`). Raw bindings + thin RAII (canon §4.3): no safe wrapper covers hwaccel / zero-copy.
-use crate::{frame_handle::FrameHandle, frame_index::FrameIndex, hw::{HwDevice, HW_PIX_FMT}, hw_routing, read_ahead::{FrameSpan, ReadAhead}, rgb_range::{self, RangeOverride}, thread_policy, yuv_planar, Error};
+use crate::{frame_handle::FrameHandle, frame_index::FrameIndex, hw::{self, HwDevice}, hw_routing, read_ahead::{FrameSpan, ReadAhead}, rgb_range::{self, RangeOverride}, thread_policy, yuv_planar, Error};
 use qcv_meta::stream_extent;
 use ffmpeg_sys_next as ff;
 use min_present::{Chroma, ColorMeta, Frame, Matrix, NativeFrame, Pixels, Plane, PlanarLayout, Primaries, Range, Transfer};
@@ -16,7 +16,8 @@ use std::{ffi::{CStr, CString}, ptr, time::Instant};
 pub struct SeqOptions { pub rate: Rate, pub start_number: i64 }
 #[derive(Clone, Default)]
 pub struct OpenOptions { /// 0 = FFmpeg auto; the user's performance/ffmpegThreads value otherwise
-    pub threads: i32, pub hw: Option<HwDevice>, /// an image sequence (the path is an image2 printf pattern)
+    pub threads: i32, pub hw: Option<HwDevice>, /// the device for the compute-decoded intra codecs (Windows: FFmpeg's Vulkan device for ProRes / FFV1 / APV, S6); None = `hw` serves every codec
+    pub hw_intra: Option<HwDevice>, /// an image sequence (the path is an image2 printf pattern)
     pub seq: Option<SeqOptions>, /// `AV_CODEC_FLAG2_FAST` (the thumbnail loader: speed over spec)
     pub fast: bool }
 
@@ -100,11 +101,13 @@ impl Session {
             // hwaccel: attach when the codec lists our device type and hw_routing allows it; get_format falls through to
             // software when the stream turns out not to use it (QCView: "a free win when it works, silent when it doesn't")
             let mut hw_accel = String::new(); let mut hw_keep = None;
-            if let Some(hw) = &opts.hw {
+            // QCView's per-codec routing: the compute-decoded intra codecs take `hw_intra` when the app provided one (Windows: Vulkan)
+            let routed = if hw_routing::vulkan_preferred_codec((*codecpar).codec_id) { opts.hw_intra.as_ref().or(opts.hw.as_ref()) } else { opts.hw.as_ref() };
+            if let Some(hw) = routed {
                 if !hw_routing::software_only_codec((*codecpar).codec_id) {
                     let mut i = 0; let mut listed = false;
                     loop { let c = ff::avcodec_get_hw_config(codec, i); if c.is_null() { break } if (*c).device_type == hw.device_type() && ((*c).methods & ff::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32) != 0 { listed = true; break } i += 1; }
-                    if listed && HW_PIX_FMT != ff::AVPixelFormat::AV_PIX_FMT_NONE {
+                    if listed {
                         (*cctx).hw_device_ctx = ff::av_buffer_ref(hw.raw());
                         (*cctx).get_format = Some(hw_routing::hwaccel_get_format);
                         hw_accel = hw.name().to_string(); hw_keep = Some(hw.clone());
@@ -216,7 +219,17 @@ impl Session {
         meta.range = yuv_planar::effective_source_range(f.color_range, meta.matrix == Matrix::Identity, self.range_override);
         meta.range_forced = self.range_override != RangeOverride::Auto;
         let fin = |frame: Frame, s: &Session| FrameHandle { frame, pts, pts_us: s.pts_to_us(pts), frame_no: index.frame_for_pts(pts), keyframe, decode_ms: t0.elapsed().as_secs_f32() * 1000.0 };
-        if format == HW_PIX_FMT && format != ff::AVPixelFormat::AV_PIX_FMT_NONE {
+        if hw::is_hw_format(format) {
+            // Vulkan (S6 milestone 1): the GPU decoded it; until the D3D12 bridge lands the frame is read back to planes
+            if format == ff::AVPixelFormat::AV_PIX_FMT_VULKAN {
+                if !self.logged_hw_fallback { log::info!("Vulkan decoded ({w}x{h}) — hwframe_transfer + planes (the D3D12 bridge is S6's next milestone)"); self.logged_hw_fallback = true; }
+                let r = ff::av_hwframe_transfer_data(self.sw_frame, frame, 0);
+                if r < 0 { return Err(Error::Open(format!("hwframe_transfer_data (vulkan): {}", av_err(r)))) }
+                (*self.sw_frame).color_range = f.color_range; (*self.sw_frame).colorspace = f.colorspace; (*self.sw_frame).color_primaries = f.color_primaries; (*self.sw_frame).color_trc = f.color_trc;
+                let out = self.planes_from(&*self.sw_frame, meta, index, t0, pts, keyframe);
+                ff::av_frame_unref(self.sw_frame);
+                return out;
+            }
             #[cfg(target_os = "macos")]
             {
                 let pix = f.data[3] as *mut std::ffi::c_void;
