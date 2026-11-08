@@ -96,3 +96,29 @@ renameMediaItem`. Built:
   range rule + select-all, rename commit).
 - Still owed in this section: playlist loading + the playlist timeline, drag-to-playlist, the "Can't be played here" badge,
   toasts (incl. QCView's "Removed … · Undo"), the unsupported-codec gate (`admitMediaPaths`) at load and at drop.
+
+## The playlist UI on the timeline (2026-11-08; canon row 167's playlist half)
+Proposed and taken ("go"): 1 loading · 2 the bar · 3 gestures · 4 drops · 5 keys · 6 the precision popover · 7 write-back.
+- `apps/qcv/src/playlist.rs`: project playlist ↔ `qcv_timeline::Editor` (QCView `startPlaylist` + `TimelineController::
+  loadPlaylist`): entries resolved against the pool (missing ones skipped + logged), QCView's SECONDS trims (-1 = untrimmed)
+  ↔ source frames on the clip's rate, the project's metadata or a synchronous probe for rate / frame count; `entries_from`
+  writes the edited order + trims back (`ProjectManager::set_playlist_items`, the dirty dot).
+- The shell: `transport_options()` / `adopt()` factor the open so a file and a playlist open alike; `load_playlist` opens it
+  paused (an empty playlist = no player, the bar says "Drop media here to add to the playlist"); `after_playlist_edit`:
+  trims / slips re-seat the running transport (`set_timeline`), reorder / insert / delete / split / undo rebuild it at the
+  same frame and play state (the slots are clip-indexed).
+- `clip_bar.rs` (20 px under the scrubber, on its camera; `frames_per_px` / `x_of_frame` now public on `Scrubber`): QCView's
+  `pickEditOp` without the toggle — 8-px ends trim, body reorders, Ctrl/Cmd slips, 5-px threshold, one undoable edit per
+  release; hover lights the handle, the cursor is col-resize / grab; selected = gray-800 with dark text, current = gray-400,
+  hover gray-300, gaps gray-100 — no accent (row 162). Tests: trims / reorder / slip / click / double-click / drop snapping.
+- Drops: `DropTarget::Playlist(x)` over the scrubber or the bar while a playlist is loaded — OS files are added to the project
+  then inserted, bin rows are inserted, at the clip edge within 12 px (QCView `snapTolPx`) else appended, audio / playlists /
+  dual views refused; the insertion bar follows the OS drag (`DragPosition`) and the row drag.
+- Keys while a playlist is loaded: Delete / Backspace removes the selected CLIP (the bin's selection otherwise; selecting one
+  clears the other), Ctrl/Cmd+K splits at the playhead, Ctrl/Cmd+Z / Shift+Z undo / redo timeline edits (the bin-restore
+  stand-in keeps Ctrl+Z only when no playlist is loaded).
+- `clip_popover.rs`: double-click a clip → Source in · Source out · Duration (timecode on the clip's rate from frame 0); Tab
+  cycles, Enter or a press outside commits as trims (a changed duration moves the out), Esc discards, a malformed field
+  turns red and stays open. Test included.
+- Owed: the viewport preview while trimming (QCView's `beginEditScrub`), thumbnails in the bar, QCView's undo toast; the
+  user's walk.

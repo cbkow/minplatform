@@ -32,12 +32,13 @@ mod compact_strip;
 mod project_panel;
 mod playlist;
 mod clip_bar;
+mod clip_popover;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
     /// the playlist's clip bar (canon row 167), shown while a playlist is loaded
-    clip_bar: clip_bar::ClipBar,
+    clip_bar: clip_bar::ClipBar, clip_popover: clip_popover::ClipPopover,
     /// Compact mode (canon row 172; QCView's chromeless + CompactStrip): the picture and one 32-px band, no title bar.
     compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
@@ -338,6 +339,7 @@ impl App {
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale); }
+                g.clip_popover.paint(scene, &mut g.fonts, scale);
                 g.ui_shown_frame = key; g.ui_dirty = false;
                 }
             }
@@ -395,6 +397,15 @@ impl App {
         // playhead (to the end of the clip when the mouse went right), a held fast-forward never saw its release-on-leave and
         // shuttled to the end — the user's "scrubbing overruns until the end" (2026-11-07 night), and the parked Windows
         // "clicks lost after leaving and returning" is the same swallow.
+        // the clip popover takes everything while open; a press outside commits it
+        if g.clip_popover.is_open() {
+            let (c, d, consumed) = g.clip_popover.event(&e, &mut g.fonts); if d { g.ui_dirty = true; }
+            if !g.clip_popover.is_open() { set_ime(&**g.window, false); }
+            let closed_now = !c.is_empty() || !g.clip_popover.is_open();
+            for c in c { self.bar_cmd(c); }
+            if consumed || closed_now { return }
+        }
+        let Some(g) = self.gpu.as_mut() else { return };
         let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed());
         // the rails first (a modal dialog or an open menu in the settings panel takes everything)
         if !g.fullscreen && !grabbed {
@@ -521,7 +532,14 @@ impl App {
             BarCmd::TrimTail { clip, new_source_out } => (ed.trim_clip_tail(TRACK, &clip, new_source_out), false),
             BarCmd::Slip { clip, new_in, new_out } => (ed.slip_clip(TRACK, &clip, new_in, new_out), false),
             BarCmd::Move { clip, index } => (ed.move_clip_to_index(TRACK, &clip, index), true),
-            BarCmd::Precision(_) => (false, false),
+            BarCmd::Precision(id) => {
+                if let (Some(g), Some(c)) = (self.gpu.as_mut(), ed.timeline.tracks.first().and_then(|t| t.clips.iter().find(|c| c.id == id)).cloned()) {
+                    let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let (w, h) = g.window.surface_size().into();
+                    let anchor = kurbo::Rect::new(g.scrubber.x_of_frame(c.start, &st, scale), g.clip_bar.rect.y0, g.scrubber.x_of_frame(c.start + c.duration, &st, scale), g.clip_bar.rect.y1);
+                    g.clip_popover.open(&c, ed.timeline.rate, anchor, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w, h), scale); set_ime(&**g.window, true);
+                }
+                (false, false)
+            }
         };
         if changed { self.after_playlist_edit(structural); }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
@@ -805,7 +823,7 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
@@ -845,11 +863,18 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                if pressed { if let Some(g) = self.gpu.as_mut() { if g.clip_popover.is_open() {
+                    let k = to_key_event(&event, self.mods);
+                    let c = g.clip_popover.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.clip_popover.is_open() { set_ime(&**g.window, false); }
+                    for c in c { self.bar_cmd(c); }
+                    return
+                } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.project_panel.is_editing() {
                     let k = to_key_event(&event, self.mods);
                     let c = g.project_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
