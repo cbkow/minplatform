@@ -4,7 +4,7 @@
 //! Shortcuts: on macOS the modified ones are the menu's key equivalents (Cmd+O fires the menu, and AppKit swallows the key, so
 //! nothing fires twice); on Windows they are shown only (no accelerator table is wired into winit's loop) and the shell's key
 //! handler keeps them. Items whose feature has not landed (streams, the host bridges, the colour panel, notes, safety guides,
-//! the shortcut sheet, project links) are present and disabled — the menu's shape is final (row 175's rule for Settings).
+//! the shortcut sheet) are present and disabled — the menu's shape is final (row 175's rule for Settings).
 //! DEVIATION: About = the platform's about panel (muda's predefined item) instead of QCView's own modal.
 use muda::{accelerator::{Accelerator, Code, Modifiers}, AboutMetadata, CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 pub enum Cmd {
     OpenMedia, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
-    Background, Settings, Docs,
+    Background, Settings, Docs, CopyProjectLink,
 }
 
 pub struct AppMenu {
@@ -56,7 +56,7 @@ impl AppMenu {
             &item("Save Project", true, acc(CMD, Code::KeyS), Some(Cmd::SaveProject)),
             &item("Save Project As…", true, acc(CMD | Modifiers::SHIFT, Code::KeyS), Some(Cmd::SaveProjectAs)),
             &PredefinedMenuItem::separator(),
-            &item("Copy Project Link", false, None, None),
+            &item("Copy Project Link", true, None, Some(Cmd::CopyProjectLink)),
         ]);
         #[cfg(not(target_os = "macos"))] { let _ = file.append_items(&[&PredefinedMenuItem::separator(), &item("E&xit", true, acc(CMD, Code::KeyQ), Some(Cmd::Quit))]); }
         let _ = menu.append(&file);

@@ -30,6 +30,8 @@ mod settings_panel;
 mod inspector_panel;
 mod os_actions;
 mod menu;
+mod single_instance;
+mod logging;
 mod background_panel;
 mod compact_strip;
 mod project_panel;
@@ -71,6 +73,8 @@ struct App {
     project: qcv_project::ProjectManager, loaded_item: String,
     /// the native menu bar (row 143)
     menu: Option<menu::AppMenu>,
+    /// single instance (row 143): what later launches forwarded
+    single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
 }
 
 impl App {
@@ -164,13 +168,18 @@ impl App {
     /// are toasted once — one line for a single path, a summary by suffix for a batch. (Windows shortcuts resolve in QCView;
     /// `.lnk` resolution is still owed here and they are refused like any unknown suffix.)
     fn admit_media_paths(&mut self, paths: &[String]) -> Vec<String> {
-        let mut admitted = vec![]; let mut refused: Vec<String> = vec![];
-        for p in paths { if p.is_empty() { continue } if p.contains("://") || qcv_project::extensions::is_supported_media_file(p) { admitted.push(p.clone()) } else { refused.push(p.clone()) } }
+        let mut admitted = vec![]; let mut refused: Vec<String> = vec![]; let mut dead_shortcut = false;
+        for raw in paths {
+            if raw.is_empty() { continue }
+            // a Windows shortcut stands in for its target (QCView: the admitted list carries the target); a dead one has its own toast
+            let p = match os_actions::resolve_shortcut(raw) { Some(t) => t, None => { refused.push(raw.clone()); dead_shortcut = true; continue } };
+            if p.contains("://") || qcv_project::extensions::is_supported_media_file(&p) { admitted.push(p) } else { refused.push(p) }
+        }
         if refused.is_empty() { return admitted }
         let name = |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string());
         if refused.len() == 1 && paths.len() == 1 {
             let p = &refused[0];
-            let msg = if std::path::Path::new(p).is_dir() { format!("{} is a folder — drop a file, or any frame of an image sequence.", name(p)) } else { format!("{} isn’t a file type QCView opens.", name(p)) };
+            let msg = if dead_shortcut { format!("{} points to a file that isn’t there any more.", name(p)) } else if std::path::Path::new(p).is_dir() { format!("{} is a folder — drop a file, or any frame of an image sequence.", name(p)) } else { format!("{} isn’t a file type QCView opens.", name(p)) };
             self.toast(&msg, min_ui::ToastKind::Notice);
         } else {
             let mut kinds: Vec<String> = vec![];
@@ -771,9 +780,47 @@ impl App {
             M::StatusBar => self.toggle_status_bar(),
             M::Background => self.reveal(Reveal::Background),
             M::Settings => self.reveal(Reveal::Settings),
+            M::CopyProjectLink => self.copy_project_link(),
             M::Docs => { let _ = os_actions::open("https://qcview.app/"); }
         }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+    }
+    /// QCView `dispatchOpenArgsOnPrimary` (+ raising the window): `qcview://` links through `openProjectLink`, `.qcvproj` opens,
+    /// other URLs are live streams (not landed: a toast), files are added as a drop is — the first one loads.
+    fn open_forwarded(&mut self, args: Vec<String>) {
+        if let Some(g) = self.gpu.as_ref() { g.window.set_minimized(false); g.window.focus_window(); }
+        let mut files = vec![];
+        for a in args {
+            if a.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("qcview://")) { self.open_project_link(&a); }
+            else if a.contains("://") { self.toast("Live streams arrive with the stream step", min_ui::ToastKind::Notice); }
+            else if a.to_lowercase().ends_with(".qcvproj") { self.open_project(&a); }
+            else { files.push(a); }
+        }
+        let mut first = true;
+        for p in self.admit_media_paths(&files) { if self.add_and_load(&p, first).is_some() { first = false; } }
+    }
+    /// QCView `openProjectLink`: `qcview://<uuid>[/<mediaId>]` → the RECENT project whose JSON `uuid` matches (QCView: links
+    /// resolve only to projects in this user's Recents), opened, the media item loaded. Stream links wait for live streams.
+    fn open_project_link(&mut self, uri: &str) -> bool {
+        match min_paths::links::parse_qcview_link(uri) {
+            Some(min_paths::links::QcviewLink::Project { uuid, media_id }) => {
+                let recents: Vec<String> = self.settings.string(settings::k::RECENT_PROJECTS).lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+                let hit = recents.into_iter().find(|p| std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v.get("uuid").and_then(|u| u.as_str()).map(|u| u == uuid)).unwrap_or(false));
+                let Some(path) = hit else { self.toast("That project isn’t in your recent projects", min_ui::ToastKind::Notice); log::warn!("openProjectLink: no recent project with uuid {uuid}"); return false };
+                self.open_project(&path);
+                if let Some(m) = media_id && self.project.item(&m).is_some() { self.load_item(&m); }
+                true
+            }
+            Some(min_paths::links::QcviewLink::Stream { .. }) => { self.toast("Live streams arrive with the stream step", min_ui::ToastKind::Notice); false }
+            None => { log::warn!("openProjectLink: not a qcview:// link"); false }
+        }
+    }
+    /// QCView `copyProjectLinkToClipboard` → `buildProjectLink`: `qcview://<project uuid>/<loaded media id>`.
+    fn copy_project_link(&mut self) {
+        match min_paths::links::qcview_project_link(self.project.uuid(), &self.loaded_item) {
+            Some(link) => { match os_actions::copy(&link) { Ok(()) => self.toast("Project link copied", min_ui::ToastKind::Positive), Err(e) => self.toast(&format!("Couldn’t copy: {e}"), min_ui::ToastKind::Negative) } }
+            None => self.toast("Load an item to copy its link", min_ui::ToastKind::Notice),
+        }
     }
     /// QCView `viewMinimal`: both rails collapsed (their reopen tabs stay), the status strip hidden.
     fn view_minimal(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { let now = Instant::now(); g.left.set_collapsed(true, now); g.right.set_collapsed(true, now); g.strip_hidden = true; g.ui_dirty = true; } } }
@@ -1029,6 +1076,9 @@ impl ApplicationHandler for App {
         // first 6.7K open (2026-11-07: the stats stopped, no tick ran while input kept arriving — the whole UI froze until a drag
         // or resize); winit's own idiom is to request the redraw from here. Wake at least every refresh and ask again if the last
         // tick is older than one — a duplicate request coalesces, a dropped one no longer freezes the app.
+        // single instance: a later launch's files / links, the window raised (QCView `dispatchOpenArgsOnPrimary`)
+        let forwarded: Vec<Vec<String>> = self.single_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        for args in forwarded { self.open_forwarded(args); }
         // the menu bar: its commands, then its live parts (the Recent submenus, the two checkmarks)
         while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c, el); } }
         if let Some(m) = self.menu.as_mut() {
@@ -1226,8 +1276,10 @@ fn trace_ms() -> f64 { static T0: std::sync::LazyLock<Instant> = std::sync::Lazy
 
 fn main() {
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before NSApp launches: AppKit reads these at launch
-    env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // the window logs to a file too (QCView's installFileLogger, after the single-instance handoff below); the harness modes stderr
+    let harness = args.iter().any(|a| ["--headless", "--ui-bench", "--audio-bench"].contains(&a.as_str()));
+    if harness { env_logger::init(); }
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
     let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; if f.is_none() { f = Some(a.clone()); } } f };
@@ -1240,9 +1292,15 @@ fn main() {
     if let Some(secs) = arg("--audio-bench").and_then(|v| v.parse().ok()) { run_audio_bench(o, secs); return }
     if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap"), arg("--ui-size").and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))); return }
     if o.headless.is_some() { run_headless(o); return }
+    // QCView's single-instance handoff: a running window takes this launch's arguments (absolute: its working folder differs)
+    let multi = std::env::var_os("QCV_MULTI_INSTANCE").is_some();
+    let fwd: Vec<String> = o.files.iter().map(|a| if a.contains("://") { a.clone() } else { std::fs::canonicalize(a).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| a.clone()) }).collect();
+    if !multi && single_instance::forward(&fwd) { println!("qcv: handed {} argument(s) to the running window", fwd.len()); return }
+    let _ = logging::install();
+    let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { menu: None, unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { single_rx, menu: None, unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

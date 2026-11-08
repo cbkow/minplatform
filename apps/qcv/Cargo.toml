@@ -28,6 +28,11 @@ wgpu = { workspace = true }
 raw-window-handle = { workspace = true }
 # the native menu bar (canon row 143 / §21.1's note): NSMenu on macOS, a Win32 menu on Windows, one definition
 muda = { version = "0.21", default-features = false }
+# single instance (row 143): a per-user local socket (Unix socket / Windows named pipe)
+interprocess = "2.4"
+serde_json = { workspace = true }
+# local timestamps for the file log (already in the tree through env_logger)
+jiff = "0.2"
 png = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
@@ -36,3 +41,7 @@ log = { workspace = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSString", "NSUserDefaults"] }
 objc2-app-kit = { workspace = true, features = ["NSMenu", "NSMenuItem", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows shortcuts (.lnk) resolve through the shell's IShellLink (QCView's QFileInfo::symLinkTarget)
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_Storage_FileSystem"] }

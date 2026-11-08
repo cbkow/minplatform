@@ -29,3 +29,48 @@ pub fn native(path: &str) -> String { min_paths::map::to_native(path, min_paths:
 
 /// Copy text (QCView `copyTextToClipboard`).
 pub fn copy(text: &str) -> Result<(), String> { min_paths::clipboard::copy_text(text) }
+
+/// QCView `mediaext::isShortcut`: a Windows shortcut (`.lnk`; never one elsewhere).
+pub fn is_shortcut(path: &str) -> bool { cfg!(windows) && path.to_ascii_lowercase().ends_with(".lnk") && !path.contains("://") }
+
+/// QCView `mediaext::resolveShortcut`: the shortcut's target, or None when it is unreadable or its target is gone; a
+/// non-shortcut comes back as itself.
+pub fn resolve_shortcut(path: &str) -> Option<String> {
+    if !is_shortcut(path) { return Some(path.to_string()) }
+    #[cfg(windows)] {
+        use windows::{core::{Interface, PCWSTR}, Win32::{System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, IPersistFile, STGM_READ}, UI::Shell::{IShellLinkW, ShellLink}}};
+        let target = unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);   // S_FALSE when the thread already has COM: fine
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+            let pf: IPersistFile = link.cast().ok()?;
+            let w: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            pf.Load(PCWSTR(w.as_ptr()), STGM_READ).ok()?;
+            let mut buf = vec![0u16; 32768];
+            link.GetPath(&mut buf, std::ptr::null_mut(), 0).ok()?;
+            String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(buf.len())])
+        };
+        if target.is_empty() || !std::path::Path::new(&target).exists() { return None }
+        return Some(target)
+    }
+    #[allow(unreachable_code)] None
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    /// A real shortcut (made by WScript.Shell) resolves to its target; once the target is gone it reads as dead (None).
+    #[test]
+    fn a_shortcut_resolves_and_a_dead_one_does_not() {
+        let d = std::env::temp_dir().join(format!("qcv-lnk-{}", std::process::id())); std::fs::create_dir_all(&d).unwrap();
+        let (target, lnk) = (d.join("clip.mov"), d.join("clip.lnk"));
+        std::fs::write(&target, b"x").unwrap();
+        let ps = format!("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath='{}'; $s.Save()", lnk.display(), target.display());
+        assert!(std::process::Command::new("powershell").args(["-NoProfile", "-Command", &ps]).status().unwrap().success());
+        let l = lnk.to_string_lossy().into_owned();
+        assert!(super::is_shortcut(&l));
+        assert_eq!(super::resolve_shortcut(&l).map(|p| p.to_lowercase()), Some(target.to_string_lossy().to_lowercase()));
+        std::fs::remove_file(&target).unwrap();
+        assert_eq!(super::resolve_shortcut(&l), None, "a dead shortcut");
+        assert_eq!(super::resolve_shortcut("C:\\\\x\\\\plain.mov").as_deref(), Some("C:\\\\x\\\\plain.mov"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
