@@ -2528,7 +2528,7 @@ nothing when it doesn't.
 
 ## 26. The state of the port, 2026-11-07 night (handoff)
 
-Written for whoever picks the work up next, in any model. `main` = b32248e (public, GitHub cbkow/minplatform); rhombus's clone
+Written for whoever picks the work up next, in any model. `main` = c61b480 (public, GitHub cbkow/minplatform; this section's own commit); rhombus's clone
 is fed by git bundles and sits at the same commit. Every ruling is dated in the rows above; this is the map.
 
 ### 26.1 What exists and runs on both OSes
