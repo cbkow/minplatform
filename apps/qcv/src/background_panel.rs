@@ -32,7 +32,7 @@ impl BackgroundPanel {
             b.rect = Rect::new(x0 + col * cw, top + row * ch, x0 + (col + 1.0) * cw, top + (row + 1.0) * ch);
             b.corners = Corners { tl: if i == 0 { r } else { 0.0 }, tr: if i == 1 { r } else { 0.0 }, bl: if i == 2 { r } else { 0.0 }, br: if i == 3 { r } else { 0.0 } };
         }
-        self.height = hh + pad / 2.0 + 2.0 * ch + t::SPACING_200 as f64 * scale;
+        self.height = hh + pad / 2.0 + 2.0 * ch + t::RAIL_SECTION_GAP as f64 * scale;
         self.height
     }
     /// Returns (the mode chosen, redraw needed).
@@ -45,12 +45,14 @@ impl BackgroundPanel {
     }
     pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.buttons.iter().any(|b| b.animating(now)) }
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
+        let gap = t::RAIL_SECTION_GAP as f64 * scale;
+        min_ui::section::paint_tile(scene, Rect::new(self.section.rect.x0, self.section.rect.y0, self.section.rect.x1, self.section.rect.y0 + self.height - gap / 2.0), scale);
         self.section.paint(scene, fonts, scale, now, first);
         if !self.section.expanded { return }
         // the block's raised backing (one layer up from the rail — the reference's raised chips; the user 2026-11-07), its seams, then the four cells
         let th = t::HAIRLINE as f64 * scale; let b = &self.buttons;
         let (l, r_, t_, b_) = (b[0].rect.x0, b[1].rect.x1, b[0].rect.y0, b[2].rect.y1); let mx = b[0].rect.x1; let my = b[0].rect.y1;
-        paint::rounded(scene, Rect::new(l, t_, r_, b_), t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, t::RAIL_CARD_BACKGROUND_COLOR);
+        paint::rounded(scene, Rect::new(l, t_, r_, b_), t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, min_ui::section::card_color());
         paint::rect(scene, Rect::new(mx - th / 2.0, t_ + th * 6.0, mx + th / 2.0, b_ - th * 6.0), t::DIVIDER_COLOR);
         paint::rect(scene, Rect::new(l + th * 6.0, my - th / 2.0, r_ - th * 6.0, my + th / 2.0), t::DIVIDER_COLOR);
         for b in &self.buttons { b.paint(scene, fonts, scale, now); }

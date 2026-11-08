@@ -1,5 +1,6 @@
 //! Section — a rail section's header in Spectrum 2's flat form (canon §25.4, the Lightroom reference): a bold 14 title
-//! with a caret on the LEFT ("⌄ Light" open, "› Effects" closed), a full-width hairline above, no card. The header is
+//! with a caret on the LEFT ("⌄ Light" open, "› Effects" closed), on a layer-2 tile (header + body, radius 8, no shadow), the
+//! tiles parted by `rail-section-gap`; the hairline retired on 2026-11-08 (canon row 174). The header is
 //! the whole click target and hovers gray-200 at radius 4 inside its padding. QCView's `CollapsibleSection` is a
 //! tinted card with tracked tiny capitals; the flat header is the written deviation.
 use crate::{anim::{mix, Ramp}, input::{Button, Event}, paint, Family, Fonts};
@@ -7,6 +8,14 @@ use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
 use std::time::Instant;
 use vello::Scene;
+
+/// Each section is a flat rounded tile in `background-layer-2` on the layer-1 rail — S2's layering by tone, no shadow
+/// (canon row 174, revised 2026-11-08 on the walk). `QCV_RAIL_FLAT=1` shows the flat form it replaced, for comparison.
+pub fn layer2() -> bool { static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *ON.get_or_init(|| std::env::var_os("QCV_RAIL_FLAT").is_none()) }
+/// The backing for fused chips / meters inside a section: layer-2 on the bare rail, one grey step up on a layer-2 tile.
+pub fn card_color() -> min_theme::Color { if layer2() { t::GRAY_100 } else { t::RAIL_CARD_BACKGROUND_COLOR } }
+/// The tile behind a whole section (header + body) when the layer-2 option is on.
+pub fn paint_tile(scene: &mut Scene, r: Rect, scale: f64) { if layer2() && r.height() > 0.0 { paint::rounded(scene, r, t::CORNER_RADIUS_500 as f64 * scale, t::BACKGROUND_LAYER_2_COLOR); } }
 
 pub struct Section { pub title: String, pub expanded: bool, pub rect: Rect, hovered: bool, pressed: bool, hover: Ramp }
 
@@ -30,10 +39,10 @@ impl Section {
         (was.2 != self.expanded, was != (self.hovered, self.pressed, self.expanded))
     }
     pub fn animating(&self, now: Instant) -> bool { self.hover.animating(now) }
-    /// Paint at `self.rect` (the row across the rail's content width); `first` skips the hairline above.
+    /// Paint at `self.rect` (the row across the rail's content width); `first` is kept for callers (the hairline it skipped is gone).
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
         let r = self.rect;
-        if !first { paint::hline(scene, r.x0, r.x1, r.y0, t::DIVIDER_THICKNESS as f64 * scale, t::DIVIDER_COLOR); }
+        let _ = first;
         let hv = self.hover.value(now);
         let inset = t::SPACING_75 as f64 * scale;
         let row = Rect::new(r.x0, r.y0 + inset, r.x1, r.y1 - inset);

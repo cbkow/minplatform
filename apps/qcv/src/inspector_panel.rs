@@ -305,7 +305,7 @@ impl InspectorPanel {
                 };
                 g.rects.push(Rect::new(x0 + pad, cy, x1 - pad, cy + h)); cy += h + gap;
             }
-            cy += pad;
+            cy += t::RAIL_SECTION_GAP as f64 * scale - gap;
         }
         self.height = cy - y;
         self.height
@@ -376,6 +376,8 @@ impl InspectorPanel {
         for g in self.groups.iter_mut() { if g.shown && g.section.expanded { for it in g.items.iter_mut() { if let Item::Field(f) = it { f.field.paint(scene, fonts, scale); } } } }
         for (gi, g) in self.groups.iter().enumerate() {
             if !g.shown { continue }
+            let bottom = if g.section.expanded { g.rects.last().map(|r| r.y1 + t::SPACING_100 as f64 * scale).unwrap_or(g.section.rect.y1) } else { g.section.rect.y1 };
+            min_ui::section::paint_tile(scene, Rect::new(g.section.rect.x0, g.section.rect.y0, g.section.rect.x1, bottom), scale);
             g.section.paint(scene, fonts, scale, now, gi == 0);
             if !g.section.expanded { continue }
             for (it, r) in g.items.iter().zip(&g.rects) {
@@ -403,7 +405,7 @@ impl InspectorPanel {
                         let l = fonts.layout(&c.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_VALUE_COLOR));
                         let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * scale;
                         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, c.group.rect.y0 + (bh - l.height() as f64) / 2.0)));
-                        for row in &c.rows { paint::rounded(scene, *row, t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, t::RAIL_CARD_BACKGROUND_COLOR); }
+                        for row in &c.rows { paint::rounded(scene, *row, t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * scale, min_ui::section::card_color()); }
                         for b in &c.group.buttons { b.paint(scene, fonts, scale, now); }
                     }
                     Item::Field(f) => {
@@ -419,7 +421,7 @@ impl InspectorPanel {
                         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.x0, r.y0)));
                         for ch in 0..self.channels {
                             let y = r.y0 + ch as f64 * step; let w = r.x1 - x0;
-                            paint::rounded(scene, Rect::new(x0, y, r.x1, y + bar_h), bar_h / 2.0, t::RAIL_CARD_BACKGROUND_COLOR);
+                            paint::rounded(scene, Rect::new(x0, y, r.x1, y + bar_h), bar_h / 2.0, min_ui::section::card_color());
                             let lvl = self.peaks[ch].clamp(0.0, 1.0) as f64;
                             if lvl > 0.0 { paint::rounded(scene, Rect::new(x0, y, x0 + w * lvl, y + bar_h), bar_h / 2.0, if lvl > 0.9 { t::NOTICE_VISUAL_COLOR } else { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT }); }
                         }

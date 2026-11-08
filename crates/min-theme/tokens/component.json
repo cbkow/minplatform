@@ -127,6 +127,8 @@
   "rail-group-header-color":    { "value": "{neutral-subdued-content-color-default}" },
   "rail-row-height":            { "value": "{component-height-100}" },
   "rail-row-gap":               { "value": "{spacing-50}" },
+  "rail-section-gap":           { "value": "{spacing-300}" },
+  "rail-group-gap":             { "value": "{spacing-300}" },
   "rail-label-color":           { "value": "{neutral-content-color-default}" },
   "rail-row-active-fill":       { "value": "{blue-400}" },
   "rail-row-active-label":      { "value": "{gray-900}" },

@@ -124,7 +124,8 @@ impl ProjectPanel {
         let (bw, bh) = self.add.measure(fonts, scale);
         self.add.rect = Rect::new(x1 - pad - bw, cy, x1 - pad, cy + bh); cy += bh + pad;
         if self.groups.is_empty() { cy += row_h + pad; }   // the drop hint
-        for g in &mut self.groups {
+        for (gi, g) in self.groups.iter_mut().enumerate() {
+            if gi > 0 { cy += t::RAIL_GROUP_GAP as f64 * scale - pad / 2.0; }   // sub-headers part by space
             let gh = (fonts.detail(g.label, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64).max(t::ICON_SIZE_SMALL as f64 * scale);
             let gh = if g.kind == MediaType::Playlist { gh.max(t::COMPONENT_HEIGHT_75 as f64 * scale) } else { gh };
             g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + gap * 2.0;
@@ -132,7 +133,7 @@ impl ProjectPanel {
             for r in &mut g.rows { r.rect = Rect::new(x0 + pad / 2.0, cy, x1 - pad / 2.0, cy + row_h); cy += row_h + gap; }
             cy += pad / 2.0;
         }
-        cy += pad;
+        cy += t::RAIL_SECTION_GAP as f64 * scale - pad / 2.0;
         if let Some((id, f)) = self.editing.as_mut() { if let Some(r) = self.groups.iter().flat_map(|g| g.rows.iter()).find(|r| r.id == *id) { f.layout(fonts, r.rect.inset((-pad / 4.0, -2.0 * scale)), scale); } }
         self.height = cy - y; self.height
     }
@@ -224,6 +225,8 @@ impl ProjectPanel {
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
     pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.add.animating(now) || self.new_playlist.animating(now) || self.groups.iter().any(|g| g.rows.iter().any(|r| r.hover.animating(now))) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
+        let gap = t::RAIL_SECTION_GAP as f64 * scale;
+        min_ui::section::paint_tile(scene, Rect::new(self.section.rect.x0, self.section.rect.y0, self.section.rect.x1, self.section.rect.y0 + self.height - gap / 2.0), scale);
         self.section.paint(scene, fonts, scale, now, first);
         if !self.section.expanded { return }
         let pad = t::SPACING_100 as f64 * scale;

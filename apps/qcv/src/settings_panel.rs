@@ -104,8 +104,8 @@ impl SettingsPanel {
         let cw = CONTROL_W * scale; let row_h = t::RAIL_ROW_HEIGHT as f64 * scale;
         let label_w = (x1 - x0 - 2.0 * pad - cw - pad).max(40.0);
         let group_top = t::SPACING_200 as f64 * scale;
-        for g in self.groups.iter_mut() {
-            cy += group_top;
+        for (gi, g) in self.groups.iter_mut().enumerate() {
+            cy += if gi == 0 { group_top } else { t::RAIL_GROUP_GAP as f64 * scale };   // sub-headers part by space
             let gh = fonts.detail(g.title, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64;
             g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + pad;
             for r in g.rows.iter_mut().filter(|r| !r.windows_only || cfg!(windows)) {
@@ -124,7 +124,7 @@ impl SettingsPanel {
         }
         cy += group_top;
         let (bw, bh) = self.reset.measure(fonts, scale);
-        self.reset.rect = Rect::new(x0 + pad, cy, x0 + pad + bw, cy + bh); cy += bh + t::SPACING_200 as f64 * scale;
+        self.reset.rect = Rect::new(x0 + pad, cy, x0 + pad + bw, cy + bh); cy += bh + t::RAIL_SECTION_GAP as f64 * scale;
         self.height = cy - y;
         self.height
     }
@@ -200,6 +200,8 @@ impl SettingsPanel {
     pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) { for r in self.rows_mut() { if let Ctl::Number(n) = &mut r.ctl { if n.focused() { n.field.ime(e, fonts); } } } }
 
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
+        let gap = t::RAIL_SECTION_GAP as f64 * scale;
+        min_ui::section::paint_tile(scene, Rect::new(self.section.rect.x0, self.section.rect.y0, self.section.rect.x1, self.section.rect.y0 + self.height - gap / 2.0), scale);
         self.section.paint(scene, fonts, scale, now, first);
         if !self.section.expanded { return }
         for g in &mut self.groups {
