@@ -17,4 +17,4 @@ every app — the QCView port today, minNotes / ufb / MinRender as they port —
 The FFmpeg itself is the ONE pinned build per machine: `tools/ffmpeg/` (9.0.2; Homebrew on macOS, BtbN gpl-shared on
 Windows fetched into `external/ffmpeg/win64`). `ffmpeg-sys-next` binds it at build time through pkg-config / `FFMPEG_DIR`.
 
-Licence: MIT OR Apache-2.0 (the author's own code, as `min-paths`). The player above it stays GPL-3.0-or-later.
+Licence: GPL-3.0-or-later (canon row 151: every workspace crate except `min-paths` is GPL; it links FFmpeg's GPL build).

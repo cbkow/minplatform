@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 description = "minplatform — the family's FFmpeg substrate (canon row 188): FFmpeg 9 behind thin RAII (sessions, the frame index, seeks), the hardware-decode devices and routing, the read-ahead warmer, the thread policy, the RGB range rule; decoded frames come out as min-present frames. Lifted from qcv-player 2026-11-07; every app decodes through this crate."
 
 [dependencies]
