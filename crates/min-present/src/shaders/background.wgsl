@@ -27,7 +27,7 @@ fn fill(px: vec2<f32>) -> vec3<f32> {
   if (!inside) { f = mix(f, vec3(22.0 / 255.0), clamp(u.bg.y, 0.0, 1.0)); }
   let lin = srgb_eotf(f);
   var enc: vec3<f32>;
-  if (u.out_mode < 0.5) { enc = lin; }
+  if (u.out_mode < 0.5) { enc = lin * select(1.0, u.pad1.x, u.pad1.x > 0.0); }   // SDR white at the user's SDR brightness (Windows scRGB, row 184)
   else if (u.out_mode < 2.5) { enc = pq_oetf(lin * u.white); }
   else if (u.out_mode < 3.5) { enc = lin; }
   else { enc = srgb_oetf(lin); }

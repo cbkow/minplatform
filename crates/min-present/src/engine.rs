@@ -400,7 +400,7 @@ impl Engine {
         let Some(s) = self.scope.as_ref() else { return };
         // QCView resolveDraw: a bin holding 1/16384 of the samples reaches 1 − 1/e at brightness 1
         let gain = v.brightness.max(0.01) * 16384.0 / s.samples.max(1) as f32;
-        let u: [f32; 12] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, gain, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, 0.0];
+        let u: [f32; 12] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, gain, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, self.out_gain];
         self.queue.write_buffer(&s.du, 0, bytemuck::cast_slice(&u));
         let mut p = pass_load(enc, "scope draw", target); p.set_pipeline(&s.draw); p.set_bind_group(0, &s.draw_bind, &[]); p.draw(0..6, 0..1);
     }
@@ -443,13 +443,13 @@ impl Engine {
     fn write_bg_uniform(&self) {
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
         let m = self.bg_mode as usize;
-        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
+        self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
             bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, 0.0], media: self.media_rect_px(), vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0] }));
     }
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).

@@ -12,7 +12,7 @@
   let s = textureSample(tex, samp, in.uv);
   let lin = srgb_eotf(clamp(s.rgb, vec3(0.0), vec3(1.0)));
   var enc: vec3<f32>;
-  if (u.out_mode < 0.5) { enc = lin; }
+  if (u.out_mode < 0.5) { enc = lin * select(1.0, u.pad1.x, u.pad1.x > 0.0); }   // SDR white at the user's SDR brightness (Windows scRGB, row 184)
   else if (u.out_mode < 2.5) { enc = pq_oetf(lin * u.white); }
   else if (u.out_mode < 3.5) { enc = lin; }
   else { enc = srgb_oetf(lin); }

@@ -45,7 +45,7 @@ fn accumulate(@builtin(global_invocation_id) id: vec3<u32>) {
 
 // The draw: the histogram over the UI, in the card's rect. Count → 1 − e^(−gain·count) (QCView resolveDraw); bins out of
 // the scale's range (SDR above 100 % / below 0 %, HDR at the top row) tinted red.
-struct D { rect: vec4<f32>, vp: vec4<f32>, p: vec4<f32> };   // rect px (x, y, w, h); viewport px; x = gain, y = HDR, z = HDR top nits
+struct D { rect: vec4<f32>, vp: vec4<f32>, p: vec4<f32> };   // rect px (x, y, w, h); viewport px; x = gain, y = HDR, z = HDR top nits, w = the output's SDR-white gain
 @group(0) @binding(0) var<uniform> d: D;
 @group(0) @binding(1) var<storage, read> h: array<u32>;
 struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -61,6 +61,6 @@ struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   let level_frac = (f32(by) + 0.5) / f32(GRID);   // 0 top … 1 bottom
   var out_of_range = false;
   if (d.p.y > 0.5) { out_of_range = by == 0u; } else { let y = 1.1 - level_frac * 1.2; out_of_range = y > 1.0 || y < 0.0; }
-  let col = select(vec3(0.86, 0.88, 0.86), vec3(1.0, 0.33, 0.28), out_of_range);
+  let col = select(vec3(0.86, 0.88, 0.86), vec3(1.0, 0.33, 0.28), out_of_range) * select(1.0, d.p.w, d.p.w > 0.0);   // the SDR-white gain (row 184)
   return vec4(col * a, a);
 }
