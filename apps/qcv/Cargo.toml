@@ -18,6 +18,7 @@ min-i18n = { path = "../../crates/min-i18n" }
 qcv-color = { path = "../../crates/qcv-color" }
 vello = { workspace = true }
 peniko = { workspace = true }
+parley = { workspace = true }
 kurbo = { workspace = true }
 qcv-player = { path = "../../crates/qcv-player" }
 qcv-meta = { path = "../../crates/qcv-meta" }

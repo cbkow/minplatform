@@ -38,6 +38,10 @@ pub mod k {
     pub const LEFT_RAIL_WIDTH: &str = "ui.layout/leftRailWidth";
     pub const RIGHT_RAIL_WIDTH: &str = "ui.layout/rightRailWidth";
     pub const LEFT_RAIL_COLLAPSED: &str = "ui.layout/leftRailCollapsed";
+    /// ours (canon rows 199 / 205): the colour chain on or off (QCView's one On / Off switch), the Color drawer open + its height
+    pub const COLOR_ENABLED: &str = "color/enabled";
+    pub const COLOR_DRAWER_OPEN: &str = "ui.layout/colorDrawerOpen";
+    pub const COLOR_DRAWER_HEIGHT: &str = "ui.layout/colorDrawerHeight";
     pub const RIGHT_RAIL_COLLAPSED: &str = "ui.layout/rightRailCollapsed";
     pub const WINDOW_X: &str = "window/x";
     pub const WINDOW_Y: &str = "window/y";
@@ -76,6 +80,9 @@ static KEYS: &[Key] = &[
     Key::bool(k::HW_DECODE, true),
     Key::int(k::SCRUB_CACHE_MB, 512, 128, 4096),
     Key::bool(k::HW_SCRUB_INTER, false),
+    Key::bool(k::COLOR_ENABLED, false),
+    Key::bool(k::COLOR_DRAWER_OPEN, false),
+    Key::int(k::COLOR_DRAWER_HEIGHT, 280, 200, 600),
     Key::int(k::LEFT_RAIL_WIDTH, 280, 200, 600),
     Key::int(k::RIGHT_RAIL_WIDTH, 320, 200, 600),
     Key::bool(k::LEFT_RAIL_COLLAPSED, false),

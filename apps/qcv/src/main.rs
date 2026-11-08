@@ -40,6 +40,8 @@ mod clip_bar;
 mod clip_popover;
 mod i18n;
 mod color;
+mod color_model;
+mod color_drawer;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -47,7 +49,8 @@ fn trm(s: &'static str) -> &'static str { min_i18n::trc("Main", s) }
 use min_i18n::fill;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
-    mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
+    mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
+    drawer: color_drawer::ColorDrawer, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
@@ -89,6 +92,9 @@ struct App {
     menu_queue: Vec<menu::Cmd>,
     /// single instance (row 143): what later launches forwarded
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    /// colour (canon rows 198–208): the user's presets; the shared minColor pass (and its build); what the slot holds; an OCIO build in flight
+    colors: color_model::Library, mincolor: Option<std::rc::Rc<std::cell::RefCell<qcv_color::MinColorPass>>>, mincolor_ready: Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>,
+    color_bound: Option<String>, ocio_rx: Option<(String, std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>)>,
 }
 
 impl App {
@@ -165,6 +171,7 @@ impl App {
             g.presenter.engine.set_transfer_override(transfer_choice(item.transfer_override)); g.inspector.set_transfer(item.transfer_override);
             g.presenter.engine.set_geometry(min_present::engine::Geometry { par, rotation }); g.content_set = None; g.ui_dirty = true;
         }
+        self.apply_color();   // the clip's chain (or the project default) into the slot (row 205)
     }
     fn note_recent_media(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_MEDIA).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_MEDIA, &list.join("\n")); }
     fn note_recent_project(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_PROJECTS).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_PROJECTS, &list.join("\n")); }
@@ -240,7 +247,7 @@ impl App {
             match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") }
         }
     }
-    fn new_project(&mut self) { self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } }
+    fn new_project(&mut self) { self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
     /// Open the file in the Transport (the raw open; the project paths above call it). True when it opened.
     /// The transport options every open uses — QCView's performance settings apply at open: threads, hardware decode (its
     /// row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate.
@@ -299,6 +306,8 @@ impl App {
         true
     }
     fn tick(&mut self) {
+        self.poll_color();
+        let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
         }
@@ -354,6 +363,10 @@ impl App {
             // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
             let rails_bottom = if g.compact { scrub_y } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
+            // the Color drawer (row 199) sits on the bands and pushes the rails' bottom (and the picture) up
+            let drawer_h = if chromeless { 0.0 } else { g.drawer.visible_height(now, scale) };
+            let rails_bottom = rails_bottom - drawer_h;
+            if g.drawer.animating(now) { g.ui_dirty = true; }
             // QCView's in-window menu bar across the top (Windows); chromeless collapses it to zero, as QCView's `menuBar.height` did
             let menu_h = if chromeless || g.menu_bar.is_none() { 0.0 } else { (t::MENU_BAR_HEIGHT as f64 * scale).round() };
             if let Some(mb) = g.menu_bar.as_mut() { if chromeless { if mb.bar.cancel() { g.ui_dirty = true; } } mb.bar.layout(&mut g.fonts, 0.0, 0.0, w as f64, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale); if chromeless { mb.bar.rect = kurbo::Rect::ZERO; } }
@@ -364,6 +377,11 @@ impl App {
             if g.left.animating(now) || g.right.animating(now) || g.left.tick(now) || g.right.tick(now) { g.ui_dirty = true; }
             let content = if g.fullscreen { (0, 0, w, h) } else { let x0 = lw.round() as u32; let x1 = (w as f64 - rw).round() as u32; let y0 = menu_h as u32; (x0, y0, x1.saturating_sub(x0).max(1), ((rails_bottom - menu_h).round() as u32).max(1)) };
             if g.content_set != Some(content) { g.content_set = Some(content); g.presenter.engine.set_content_rect(Some(content)); g.ui_dirty = true; }
+            if chromeless { g.drawer.rect = kurbo::Rect::ZERO; } else {
+                if g.drawer.sync(color_view, now) { g.ui_dirty = true; }
+                let cr = kurbo::Rect::new(content.0 as f64, content.1 as f64, (content.0 + content.2) as f64, (content.1 + content.3) as f64);
+                g.drawer.layout(&mut g.fonts, cr, 0.0, rails_bottom, w as f64, scale, now);
+            }
             // the panels: the settings mirror the store; the inspector mirrors the Transport (+ the metadata service's results, drained every tick)
             while let Some(ev) = self.meta.try_recv() {
                 let path_of = |id: &str, project: &qcv_project::ProjectManager| project.item(id).map(|m| m.path.clone()).unwrap_or_else(|| id.to_string());
@@ -454,6 +472,7 @@ impl App {
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
                     }
                 }
+                if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
                 if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
                 if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); }
                 g.bar.paint(scene, &mut g.fonts, scale, now);
@@ -467,6 +486,7 @@ impl App {
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
+                if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts); }
                 g.toast.paint(scene, &mut g.fonts, content, scale, now);
                 if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint_menus(scene, &mut g.fonts, scale); }
                 if g.about.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.about.layout(&mut g.fonts, b, scale); g.about.paint(scene, &mut g.fonts, scale, b, now); }
@@ -552,6 +572,19 @@ impl App {
         }
         let Some(g) = self.gpu.as_mut() else { return };
         let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed());
+        // the Color drawer (row 199): its menu / naming popover take everything; its tab over the picture; its own presses
+        if !g.fullscreen && !g.compact && !grabbed {
+            g.drawer.set_pointer_present(e.pos().is_some(), now);
+            let mut cmds = vec![];
+            if matches!(e, min_ui::Event::Down { .. }) && g.drawer.has_focus() && !e.pos().is_some_and(|(x, y)| g.drawer.rect.contains(kurbo::Point::new(x, y))) { cmds.extend(g.drawer.blur()); }
+            let modal = g.drawer.is_modal();
+            let (more, d, consumed) = g.drawer.event(&e, now, &mut g.fonts, bounds); cmds.extend(more);
+            if d { g.ui_dirty = true; }
+            if g.drawer.is_modal() != modal { set_ime(&**g.window, g.drawer.is_modal()); }
+            for c in cmds { self.color_cmd(c); }
+            if consumed || modal { return }
+        }
+        let Some(g) = self.gpu.as_mut() else { return };
         // the rails first (a modal dialog or an open menu in the settings panel takes everything)
         if !g.fullscreen && !grabbed {
             let had_focus = g.settings_panel.has_focus();
@@ -641,6 +674,7 @@ impl App {
                 transport_bar::Cmd::Pin => self.toggle_pin(),
                 transport_bar::Cmd::ToggleCompact => { self.toggle_compact(); return }
                 transport_bar::Cmd::RevealBackground => self.reveal(Reveal::Background),
+                transport_bar::Cmd::ToggleColor => self.color_cmd(color_drawer::Cmd::Toggle),
                 transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } }
             }
         }
@@ -842,6 +876,7 @@ impl App {
             M::LeftRail | M::RightRail => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen { if c == M::LeftRail { g.left.toggle(now); } else { g.right.toggle(now); } g.ui_dirty = true; } } }
             M::StatusBar => self.toggle_status_bar(),
             M::Background => self.reveal(Reveal::Background),
+            M::ColorPanel => { if self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.compact) { self.color_cmd(color_drawer::Cmd::Toggle); } }
             M::Settings => self.reveal(Reveal::Settings),
             M::CopyProjectLink => self.copy_project_link(),
             M::Docs => { let _ = os_actions::open("https://qcview.app/"); }
@@ -1102,6 +1137,7 @@ impl ApplicationHandler for App {
         presenter.engine.set_background(self.settings.int(settings::k::BACKGROUND_MODE) as u8); presenter.engine.set_ui_scale(window.scale_factor() as f32);
         if self.o.identity_chain { presenter.engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
         let mincolor_rx = color::wanted_ahead(&presenter.engine.device, &presenter.engine.queue);
+        if !color::harness_active() { self.mincolor_ready = Some(color::mincolor_ahead(&presenter.engine.device, &presenter.engine.queue)); }
         let i = presenter.info();
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}{}; features {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, if i.layer_workaround { " (PQ set on the layer by name)" } else { "" }, i.features, window.scale_factor());
         if !i.present_modes.is_empty() { println!("present modes {:?}", i.present_modes); }
@@ -1124,7 +1160,8 @@ impl ApplicationHandler for App {
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
         let mut ui = if std::env::var_os("QCV_NO_UI").is_some() { None } else { min_ui::UiLayer::new(&presenter.engine.device, size.width, size.height).map_err(|e| println!("ui layer: {e}")).ok() };
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64);
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
@@ -1182,7 +1219,7 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_modal() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -1217,6 +1254,13 @@ impl ApplicationHandler for App {
                     if matches!(event.logical_key, Key::Named(NamedKey::F2)) { if g.project_panel.rename_selection(&mut g.fonts) { set_ime(&**g.window, true); g.ui_dirty = true; } return }
                     if self.mods.ctrl && !self.mods.shift && !self.mods.alt && matches!(&event.logical_key, Key::Character(c) if c == "a" || c == "A") { if g.project_panel.select_all_media() { g.ui_dirty = true; } return }
                 } } }
+                if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && (g.drawer.has_focus() || g.drawer.is_modal()) {
+                    let k = to_key_event(&event, self.mods);
+                    let (cmds, used) = g.drawer.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.drawer.is_modal() { set_ime(&**g.window, false); }
+                    for c in cmds { self.color_cmd(c); }
+                    if used { return }
+                } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.inspector.has_focus() {
                     let k = to_key_event(&event, self.mods);
                     let cmds = g.inspector.key(&k, &mut g.fonts); g.ui_dirty = true;
@@ -1241,6 +1285,7 @@ impl ApplicationHandler for App {
                         "0" => { self.view_minimal(); return }   // Minimal Mode
                         "9" => { self.view_all_panels(); return }  // Show All Panels
                         "5" => { self.toggle_status_bar(); return }   // View ▸ Status Bar
+                        "3" => { if self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.compact) { self.color_cmd(color_drawer::Cmd::Toggle); } return }   // View ▸ Color Panel (row 199)
                         "l" | "L" => { if let Some(p) = self.player.as_mut() { p.apply(Action::ToggleLoop, now); } return }
                         "q" | "Q" => { self.finish(); el.exit(); return }
                         "=" | "+" | "-" | "_" => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == "-" || c == "_" { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } return }
@@ -1307,6 +1352,7 @@ impl ApplicationHandler for App {
                 let dy = match delta { winit::event::MouseScrollDelta::LineDelta(x, y) => (if alt && y == 0.0 { x } else { y }) as f64 * 120.0, winit::event::MouseScrollDelta::PixelDelta(p) => (if alt && p.y == 0.0 { p.x } else { p.y }) * 2.0, _ => 0.0 };
                 if let Some(g) = self.gpu.as_mut() { let (x, y) = g.pointer; let now = Instant::now(); let scale = g.window.scale_factor();
                     let chromeless = g.fullscreen || g.compact;
+                    if !chromeless && g.drawer.wheel(x, y, -dy / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
                     if !chromeless && g.left.hit(x, y) {
                         if let Some(cmds) = g.settings_panel.wheel(x, y, dy, &mut self.settings) { g.ui_dirty = true; for c in cmds { self.apply_setting(c); } return }
                         if g.left.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return
@@ -1381,7 +1427,8 @@ fn main() {
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let colors = color_model::Library::load(settings.path());
+    let app = App { colors, mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -1487,6 +1534,9 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut left = min_ui::Rail::new(min_ui::Side::Left, 280.0, false); left.settle();
     let mut right = min_ui::Rail::new(min_ui::Side::Right, 320.0, false); right.settle();
     let rails_bottom = bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale;
+    // `QCV_UI_SNAP_COLOR=1`: the Color drawer open (row 199) on a sample state — a user preset, the chain edited (Custom), a clip that owns it
+    let mut drawer = std::env::var_os("QCV_UI_SNAP_COLOR").map(|_| { let mut d = color_drawer::ColorDrawer::new(true, 280.0); d.set_pointer_present(true, t0); d });
+    let rails_bottom = rails_bottom - drawer.as_ref().map(|d| d.visible_height(t0, scale)).unwrap_or(0.0);
     // `QCV_UI_SNAP_MENU=1`: the in-window menu bar (row 194) on top, File open, the Recent Media submenu cascaded
     let mut menu_bar = std::env::var_os("QCV_UI_SNAP_MENU").map(|_| menu::InWindowMenu::new(&mut fonts));
     let menu_h = if menu_bar.is_some() { (t::MENU_BAR_HEIGHT as f64 * scale).round() } else { 0.0 };
@@ -1611,6 +1661,15 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
         panel.tick(shown_at); panel.paint_overlays(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);
+        if let Some(d) = drawer.as_mut() {
+            let mut presets = color_model::builtins();
+            let mine = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, ..Default::default() }), preset: "Client PQ review".into() };
+            presets.push(color_model::Preset { name: "Client PQ review".into(), stored: mine.clone(), builtin: false });
+            let edited = color_model::Stored { chain: color_model::ClipChain::MinColor(qcv_color::Chain { in_gamut: 3, in_transfer: 14, knee_on: 1, knee_tgt: 200.0, ..Default::default() }), preset: "Client PQ review".into() };
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored: edited, custom: true, on: true, presets }, t0);
+            d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
+            d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts);
+        }
         if let Some(mb) = menu_bar.as_ref() { mb.bar.paint(scene, &mut fonts, scale); mb.bar.paint_menus(scene, &mut fonts, scale); }
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
         if let Some(ms) = ui.render(&engine.device, &engine.queue) { render_ms.push(ms); }

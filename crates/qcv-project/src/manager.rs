@@ -16,6 +16,8 @@ pub struct ProjectManager {
     pool: Vec<MediaItem>, bins: Vec<ProjectBin>,
     active_item_id: String, b_source_media_id: String,
     uuid: String, file_path: String, name: String, created_at: String, modified_at: String, dirty: bool,
+    /// the default colour chain (minplatform, canon row 205): opaque here, the app's colour module owns its shape
+    color_default: serde_json::Map<String, serde_json::Value>,
     last_removal: Vec<RemovedItemSnapshot>,
     revision: u64,
     /// files the user reached for (adds and dedupe hits both count — QCView's Recents feed)
@@ -46,7 +48,7 @@ impl Default for ProjectManager { fn default() -> Self { Self::new() } }
 impl ProjectManager {
     pub fn new() -> ProjectManager {
         let now = now_iso_utc();
-        ProjectManager { pool: vec![], bins: seed_bins(), active_item_id: String::new(), b_source_media_id: String::new(), uuid: new_uuid(), file_path: String::new(), name: "Untitled".into(), created_at: now.clone(), modified_at: now, dirty: false, last_removal: vec![], revision: 0, recent: vec![] }
+        ProjectManager { color_default: Default::default(), pool: vec![], bins: seed_bins(), active_item_id: String::new(), b_source_media_id: String::new(), uuid: new_uuid(), file_path: String::new(), name: "Untitled".into(), created_at: now.clone(), modified_at: now, dirty: false, last_removal: vec![], revision: 0, recent: vec![] }
     }
     // ---- reads ----
     pub fn pool(&self) -> &[MediaItem] { &self.pool }
@@ -71,7 +73,7 @@ impl ProjectManager {
     /// QCView `newProject`: the pool and selection go, the bin shells stay (only their ids reset); a fresh uuid and dates.
     pub fn new_project(&mut self) {
         self.pool.clear(); self.last_removal.clear(); for bn in &mut self.bins { bn.item_ids.clear(); }
-        self.active_item_id.clear(); self.b_source_media_id.clear();
+        self.active_item_id.clear(); self.b_source_media_id.clear(); self.color_default.clear();
         self.uuid = new_uuid(); self.file_path.clear(); self.name = "Untitled".into(); self.created_at = now_iso_utc(); self.modified_at = self.created_at.clone();
         self.dirty = false; self.bump();
     }
@@ -88,9 +90,9 @@ impl ProjectManager {
             Err(e) => { self.new_project(); Err(e) }
         }
     }
-    fn snapshot(&self) -> ProjectFile { ProjectFile { uuid: self.uuid.clone(), name: self.name.clone(), created_at: self.created_at.clone(), modified_at: self.modified_at.clone(), media: self.pool.clone(), bins: self.bins.clone(), active_item_id: self.active_item_id.clone(), b_source_media_id: self.b_source_media_id.clone() } }
+    fn snapshot(&self) -> ProjectFile { ProjectFile { uuid: self.uuid.clone(), name: self.name.clone(), created_at: self.created_at.clone(), modified_at: self.modified_at.clone(), media: self.pool.clone(), bins: self.bins.clone(), active_item_id: self.active_item_id.clone(), b_source_media_id: self.b_source_media_id.clone(), color_default: self.color_default.clone() } }
     fn apply_loaded(&mut self, f: ProjectFile) -> Vec<Probe> {
-        self.pool = f.media; self.bins = f.bins; self.active_item_id = f.active_item_id; self.b_source_media_id = f.b_source_media_id; self.last_removal.clear();
+        self.pool = f.media; self.bins = f.bins; self.active_item_id = f.active_item_id; self.b_source_media_id = f.b_source_media_id; self.last_removal.clear(); self.color_default = f.color_default;
         self.uuid = if f.uuid.is_empty() { new_uuid() } else { f.uuid }; self.name = if f.name.is_empty() { "Untitled".into() } else { f.name };
         self.created_at = if f.created_at.is_empty() { now_iso_utc() } else { f.created_at }; self.modified_at = if f.modified_at.is_empty() { self.created_at.clone() } else { f.modified_at };
         self.dirty = false;
@@ -272,6 +274,13 @@ impl ProjectManager {
     }
     /// QCView `setSequenceLayer`.
     pub fn set_sequence_layer(&mut self, id: &str, layer: &str) -> bool { self.edit(id, |m| if m.media_type == MediaType::ImageSequence && m.image_seq.layer != layer { m.image_seq.layer = layer.to_string(); true } else { false }) }
+    /// The project's default colour chain (minplatform, canon row 205).
+    pub fn color_default(&self) -> &serde_json::Map<String, serde_json::Value> { &self.color_default }
+    pub fn set_color_default(&mut self, m: serde_json::Map<String, serde_json::Value>) -> bool { if self.color_default == m { return false } self.color_default = m; self.mark_dirty(); true }
+    /// A clip's colour maps (QCView's `ocioClip` / `minColorClip`, which carry the whole chain here — row 205).
+    pub fn set_color_clip(&mut self, id: &str, ocio: serde_json::Map<String, serde_json::Value>, min_color: serde_json::Map<String, serde_json::Value>) -> bool {
+        self.edit(id, |m| if m.ocio_clip != ocio || m.min_color_clip != min_color { m.ocio_clip = ocio.clone(); m.min_color_clip = min_color.clone(); true } else { false })
+    }
     pub fn set_transfer_override(&mut self, id: &str, t: TransferOverride) -> bool { self.edit(id, |m| if m.transfer_override != t { m.transfer_override = t; true } else { false }) }
     /// QCView `setPixelAspect(item, mode, num, den)`: Custom keeps the given ratio; the others keep the stored custom ratio.
     pub fn set_pixel_aspect(&mut self, id: &str, mode: PixelAspectMode, num: i32, den: i32) -> bool { self.edit(id, |m| { let (n, d) = if mode == PixelAspectMode::Custom && num > 0 && den > 0 { (num, den) } else { (m.custom_par_num, m.custom_par_den) }; if m.pixel_aspect_mode != mode || m.custom_par_num != n || m.custom_par_den != d { m.pixel_aspect_mode = mode; m.custom_par_num = n; m.custom_par_den = d; true } else { false } }) }

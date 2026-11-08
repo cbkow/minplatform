@@ -17,6 +17,9 @@ pub struct ProjectFile {
     pub uuid: String, pub name: String, pub created_at: String, pub modified_at: String,
     pub media: Vec<MediaItem>, pub bins: Vec<ProjectBin>,
     pub active_item_id: String, pub b_source_media_id: String,
+    /// minplatform (canon row 205): the project's default colour chain, an opaque map; written only when set, so every
+    /// QCView project round-trips byte for byte (row 141).
+    pub color_default: serde_json::Map<String, Value>,
 }
 
 // ---- ${PROJECT_DIR} ----------------------------------------------------------------------------------------------
@@ -167,11 +170,13 @@ fn bin_to_json(bn: &ProjectBin) -> Value { json!({ "name": bn.name, "type": bn.a
 
 /// The whole document as a JSON value (the writer then formats it Qt's way). `project_dir` = the folder the file lives in.
 pub fn to_value(p: &ProjectFile, project_dir: &str, modified_at: &str) -> Value {
-    json!({ "schema": SCHEMA_TAG, "version": SCHEMA_VERSION,
+    let mut v = json!({ "schema": SCHEMA_TAG, "version": SCHEMA_VERSION,
         "project": { "uuid": p.uuid, "name": p.name, "created_at": p.created_at, "modified_at": modified_at },
         "media": p.media.iter().map(|it| media_item_to_json(it, project_dir)).collect::<Vec<_>>(),
         "bins": p.bins.iter().map(bin_to_json).collect::<Vec<_>>(),
-        "ui_state": { "active_item_id": p.active_item_id, "b_source_media_id": p.b_source_media_id } })
+        "ui_state": { "active_item_id": p.active_item_id, "b_source_media_id": p.b_source_media_id } });
+    if !p.color_default.is_empty() { if let Some(o) = v.as_object_mut() { o.insert("colorDefault".into(), Value::Object(p.color_default.clone())); } }
+    v
 }
 pub fn project_dir_of(file_path: &str) -> String { Path::new(file_path).parent().map(|d| d.to_string_lossy().replace('\\', "/")).unwrap_or_default() }
 
@@ -200,7 +205,7 @@ pub fn parse(text: &str, project_dir: &str, file_path: &str) -> Result<ProjectFi
     let active = s(&ui, "active_item_id"); let bsrc = s(&ui, "b_source_media_id");
     let active = if !active.is_empty() && media.iter().any(|m| m.id == active) { active } else { String::new() };
     let bsrc = if !bsrc.is_empty() && media.iter().any(|m| m.id == bsrc) { bsrc } else { String::new() };
-    Ok(ProjectFile { uuid: s(&project, "uuid"), name: s(&project, "name"), created_at: s(&project, "created_at"), modified_at: s(&project, "modified_at"), media, bins, active_item_id: active, b_source_media_id: bsrc })
+    Ok(ProjectFile { uuid: s(&project, "uuid"), name: s(&project, "name"), created_at: s(&project, "created_at"), modified_at: s(&project, "modified_at"), media, bins, active_item_id: active, b_source_media_id: bsrc, color_default: obj(root, "colorDefault") })
 }
 pub fn load(file_path: &str) -> Result<ProjectFile, String> {
     let text = std::fs::read_to_string(file_path).map_err(|e| format!("Open: cannot read '{file_path}': {e}"))?;
