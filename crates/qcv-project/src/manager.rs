@@ -197,6 +197,12 @@ impl ProjectManager {
         if m.name == new_name { return true }
         m.name = new_name.to_string(); self.mark_dirty(); true
     }
+    /// A playlist's entries after a timeline edit (QCView writes the edited order + trims back to the item; dirty when changed).
+    pub fn set_playlist_items(&mut self, id: &str, items: Vec<PlaylistEntry>) -> bool {
+        let Some(m) = self.item_mut(id) else { return false };
+        if m.media_type != MediaType::Playlist || m.playlist.items == items { return false }
+        m.playlist.items = items; self.mark_dirty(); true
+    }
     /// `Playlist_NN`: one past the highest existing number, two digits.
     pub fn next_playlist_auto_name(&self) -> String {
         let max = self.pool.iter().filter(|m| m.media_type == MediaType::Playlist).filter_map(|m| m.name.strip_prefix("Playlist_").and_then(|n| n.parse::<i32>().ok())).max().unwrap_or(0);

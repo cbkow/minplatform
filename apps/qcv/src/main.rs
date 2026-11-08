@@ -30,6 +30,7 @@ mod inspector_panel;
 mod background_panel;
 mod compact_strip;
 mod project_panel;
+mod playlist;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
@@ -44,6 +45,8 @@ struct App {
     o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, hw_intra: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
     scrub_last_req: Option<(i32, Instant)>,
+    /// the loaded playlist's timeline model + its undo (qcv-timeline's Editor); None when a single file is loaded
+    pl_editor: Option<qcv_timeline::Editor>,
     last_tick: Instant,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
@@ -90,6 +93,7 @@ impl App {
         self.project.set_active_item(id);
         match item.media_type {
             qcv_project::MediaType::Video | qcv_project::MediaType::Audio => {}
+            qcv_project::MediaType::Playlist => { let ok = self.load_playlist(id); self.project.set_load_failed(id, !ok); if ok { self.loaded_item = id.to_string(); } if let Some(g) = self.gpu.as_mut() { g.content_set = None; g.ui_dirty = true; } return }
             other => { log::info!("load: {other:?} items load with their step; selected only"); return }
         }
         let ok = self.open(&item.path);
@@ -137,34 +141,59 @@ impl App {
     }
     fn new_project(&mut self) { self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } }
     /// Open the file in the Transport (the raw open; the project paths above call it). True when it opened.
-    fn open(&mut self, path: &str) -> bool {
-        let Some(g) = self.gpu.as_mut() else { return false };
-        let src = Source::from_path(path, None);
-        let t = Instant::now();
-        // QCView's performance settings apply at open: threads, hardware decode (its row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate
+    /// The transport options every open uses — QCView's performance settings apply at open: threads, hardware decode (its
+    /// row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate.
+    fn transport_options(&self) -> TransportOptions {
         let st = &self.settings;
         let hw_ok = !cfg!(windows) || st.bool(settings::k::HW_DECODE);
         let hw = if self.o.sw || !hw_ok { None } else { self.hw.clone() };
         let threads = if self.o.threads != 0 { self.o.threads } else { st.int(settings::k::FFMPEG_THREADS) as i32 };
         let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), stats: *TRACE_SCRUB, ..Default::default() });
         let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
-        match Transport::open(&src, TransportOptions { hw, hw_intra: self.hw_intra.clone(), threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }) {
-            Ok(mut p) => {
-                // audio first, so the harness's play below starts it too (the player's hooks run inside Transport::play)
-                if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {} (device latency {:.1} ms)", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }, p.audio.device_latency_ms()); } Err(e) => println!("audio: {e}") } }
-                if p.audio.has_audio() { p.audio.set_volume(st.float(settings::k::VOLUME) as f32); p.audio.set_muted(st.bool(settings::k::MUTED)); p.audio.set_sync_offset_ms(st.int(settings::k::SYNC_OFFSET_MS) as i32); p.audio.set_scrub_muted(st.bool(settings::k::SCRUB_MUTED)); }
-                if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
-                println!("opened {} — {}  (open took {:.0} ms)", src.display(), describe(&p), t.elapsed().as_secs_f32() * 1000.0);
-                self.source_label = src.display(); self.source_path = path.to_string(); g.thumbs.on_open(&p); g.presenter.engine.set_geometry(Default::default()); g.presenter.engine.set_transfer_override(Default::default()); g.inspector.set_transfer(Default::default());
-                // QCView: both metadata requests at add; keyed by the media id when the file is in the project (the manager caches the result), else by path
-                let key = self.project.pool().iter().find(|m| m.path == path).map(|m| m.id.clone()).unwrap_or_else(|| path.to_string());
-                self.meta.request_video_extraction(&key, path); self.meta.request_adobe_extraction(&key, path);
-                self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
-                g.title_shown.clear();
-                true
-            }
+        TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, ..Default::default() }
+    }
+    fn open(&mut self, path: &str) -> bool {
+        if self.gpu.is_none() { return false }
+        let src = Source::from_path(path, None);
+        let t = Instant::now();
+        match Transport::open(&src, self.transport_options()) {
+            Ok(p) => { self.pl_editor = None; self.adopt(p, src.display(), path, t); true }
             Err(e) => { println!("open {path}: {e}"); false }
         }
+    }
+    /// A freshly opened transport becomes the player: audio, QCView's paused open, the readouts, the metadata requests.
+    fn adopt(&mut self, mut p: Transport, label: String, path: &str, t: Instant) {
+        let st = &self.settings;
+        // audio first, so the harness's play below starts it too (the player's hooks run inside Transport::play)
+        if std::env::var_os("QCV_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => { p.set_audio(Box::new(a)); println!("audio: {} (device latency {:.1} ms)", if p.audio.has_audio() { "open (CoreAudio default output)" } else { "no audio stream" }, p.audio.device_latency_ms()); } Err(e) => println!("audio: {e}") } }
+        if p.audio.has_audio() { p.audio.set_volume(st.float(settings::k::VOLUME) as f32); p.audio.set_muted(st.bool(settings::k::MUTED)); p.audio.set_sync_offset_ms(st.int(settings::k::SYNC_OFFSET_MS) as i32); p.audio.set_scrub_muted(st.bool(settings::k::SCRUB_MUTED)); }
+        if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
+        println!("opened {label} — {}  (open took {:.0} ms)", describe(&p), t.elapsed().as_secs_f32() * 1000.0);
+        let g = self.gpu.as_mut().unwrap();
+        self.source_label = label; self.source_path = path.to_string(); g.thumbs.on_open(&p); g.presenter.engine.set_geometry(Default::default()); g.presenter.engine.set_transfer_override(Default::default()); g.inspector.set_transfer(Default::default());
+        // QCView: both metadata requests at add; keyed by the media id when the file is in the project (the manager caches the result), else by path
+        let key = self.project.pool().iter().find(|m| m.path == path).map(|m| m.id.clone()).unwrap_or_else(|| path.to_string());
+        if !path.is_empty() { self.meta.request_video_extraction(&key, path); self.meta.request_adobe_extraction(&key, path); }
+        self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
+        g.title_shown.clear();
+    }
+    /// QCView `startPlaylist`: the entries resolved against the pool into a timeline, opened paused on its first clip; an
+    /// empty playlist is loaded with no player (its bar says "Drop media here").
+    fn load_playlist(&mut self, id: &str) -> bool {
+        let Some(item) = self.project.item(id).cloned() else { return false };
+        let ed = playlist::editor_for(&self.project, &item);
+        let has_clips = ed.timeline.tracks.first().is_some_and(|t| t.clips.iter().any(|c| !c.is_gap));
+        self.player = None;
+        if has_clips {
+            let t = Instant::now();
+            match Transport::open_playlist(ed.timeline.clone(), self.transport_options()) {
+                Ok(p) => self.adopt(p, item.name.clone(), "", t),
+                Err(e) => { println!("open playlist '{}': {e}", item.name); return false }
+            }
+        } else { self.source_label = item.name.clone(); self.source_path.clear(); if let Some(g) = self.gpu.as_mut() { g.title_shown.clear(); } }
+        println!("playlist '{}': {} clip(s), {} frames", item.name, ed.timeline.tracks.first().map(|t| t.clips.iter().filter(|c| !c.is_gap).count()).unwrap_or(0), ed.timeline.duration);
+        self.pl_editor = Some(ed);
+        true
     }
     fn tick(&mut self) {
         self.last_tick = Instant::now();
@@ -461,6 +490,7 @@ impl App {
         let name = self.project.next_playlist_auto_name();
         let (id, probes) = self.project.create_playlist(paths, &name, 24.0, 1920, 1080, 0, 0);
         self.schedule_probes(probes);
+        self.load_item(&id);   // QCView: setActiveItem — the new playlist loads (empty: no player, the bar invites a drop)
         if let Some(g) = self.gpu.as_mut() { g.project_panel.selected = vec![id.clone()]; g.project_panel.pending_rename = Some(id); g.ui_dirty = true; }
     }
     fn project_cmd(&mut self, c: project_panel::Cmd) {
@@ -894,7 +924,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
-    let app = App { drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
