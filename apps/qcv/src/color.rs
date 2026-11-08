@@ -108,6 +108,8 @@ impl min_present::ColorPass for SharedPass {
     fn input(&self) -> min_present::Space { self.0.borrow().input() }
     fn output(&self) -> min_present::Space { self.0.borrow().output() }
     fn run(&mut self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) { self.0.borrow_mut().run(enc, src, dst) }
+    fn set_scope_tap(&mut self, on: bool) { self.0.borrow_mut().set_scope_tap(on) }
+    fn scope_tap(&self) -> Option<(wgpu::Texture, [f32; 9])> { self.0.borrow().scope_tap() }
 }
 
 /// The harness owns the slot when it asked for a chain (`QCV_MINCOLOR` / `QCV_OCIO`).
@@ -139,7 +141,11 @@ impl crate::App {
             if !BUNDLED.iter().any(|(k, _)| *k == o.config) { configs.push((o.config.clone(), std::path::Path::new(&o.config).parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| o.config.clone()))); }
             OcioLists { configs, inputs: c.inputs(), looks: c.looks(), views: c.views() }
         }) } else { None };
-        View { target, has_clip: id.is_some(), own, stored, custom, on: self.settings.bool(crate::settings::k::COLOR_ENABLED), presets: self.colors.all(), file_peak, ocio }
+        // the source is HDR when its Input says so (minColor PQ / HLG, an OCIO PQ / HLG space) or, in bypass, its tags do
+        let tags_hdr = id.as_ref().and_then(|i| self.project.item(i)).is_some_and(|m| { let t = m.video.color_transfer.to_lowercase(); t.contains("2084") || t.contains("pq") || t.contains("hlg") || t.contains("arib") });
+        let on = self.settings.bool(crate::settings::k::COLOR_ENABLED);
+        let hdr_source = match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => c.in_transfer == 14 || c.in_transfer == 15, ClipChain::Ocio(o) => { let n = o.input.to_uppercase(); n.contains("PQ") || n.contains("2084") || n.contains("HLG") } };
+        View { target, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source }
     }
     /// Bind what the drawer says to the engine's slot: off = bypass; minColor = the shared pass (a uniform update); OCIO = a
     /// pass built on a worker (the previous chain stays on screen until it is ready).

@@ -24,6 +24,7 @@ unsafe extern "C" {
     fn oc_config_encoding(c: *const RawConfig, cs: *const c_char) -> *const c_char;
     fn oc_chain_build(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, lang: c_int, fn_name: *const c_char, err: *mut c_char, n: usize) -> *mut RawChain;
     fn oc_chain_free(c: *mut RawChain);
+    fn oc_chain_build_scope(c: *const RawConfig, input: *const c_char, lang: c_int, side: *mut c_int, err: *mut c_char, n: usize) -> *mut RawChain;
     fn oc_chain_build_split(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, lang: c_int, pre: *mut *mut RawChain, post: *mut *mut RawChain, err: *mut c_char, n: usize) -> c_int;
     fn oc_chain_shader(c: *const RawChain) -> *const c_char;
     fn oc_chain_num_uniforms(c: *const RawChain) -> c_uint;
@@ -93,6 +94,13 @@ impl Chain {
         let side = unsafe { oc_chain_build_split(config.raw, cstr(&spec.input).as_ptr(), cstr(&spec.look).as_ptr(), cstr(&spec.view).as_ptr(), cstr(&spec.scene_lut).as_ptr(), lang, &mut pre, &mut post, err.as_mut_ptr() as *mut c_char, err.len()) };
         if side == 0 { return Err(CStr::from_bytes_until_nul(&err).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()) }
         Ok((Chain { raw: pre, _config: config.clone() }, Chain { raw: post, _config: config.clone() }, if side == 1 { crate::Side::Scene } else { crate::Side::Display }))
+    }
+    /// QCView's OCIOScope: the input → the interchange role, and the side (for the matrix to Rec.2020).
+    pub fn build_scope(config: &Arc<Config>, input: &str) -> Result<(Chain, crate::Side), String> {
+        let mut err = vec![0u8; 4096]; let mut side = 0;
+        let raw = unsafe { oc_chain_build_scope(config.raw, cstr(input).as_ptr(), if cfg!(windows) { 1 } else { 0 }, &mut side, err.as_mut_ptr() as *mut c_char, err.len()) };
+        if raw.is_null() { return Err(CStr::from_bytes_until_nul(&err).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()) }
+        Ok((Chain { raw, _config: config.clone() }, if side == 1 { crate::Side::Scene } else { crate::Side::Display }))
     }
     pub fn shader(&self) -> String { s(unsafe { oc_chain_shader(self.raw) }) }
     pub fn num_uniforms(&self) -> u32 { unsafe { oc_chain_num_uniforms(self.raw) } }
@@ -222,6 +230,8 @@ pub struct OcioPass {
     device: wgpu::Device,
     sampler: wgpu::Sampler,
     mode: Mode,
+    /// the waveform's tap (QCView's OCIOScope): the native pass, its matrix to Rec.2020, on, its texture
+    scope: Option<(Native, [f32; 9])>, scope_on: bool, scope_tex: Option<wgpu::Texture>,
     pub spec: Spec,
     pub knee: crate::Knee,
     pub build_ms: f64,
@@ -243,10 +253,14 @@ impl OcioPass {
                 Err(e) => { log::warn!("OCIO: no Knee for this chain ({e}); running it whole"); Mode::One(Native::new(device, queue, &Chain::build(config, &spec)?, "OCIODisplay")?) }
             }
         } else { Mode::One(Native::new(device, queue, &Chain::build(config, &spec)?, "OCIODisplay")?) };
+        let scope = match Chain::build_scope(config, &spec.input) {
+            Ok((c, side)) => Native::new(device, queue, &c, "OCIOScope").ok().map(|n| (n, crate::side_matrices(side).0)),
+            Err(e) => { log::info!("OCIO: no scope tap for '{}' ({e})", spec.input); None }
+        };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ocio-linear-clamp"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let build_ms = t0.elapsed().as_secs_f64() * 1000.0;
         log::info!("OCIO {}: '{}' → '{}'{}{} built in {build_ms:.0} ms", version(), spec.input, spec.view, if spec.look.is_empty() { String::new() } else { format!(" + look '{}'", spec.look) }, if matches!(mode, Mode::Split { .. }) { " + Knee (split)" } else { "" });
-        Ok(OcioPass { device: device.clone(), sampler, mode, spec, knee, build_ms })
+        Ok(OcioPass { device: device.clone(), sampler, mode, scope, scope_on: false, scope_tex: None, spec, knee, build_ms })
     }
     /// New Knee numbers on a split chain: a buffer write, no rebuild. Turning the Knee on or off needs a new pass (`new`).
     pub fn set_knee(&mut self, k: crate::Knee) -> bool {
@@ -258,7 +272,13 @@ impl OcioPass {
 impl ColorPass for OcioPass {
     fn input(&self) -> Space { Space::Encoded(Transfer::Bt1886) }
     fn output(&self) -> Space { Space::Linear }
+    fn set_scope_tap(&mut self, on: bool) { self.scope_on = on; }
+    fn scope_tap(&self) -> Option<(wgpu::Texture, [f32; 9])> { if !self.scope_on { return None } Some((self.scope_tex.clone()?, self.scope.as_ref()?.1)) }
     fn run(&mut self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) {
+        if self.scope_on && let Some((n, _)) = self.scope.as_ref() {
+            if self.scope_tex.as_ref().map(|t| (t.width(), t.height())) != Some((src.width(), src.height())) { self.scope_tex = Some(crate::scope_texture(&self.device, src.width(), src.height())); }
+            n.run(&self.device, &self.sampler, enc, src, self.scope_tex.as_ref().unwrap());
+        }
         match &mut self.mode {
             Mode::One(n) => n.run(&self.device, &self.sampler, enc, src, dst),
             Mode::Split { pre, knee, post, tex, .. } => {

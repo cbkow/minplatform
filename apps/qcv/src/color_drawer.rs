@@ -41,6 +41,8 @@ pub struct View {
     pub file_peak: (i32, f64),
     /// an OCIO chain's lists, from its config
     pub ocio: Option<OcioLists>,
+    /// the source is HDR (PQ / HLG): the waveform opens on its HDR scale
+    pub hdr_source: bool,
 }
 
 /// What an OCIO chain's columns offer (from the loaded config; the configs are the bundled three + a user's file).
@@ -67,6 +69,10 @@ pub struct ColorDrawer {
     columns_for: String,
     on: Switch, on_rect: Rect,
     /// QCView's viewer-aids row: Exposure (±4 st), Gamma (0.25–4), the channel view, one reset
+    /// the waveform card (canon row 203): the scale (None = follow the source), the HDR top, the trace's rect
+    wf_scale: ActionGroup, wf_peak: TextButton, wf_hdr: Option<bool>, wf_peak_nits: f32, wf_card: Rect, wf_trace: Rect, wf_src_hdr: bool, wf_col: Rect, wf_collapse: Rect, wf_expanded: bool, wf_hover: bool,
+    /// the row of columns' sideways scroll (px), its full width, the body it scrolls in
+    hscroll: f64, content_w: f64, body: Rect,
     exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
@@ -77,6 +83,11 @@ pub struct ColorDrawer {
     scale: f64,
 }
 
+/// QCView's waveform HDR tops (nits).
+const PEAKS: [i32; 5] = [300, 600, 1000, 2000, 4000];
+const WAVEFORM_W: f64 = 460.0;
+const WF_MIN: f64 = 280.0;
+const COLLAPSED: f64 = 32.0;
 const PRESETS_W: f64 = 220.0;
 const LIST_W: f64 = 170.0;
 
@@ -92,6 +103,9 @@ impl ColorDrawer {
             preset_rows: vec![],
             knee: KneePanel::new(), agx: AgxPanel::new(), columns_for: String::new(),
             on: Switch::new(false), on_rect: Rect::ZERO,
+            wf_scale: ActionGroup::new(["SDR", "HDR"].iter().map(|l| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect()).compact(),
+            wf_peak: TextButton::new("1000 nits", Variant::Secondary).size_s(),
+            wf_hdr: None, wf_peak_nits: 1000.0, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: true, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO,
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
@@ -155,6 +169,9 @@ impl ColorDrawer {
             self.knee.set_sdr_view(qcv_color::ocio::view_is_sdr(&o.view));
             self.knee.sync(&kc, v.file_peak, now);
         }
+        if self.view.as_ref().map(|o| &o.target) != Some(&v.target) { self.wf_hdr = None; }
+        self.wf_src_hdr = v.hdr_source;
+        self.sync_wf_chips();
         self.on.set(v.on, now);
         self.save_as.enabled = v.custom;
         self.reset.enabled = v.has_clip && v.own;
@@ -197,27 +214,47 @@ impl ColorDrawer {
         let body = Rect::new(full.x0 + pad, self.header.y1, full.x1 - pad, bottom.y0 - t::SPACING_100 as f64 * scale);
         // Save as preset… under the presets list
         let (bw, bh) = self.save_as.measure(fonts, scale);
-        let mut x = body.x0;
+        // the columns flow left to right at their widths; the waveform fills what is left (at least WF_MIN); past the drawer's
+        // width the row scrolls sideways (a trackpad swipe or Shift + wheel; a thin bar shows where)
+        self.body = body;
+        let ocio = self.view.as_ref().is_some_and(|v| v.stored.chain.is_ocio());
+        let mut x = body.x0 - self.hscroll;
         let pw = PRESETS_W * scale;
         self.presets.layout(Rect::new(x, body.y0, x + pw, body.y1 - bh - t::SPACING_100 as f64 * scale), scale);
-        self.save_as.rect = Rect::new(x, body.y1 - bh, x + bw.max(pw.min(bw)), body.y1);
+        self.save_as.rect = Rect::new(x, body.y1 - bh, x + bw, body.y1);
         x += pw + gap;
-        let ocio = self.view.as_ref().is_some_and(|v| v.stored.chain.is_ocio());
         if ocio {
-            // the View column takes what is left once the Knee has its width (the names are long: "… (Rec.709 D60 in Rec.709 D65)")
             self.ocfg.layout(Rect::new(x, body.y0, x + 130.0 * scale, body.y1), scale); x += 130.0 * scale + gap;
             self.oinput.layout_with(fonts, Rect::new(x, body.y0, x + 210.0 * scale, body.y1), scale); x += 210.0 * scale + gap;
-            self.olook.layout(Rect::new(x, body.y0, x + 230.0 * scale, body.y1), scale); x += 230.0 * scale + gap;   // Blender's looks: "AgX - Very High Contrast" …
-            let vw = (body.x1 - x - gap - self.knee.width() * scale).max(180.0 * scale);
+            self.olook.layout(Rect::new(x, body.y0, x + 230.0 * scale, body.y1), scale); x += 230.0 * scale + gap;
+            // View: what is left beside the Knee and the waveform's minimum, never under 200
+            let wf_need = if self.wf_expanded { WF_MIN * scale } else { COLLAPSED * scale };
+            let vw = (body.x1 - x - gap - self.knee.width() * scale - gap - wf_need).max(200.0 * scale);
             self.oview.layout(Rect::new(x, body.y0, x + vw, body.y1), scale); x += vw + gap;
-            self.knee.layout(fonts, x, body.y0, body.y1, scale);
+            x += self.knee.layout(fonts, x, body.y0, body.y1, scale) + gap;
         } else {
             for l in [&mut self.gamut, &mut self.transfer] { l.layout(Rect::new(x, body.y0, x + LIST_W * scale, body.y1), scale); x += LIST_W * scale + gap; }
             x += self.knee.layout(fonts, x, body.y0, body.y1, scale) + gap;
-            self.agx.layout(fonts, x, body.y0, body.y1, scale);
+            x += self.agx.layout(fonts, x, body.y0, body.y1, scale) + gap;
             // no Rendering column (the user 2026-11-08: "our rendering column isn't needed for mincolor anymore"): un-tone-mapped
             // is the rendering, AgX is its own column; a chain carrying an OpenDRT look keeps rendering with it
         }
+        // the waveform: a collapsible column like the Knee and AgX (the single caret), caption row with the scale chips
+        let cap = t::COMPONENT_HEIGHT_75 as f64 * scale;
+        let ww = if self.wf_expanded { (body.x1 - x).clamp(WF_MIN * scale, WAVEFORM_W * scale) } else { COLLAPSED * scale };
+        self.wf_col = Rect::new(x, body.y0, x + ww, body.y1);
+        self.wf_card = Rect::new(x, body.y0 + cap, x + ww, body.y1);
+        self.content_w = x + ww - (body.x0 - self.hscroll);
+        let b = t::ICON_SIZE_SMALL as f64 * scale + 4.0 * scale;
+        self.wf_collapse = Rect::new(x + ww - b, body.y0 + (cap - b) / 2.0, x + ww, body.y0 + (cap + b) / 2.0);
+        let ch = self.wf_scale.buttons[0].measure(fonts, scale).1;
+        let mut cx = self.wf_collapse.x0 - t::SPACING_100 as f64 * scale;
+        if self.wf_expanded && self.scope_hdr() { let (w, bh) = self.wf_peak.measure(fonts, scale); cx -= w; self.wf_peak.rect = Rect::new(cx, body.y0 + (cap - bh) / 2.0, cx + w, body.y0 + (cap + bh) / 2.0); cx -= t::SPACING_100 as f64 * scale; } else { self.wf_peak.rect = Rect::ZERO; }
+        if self.wf_expanded { let w: f64 = self.wf_scale.buttons.iter().map(|b| b.measure(fonts, scale).0).sum::<f64>() + t::ACTION_GROUP_GAP_COMPACT as f64 * scale; cx -= w; self.wf_scale.layout(fonts, cx, body.y0 + (cap - ch) / 2.0, scale); } else { self.wf_scale.layout(fonts, -1e6, -1e6, scale); }
+        let p = t::SPACING_100 as f64 * scale; let label_w = 34.0 * scale;
+        self.wf_trace = if self.wf_expanded { Rect::new(self.wf_card.x0 + p + label_w, self.wf_card.y0 + p, self.wf_card.x1 - p, self.wf_card.y1 - p) } else { Rect::ZERO };
+        let max = (self.content_w - body.width()).max(0.0);
+        if self.hscroll > max { self.hscroll = max; }
     }
 
     fn edited(&self, f: impl FnOnce(&mut qcv_color::Chain)) -> Option<Cmd> {
@@ -234,6 +271,20 @@ impl ColorDrawer {
             ClipChain::Ocio(o) => Some(Cmd::Edit(Stored { chain: ClipChain::Ocio(OcioChain { knee: qcv_color::Knee { enabled: c.knee_on != 0, source_nits: c.knee_src, target_nits: c.knee_tgt, start: c.knee_start }, ..o.clone() }), preset: v.stored.preset.clone() })),
             ClipChain::MinColor(m) => Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(qcv_color::Chain { knee_on: c.knee_on, knee_src: c.knee_src, knee_tgt: c.knee_tgt, knee_start: c.knee_start, ..*m }), preset: v.stored.preset.clone() })),
         }
+    }
+    fn scope_hdr(&self) -> bool { self.wf_hdr.unwrap_or(self.wf_src_hdr) }
+    fn sync_wf_chips(&mut self) {
+        let hdr = self.scope_hdr();
+        for (i, b) in self.wf_scale.buttons.iter_mut().enumerate() { b.selected = (i == 1) == hdr; }
+        self.wf_peak.label = format!("{} nits", self.wf_peak_nits as i32);
+    }
+    /// The waveform to draw (window px, the scale, the HDR top) — None while the drawer or the card is hidden.
+    pub fn scope(&self) -> Option<min_present::ScopeView> {
+        if !self.open || !self.wf_expanded || self.rect.height() < self.height * self.scale * 0.98 || self.wf_trace.width() < 40.0 { return None }
+        // the trace stays inside the scrolled row's window
+        let r = self.wf_trace.intersect(Rect::new(self.body.x0, self.wf_trace.y0, self.body.x1, self.wf_trace.y1));
+        if r.width() < 8.0 { return None }
+        Some(min_present::ScopeView { rect: [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32], hdr: self.scope_hdr(), peak_nits: self.wf_peak_nits, brightness: 1.0 })
     }
     fn set_aids(&mut self, a: ViewerAids) {
         self.aids = a;
@@ -317,6 +368,13 @@ impl ColorDrawer {
             let (c, d) = self.agx.event(e, now, fonts); dirty |= d; if let Some(c) = c { cmds.extend(self.with_chain(c)); }
         }
         let (k, d) = self.on.event(e, now); dirty |= d; if let Some(on) = k { cmds.push(Cmd::SetOn(on)); }
+        if let Some((px, py)) = e.pos() {
+            let over = if self.wf_expanded { self.wf_collapse.contains(kurbo::Point::new(px, py)) } else { self.wf_card.contains(kurbo::Point::new(px, py)) };
+            if over != self.wf_hover { self.wf_hover = over; dirty = true; }
+            if over && matches!(e, Event::Down { button: Button::Primary, .. }) { self.wf_expanded = !self.wf_expanded; return (cmds, true, true) }
+        }
+        for (i, rsp) in self.wf_scale.event(e, now) { dirty = true; if rsp == Response::Clicked { self.wf_hdr = Some(i == 1); self.sync_wf_chips(); } }
+        if self.scope_hdr() { let (c, d) = self.wf_peak.event(e, now); dirty |= d; if c { let i = PEAKS.iter().position(|p| *p as f32 == self.wf_peak_nits).map(|i| (i + 1) % PEAKS.len()).unwrap_or(2); self.wf_peak_nits = PEAKS[i] as f32; self.sync_wf_chips(); } }   // QCView's tops, cycled
         // the viewer aids: a double-click on a slider resets it (QCView)
         let mut a = self.aids;
         if let Event::Down { x, y, button: Button::Primary } = *e { for (id, sl) in [(0u8, &self.exp), (1u8, &self.gam)] { if sl.hit(x, y) {
@@ -334,6 +392,14 @@ impl ColorDrawer {
         let (c, d) = self.make_default.event(e, now); dirty |= d; if c { cmds.push(Cmd::MakeDefault); }
         let d = dirty || !cmds.is_empty();
         (cmds, d, inside)
+    }
+    /// A sideways swipe / Shift + wheel scrolls the row of columns when it is wider than the drawer.
+    pub fn hwheel(&mut self, x: f64, y: f64, dx_px: f64) -> bool {
+        if !self.rect.contains(kurbo::Point::new(x, y)) { return false }
+        let max = (self.content_w - self.body.width()).max(0.0);
+        let h = (self.hscroll + dx_px).clamp(0.0, max);
+        if (h - self.hscroll).abs() < 0.5 { return false }
+        self.hscroll = h; true
     }
     pub fn wheel(&mut self, x: f64, y: f64, dy_px: f64) -> bool {
         if !self.rect.contains(kurbo::Point::new(x, y)) { return false }
@@ -401,6 +467,7 @@ impl ColorDrawer {
             min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
         } }
         for b in [&self.reset, &self.apply_all, &self.make_default] { if v.has_clip { b.paint(scene, fonts, s, now); } }
+        scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &Rect::new(self.body.x0, self.body.y0, self.body.x1, self.body.y1));
         self.presets.paint(scene, fonts, now);
         self.save_as.paint(scene, fonts, s, now);
         match &v.stored.chain {
@@ -412,6 +479,43 @@ impl ColorDrawer {
                 if v.ocio.is_some() { for l in [&mut self.ocfg, &mut self.oinput, &mut self.olook, &mut self.oview] { l.paint(scene, fonts, now); } self.knee.paint(scene, fonts, now); }
                 else { let l = fonts.layout(tr("Loading the OCIO config…"), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR)); min_ui::fonts::draw_layout(scene, &l, Affine::translate((self.save_as.rect.x1 + 40.0 * s, self.header.y1 + 40.0 * s))); }
             }
+        }
+        // the waveform card: caption + scale chips; the graticule under the presenter's trace
+        if !self.wf_expanded {
+            let bg = if self.wf_hover { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR };
+            paint::rounded(scene, self.wf_card, t::CORNER_RADIUS_500 as f64 * s, bg);
+            let l = fonts.layout(tr("Waveform"), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
+            let cx = self.wf_card.x0 + (self.wf_card.width() - l.height() as f64) / 2.0; let top = self.wf_card.y0 + t::SPACING_200 as f64 * s;
+            min_ui::fonts::draw_layout(scene, &l, Affine::translate((cx, top + l.width() as f64)) * Affine::rotate(-std::f64::consts::FRAC_PI_2));
+        }
+        if self.wf_expanded && self.wf_card.width() > 40.0 {
+            if self.wf_hover { paint::rounded(scene, self.wf_collapse, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
+            if let Some(g) = fonts.icon("caret-left", t::ICON_SIZE_SMALL * s as f32, paint::color(if self.wf_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::RAIL_OPEN_TAB_COLOR })) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.wf_collapse.x0 + (self.wf_collapse.width() - g.width() as f64) / 2.0, self.wf_collapse.y0 + (self.wf_collapse.height() - g.height() as f64) / 2.0))); }
+            let capr = Rect::new(self.wf_card.x0, self.wf_card.y0 - t::COMPONENT_HEIGHT_75 as f64 * s, self.wf_card.x1, self.wf_card.y0);
+            let l = fonts.detail(tr("Waveform"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
+            min_ui::fonts::draw_layout(scene, &l, Affine::translate((capr.x0 + t::SPACING_50 as f64 * s, mid(&l, capr))));
+            self.wf_scale.paint(scene, fonts, s, now); if self.scope_hdr() { self.wf_peak.paint(scene, fonts, s, now); }
+            paint::rounded(scene, self.wf_card, t::CORNER_RADIUS_500 as f64 * s, t::GRAY_25);
+            let tr_ = self.wf_trace;
+            let lines: Vec<(f64, String)> = if self.scope_hdr() {
+                let top = self.wf_peak_nits as f64;
+                [0.0, 100.0, 203.0, top / 2.0, top].iter().filter(|n| **n <= top).map(|n| (1.0 - n / top, format!("{}", n.round() as i64))).collect()
+            } else { [0.0, 25.0, 50.0, 75.0, 100.0].iter().map(|p| ((1.1 - p / 100.0) / 1.2, format!("{}", *p as i64))).collect() };
+            for (f, label) in lines {
+                let y = tr_.y0 + f * tr_.height();
+                paint::rect(scene, Rect::new(tr_.x0, y - 0.5 * s, tr_.x1, y + 0.5 * s), t::GRAY_200);
+                let ll = fonts.layout(&label, Family::Mono, (t::CODE_SIZE_S - 1.0) * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
+                min_ui::fonts::draw_layout(scene, &ll, Affine::translate((tr_.x0 - ll.width() as f64 - t::SPACING_75 as f64 * s, y - ll.height() as f64 / 2.0)));
+            }
+            let unit = fonts.layout(if self.scope_hdr() { "nits" } else { "%" }, Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR));
+            min_ui::fonts::draw_layout(scene, &unit, Affine::translate((self.wf_card.x0 + t::SPACING_75 as f64 * s, self.wf_card.y1 - unit.height() as f64 - t::SPACING_75 as f64 * s)));
+        }
+        scene.pop_layer();
+        // the row's sideways position, when it overflows: a thin pill under the columns
+        let max = (self.content_w - self.body.width()).max(0.0);
+        if max > 0.5 {
+            let th = t::SCROLLBAR_THICKNESS as f64 * s; let w = self.body.width() * self.body.width() / self.content_w; let x0 = self.body.x0 + (self.body.width() - w) * self.hscroll / max;
+            paint::rounded(scene, Rect::new(x0, self.body.y1 + 2.0 * s, x0 + w, self.body.y1 + 2.0 * s + th), th / 2.0, t::SCROLLBAR_COLOR);
         }
         // bottom row: the one On / Off switch
         self.on.paint(scene, s, now);

@@ -109,6 +109,8 @@ pub struct MinColorPass {
     sampler: wgpu::Sampler,
     chain: Chain,
     blocks: Option<Blocks>,
+    /// the waveform's tap: on, and its texture at the video's size (a 1×1 stand-in while off)
+    scope_on: bool, scope: wgpu::Texture,
 }
 
 /// The four blocks' offsets in the one read-only storage buffer (256-aligned for every backend; std430 = the C layout).
@@ -124,20 +126,29 @@ impl MinColorPass {
             wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None },
             wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
         ] });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("minColor"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("minColor"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("minColor blocks"), size: 3 * SLOT + FLAGS as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("minColor"), ..Default::default() });
         log::info!("minColor kernel ready ({:.0} ms)", t0.elapsed().as_secs_f64() * 1000.0);
-        MinColorPass { device: device.clone(), queue: queue.clone(), pipeline, layout, ubuf, sampler, chain, blocks: None }
+        MinColorPass { device: device.clone(), queue: queue.clone(), pipeline, layout, ubuf, sampler, chain, blocks: None, scope_on: false, scope: scope_texture(device, 1, 1) }
     }
     pub fn chain(&self) -> &Chain { &self.chain }
     /// A new chain: only the uniform bytes change (written before the next run).
     pub fn set_chain(&mut self, chain: Chain) { if chain != self.chain { self.chain = chain; self.blocks = None; } }
 }
 
+/// A texture the Input-stage image is written to (the waveform reads it).
+pub(crate) fn scope_texture(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor { label: Some("scope tap (Input)"), size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC, view_formats: &[] })
+}
+pub(crate) const IDENTITY3: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
 impl ColorPass for MinColorPass {
+    fn set_scope_tap(&mut self, on: bool) { if on != self.scope_on { self.scope_on = on; self.queue.write_buffer(&self.ubuf, 3 * SLOT + 12, bytemuck::bytes_of(&(on as i32))); } }
+    fn scope_tap(&self) -> Option<(wgpu::Texture, [f32; 9])> { (self.scope_on && self.scope.width() > 1).then(|| (self.scope.clone(), IDENTITY3)) }
     fn input(&self) -> Space { Space::Encoded(Transfer::Bt1886) }
     fn output(&self) -> Space { Space::Linear }
     fn run(&mut self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture) {
@@ -145,7 +156,9 @@ impl ColorPass for MinColorPass {
             let b = resolve(&self.chain, false);
             for (i, (o, n)) in SPANS.iter().enumerate() { self.queue.write_buffer(&self.ubuf, i as u64 * SLOT, &b.0[*o..o + n]); }
             self.blocks = Some(b);
+            self.queue.write_buffer(&self.ubuf, 3 * SLOT + 12, bytemuck::bytes_of(&(self.scope_on as i32)));
         }
+        if self.scope_on && (self.scope.width(), self.scope.height()) != (src.width(), src.height()) { self.scope = scope_texture(&self.device, src.width(), src.height()); }
         let sv = src.create_view(&Default::default()); let dv = dst.create_view(&Default::default());
         let ub = |i: u64, n: usize| wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &self.ubuf, offset: i * SLOT, size: wgpu::BufferSize::new(n as u64) });
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("minColor"), layout: &self.layout, entries: &[
@@ -154,6 +167,7 @@ impl ColorPass for MinColorPass {
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&sv) },
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&dv) },
+            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&self.scope.create_view(&Default::default())) },
         ] });
         let size = dst.size();
         let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("minColor"), timestamp_writes: None });
@@ -174,7 +188,7 @@ impl Default for Knee { fn default() -> Knee { Knee { enabled: false, source_nit
 pub enum Side { Scene, Display }
 
 /// QCView's fixed matrices into linear Rec.2020 and back (linear_stage.h): AP0 D60 (Bradford) / CIE XYZ D65.
-fn side_matrices(side: Side) -> ([f32; 9], [f32; 9]) {
+pub(crate) fn side_matrices(side: Side) -> ([f32; 9], [f32; 9]) {
     match side {
         Side::Scene => ([1.4904095205, -0.2661709193, -0.2242386013, -0.0801674999, 1.1821671211, -0.1019996212, 0.0032276312, -0.0347764757, 1.0315488446],
                         [0.6790856347, 0.1577009146, 0.1632134506, 0.0460020031, 0.8590546730, 0.0949433239, -0.0005739432, 0.0284677684, 0.9721061748]),

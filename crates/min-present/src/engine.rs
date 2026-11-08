@@ -21,7 +21,20 @@ pub trait ColorPass {
     fn input(&self) -> Space;
     fn output(&self) -> Space;
     fn run(&mut self, enc: &mut wgpu::CommandEncoder, src: &wgpu::Texture, dst: &wgpu::Texture);
+    /// The waveform wants the source through this chain's INPUT (canon row 203, QCView's scope tiers): turn the tap on / off.
+    fn set_scope_tap(&mut self, _on: bool) {}
+    /// After `run`: the Input-stage image (linear light) and its matrix to linear Rec.2020 (row-major), when tapped.
+    fn scope_tap(&self) -> Option<(wgpu::Texture, [f32; 9])> { None }
 }
+
+/// What the waveform draws and where (canon row 203): the card's rect in viewport px, the scale (SDR Y′ −10…110 % / HDR
+/// nits 0…peak), the trace brightness.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScopeView { pub rect: [f32; 4], pub hdr: bool, pub peak_nits: f32, pub brightness: f32 }
+
+/// QCView's tap cap: the waveform samples at most 960 columns.
+const SCOPE_TAP_W: u32 = 960;
+struct Scope { hist: wgpu::Buffer, su: wgpu::Buffer, du: wgpu::Buffer, acc: wgpu::ComputePipeline, acc_layout: wgpu::BindGroupLayout, draw: wgpu::RenderPipeline, draw_bind: wgpu::BindGroup, tap: Option<(wgpu::Texture, (u32, u32))>, samples: u32 }
 /// The identity chain: exercises the three-pass route (stage 1 → slot → blit) with no colour change.
 pub struct IdentityColorPass;
 impl ColorPass for IdentityColorPass {
@@ -150,6 +163,7 @@ pub struct Engine {
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids,
+    scope: Option<Scope>, scope_view: Option<ScopeView>,
     geometry: Geometry,
     transfer_override: TransferChoice,
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
@@ -264,7 +278,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), scope: None, scope_view: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -328,6 +342,58 @@ impl Engine {
         if self.rotation_quarters() & 1 == 1 { (eh, ew) } else { (ew, eh) }
     }
     /// The viewport background mode (QCView `display/backgroundMode`: 0 Black, 1 DarkGray, 2 DarkChecker, 3 LightChecker).
+    /// Show the waveform in `v`'s rect (None hides it; the GPU objects are built on first use).
+    pub fn set_scope(&mut self, v: Option<ScopeView>) { self.scope_view = v; }
+    fn ensure_scope(&mut self) {
+        if self.scope.is_some() { return }
+        let dev = &self.device;
+        let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scope"), source: wgpu::ShaderSource::Wgsl(include_str!("shaders/scope.wgsl").into()) });
+        let hist = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope histogram"), size: 512 * 512 * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let su = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope accumulate"), size: 80, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let du = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope draw"), size: 48, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let acc_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope accumulate"), entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
+        let apl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&acc_layout)], immediate_size: 0 });
+        let acc = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("scope accumulate"), layout: Some(&apl), module: &module, entry_point: Some("accumulate"), compilation_options: Default::default(), cache: None });
+        let draw_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("scope draw"), entries: &[
+            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
+        let dpl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&draw_layout)], immediate_size: 0 });
+        let blend = wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent::OVER };
+        let draw = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("scope draw"), layout: Some(&dpl),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: self.target_format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
+            primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
+        let draw_bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope draw"), layout: &draw_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: du.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: hist.as_entire_binding() }] });
+        self.scope = Some(Scope { hist, su, du, acc, acc_layout, draw, draw_bind, tap: None, samples: 1 });
+    }
+    /// The tap (a texture in linear light + its matrix to linear Rec.2020) → the histogram.
+    fn accumulate_scope(&mut self, enc: &mut wgpu::CommandEncoder, tap: &wgpu::Texture, to2020: [f32; 9], v: ScopeView) {
+        let s = self.scope.as_mut().unwrap();
+        let (tw, th) = (tap.width(), tap.height());
+        let gw = tw.min(SCOPE_TAP_W).max(1); let gh = ((th as f64 * gw as f64 / tw.max(1) as f64).round() as u32).max(1);
+        s.samples = gw * gh;
+        let m = to2020;
+        let u: [f32; 20] = [m[0], m[1], m[2], 0.0, m[3], m[4], m[5], 0.0, m[6], m[7], m[8], 0.0, tw as f32, th as f32, gw as f32, gh as f32, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits.clamp(100.0, 10000.0), 100.0, 0.0];
+        self.queue.write_buffer(&s.su, 0, bytemuck::cast_slice(&u));
+        enc.clear_buffer(&s.hist, 0, None);
+        let tv = tap.create_view(&Default::default());
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope accumulate"), layout: &s.acc_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tv) }, wgpu::BindGroupEntry { binding: 1, resource: s.su.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: s.hist.as_entire_binding() }] });
+        let mut p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope accumulate"), timestamp_writes: None });
+        p.set_pipeline(&s.acc); p.set_bind_group(0, &bind, &[]); p.dispatch_workgroups(gw.div_ceil(16), gh.div_ceil(16), 1);
+    }
+    fn draw_scope(&self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, v: ScopeView) {
+        let Some(s) = self.scope.as_ref() else { return };
+        // QCView resolveDraw: a bin holding 1/16384 of the samples reaches 1 − 1/e at brightness 1
+        let gain = v.brightness.max(0.01) * 16384.0 / s.samples.max(1) as f32;
+        let u: [f32; 12] = [v.rect[0], v.rect[1], v.rect[2], v.rect[3], self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0, gain, if v.hdr { 1.0 } else { 0.0 }, v.peak_nits, 0.0];
+        self.queue.write_buffer(&s.du, 0, bytemuck::cast_slice(&u));
+        let mut p = pass_load(enc, "scope draw", target); p.set_pipeline(&s.draw); p.set_bind_group(0, &s.draw_bind, &[]); p.draw(0..6, 0..1);
+    }
+    /// The waveform's last histogram (512 × 512, row 0 = the top of the scale) — tests and probes.
+    #[doc(hidden)] pub fn scope_counts(&self) -> Option<Vec<u32>> { let s = self.scope.as_ref()?; let b = readback::read_buffer(&self.device, &self.queue, &s.hist, 512 * 512 * 4); Some(bytemuck::cast_slice(&b).to_vec()) }
     /// The viewer aids on the screen pass (a uniform write).
     pub fn set_viewer_aids(&mut self, a: ViewerAids) { if a != self.aids { self.aids = a; self.write_uniforms(); } }
     pub fn viewer_aids(&self) -> ViewerAids { self.aids }
@@ -474,6 +540,8 @@ impl Engine {
         if let Some(bg) = &self.overlay {
             let mut p = pass_load(enc, "stage 4 overlay", target); p.set_pipeline(&self.overlay_pipeline); p.set_bind_group(0, bg, &[]); p.draw(0..6, 0..1);
         }
+        // the waveform over the UI, in its card (row 203)
+        if let (Some(v), true) = (self.scope_view, self.shown.is_some()) { self.draw_scope(enc, target, v); }
     }
     fn encode_video(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         // stage 0: the background over the whole viewport (clears it); the picture passes load and blend over it
@@ -484,10 +552,29 @@ impl Engine {
             let shown = self.shown.as_ref().unwrap(); let inter = self.inter.as_ref().unwrap();
             let av = inter.a.create_view(&Default::default());
             { let mut p = pass(enc, "stage 1", &av); p.set_pipeline(self.inter_pipeline(variant)); p.set_bind_group(0, &shown.binds[1], &[]); p.draw(0..6, 0..1); }
-            let Inter { a, b, bind, .. } = self.inter.as_ref().unwrap();
+            let scope = self.scope_view;
+            self.color_pass.as_mut().unwrap().set_scope_tap(scope.is_some());
+            let Inter { a, b, .. } = self.inter.as_ref().unwrap();
             self.color_pass.as_mut().unwrap().run(enc, a, b);
+            if let Some(v) = scope {
+                self.ensure_scope();
+                // the chain's Input-stage image (QCView's scope reads the source through the Input, never the view)
+                if let Some((tap, m)) = self.color_pass.as_ref().unwrap().scope_tap() { self.accumulate_scope(enc, &tap, m, v); }
+            }
+            let Inter { bind, .. } = self.inter.as_ref().unwrap();
             let mut p = pass_load(enc, "stage 3", target); p.set_pipeline(&self.blit_target); p.set_bind_group(0, bind, &[]); p.draw(0..6, 0..1);
         } else {
+            if let Some(v) = self.scope_view {
+                // bypass: stage 1's decode of the file's tags (QCView's Assumed tier), linear Rec.709, at the tap's size
+                self.ensure_scope();
+                let (w, h) = self.video; let tw = w.min(SCOPE_TAP_W).max(1); let th = ((h as f64 * tw as f64 / w.max(1) as f64).round() as u32).max(1);
+                let s = self.scope.as_mut().unwrap();
+                if s.tap.as_ref().map(|t| t.1) != Some((tw, th)) { s.tap = Some((self.device.create_texture(&wgpu::TextureDescriptor { label: Some("scope tap"), size: wgpu::Extent3d { width: tw, height: th, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }), (tw, th))); }
+                let tap = s.tap.as_ref().unwrap().0.clone();
+                { let tv = tap.create_view(&Default::default()); let shown = self.shown.as_ref().unwrap(); let mut p = pass(enc, "scope tap", &tv); p.set_pipeline(self.inter_pipeline(variant)); p.set_bind_group(0, &shown.binds[3], &[]); p.draw(0..6, 0..1); }
+                const REC709_TO_2020: [f32; 9] = [0.6274040, 0.3292820, 0.0433136, 0.0690970, 0.9195400, 0.0113612, 0.0163916, 0.0880132, 0.8955950];
+                self.accumulate_scope(enc, &tap, REC709_TO_2020, v);
+            }
             let shown = self.shown.as_ref().unwrap();
             let mut p = pass_load(enc, "present", target); p.set_pipeline(self.target_pipeline(variant)); p.set_bind_group(0, &shown.binds[0], &[]); p.draw(0..6, 0..1);
         }
@@ -540,6 +627,30 @@ mod tests {
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128)];
         Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
     }
+    #[test]
+    fn the_waveform_reads_the_source_through_the_input() {
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        let f = ramp_frame(256, 16); e.show(&f).unwrap();   // BT.1886-tagged limited Y′ ramp, 0 → 1 across
+        // exposure on screen must not move the scope (it reads the source, never the viewer aids)
+        e.set_viewer_aids(ViewerAids { exposure: 2.0, ..Default::default() });
+        e.set_scope(Some(ScopeView { rect: [0.0, 0.0, 64.0, 64.0], hdr: false, peak_nits: 1000.0, brightness: 1.0 }));
+        let _ = e.render_offscreen(256, 16).unwrap();
+        let h = e.scope_counts().unwrap();
+        assert_eq!(h.iter().map(|&c| c as u64).sum::<u64>(), 256 * 16, "one count per tapped pixel");
+        // SDR scale: Y′ of the source (the 2.4 decode and the scope's 1/2.4 cancel); row = (1.1 − Y′) / 1.2 × 512
+        let row_of = |col: usize| (0..512).find(|&r| h[r * 512 + col] > 0).unwrap();
+        let (r0, r1) = (row_of(0), row_of(510));
+        assert!((r0 as i32 - 469).abs() <= 2 && (r1 as i32 - 42).abs() <= 2, "black at 0 % (row {r0}), white at 100 % (row {r1})");
+        // HDR scale: nits; a 2.4 source white = 100 nits → row (1 − 100 / 1000) × 512
+        e.set_scope(Some(ScopeView { rect: [0.0, 0.0, 64.0, 64.0], hdr: true, peak_nits: 1000.0, brightness: 1.0 }));
+        let _ = e.render_offscreen(256, 16).unwrap();
+        let h = e.scope_counts().unwrap();
+        let r = (0..512).find(|&r| h[r * 512 + 510] > 0).unwrap();
+        assert!((r as i32 - 460).abs() <= 2, "100 nits on a 1000-nit scale (row {r})");
+        e.set_scope(None); e.set_viewer_aids(ViewerAids::default());
+    }
+
     #[test]
     fn fit_in_places_the_video_inside_the_content_rect() {
         let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;

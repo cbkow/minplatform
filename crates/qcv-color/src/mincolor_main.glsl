@@ -11,6 +11,9 @@ layout(std430, set = 0, binding = 3) readonly buffer McFlags { int kneeOn; int a
 layout(set = 0, binding = 4) uniform texture2D srcTex;
 layout(set = 0, binding = 5) uniform sampler srcSmp;
 layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D dst;
+// the waveform's tap (canon row 203, QCView's scope tiers): the source through the Input — linear Rec.2020, 1.0 = 100 nits —
+// written when flagsPad = 1 (a 1×1 stand-in is bound otherwise)
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D scopeTap;
 layout(local_size_x = 8, local_size_y = 8) in;
 void main() {
     ivec2 g = ivec2(gl_GlobalInvocationID.xy);
@@ -19,6 +22,7 @@ void main() {
     vec4 color = texelFetch(sampler2D(srcTex, srcSmp), g, 0);
     vec3 c = color.rgb;
     c = drt_input_transform(pIn, c);
+    if (flagsPad != 0) { imageStore(scopeTap, g, vec4(c, 1.0)); }
     if (kneeOn != 0) { c = drt_knee(pIn, c); }
     if (agxOn != 0) { DrtAgxParams agx = qcv_agx(); c = drt_agx(agx, c); }
     c = drt_transform(pOut, c);

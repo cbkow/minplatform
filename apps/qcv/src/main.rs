@@ -386,6 +386,8 @@ impl App {
                 let cr = kurbo::Rect::new(content.0 as f64, content.1 as f64, (content.0 + content.2) as f64, (content.1 + content.3) as f64);
                 g.drawer.layout(&mut g.fonts, cr, 0.0, rails_bottom, w as f64, scale, now);
             }
+            // the waveform (row 203): the presenter draws its trace into the drawer's card while it shows
+            g.presenter.engine.set_scope(if chromeless || g.fullscreen { None } else { g.drawer.scope() });
             // the panels: the settings mirror the store; the inspector mirrors the Transport (+ the metadata service's results, drained every tick)
             while let Some(ev) = self.meta.try_recv() {
                 let path_of = |id: &str, project: &qcv_project::ProjectManager| project.item(id).map(|m| m.path.clone()).unwrap_or_else(|| id.to_string());
@@ -1356,7 +1358,11 @@ impl ApplicationHandler for App {
                 let dy = match delta { winit::event::MouseScrollDelta::LineDelta(x, y) => (if alt && y == 0.0 { x } else { y }) as f64 * 120.0, winit::event::MouseScrollDelta::PixelDelta(p) => (if alt && p.y == 0.0 { p.x } else { p.y }) * 2.0, _ => 0.0 };
                 if let Some(g) = self.gpu.as_mut() { let (x, y) = g.pointer; let now = Instant::now(); let scale = g.window.scale_factor();
                     let chromeless = g.fullscreen || g.compact;
-                    if !chromeless && g.drawer.wheel(x, y, -dy / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
+                    // the drawer: a sideways swipe or Shift + wheel scrolls its row of columns; else its lists / columns scroll
+                    let dx = match delta { winit::event::MouseScrollDelta::LineDelta(x, _) => x as f64 * 120.0, winit::event::MouseScrollDelta::PixelDelta(p) => p.x * 2.0, _ => 0.0 };
+                    let (hx, vy) = if self.mods.shift && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
+                    if !chromeless && hx.abs() > vy.abs() && g.drawer.hwheel(x, y, -hx / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
+                    if !chromeless && g.drawer.wheel(x, y, -vy / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
                     if !chromeless && g.left.hit(x, y) {
                         if let Some(cmds) = g.settings_panel.wheel(x, y, dy, &mut self.settings) { g.ui_dirty = true; for c in cmds { self.apply_setting(c); } return }
                         if g.left.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return
@@ -1676,8 +1682,9 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
                 let o = color_model::OcioChain { config: "ACES_2.0".into(), input: cfg.inputs().into_iter().find(|i| i.contains("ACEScg")).unwrap_or_default(), look: String::new(), view: cfg.views().into_iter().find(|v| v.contains("SDR")).unwrap_or_default(), scene_lut: String::new(), knee: qcv_color::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } };
                 (color_model::Stored { chain: color_model::ClipChain::Ocio(o), preset: String::new() }, Some(color_drawer::OcioLists { configs: color::BUNDLED.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(), inputs: cfg.inputs(), looks: cfg.looks(), views: cfg.views() }))
             } else { (edited, None) };
-            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio }, t0);
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
+            engine.set_scope(d.scope());
             d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts);
         }
         if let Some(mb) = menu_bar.as_ref() { mb.bar.paint(scene, &mut fonts, scale); mb.bar.paint_menus(scene, &mut fonts, scale); }

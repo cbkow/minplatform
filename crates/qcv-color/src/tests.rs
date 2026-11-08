@@ -92,3 +92,18 @@ fn names_and_defaults() {
     let y = apply_cpu(&resolve(&Chain::default(), false), [0.5, 0.5, 0.5]);
     assert!((y[0] - 0.5f32.powf(2.4)).abs() < 2e-3, "{y:?}");
 }
+
+#[test]
+fn the_scope_tap_is_the_input_stage() {
+    let Some((dev, q)) = gpu() else { eprintln!("no GPU — skipped"); return };
+    // linear Rec.709 in, AgX on (the view must NOT reach the tap): the tap = the input in linear Rec.2020
+    let mut pass = MinColorPass::new(&dev, &q, Chain { in_transfer: ids::OETF_LINEAR, agx_on: 1, ..Chain::default() });
+    pass.set_scope_tap(true);
+    let px = [[0.5f32, 0.5, 0.5], [1.0, 0.0, 0.0], [4.0, 4.0, 4.0]];
+    let _ = run_gpu_pass(&dev, &q, &mut pass, &px);
+    let (tap, m) = pass.scope_tap().expect("a tap");
+    assert_eq!(m, IDENTITY3);
+    let v = min_present::readback::read_rgba16f(&dev, &q, &tap, 3, 1);
+    let want = [[0.5, 0.5, 0.5], [0.6274, 0.0691, 0.0164], [4.0, 4.0, 4.0]];
+    for (i, w) in want.iter().enumerate() { for c in 0..3 { assert!((v[i * 4 + c] - w[c]).abs() < 4e-3 * w[c].max(0.1), "pixel {i}: tap {:?} vs {w:?}", &v[i * 4..i * 4 + 3]); } }
+}

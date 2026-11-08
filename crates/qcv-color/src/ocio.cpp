@@ -192,6 +192,30 @@ int oc_chain_build_split(const OcConfig *c, const char *input, const char *look,
     } catch (const std::exception &e) { put(err, errn, e.what()); return 0; }
 }
 
+// QCView's OCIOScope: the input colourspace → the interchange role, nothing else (the waveform reads the source through the
+// Input — canon row 203). side: 1 scene (aces_interchange), 2 display (cie_xyz_d65_interchange); 0 = failed.
+OcChain *oc_chain_build_scope(const OcConfig *c, const char *input, int lang, int *side, char *err, size_t errn)
+{
+    try {
+        OCIO::ConstColorSpaceRcPtr scs = c->cfg->getColorSpace(input);
+        if (!scs || scs->isData()) { put(err, errn, "no scope for a data / unknown input"); return nullptr; }
+        const bool scene = scs->getReferenceSpaceType() == OCIO::REFERENCE_SPACE_SCENE;
+        const char *role = scene ? "aces_interchange" : "cie_xyz_d65_interchange";
+        if (!c->cfg->hasRole(role)) { put(err, errn, "the config has no interchange role"); return nullptr; }
+        OCIO::ColorSpaceTransformRcPtr t = OCIO::ColorSpaceTransform::Create(); t->setSrc(input); t->setDst(c->cfg->getRoleColorSpace(role));
+        auto *ch = new OcChain;
+        ch->proc = c->cfg->getProcessor(t);
+        ch->cpu = ch->proc->getDefaultCPUProcessor();
+        ch->desc = OCIO::GpuShaderDesc::CreateShaderDesc();
+        ch->desc->setLanguage(lang == 1 ? OCIO::GPU_LANGUAGE_HLSL_SM_5_0 : OCIO::GPU_LANGUAGE_MSL_2_0);
+        ch->desc->setFunctionName("OCIOScope"); ch->desc->setResourcePrefix("ocio_scope_");
+        ch->proc->getDefaultGPUProcessor()->extractGpuShaderInfo(ch->desc);
+        ch->shader = ch->desc->getShaderText();
+        *side = scene ? 1 : 2;
+        return ch;
+    } catch (const std::exception &e) { put(err, errn, e.what()); return nullptr; }
+}
+
 void oc_chain_free(OcChain *c) { delete c; }
 const char *oc_chain_shader(const OcChain *c) { return c->shader.c_str(); }
 unsigned oc_chain_num_uniforms(const OcChain *c) { return c->desc->getNumUniforms(); }

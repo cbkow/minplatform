@@ -15,7 +15,7 @@ pub mod presenter;
 pub mod readback;
 pub mod import;
 pub use frame::*;
-pub use engine::{ColorPass, Engine, IdentityColorPass, Space, Snapshot, ViewerAids};
+pub use engine::{ColorPass, Engine, IdentityColorPass, ScopeView, Space, Snapshot, ViewerAids};
 pub use presenter::{Output, OutputInfo, Presenter};
 
 #[derive(thiserror::Error, Debug)]
