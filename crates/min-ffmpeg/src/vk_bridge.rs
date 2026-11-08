@@ -17,12 +17,12 @@
 //! every plane pair is size-compatible. The ring holds the `AVFrame` references until their slot is reused after the copy has
 //! completed, so FFmpeg's pool slot is never returned early.
 use crate::{ffmpeg::HwFrame, hw::HwDevice};
-use ash::vk;
+use ash::vk::{self, Handle};
 use ffmpeg_sys_next as ff;
 use min_present::Dx12FrameHandle;
 use std::ffi::c_void;
 use windows::core::Interface;
-use windows::Win32::Foundation::{GENERIC_ALL, HANDLE};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -60,7 +60,7 @@ impl VkBridge {
             let hwdev = (*hw.raw()).data as *mut ff::AVHWDeviceContext;
             let vkctx = (*hwdev).hwctx as *const ff::AVVulkanDeviceContext;
             let gipa = (*vkctx).get_proc_addr?;
-            let static_fn = vk::StaticFn { get_instance_proc_addr: std::mem::transmute(gipa) };
+            let static_fn = ash::StaticFn { get_instance_proc_addr: std::mem::transmute(gipa) };
             let inst = vk::Instance::from_raw((*vkctx).inst as u64);
             let instance = ash::Instance::load(&static_fn, inst);
             let dev = vk::Device::from_raw((*vkctx).act_dev as u64);
@@ -78,10 +78,10 @@ impl VkBridge {
             // the shared fence ↔ timeline semaphore
             let d3d: ID3D12Device = ID3D12Device::from_raw_borrowed(&d3d_raw)?.clone();
             let fence: ID3D12Fence = d3d.CreateFence(0, D3D12_FENCE_FLAG_SHARED).ok()?;
-            let fh = d3d.CreateSharedHandle(&fence, None, GENERIC_ALL.0, windows::core::PCWSTR::null()).ok()?;
+            let fh = d3d.CreateSharedHandle(&fence, None, 0x1000_0000u32 /* GENERIC_ALL */, windows::core::PCWSTR::null()).ok()?;
             let mut ty = vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE).initial_value(0);
             let sem = device.create_semaphore(&vk::SemaphoreCreateInfo::default().push_next(&mut ty), None).ok()?;
-            ext_sem.import_semaphore_win32_handle(&vk::ImportSemaphoreWin32HandleInfoKHR::default().semaphore(sem).handle_type(vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE).handle(fh.0 as vk::HANDLE)).ok()?;
+            ext_sem.import_semaphore_win32_handle(&vk::ImportSemaphoreWin32HandleInfoKHR::default().semaphore(sem).handle_type(vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE).handle(fh.0 as isize)).ok()?;
             let fence_raw = fence.as_raw();
             let slots = cmds.into_iter().map(|cmd| Slot { planes: vec![], key: (0, 0, 0, 0), busy_until: 0, keep: None, cmd }).collect();
             log::info!("vk bridge: up on queue family {qf} — {RING}-slot ring of shared D3D12 plane textures, one shared fence");
@@ -121,7 +121,7 @@ impl VkBridge {
         let mut res: Option<ID3D12Resource> = None;
         self.d3d.CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &desc, D3D12_RESOURCE_STATE_COMMON, None, &mut res).ok()?;
         let res = res?;
-        let handle = self.d3d.CreateSharedHandle(&res, None, GENERIC_ALL.0, windows::core::PCWSTR::null()).ok()?;
+        let handle = self.d3d.CreateSharedHandle(&res, None, 0x1000_0000u32 /* GENERIC_ALL */, windows::core::PCWSTR::null()).ok()?;
         let mut ext = vk::ExternalMemoryImageCreateInfo::default().handle_types(vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE);
         let info = vk::ImageCreateInfo::default().image_type(vk::ImageType::TYPE_2D).format(vkfmt).extent(vk::Extent3D { width: w, height: h, depth: 1 }).mip_levels(1).array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1).tiling(vk::ImageTiling::OPTIMAL).usage(vk::ImageUsageFlags::TRANSFER_DST).sharing_mode(vk::SharingMode::EXCLUSIVE).initial_layout(vk::ImageLayout::UNDEFINED).push_next(&mut ext);
@@ -129,7 +129,7 @@ impl VkBridge {
         let req = self.device.get_image_memory_requirements(image);
         let type_index = (0..self.mem_props.memory_type_count).find(|&i| (req.memory_type_bits & (1 << i)) != 0 && self.mem_props.memory_types[i as usize].property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL))
             .or_else(|| (0..self.mem_props.memory_type_count).find(|&i| (req.memory_type_bits & (1 << i)) != 0))?;
-        let mut import = vk::ImportMemoryWin32HandleInfoKHR::default().handle_type(vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE).handle(handle.0 as vk::HANDLE);
+        let mut import = vk::ImportMemoryWin32HandleInfoKHR::default().handle_type(vk::ExternalMemoryHandleTypeFlags::D3D12_RESOURCE).handle(handle.0 as isize);
         let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
         let alloc = vk::MemoryAllocateInfo::default().allocation_size(req.size).memory_type_index(type_index).push_next(&mut import).push_next(&mut dedicated);
         let memory = match self.device.allocate_memory(&alloc, None) { Ok(m) => m, Err(e) => { log::warn!("vk bridge: import of a D3D12 plane failed: {e:?}"); self.device.destroy_image(image, None); return None } };
