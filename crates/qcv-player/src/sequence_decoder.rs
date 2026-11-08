@@ -185,6 +185,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
     #[test]
+    fn a_loop_wrap_keeps_the_failed_ticks() {
+        let Some(d) = sequence("wrap") else { eprintln!("ffmpeg missing: skipped"); return };
+        std::fs::remove_file(d.join("f_1006.png")).unwrap();   // frame 5: a gap
+        let src = crate::Source::Sequence { pattern: d.join("f_%04d.png").to_string_lossy().into_owned(), rate: Rate::new(240, 1), start: 1001, end: 1024, label: String::new() };
+        let mut t = crate::Transport::open(&src, crate::TransportOptions { loop_enabled: true, scrub: None, seq: StreamingConfig::from_settings(4, 24), ..Default::default() }).unwrap();
+        let failed = |t: &crate::Transport| t.decoder().as_sequence().unwrap().cache().failed_frames();
+        assert!(wait(|| failed(&t).contains(&5)), "the gap flags");
+        t.play();
+        let gen0 = t.decoder().as_sequence().unwrap().cache().generation();
+        let t0 = Instant::now();
+        while t.stats.loops < 2 && t0.elapsed() < Duration::from_secs(5) { let _ = t.tick(Instant::now()); std::thread::sleep(Duration::from_millis(1)); }
+        assert!(t.stats.loops >= 2, "played through two wraps");
+        assert_eq!(t.decoder().as_sequence().unwrap().cache().generation(), gen0, "a wrap is not a seek (QCView's frame advance): no generation bump, no amnesty");
+        assert!(failed(&t).contains(&5), "the tick survives the wraps");
+        let _ = std::fs::remove_dir_all(d);
+    }
+    #[test]
     fn set_rate_keeps_the_frames_and_retimes_them() {
         let Some(d) = sequence("rate") else { eprintln!("ffmpeg missing: skipped"); return };
         let mut dec = SequenceDecoder::open(&d.join("f_%04d.png").to_string_lossy(), Rate::new(24, 1), 1001, 1024, StreamingConfig::from_settings(4, 24), "").unwrap();

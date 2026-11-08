@@ -655,6 +655,9 @@ impl Transport {
         let Some((clip, src)) = self.resolve(tl).or_else(|| { let c = self.find_non_gap_clip(0, 1)?; let k = self.clip(c)?; Some((c, k.source_in)) }) else { return };
         if clip != self.slots[self.active].clip { if !self.swap_to(clip, self.user_wants_playback) { return } }
         let a = self.active;
+        // an image sequence wraps like QCView's frame advance (`updatePlayhead(cFrame)`, unforced): the cache's loop-seam rule
+        // keeps it from being a seek — the wrapped window is already cached, and a seek's amnesty would wipe the failed ticks
+        if let Some(d) = self.slots[a].decoder.as_sequence() { d.scrub_to(src as i32); self.last_shown = None; return }
         self.seek_gate = Some((src as i32, self.slots[a].decoder.seeks_performed(), self.slots[a].decoder.published_seq(), Instant::now()));
         self.slots[a].decoder.seek_to_frame(src as i32);
         if self.user_wants_playback && !self.slots[a].decoder.is_playing() { self.slots[a].decoder.play(); }

@@ -221,16 +221,23 @@ impl Shared {
         let prev = self.playhead.swap(n, AcqRel);
         let delta = n - prev;
         let mut big = !(BIG_JUMP_BACKWARD..=BIG_JUMP_FORWARD).contains(&delta);
-        // A loop seam (end → start or back) is not a seek: the in point is already in the wrapped window.
+        // A loop seam (end → start or back) is not a seek: the in point is already in the wrapped window. The seam is the
+        // in / out range's when one is set (QCView checked the sequence's ends only, so every [in, out] wrap was a seek: the
+        // prefetch thrown away and the failed ticks cleared each time round).
         if big && self.looping.load(Acquire) && self.frame_count > 0 {
-            let last = self.frame_count - 1 - LOOP_WRAP_SLACK;
-            if (prev >= last && n <= LOOP_WRAP_SLACK) || (prev <= LOOP_WRAP_SLACK && n >= last) { big = false }
+            let (lo, hi) = if self.has_range.load(Acquire) { (self.loop_in.load(Acquire).max(0), self.loop_out.load(Acquire).min(self.frame_count - 1)) } else { (0, self.frame_count - 1) };
+            let (near_hi, near_lo) = (|f: i32| f >= hi - LOOP_WRAP_SLACK, |f: i32| f <= lo + LOOP_WRAP_SLACK);
+            if (near_hi(prev) && near_lo(n)) || (near_lo(prev) && near_hi(n)) { big = false }
         }
         if force_seek || big {
             self.generation.fetch_add(1, AcqRel);
             self.last_seek.store(n, Release);
             self.io.lock().unwrap().requests.clear();
             self.failed.lock().unwrap().clear();   // the amnesty: a seek retries frames a flaky share failed
+            // …and the cached sentinels go with it, so those frames ARE retried and the genuinely broken ones re-flag as the
+            // window reaches them (QCView's intent — "re-flag within one window rebuild" — but its sentinels stayed cached: the
+            // frames were never reloaded and their timeline ticks vanished for good after any seek)
+            for k in self.lru.keys() { if self.lru.peek(&k).is_some_and(|i| i.sentinel.is_some()) { self.lru.remove(&k); } }
             self.cache_cv.notify_one();
         }
         if delta != 0 || force_seek {
@@ -436,6 +443,26 @@ mod tests {
         assert!(c.generation() > g);
         assert!(wait(|| c.frame(30).is_some() && c.frame(15).is_none()), "the window moved to 30");
         assert_eq!(c.closest_frame(30).unwrap().0, 30);
+    }
+    #[test]
+    fn loop_seams_are_not_seeks_and_a_seek_retries_the_sentinels() {
+        let Some((d, pat)) = sequence() else { return };
+        let c = ImageSequenceCache::open(&d.0.to_string_lossy(), pat, 1001, 1040, 24.0, "", StreamingConfig::from_settings(4, 24)).unwrap();
+        c.update_playhead(5, true);
+        assert!(wait(|| c.failed_frames().contains(&9)), "the gap (file 1010 = frame 9) is flagged");
+        // the whole-sequence seam: 39 → 0 keeps the generation and the ticks
+        c.update_playhead(38, true); assert!(wait(|| c.failed_frames().contains(&9)), "re-flagged in the wrapped window after the seek to 38");
+        c.update_playhead(39, false); let g = c.generation();
+        c.update_playhead(0, false);
+        assert_eq!(c.generation(), g, "end → start is a seam, not a seek"); assert!(c.failed_frames().contains(&9));
+        // the [in, out] seam: 30 → 8
+        c.set_loop_range(8, 30); c.update_playhead(29, true); assert!(wait(|| c.failed_frames().contains(&9)), "re-flagged in the range's wrapped window");
+        c.update_playhead(30, false); let g = c.generation();
+        c.update_playhead(8, false);
+        assert_eq!(c.generation(), g, "out → in is a seam, not a seek"); assert!(c.failed_frames().contains(&9));
+        // a real seek clears the ticks and evicts the sentinels, so the gap is reloaded and re-flags
+        c.clear_loop_range(); c.update_playhead(20, true);
+        assert!(wait(|| c.failed_frames().contains(&9)), "the gap re-flags after the amnesty");
     }
     #[test]
     fn stride_caches_every_nth_frame_and_drops_read_behind() {
