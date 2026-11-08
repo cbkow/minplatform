@@ -51,3 +51,51 @@ QCView's expansions carried: palette → RGB, tRNS → alpha, < 8-bit → 8, gra
   frame. Rare in sequences; libtiff joins if a real file shows up.
 
 Owed from QCView's loaders for piece 4: the thumbnail fast paths (PNG skip-downsample, JPEG DCT scaling).
+
+## Piece 2 — the sequence cache (DONE 2026-11-08, 5bc6b83)
+
+`crates/qcv-player/src/image_sequence_cache.rs` = QCView's `ImageSequenceCache` (old QCView's `DirectEXRCache`): the
+10-ms cache thread (window eviction with loop / range modulo math; queue = playhead first, then ahead, then behind at
+stride 1; ≤ 32 requests; batches of max(4, ahead / 2)), the IO thread starting one load thread per frame under the
+thread cap (the seek target may take one more, and decodes with 8 internal threads), generation discard, gap (1×1,
+transparent) / broken sentinels, the failed set with the seek amnesty, GPU push + evict sinks, loop-seam suppression.
+Settings: `performance/imageSeqThreads` (1–64, default 16), `performance/imageSeqReadAhead` (24–240, default 72;
+read-behind = max(12, ahead / 6)). Divergences: completions wake the IO loop (QCView polled on 10 ms), one shared
+broken sentinel (QCView allocated a full-size one per frame and costed it at 4 bytes), QCView's write-only overrun
+flags not carried.
+
+| 4K EXR (ZIP, 72 frames) | macOS | Windows (synthetic, on the box) |
+|---|---|---|
+| seek target, nothing else in flight | 8.8 ms | 12.3 ms |
+| window fill | ~258 fps | ~269 fps |
+
+## Piece 3 — the transport + presenter (DONE 2026-11-08, d962347 …)
+
+A slot's decoder is `SlotDecoder::{Video, Sequence}` (`sequence_decoder.rs`); the transport's calls map onto QCView's
+sequence mode: a user seek = a forced playhead (the target lands when cached — a hole lands too, holding the picture),
+a drag = an unforced playhead (QCView: forcing per move starved the IO pool), playback pulls each frame once when
+cached and HOLDS the last good one on a miss / gap / broken frame (QCView's renderer never sees sentinels). Formats
+`min-image` does not read (DPX, TGA, BMP) stay on FFmpeg's image2; `QCV_SEQ_FFMPEG=1` forces that route for A/B.
+The presenter reads the cached planes in place (`min_present::Plane` bytes are shared, no 50-MB copy per 4K frame).
+The cache wraps with the loop toggle (from the open — QCView only on a toggle) and fills only [in, out] when a range
+is set. The scrubber draws the cache underline (wrapping at the edges / the range) and failed-frame ticks, repainted
+when the cache's status changes (QCView polls at 33 ms).
+
+| 4K EXR through the transport | macOS | Windows |
+|---|---|---|
+| frame 30, cache vs FFmpeg image2 | snapshots byte-identical (encoded + display) | — |
+| headless play, 72 frames | first frame 23 ms, show p50 9.9 ms, 1 dropped | first frame 46 ms, show p50 3.8 ms, 0 dropped |
+| random seek, window 24 — cold / cached | p50 76 / 11 ms | p50 81–92 / 4–11 ms |
+| scrub sweep 0→71 at 16 ms | 0 frames behind the pointer | 0 (max 2) |
+
+Cold seeks pay for the previous window's loads still decoding beside the target (QCView cannot cancel them either).
+A crash at exit on Windows in the new bench was the bench dropping the engine before the hardware devices built on its
+D3D12 device (the rule from the slow-close fix); fixed in the bench.
+
+Open for the user / later pieces:
+- EXR in bypass: QCView's SDR swapchain shows linear EXR values AS CODE VALUES; ours tags the frames Linear and the
+  engine shows them as light on the linear surface. Part of the banked colour question (§18.6) — not changed.
+- The upload runs on the presenter thread (show ≈ 4–10 ms at 4K half); QCView has a GPU upload thread fed by the push
+  sink — carry it if playback needs it.
+- Piece 4: seed the detector's missing frames at open (the ticks before any IO), sequences in playlists (the cache
+  window per clip), hover thumbnails, the bins; piece 5: the EXR layer picker.

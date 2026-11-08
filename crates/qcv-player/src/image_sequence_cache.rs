@@ -21,9 +21,9 @@
 //!   up to 10 ms before it was filed;
 //! - ONE broken sentinel per cache, shared: QCView built a full-size RGBA8 image per broken frame (33 MB at 4K) and
 //!   costed it at 4 bytes — a run of broken frames could hold gigabytes the budget never saw;
-//! - (NOT a divergence, tried and reverted 2026-11-08: dropping without waiting for the loads in flight crashed the
-//!   Windows process at exit — a loader still inside OpenEXRCore while the runtime tore down, 0xC0000005. Drop waits,
-//!   as QCView's shutdown waits on its futures; the transport drops replaced slots off the UI thread.)
+//! - (not a divergence: drop WAITS for the loads in flight, as QCView's shutdown waits on its futures — a no-wait drop
+//!   was tried and withdrawn 2026-11-08 to keep the process from tearing down under a loader; the transport drops
+//!   replaced slots off the UI thread, so the wait never lands on a frame);
 //! - QCView's overrun flags (`m_overrunMode`, `m_lastGoodFrame`) were written and never read — not carried.
 use crate::simple_lru::SimpleLru;
 use min_image::{Image, Sentinel};
