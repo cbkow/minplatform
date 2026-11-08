@@ -180,3 +180,26 @@ mod probe {
         }
     }
 }
+#[cfg(test)]
+mod whole_frame {
+    /// Every pixel against FFmpeg's decode of the same file (`MIN_IMAGE_EXR_RAW` = gbrpf32le), at offsets -1..=1 —
+    /// a real offset shows as the best match away from (0,0).
+    #[test] #[ignore]
+    fn against_ffmpeg_raw() {
+        let (Ok(p), Ok(raw)) = (std::env::var("MIN_IMAGE_EXR_FIXTURE"), std::env::var("MIN_IMAGE_EXR_RAW")) else { return };
+        let img = super::load(&p, "", 0).unwrap();
+        let raw = std::fs::read(raw).unwrap();
+        let (w, h) = (img.width as usize, img.height as usize);
+        let half = |b: &[u8]| { let h = u16::from_le_bytes([b[0], b[1]]); let s = if h & 0x8000 != 0 { -1.0f32 } else { 1.0 }; let e = ((h >> 10) & 0x1f) as i32; let m = (h & 0x3ff) as f32; s * if e == 31 { f32::INFINITY } else if e == 0 { m / 1024.0 * 2f32.powi(-14) } else { (1.0 + m / 1024.0) * 2f32.powi(e - 15) } };
+        let ff = |pl: usize, x: usize, y: usize| { let o = (pl * w * h + y * w + x) * 4; f32::from_le_bytes(raw[o..o + 4].try_into().unwrap()) };
+        for (dx, dy) in [(0i32, 0i32), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let (mut max, mut sum, mut n) = (0f32, 0f64, 0u64);
+            for y in 1..h - 1 { for x in 1..w - 1 { for pl in 0..3 {
+                let o = y * img.pitch as usize + x * 2;
+                let d = (half(&img.planes[pl][o..]) - ff(pl, (x as i32 + dx) as usize, (y as i32 + dy) as usize)).abs();
+                max = max.max(d); sum += d as f64; n += 1;
+            }}}
+            println!("OFF {dx:+} {dy:+} max {max:.6} mean {:.8}", sum / n as f64);
+        }
+    }
+}
