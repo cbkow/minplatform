@@ -137,6 +137,8 @@ pub struct Transport {
     prewarm: Option<(usize, mpsc::Receiver<Result<Slot, Error>>)>,
     /// a clip that was NOT prewarmed, opening on a thread (the UI keeps running; the current picture holds): what to do on landing
     pending: Option<Pending>,
+    /// an edit scrub (a trim / slip preview) is holding the scrub gesture
+    edit_scrub: bool,
     rate: Rate, frames: i32, fps: f64,
     review_speed: f64, loop_enabled: bool, in_point: i32, out_point: i32,
     /// user intent, captured BEFORE the decoder flips — the loop wrap reads it to decide on the auto-resume
@@ -189,7 +191,7 @@ impl Transport {
         let mut timer = PlaybackTimer::new();
         timer.set_frame_rate(fps); timer.set_duration(if fps > 0.0 { frames as f64 / fps } else { 0.0 }); timer.set_clock_policy(opts.clock_policy); timer.set_looping(opts.loop_enabled);
         Transport { timeline, timer, audio: Box::new(NoAudio), loop_enabled: opts.loop_enabled, refresh_ms: opts.refresh_ms, opts, range_override: crate::RangeOverride::Auto,
-            slots: vec![], active: 0, prewarm: None, pending: None, rate, frames, fps,
+            slots: vec![], active: 0, prewarm: None, pending: None, edit_scrub: false, rate, frames, fps,
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
@@ -429,6 +431,22 @@ impl Transport {
         if was_playing { self.play(); }
     }
     pub fn is_scrubbing(&self) -> bool { self.scrubbing.is_some() }
+    /// QCView `previewEditScrubFrame` (playlist): show SOURCE frame `src` of clip `clip_id` through the scrub decoder — only when
+    /// that clip is the active one (the shared scrub decoder is open on it; another clip shows nothing, as in QCView). The first
+    /// call pauses like a scrub press (`beginEditScrub`); the clock never moves.
+    pub fn edit_preview(&mut self, clip_id: &str, src: i64) -> bool {
+        let active_id = self.timeline.tracks.first().and_then(|t| t.clips.get(self.slots[self.active].clip)).map(|c| c.id.clone());
+        if active_id.as_deref() != Some(clip_id) { return false }
+        if self.scrubbing.is_none() { self.begin_scrub(); self.edit_scrub = true; }
+        let s = &mut self.slots[self.active];
+        if let Some(sd) = &mut s.scrub { sd.request_frame(src.max(0) as i32); } else { s.decoder.seek_to_frame(src.max(0) as i32); }
+        true
+    }
+    /// QCView `endEditScrub`: the pre-edit frame again (the timer never moved), playback resumes if the press interrupted it.
+    pub fn end_edit_preview(&mut self) {
+        if !std::mem::take(&mut self.edit_scrub) { return }
+        let f = self.current_frame(); self.scrub_to_frame(f); self.end_scrub();
+    }
     /// Install an audio player (QCView's `AudioPlayer`): opens the active clip's audio on it.
     pub fn set_audio(&mut self, mut audio: Box<dyn AudioHooks>) {
         let path = self.path().to_string();

@@ -146,3 +146,11 @@ Proposed and taken ("go"): 1 loading · 2 the bar · 3 gestures · 4 drops · 5 
 - **Unsupported media** (QCView `reportUnsupportedMedia`): a failed load sets the row badge and toasts once per item per load —
   "X can’t be played here: unsupported format." or the ARRIRAW camera-named line; the row badge (QCView's `unsupported` =
   `video.unsupported_codec || load_failed`) is a warning glyph at the row's right edge with QCView's tooltip.
+
+## The trim preview in the viewport (2026-11-08; a playlist leftover)
+QCView `beginEditScrub` / `previewEditScrubFrame` / `endEditScrub` carried: while a trim / slip drags, the viewport shows the
+new in-frame (head), the new out-frame (tail), or the content now under the playhead (slip, only while the playhead is over
+the clip) through the scrub decoder; only for the ACTIVE clip (another clip shows nothing, as in QCView); the clock never
+moves; on release the pre-edit frame returns and playback resumes if the press interrupted it (`Transport::edit_preview` /
+`end_edit_preview`, `ClipBar::edit_preview`). Reading it corrected the slip DIRECTION to QCView's (`dIn = sourceIn + delta`:
+dragging right moves the source window later); the test follows. Thumbnails in the bar stay unbuilt unless asked for.

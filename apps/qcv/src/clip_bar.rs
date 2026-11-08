@@ -1,6 +1,6 @@
 //! The playlist's clip bar (canon row 167: one 20-px bar under the scrubber, NO edit mode — a gesture means what its target
 //! means). QCView's `TimelinePanel.qml` `pickEditOp` without the edit toggle: the 8 px at either end of a clip trims its head /
-//! tail, dragging the body reorders it (slot-based, insertion bar), Ctrl/Cmd + drag slips the source window, a click seeks
+//! tail, dragging the body reorders it (slot-based, insertion bar), Ctrl/Cmd + drag slips the source window (right = later), a click seeks
 //! there and selects the clip, a double-click opens the precision popover. Gestures start past QCView's 5-px threshold and
 //! commit ONE undoable `qcv-timeline` edit on release; while dragging the bar shows the result (ghost + insertion bar /
 //! the trimmed extent + a frame badge). Draws on the scrubber's camera, so clips line up with the ruler above.
@@ -67,10 +67,22 @@ impl ClipBar {
             Op::TrimHead => { let inn = (c.source_in + src(d)).clamp(0, c.source_out - 1); (inn != c.source_in).then(|| BarCmd::TrimHead { clip: c.id.clone(), new_start: c.start + rescale(inn - c.source_in, c.source_rate, tl.rate), new_source_in: inn }) }
             Op::Slip => {
                 let len = c.source_out - c.source_in; let max_in = if c.source_duration > 0 { (c.source_duration - len).max(0) } else { i64::MAX };
-                let inn = (c.source_in - src(d)).clamp(0, max_in);   // the content follows the pointer
+                let inn = (c.source_in + src(d)).clamp(0, max_in);   // QCView: dIn = sourceIn + delta (dragging right moves the source window later)
                 (inn != c.source_in).then(|| BarCmd::Slip { clip: c.id.clone(), new_in: inn, new_out: inn + len })
             }
             Op::Reorder => { let f = sc.frame_at_x(g.x, st, scale) as i64; let (idx, _) = Self::insert_index(tl, f, None, sc, st, scale)?; let from = Self::clips(tl).iter().position(|k| k.id == c.id)?; (idx != from && idx != from + 1).then(|| BarCmd::Move { clip: c.id.clone(), index: idx }) }
+        }
+    }
+    /// QCView `previewEditScrubFrame`: while a trim / slip drags, the SOURCE frame the viewport should show for the edited clip —
+    /// the new in (head), the new out (tail), the content now under the playhead (slip; None when the playhead is off the clip).
+    pub fn edit_preview(&self, tl: &Timeline, sc: &Scrubber, st: &ScrubState, scale: f64) -> Option<(String, i64)> {
+        let g = self.press.as_ref().filter(|g| g.active && g.op != Op::Reorder)?;
+        let c = &g.clip; let last = if c.source_duration > 0 { c.source_duration - 1 } else { i64::MAX };
+        match self.result(g, tl, sc, st, scale) {
+            Some(BarCmd::TrimHead { new_source_in, .. }) => Some((c.id.clone(), new_source_in)),
+            Some(BarCmd::TrimTail { new_source_out, .. }) => Some((c.id.clone(), new_source_out.min(last))),
+            Some(BarCmd::Slip { new_in, .. }) => { let ph = st.current as i64; (ph >= c.start && ph < c.start + c.duration).then(|| (c.id.clone(), (new_in + rescale(ph - c.start, tl.rate, c.source_rate)).min(last))) }
+            _ => match g.op { Op::TrimHead => Some((c.id.clone(), c.source_in)), Op::TrimTail => Some((c.id.clone(), (c.source_out).min(last))), _ => None },
         }
     }
     /// Returns (commands, redraw). `ctrl` = Ctrl / Cmd (the slip modifier).
@@ -210,8 +222,8 @@ mod tests {
         // the body of clip 0 dropped past clip 1's end → index 2
         let c = drag(&mut bar, &ed, &sc, &st, x_of(&sc, &st, 50), x_of(&sc, &st, 195), false);
         assert_eq!(c, vec![BarCmd::Move { clip: ids[0].clone(), index: 2 }]);
-        // Ctrl + body: slip — the content follows the pointer, so dragging LEFT moves the source in forward
-        let mid = x_of(&sc, &st, 250); let c = drag(&mut bar, &ed, &sc, &st, mid, mid - 30.0 / sc.frames_per_px(&st), true);
+        // Ctrl + body: slip — QCView's direction: dragging RIGHT moves the source in later
+        let mid = x_of(&sc, &st, 250); let c = drag(&mut bar, &ed, &sc, &st, mid, mid + 30.0 / sc.frames_per_px(&st), true);
         assert!(matches!(&c[..], [BarCmd::Slip { clip, new_in, new_out }] if *clip == ids[2] && (28..=32).contains(new_in) && new_out - new_in == 100), "{c:?}");
     }
     #[test]

@@ -514,9 +514,12 @@ impl App {
         let mut bcmds = vec![];
         if let Some(ed) = self.pl_editor.as_ref() { if g.clip_bar.is_pressed() || e.pos().is_some_and(|(x, y)| g.clip_bar.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
             let (c, d) = g.clip_bar.event(&e, now, self.mods.ctrl, &ed.timeline, &g.scrubber, &st, scale); if d { g.ui_dirty = true; } bcmds = c;
+            // the edit scrub: the frame under the trim edge / the slipped content in the viewport while the gesture drags
+            if let (Some((clip, src)), Some(p)) = (g.clip_bar.edit_preview(&ed.timeline, &g.scrubber, &st, scale), self.player.as_mut()) { if matches!(e, min_ui::Event::Move { .. }) { p.edit_preview(&clip, src); } }
             let want = match g.clip_bar.hover_zone() { Some(clip_bar::Zone::Head) | Some(clip_bar::Zone::Tail) => winit::cursor::CursorIcon::ColResize, Some(clip_bar::Zone::Body) => winit::cursor::CursorIcon::Grab, None => winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
         } }
+        if matches!(e, min_ui::Event::Up { .. }) { if let Some(p) = self.player.as_mut() { p.end_edit_preview(); } }
         if !bcmds.is_empty() || g.clip_bar.is_pressed() { for c in bcmds { self.bar_cmd(c); } return }
         let g = self.gpu.as_mut().unwrap();
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
