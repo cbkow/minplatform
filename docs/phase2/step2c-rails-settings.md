@@ -265,5 +265,8 @@ Settings panel has.
 - Numbers (RTX 4090, headless 120 frames): 1080p 19 % of a core vs 236 % software (show 0.37 vs 3.8 ms); 4K 37 % vs 511 %
   (show 0.37 vs 5.96, decode 0.1 vs 6.1 ms); the scrub session bridges too (previews 4.4 ms p50 vs 8.7 readback, 0 stream
   frames). The scrub cache keeps Vulkan frames native (FFmpeg's pool frame held by the entry; the bridge copies at publish).
-- Owed: the 4:4:4 / 4444-alpha / 8-bit layouts verified against synthetic clips (this session's last check), ProRes RAW
-  stays software (QCView: GPU debayer not implemented), a LUID match when a machine has several GPUs.
+- Layouts VERIFIED against synthetic clips generated on the box (no client footage moved): ProRes 4444 yuv444p12le = 3 R16 images →
+  planar3, pixel-identical; ProRes 4444 with alpha yuva444p12le = 4 images → planar4, identical; 422 10-bit at 720p identical (±1 at
+  one probe). The inter codecs still take D3D12VA zero-copy (h264 1080p, HEVC10 PQ 4K). The windowed player runs the bridge live.
+- Owed: ProRes RAW stays software (QCView: GPU debayer not implemented); a LUID match when a machine has several GPUs; the
+  6.7K ProRes clips from the NAS through the bridge on the user's walk.
