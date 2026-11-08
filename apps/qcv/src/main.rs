@@ -47,7 +47,7 @@ fn trm(s: &'static str) -> &'static str { min_i18n::trc("Main", s) }
 use min_i18n::fill;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
-    mincolor_rx: Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
+    mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
@@ -300,7 +300,7 @@ impl App {
     }
     fn tick(&mut self) {
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
-            g.presenter.engine.set_color_pass(Some(Box::new(pass))); g.mincolor_rx = None; log::info!("minColor bound to the slot");
+            g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
         }
         self.last_tick = Instant::now();
         let Some(g) = self.gpu.as_mut() else { return };
@@ -1101,7 +1101,7 @@ impl ApplicationHandler for App {
         presenter.engine.set_content_rect(Some(content_rect(size.width, size.height, window.scale_factor())));
         presenter.engine.set_background(self.settings.int(settings::k::BACKGROUND_MODE) as u8); presenter.engine.set_ui_scale(window.scale_factor() as f32);
         if self.o.identity_chain { presenter.engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
-        let mincolor_rx = color::wanted().map(|c| color::build_ahead(&presenter.engine.device, &presenter.engine.queue, c));
+        let mincolor_rx = color::wanted_ahead(&presenter.engine.device, &presenter.engine.queue);
         let i = presenter.info();
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}{}; features {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, if i.layer_workaround { " (PQ set on the layer by name)" } else { "" }, i.features, window.scale_factor());
         if !i.present_modes.is_empty() { println!("present modes {:?}", i.present_modes); }
@@ -1639,7 +1639,7 @@ fn run_headless(o: Opts) {
     let mut engine = Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("headless engine");
     engine.set_display(DisplayMode { out: OutMode::Linear, white: o.white });
     if o.identity_chain { engine.set_color_pass(Some(Box::new(min_present::IdentityColorPass))); }
-    if let Some(c) = color::wanted() { let t = Instant::now(); engine.set_color_pass(Some(Box::new(qcv_color::MinColorPass::new(&engine.device, &engine.queue, c)))); println!("headless: minColor {} bound ({:.0} ms build)", std::env::var("QCV_MINCOLOR").unwrap_or_default(), t.elapsed().as_secs_f64() * 1000.0); }
+    if let Some(rx) = color::wanted_ahead(&engine.device, &engine.queue) { let t = Instant::now(); match rx.recv() { Ok(p) => { engine.set_color_pass(Some(p)); println!("headless: colour chain {}{} bound ({:.0} ms build)", std::env::var("QCV_OCIO").unwrap_or_default(), std::env::var("QCV_MINCOLOR").unwrap_or_default(), t.elapsed().as_secs_f64() * 1000.0); } Err(_) => println!("headless: colour chain FAILED (see the log)") } }
     #[cfg(windows)] let dev = engine.dx12_device_raw();
     #[cfg(not(windows))] let dev = None;
     let hw = if o.sw { None } else { HwDevice::platform(dev) }; let hw_intra = if o.sw { None } else { HwDevice::vulkan(dev) };

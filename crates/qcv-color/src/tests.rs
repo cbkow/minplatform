@@ -16,7 +16,8 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 /// Run `pass` over `px` (one row) on the GPU; the f16 results.
-fn run_gpu(dev: &wgpu::Device, q: &wgpu::Queue, pass: &mut MinColorPass, px: &[[f32; 3]]) -> Vec<[f32; 3]> {
+fn run_gpu(dev: &wgpu::Device, q: &wgpu::Queue, pass: &mut MinColorPass, px: &[[f32; 3]]) -> Vec<[f32; 3]> { run_gpu_pass(dev, q, pass, px) }
+pub(crate) fn run_gpu_pass(dev: &wgpu::Device, q: &wgpu::Queue, pass: &mut dyn ColorPass, px: &[[f32; 3]]) -> Vec<[f32; 3]> {
     let w = px.len() as u32;
     let size = wgpu::Extent3d { width: w, height: 1, depth_or_array_layers: 1 };
     let src = dev.create_texture(&wgpu::TextureDescriptor { label: None, size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba32Float, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] });

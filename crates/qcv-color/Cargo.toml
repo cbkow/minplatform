@@ -7,17 +7,22 @@ authors.workspace = true
 repository.workspace = true
 publish = false
 license = "GPL-3.0-only"
-description = "QCView's colour engines for min-present's stage-2 slot (canon §18, rows 198-204): minColor (the vendored minColorAE core, GPL-3.0-only) as one WGSL compute pass"
+description = "QCView's colour engines for min-present's stage-2 slot (canon §18, rows 198-204): minColor (the vendored minColorAE core, GPL-3.0-only) as one WGSL compute pass; OCIO 2.6 in-process as a native-shader pass"
+
+[features]
+# OCIO (rows 198 / 200): OpenColorIO 2.6 linked in-process, its generated MSL / HLSL run as a native pass. Found via
+# OCIO_ROOT=<prefix> (include/ + lib/; Windows: vcpkg's x64-windows) or pkg-config.
+default = ["ocio"]
+ocio = []
 
 [dependencies]
 min-present = { path = "../min-present" }
 wgpu = { workspace = true }
 bytemuck = { workspace = true }
 log = { workspace = true }
+pollster = { workspace = true }
 
 [build-dependencies]
 cc = "1"
 naga = { version = "=30.0.1", features = ["glsl-in", "wgsl-in", "wgsl-out"] }
 
-[dev-dependencies]
-pollster = { workspace = true }

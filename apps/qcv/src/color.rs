@@ -1,5 +1,7 @@
 //! The colour engines in the app (canon §18, rows 198–204). Until the Color drawer and its presets land (row 199, the
-//! preset UX talk owed), a chain is engaged only from the harness: `QCV_MINCOLOR=<name>` with one of [`TEST_CHAINS`].
+//! preset UX talk owed), a chain is engaged only from the harness: `QCV_MINCOLOR=<name>` with one of [`TEST_CHAINS`], or
+//! `QCV_OCIO=<config>|<input>|<view>[|<look>]` against a bundled config folder (`QCV_OCIO_CONFIGS`, else QCView's
+//! checkout beside this repo — where the configs ship from is a packaging question).
 //! The minColor pipeline builds OFF the main thread at startup (515 ms cold on macOS; QCView built it ahead too) and
 //! binds to the slot when ready.
 use qcv_color::{ids, Chain, MinColorPass};
@@ -36,9 +38,46 @@ pub fn wanted() -> Option<Chain> {
 }
 
 /// Build the pass on a worker; the receiver yields it once.
-pub fn build_ahead(device: &wgpu::Device, queue: &wgpu::Queue, chain: Chain) -> mpsc::Receiver<MinColorPass> {
+pub fn build_ahead(device: &wgpu::Device, queue: &wgpu::Queue, chain: Chain) -> mpsc::Receiver<Box<dyn min_present::ColorPass + Send>> {
     let (tx, rx) = mpsc::channel();
     let (d, q) = (device.clone(), queue.clone());
-    std::thread::Builder::new().name("mincolor-build".into()).spawn(move || { let _ = tx.send(MinColorPass::new(&d, &q, chain)); }).ok();
+    std::thread::Builder::new().name("mincolor-build".into()).spawn(move || { let _ = tx.send(Box::new(MinColorPass::new(&d, &q, chain)) as Box<dyn min_present::ColorPass + Send>); }).ok();
+    rx
+}
+
+/// Whichever chain the harness asked for, built ahead.
+pub fn wanted_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>> {
+    if let Some((cfg, spec)) = ocio_wanted() { return Some(ocio_build_ahead(device, queue, cfg, spec)) }
+    wanted().map(|c| build_ahead(device, queue, c))
+}
+
+/// The bundled configs' folder (Blender5.2/ ACES_1.3/ ACES_2.0/).
+pub fn ocio_configs_dir() -> std::path::PathBuf {
+    std::env::var_os("QCV_OCIO_CONFIGS").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let exe = std::env::current_exe().unwrap_or_default();
+        // target/<profile>/qcv → the repo → its sibling QCView-Player
+        exe.ancestors().nth(4).map(|r| r.join("QCView-Player/assets/OCIO")).unwrap_or_default()
+    })
+}
+
+/// `QCV_OCIO=<config>|<input>|<view>[|<look>]`.
+pub fn ocio_wanted() -> Option<(String, qcv_color::ocio::Spec)> {
+    let v = std::env::var("QCV_OCIO").ok()?;
+    let p: Vec<&str> = v.split('|').collect();
+    if p.len() < 3 { log::warn!("QCV_OCIO wants <config>|<input>|<view>[|<look>], got {v:?}"); return None }
+    let cfg = ocio_configs_dir().join(p[0]).join("config.ocio");
+    Some((cfg.to_string_lossy().into_owned(), qcv_color::ocio::Spec { input: p[1].into(), view: p[2].into(), look: p.get(3).unwrap_or(&"").to_string(), scene_lut: String::new() }))
+}
+
+/// Build an OCIO pass on a worker (OCIO + the backend compile); `None` on the channel when it failed (logged).
+pub fn ocio_build_ahead(device: &wgpu::Device, queue: &wgpu::Queue, config: String, spec: qcv_color::ocio::Spec) -> mpsc::Receiver<Box<dyn min_present::ColorPass + Send>> {
+    let (tx, rx) = mpsc::channel();
+    let (d, q) = (device.clone(), queue.clone());
+    std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
+        match qcv_color::ocio::Config::open(&config).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec)) {
+            Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); }
+            Err(e) => log::error!("OCIO: {e}"),
+        }
+    }).ok();
     rx
 }

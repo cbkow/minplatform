@@ -24,6 +24,7 @@ fn main() {
         .file("core/opendrt_presets.cpp").file("core/mincolor_agx.cpp").file("src/ffi.cpp")
         .flag_if_supported("-fno-fast-math").flag_if_supported("/fp:precise")
         .compile("mincolor_core");
+    ocio();
     for f in ["src/ffi.cpp", "core/opendrt_presets.cpp", "core/mincolor_agx.cpp", "core/opendrt_presets.h", "core/mincolor_agx_host.h", "core/opendrt.h"] { println!("cargo:rerun-if-changed={f}"); }
 }
 
@@ -44,4 +45,21 @@ fn agx_loader() -> String {
     }
     assert_eq!(i, 84, "DrtAgxParams scalar count changed in the vendored core");
     out + "    return a;\n}\n"
+}
+
+/// OCIO 2.6 (feature `ocio`): `OCIO_ROOT=<prefix>` or pkg-config; the shim in `src/ocio.cpp`.
+fn ocio() {
+    println!("cargo:rerun-if-changed=src/ocio.cpp");
+    println!("cargo:rerun-if-env-changed=OCIO_ROOT");
+    if env::var_os("CARGO_FEATURE_OCIO").is_none() { return }
+    let (inc, lib) = if let Some(root) = env::var_os("OCIO_ROOT") {
+        let r = PathBuf::from(root); (r.join("include"), r.join("lib"))
+    } else {
+        let var = |flag: &str| String::from_utf8(std::process::Command::new("pkg-config").args([flag, "OpenColorIO"]).output().expect("pkg-config (or set OCIO_ROOT)").stdout).unwrap().trim().to_string();
+        (PathBuf::from(var("--variable=includedir")), PathBuf::from(var("--variable=libdir")))
+    };
+    cc::Build::new().cpp(true).std("c++17").file("src/ocio.cpp").include(&inc).warnings(false).compile("qcv_ocio");
+    println!("cargo:rustc-link-search=native={}", lib.display());
+    println!("cargo:rustc-link-lib=dylib=OpenColorIO");
+    if !cfg!(windows) { println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display()); }   // Windows: the OCIO DLL's folder goes on PATH
 }

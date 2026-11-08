@@ -162,5 +162,10 @@ impl ColorPass for MinColorPass {
     }
 }
 
+#[cfg(feature = "ocio")]
+pub mod ocio;
+
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "ocio"))]
+mod ocio_tests;
