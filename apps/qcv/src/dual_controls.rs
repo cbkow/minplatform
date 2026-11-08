@@ -83,7 +83,7 @@ impl DualControls {
         // the chips share what is left, QCView's 240 each at most
         let n = if self.shows_b() { 2.0 } else { 1.0 };
         let cw = (((x - min_x) - gap * (n - 1.0)) / n).clamp(0.0, 240.0 * scale);
-        let ch = t::FIELD_HEIGHT_S as f64 * scale; let cy = y + (h - ch) / 2.0;
+        let ch = t::TIMECODE_WELL_HEIGHT as f64 * scale; let cy = y + (h - ch) / 2.0;   // the wells' height: inside the strip's borders (the walk, 2026-11-08)
         if self.shows_b() {
             self.b.rect = Rect::new(x - cw, cy, x, cy + ch); x -= cw + gap;
             let cs = 16.0 * scale; self.close_b.rect = if self.b.name.is_some() { Rect::new(self.b.rect.x1 - cs - 4.0 * scale, cy + (ch - cs) / 2.0, self.b.rect.x1 - 4.0 * scale, cy + (ch + cs) / 2.0) } else { Rect::ZERO };
