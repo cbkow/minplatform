@@ -4,7 +4,7 @@
 use winit31 as winit;
 use min_present::{Output, Presenter, Snapshot};
 use min_theme::tokens as t;
-use qcv_player::{HwDevice, Transport, TransportOptions, Source, Action};
+use qcv_player::{HwDevice, Transport, TransportOptions, Source, Action, Playback};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 use winit::application::ApplicationHandler;
 use winit::data_transfer::TypeHint;
@@ -18,7 +18,8 @@ use winit::dpi::{LogicalSize, PhysicalPosition};
 
 fn pct(v: &mut Vec<f32>, p: f32) -> f32 { if v.is_empty() { return f32::NAN } v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v[((v.len() - 1) as f32 * p / 100.0).round() as usize] }
 
-struct Opts { snap_display: Option<(String, u32)>, cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, /// every positional path (the window adds them all, loads the first — like a drop)
+struct Opts { /// `--dual <B>`: the launch file is A, this is B (canon row 211; the strip's chips are step 3)
+    dual: Option<String>, snap_display: Option<(String, u32)>, cut: Option<String>, hover: Option<u32>, seek_gap_ms: u64, seeks: Option<u32>, scrub: Option<(i32, i32, f32)>, scrub_hw: bool, headless: Option<u32>, looping: bool, file: Option<String>, /// every positional path (the window adds them all, loads the first — like a drop)
     files: Vec<String>, sw: bool, out: Output, white: f32, seconds: f32, stats: bool, snap_out: Option<(String, u32)>, verify_pq: bool, identity_chain: bool, refresh_ms: f32, screen: Option<usize>, threads: i32, autoplay: bool }
 
 mod ui_sketch;
@@ -73,7 +74,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     menu_bar: Option<menu::InWindowMenu>, about: min_ui::Dialog }
 
 struct App {
-    o: Opts, gpu: Option<Gpu>, player: Option<Transport>, hw: Option<HwDevice>, hw_intra: Option<HwDevice>, source_label: String, source_path: String,
+    o: Opts, gpu: Option<Gpu>, player: Option<Transport>, /// dual view (row 211): set ⇒ `player` is None and the presenter's sides draw A / B
+    dual: Option<qcv_player::DualTransport>, hw: Option<HwDevice>, hw_intra: Option<HwDevice>, source_label: String, source_path: String,
     t0: Option<Instant>, t_open: Option<Instant>, first_presented: bool,
     scrub_last_req: Option<(i32, Instant)>,
     /// the loaded playlist's timeline model + its undo (qcv-timeline's Editor); None when a single file is loaded
@@ -269,6 +271,30 @@ impl App {
         let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(st.int(settings::k::IMAGE_SEQ_THREADS) as i32, st.int(settings::k::IMAGE_SEQ_READ_AHEAD) as i32);   // QCView reads them at each sequence load
         TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, uploader: self.gpu.as_ref().map(|g| g.presenter.engine.uploader()), ..Default::default() }
     }
+    /// Dual view (row 211): the loaded clip becomes A, `b` is B, on one master clock; the presenter's sides draw them in the
+    /// compare mode (`QCV_DUAL_MODE` = single / sbs / split / diff until step 3's chips). Opens PAUSED like QCView's entry.
+    fn enter_dual(&mut self, b: &str) {
+        if self.gpu.is_none() { return }
+        let a = self.player.as_ref().map(|p| p.path().to_string()).filter(|p| !p.is_empty());
+        let info = |p: &str| match qcv_player::dual::media_info(p) { Ok(m) => Some(m), Err(e) => { println!("dual: {e}"); None } };
+        let (ma, mb) = (a.as_deref().and_then(info), info(b));
+        let frame_s = self.player.as_ref().map(|p| p.current_frame() as f64 / p.rate().as_f64().max(1e-9)).unwrap_or(0.0);
+        match qcv_player::DualTransport::open(ma, mb, self.transport_options()) {
+            Ok(mut d) => {
+                if let Some(p) = self.player.take() { p.retire(); }
+                if std::env::var_os("QCV_NO_AUDIO").is_none() && let Ok(au) = qcv_player::AudioPlayer::new() { d.set_audio(Box::new(au)); }
+                let f = (frame_s * d.rate().as_f64()).round() as i32; d.seek_to_frame(f);   // QCView: the single view's time carries into A
+                let g = self.gpu.as_mut().unwrap();
+                g.presenter.engine.set_dual(true);
+                let mode = match std::env::var("QCV_DUAL_MODE").as_deref() { Ok("single") => min_present::dual::CompareMode::Single, Ok("split") => min_present::dual::CompareMode::Split, Ok("diff") => min_present::dual::CompareMode::Difference, _ => min_present::dual::CompareMode::SideBySide };
+                if let Some(ed) = g.presenter.engine.dual_mut() { ed.mode = mode; }
+                g.presenter.engine.relayout_dual();
+                println!("dual: {} vs {} — master {:.3} fps, {} frames, {mode:?}", a.as_deref().unwrap_or("(empty)"), b, d.rate().as_f64(), d.frame_count());
+                self.dual = Some(d); g.ui_dirty = true;
+            }
+            Err(e) => println!("dual: {e}"),
+        }
+    }
     fn open(&mut self, path: &str) -> bool { self.open_source(Source::from_path(path, None), path) }
     fn open_source(&mut self, src: Source, path: &str) -> bool { self.open_source_layer(src, path, "") }
     fn open_source_layer(&mut self, src: Source, path: &str, layer: &str) -> bool {
@@ -347,12 +373,23 @@ impl App {
                 }
             }
         }
+        if let (Some(d), Some(ed)) = (self.dual.as_mut(), g.presenter.engine.dual_mut()) {
+            let u = d.tick(now);
+            for (i, side) in [(0usize, qcv_player::Side::A), (1, qcv_player::Side::B)] {
+                let eng = if i == 0 { &mut ed.a } else { &mut ed.b };
+                match u[i] {
+                    qcv_player::SideUpdate::New => if let Some(h) = d.side(side).and_then(|t| t.current()) { match eng.show(&h.frame) { Ok(()) => shown_new = true, Err(e) => println!("dual {side:?}: show: {e}") } },
+                    qcv_player::SideUpdate::Blank => { eng.clear_frame(); shown_new = true; }
+                    qcv_player::SideUpdate::Same => {}
+                }
+            }
+        }
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
         if let Some(u) = g.ui.as_mut() {
             let frame = self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64())));
             let key = frame.map(|(c, n, _)| (c, n));
-            g.bar.sync(self.player.as_ref(), now);
+            g.bar.sync(pb(&self.dual, &self.player), now);
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
             // the sequence cache's band + failed ticks: repaint when they change (QCView polls the cache at 33 ms, emits on change)
@@ -362,7 +399,7 @@ impl App {
                 g.scrubber.cache_wraps = seq_status.is_some_and(|s| s.3);
                 g.seq_status = seq_status; g.ui_dirty = true;
             }
-            let st = scrub_state(self.player.as_ref());
+            let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let bar_h = if self.pl_editor.is_some() && !g.compact { clip_bar::ClipBar::height(scale) } else { 0.0 };   // +20 for a playlist (row 169)
             let strip_h = if g.strip_hidden { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
             let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
@@ -451,7 +488,7 @@ impl App {
             if !chromeless { self.settings.set_int(settings::k::LEFT_RAIL_WIDTH, g.left.width.round() as i64); self.settings.set_int(settings::k::RIGHT_RAIL_WIDTH, g.right.width.round() as i64); self.settings.set_bool(settings::k::LEFT_RAIL_COLLAPSED, g.left.collapsed); self.settings.set_bool(settings::k::RIGHT_RAIL_COLLAPSED, g.right.collapsed); }
             if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
             g.scrubber.compact = g.compact;
-            if g.compact { g.strip.sync(self.player.as_ref()); let tc = g.strip.timecode_text().to_string(); g.compact_strip.sync(self.player.as_ref(), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
+            if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
             else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); g.clip_bar.rect = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; }
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
@@ -471,7 +508,7 @@ impl App {
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
                 let bands_y = scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale;
                 g.bar.layout(&mut g.fonts, w as f64, bands_y, scale);
-                g.strip.sync(self.player.as_ref());
+                g.strip.sync(pb(&self.dual, &self.player));
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
                 let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
                 let scene = u.scene_mut();
@@ -565,16 +602,16 @@ impl App {
             let want = if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) && !consumed { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
             for c in cmds { match c {
-                compact_strip::Cmd::Act(a) => { if let Some(p) = self.player.as_mut() { p.apply(a, now); } }
+                compact_strip::Cmd::Act(a) => { if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { p.apply(a, now); } }
                 compact_strip::Cmd::Pin => self.toggle_pin(),
                 compact_strip::Cmd::Exit => { self.toggle_compact(); return }
                 compact_strip::Cmd::DragWindow => { if let Some(g) = self.gpu.as_ref() { if let Err(e) = g.window.drag_window() { log::debug!("drag_window: {e}"); } } }
             } }
             let Some(g) = self.gpu.as_mut() else { return };
             if consumed && !(g.scrubber.is_pressed() && matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. })) { return }
-            let st = scrub_state(self.player.as_ref());
+            let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let (scmds, sd) = g.scrubber.event(&e, now, &st, scale); if sd { g.ui_dirty = true; }
-            if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
+            if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
             return
         }
         // THE POINTER GRAB: a press on a band node (the scrubber, a transport button, the volume slider) owns Move / Up until the
@@ -649,7 +686,7 @@ impl App {
                     inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Transfer(t) => { g.presenter.engine.set_transfer_override(transfer_choice(t)); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_transfer_override(&id, t); } }
                     inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
-                    inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(self.player.as_ref()); }
+                    inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(pb(&self.dual, &self.player)); }
                     inspector_panel::Cmd::Par(par) => { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); let (mode, n, d) = match par { min_present::engine::Par::Square => (qcv_project::PixelAspectMode::Square, 1, 1), min_present::engine::Par::Detected => (qcv_project::PixelAspectMode::Detected, 1, 1), min_present::engine::Par::Custom(n, d) => (qcv_project::PixelAspectMode::Custom, n as i32, d as i32) }; self.project.set_pixel_aspect(&id, mode, n, d); } }
                     inspector_panel::Cmd::Rotation(r) => { let mut geo = g.presenter.engine.geometry(); geo.rotation = r; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
                 } }
@@ -669,7 +706,7 @@ impl App {
         if consumed { return }
         let (cmds, dirty) = g.bar.event(&e, now);
         if dirty { g.ui_dirty = true; }
-        let st = scrub_state(self.player.as_ref());
+        let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
         // the clip bar (a playlist): its gestures commit timeline edits; while one is pressed it owns the pointer
         let mut bcmds = vec![];
         if let Some(ed) = self.pl_editor.as_ref() { if g.clip_bar.is_pressed() || e.pos().is_some_and(|(x, y)| g.clip_bar.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
@@ -684,12 +721,12 @@ impl App {
         let g = self.gpu.as_mut().unwrap();
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
         if sd { g.ui_dirty = true; }
-        if let Some(p) = self.player.as_mut() { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
+        if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
         if g.fullscreen { let want = if st.frames > 0 && e.pos().is_some_and(|(x, y)| g.scrubber.hit(x, y)) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default }; if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); } }
         for c in cmds {
             match c {
                 transport_bar::Cmd::Act(a) => {
-                    let handled = self.player.as_mut().map(|p| p.apply(a, now)).unwrap_or(false);
+                    let handled = pb_mut(&mut self.dual, &mut self.player).map(|p| p.apply(a, now)).unwrap_or(false);
                     if !handled && a == Action::ToggleFullscreen { self.toggle_fullscreen(); return }
                     else if !handled && a == Action::CycleBackground { self.cycle_background(); }
                     else if !handled { log::info!("{a:?}: nothing to apply it to"); }
@@ -750,7 +787,7 @@ impl App {
             BarCmd::Move { clip, index } => (ed.move_clip_to_index(TRACK, &clip, index), true),
             BarCmd::Precision(id) => {
                 if let (Some(g), Some(c)) = (self.gpu.as_mut(), ed.timeline.tracks.first().and_then(|t| t.clips.iter().find(|c| c.id == id)).cloned()) {
-                    let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let (w, h) = g.window.surface_size().into();
+                    let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor(); let (w, h) = g.window.surface_size().into();
                     let anchor = kurbo::Rect::new(g.scrubber.x_of_frame(c.start, &st, scale), g.clip_bar.rect.y0, g.scrubber.x_of_frame(c.start + c.duration, &st, scale), g.clip_bar.rect.y1);
                     g.clip_popover.open(&c, ed.timeline.rate, anchor, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w, h), scale); set_ime(&**g.window, true);
                 }
@@ -785,7 +822,7 @@ impl App {
     /// The playlist's insert point for a drop at x: the clip edge within 12 px (QCView `snapTolPx`), else the end.
     fn playlist_drop_index(&self, x: f64) -> Option<(usize, f64)> {
         let (ed, g) = (self.pl_editor.as_ref()?, self.gpu.as_ref()?);
-        let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor();
+        let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor();
         let tol = (12.0 * scale * g.scrubber.frames_per_px(&st)).ceil().max(1.0) as i64;
         let f = if self.player.is_some() { g.scrubber.frame_at_x(x, &st, scale) as i64 } else { 0 };
         let clips = ed.timeline.tracks.first().map(|t| t.clips.len()).unwrap_or(0);
@@ -883,7 +920,7 @@ impl App {
             M::AllPanels => self.view_all_panels(),
             M::Compact => self.toggle_compact(),
             M::Pin => self.toggle_pin(),
-            M::ZoomIn | M::ZoomOut => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == M::ZoomOut { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } }
+            M::ZoomIn | M::ZoomOut => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == M::ZoomOut { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } }
             M::Fullscreen => self.toggle_fullscreen(),
             M::DefaultFrame => {
                 // QCView `resetWindowFrame`: fullscreen left first, then the first-run size centred on this screen
@@ -1114,9 +1151,12 @@ fn sequence_failed_on_timeline(p: &Transport) -> Vec<i32> {
 }
 
 /// The scrubber's view of the Transport.
-fn scrub_state(p: Option<&Transport>) -> min_ui::ScrubState {
+/// The loaded playhead, single or dual (the bands read either through `Playback`).
+fn pb<'a>(dual: &'a Option<qcv_player::DualTransport>, player: &'a Option<Transport>) -> Option<&'a dyn Playback> { match dual { Some(d) => Some(d), None => player.as_ref().map(|p| p as &dyn Playback) } }
+fn pb_mut<'a>(dual: &'a mut Option<qcv_player::DualTransport>, player: &'a mut Option<Transport>) -> Option<&'a mut dyn Playback> { match dual { Some(d) => Some(d), None => player.as_mut().map(|p| p as &mut dyn Playback) } }
+fn scrub_state(p: Option<&dyn Playback>, single: Option<&Transport>) -> min_ui::ScrubState {
     let Some(p) = p else { return Default::default() };
-    let cached = p.decoder().as_sequence().map(|s| (s.cache().buffered_behind_coverage(), s.cache().buffered_ahead_coverage()));   // the band: sequences only (QCView's `currentMediaKind === 1`)
+    let cached = single.and_then(|p| p.decoder().as_sequence()).map(|s| (s.cache().buffered_behind_coverage(), s.cache().buffered_ahead_coverage()));   // the band: sequences only (QCView's `currentMediaKind === 1`)
     min_ui::ScrubState { frames: p.frame_count(), fps: p.rate().as_f64(), current: p.current_frame(), in_point: p.in_point(), out_point: p.out_point(), playing: p.is_playing(), scrubbing: p.is_scrubbing(), cached }
 }
 
@@ -1212,6 +1252,7 @@ impl ApplicationHandler for App {
         if menu::InWindowMenu::wanted() { if let Some(g) = self.gpu.as_mut() { g.menu_bar = Some(menu::InWindowMenu::new(&mut g.fonts)); } }
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { let paths = if self.o.files.is_empty() { vec![f.clone()] } else { self.o.files.clone() }; let mut first = true; for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } } } }
+        if let Some(b) = self.o.dual.clone() { self.enter_dual(&b); }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); return } }
@@ -1327,9 +1368,9 @@ impl ApplicationHandler for App {
                         "9" => { self.view_all_panels(); return }  // Show All Panels
                         "5" => { self.toggle_status_bar(); return }   // View ▸ Status Bar
                         "3" => { if self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.compact) { self.color_cmd(color_drawer::Cmd::Toggle); } return }   // View ▸ Color Panel (row 199)
-                        "l" | "L" => { if let Some(p) = self.player.as_mut() { p.apply(Action::ToggleLoop, now); } return }
+                        "l" | "L" => { if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { p.apply(Action::ToggleLoop, now); } return }
                         "q" | "Q" => { self.finish(); el.exit(); return }
-                        "=" | "+" | "-" | "_" => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == "-" || c == "_" { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } return }
+                        "=" | "+" | "-" | "_" => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == "-" || c == "_" { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } return }
                         _ => {}
                     }
                 } }
@@ -1373,7 +1414,7 @@ impl ApplicationHandler for App {
                 };
                 let m = self.mods;
                 if let Some(a) = key.and_then(|k| qcv_player::map_key(k, m, pressed, event.repeat)) {
-                    let handled = self.player.as_mut().map(|p| p.apply(a, Instant::now())).unwrap_or(false);
+                    let handled = pb_mut(&mut self.dual, &mut self.player).map(|p| p.apply(a, Instant::now())).unwrap_or(false);
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
@@ -1403,7 +1444,7 @@ impl ApplicationHandler for App {
                         if g.left.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return
                     }
                     if !chromeless && g.right.hit(x, y) { if g.right.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return }
-                    if g.scrubber.hit(x, y) { let st = scrub_state(self.player.as_ref()); let scale = g.window.scale_factor(); if g.scrubber.wheel(x, dy, alt, &st, scale) { g.ui_dirty = true; } } }
+                    if g.scrubber.hit(x, y) { let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor(); if g.scrubber.wheel(x, dy, alt, &st, scale) { g.ui_dirty = true; } } }
             }
             WindowEvent::PointerButton { state, position, button, .. } => {
                 let b = match button.mouse_button() { Some(winit::event::MouseButton::Left) => min_ui::Button::Primary, Some(winit::event::MouseButton::Right) => min_ui::Button::Secondary, Some(winit::event::MouseButton::Middle) => min_ui::Button::Middle, _ => return };
@@ -1454,13 +1495,13 @@ fn main() {
     i18n::install();   // canon row 195: before any panel builds its labels
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
-    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; if f.is_none() { f = Some(a.clone()); } } f };
-    let files: Vec<String> = { let mut v = vec![]; let mut skip = false; for a in args.iter() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } v.push(a.clone()); } v };
+    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--dual", "--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; if f.is_none() { f = Some(a.clone()); } } f };
+    let files: Vec<String> = { let mut v = vec![]; let mut skip = false; for a in args.iter() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--dual", "--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } v.push(a.clone()); } v };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let snap_display = arg("--snap-display").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let scrub = arg("--scrub").and_then(|v| { let (r, ms) = v.rsplit_once(':')?; let (a, b) = r.split_once('-')?; Some((a.parse().ok()?, b.parse().ok()?, ms.parse().ok()?)) });
-    let o = Opts { snap_display, cut: arg("--cut"), hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, files, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0), autoplay: has("--play") };
+    let o = Opts { dual: arg("--dual"), snap_display, cut: arg("--cut"), hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, files, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0), autoplay: has("--play") };
     if let Some(secs) = arg("--audio-bench").and_then(|v| v.parse().ok()) { run_audio_bench(o, secs); return }
     if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap"), arg("--ui-size").and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))); return }
     if o.headless.is_some() { run_headless(o); return }
@@ -1475,7 +1516,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { dual: None, colors, ocio_configs: HashMap::new(), mincolor: None, mincolor_ready: None, color_bound: None, ocio_rx: None, single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -1663,21 +1704,21 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
             println!("range probe: re-decoded {shown}; centre pixel before {:.4} after {:.4} (meta range of the shown frame: {:?})", before[idx], after[idx], p.current().map(|h| h.frame.meta.range));
         } else { println!("range probe: no Range chips in the panel"); }
     }
-    bar.sync(player.as_ref(), t0);
+    bar.sync(player.as_ref().map(|p| p as &dyn Playback), t0);
     bar.layout(&mut fonts, w as f64, bands_y, scale);
     let (hover, press) = (bar.rect_of("caret-right").unwrap().center(), bar.rect_of("sign-out").unwrap().center());
     bar.event(&min_ui::Event::Down { x: press.x, y: press.y, button: min_ui::Button::Primary }, t0);
     bar.event(&min_ui::Event::Move { x: hover.x, y: hover.y }, t0);
     let shown_at = t0 + std::time::Duration::from_millis(t::TOOLTIP_DELAY as u64 + 100);   // the hover ramp done, the tooltip up
-    bar.sync(player.as_ref(), shown_at); bar.tick(shown_at);
-    strip.sync(player.as_ref());
+    bar.sync(player.as_ref().map(|p| p as &dyn Playback), shown_at); bar.tick(shown_at);
+    strip.sync(player.as_ref().map(|p| p as &dyn Playback));
     strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
     strip.stage(status_strip::Mode::Timecode, "1000", &mut fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
     let mut scrubber = min_ui::Scrubber::new();
     let mut thumbs = hover_thumbs::HoverThumbs::new();
     // an image sequence: let the cache fill so the band + failed ticks are in the snap
     if let Some(p) = player.as_ref() && p.decoder().as_sequence().is_some() { std::thread::sleep(std::time::Duration::from_millis(600)); scrubber.failed = sequence_failed_on_timeline(p); scrubber.cache_wraps = p.decoder().as_sequence().unwrap().cache().looping(); }
-    let st = scrub_state(player.as_ref());
+    let st = scrub_state(player.as_ref().map(|p| p as &dyn Playback), player.as_ref());
     scrubber.layout(kurbo::Rect::new(0.0, h as f64 - t::SCRUBBER_HEIGHT as f64 * scale, w as f64, h as f64), scale);
     if std::env::var_os("QCV_UI_SNAP_FIT").is_none() { scrubber.wheel(w as f64 * 0.4, 600.0, false, &st, scale); }   // zoomed in about 40 % — frame ticks + the extent marker (`QCV_UI_SNAP_FIT=1`: the whole timeline)
     scrubber.event(&min_ui::Event::Move { x: w as f64 * 0.62, y: h as f64 - 10.0 }, t0, &st, scale);

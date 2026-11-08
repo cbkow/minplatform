@@ -325,6 +325,8 @@ impl Engine {
     pub fn set_color_pass(&mut self, cp: Option<Box<dyn ColorPass>>) { self.color_pass = cp; self.inter = None; self.write_uniforms(); }
     pub fn has_color_pass(&self) -> bool { self.color_pass.is_some() }
     pub fn has_frame(&self) -> bool { self.shown.is_some() }
+    /// Show nothing (a dual side in a gap or past its end: the background shows through).
+    pub fn clear_frame(&mut self) { self.shown = None; }
     /// Stage 4: composite `view` (an `Rgba8Unorm` texture at the viewport size — vello's output: sRGB-encoded, straight
     /// alpha) over every `encode` until the next call; `None` removes it. UI white lands on the display's SDR reference
     /// white in every output mode. Call again after the texture is re-created (a resize).

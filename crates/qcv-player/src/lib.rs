@@ -10,6 +10,8 @@ pub use min_ffmpeg::{ffmpeg, frame_handle, frame_index, hw, hw_routing, read_ahe
 pub mod playback_timer;
 pub mod key_map;
 pub mod transport;
+pub mod dual;
+pub mod playback;
 pub mod thumbnail_cache;
 pub mod scrub_decoder;
 pub mod scrub_frame_cache;
@@ -26,6 +28,8 @@ pub use rgb_range::RangeOverride;
 pub use scrub_decoder::{ScrubDecoder, ScrubOptions, Served};
 pub use audio::{AudioPlayer, AudioStats, RoutingMode, WaveformProbeEngine, ColumnPeak, audio_stream_count};
 pub use transport::{Transport, TransportOptions, AudioHooks, NoAudio, Stats};
+pub use dual::{DualTransport, Side, SideUpdate};
+pub use playback::{Playback, TimecodeInfo};
 pub use playback_timer::{PlaybackTimer, ClockPolicy};
 pub use qcv_meta::{stream_extent, TimecodeFormatter};
 pub use key_map::{Action, Key, Mods, map_key};

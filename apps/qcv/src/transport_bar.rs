@@ -7,7 +7,7 @@
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, Family, Fonts, Response, Slider, Tooltips};
-use qcv_player::{Action, Transport};
+use qcv_player::Action;
 use std::time::Instant;
 use vello::Scene;
 
@@ -117,11 +117,11 @@ impl TransportBar {
 
     /// Mirror the Transport's state into the buttons (QCView's bindings): enabled when media is open, play ↔ pause,
     /// in / out selected while set, clear only while either is set, loop selected while on.
-    pub fn sync(&mut self, p: Option<&Transport>, now: Instant) {
+    pub fn sync(&mut self, p: Option<&dyn qcv_player::Playback>, now: Instant) {
         let has = p.is_some();
         for (g, binds) in self.groups.iter_mut().zip(&self.binds) {
             for (b, bind) in g.buttons.iter_mut().zip(binds) {
-                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::ToggleCompact | Bind::ToggleColor => true, Bind::Later => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.audio.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
+                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::ToggleCompact | Bind::ToggleColor => true, Bind::Later => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
                 if b.enabled != enabled { b.enabled = enabled; if !enabled { b.reset(now); } }
                 if let (Some(p), Bind::Act(a)) = (p, bind) {
                     match a {
@@ -130,7 +130,7 @@ impl TransportBar {
                         Action::SetOutPoint => b.selected = p.out_point() >= 0,
                         Action::ClearInOut => { let on = p.in_point() >= 0 || p.out_point() >= 0; if b.enabled != on { b.enabled = on; if !on { b.reset(now); } } }
                         Action::ToggleLoop => b.selected = p.loop_enabled(),
-                        Action::ToggleMute => { let has = p.audio.has_audio(); if b.enabled != has { b.enabled = has; if !has { b.reset(now); } } let m = p.audio.is_muted(); b.icon = if m { "speaker-x" } else { "speaker-high" }; b.tooltip = tr(if m { "Unmute (M)" } else { "Mute (M)" }); b.selected = m; }
+                        Action::ToggleMute => { let has = p.has_audio(); if b.enabled != has { b.enabled = has; if !has { b.reset(now); } } let m = p.is_muted(); b.icon = if m { "speaker-x" } else { "speaker-high" }; b.tooltip = tr(if m { "Unmute (M)" } else { "Mute (M)" }); b.selected = m; }
                         _ => {}
                     }
                 } else if let Bind::Act(Action::ToggleLoop) = bind { b.selected = true; }   // loop defaults ON before media opens (QCView)
@@ -138,7 +138,7 @@ impl TransportBar {
         }
         self.pin.buttons[0].enabled = true;
         if let Some(p) = p { let sp = p.review_speed(); let mut txt = format!("{sp:.2}"); while txt.ends_with('0') { txt.pop(); } if txt.ends_with('.') { txt.pop(); } self.speed.text = format!("{txt}×"); self.speed.off_unity = (sp - 1.0).abs() > 0.001; self.speed.enabled = true; } else { self.speed.enabled = false; }
-        if let Some(p) = p { let on = p.audio.has_audio() && !p.audio.is_muted(); self.volume.enabled = on; if !self.volume.dragging() { self.volume.value = p.audio.volume(); } self.volume.tooltip = min_i18n::fill(&tr("Volume — %1%"), &[&((p.audio.volume() * 100.0).round() as i32)]); } else { self.volume.enabled = false; }
+        if let Some(p) = p { let on = p.has_audio() && !p.is_muted(); self.volume.enabled = on; if !self.volume.dragging() { self.volume.value = p.volume(); } self.volume.tooltip = min_i18n::fill(&tr("Volume — %1%"), &[&((p.volume() * 100.0).round() as i32)]); } else { self.volume.enabled = false; }
     }
 
     /// Route a pointer event; the commands it produced. Also feeds the tooltip with what the pointer rests on.

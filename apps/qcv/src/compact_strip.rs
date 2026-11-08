@@ -5,7 +5,7 @@
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{paint, ActionButton, Event, Family, Fonts, Response, Tooltips};
-use qcv_player::{Action, Transport};
+use qcv_player::Action;
 use std::time::Instant;
 use vello::Scene;
 
@@ -43,7 +43,7 @@ impl CompactStrip {
         self.scrub_rect = Rect::new(x, y, rx.max(x + 1.0), y + h);
         self.rect = Rect::new(0.0, y, w, y + h);
     }
-    pub fn sync(&mut self, p: Option<&Transport>, tc: &str, pinned: bool, now: Instant) {
+    pub fn sync(&mut self, p: Option<&dyn qcv_player::Playback>, tc: &str, pinned: bool, now: Instant) {
         let has = p.is_some();
         if self.play.enabled != has { self.play.enabled = has; if !has { self.play.reset(now); } }
         if let Some(p) = p { self.play.icon = if p.is_playing() { "pause" } else { "play" }; self.play.tooltip = tr(if p.is_playing() { "Pause (Space)" } else { "Play (Space)" }); }

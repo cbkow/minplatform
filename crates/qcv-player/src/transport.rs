@@ -170,6 +170,8 @@ pub struct Transport {
     /// `play` held the audio until the next picture lands (QCView releases on the first frame published after play)
     audio_hold_pending: bool,
     trace_play: Option<Instant>, trace_n: u32,
+    /// dual view (row 211): a SIDE — its clock never integrates; the dual's master puts the playhead (`follow`)
+    follower: bool, follow_frame: i64,
 }
 
 impl Transport {
@@ -216,7 +218,7 @@ impl Transport {
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, scrub_pos: None, skim: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
-            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false, trace_play: None, trace_n: 0 }
+            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false, trace_play: None, trace_n: 0, follower: false, follow_frame: 0 }
     }
     /// The timeline changed under us (an edit): durations re-seat; the active clip index is re-found by id order.
     pub fn set_timeline(&mut self, timeline: Timeline) {
@@ -308,10 +310,26 @@ impl Transport {
         None
     }
 
+    // ---- dual view: a side following the master (row 211) ------------------------------------------------------------
+    /// Make this transport a dual side: its clock stops integrating and `follow` sets it; loop wraps and the end are the master's.
+    pub fn set_follower(&mut self, on: bool) { self.follower = on; }
+    /// Drop this transport with its decoder slots joined on threads (a dual side replaced: seconds on a NAS / Windows).
+    pub fn retire(mut self) { for sl in self.slots.drain(..) { drop_off_thread(sl); } }
+    pub fn is_follower(&self) -> bool { self.follower }
+    /// The master put the playhead on this side's timeline frame `frame` (may be past the end: nothing shows there).
+    pub fn follow(&mut self, frame: i64) {
+        self.follow_frame = frame;
+        if self.fps <= 0.0 || self.seek_gate.is_some() { return }   // a landing in flight re-seats the clock itself
+        let f = frame.clamp(0, (self.frames as i64 - 1).max(0));
+        if f != self.timer.current_frame() as i64 { self.timer.seek(f as f64 / self.fps); }
+    }
+    /// A picture exists at this side's timeline frame (inside the timeline, on a clip — not a gap).
+    pub fn has_picture_at(&self, frame: i64) -> bool { frame >= 0 && frame < self.frames as i64 && self.resolve(frame).is_some() }
+
     // ---- play / pause ---------------------------------------------------------------------------------------------
     pub fn play(&mut self) {
         self.user_wants_playback = true;
-        if self.at_end() { self.seek_to_frame(0); }   // play from the end restarts (the timer clamps at duration)
+        if self.at_end() && !self.follower { self.seek_to_frame(0); }   // play from the end restarts (the timer clamps at duration); a dual side's restart is the master's
         self.timer.play(); self.slots[self.active].decoder.play();
         if std::env::var_os("QCV_AUDIO_TRACE").is_some() { self.trace_play = Some(Instant::now()); self.trace_n = 12; log::info!("trace: play() at timer {:.4}", self.timer.position()); }
         if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); self.audio.set_hold(true); self.audio.play(); self.audio_hold_pending = true; }
@@ -673,6 +691,11 @@ impl Transport {
         }
         if self.fast.is_some() || self.scrubbing.is_some() { let (h, _) = self.slots[self.active].decoder.fetch_due(i32::MAX); return self.show(h?, now) }   // the gesture drives the clock; frames land whenever
         let tl = match self.timer.clock_policy() {
+            ClockPolicy::WallClock if self.follower => {
+                // a dual side: the master placed the playhead; past this side's end (or in a gap) nothing shows
+                if !self.has_picture_at(self.follow_frame) { return None }
+                self.current_frame() as i64
+            }
             ClockPolicy::WallClock => {
                 self.timer.update(now);
                 if self.timer.wrapped { self.on_loop_wrap(); return None }

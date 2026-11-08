@@ -8,7 +8,6 @@ use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{anim::{mix, Ramp}, paint, Button, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Popover, TextField, Tooltips};
 use qcv_meta::TimecodeFormatter;
-use qcv_player::Transport;
 use std::time::Instant;
 use vello::Scene;
 
@@ -50,9 +49,9 @@ impl StatusStrip {
     /// The SMPTE readout's text (compact mode shows it in its own band).
     pub fn timecode_text(&self) -> &str { &self.tc.text }
     /// QCView's bindings: the frame well = the active clock's frame, the SMPTE well = the formatter at the source's start timecode.
-    pub fn sync(&mut self, p: Option<&Transport>) {
+    pub fn sync(&mut self, p: Option<&dyn qcv_player::Playback>) {
         let Some(p) = p else { self.frame.text = tr("Frame —").into(); self.tc.text = "—".into(); self.fps.clear(); self.fmt = None; self.frame_count = 0; return };
-        let i = p.info();
+        let i = p.timecode_info();
         let (num, den) = i.frame_rate;
         let fmt = TimecodeFormatter::new(num, den, i.drop_frame);
         // the timecode origin: the Inspector's Origin picker (QCView's: From start / Embedded / QT Start / QT TC / XMP Alt) or the embedded timecode
