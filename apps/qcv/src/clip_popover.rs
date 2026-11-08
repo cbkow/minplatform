@@ -86,7 +86,7 @@ mod tests {
     use super::*;
     use qcv_timeline::{ClipMediaKind, Editor, MediaInfo};
     fn clip() -> Clip {
-        let m = MediaInfo { id: "m".into(), name: "c".into(), path: "/x.mov".into(), kind: ClipMediaKind::Video, rate: Rate::new(24, 1), duration: 480, width: 1, height: 1, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 0, sequence_end_frame: 0 };
+        let m = MediaInfo { id: "m".into(), name: "c".into(), path: "/x.mov".into(), kind: ClipMediaKind::Video, rate: Rate::new(24, 1), duration: 480, width: 1, height: 1, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 0, sequence_end_frame: 0, sequence_exr_layer: String::new(), sequence_missing: vec![] };
         let mut ed = Editor::default(); ed.load_playlist("p", &[m], &[qcv_timeline::InOutRange { in_point: Some(24), out_point: Some(72) }], Rate::new(24, 1), 0, (1, 1), "pl");
         ed.timeline.tracks[0].clips[0].clone()
     }

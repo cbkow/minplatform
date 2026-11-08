@@ -194,7 +194,7 @@ mod tests {
     use qcv_timeline::{ClipMediaKind, Editor, MediaInfo, Rate};
     /// three 100-frame clips at 24 fps on a 1000-px bar: 300 frames → ~3.3 px per frame
     fn setup() -> (ClipBar, Editor, Scrubber, ScrubState) {
-        let m = |i: usize| MediaInfo { id: format!("m{i}"), name: format!("clip{i}"), path: format!("/x/{i}.mov"), kind: ClipMediaKind::Video, rate: Rate::new(24, 1), duration: 200, width: 1920, height: 1080, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 0, sequence_end_frame: 0 };
+        let m = |i: usize| MediaInfo { id: format!("m{i}"), name: format!("clip{i}"), path: format!("/x/{i}.mov"), kind: ClipMediaKind::Video, rate: Rate::new(24, 1), duration: 200, width: 1920, height: 1080, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 0, sequence_end_frame: 0, sequence_exr_layer: String::new(), sequence_missing: vec![] };
         let mut ed = Editor::default();
         ed.load_playlist("p", &[m(0), m(1), m(2)], &[qcv_timeline::InOutRange { in_point: Some(0), out_point: Some(100) }; 3], Rate::new(24, 1), 0, (1920, 1080), "pl");
         let st = ScrubState { frames: ed.timeline.duration as i32, fps: 24.0, current: 0, in_point: -1, out_point: -1, playing: false, scrubbing: false, cached: None };

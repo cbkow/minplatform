@@ -21,7 +21,9 @@ pub fn media_info(m: &MediaItem) -> MediaInfo {
     if frames <= 0 && m.duration > 0.0 { frames = (m.duration * rate.as_f64()).round() as i64; }
     MediaInfo { id: m.id.clone(), name: m.name.clone(), path: m.path.clone(), kind, rate, duration: frames.max(0), width: w.max(0) as u32, height: h.max(0) as u32, has_audio: m.has_audio,
         sequence_pattern: if m.media_type == MediaType::ImageSequence { std::path::Path::new(&m.image_seq.directory).join(&m.image_seq.pattern).to_string_lossy().into_owned() } else { String::new() },   // QCView opens a sequence clip from its item's directory + pattern (`startImageSequence`)
-        sequence_start_frame: m.image_seq.start_frame as i64, sequence_end_frame: m.image_seq.end_frame as i64 }
+        sequence_start_frame: m.image_seq.start_frame as i64, sequence_end_frame: m.image_seq.end_frame as i64,
+        // the item's EXR layer and gaps on disk travel with the clip (QCView's `startImageSequence` reads them off the item)
+        sequence_exr_layer: if m.media_type == MediaType::ImageSequence { m.image_seq.layer.clone() } else { String::new() }, sequence_missing: if m.media_type == MediaType::ImageSequence { m.image_seq.missing_frames.clone() } else { vec![] } }
 }
 
 /// QCView's trim: -1 = untrimmed; seconds → source frames on the clip's own rate.

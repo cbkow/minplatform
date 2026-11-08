@@ -125,6 +125,7 @@ impl Slot {
             let d = SequenceDecoder::open(pattern, *rate, *start, *end, opts.seq, layer)?;
             // the cache's wrap follows the loop from the open (QCView set it only on a toggle: a fresh sequence wrapped with loop off)
             d.cache().set_looping(opts.loop_enabled);
+            d.seed_missing(&clip.sequence_missing);
             let (info, index) = (d.info.clone(), d.frame_index().clone());
             return Ok(Slot { clip: clip_index, decoder: SlotDecoder::Sequence(d), scrub: None, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
         }
@@ -172,7 +173,7 @@ impl Transport {
         let slot = Slot::open(0, &probe_clip, &opts)?;
         let rate = slot.info.rate(); let frames = slot.info.frame_count as i64;
         let mut editor = Editor::default();
-        editor.load_single_media(&MediaInfo { id: String::new(), name: src.display(), path: src.path().to_string(), kind: probe_clip.media_kind, rate, duration: frames, width: slot.info.width, height: slot.info.height, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: probe_clip.sequence_start_frame, sequence_end_frame: probe_clip.sequence_start_frame + frames - 1 });
+        editor.load_single_media(&MediaInfo { id: String::new(), name: src.display(), path: src.path().to_string(), kind: probe_clip.media_kind, rate, duration: frames, width: slot.info.width, height: slot.info.height, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: probe_clip.sequence_start_frame, sequence_end_frame: probe_clip.sequence_start_frame + frames - 1, sequence_exr_layer: String::new(), sequence_missing: vec![] });
         let seq_layer = opts.seq_layer.clone();
         let mut t = Transport::from_timeline(editor.timeline, opts, false);
         if probe_clip.media_kind == ClipMediaKind::ImageSequence { t.timeline.tracks[0].clips[0].sequence_exr_layer = seq_layer; }   // the hover keys carry it
@@ -739,7 +740,7 @@ pub fn playlist_from_specs(specs: &[(String, Option<(i64, i64)>)]) -> Result<Tim
         let m = qcv_meta::extract(path);
         if !m.loaded { return Err(Error::Open(format!("probe {path}"))) }
         let rate = Rate::from_f64(m.frame_rate); if master.is_none() { master = Some(rate); }
-        items.push(MediaInfo { id: path.clone(), name: std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), path: path.clone(), kind: ClipMediaKind::Video, rate, duration: m.total_frames as i64, width: m.width as u32, height: m.height as u32, has_audio: m.audio_channels > 0, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1 });
+        items.push(MediaInfo { id: path.clone(), name: std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), path: path.clone(), kind: ClipMediaKind::Video, rate, duration: m.total_frames as i64, width: m.width as u32, height: m.height as u32, has_audio: m.audio_channels > 0, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), sequence_missing: vec![] });
         trims.push(InOutRange { in_point: trim.map(|t| t.0), out_point: trim.map(|t| t.1) });
     }
     let mut e = Editor::default();

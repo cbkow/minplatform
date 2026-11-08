@@ -22,6 +22,8 @@ pub struct SequenceDecoder {
     playing: AtomicBool, seeks: AtomicU32, published: AtomicU64, current: AtomicI32,
     /// a user seek's target, still to land
     want: Mutex<Option<i32>>,
+    /// the detector's gaps, re-seeded after the open's positioning seek (that seek's amnesty would clear them)
+    seed: Mutex<Option<Vec<i32>>>,
     /// the frame `fetch_due` handed out last (each frame comes back once)
     last: AtomicI32,
     shown: Mutex<Option<(i32, Arc<Image>)>>,
@@ -51,7 +53,7 @@ impl SequenceDecoder {
             duration_secs: frames as f64 / rate.as_f64() };
         let index = Arc::new(FrameIndex::new(rate.den as i32, rate.num as i32, rate.num as i32, rate.den as i32, frames, true));
         Ok(SequenceDecoder { cache, info, index, fps: rate.as_f64(), playing: AtomicBool::new(false), seeks: AtomicU32::new(0), published: AtomicU64::new(0), current: AtomicI32::new(-1),
-            want: Mutex::new(Some(0)), last: AtomicI32::new(-1), shown: Mutex::new(None) })
+            want: Mutex::new(Some(0)), seed: Mutex::new(None), last: AtomicI32::new(-1), shown: Mutex::new(None) })
     }
     pub fn cache(&self) -> &ImageSequenceCache { &self.cache }
     /// The inspector's frame-rate chips (QCView `TimelineController::setFrameRate`): the frame count stays, the cache keeps its frames.
@@ -80,8 +82,12 @@ impl SequenceDecoder {
     pub fn current_frame(&self) -> i32 { self.current.load(Acquire) }
 
     /// A user seek: the cache bumps its generation and puts `f` at the front of the queue.
+    /// QCView `startImageSequence`'s seed: the gaps show as ticks before any IO; they survive the open's positioning seek
+    /// (the first one), a later seek's amnesty clears them as in QCView.
+    pub fn seed_missing(&self, frames: &[i32]) { if frames.is_empty() { return } self.cache.set_known_missing(frames); *self.seed.lock().unwrap() = Some(frames.to_vec()); }
     pub fn seek_to_frame(&self, f: i32) {
         self.cache.update_playhead(f, true);
+        if let Some(s) = self.seed.lock().unwrap().take() { self.cache.set_known_missing(&s); }
         *self.want.lock().unwrap() = Some(f.clamp(0, self.cache.frame_count() - 1));
         self.last.store(-1, Release);
         self.seeks.fetch_add(1, AcqRel);
@@ -218,6 +224,17 @@ mod tests {
         assert!(t.set_sequence_layer("diffuse"));
         assert_eq!(t.timeline.tracks[0].clips[0].sequence_exr_layer, "diffuse", "the clip carries the layer (the hover keys)");
         assert!(wait(|| cache(&t).is_some_and(|p| p != beauty)), "frame 0 reloads at the diffuse layer");
+        let _ = std::fs::remove_dir_all(d);
+    }
+    #[test]
+    fn a_playlist_sequence_clip_seeds_its_gaps_at_open() {
+        let Some(d) = sequence("plgaps") else { eprintln!("ffmpeg missing: skipped"); return };
+        let m = qcv_timeline::MediaInfo { id: "s".into(), name: "s".into(), path: d.join("f_1001.png").to_string_lossy().into_owned(), kind: qcv_timeline::ClipMediaKind::ImageSequence, rate: Rate::new(24, 1), duration: 24, width: 64, height: 36, has_audio: false,
+            sequence_pattern: d.join("f_%04d.png").to_string_lossy().into_owned(), sequence_start_frame: 1001, sequence_end_frame: 1024, sequence_exr_layer: String::new(), sequence_missing: vec![17] };   // frame 17 "missing" per the detector
+        let mut e = qcv_timeline::Editor::default();
+        e.load_playlist("pl", &[m], &[qcv_timeline::InOutRange::default()], Rate::new(24, 1), 0, (64, 36), "");
+        let t = crate::Transport::open_playlist(e.timeline, crate::TransportOptions { scrub: None, seq: StreamingConfig::from_settings(2, 24), ..Default::default() }).unwrap();
+        assert!(t.decoder().as_sequence().unwrap().cache().failed_frames().contains(&17), "the seed survives the open's positioning seek");
         let _ = std::fs::remove_dir_all(d);
     }
     #[test]

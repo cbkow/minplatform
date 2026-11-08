@@ -60,10 +60,12 @@ pub struct Clip {
     /// 0 = unknown (a Finder drop before its metadata arrives)
     pub source_duration: i64, pub has_audio: bool,
     pub sequence_pattern: String, pub sequence_start_frame: i64, pub sequence_end_frame: i64, pub sequence_exr_layer: String, pub audio_muted: bool,
+    /// an image sequence's gaps on disk at detection (0-based) — seeded into the cache's failed set at open (QCView `startImageSequence`)
+    pub sequence_missing: Vec<i32>,
 }
 impl Clip {
     pub fn gap(duration: i64) -> Clip { Clip { id: fresh_id(), name: "Gap".into(), is_gap: true, duration, ..Clip::empty() } }
-    pub fn empty() -> Clip { Clip { id: String::new(), name: String::new(), start: 0, duration: 0, source_in: 0, source_out: 0, is_gap: false, media_kind: ClipMediaKind::Video, media_path: String::new(), media_item_id: String::new(), source_rate: Rate::new(24, 1), source_width: 0, source_height: 0, source_duration: 0, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), audio_muted: false } }
+    pub fn empty() -> Clip { Clip { id: String::new(), name: String::new(), start: 0, duration: 0, source_in: 0, source_out: 0, is_gap: false, media_kind: ClipMediaKind::Video, media_path: String::new(), media_item_id: String::new(), source_rate: Rate::new(24, 1), source_width: 0, source_height: 0, source_duration: 0, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), audio_muted: false, sequence_missing: vec![] } }
     pub fn end(&self) -> i64 { self.start + self.duration }
     /// Half-open containment: at the exact end of A which starts B, the next clip wins.
     pub fn contains(&self, frame: i64) -> bool { frame >= self.start && frame < self.end() }
@@ -150,7 +152,9 @@ impl Timeline {
 /// Media facts the loaders take (QCView's `MediaItem` slice the timeline reads).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaInfo { pub id: String, pub name: String, pub path: String, pub kind: ClipMediaKind, pub rate: Rate, /// source frames; 0 = unknown
-    pub duration: i64, pub width: u32, pub height: u32, pub has_audio: bool, pub sequence_pattern: String, pub sequence_start_frame: i64, pub sequence_end_frame: i64 }
+    pub duration: i64, pub width: u32, pub height: u32, pub has_audio: bool, pub sequence_pattern: String, pub sequence_start_frame: i64, pub sequence_end_frame: i64,
+    /// the item's EXR layer and gaps on disk (a playlist clip opens its sequence with them)
+    pub sequence_exr_layer: String, pub sequence_missing: Vec<i32> }
 /// A playlist entry's trim in source frames; None = the full clip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct InOutRange { pub in_point: Option<i64>, pub out_point: Option<i64> }
@@ -180,7 +184,7 @@ impl Editor {
     pub fn load_single_media(&mut self, m: &MediaInfo) {
         let mut t = Timeline { name: m.name.clone(), mode: SourceMode::SingleMedia, rate: m.rate, duration: m.duration.max(0), ..Default::default() };
         let mut track = Track::video(TRACK_A, true);
-        track.clips.push(Clip { id: fresh_id(), name: m.name.clone(), start: 0, duration: t.duration, source_in: 0, source_out: t.duration, media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: m.rate, source_width: m.width, source_height: m.height, source_duration: t.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, ..Clip::empty() });
+        track.clips.push(Clip { id: fresh_id(), name: m.name.clone(), start: 0, duration: t.duration, source_in: 0, source_out: t.duration, media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: m.rate, source_width: m.width, source_height: m.height, source_duration: t.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, sequence_exr_layer: m.sequence_exr_layer.clone(), sequence_missing: m.sequence_missing.clone(), ..Clip::empty() });
         t.tracks.push(track);
         self.timeline = t; self.playlist_media_item_id.clear(); self.undo.clear(); self.redo.clear(); self.changed();
     }
@@ -193,7 +197,7 @@ impl Editor {
         for (i, m) in items.iter().enumerate() {
             let r = trims.get(i).copied().unwrap_or_default();
             let src_in = r.in_point.unwrap_or(0).max(0); let src_out = r.out_point.unwrap_or(m.duration);
-            let mut c = Clip { id: fresh_id(), name: m.name.clone(), start: cursor, source_in: src_in, source_out: src_out, media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: m.rate, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, ..Clip::empty() };
+            let mut c = Clip { id: fresh_id(), name: m.name.clone(), start: cursor, source_in: src_in, source_out: src_out, media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: m.rate, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, sequence_exr_layer: m.sequence_exr_layer.clone(), sequence_missing: m.sequence_missing.clone(), ..Clip::empty() };
             c.duration = c.source_len_at(master_rate);
             cursor += c.duration; track.clips.push(c);
             if gap_frames > 0 && i + 1 < items.len() { let mut g = Clip::gap(gap_frames); g.start = cursor; cursor += gap_frames; track.clips.push(g); }
@@ -284,7 +288,7 @@ impl Editor {
     /// Drop-to-add at a clip-array index (past the end appends); the track re-flows contiguously. Returns the new id.
     pub fn insert_clip_at_index(&mut self, track: &str, at_index: usize, m: &MediaInfo, trim: InOutRange) -> Option<String> {
         if !self.editable(track) || m.path.is_empty() || m.kind == ClipMediaKind::Audio { return None }   // audio media is not allowed in playlists
-        let mut c = Clip { id: fresh_id(), name: m.name.clone(), source_in: trim.in_point.unwrap_or(0).max(0), source_out: trim.out_point.unwrap_or(m.duration), media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: if m.rate.num > 0 { m.rate } else { self.timeline.rate }, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, ..Clip::empty() };
+        let mut c = Clip { id: fresh_id(), name: m.name.clone(), source_in: trim.in_point.unwrap_or(0).max(0), source_out: trim.out_point.unwrap_or(m.duration), media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: if m.rate.num > 0 { m.rate } else { self.timeline.rate }, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, sequence_exr_layer: m.sequence_exr_layer.clone(), sequence_missing: m.sequence_missing.clone(), ..Clip::empty() };
         c.duration = c.source_len_at(self.timeline.rate);
         if c.duration <= 0 { return None }
         let idx = at_index.min(self.timeline.track(track)?.clips.len());
@@ -390,7 +394,7 @@ pub fn fresh_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn media(name: &str, frames: i64, rate: Rate) -> MediaInfo { MediaInfo { id: name.into(), name: name.into(), path: format!("/m/{name}.mov"), kind: ClipMediaKind::Video, rate, duration: frames, width: 1920, height: 1080, has_audio: true, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1 } }
+    fn media(name: &str, frames: i64, rate: Rate) -> MediaInfo { MediaInfo { id: name.into(), name: name.into(), path: format!("/m/{name}.mov"), kind: ClipMediaKind::Video, rate, duration: frames, width: 1920, height: 1080, has_audio: true, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), sequence_missing: vec![] } }
     #[test] fn rescale_round_trips_at_equal_rates() { let r = Rate::from_f64(23.976); let t = RationalTime::new(12345, r); assert_eq!(t.rescaled_to(r), t); assert_eq!(r, Rate { num: 24000, den: 1001 }); }
     #[test] fn exact_rates_from_rationals() { assert_eq!(Rate::from_rational(24000, 1001), Some(Rate::new(24000, 1001))); assert_eq!(Rate::from_rational(0, 1), None); assert_eq!(Rate::from_f64(25.0), Rate::new(25, 1)); assert_eq!(Rate::from_f64(23.5), Rate::new(23500, 1000)); }
     #[test] fn mixed_rates_snap() { let a = Rate::new(24, 1); let b = Rate::new(30, 1); assert_eq!(rescale(24, a, b), 30); assert_eq!(rescale(1, a, b), 1); assert_eq!(rescale(7, b, a), 6); }
