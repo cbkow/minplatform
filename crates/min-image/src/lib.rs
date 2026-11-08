@@ -67,6 +67,20 @@ pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
     }
 }
 
+/// Width and height from the headers (QCView's `getDimensions`) — the sequence cache's first-frame probe.
+pub fn dimensions(path: &str, layer: &str) -> Result<(u32, u32), Error> {
+    match Format::of(path) {
+        Some(Format::Exr) => exr::dimensions(path, layer),
+        Some(Format::Png) => png::dimensions(path),
+        Some(Format::Tiff) => tiff::dimensions(path),
+        Some(Format::Jpeg) => jpeg::dimensions(path),
+        None => Err(Error::Open(format!("{path}: not an image format min-image reads"))),
+    }
+}
+
+/// Bytes the frame holds (the cache's LRU cost).
+impl Image { pub fn byte_size(&self) -> usize { self.planes.iter().map(|p| p.len()).sum() } }
+
 /// Interleaved samples as a loader produced them, before [`Image::from_interleaved`] splits them into planes.
 pub(crate) enum Samples<'a> { U8(&'a [u8]), /// 16-bit integers or IEEE half bits, host order
     U16(&'a [u16]) }

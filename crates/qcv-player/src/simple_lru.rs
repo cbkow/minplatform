@@ -27,12 +27,16 @@ impl<K: Eq + Hash + Clone, V: Clone> SimpleLru<K, V> {
     /// Does NOT touch the LRU.
     pub fn peek(&self, k: &K) -> Option<V> { self.inner.lock().unwrap().map.get(k).map(|e| e.0.clone()) }
     /// Replaces any entry for `k`, pushes to MRU, evicts the oldest while over budget.
-    pub fn add(&self, k: K, v: V, bytes: usize) {
+    pub fn add(&self, k: K, v: V, bytes: usize) { self.add_evicting(k, v, bytes); }
+    /// [`Self::add`], returning the keys the budget pushed out (QCView's eviction callback runs on them, outside the lock).
+    pub fn add_evicting(&self, k: K, v: V, bytes: usize) -> Vec<K> {
         let mut i = self.inner.lock().unwrap();
         if let Some((_, old)) = i.map.remove(&k) { i.bytes -= old; if let Some(p) = i.order.iter().position(|x| *x == k) { i.order.remove(p); } }
         i.map.insert(k.clone(), (v, bytes)); i.bytes += bytes; i.order.push_back(k);
-        Self::evict(&mut i);
+        Self::evict(&mut i)
     }
+    /// Every key, unordered (callers that need QCView's `std::map` order sort).
+    pub fn keys(&self) -> Vec<K> { self.inner.lock().unwrap().map.keys().cloned().collect() }
     pub fn remove(&self, k: &K) -> Option<V> {
         let mut i = self.inner.lock().unwrap();
         let (v, b) = i.map.remove(k)?; i.bytes -= b;
@@ -40,11 +44,14 @@ impl<K: Eq + Hash + Clone, V: Clone> SimpleLru<K, V> {
         Some(v)
     }
     pub fn clear(&self) { let mut i = self.inner.lock().unwrap(); i.map.clear(); i.order.clear(); i.bytes = 0; }
-    fn evict(i: &mut Inner<K, V>) {
+    fn evict(i: &mut Inner<K, V>) -> Vec<K> {
+        let mut out = vec![];
         while i.bytes > i.max_bytes && i.order.len() > 1 {   // never evict the only (just-added) entry
             let Some(k) = i.order.pop_front() else { break };
             if let Some((_, b)) = i.map.remove(&k) { i.bytes -= b; }
+            out.push(k);
         }
+        out
     }
 }
 

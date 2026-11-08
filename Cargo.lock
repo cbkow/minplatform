@@ -2898,6 +2898,7 @@ dependencies = [
  "libc",
  "log",
  "min-ffmpeg",
+ "min-image",
  "min-paths",
  "min-present",
  "objc2-audio-toolbox",

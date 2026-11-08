@@ -14,6 +14,7 @@ pub mod thumbnail_cache;
 pub mod scrub_decoder;
 pub mod scrub_frame_cache;
 pub mod simple_lru;
+pub mod image_sequence_cache;
 pub mod video_decoder;
 pub mod audio;
 pub use ffmpeg::{OpenOptions, SeqOptions, Session, SessionInfo};

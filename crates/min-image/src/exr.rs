@@ -49,6 +49,17 @@ pub fn layers(path: &str) -> Result<Vec<String>, Error> {
 
 /// Decode `path` (QCView `loadFrame`): `layer` "" = the default; `threads` 0 = all cores, capped at 8 (QCView's probe: 8 is
 /// the knee on 4K DWAB).
+/// The display window's size of the part `layer` selects (QCView's layer-aware `getDimensions`) — headers only.
+pub fn dimensions(path: &str, layer: &str) -> Result<(u32, u32), Error> {
+    if std::fs::metadata(path).is_err() { return Err(Error::Open(format!("{path}: missing"))) }
+    let ctx = open(path)?;
+    let mut parts = 0; ok(unsafe { exr_get_count(ctx.0, &mut parts) }, "exr_get_count", path)?;
+    let part = if layer.is_empty() || parts <= 1 { 0 } else { (0..parts).find(|p| part_name(&ctx, *p).as_deref() == Some(layer)).unwrap_or(0) };
+    let mut disp = exr_attr_box2i_t::default();
+    ok(unsafe { exr_get_display_window(ctx.0, part, &mut disp) }, "display window", path)?;
+    Ok(((disp.max.x - disp.min.x + 1).max(0) as u32, (disp.max.y - disp.min.y + 1).max(0) as u32))
+}
+
 pub fn load(path: &str, layer: &str, threads: usize) -> Result<Image, Error> {
     let ctx = open(path)?;
     let mut parts = 0; ok(unsafe { exr_get_count(ctx.0, &mut parts) }, "exr_get_count", path)?;
