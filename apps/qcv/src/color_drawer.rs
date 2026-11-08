@@ -22,7 +22,8 @@ fn tr(s: &'static str) -> &'static str { min_i18n::trc("ColorPanel", s) }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
     NewOcio, OpenConfig, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
-    Aids(ViewerAids), ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
+    Aids(ViewerAids), /// the drawer's height after a drag of its top edge (logical px)
+    Height(f64), ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
 
 /// What the drawer shows, fed by the shell every sync.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,6 +61,8 @@ pub struct ColorDrawer {
     /// logical px (the user can resize later; the store keeps it)
     pub height: f64,
     pub rect: Rect,
+    /// the top edge's resize grip (the rails' splitter, turned): hovered, and the drag's (pointer y, height) at the press
+    split_hover: bool, split_drag: Option<(f64, f64)>,
     tab: Rect, tab_hover: bool, tab_ramp: Ramp, present: Ramp,
     presets: ListColumn, gamut: ListColumn, transfer: ListColumn, render: ListColumn,
     /// OCIO's columns (QCView: Config · Input · Look · View)
@@ -93,7 +96,7 @@ impl ColorDrawer {
         let mut gamut_names = qcv_color::input_gamut_names(); gamut_names.truncate(15);
         let transfer_names = qcv_color::input_transfer_names();
         ColorDrawer {
-            open, open_ramp: Ramp::new(if open { 1.0 } else { 0.0 }, t::RAIL_COLLAPSE_DURATION), height, rect: Rect::ZERO,
+            open, open_ramp: Ramp::new(if open { 1.0 } else { 0.0 }, t::RAIL_COLLAPSE_DURATION), height, rect: Rect::ZERO, split_hover: false, split_drag: None,
             tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE),
             presets: ListColumn::new(tr("Presets")), gamut: ListColumn::new(tr("Input gamut")), transfer: ListColumn::new(tr("Input transfer")), render: ListColumn::new(tr("Rendering")),
             ocfg: ListColumn::new(tr("Config")), oinput: ListColumn::new(tr("Input")).with_filter(), olook: ListColumn::new(tr("Look")), oview: ListColumn::new(tr("View")), ocfg_keys: vec![],
@@ -118,7 +121,10 @@ impl ColorDrawer {
     pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee.animating(now) || self.agx.animating(now) || self.exp.animating(now) || self.gam.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
     pub fn is_modal(&self) -> bool { self.menu.is_open() || self.naming.is_some() }
     pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee.focused() || self.agx.focused() || self.oinput.focused() }
-    fn dragging(&self) -> bool { self.knee.dragging() || self.agx.dragging() || self.exp.dragging() || self.gam.dragging() }
+    /// The top edge is under the pointer or being dragged (the shell shows the row-resize cursor).
+    pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
+    fn split_zone(&self) -> Rect { let z = t::SPLITTER_HOT_ZONE as f64 * self.scale; Rect::new(self.rect.x0, self.rect.y0 - z, self.rect.x1, self.rect.y0 + z) }
+    fn dragging(&self) -> bool { self.split_drag.is_some() || self.knee.dragging() || self.agx.dragging() || self.exp.dragging() || self.gam.dragging() }
     pub fn set_pointer_present(&mut self, on: bool, now: Instant) { if on { if self.present.target() < 0.5 { self.present = Ramp::new(1.0, t::ANIMATION_DURATION_SLIDE); } } else { self.present.set_target(0.0, now); } }
 
     /// Mirror the shell's state; true when something visible changed.
@@ -329,6 +335,17 @@ impl ColorDrawer {
         if over_tab != self.tab_hover { self.tab_hover = over_tab; self.tab_ramp.set_target(if over_tab { 1.0 } else { 0.0 }, now); dirty = true; }
         if let Event::Down { button: Button::Primary, .. } = e { if over_tab { cmds.push(Cmd::Toggle); return (cmds, true, true) } }
         if self.rect.height() <= 1.0 { return (cmds, dirty, false) }
+        // the top edge: drag to resize (200…600 px, kept in the store on release)
+        if let Some((y0, h0)) = self.split_drag {
+            match *e {
+                Event::Move { y, .. } => { self.height = (h0 + (y0 - y) / self.scale).clamp(200.0, 600.0).round(); return (cmds, true, true) }
+                Event::Up { .. } | Event::Leave => { self.split_drag = None; cmds.push(Cmd::Height(self.height)); return (cmds, true, true) }
+                _ => return (cmds, false, true),
+            }
+        }
+        let on_edge = self.open && e.pos().is_some_and(|(x, y)| self.split_zone().contains(kurbo::Point::new(x, y)));
+        if on_edge != self.split_hover { self.split_hover = on_edge; dirty = true; }
+        if on_edge { if let Event::Down { y, button: Button::Primary, .. } = *e { self.split_drag = Some((y, self.height)); return (cmds, true, true) } }
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y)));
         if !inside && !self.dragging() && !matches!(e, Event::Up { .. } | Event::Leave) { return (cmds, dirty, false) }
         let mc = self.view.as_ref().is_some_and(|v| !v.stored.chain.is_ocio());
@@ -445,7 +462,9 @@ impl ColorDrawer {
         if self.rect.height() <= 1.0 { return }
         let s = self.scale;
         paint::rect(scene, self.rect, t::RAIL_BACKGROUND_COLOR);
-        paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + s.max(1.0)), t::DIVIDER_COLOR);
+        // the top edge: the divider, brighter as the resize grip under the pointer
+        let edge = if self.splitter_hovered() { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR };
+        paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + if self.splitter_hovered() { 2.0 * s } else { s.max(1.0) }), edge);
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.rect);
         let Some(v) = self.view.clone() else { scene.pop_layer(); return };
         // header: COLOR · the target · its status

@@ -587,6 +587,7 @@ impl App {
             let (more, d, consumed) = g.drawer.event(&e, now, &mut g.fonts, bounds); cmds.extend(more);
             if d { g.ui_dirty = true; }
             let typing = g.drawer.is_typing(); if typing != was_typing { set_ime(&**g.window, typing); }
+            if g.drawer.splitter_hovered() { if g.cursor != winit::cursor::CursorIcon::RowResize { g.cursor = winit::cursor::CursorIcon::RowResize; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); } } else if g.cursor == winit::cursor::CursorIcon::RowResize { g.cursor = winit::cursor::CursorIcon::Default; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); }
             for c in cmds { self.color_cmd(c); }
             if consumed || modal { return }
         }
@@ -598,7 +599,7 @@ impl App {
             let lr = g.left.event(&e, now); let rr = g.right.event(&e, now);
             if lr.dirty || rr.dirty { g.ui_dirty = true; }
             let over_left = e.pos().is_some_and(|(x, y)| g.left.hit(x, y)); let over_right = e.pos().is_some_and(|(x, y)| g.right.hit(x, y));
-            let want = if g.left.splitter_hovered() || g.right.splitter_hovered() { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
+            let want = if g.drawer.splitter_hovered() { winit::cursor::CursorIcon::RowResize } else if g.left.splitter_hovered() || g.right.splitter_hovered() { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
             let mut cmds = vec![]; let mut pcmds: Vec<project_panel::Cmd> = vec![]; let mods = self.mods;
             // a press on a rail's own control (the collapse arrow, the scrollbar) is the rail's, not the panel's
