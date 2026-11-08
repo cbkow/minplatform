@@ -190,7 +190,8 @@ pub enum Edit {
 
 #[derive(Debug, Default)]
 pub struct Editor { pub timeline: Timeline, undo: Vec<Edit>, redo: Vec<Edit>, /// bumps on every mutation (QCView's `timelineChanged`)
-    pub generation: u64, pub playlist_media_item_id: String }
+    pub generation: u64, /// dual (row 212): how far the last edit grew the timeline to the LEFT (every clip moved right by it; the playhead follows)
+    pub last_grow: i64, pub playlist_media_item_id: String }
 
 impl Editor {
     pub fn new(timeline: Timeline) -> Editor { Editor { timeline, ..Default::default() } }
@@ -237,18 +238,28 @@ impl Editor {
     /// Dual (row 212): move `clip` by `delta` frames — with every LATER clip on its track when `carry` (one version of the
     /// cut travels together), alone otherwise. The move is clamped so nothing crosses the clip before it (or frame 0) and,
     /// moving alone, the clip after it. One undo step. Returns the delta applied.
+    /// The first clip on a track may move past frame 0: the timeline GROWS to the left (every other clip, both tracks, moves
+    /// right by the overshoot — `last_grow`; the caller moves the playhead with them).
     pub fn shift_clips(&mut self, track: &str, clip: &str, delta: i64, carry: bool) -> i64 {
+        self.last_grow = 0;
         if delta == 0 || !self.editable(track) { return 0 }
         let Some(t) = self.timeline.track(track) else { return 0 };
         let mut clips: Vec<&Clip> = t.clips.iter().filter(|c| !c.is_gap).collect(); clips.sort_by_key(|c| c.start);
         let Some(i) = clips.iter().position(|c| c.id == clip) else { return 0 };
-        let lo = if i > 0 { clips[i - 1].end() } else { 0 };
+        let grows = self.timeline.mode == SourceMode::Dual && i == 0;
+        let lo = if i > 0 { clips[i - 1].end() } else if grows { i64::MIN / 4 } else { 0 };
         let moving: Vec<Clip> = if carry { clips[i..].iter().map(|c| (*c).clone()).collect() } else { vec![clips[i].clone()] };
         let mut d = delta.max(lo - clips[i].start);
         if !carry { if let Some(next) = clips.get(i + 1) { d = d.min(next.start - clips[i].end()); } }
         if d == 0 { return 0 }
-        let edits: Vec<Edit> = moving.iter().map(|c| { let mut n = c.clone(); n.start += d; Edit::Replace { track: track.into(), clip: c.id.clone(), old: c.clone(), new: n, label: "Slide clip" } }).collect();
-        if self.push(Edit::Batch { edits, label: "Slide clip" }) { d } else { 0 }
+        let grow = if grows { (-(clips[i].start + d)).max(0) } else { 0 };
+        let mut edits: Vec<Edit> = moving.iter().map(|c| { let mut n = c.clone(); n.start += d + grow; Edit::Replace { track: track.into(), clip: c.id.clone(), old: c.clone(), new: n, label: "Slide clip" } }).collect();
+        if grow > 0 { let ids: Vec<String> = moving.iter().map(|c| c.id.clone()).collect(); edits.extend(self.shift_all_except(grow, &ids)); }
+        if self.push(Edit::Batch { edits, label: "Slide clip" }) { self.last_grow = grow; d } else { 0 }
+    }
+    /// Replace edits moving every clip on every track right by `o`, except `skip` (a left-growth's companions).
+    fn shift_all_except(&self, o: i64, skip: &[String]) -> Vec<Edit> {
+        self.timeline.tracks.iter().flat_map(|t| t.clips.iter().filter(|c| !skip.contains(&c.id)).map(move |c| { let mut n = c.clone(); n.start += o; Edit::Replace { track: t.id.clone(), clip: c.id.clone(), old: c.clone(), new: n, label: "Slide clip" } })).collect()
     }
     /// Dual (row 212): delete `clip` and pull the later clips on its track left by its length (Shift+Delete). One undo step.
     pub fn delete_and_close(&mut self, track: &str, clip: &str) -> bool {
@@ -311,6 +322,18 @@ impl Editor {
     /// The head moves to `new_start` with `new_source_in`; the end stays (duration = old end − new start).
     pub fn trim_clip_head(&mut self, track: &str, clip: &str, new_start: i64, new_source_in: i64) -> bool {
         let Some(old) = self.clip_copy(track, clip) else { return false };
+        self.last_grow = 0;
+        // dual: a head extended past frame 0 grows the timeline to the left — everything else moves right by the overshoot
+        if new_start < 0 && self.timeline.mode == SourceMode::Dual {
+            if !self.editable(track) { return false }
+            let o = -new_start;
+            let mut n = old.clone(); n.start = 0; n.source_in = new_source_in; Self::clamp_source(&mut n); n.duration = old.end() + o;
+            if n.source_in != new_source_in { return false }   // the source has no frames there
+            let mut edits = vec![Edit::Replace { track: track.into(), clip: clip.into(), old, new: n, label: "Trim head" }];
+            edits.extend(self.shift_all_except(o, &[clip.to_string()]));
+            if self.push(Edit::Batch { edits, label: "Trim head" }) { self.last_grow = o; return true }
+            return false
+        }
         let mut n = old.clone(); n.start = new_start.max(0); n.source_in = new_source_in; Self::clamp_source(&mut n); n.duration = (old.end() - n.start).max(0);
         self.replace(track, clip, n, "Trim head")
     }
@@ -547,6 +570,25 @@ mod tests {
         assert!(ed.undo_edit()); assert_eq!(starts(&ed), before);
         // A is untouched throughout
         assert_eq!(ed.timeline.track(TRACK_A).unwrap().clips.len(), 1);
+    }
+    #[test]
+    fn dual_grows_to_the_left_past_frame_zero() {
+        let mut ed = Editor::default();
+        ed.load_dual(Some(&media("a", 240, Rate::new(24, 1))), Some(&media("b", 240, Rate::new(24, 1))), Rate::new(24, 1));
+        let b = ed.timeline.track(TRACK_B).unwrap().clips[0].id.clone();
+        // pull B 14 frames earlier than A: A (and anything else) moves right instead, B lands at 0
+        assert_eq!(ed.shift_clips(TRACK_B, &b, -14, true), -14); assert_eq!(ed.last_grow, 14);
+        assert_eq!((ed.timeline.track(TRACK_A).unwrap().clips[0].start, ed.timeline.track(TRACK_B).unwrap().clips[0].start), (14, 0));
+        assert_eq!(ed.timeline.duration, 254);
+        assert!(ed.undo_edit()); assert_eq!(ed.timeline.track(TRACK_A).unwrap().clips[0].start, 0);
+        // a head trimmed out past 0 (B's source from 20 → extend 10 earlier than the timeline start)
+        let mut ed = Editor::default();
+        ed.load_dual(Some(&media("a", 240, Rate::new(24, 1))), Some(&media("b", 240, Rate::new(24, 1))), Rate::new(24, 1));
+        let b = ed.timeline.track(TRACK_B).unwrap().clips[0].id.clone();
+        assert!(ed.trim_clip_head(TRACK_B, &b, 20, 20));   // B now starts at 20 from source 20
+        assert!(ed.shift_clips(TRACK_B, &b, -20, true) == -20 && ed.last_grow == 0);   // B back to 0, source 20
+        assert!(ed.trim_clip_head(TRACK_B, &b, -10, 10)); assert_eq!(ed.last_grow, 10);
+        assert_eq!((ed.timeline.track(TRACK_A).unwrap().clips[0].start, ed.timeline.track(TRACK_B).unwrap().clips[0].start, ed.timeline.track(TRACK_B).unwrap().clips[0].source_in), (10, 0, 10));
     }
     #[test]
     fn a_side_timeline_is_its_track_at_its_own_rate_and_the_master_rate_change_keeps_times() {

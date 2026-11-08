@@ -92,7 +92,7 @@ impl DualBars {
             Op::TrimTail => { let out = (c.source_out + src(d)).clamp(c.source_in + 1, if c.source_duration > 0 { c.source_duration } else { i64::MAX }); (out != c.source_out).then(|| LaneCmd::TrimTail { side, clip: c.id.clone(), new_source_out: out }) }
             Op::TrimHead => { let inn = (c.source_in + src(d)).clamp(0, c.source_out - 1); (inn != c.source_in).then(|| LaneCmd::TrimHead { side, clip: c.id.clone(), new_start: c.start + rescale(inn - c.source_in, c.source_rate, tl.rate), new_source_in: inn }) }
             Op::Slip => { let len = c.source_out - c.source_in; let max_in = if c.source_duration > 0 { (c.source_duration - len).max(0) } else { i64::MAX }; let inn = (c.source_in + src(d)).clamp(0, max_in); (inn != c.source_in).then(|| LaneCmd::Slip { side, clip: c.id.clone(), new_in: inn, new_out: inn + len }) }
-            Op::Slide => { let d = d.max(-c.start); (d != 0).then(|| LaneCmd::Slide { side, clip: c.id.clone(), delta: d, carry: g.carry }) }
+            Op::Slide => (d != 0).then(|| LaneCmd::Slide { side, clip: c.id.clone(), delta: d, carry: g.carry }),   // past frame 0 the timeline grows left (row 212)
         };
         (cmd, snap)
     }
@@ -145,7 +145,7 @@ impl DualBars {
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r);
         for side in [Side::A, Side::B] {
             let lane = self.lane(side); let (y0, y1) = (lane.y0 + inset, lane.y1 - inset);
-            let (strong, muted) = if side == Side::A { (t::SIDE_A_COLOR, t::SIDE_A_MUTED_COLOR) } else { (t::SIDE_B_COLOR, t::SIDE_B_MUTED_COLOR) };
+            let strong = if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR };
             // the target lane: a hairline in its side colour along its left end (⌘K and the keys act here)
             if self.target == side { paint::rect(scene, Rect::new(lane.x0, y0, lane.x0 + 2.0 * scale, y1), strong); }
             for c in clips(tl, side) {
@@ -158,10 +158,16 @@ impl DualBars {
                 }
                 let selected = self.selected.as_ref().is_some_and(|(s, id)| *s == side && *id == c.id);
                 let hovered = self.hover.as_ref().is_some_and(|h| h.0 == side && h.1 == c.id);
-                let fill = if selected { strong } else if hovered { mix_c(muted, strong, 0.35) } else { muted };
-                let cr = Rect::new(x0 + 0.5 * scale, y0, (x1 - 0.5 * scale).max(x0 + scale), y1);
+                let current = c.contains(st.current as i64);
+                // Spectrum 2: neutral surfaces (the playlist bar's greys), the side's colour as a 2-px accent along the top
+                let fill = if selected { t::PLAYLIST_BAR_SELECTED_COLOR } else if hovered { t::PLAYLIST_BAR_CLIP_HOVER_COLOR } else if current { t::PLAYLIST_BAR_CURRENT_COLOR } else { t::PLAYLIST_BAR_CLIP_COLOR };
+                // drawn inside the lane only: zoomed in on a long film a clip spans far off-screen, and vello's coverage breaks at those extents
+                let (vx0, vx1) = (lane.x0 - 4.0 * scale, lane.x1 + 4.0 * scale);
+                let cr = Rect::new((x0 + 0.5 * scale).max(vx0), y0, (x1 - 0.5 * scale).max(x0 + scale).min(vx1), y1);
+                if cr.x1 <= cr.x0 { continue }
                 paint::rounded(scene, cr, radius, fill);
-                if let Some((s, id, z)) = &self.hover { if *s == side && *id == c.id && g.is_none() { let w = 2.0 * scale; match z { Zone::Head => paint::rect(scene, Rect::new(cr.x0, y0, cr.x0 + w, y1), t::GRAY_900), Zone::Tail => paint::rect(scene, Rect::new(cr.x1 - w, y0, cr.x1, y1), t::GRAY_900), Zone::Body => {} } } }
+                paint::rect(scene, Rect::new(cr.x0, y0, cr.x1, y0 + 2.0 * scale), strong);
+                if let Some((s, id, z)) = &self.hover { if *s == side && *id == c.id && g.is_none() { let w = 2.0 * scale; let hc = t::PLAYLIST_BAR_HANDLE_COLOR; match z { Zone::Head => paint::rect(scene, Rect::new(cr.x0, y0, cr.x0 + w, y1), hc), Zone::Tail => paint::rect(scene, Rect::new(cr.x1 - w, y0, cr.x1, y1), hc), Zone::Body => {} } } }
             }
         }
         // the snap line across both lanes
@@ -178,7 +184,13 @@ impl DualBars {
             };
             Some(format!("{}{n} f  →  {at}", if n > 0 { "+" } else { "" }))
         } else if let Some((s, id, _)) = &self.hover {
-            clips(tl, *s).into_iter().find(|c| c.id == *id).map(|c| { let o = offset(c, tl.rate); format!("{} {}{o} f", if *s == Side::A { "A" } else { "B" }, if o > 0 { "+" } else { "" }) })
+            // the clip's offset against the other side's clip at the same spot (its first one otherwise): "B −14 f vs A"
+            let other = if *s == Side::A { Side::B } else { Side::A };
+            clips(tl, *s).into_iter().find(|c| c.id == *id).map(|c| {
+                let oc = clips(tl, other); let base = oc.iter().find(|k| k.contains(c.start)).or(oc.first()).map(|k| offset(k, tl.rate));
+                let name = |x: Side| if x == Side::A { "A" } else { "B" };
+                match base { Some(b) => { let o = offset(c, tl.rate) - b; format!("{} {}{o} f vs {}", name(*s), if o > 0 { "+" } else { "" }, name(other)) } None => { let o = offset(c, tl.rate); format!("{} {}{o} f", name(*s), if o > 0 { "+" } else { "" }) } }
+            })
         } else { None };
         if let Some(txt) = text {
             let l = fonts.layout(&txt, Family::Mono, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::PLAYLIST_BAR_LABEL_COLOR));
@@ -190,7 +202,6 @@ impl DualBars {
         }
     }
 }
-fn mix_c(a: min_theme::Color, b: min_theme::Color, k: f32) -> min_theme::Color { min_theme::Color::rgba(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k, a.a + (b.a - a.a) * k) }
 
 #[cfg(test)]
 mod tests {

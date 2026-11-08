@@ -48,16 +48,19 @@ pub struct Scrubber {
     pub failed: Vec<i32>,
     /// The cache band wraps around the whole timeline (looping) — QCView's split of the overflow to the far edge.
     pub cache_wraps: bool,
+    /// The track's minimum end inset in logical px (default: the row padding). macOS rounds the window's bottom corners: the
+    /// shell raises it past the corner radius so the timeline's ends (and the lanes below that share this camera) stay reachable.
+    pub end_inset: f64,
 }
 
 impl Default for Scrubber { fn default() -> Self { Scrubber::new() } }
 
 impl Scrubber {
-    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false } }
+    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0 } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn is_fit(&self) -> bool { self.pps.is_none() }
-    fn pad(&self, scale: f64) -> f64 { t::SPACING_100 as f64 * scale }
+    fn pad(&self, scale: f64) -> f64 { (t::SPACING_100 as f64).max(self.end_inset) * scale }
     /// The track: the band inset by the row padding. A resize keeps the visible time range.
     pub fn layout(&mut self, rect: Rect, scale: f64) {
         let w = (rect.width() - 2.0 * self.pad(scale)).max(1.0);

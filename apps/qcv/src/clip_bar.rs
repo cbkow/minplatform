@@ -152,7 +152,10 @@ impl ClipBar {
             let hovered = self.hover.as_ref().is_some_and(|h| h.0 == c.id);
             let dragged = g.is_some_and(|g| g.op == Op::Reorder && g.clip.id == c.id);
             let fill = if selected { t::PLAYLIST_BAR_SELECTED_COLOR } else if current { t::PLAYLIST_BAR_CURRENT_COLOR } else if hovered { t::PLAYLIST_BAR_CLIP_HOVER_COLOR } else { t::PLAYLIST_BAR_CLIP_COLOR };
-            let cr = Rect::new(x0 + 0.5 * scale, y0, (x1 - 0.5 * scale).max(x0 + scale), y1);
+            // inside the bar only (zoomed in on a long timeline a clip spans far off-screen; vello's coverage breaks at those extents)
+            let (vx0, vx1) = (r.x0 - 4.0 * scale, r.x1 + 4.0 * scale);
+            let cr = Rect::new((x0 + 0.5 * scale).max(vx0), y0, (x1 - 0.5 * scale).max(x0 + scale).min(vx1), y1);
+            if cr.x1 <= cr.x0 { continue }
             paint::rounded(scene, cr, radius, if dragged { t::PLAYLIST_BAR_GAP_COLOR } else { fill });
             // the name, elided in the middle, when there is room
             let pad = 6.0 * scale; let avail = cr.width() - 2.0 * pad;

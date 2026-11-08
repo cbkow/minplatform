@@ -431,7 +431,12 @@ impl App {
     }
     /// An edit landed in the dual editor: the transport follows (a split / delete reopens the sides).
     fn after_dual_edit(&mut self, structural: bool) {
-        if let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_ref()) { d.set_timeline(&ed.timeline, structural); }
+        if let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_mut()) {
+            // a growth to the left moved every clip right: the playhead moves with them (it stays on the same picture)
+            let grow = std::mem::take(&mut ed.last_grow); let f = d.current_frame() + grow as i32;
+            d.set_timeline(&ed.timeline, structural);
+            if grow > 0 { d.seek_to_frame(f); }
+        }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
     fn dual_lane_cmd(&mut self, c: dual_bars::LaneCmd) {
@@ -1558,7 +1563,10 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
-        if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }   // the waveform's A / B (row 173)
+        if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
+        // macOS rounds the window's bottom corners (~16 pt): the scrubber's camera insets past them, so the timeline's ends —
+        // and the playlist / dual lanes on the same camera — keep their trim zones reachable (the walk, 2026-11-08)
+        if cfg!(target_os = "macos") { if let Some(g) = self.gpu.as_mut() { g.scrubber.end_inset = 16.0; } }   // the waveform's A / B (row 173)
         if let Some(g) = self.gpu.as_mut() { g.thumbs.enabled = thumbs_enabled; }
         self.apply_pin();
         // the menu bar (QCView's MenuBar, row 143): the app's native menu on macOS; QCView's in-window bar on Windows (row 194)
