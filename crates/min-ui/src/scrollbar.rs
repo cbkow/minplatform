@@ -1,13 +1,14 @@
 //! An overlay scrollbar for a scrolled box (the rails' look, canon §25.4: a pill 4 px in from the edge, shown while the
-//! pointer is over the box or for a moment after a scroll, brighter and draggable on hover). The box owns `offset`.
-use crate::{paint, Button, Event};
+//! pointer is over the box or for a moment after a scroll, twice as wide, brighter and draggable on hover — the rail's
+//! `scrollbar()` exactly). The box owns `offset`.
+use crate::{anim::Ramp, paint, Button, Event};
 use kurbo::Rect;
 use min_theme::tokens as t;
 use std::time::Instant;
 use vello::Scene;
 
-#[derive(Default)]
-pub struct ScrollBar { pub offset: f64, content: f64, view: Rect, scale: f64, hover: bool, inside: bool, drag: Option<(f64, f64)>, last: Option<Instant> }
+pub struct ScrollBar { pub offset: f64, content: f64, view: Rect, scale: f64, hover: bool, inside: bool, drag: Option<(f64, f64)>, last: Option<Instant>, widen: Ramp }
+impl Default for ScrollBar { fn default() -> Self { ScrollBar { offset: 0.0, content: 0.0, view: Rect::ZERO, scale: 1.0, hover: false, inside: false, drag: None, last: None, widen: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } } }
 
 impl ScrollBar {
     /// The visible box and the content's full height (px).
@@ -18,7 +19,7 @@ impl ScrollBar {
         if self.max() <= 0.5 || self.view.height() <= 0.0 { return None }
         let w = t::SCROLLBAR_THICKNESS as f64 * self.scale; let inset = t::SPACING_50 as f64 * self.scale;
         let track = self.view.height() - 2.0 * inset;
-        let h = (track * self.view.height() / self.content).max(24.0 * self.scale).min(track);
+        let h = (track * self.view.height() / self.content).max(t::COMPONENT_HEIGHT_75 as f64 * self.scale).min(track);
         let y = self.view.y0 + inset + (track - h) * self.offset / self.max();
         Some(Rect::new(self.view.x1 - inset - w, y, self.view.x1 - inset, y + h))
     }
@@ -38,6 +39,7 @@ impl ScrollBar {
             Event::Up { .. } if self.drag.is_some() => { self.drag = None; mine = true; }
             _ => {}
         }
+        self.widen.set_target(if self.hover || self.drag.is_some() { 1.0 } else { 0.0 }, now);
         ((self.offset, self.hover, self.inside) != before, mine)
     }
     pub fn wheel(&mut self, dy_px: f64, now: Instant) -> bool {
@@ -45,12 +47,15 @@ impl ScrollBar {
         if (o - self.offset).abs() < 0.5 { return false }
         self.offset = o; self.last = Some(now); true
     }
-    pub fn animating(&self, now: Instant) -> bool { self.last.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + 50) }
+    pub fn animating(&self, now: Instant) -> bool { self.widen.animating(now) || self.last.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY + 50) }
     pub fn paint(&self, scene: &mut Scene, now: Instant) {
         let Some(th) = self.thumb() else { return };
         let recent = self.last.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY);
         if !(self.inside || recent || self.drag.is_some()) { return }
         let c = if self.hover || self.drag.is_some() { t::SCROLLBAR_COLOR_HOVER } else { t::SCROLLBAR_COLOR };
-        paint::rounded(scene, th, th.width() / 2.0, c);
+        // the rail's widening: the pill grows inward to twice its width under the pointer
+        let w = th.width() * (1.0 + self.widen.value(now) as f64);
+        let th = Rect::new(th.x1 - w, th.y0, th.x1, th.y1);
+        paint::rounded(scene, th, w / 2.0, c);
     }
 }

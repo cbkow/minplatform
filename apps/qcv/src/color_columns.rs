@@ -71,7 +71,7 @@ impl Frame {
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((self.rect.x0 + t::SPACING_50 as f64 * s, self.rect.y0 + (cap - l.height() as f64) / 2.0)));
             if on { let dot = 6.0 * s; let dx = self.rect.x0 + t::SPACING_50 as f64 * s + l.width() as f64 + t::SPACING_100 as f64 * s; paint::rounded(scene, Rect::new(dx, self.rect.y0 + (cap - dot) / 2.0, dx + dot, self.rect.y0 + (cap + dot) / 2.0), dot / 2.0, t::NOTICE_VISUAL_COLOR); }
             if self.collapse_hover { paint::rounded(scene, self.collapse, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
-            if let Some(g) = fonts.icon("caret-double-left", t::ICON_SIZE_SMALL * s as f32, paint::color(if self.collapse_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::RAIL_OPEN_TAB_COLOR })) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.collapse.x0 + (self.collapse.width() - g.width() as f64) / 2.0, self.collapse.y0 + (self.collapse.height() - g.height() as f64) / 2.0))); }
+            if let Some(g) = fonts.icon("caret-left", t::ICON_SIZE_SMALL * s as f32, paint::color(if self.collapse_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::RAIL_OPEN_TAB_COLOR })) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.collapse.x0 + (self.collapse.width() - g.width() as f64) / 2.0, self.collapse.y0 + (self.collapse.height() - g.height() as f64) / 2.0))); }
             paint::rounded(scene, self.card, radius, t::BACKGROUND_LAYER_2_COLOR);
         } else {
             // the strip: QCView's collapsed body — a vertical title, an amber mark while on, hover = brighter
@@ -249,7 +249,7 @@ impl AgxPanel {
         let note = fonts.layout_width(tr("Blender's AgX at the defaults; HDR above 100 nits."), Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some(iw as f32));
         self.note_h = note.height() as f64; self.rows.push((y, self.note_h)); y += self.note_h + t::SPACING_100 as f64 * s;
         self.rows.push((y, lh)); y += lh;                                                          // "Target gamut"
-        let gh = self.target.layout(fonts, ix, y, s); self.rows.push((y, gh)); y += gh + t::SPACING_100 as f64 * s;
+        self.target.layout(fonts, ix, y, s); let gh = self.target.rect.height(); self.rows.push((y, gh)); y += gh + t::SPACING_100 as f64 * s;   // layout() returns the WIDTH
         self.rows.push((y, lh)); y += lh;                                                          // "Peak luminance"
         self.peak.layout(fonts, Rect::new(ix, y + (row - fh) / 2.0, ix + iw - unit, y + (row + fh) / 2.0), s); self.rows.push((y, row)); y += row;
         for sl in self.sliders.iter_mut() { self.rows.push((y, lh)); y += lh; sl.rect = Rect::new(ix, y, ix + iw, y + row * 0.8); y += row * 0.8 + t::SPACING_50 as f64 * s; }
