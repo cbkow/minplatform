@@ -12,6 +12,7 @@ use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
 use crate::color_columns::{AgxPanel, KneePanel};
 use min_present::ViewerAids;
+use min_i18n::fill;
 use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, Response, Slider, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, ListColumn, ListRow, Menu, MenuItem, Popover, Switch, TextButton, TextField, Variant};
 use std::time::Instant;
 use vello::Scene;
@@ -84,7 +85,8 @@ pub struct ColorDrawer {
     /// dual view: each side's (now, clip max) — QCView's A / B lines (WaveformPanel.qml), here one caption segment per side
     peaks_dual: Option<[Option<([f32; 2], [f32; 2])>; 2]>,
     /// the readout's band under the card (QCView's readout sits below its waveform; the caption row had no room)
-    wf_readout: Rect,
+    wf_readout: Rect, /// the readout's tooltip (QCView: the brightest channel lives there, not inline)
+    tips: min_ui::Tooltips,
     exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
@@ -115,7 +117,7 @@ impl ColorDrawer {
             on: Switch::new(false), on_rect: Rect::ZERO,
             wf_scale: ActionGroup::new(["SDR", "HDR"].iter().map(|l| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect()).compact(),
             wf_peak: TextButton::new("1000 nits", Variant::Secondary).size_s(),
-            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None, peaks_dual: None, wf_readout: Rect::ZERO,
+            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None, peaks_dual: None, wf_readout: Rect::ZERO, tips: min_ui::Tooltips::default(),
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
@@ -332,6 +334,17 @@ impl ColorDrawer {
     /// Returns (commands, dirty, consumed).
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts, bounds: Rect) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let mut dirty = false;
+        // the readout's tooltip: QCView `ScopeController` — the brightest channel, this frame and the clip's max, for the row under the pointer
+        let tip = e.pos().filter(|_| !matches!(e, Event::Leave) && self.naming.is_none() && !self.menu.is_open()).and_then(|(x, y)| {
+            if !self.wf_readout.contains(kurbo::Point::new(x, y)) { return None }
+            let hdr = self.scope_hdr();
+            let row = ((y - self.wf_readout.y0 - t::SPACING_100 as f64 * self.scale) / (16.0 * self.scale)).floor().max(0.0) as usize;
+            let (now_v, peak) = match (self.peaks_dual, self.peaks) { (Some(sides), _) => sides.iter().flatten().nth(row).copied()?, (None, Some(p)) => p, _ => return None };
+            let txt = if hdr { fill(trs("Brightest channel (linear Rec.2020): frame %1 · max %2 nits"), &[&format_peak(now_v[1], true), &format_peak(peak[1], true)]) }
+                      else { fill(trs("Brightest channel (code value): frame %1 · max %2"), &[&format_peak(now_v[1], false), &format_peak(peak[1], false)]) };
+            Some((7000 + row as u64, Rect::new(self.wf_readout.x0, self.wf_readout.y0, self.wf_readout.x1, self.wf_readout.y1), txt))
+        });
+        if self.tips.hover(tip.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         // the naming popover takes everything while open; a press outside cancels
         if self.naming.is_some() {
             match *e {
@@ -537,11 +550,11 @@ impl ColorDrawer {
             // QCView's readout, under the card: now · the clip's peak (· the brightest channel in single), nits on HDR / % of Y′ on SDR;
             // dual: a line per side led by its letter in the side colour (WaveformPanel.qml's A / B lines)
             let hdr = self.scope_hdr();
-            let f = |v: f32| if hdr { format!("{}", v.round() as i64) } else { format!("{}", (v * 100.0).round() as i64) };
-            let unit = if hdr { " nits" } else { " %" };
+            let f = |v: f32| format_peak(v, hdr);
+            let unit = if hdr { " nits" } else { "" };
             let rows: Vec<(Option<(&str, min_theme::Color)>, String, bool)> = match (self.peaks_dual, self.peaks) {
                 (Some(sides), _) => sides.iter().enumerate().filter_map(|(i, sp)| sp.map(|(now_v, peak)| (Some(if i == 0 { ("A ", t::SIDE_A_COLOR) } else { ("B ", t::SIDE_B_COLOR) }), format!("{} · {} {}{unit}", f(now_v[0]), tr("peak"), f(peak[0])), if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 }))).collect(),
-                (None, Some((now_v, peak))) => vec![(None, format!("{} · {} {} · {} {}{unit}", f(now_v[0]), tr("peak"), f(peak[0]), tr("ch"), f(peak[1])), if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 })],
+                (None, Some((now_v, peak))) => vec![(None, format!("{} · {} {}{unit}", f(now_v[0]), tr("peak"), f(peak[0])), if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 })],
                 _ => vec![],
             };
             let rr = self.wf_readout; let lh = 16.0 * s;
@@ -590,8 +603,15 @@ impl ColorDrawer {
         scene.pop_layer();
     }
     /// The menu and the naming popover, over everything.
-    pub fn paint_overlays(&mut self, scene: &mut Scene, fonts: &mut Fonts) {
+    pub fn tick(&mut self, now: Instant) -> bool { self.tips.tick(now) }
+    pub fn paint_overlays(&mut self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) {
+        self.tips.paint(scene, fonts, self.scale, bounds, now);
         if self.menu.is_open() { self.menu.paint(scene, fonts, self.scale); }
         if self.naming.is_some() { self.name_pop.paint(scene, fonts, self.scale); self.name_field.paint(scene, fonts, self.scale); }
     }
 }
+
+/// QCView `formatPeak`: nits with one decimal under 10, whole above; SDR as a percentage of Y′ / the code value.
+fn format_peak(v: f32, hdr: bool) -> String { if hdr { if v < 10.0 { format!("{v:.1}") } else { format!("{}", v.round() as i64) } } else { format!("{} %", (v * 100.0).round() as i64) } }
+/// QCView's `ScopeController` catalog context (its readout tooltip).
+fn trs(s: &str) -> &str { min_i18n::trc("ScopeController", s) }

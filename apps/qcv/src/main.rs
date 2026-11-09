@@ -703,7 +703,7 @@ impl App {
             // the Color drawer (row 199) sits on the bands and pushes the rails' bottom (and the picture) up
             let drawer_h = if chromeless { 0.0 } else { g.drawer.visible_height(now, scale) };
             let rails_bottom = rails_bottom - drawer_h;
-            if g.drawer.animating(now) { g.ui_dirty = true; }
+            if g.drawer.animating(now) || g.drawer.tick(now) { g.ui_dirty = true; }
             // QCView's in-window menu bar across the top (Windows); chromeless collapses it to zero, as QCView's `menuBar.height` did
             let menu_h = if chromeless || g.menu_bar.is_none() { 0.0 } else { (t::MENU_BAR_HEIGHT as f64 * scale).round() };
             if let Some(mb) = g.menu_bar.as_mut() { if chromeless { if mb.bar.cancel() { g.ui_dirty = true; } } mb.bar.layout(&mut g.fonts, 0.0, 0.0, w as f64, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale); if chromeless { mb.bar.rect = kurbo::Rect::ZERO; } }
@@ -846,7 +846,7 @@ impl App {
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
-                if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts); }
+                if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.toast.paint(scene, &mut g.fonts, content, scale, now);
                 if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint_menus(scene, &mut g.fonts, scale); }
                 if g.about.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.about.layout(&mut g.fonts, b, scale); g.about.paint(scene, &mut g.fonts, scale, b, now); }
@@ -2151,7 +2151,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
             d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
             engine.set_scope(d.scope());
-            d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts);
+            d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts, kurbo::Rect::new(0.0, 0.0, 1e5, 1e5), shown_at);
         }
         if let Some(mb) = menu_bar.as_ref() { mb.bar.paint(scene, &mut fonts, scale); mb.bar.paint_menus(scene, &mut fonts, scale); }
         build_ms.push(t.elapsed().as_secs_f32() * 1000.0);
