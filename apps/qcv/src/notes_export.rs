@@ -18,9 +18,11 @@ impl crate::App {
         let media_path = item.as_ref().map(|i| i.path.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| media.to_string_lossy().into_owned());
         let now = jiff::Zoned::now();
         let base = format!("{}-{}", qcv_notes::export::sanitize(&media_name), now.strftime("%Y-%m-%d_%H-%M-%S"));
-        let dlg = rfd::FileDialog::new().set_file_name(match fmt { ExportFormat::Html => format!("{base}.html"), ExportFormat::Markdown => base.clone() });
+        let dlg = rfd::FileDialog::new().set_file_name(match fmt { ExportFormat::Html => format!("{base}.html"), ExportFormat::Pdf => format!("{base}.pdf"), ExportFormat::Docx => format!("{base}.docx"), ExportFormat::Markdown => base.clone() });
         let picked = match fmt {
             ExportFormat::Html => dlg.set_title(tr("Save HTML…").trim_end_matches('…')).add_filter(tr("HTML (*.html)"), &["html"]).save_file(),
+            ExportFormat::Pdf => dlg.set_title(tr("Save PDF…").trim_end_matches('…')).add_filter(tr("PDF (*.pdf)"), &["pdf"]).save_file(),
+            ExportFormat::Docx => dlg.set_title(tr("Save DOCX…").trim_end_matches('…')).add_filter(tr("Word document (*.docx)"), &["docx"]).save_file(),
             ExportFormat::Markdown => dlg.set_title(tr("Export folder (Markdown)")).save_file(),
         };
         let Some(picked) = picked else { return };
@@ -49,12 +51,21 @@ impl crate::App {
                     }
                 } else { None };
                 let ink = if clean.is_some() { ink } else { None };
-                Item { note, frame, ink, flat: annotated.or(clean) }
+                let flat = annotated.or(clean);
+                // DOCX / PDF: the flat picture as a JPEG q92 (a page shows it ~6 inches wide)
+                let page = if matches!(fmt, ExportFormat::Pdf | ExportFormat::Docx) { flat.as_ref().and_then(|p| crate::image_rgba8(p).ok()).and_then(|(px, (w, h))| { let rgb: Vec<u8> = px.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect(); min_image::write::jpeg8_bytes(&rgb, w, h, 92).ok().map(|b| (b, w, h)) }) } else { None };
+                Item { note, frame, ink, flat, page }
             }).collect();
-            let doc = Doc { media_name, media_path, exported: if fmt == ExportFormat::Html { shown } else { exported }, items, brand_png: include_bytes!("../assets/icons/qcview_export.png"),
+            let doc = Doc { media_name, media_path, exported: if fmt == ExportFormat::Markdown { exported } else { shown }, items, brand_png: include_bytes!("../assets/icons/qcview_export.png"),
                 fonts: vec![(f::FAMILY_SANS, 400, "normal", f::GEIST_REGULAR), (f::FAMILY_SANS, 700, "normal", f::GEIST_BOLD), (f::FAMILY_SANS, 400, "italic", f::GEIST_ITALIC), (f::FAMILY_MONO, 400, "normal", f::GEIST_MONO_REGULAR), (f::FAMILY_MONO, 700, "normal", f::GEIST_MONO_BOLD)] };
             let r = match fmt {
                 ExportFormat::Html => { let p = if picked.extension().is_some_and(|e| e.eq_ignore_ascii_case("html")) { picked } else { picked.with_extension("html") }; std::fs::write(&p, qcv_notes::export::html(&doc)).map(|_| p).map_err(|e| e.to_string()) }
+                ExportFormat::Pdf | ExportFormat::Docx => {
+                    let ext = if fmt == ExportFormat::Pdf { "pdf" } else { "docx" };
+                    let p = if picked.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) { picked } else { picked.with_extension(ext) };
+                    let bytes = if fmt == ExportFormat::Pdf { qcv_notes::export_doc::pdf(&doc) } else { qcv_notes::export_doc::docx(&doc) };
+                    bytes.and_then(|b| std::fs::write(&p, b).map_err(|e| e.to_string())).map(|_| p)
+                }
                 ExportFormat::Markdown => {
                     let parent = picked.parent().map(Path::to_path_buf).unwrap_or_default();
                     let stem = picked.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();

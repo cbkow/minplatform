@@ -14,3 +14,7 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }   # exact pars
 log = { workspace = true }
 qcv-meta = { path = "../qcv-meta" }
 kurbo = { workspace = true }
+# the exports (row 217): DOCX = a zip of OOXML, PDF = krilla (Geist embedded), text measured with skrifa (krilla's version)
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
+krilla = { version = "0.8.2", default-features = false, features = ["raster-images", "simple-text"] }
+skrifa = "0.42"

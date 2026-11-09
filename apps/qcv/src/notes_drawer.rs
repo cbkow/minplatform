@@ -25,9 +25,9 @@ pub const TOOLS: [(Tool, &str, &str); 7] = [
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card { pub key: String, pub frame: i64, pub text: String, pub addressed: bool, pub thumb: Option<PathBuf>, pub viewer: bool, pub ocio: bool }
-/// The export formats (row 217); PDF and DOCX join when built (the menu hides what is not there).
+/// The export formats (row 217), in QCView's menu order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ExportFormat { Markdown, Html }
+pub enum ExportFormat { Markdown, Html, Pdf, Docx }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { AddNote, Export(ExportFormat), Seek(i64), Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
     Height(f64) }
@@ -135,7 +135,7 @@ impl NotesDrawer {
         // the export menu owns the pointer while open
         if self.menu.is_open() {
             let (pick, d, _) = self.menu.event(e);
-            if let Some(i) = pick { self.menu.close(); cmds.push(Cmd::Export([ExportFormat::Markdown, ExportFormat::Html][i.min(1)])); }
+            if let Some(i) = pick { self.menu.close(); cmds.push(Cmd::Export([ExportFormat::Markdown, ExportFormat::Html, ExportFormat::Pdf, ExportFormat::Docx][i.min(3)])); }
             let _ = d;
             return (cmds, true, true)
         }
@@ -171,7 +171,7 @@ impl NotesDrawer {
             if ex_h {
                 let any = !self.cards.is_empty();
                 let bounds = Rect::new(self.rect.x0, 0.0, self.rect.x1, self.rect.y1);
-                self.menu.open_at(vec![MenuItem::action(tr("Markdown folder…"), any), MenuItem::action(tr("HTML (single file)…"), any)], fonts, self.export.x0, self.export.y0, bounds, self.scale);
+                self.menu.open_at(vec![MenuItem::action(tr("Markdown folder…"), any), MenuItem::action(tr("HTML (single file)…"), any), MenuItem::action(tr("PDF…"), any), MenuItem::action(tr("DOCX…"), any)], fonts, self.export.x0, self.export.y0, bounds, self.scale);
                 dirty = true;
             }
             if let Some((i, part)) = hover { let c = &self.cards[i]; match part {
