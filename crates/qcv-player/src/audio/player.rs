@@ -121,14 +121,16 @@ impl AudioPlayer {
     pub fn set_sync_offset_ms(&mut self, ms: i32) { self.sync_offset_ms = ms; }
     /// QCView `AudioPlayer::open` on a live URL: the QCAA segment's reader; the device starts before any audio has
     /// arrived (the jitter buffer primes), no servo, no seek.
-    pub fn open_live(&mut self, segment: &str) {
+    pub fn open_live(&mut self, segment: &str) -> Arc<super::live::LiveAudioSource> {
         AudioHooks::close(self);
-        let d: Arc<dyn AudioSourceCtl> = Arc::new(super::live::LiveAudioSource::open(segment, self.routing));
+        let live = Arc::new(super::live::LiveAudioSource::open(segment, self.routing));
+        let d: Arc<dyn AudioSourceCtl> = live.clone();
         d.start();
         *self.cb.source.lock().unwrap() = Some(d.clone()); self.decoder = Some(d);
         self.cb.live.store(true, Release); self.cb.playing.store(true, Release); self.cb.req.restart.store(true, Release);
         self.device.start();
         log::info!("AudioPlayer: live source playing, device buffer latency {:.1} ms", self.device.buffer_latency_seconds() * 1000.0);
+        live
     }
     /// QCView's Listen toggle for a live source (`setLivePlaydown`).
     pub fn set_live_playdown(&mut self, on: bool) { self.cb.playdown.store(on, Release); }

@@ -24,6 +24,9 @@ pub enum Cmd { /// the image-sequence card's chips (QCView `ImageSequenceInspect
     Layer(String), /// the path actions (QCView's File card + Linked Projects): copy the text, reveal / open the path
     Copy(String), Reveal(String), Open(String), Range(RangeOverride), Transfer(TransferOverride), Routing(RoutingMode), Origin(String), Par(Par), Rotation(Option<u16>) }
 
+/// What the Inspector shows for a live item (the shell gathers it from the feed and its audio reader).
+pub struct LiveInfo { pub url: String, pub name: String, pub host: &'static str, pub width: u32, pub height: u32, pub fps: Option<f64>,
+    pub audio_state: u32, pub audio_channels: u32, pub audio_rate: u32, pub peaks: [f32; 16] }
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
 struct Chips { /// the English label: what a click dispatches on, whatever the language
@@ -70,6 +73,8 @@ pub struct InspectorPanel {
     tooltips: min_ui::Tooltips,
     /// the hero thumbnail: its key (path + layer), the picture once decoded, the worker's channel
     hero_key: String, hero: Option<peniko::ImageBrush>, /// a video hero's R'G'B' and the look generation it was drawn in (row 216)
+    /// a live item's model key (rebuild when it changes; the meters move without one)
+    live_key: String,
     hero_raw: Option<qcv_player::ThumbPixels>, hero_gen: u64, hero_rx: Option<std::sync::mpsc::Receiver<(String, Option<qcv_player::ThumbPixels>)>>,
 }
 
@@ -124,7 +129,7 @@ impl InspectorPanel {
     pub fn relabel(&mut self) { let f = Self::new(); for (g, n) in self.groups.iter_mut().zip(f.groups) { g.section.title = n.section.title; } self.dirty_model = true; }
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(tr(title), true), items: vec![], rects: vec![], shown: true };
-        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_raw: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), hero_key: String::new(), hero_raw: None, hero_gen: u64::MAX, hero: None, hero_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
+        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_raw: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), hero_key: String::new(), live_key: String::new(), hero_raw: None, hero_gen: u64::MAX, hero: None, hero_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
             range: RangeOverride::Auto, transfer: TransferOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
@@ -165,6 +170,52 @@ impl InspectorPanel {
         for (n, (raw, g)) in self.layer_raw.iter_mut() { if *g != generation { if let Some(img) = conv(raw) { self.layer_thumbs.insert(n.clone(), img); } *g = generation; any = true; } }
         any
     }
+    /// A QCBridge live item (row 228; QCView InspectorPanel's `isLiveItem` cards): File = the name, the URL, QCView's source
+    /// facts (`hostbridge::facts`: what the values, range and fourth channel mean, the one instruction) and Copy URL; Video =
+    /// the feed's geometry, rate, wire format; Color = the Transfer override; Audio = the QCAA segment's state, rate, channels,
+    /// the Mix pill, meters. No Geometry / Timecode / Linked / Sequence cards (QCView hides them for a live item).
+    pub fn sync_live(&mut self, l: &LiveInfo) -> bool {
+        self.path.clear(); self.vmeta = None; self.ameta = None; self.hero_key.clear(); self.hero = None;
+        let mut dirty = false;
+        let ch = (l.audio_channels as usize).min(16);
+        if l.audio_state != 0 && (0..ch).any(|i| (l.peaks[i] - self.peaks[i]).abs() > 0.01) { self.peaks = l.peaks; dirty = true; }
+        self.channels = ch;
+        let key = format!("{}|{}|{}x{}|{:?}|{}|{}|{}|{:?}|{:?}|{}", l.url, l.name, l.width, l.height, l.fps.map(|f| (f * 1000.0).round() as i64), l.audio_state, l.audio_channels, l.audio_rate, self.transfer, self.routing, min_i18n::generation());
+        if key == self.live_key && !self.dirty_model { return dirty }
+        self.live_key = key; self.dirty_model = false;
+        let row = |label: &str, value: String, mono: bool| Item::Row(Row { label: tr(label).into(), value, note: String::new(), mono, warn: false });
+        let chips = |label: &str, opts: &[(&str, &str)], selected_key: &str| {
+            let buttons = opts.iter().map(|(_, l)| { let mut b = ActionButton::new("", tr(l)).size_s(); b.label = Some(tr(l).to_string()); b }).collect();
+            let keys: Vec<String> = opts.iter().map(|(k, _)| k.to_string()).collect();
+            let selected = keys.iter().position(|k| k == selected_key).unwrap_or(0);
+            Item::Chips(Chips { id: label.to_string(), label: tr(label).into(), group: ActionGroup::new(buttons).compact(), keys, selected, rect: Rect::ZERO, rows: vec![] })
+        };
+        // QCView `hostbridge::facts` — each measured in QCBridgeAE; nothing inferred from the frame
+        let (colour, range, alpha, note) = match l.host { "probe" => ("Synthetic ramp", "Runs past 1.0", "Opaque", "A test signal, no Adobe host needed."), "ae" => ("Working space, untransformed", "Unclamped float", "Opaque, flattened", "Set the OCIO input to the host's working space."), _ => ("Working space, untransformed", "Unclamped float", "Straight", "Set the OCIO input to the host's working space.") };
+        let file = vec![Item::Hero("broadcast"), row("Name", l.name.clone(), false), Item::PathLine(l.url.clone()), row("Colour", tr(colour).into(), false), row("Range", tr(range).into(), false), row("Alpha", tr(alpha).into(), false), Item::Caption(tr(note).into()),
+            actions(vec![("copy", "Copy URL", true, "", Cmd::Copy(l.url.clone()))])];
+        let mut video = vec![];
+        if l.width > 0 { video.push(row("Resolution", tf(tr("%1 × %2"), &[&l.width, &l.height]), true)); }
+        if let Some(f) = l.fps { video.push(row("Frame rate", format!("{f:.3} fps"), true)); }
+        video.push(row("Pixel format", "RGBA16F".into(), true));
+        let sel = match self.transfer { TransferOverride::Auto => "auto", TransferOverride::SdrRec709 => "sdr", TransferOverride::Pq2020 => "pq2020", TransferOverride::PqP3D65 => "pqp3", TransferOverride::Hlg => "hlg", TransferOverride::Linear => "linear" };
+        let color = vec![chips("Transfer", &[("auto", min_i18n::trc("LiveStrip", crate::live_strip::AUTO)), ("sdr", "SDR 709"), ("pq2020", "PQ 2020"), ("pqp3", "PQ P3"), ("hlg", "HLG"), ("linear", "Linear")], sel)];
+        let mut audio = vec![];
+        if l.audio_state == 0 { audio.push(row("Audio", tr("none").into(), false)); } else {
+            audio.push(row("State", tr(match l.audio_state { 1 => "Off in the host", 2 => "Idle", 3 => "Pushing", 4 => "Scrubbing", _ => "No audio" }).into(), false));
+            if l.audio_rate > 0 { audio.push(row("Sample rate", tf(tr("%1 Hz"), &[&l.audio_rate]), true)); }
+            if ch > 0 { audio.push(row("Channels", match ch { 2 => tf(tr("%1 (stereo)"), &[&2]), 1 => tf(tr("%1 (mono)"), &[&1]), n => n.to_string() }, true)); }
+            if l.audio_state == 1 { audio.push(row("Audio Stream", tr("off: tick it in Premiere ▸ Preferences ▸ Playback").into(), false)); }
+            let mut opts: Vec<(&str, &str)> = vec![("auto", "Auto")]; if ch >= 6 { opts.push(("5.1", "5.1 → 2")); } if ch >= 8 { opts.push(("7-8", "7-8")); }
+            if opts.len() > 1 { audio.push(chips("Mix", &opts, match self.routing { RoutingMode::Auto => "auto", RoutingMode::Downmix5_1 => "5.1", RoutingMode::Stereo7_8 => "7-8" })); }
+            if ch > 0 { audio.push(Item::Meters); }
+        }
+        for (gi, g) in self.groups.iter_mut().enumerate() { g.shown = matches!(gi, 0 | 1 | 3 | 4); }
+        for (g, items) in self.groups.iter_mut().zip([file, video, vec![], color, audio, vec![], vec![], vec![]]) { g.items = items; }
+        for g in self.groups.iter_mut() { for it in g.items.iter_mut() { if let Item::Chips(c) = it { let sel = c.selected; for (j, b) in c.group.buttons.iter_mut().enumerate() { b.selected = j == sel; } } } }
+        true
+    }
+    pub fn set_routing(&mut self, m: RoutingMode) { if m != self.routing { self.routing = m; self.dirty_model = true; } }
     pub fn sync(&mut self, p: Option<&Transport>) -> bool {
         let Some(p) = p else { if !self.path.is_empty() { self.path.clear(); self.vmeta = None; self.ameta = None; for g in &mut self.groups { g.items.clear(); } self.dirty_model = false; return true } return false };
         let path = p.path().to_string();

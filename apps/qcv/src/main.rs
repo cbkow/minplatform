@@ -919,7 +919,14 @@ impl App {
                 // the EXR layer tiles: the loaded sequence item's layers (the project's), its current layer, its first frame
                 let (ls, cur, first) = self.project.item(&self.loaded_item).filter(|m| m.media_type == qcv_project::MediaType::ImageSequence && self.player.as_ref().is_some_and(|p| p.decoder().as_sequence().is_some())).map(|m| (m.image_seq.available_layers.clone(), m.image_seq.layer.clone(), m.path.clone())).unwrap_or_default();
                 g.inspector.set_seq_layers(ls, &cur, &first);
-                if g.inspector.sync(match self.dual.as_ref() { Some(d) => d.side(if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => self.player.as_ref() }) { g.ui_dirty = true; }
+                if let Some(l) = self.live.as_ref() {
+                    // a live item (row 228): the feed's facts and its audio reader's
+                    let f = l.feed.facts(); let (st, ch, rate) = l.audio_src.as_ref().map(|a| a.facts()).unwrap_or((0, 0, 0));
+                    let peaks = l.audio_src.as_ref().map(|a| { use qcv_player::audio::AudioSourceCtl; a.peak_levels() }).unwrap_or([0.0; 16]);
+                    let item = self.project.item(&l.item);
+                    let info = inspector_panel::LiveInfo { url: item.map(|i| i.path.clone()).unwrap_or_default(), name: item.map(|i| i.name.clone()).unwrap_or_default(), host: l.feed.host().key(), width: f.width, height: f.height, fps: l.feed.host_fps(), audio_state: st, audio_channels: ch, audio_rate: rate, peaks };
+                    if g.inspector.sync_live(&info) { g.ui_dirty = true; }
+                } else if g.inspector.sync(match self.dual.as_ref() { Some(d) => d.side(if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => self.player.as_ref() }) { g.ui_dirty = true; }
                 { let tc = &mut self.thumb_color[islot.min(1)]; if g.inspector.apply_look(thumb_gen[islot.min(1)], &mut |px| tc.convert(px)) { g.ui_dirty = true; } }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale);
                 let sh = g.shortcuts.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0 + rh, scale); g.right.content_height = rh + sh;
@@ -932,7 +939,7 @@ impl App {
             if !chromeless { self.settings.set_int(settings::k::LEFT_RAIL_WIDTH, g.left.width.round() as i64); self.settings.set_int(settings::k::RIGHT_RAIL_WIDTH, g.right.width.round() as i64); self.settings.set_bool(settings::k::LEFT_RAIL_COLLAPSED, g.left.collapsed); self.settings.set_bool(settings::k::RIGHT_RAIL_COLLAPSED, g.right.collapsed); }
             if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
             g.scrubber.compact = g.compact;
-            if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
+            if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.set_live(self.live.is_some()); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
             else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); let lanes = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; g.clip_bar.rect = if self.pl_editor.is_some() { lanes } else { kurbo::Rect::ZERO }; g.dual_bars.rect = if self.dual.is_some() { lanes } else { kurbo::Rect::ZERO }; }
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
             // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
@@ -971,6 +978,8 @@ impl App {
                 }
                 if g.live_strip.animating() || g.live_strip.tick(now) { g.ui_dirty = true; }
             }
+            let dot = self.live.as_ref().and_then(|l| l.last_facts.as_ref()).map(|f| f.status == qcv_player::host_feed::Status::Live);
+            if dot != g.project_panel.live_dot { g.project_panel.live_dot = dot; g.ui_dirty = true; }
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
                 let bands_y = scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale;
                 if live_on { g.live_strip.layout(&mut g.fonts, kurbo::Rect::new(0.0, bands_y, w as f64, scrub_y), scale); }
@@ -1209,7 +1218,7 @@ impl App {
                     inspector_panel::Cmd::Stride(s) => { if let Some(c) = self.player.as_ref().and_then(|p| p.decoder().as_sequence()) { c.cache().set_stride(s); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_cache_stride(&id, s); } g.ui_dirty = true; }
                     inspector_panel::Cmd::Range(r) => { if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Transfer(t) => { if let Some(en) = color::slot_engine(g, slot, dual_on) { en.set_transfer_override(transfer_choice(t)); } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); self.project.set_transfer_override(&id, t); } }
-                    inspector_panel::Cmd::Routing(m) => { if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.audio.set_routing_mode(m); } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
+                    inspector_panel::Cmd::Routing(m) => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_routing_mode(m); g.inspector.set_routing(m); } if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.audio.set_routing_mode(m); } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
                     inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(pb(&self.dual, &self.player)); }
                     inspector_panel::Cmd::Par(par) => { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); let (mode, n, d) = match par { min_present::engine::Par::Square => (qcv_project::PixelAspectMode::Square, 1, 1), min_present::engine::Par::Detected => (qcv_project::PixelAspectMode::Detected, 1, 1), min_present::engine::Par::Custom(n, d) => (qcv_project::PixelAspectMode::Custom, n as i32, d as i32) }; self.project.set_pixel_aspect(&id, mode, n, d); } }
                     inspector_panel::Cmd::Rotation(r) => { if let Some(en) = color::slot_engine(g, slot, dual_on) { let mut geo = en.geometry(); geo.rotation = r; en.set_geometry(geo); } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
@@ -1355,7 +1364,7 @@ impl App {
                 k::ALWAYS_ON_TOP => { let _ = g; self.apply_pin(); }
                 k::LIVE_PLAYDOWN => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(self.settings.bool(key)); } }
                 k::LIVE_BUFFER_MS => qcv_player::audio::live::set_global_buffer_ms(self.settings.int(key) as i32),
-                k::LIVE_SYNC_OFFSET_MS => { qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(key) as i32); if let Some(l) = self.live.as_mut() { l.feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms()); } }
+                k::LIVE_SYNC_OFFSET_MS | k::LIVE_SYNC_OFFSET_MS_AE | k::LIVE_SYNC_OFFSET_MS_PROBE => if self.live.as_ref().is_none_or(|l| k::live_sync_key(l.feed.host().key()) == key) { qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(key) as i32); if let Some(l) = self.live.as_mut() { l.feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms()); } }
                 _ => {}   // applies at the next open (performance/*) or has no consumer yet
             }
         }

@@ -15,7 +15,11 @@ pub mod k {
     pub const SYNC_OFFSET_MS: &str = "audio/syncOffsetMs";
     pub const DUAL_SYNC_OFFSET_MS: &str = "audio/dualSyncOffsetMs";
     pub const LIVE_PLAYDOWN: &str = "audio/livePlaydown";
+    /// QCView `liveSyncOffsetKey`: one A/V offset per host application (`audio/liveSyncOffsetMs/<host>`, premiere when none)
     pub const LIVE_SYNC_OFFSET_MS: &str = "audio/liveSyncOffsetMs/premiere";
+    pub const LIVE_SYNC_OFFSET_MS_AE: &str = "audio/liveSyncOffsetMs/ae";
+    pub const LIVE_SYNC_OFFSET_MS_PROBE: &str = "audio/liveSyncOffsetMs/probe";
+    pub fn live_sync_key(host: &str) -> &'static str { match host { "ae" => LIVE_SYNC_OFFSET_MS_AE, "probe" => LIVE_SYNC_OFFSET_MS_PROBE, _ => LIVE_SYNC_OFFSET_MS } }
     pub const LIVE_BUFFER_MS: &str = "audio/liveBufferMs";
     pub const BLENDER_SESSIONS: &str = "bridge/blenderSessions";
     pub const BACKGROUND_MODE: &str = "display/backgroundMode";
@@ -75,7 +79,7 @@ static KEYS: &[Key] = &[
     Key::int(k::SYNC_OFFSET_MS, 0, -100, 100),
     Key::int(k::DUAL_SYNC_OFFSET_MS, if cfg!(target_os = "macos") { 17 } else { 15 }, -100, 100),   // QCView `dualAudioSyncOffsetMsDefault`
     Key::bool(k::LIVE_PLAYDOWN, false),
-    Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200),
+    Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_AE, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_PROBE, 0, -200, 200),
     Key::int(k::LIVE_BUFFER_MS, 60, 20, 200),
     Key::bool(k::BLENDER_SESSIONS, false),
     Key::int(k::BACKGROUND_MODE, 0, 0, 3),

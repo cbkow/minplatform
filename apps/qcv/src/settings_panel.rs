@@ -42,6 +42,10 @@ const LANG_CODES: &[&str] = &["", "en", "de", "es", "fr", "it", "ja", "ko", "pl"
 const LANG_NAMES: &[&str] = &["System default", "English", "Deutsch", "Español", "Français", "Italiano", "日本語", "한국어", "Polski", "Português (Brasil)", "Русский", "Українська", "简体中文 (中国)"];
 
 impl SettingsPanel {
+    /// The A/V sync (Live) row edits the connected host's own offset (QCView: the live decoder's host, premiere when none).
+    pub fn set_live_sync_key(&mut self, key: &'static str) {
+        for r in self.groups.iter_mut().flat_map(|g| g.rows.iter_mut()) { if r.key.starts_with("audio/liveSyncOffsetMs/") && r.key != key { r.key = key; self.seen = u64::MAX; } }
+    }
     /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
     /// Every row's text is the constructor's and the values come from the store each frame: a fresh panel, the section's state kept.
     pub fn relabel(&mut self) { let expanded = self.section.expanded; *self = Self::new(); self.section.expanded = expanded; }

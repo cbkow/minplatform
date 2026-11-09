@@ -46,7 +46,8 @@ struct Shared {
     primed: AtomicBool, target_samples: AtomicUsize, reprime: AtomicBool,
     underruns: AtomicU64, primes: AtomicU64,
     stop: AtomicBool, running: AtomicBool, has_audio: AtomicBool,
-    channels: AtomicU32, sample_rate: AtomicU32, routing: AtomicU32,
+    channels: AtomicU32, sample_rate: AtomicU32, routing: AtomicU32, /// QCView `audioState`: 0 no segment, 1 off in the host, 2 idle, 3 pushing, 4 scrubbing
+    state: AtomicU32,
     peaks: [AtomicU32; 16],
     sleep: (Mutex<()>, Condvar),
 }
@@ -59,7 +60,7 @@ impl LiveAudioSource {
         let sh = Arc::new(Shared {
             ring: AudioRing::new(RING_SAMPLES), primed: AtomicBool::new(false), target_samples: AtomicUsize::new(60 * DEVICE_RATE as usize / 1000 * 2), reprime: AtomicBool::new(false),
             underruns: AtomicU64::new(0), primes: AtomicU64::new(0), stop: AtomicBool::new(false), running: AtomicBool::new(false), has_audio: AtomicBool::new(false),
-            channels: AtomicU32::new(0), sample_rate: AtomicU32::new(0), routing: AtomicU32::new(routing as u32), peaks: Default::default(), sleep: (Mutex::new(()), Condvar::new()),
+            channels: AtomicU32::new(0), sample_rate: AtomicU32::new(0), routing: AtomicU32::new(routing as u32), state: AtomicU32::new(0), peaks: Default::default(), sleep: (Mutex::new(()), Condvar::new()),
         });
         let (s2, name) = (sh.clone(), segment.to_string());
         let t = std::thread::Builder::new().name("qcv-live-audio".into()).spawn(move || reader_loop(&s2, &name)).expect("live audio thread");
@@ -69,6 +70,8 @@ impl LiveAudioSource {
     pub fn sample_rate(&self) -> u32 { self.sh.sample_rate.load(Acquire) }
     pub fn has_audio(&self) -> bool { self.sh.has_audio.load(Acquire) }
     pub fn underruns(&self) -> u64 { self.sh.underruns.load(Relaxed) }
+    /// QCView's Inspector facts: (state, channels, rate) — state 0 no segment, 1 off in the host, 2 idle, 3 pushing, 4 scrubbing.
+    pub fn facts(&self) -> (u32, u32, u32) { (self.sh.state.load(Acquire), self.sh.channels.load(Acquire), self.sh.sample_rate.load(Acquire)) }
     /// The queued depth in ms (the Inspector's Audio card).
     pub fn queued_ms(&self) -> f64 { self.sh.ring.fresh_samples() as f64 / 2.0 / DEVICE_RATE as f64 * 1000.0 }
     pub fn close(&self) {
@@ -168,11 +171,11 @@ fn reader_loop(sh: &Shared, name: &str) {
     let mut idle_polls = 0u32; let mut logged_pid = 0u32; let mut said_rate = 0u32;
     let mut planes: Vec<f32> = vec![]; let mut stereo: Vec<f32> = vec![];
     let mut fold_m: Vec<f32> = vec![]; let mut fold_key = (usize::MAX, u32::MAX);
-    let mut conv = RateConv::new();
+    let mut conv = RateConv::new(); let mut session_flags = 0u32;
     while !sh.stop.load(Acquire) {
         if ring.is_none() {
             match qa::AudioRing::open(name) {
-                Err(_) => { sh.has_audio.store(false, Release); if !sleep(sh, WAIT_POLL_MS) { break } continue }
+                Err(_) => { sh.has_audio.store(false, Release); sh.state.store(0, Release); if !sleep(sh, WAIT_POLL_MS) { break } continue }
                 Ok(r) => {
                     let h = r.header();
                     planes = vec![0.0; h.max_channels as usize * h.slot_frames as usize];
@@ -189,17 +192,21 @@ fn reader_loop(sh: &Shared, name: &str) {
             ring = None;
             // the frame ring's housekeeping: a dead producer's segment stays in the kernel until someone unlinks it
             if qcv_ring::mapping::unlink(name) { log::info!("LiveAudioSource: removed the segment a dead producer left ({name})"); }
-            sh.has_audio.store(false, Release);
+            sh.has_audio.store(false, Release); sh.state.store(0, Release);
             if !sleep(sh, WAIT_POLL_MS) { break }
             continue
         }
-        if r.state() == State::Retired { ring = None; continue }
+        if r.state() == State::Retired { ring = None; sh.state.store(0, Release); continue }
         // a new session (every play, scrub and speed change on the host): its format; whatever was queued is stale
         if let Some(s) = r.read_session(&mut generation) {
+            session_flags = s.flags;
             sh.channels.store(s.channels, Release); sh.sample_rate.store(s.sample_rate, Release); sh.has_audio.store(s.channels > 0, Release);
             sh.ring.mark_stale(); sh.reprime.store(true, Release); said_silenced = false;
             conv.reset(s.sample_rate);
         }
+        // QCView `pollAudioFacts`: off in the host, else pushing (scrubbing when the session says so), else idle
+        let st = if r.host_audio() == qa::HostAudio::Off { 1 } else if r.state() == State::Pushing { if session_flags & qa::SESSION_SCRUBBING != 0 { 4 } else { 3 } } else { 2 };
+        sh.state.store(st, Release);
         let slot_frames = r.slot_frames() as usize;
         let per_packet = slot_frames * 2;
         let depth = depth_ms();

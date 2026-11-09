@@ -14,7 +14,7 @@ pub enum Cmd { Act(Action), Pin, Exit, DragWindow }
 
 pub struct CompactStrip {
     play: ActionButton, pin: ActionButton, exit: ActionButton,
-    tc: String, tc_rect: Rect, tc_hover: bool,
+    tc: String, tc_rect: Rect, tc_hover: bool, live: bool,
     pub tooltips: Tooltips,
     pub rect: Rect,
     /// where the scrubber goes (between the left and right controls)
@@ -29,7 +29,7 @@ impl CompactStrip {
     pub fn relabel(&mut self) { let f = Self::new(); self.play.tooltip = f.play.tooltip; self.pin.tooltip = f.pin.tooltip; self.exit.tooltip = f.exit.tooltip; }
     pub fn new() -> CompactStrip {
         CompactStrip { play: ActionButton::new("play", &tr("Play (Space)")).size_s(), pin: ActionButton::new("push-pin", &tr("Always on Top (Ctrl+Alt+T)")).size_s(), exit: ActionButton::new("arrows-out-simple", &tr("Leave Compact Mode (Ctrl+Shift+C, Esc)")).size_s(),
-            tc: String::new(), tc_rect: Rect::ZERO, tc_hover: false, tooltips: Tooltips::default(), rect: Rect::ZERO, scrub_rect: Rect::ZERO }
+            live: false, tc: String::new(), tc_rect: Rect::ZERO, tc_hover: false, tooltips: Tooltips::default(), rect: Rect::ZERO, scrub_rect: Rect::ZERO }
     }
     pub fn layout(&mut self, fonts: &mut Fonts, w: f64, y: f64, scale: f64) {
         let h = t::SCRUBBER_HEIGHT as f64 * scale; let pad = t::SPACING_100 as f64 * scale; let gap = t::SPACING_75 as f64 * scale;
@@ -45,11 +45,13 @@ impl CompactStrip {
         self.scrub_rect = Rect::new(x, y, rx.max(x + 1.0), y + h);
         self.rect = Rect::new(0.0, y, w, y + h);
     }
+    /// A live feed (QCView CompactStrip: the LIVE badge in the accent, a live dot at the track's start).
+    pub fn set_live(&mut self, on: bool) { self.live = on; if on { self.tc = tr("LIVE"); } }
     pub fn sync(&mut self, p: Option<&dyn qcv_player::Playback>, tc: &str, pinned: bool, now: Instant) {
         let has = p.is_some();
         if self.play.enabled != has { self.play.enabled = has; if !has { self.play.reset(now); } }
         if let Some(p) = p { self.play.icon = if p.is_playing() { "pause" } else { "play" }; self.play.tooltip = tr(if p.is_playing() { "Pause (Space)" } else { "Play (Space)" }); }
-        self.tc = tc.to_string();
+        self.tc = if self.live { tr("LIVE") } else { tc.to_string() };
         self.pin.selected = pinned;
     }
     /// Returns (commands, redraw needed, consumed).
@@ -74,7 +76,8 @@ impl CompactStrip {
         paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0 + t::HAIRLINE as f64 * scale, self.scrub_rect.x0, self.rect.y1), t::SCRUBBER_BACKGROUND_COLOR);
         paint::rect(scene, Rect::new(self.scrub_rect.x1, self.rect.y0 + t::HAIRLINE as f64 * scale, self.rect.x1, self.rect.y1), t::SCRUBBER_BACKGROUND_COLOR);
         self.play.paint(scene, fonts, scale, now); self.pin.paint(scene, fonts, scale, now); self.exit.paint(scene, fonts, scale, now);
-        let c = if self.tc_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
+        if self.live { let d = 8.0 * scale; let y = self.scrub_rect.y0 + (self.scrub_rect.height() - d) / 2.0; paint::rounded(scene, Rect::new(self.scrub_rect.x0, y, self.scrub_rect.x0 + d, y + d), d / 2.0, t::ACCENT_VISUAL_COLOR); }
+        let c = if self.live { t::ACCENT_CONTENT_COLOR_DEFAULT } else if self.tc_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
         let l = fonts.layout(&self.tc, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((self.tc_rect.x0 + t::FIELD_EDGE_TO_TEXT as f64 * scale, self.tc_rect.y0 + (self.tc_rect.height() - l.height() as f64) / 2.0)));
     }

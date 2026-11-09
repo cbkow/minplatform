@@ -49,7 +49,8 @@ pub struct ProjectPanel {
     add: TextButton,
     groups: Vec<Group>,
     pub selected: Vec<String>, last_selected: Option<String>,
-    active: String, title: String, dirty: bool,
+    active: String, title: String, dirty: bool, /// the active live item's connection dot (QCView LeftRail): Some(true) red = live, Some(false) amber = connecting / paused
+    pub live_dot: Option<bool>,
     revision_seen: u64, height: f64,
     last_click: Option<(String, Instant)>,
     menu: Menu, /// the row being renamed inline and its field
@@ -72,7 +73,7 @@ const DOUBLE_CLICK_MS: u128 = 400;
 impl ProjectPanel {
     /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
     pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.add.label = f.add.label; self.revision_seen = u64::MAX; }
-    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new(tr("Media"), true), add: TextButton::new(tr("Add Media…"), Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![], tree: None } }
+    pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new(tr("Media"), true), add: TextButton::new(tr("Add Media…"), Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, live_dot: None, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![], tree: None } }
     /// The loaded playlist's tree (None = no playlist loaded); true when it changed.
     pub fn set_tree(&mut self, m: Option<TreeModel>) -> bool {
         if self.tree.as_ref().map(|t| &t.model) == m.as_ref() { return false }
@@ -327,8 +328,14 @@ impl ProjectPanel {
                 let bg = if active { t::RAIL_ROW_ACTIVE_FILL } else if selected { t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT } else { mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, r.hover.value(now)) };
                 if bg.a > 0.0 { paint::rounded(scene, r.rect, radius, bg); }
                 let c = if r.failed { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
-                let x = r.rect.x0 + pad;
+                let mut x = r.rect.x0 + pad;
                 let mut right = r.rect.x1 - pad;
+                // QCView's live connection dot: only on the ACTIVE live item (inactive streams have no receiver)
+                if active && r.media_type == MediaType::LiveStream && let Some(on) = self.live_dot {
+                    let d = 6.0 * scale; let dy = r.rect.y0 + (r.rect.height() - d) / 2.0;
+                    let c = if on { min_theme::Color::rgba(0xe5 as f32 / 255.0, 0x48 as f32 / 255.0, 0x4d as f32 / 255.0, 1.0) } else { min_theme::Color::rgba(0xe6 as f32 / 255.0, 0xa2 as f32 / 255.0, 0x3c as f32 / 255.0, 1.0) };
+                    paint::rounded(scene, Rect::new(x, dy, x + d, dy + d), d / 2.0, c); x += d + t::SPACING_75 as f64 * scale;
+                }
                 if r.unsupported { if let Some(g) = fonts.icon("warning", t::ICON_SIZE_SMALL * scale as f32, paint::color(t::NOTICE_VISUAL_COLOR)) { let gx = right - g.width() as f64; let gy = r.rect.y0 + (r.rect.height() - g.height() as f64) / 2.0; min_ui::fonts::draw_layout(scene, &g, kurbo::Affine::translate((gx, gy))); badges.push((r.id.clone(), Rect::new(gx, gy, right, gy + g.height() as f64))); right = gx - t::SPACING_75 as f64 * scale; } }
                 // the loaded playlist's row: its clip count + canvas, subdued, at the right
                 let tree = self.tree.as_ref().filter(|tr| tr.model.playlist == r.id);

@@ -20,7 +20,7 @@ pub enum Cmd { Transfer(TransferOverride), Color, Notes, Shot(crate::capture::De
 /// The Auto label for a QCBridge host feed (the user 2026-11-09, diverging from QCView's "Auto · SDR, untagged"): the Transmit
 /// device asks the host for its WORKING colour space and never names it (the ring's ICC region stays empty), so "SDR"
 /// was a guess — a 32-bpc linear comp is not SDR. QCView's tag rule (LiveStrip.qml autoLabel) returns with SRT (step 2).
-const AUTO: &str = "Auto · working space, untagged";
+pub const AUTO: &str = "Auto · working space, untagged";
 const AUTO_TIP: &str = "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)";
 const TRANSFERS: [(TransferOverride, &str); 6] = [(TransferOverride::Auto, "Auto"), (TransferOverride::SdrRec709, "SDR 709"), (TransferOverride::Pq2020, "PQ 2020"), (TransferOverride::PqP3D65, "PQ P3"), (TransferOverride::Hlg, "HLG"), (TransferOverride::Linear, "Linear")];
 
