@@ -25,7 +25,7 @@ impl SlotBuffers {
         desc.setStorageMode(MTLStorageMode::Shared);
         let raw = self.buffers[i].newTextureWithDescriptor_offset_bytesPerRow(&desc, 0, bytes_per_row as usize)?;
         let hal = unsafe { wgpu::hal::metal::Device::texture_from_raw(raw, wgpu::TextureFormat::Rgba16Float, MTLTextureType::Type2D, 1, 1, wgpu::hal::CopyExtent { width: w, height: h, depth: 1 }, None) };
-        let wdesc = wgpu::TextureDescriptor { label: Some("ring slot (zero-copy)"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] };
+        let wdesc = wgpu::TextureDescriptor { label: Some("ring slot (zero-copy)"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC, view_formats: &[] };   // COPY_SRC: Review copies the shown slot out (row 228 fix 6)
         Some(unsafe { device.create_texture_from_hal::<wgpu::hal::api::Metal>(hal, &wdesc, wgpu::wgt::TextureUses::RESOURCE) })
     }
 }

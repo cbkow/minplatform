@@ -974,7 +974,8 @@ impl App {
                     let item = self.project.item(&l.item);
                     let (name, transfer) = item.map(|i| (i.name.clone(), i.transfer_override)).unwrap_or_default();
                     let facts = l.feed.facts(); let secs = l.feed.live_seconds(); let app = l.feed.host().app();
-                    if g.live_strip.sync(facts, &name, app, transfer, secs, self.settings.bool(settings::k::LIVE_PLAYDOWN), now) { g.ui_dirty = true; }
+                    let review = l.review.as_ref().map(|r| r.label.clone());
+                    if g.live_strip.sync(facts, &name, app, transfer, secs, self.settings.bool(settings::k::LIVE_PLAYDOWN), review.as_deref(), now) { g.ui_dirty = true; }
                 }
                 if g.live_strip.animating() || g.live_strip.tick(now) { g.ui_dirty = true; }
             }
@@ -2139,6 +2140,8 @@ impl ApplicationHandler for App {
                     if self.annot.tool == annotate::Tool::Select && matches!(event.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) { if let Some(c) = self.annot.delete_selected(frame) { self.after_annotation(c); } return }
                 }
                 if pressed && !event.repeat && self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "4") { self.toggle_notes(); return }
+                // Esc's ladder (QCView): the stroke, the selection (above), then Review, then compact / fullscreen
+                if pressed && !event.repeat && matches!(event.logical_key, Key::Named(NamedKey::Escape)) && !self.mods.ctrl && !self.mods.shift && !self.mods.alt && self.exit_review() { return }
                 if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { if self.gpu.as_ref().is_some_and(|g| g.compact) { self.toggle_compact(); return } if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); return } self.finish(); el.exit(); return }
                 let key = match &event.logical_key {
                     Key::Character(c) if c == " " => Some(qcv_player::Key::Space),
@@ -2153,6 +2156,8 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     // live (row 228): the transport keys are locked; M still mutes (QCView's LiveStrip rule)
+                    // Space / K / W / S on a live item: freeze ↔ live (QCView plan B2)
+                    else if a == Action::TogglePlayback && self.live.is_some() { if !event.repeat { self.toggle_review(); } }
                     else if a == Action::ToggleMute && self.live.is_some() { let m = !self.settings.bool(settings::k::MUTED); self.settings.set_bool(settings::k::MUTED, m); self.apply_setting(settings_panel::Cmd::Changed(settings::k::MUTED)); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
                     else if a == Action::Screenshot || a == Action::ScreenshotToClipboard { if !event.repeat { self.screenshot(if a == Action::Screenshot { capture::Dest::File } else { capture::Dest::Clipboard }); } }

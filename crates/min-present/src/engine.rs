@@ -346,6 +346,30 @@ impl Engine {
     pub fn has_frame(&self) -> bool { self.shown.is_some() }
     /// Show nothing (a dual side in a gap or past its end: the background shows through).
     pub fn clear_frame(&mut self) { self.shown = None; }
+    /// Review (canon row 228, fix 6): the shown frame kept as it is while its source moves on — a GPU-imported frame (the
+    /// QCBridge ring's zero-copy slot, which the host rewrites) is copied into textures the engine owns and re-bound; CPU
+    /// planes are already the engine's and hold until the next `show`. The picture stays FLOAT and goes through the chain,
+    /// so the view can still be adjusted (QCView froze an 8-bit display capture). False when nothing is shown.
+    pub fn hold_shown(&mut self) -> bool {
+        let Some(shown) = self.shown.as_ref() else { return false };
+        if self.planar_bound { return true }
+        let Some(g) = self.gpu_held.back().cloned() else { return true };
+        let variant = shown.variant;
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("review hold") });
+        let owned: Vec<wgpu::Texture> = g.textures.iter().map(|t| {
+            let size = wgpu::Extent3d { width: t.width(), height: t.height(), depth_or_array_layers: 1 };
+            let o = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("review frame"), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: t.format(), usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+            enc.copy_texture_to_texture(t.as_image_copy(), o.as_image_copy(), size);
+            o
+        }).collect();
+        self.queue.submit([enc.finish()]);
+        let views: Vec<_> = owned.iter().map(|t| t.create_view(&Default::default())).collect();
+        let binds = self.binds(variant, &views);
+        self.shown = Some(Shown { variant, binds });
+        self.gpu_held.push_back(std::sync::Arc::new(crate::frame::GpuPlanes { textures: owned, layout: g.layout }));
+        while self.gpu_held.len() > HELD { self.gpu_held.pop_front(); }
+        true
+    }
     /// Stage 4: composite `view` (an `Rgba8Unorm` texture at the viewport size — vello's output: sRGB-encoded, straight
     /// alpha) over every `encode` until the next call; `None` removes it. UI white lands on the display's SDR reference
     /// white in every output mode. Call again after the texture is re-created (a resize).

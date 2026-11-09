@@ -27,7 +27,8 @@ const TRANSFERS: [(TransferOverride, &str); 6] = [(TransferOverride::Auto, "Auto
 pub struct LiveStrip {
     pub rect: Rect,
     transfer: TextButton, buttons: ActionGroup, menu: Menu, tips: Tooltips,
-    facts: Option<Facts>, name: String, app: String, override_: TransferOverride, live_seconds: f64,
+    facts: Option<Facts>, name: String, app: String, /// QCView's REVIEW: the freeze's label ("HH:mm:ss")
+    review: Option<String>, override_: TransferOverride, live_seconds: f64,
     /// QCView's 1-s timer: fps = frames taken per second
     fps: (u64, Instant, f64),
     t0: Instant, scale: f64,
@@ -42,18 +43,19 @@ impl LiveStrip {
         let buttons = ActionGroup::new(vec![b("speaker-x", min_i18n::trc("InspectorPanel", "Listen in QCView")), b("palette", tr("Color panel (⌃3)")), b("note-pencil", tr("Notes panel (⌃4)")),
             b("file-image", tr(if mac { "Screenshot to clipboard (⌘T)" } else { "Screenshot to clipboard (Ctrl+T)" })), b("file-arrow-down", tr("Screenshot to Desktop (T)"))]).compact();
         let now = Instant::now();
-        LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), t0: now, scale: 1.0 }
+        LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), review: None, override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), t0: now, scale: 1.0 }
     }
     /// A language switch: the buttons' words.
     pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.buttons.buttons.iter_mut().zip(f.buttons.buttons) { b.tooltip = n.tooltip; } }
     /// Per tick: the feed's facts, the item's name and Transfer choice. True when what is shown changed.
-    pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, listen: bool, now: Instant) -> bool {
+    pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, listen: bool, review: Option<&str>, now: Instant) -> bool {
+        let review_changed = self.review.as_deref() != review; self.review = review.map(str::to_string);
         let lb = &mut self.buttons.buttons[0];
         let listen_changed = lb.selected != listen;
         lb.selected = listen; lb.icon = if listen { "speaker-high" } else { "speaker-x" };
         if now.duration_since(self.fps.1).as_secs_f64() >= 1.0 { let dt = now.duration_since(self.fps.1).as_secs_f64(); self.fps = (facts.frames, now, (facts.frames.saturating_sub(self.fps.0)) as f64 / dt); }
         let label = if transfer == TransferOverride::Auto { tr(AUTO).to_string() } else { tr(TRANSFERS.iter().find(|(o, _)| *o == transfer).map(|(_, l)| *l).unwrap_or("Auto")).to_string() };
-        let changed = listen_changed || self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
+        let changed = review_changed || listen_changed || self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
         self.app = app.to_string(); self.transfer.label = label; self.override_ = transfer; self.name = name.to_string(); self.live_seconds = live_seconds;
         let shots = facts.has_frame;
         for i in [3, 4] { self.buttons.buttons[i].enabled = shots; }   // fix 5: nothing to capture before a frame
@@ -72,7 +74,7 @@ impl LiveStrip {
         self.transfer.rect = Rect::new(gx - t::SPACING_300 as f64 * scale - tw, ty, gx - t::SPACING_300 as f64 * scale, ty + th);
     }
     /// The status row's animation: the live dot pulses (QCView: 1 → 0.35 over 900 ms each way).
-    pub fn animating(&self) -> bool { self.facts.as_ref().is_some_and(|f| f.status == Status::Live) || self.tips.next_change(Instant::now()).is_some() }
+    pub fn animating(&self) -> bool { (self.review.is_none() && self.facts.as_ref().is_some_and(|f| f.status == Status::Live)) || self.tips.next_change(Instant::now()).is_some() }
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts, bounds: Rect) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let mut dirty = false;
         if self.menu.is_open() {
@@ -107,10 +109,12 @@ impl LiveStrip {
         let mid = |h: f64| r.y0 + (r.height() - h) / 2.0;
         let mut x = r.x0 + t::SPACING_300 as f64 * s;
         // the dot: red pulsing live; amber connecting / reconnecting / paused
-        let (dot, alpha) = match f.status { Status::Live => { let ph = (now.duration_since(self.t0).as_secs_f64() % 1.8) / 0.9; let k = if ph < 1.0 { ph } else { 2.0 - ph }; (red, (1.0 - 0.65 * k) as f32) }, _ => (amber, 1.0) };
+        // Review: amber, steady (QCView: the pulse runs only live and not in Review)
+        let (dot, alpha) = if self.review.is_some() { (amber, 1.0) } else { match f.status { Status::Live => { let ph = (now.duration_since(self.t0).as_secs_f64() % 1.8) / 0.9; let k = if ph < 1.0 { ph } else { 2.0 - ph }; (red, (1.0 - 0.65 * k) as f32) } _ => (amber, 1.0) } };
         let d = 8.0 * s; paint::rounded(scene, Rect::new(x, mid(d), x + d, mid(d) + d), d / 2.0, dot.with_alpha(alpha)); x += d + t::SPACING_200 as f64 * s;
         // the badge (shared memory: never CONNECTING / RECONNECTING — WAITING)
-        let badge = match f.status { Status::Live => tr("LIVE"), Status::Paused => tr("PAUSED"), Status::Connecting | Status::Reconnecting => tr("WAITING") };
+        let review_badge = self.review.as_ref().map(|l| min_i18n::fill(tr("REVIEW · %1"), &[l]));
+        let badge = if let Some(b) = review_badge.as_deref() { b } else { match f.status { Status::Live => tr("LIVE"), Status::Paused => tr("PAUSED"), Status::Connecting | Status::Reconnecting => tr("WAITING") } };
         let bl = fonts.detail(badge, t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
         min_ui::fonts::draw_layout(scene, &bl, Affine::translate((x, mid(bl.height() as f64)))); x += bl.width() as f64 + t::SPACING_300 as f64 * s;
         let size = t::RAIL_LABEL_SIZE * s as f32;

@@ -65,6 +65,9 @@ impl HostFeed {
 
     /// Per tick: the newest frame when there is one (latest wins). `device`: the Mac wraps the ring slot for the GPU without a
     /// copy (S4: 0.2 ms at 4K); elsewhere, and without a device, the slot is copied (DX12: one copy).
+    /// QCView `setPublishEnabled(true)`'s republish: the ring's newest frame is taken again on the next tick even when the host
+    /// sent nothing new (leaving Review on a paused host must not leave the frozen picture up).
+    pub fn republish(&mut self) { if let Some(r) = self.ring.as_mut() { r.last_seen = 0; } self.held.clear(); }
     /// The negative part of the live A/V offset (QCView's video hold), 0 = none.
     pub fn set_video_hold_ms(&mut self, ms: i32) { self.hold = Duration::from_millis(ms.max(0) as u64); }
     /// Per tick: the frame to show now, if any (a hold delays each frame by its time; switched off, the newest held one shows).
