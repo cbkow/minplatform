@@ -72,6 +72,8 @@ impl OutputRing {
         Ok(OutputRing { map, writer: Writer::default(), held: 0, last_seen: 0, known_request: 0, known_reply: 0, known_status: 0 })
     }
     // ----- producer -----
+    /// The sink's read of the HDR block (a new generation since `known`).
+    pub fn read_hdr_info(&self, known: &mut u64) -> Option<OutputHdrInfo> { let bp = unsafe { self.map.base.add(OUTPUT_HDR_INFO_OFFSET as usize) } as *const OutputHdrBlock; unsafe { let b = &*bp; ringslot::read_record(&b.lock, &b.generation, std::ptr::addr_of!((*bp).info), known) } }
     pub fn write_hdr_info(&self, info: OutputHdrInfo) { let bp = unsafe { self.map.base.add(OUTPUT_HDR_INFO_OFFSET as usize) } as *mut OutputHdrBlock; unsafe { let b = &*bp; ringslot::write_record(&b.lock, &b.generation, std::ptr::addr_of_mut!((*bp).info), info) } }
     pub fn read_request(&mut self) -> Option<OutputRequest> { let h = unsafe { &*(self.header() as *const OutputRingHeader) }; unsafe { ringslot::read_record(&h.request_lock, &h.request_generation, &h.request, &mut self.known_request) } }
     pub fn request_generation(&self) -> u64 { self.header().request_generation.load(Acquire) }
