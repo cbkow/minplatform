@@ -172,7 +172,7 @@ impl crate::App {
         let on = self.settings.bool(crate::settings::k::COLOR_ENABLED);
         let slots = if self.dual.is_some() { 2 } else { 1 };
         for slot in 0..2 {
-            let shown = slot < slots && (if self.dual.is_some() { self.dual.as_ref().unwrap().side(if slot == 0 { qcv_player::Side::A } else { qcv_player::Side::B }).is_some() } else { self.player.is_some() || self.live.is_some() });   // a live feed (row 228) takes the chain as a file does
+            let shown = slot < slots && (if self.dual.is_some() { self.dual.as_ref().unwrap().side(if slot == 0 { qcv_player::Side::A } else { qcv_player::Side::B }).is_some() } else { self.player.is_some() || self.live.as_ref().is_some_and(|l| !l.review.as_ref().is_some_and(|r| r.stored)) });   // a live feed (row 228) takes the chain as a file does — not a saved note's PNG in Review (display-referred: QCView's bypass)
             let (_, stored, _) = self.chain_of(&self.slot_item(slot));
             let dual = self.dual.is_some();
             let Some(g) = self.gpu.as_mut() else { return };

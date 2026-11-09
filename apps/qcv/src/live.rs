@@ -8,8 +8,30 @@ use qcv_ring::url::Host;
 
 /// QCView's LIVE / REVIEW (plan B2; canon row 228 1b): the feed frozen on the viewport. `stamp` = the note key minted at the
 /// freeze (`yyyyMMdd-HHmmss-zzz`, local) that the first note takes; `note` = the stream note shown (None = a transient freeze).
-#[allow(dead_code)]   // stamp / note: the stream notes (1b-ii)
-pub struct Review { pub label: String, pub stamp: String, pub note: Option<String> }
+/// `captured_at` / `host_tc` / `secs` = the freeze's fields for the note that takes it (QCView `currentNoteKey`: ISO with the
+/// UTC offset, the host's timecode, seconds since the item opened); `stored` = the viewport shows a SAVED note's PNG (display-
+/// referred: the chain is off for it, QCView's bypass), not the held float frame.
+pub struct Review { pub label: String, pub stamp: String, pub note: Option<String>, pub captured_at: String, pub host_tc: String, pub secs: f64, pub stored: bool }
+
+/// The note a drawing / Add note targets now (QCView `currentNoteKey`): a live item's = the Review note or the freeze's stamp
+/// (None while live — the callers freeze first); a file's = the playhead's. Free of `App` so a caller holding the GPU can ask.
+pub(crate) fn note_cur(live: Option<&Live>, player: Option<&qcv_player::Transport>, notes: &[qcv_notes::Note], stream_name: &str) -> Option<crate::annotate::Cur> {
+    use crate::annotate::{Cur, StreamTag};
+    if let Some(l) = live {
+        let r = l.review.as_ref()?;
+        if let Some(k) = &r.note { let n = notes.iter().find(|n| &n.timecode == k)?; return Some(Cur { key: k.clone(), secs: n.timestamp_seconds, frame: 0, stream: Some(StreamTag { captured_at: n.captured_at.clone(), host_timecode: n.host_timecode.clone(), name: n.stream.clone() }) }) }
+        return Some(Cur { key: r.stamp.clone(), secs: r.secs, frame: 0, stream: Some(StreamTag { captured_at: r.captured_at.clone(), host_timecode: r.host_tc.clone(), name: stream_name.to_string() }) })
+    }
+    player.map(|p| Cur::file(p.current_frame(), p.rate().as_f64()))
+}
+/// QCView `reviewLabelFor`: "HH:mm:ss" from `captured_at`, else the key's "yyyyMMdd-HHmmss-zzz", else the key.
+pub(crate) fn review_label(captured_at: &str, key: &str) -> String {
+    if captured_at.len() >= 19 { return captured_at[11..19].to_string() }
+    if key.len() >= 15 && key.as_bytes()[8] == b'-' { return format!("{}:{}:{}", &key[9..11], &key[11..13], &key[13..15]) }
+    key.to_string()
+}
+/// The card's capture label (QCView `captureLabel`: "HH:mm:ss.zzz").
+pub(crate) fn capture_label(captured_at: &str, key: &str) -> String { if captured_at.len() >= 23 { captured_at[11..23].to_string() } else { review_label(captured_at, key) } }
 
 pub struct Live { pub review: Option<Review>, pub feed: HostFeed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts>,
     /// the QCAA segment's player (QCView: the live AudioPlayer): it plays as packets arrive; Listen decides if it is heard
@@ -54,6 +76,7 @@ impl crate::App {
             g.presenter.engine.set_geometry(min_present::engine::Geometry::default()); g.content_set = None; g.ui_dirty = true;
         }
         self.apply_color();
+        self.sync_stream_notes();
         log::info!("live: {} ({})", item.name, host.url());
         true
     }
@@ -84,7 +107,7 @@ impl crate::App {
             }
             Cmd::Listen => { use crate::settings::k; let on = !self.settings.bool(k::LIVE_PLAYDOWN); self.settings.set_bool(k::LIVE_PLAYDOWN, on); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(on); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Cmd::Color => self.color_cmd(crate::color_drawer::Cmd::Toggle),
-            Cmd::Notes => {}   // step 1b (Review)
+            Cmd::Notes => self.toggle_notes(),
             Cmd::Shot(d) => self.screenshot(d),
         }
     }
@@ -98,22 +121,74 @@ impl crate::App {
         let now = jiff::Zoned::now();
         let stamp = now.strftime("%Y%m%d-%H%M%S-%3f").to_string();
         let label = now.strftime("%H:%M:%S").to_string();
+        let captured_at = now.strftime("%Y-%m-%dT%H:%M:%S.%3f%:z").to_string();
         log::info!("live: REVIEW (freeze {stamp})");
-        if let Some(l) = self.live.as_mut() { l.review = Some(Review { label, stamp, note: None }); }
+        if let Some(l) = self.live.as_mut() { let (host_tc, secs) = (l.feed.host_timecode(), l.feed.live_seconds()); l.review = Some(Review { label, stamp, note: None, captured_at, host_tc, secs, stored: false }); }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
     /// QCView `exitReview`: back to live — the host's newest frame shows again even when it is paused (the republish); a freeze
     /// that never became a note is dropped.
     pub(crate) fn exit_review(&mut self) -> bool {
         let Some(l) = self.live.as_mut() else { return false };
-        if l.review.take().is_none() { return false }
+        let Some(r) = l.review.take() else { return false };
         l.feed.republish();
+        if r.stored { self.apply_color(); }   // the chain back on for the live picture
         log::info!("live: back to LIVE");
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
         true
     }
     /// Space (and K / W / S) on a live item: freeze, or back to live (QCView `togglePlayback` on a live single item).
     pub(crate) fn toggle_review(&mut self) { if self.live.as_ref().is_some_and(|l| l.review.is_some()) { self.exit_review(); } else { self.freeze_live(); } }
+    /// QCView `enterReview(timecode)`: a stream note's saved frame on the viewport — its clean PNG (display-referred, so the
+    /// chain is off for it: QCView's bypass); the note's strokes overlay it. No PNG: QCView's toast.
+    pub(crate) fn enter_review(&mut self, key: &str) {
+        let Some(note) = self.annot.notes.iter().find(|n| n.timecode == key).cloned() else { return };
+        if self.live.is_none() { return }
+        let png = self.annot.dir().map(|d| qcv_notes::io::images_dir(&d).join(qcv_notes::io::image_filename(key)));
+        let Some((px, (w, h))) = png.and_then(|p| crate::image_rgba8(&p).ok()) else { self.toast(trw("This note has no captured frame"), min_ui::ToastKind::Notice); return };
+        // 8-bit sRGB → the packed half-float layout the feed uses (as stored: Transfer sRGB, straight alpha)
+        let half: Vec<u8> = px.iter().flat_map(|v| half::f16::from_f32(*v as f32 / 255.0).to_le_bytes()).collect();
+        let frame = min_present::Frame { width: w, height: h, pixels: min_present::Pixels::Planar { planes: vec![min_present::Plane::owned(half, w, h, w * 8)], layout: min_present::PlanarLayout::RgbaF16 { premultiplied: false } }, meta: min_present::ColorMeta { transfer: min_present::Transfer::Srgb, range: min_present::Range::Full, bit_depth: 8, ..Default::default() } };
+        if let Some(g) = self.gpu.as_mut() { if let Err(e) = g.presenter.engine.show(&frame) { log::warn!("review: {e}"); return } g.ui_dirty = true; }
+        let label = review_label(&note.captured_at, key);
+        if let Some(l) = self.live.as_mut() {
+            let stamp = l.review.as_ref().map(|r| r.stamp.clone()).unwrap_or_default();
+            l.review = Some(Review { label, stamp, note: Some(key.to_string()), captured_at: note.captured_at.clone(), host_tc: note.host_timecode.clone(), secs: note.timestamp_seconds, stored: true });
+        }
+        self.apply_color();   // off while a saved note shows
+        log::info!("live: REVIEW of note {key}");
+    }
+    /// ← / → and Q / E in Review (QCView `stepReviewNote`): the previous / next stream note by key; from a transient freeze, ←
+    /// goes to the newest note and → does nothing.
+    pub(crate) fn step_review(&mut self, dir: i32) {
+        let Some(r) = self.live.as_ref().and_then(|l| l.review.as_ref()) else { return };
+        let keys: Vec<String> = self.annot.notes.iter().map(|n| n.timecode.clone()).collect();
+        let next = match &r.note {
+            None => if dir < 0 { keys.last().cloned() } else { None },
+            Some(k) => { let i = keys.iter().position(|x| x == k); i.and_then(|i| if dir < 0 { i.checked_sub(1) } else { Some(i + 1) }).and_then(|j| keys.get(j).cloned()) }
+        };
+        if let Some(k) = next { self.enter_review(&k); }
+    }
+    /// The first note on a transient freeze takes it (QCView `adoptReviewNote`).
+    pub(crate) fn adopt_review_note(&mut self, key: &str) {
+        if let Some(r) = self.live.as_mut().and_then(|l| l.review.as_mut()) && r.note.is_none() && r.stamp == key { r.note = Some(key.to_string()); }
+    }
+    /// The Review note is gone (deleted / undone): leave Review (QCView kept showing it and then minted malformed notes — row 228 1b).
+    pub(crate) fn review_note_check(&mut self) {
+        let gone = self.live.as_ref().and_then(|l| l.review.as_ref()).and_then(|r| r.note.clone()).is_some_and(|k| !self.annot.notes.iter().any(|n| n.timecode == k));
+        if gone { self.exit_review(); }
+    }
+    /// QCView `syncAnnotationManagerToActiveMedia`'s stream branch: a saved project → the item's folder under its `.qcview/streams`
+    /// (found again by the id after a rename; created by the first note); never saved → no notes, the panel's Save tile.
+    pub(crate) fn sync_stream_notes(&mut self) {
+        let Some(l) = self.live.as_ref() else { return };
+        let Some(item) = self.project.item(&l.item).cloned() else { return };
+        let project = self.project.file_path().to_string();
+        if project.is_empty() { self.annot.load(None); return }
+        let dir = qcv_notes::io::stream_dir(std::path::Path::new(&project), &item.name, &item.id);
+        let header = qcv_notes::io::stream_header(&dir, &item.name, &item.id, &item.path);
+        self.annot.load_stream(dir, header);
+    }
     /// QCView `stopLiveStream`: the feed closes and no stale frame survives.
     pub(crate) fn stop_live(&mut self) {
         if self.live.take().is_none() { return }

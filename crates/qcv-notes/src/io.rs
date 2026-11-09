@@ -26,6 +26,37 @@ pub fn notes_dir(media: &Path) -> PathBuf { sidecar_root(media).join(sanitize_me
 pub fn notes_json(dir: &Path) -> PathBuf { dir.join("notes.json") }
 pub fn images_dir(dir: &Path) -> PathBuf { dir.join("images") }
 
+// ---- streams (QCView plan B1: a live item's notes live with the PROJECT) ----
+/// `<project_dir>/.qcview/streams` (or `.ump/streams` when only a legacy `.ump` exists: `projectSidecarWithFallback`).
+pub fn streams_root(project: &Path) -> PathBuf {
+    let dir = project.parent().unwrap_or(Path::new("."));
+    let q = dir.join(".qcview"); let u = dir.join(".ump");
+    (if !q.exists() && u.exists() { u } else { q }).join("streams")
+}
+/// QCView `streamFolderName`: the trimmed, sanitized item name ("stream" when empty) + "__" + the id's first 8 characters.
+pub fn stream_folder_name(item_name: &str, item_id: &str) -> String {
+    let n = sanitize_media_name(item_name.trim());
+    format!("{}__{}", if n.is_empty() { "stream" } else { &n }, item_id.chars().take(8).collect::<String>())
+}
+/// QCView `findStreamFolder`: the existing folder whose name ends in "__<id8>" (first by name) — a renamed item keeps its notes.
+pub fn find_stream_folder(project: &Path, item_id: &str) -> Option<String> {
+    if item_id.is_empty() { return None }
+    let suffix = format!("__{}", item_id.chars().take(8).collect::<String>());
+    let mut names: Vec<String> = std::fs::read_dir(streams_root(project)).ok()?.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names.into_iter().find(|n| n.ends_with(&suffix))
+}
+/// A live item's notes folder: the existing one, else the one its first note will create (QCView creates it lazily).
+pub fn stream_dir(project: &Path, item_name: &str, item_id: &str) -> PathBuf {
+    streams_root(project).join(find_stream_folder(project, item_id).unwrap_or_else(|| stream_folder_name(item_name, item_id)))
+}
+/// QCView's stream header: `stream`, `stream_id`, `stream_url` (merged over what the file already holds).
+pub fn stream_header(dir: &Path, name: &str, id: &str, url: &str) -> Map<String, Value> {
+    let mut h = load_at(dir).map(|(h, _)| h).unwrap_or_default();
+    h.insert("stream".into(), Value::from(name)); h.insert("stream_id".into(), Value::from(id)); h.insert("stream_url".into(), Value::from(url));
+    h
+}
+
 /// QCView `kindForExtension`.
 pub fn media_type(media: &Path) -> &'static str {
     let ext = media.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
@@ -115,5 +146,23 @@ mod tests {
             n += 1;
         }
         eprintln!("{n} / {} sidecars identical", paths.len());
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    #[test]
+    fn stream_folders_are_qcviews() {
+        assert_eq!(stream_folder_name(" QCBridge After Effects ", "0123456789abcdef"), "QCBridge After Effects__01234567");
+        assert_eq!(stream_folder_name("a/b:c", "xy"), "a_b_c__xy");
+        assert_eq!(stream_folder_name("  ", "abcdefghij"), "stream__abcdefgh");
+        let root = std::env::temp_dir().join(format!("qcv-stream-io-{}", std::process::id())); let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("p.qcvproj");
+        std::fs::create_dir_all(streams_root(&project).join("Old name__01234567")).unwrap();
+        assert_eq!(find_stream_folder(&project, "0123456789"), Some("Old name__01234567".into()), "found by the id suffix after a rename");
+        assert_eq!(stream_dir(&project, "New", "0123456789"), streams_root(&project).join("Old name__01234567"));
+        assert_eq!(stream_dir(&project, "Other", "zzzzzzzz9"), streams_root(&project).join("Other__zzzzzzzz"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

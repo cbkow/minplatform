@@ -59,7 +59,7 @@ impl LiveStrip {
         self.app = app.to_string(); self.transfer.label = label; self.override_ = transfer; self.name = name.to_string(); self.live_seconds = live_seconds;
         let shots = facts.has_frame;
         for i in [3, 4] { self.buttons.buttons[i].enabled = shots; }   // fix 5: nothing to capture before a frame
-        self.buttons.buttons[2].enabled = false;   // notes on a live feed arrive with Review (step 1b)
+
         self.facts = Some(facts);
         changed
     }

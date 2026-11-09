@@ -24,12 +24,22 @@ pub const TOOLS: [(Tool, &str, &str); 7] = [
     (Tool::Eraser, "eraser", "Erase stroke (click strokes to remove)")];
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Card { pub key: String, pub frame: i64, pub text: String, pub addressed: bool, pub thumb: Option<PathBuf>, pub viewer: bool, pub ocio: bool }
+/// `label` = what the card's time line says (a file: the key; a stream: the capture time "HH:mm:ss.zzz"); `sub` = a stream
+/// note's host timecode (QCView NotesPanel: captureLabel + hostTimecode).
+pub struct Card { pub key: String, pub label: String, pub sub: String, pub frame: i64, pub text: String, pub addressed: bool, pub thumb: Option<PathBuf>, pub viewer: bool, pub ocio: bool }
 /// The export formats (row 217), in QCView's menu order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat { Markdown, Html, Pdf, Docx }
+/// A live item's notes (QCView plan B1 / B2): the pill's state (the Review label, None = live) and the Save tile (the
+/// project has never been saved — stream notes live with it).
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { AddNote, Export(ExportFormat), Seek(i64), Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
+pub struct StreamMode { pub review: Option<String>, pub needs_save: bool }
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Cmd { AddNote, Export(ExportFormat), Seek(i64), /// a stream note's card: its frame on the viewport (QCView `enterReview`)
+    Review(String), /// the LIVE / REVIEW pill: freeze ↔ back to live
+    Pill, /// the Save tile (QCView `requestProjectSave`)
+    Save, Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
     Height(f64) }
 
 struct CardRects { thumb: Rect, text: Rect, addressed: Rect, delete: Rect }
@@ -46,6 +56,7 @@ pub struct NotesDrawer {
     hover: Option<(usize, u8)>, add_hover: bool, pub tips: Tooltips,
     /// QCView's Export notes tile under Add note here, and its format menu
     export: Rect, export_hover: bool, menu: Menu,
+    stream: Option<StreamMode>, pill: Rect, pill_hover: bool,
 }
 
 impl NotesDrawer {
@@ -55,7 +66,7 @@ impl NotesDrawer {
         NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, hbar: ScrollBar::horizontal(), panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
             tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
-            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, export: Rect::ZERO, export_hover: false, menu: Menu::new(), tips: Tooltips::default() }
+            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, export: Rect::ZERO, export_hover: false, menu: Menu::new(), tips: Tooltips::default(), stream: None, pill: Rect::ZERO, pill_hover: false }
     }
     pub fn set_open(&mut self, on: bool, now: Instant) { if on != self.open { self.open = on; self.open_ramp.set_target(if on { 1.0 } else { 0.0 }, now); if !on { self.unfocus(); } } }
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
@@ -65,6 +76,14 @@ impl NotesDrawer {
     pub fn tick(&mut self, now: Instant) -> bool { self.tips.tick(now) }
     pub fn has_focus(&self) -> bool { self.editing.is_some() || self.picker.focused() }
     /// The state to show; true when it changed.
+    /// A live item's mode (None = a file). The tools are off until the project is saved (QCView froze the feed and then dropped
+    /// the strokes — canon row 228 1b).
+    pub fn set_stream(&mut self, m: Option<StreamMode>) -> bool {
+        if self.stream == m { return false }
+        let off = m.as_ref().is_some_and(|m| m.needs_save);
+        for b in &mut self.tools { b.enabled = !off; }
+        self.stream = m; true
+    }
     pub fn sync(&mut self, clip: &str, cards: Vec<Card>, current: Option<String>, tool: Option<Tool>, color: &str, width: f32) -> bool {
         let changed = self.cards != cards || self.current != current || self.tool != tool || self.clip != clip || (self.width_v - width).abs() > 1e-3;
         self.cards = cards; self.current = current; self.tool = tool; self.clip = clip.to_string(); self.width_v = width;
@@ -168,8 +187,10 @@ impl NotesDrawer {
         if hover != self.hover { self.hover = hover; dirty = true; }
         let add_h = inside && pt.is_some_and(|p| self.add.contains(p)); if add_h != self.add_hover { self.add_hover = add_h; dirty = true; }
         let ex_h = inside && pt.is_some_and(|p| self.export.contains(p)); if ex_h != self.export_hover { self.export_hover = ex_h; dirty = true; }
+        let pill_h = inside && self.stream.is_some() && pt.is_some_and(|p| self.pill.contains(p)); if pill_h != self.pill_hover { self.pill_hover = pill_h; dirty = true; }
         if let Event::Down { button: min_ui::Button::Primary, .. } = *e {
-            if add_h { cmds.push(Cmd::AddNote); dirty = true; }
+            if add_h { cmds.push(if self.stream.as_ref().is_some_and(|m| m.needs_save) { Cmd::Save } else { Cmd::AddNote }); dirty = true; }
+            if self.pill_hover { cmds.push(Cmd::Pill); dirty = true; }
             if ex_h {
                 let any = !self.cards.is_empty();
                 let bounds = Rect::new(self.rect.x0, 0.0, self.rect.x1, self.rect.y1);
@@ -177,7 +198,7 @@ impl NotesDrawer {
                 dirty = true;
             }
             if let Some((i, part)) = hover { let c = &self.cards[i]; match part {
-                0 => cmds.push(Cmd::Seek(c.frame)),
+                0 => cmds.push(if self.stream.is_some() { Cmd::Review(c.key.clone()) } else { Cmd::Seek(c.frame) }),
                 1 => cmds.push(Cmd::Addressed(c.key.clone(), !c.addressed)),
                 2 => cmds.push(Cmd::Delete(c.key.clone())),
                 _ => {}   // the text box took it
@@ -186,6 +207,7 @@ impl NotesDrawer {
         // tooltips: the tools, the card buttons
         let tip = pt.filter(|_| inside).and_then(|p| {
             for (i, b) in self.tools.iter().enumerate() { if b.rect.contains(p) { return Some((100 + i as u64, b.rect, tr(TOOLS[i].2).to_string())) } }
+            if self.pill_hover { return Some((400, self.pill, tr(if self.stream.as_ref().is_some_and(|m| m.review.is_some()) { "back to live" } else { "freeze" }).to_string())) }
             if self.export.contains(p) && !self.menu.is_open() { return Some((300, self.export, if self.cards.is_empty() { tr("No notes to export yet.").to_string() } else { tr("%1 notes will be exported.").replace("%1", &self.cards.len().to_string()) })) }
             match hover { Some((i, 1)) => Some((200 + i as u64 * 2, self.rects[i].addressed, tr("Mark addressed").to_string())), Some((i, 2)) => Some((201 + i as u64 * 2, self.rects[i].delete, tr("Delete note").to_string())), _ => None }
         });
@@ -224,11 +246,29 @@ impl NotesDrawer {
         let mut x = self.header.x0; min_ui::fonts::draw_layout(scene, &h, Affine::translate((x, mid(&h, self.header)))); x += h.width() as f64 + t::SPACING_200 as f64 * s;
         let cl = fonts.layout(&format!("{}  ·  {}", self.clip, self.cards.len()), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
         min_ui::fonts::draw_layout(scene, &cl, Affine::translate((x, mid(&cl, self.header))));
+        // QCView's LIVE / REVIEW pill (a stream): the dot (red live, amber in Review) + the state; a click freezes / goes back
+        if let Some(m) = &self.stream {
+            x += cl.width() as f64 + t::SPACING_300 as f64 * s;
+            let label = match &m.review { Some(l) => min_i18n::fill(tr("REVIEW · %1"), &[l]), None => tr("LIVE").to_string() };
+            let pl = fonts.detail(&label, t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
+            let d = 7.0 * s; let ph = 20.0 * s; let pw = 8.0 * s + d + 6.0 * s + pl.width() as f64 + 10.0 * s;
+            let py = self.header.y0 + (self.header.height() - ph) / 2.0;
+            self.pill = Rect::new(x, py, x + pw, py + ph);
+            paint::rounded(scene, self.pill, ph / 2.0, if self.pill_hover { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR });
+            let c = if m.review.is_some() { min_theme::Color::rgba(0xe6 as f32 / 255.0, 0xa2 as f32 / 255.0, 0x3c as f32 / 255.0, 1.0) } else { min_theme::Color::rgba(0xe5 as f32 / 255.0, 0x48 as f32 / 255.0, 0x4d as f32 / 255.0, 1.0) };
+            paint::rounded(scene, Rect::new(x + 8.0 * s, py + (ph - d) / 2.0, x + 8.0 * s + d, py + (ph + d) / 2.0), d / 2.0, c);
+            min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + 8.0 * s + d + 6.0 * s, mid(&pl, self.pill))));
+        } else { self.pill = Rect::ZERO; }
         // the layer-2 panels (the colour drawer's treatment), the add tile one of them, rising on hover
         let r = t::CORNER_RADIUS_500 as f64 * s;
         for (i, p) in self.panels.iter().enumerate() { paint::rounded(scene, *p, r, if i == 0 && self.add_hover { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR }); }
-        if let Some(g) = fonts.icon("plus", 22.0 * s as f32, paint::color(t::RAIL_LABEL_COLOR)) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.add.x0 + (self.add.width() - g.width() as f64) / 2.0, self.add.y0 + self.add.height() * 0.32))); }
-        for (i, txt) in [tr("Add note here"), tr("captures current frame")].iter().enumerate() {
+        // the add tile's words: a file's; a stream's (QCView: "freezes the feed" live, "on the frozen frame" in Review); the Save
+        // tile while the project has never been saved
+        let save = self.stream.as_ref().is_some_and(|m| m.needs_save);
+        let (icon, words) = if save { ("floppy-disk", [tr("Save the project to keep notes for this stream"), tr("Save…")]) }
+            else { ("plus", [tr("Add note here"), match &self.stream { None => tr("captures current frame"), Some(m) if m.review.is_some() => tr("on the frozen frame"), Some(_) => tr("freezes the feed") }]) };
+        if let Some(g) = fonts.icon(icon, 22.0 * s as f32, paint::color(t::RAIL_LABEL_COLOR)) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.add.x0 + (self.add.width() - g.width() as f64) / 2.0, self.add.y0 + self.add.height() * 0.32))); }
+        for (i, txt) in words.iter().enumerate() {
             let l = fonts.layout_width(txt, Family::Sans, (if i == 0 { t::RAIL_LABEL_SIZE } else { t::DETAIL_SIZE_S }) * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if i == 0 { t::RAIL_LABEL_COLOR } else { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT }), Some((self.add.width() - 12.0 * s) as f32));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((self.add.x0 + (self.add.width() - l.width() as f64) / 2.0, self.add.y0 + self.add.height() * 0.55 + i as f64 * 20.0 * s)));
         }
@@ -259,9 +299,10 @@ impl NotesDrawer {
             }
             if current || self.hover.is_some_and(|h| h.0 == i && h.1 == 0) { scene.stroke(&kurbo::Stroke::new(if current { 2.0 * s } else { s }), Affine::IDENTITY, paint::color(if current { t::FOCUS_INDICATOR_COLOR } else { t::GRAY_500 }), None, &kurbo::RoundedRect::from_rect(thumb, 4.0 * s)); }
             // the timecode line + badges
-            let tl = fonts.layout(&c.key, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if current { t::NEUTRAL_CONTENT_COLOR_DEFAULT } else { t::RAIL_LABEL_COLOR }));
+            let tl = fonts.layout(&c.label, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if current { t::NEUTRAL_CONTENT_COLOR_DEFAULT } else { t::RAIL_LABEL_COLOR }));
             let ly = thumb.y1 + 3.0 * s; min_ui::fonts::draw_layout(scene, &tl, Affine::translate((thumb.x0, ly)));
             let mut bx = thumb.x0 + tl.width() as f64 + 8.0 * s;
+            if !c.sub.is_empty() { let sl = fonts.layout(&c.sub, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)); min_ui::fonts::draw_layout(scene, &sl, Affine::translate((bx, ly))); bx += sl.width() as f64 + 8.0 * s; }
             for (on, b) in [(c.viewer, tr("VIEWER")), (c.ocio, tr("OCIO"))] { if on { let bl = fonts.detail(b, t::DETAIL_SIZE_S * s as f32, paint::color(t::GRAY_50)); let br = Rect::new(bx, ly + 1.0 * s, bx + bl.width() as f64 + 8.0 * s, ly + 15.0 * s); paint::rounded(scene, br, 3.0 * s, t::GRAY_600); min_ui::fonts::draw_layout(scene, &bl, Affine::translate((bx + 4.0 * s, mid(&bl, br)))); bx = br.x1 + 4.0 * s; } }
             // the text box (QCView's recessed TextArea: the whole note, wrapped, scrolling inside)
             if let Some(a) = self.areas.get_mut(&c.key) { a.paint(scene, fonts, s); }

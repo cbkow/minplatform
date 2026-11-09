@@ -307,12 +307,28 @@ impl App {
         }
     }
     /// QCView `projectSave`: to the file it came from, else Save As.
-    fn save_project(&mut self) { if self.project.file_path().is_empty() { self.save_project_as(); } else { let p = self.project.file_path().to_string(); match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") } } }
+    fn save_project(&mut self) { if self.project.file_path().is_empty() { self.save_project_as(); } else { let p = self.project.file_path().to_string(); match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") } } self.after_project_save(""); }
+    /// QCView `projectSaved`: a live item's notes become possible after the first save; Save As to another folder carries
+    /// EVERY live item's notes folder (QCView `carryStreamNotes` carried only the ones it had loaded — row 228 1b).
+    fn after_project_save(&mut self, old: &str) {
+        let new = self.project.file_path().to_string();
+        if !old.is_empty() && !new.is_empty() && Path::new(old).parent() != Path::new(&new).parent() {
+            let ids: Vec<(String, String)> = self.project.pool().iter().filter(|i| i.media_type == qcv_project::MediaType::LiveStream).map(|i| (i.id.clone(), i.name.clone())).collect();
+            for (id, _) in ids { if let Some(folder) = qcv_notes::io::find_stream_folder(Path::new(old), &id) {
+                let (from, to) = (qcv_notes::io::streams_root(Path::new(old)).join(&folder), qcv_notes::io::streams_root(Path::new(&new)).join(&folder));
+                if qcv_notes::io::notes_json(&to).exists() { continue }
+                if let Err(e) = copy_tree(&from, &to) { log::warn!("stream notes carry {folder}: {e}"); } else { log::info!("stream notes carried: {folder}"); }
+            } }
+        }
+        if self.live.is_some() { self.sync_stream_notes(); let open = self.gpu.as_ref().is_some_and(|g| g.notes.open); if open && self.annot.has_target() { self.annot.active = true; } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+    }
     fn save_project_as(&mut self) {
         let suggested = if self.project.file_path().is_empty() { format!("{}.qcvproj", self.project.name()) } else { Path::new(self.project.file_path()).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() };
         if let Some(p) = rfd::FileDialog::new().set_title(trm("Save Project As")).add_filter(trm("QCView Project"), &["qcvproj"]).set_file_name(&suggested).save_file() {
             let mut p = p.to_string_lossy().to_string(); if !p.to_lowercase().ends_with(".qcvproj") { p.push_str(".qcvproj"); }
+            let old = self.project.file_path().to_string();
             match self.project.save_project(&p) { Ok(()) => self.note_recent_project(&p), Err(e) => log::warn!("{e}") }
+            self.after_project_save(&old);
         }
     }
     fn new_project(&mut self) { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
@@ -465,12 +481,20 @@ impl App {
     fn toggle_notes(&mut self) {
         let open = self.gpu.as_ref().is_some_and(|g| g.notes.open);
         if open { self.close_notes(); return }
-        if self.dual.is_some() || self.pl_editor.is_some() || self.player.is_none() || self.annot.media.is_none() { return }
+        // a file with a sidecar, or a live item (its notes live with the project; unsaved → the panel's Save tile, tools off)
+        let live = self.live.is_some();
+        if self.dual.is_some() || self.pl_editor.is_some() || (!live && (self.player.is_none() || self.annot.media.is_none())) { return }
         let now = Instant::now();
         if self.gpu.as_ref().is_some_and(|g| g.drawer.open) { self.color_cmd(color_drawer::Cmd::Toggle); }
-        self.annot.active = true; self.annot.tool = annotate::Tool::Freehand;
+        // armed, but a live feed freezes only when a stroke starts or a note is added (QCView froze on arming)
+        self.annot.active = self.annot.has_target(); self.annot.tool = annotate::Tool::Freehand;
         if let Some(c) = qcv_notes_color(&self.settings.string(settings::k::ANNOTATION_COLOR)) { self.annot.color = c; }
         if let Some(g) = self.gpu.as_mut() { g.notes.set_open(true, now); g.ui_dirty = true; }
+    }
+    /// The note drawing / Add note targets now (QCView `currentNoteKey`).
+    pub(crate) fn current_note(&self) -> Option<annotate::Cur> {
+        let name = self.live.as_ref().and_then(|l| self.project.item(&l.item)).map(|i| i.name.clone()).unwrap_or_default();
+        live::note_cur(self.live.as_ref(), self.player.as_ref(), &self.annot.notes, &name)
     }
     pub(crate) fn close_notes(&mut self) {
         self.annot.active = false; self.annot.escape(); self.annot.selected = None;
@@ -480,14 +504,20 @@ impl App {
     }
     fn notes_cmd(&mut self, c: notes_drawer::Cmd) {
         use notes_drawer::Cmd as N;
-        let (frame, fps) = self.player.as_ref().map(|p| (p.current_frame(), p.rate().as_f64())).unwrap_or((0, 24.0));
         match c {
             N::Export(f) => self.export_notes(f),
-            N::AddNote => { if let Some(c) = self.annot.add_note(frame, fps) { self.after_annotation(c); } }
+            N::AddNote => {
+                // a live item: the note goes on a frozen frame (QCView `ensureFrozenForNote`); Add on a saved note's Review is a no-op
+                if self.live.as_ref().is_some_and(|l| l.review.is_none()) { self.freeze_live(); }
+                if let Some(cur) = self.current_note() && let Some(c) = self.annot.add_note(&cur) { self.after_annotation(c); }
+            }
+            N::Review(k) => self.enter_review(&k),
+            N::Pill => self.toggle_review(),
+            N::Save => self.save_project(),
             N::Seek(f) => { if let Some(p) = self.player.as_mut() { p.seek_to_frame(f as i32); } }
             N::Text(k, t) => self.annot.set_text(&k, &t),
             N::Addressed(k, on) => self.annot.set_addressed(&k, on),
-            N::Delete(k) => self.annot.delete_note(&k),
+            N::Delete(k) => { self.annot.delete_note(&k); self.review_note_check(); }
             // QCView: clicking the armed tool again disarms it (annotation mode off, the panel stays)
             N::Tool(t) => { match t { Some(t) => { self.annot.tool = t; self.annot.active = true; } None => { self.annot.active = false; self.annot.escape(); } } self.annot.selected = None; }
             N::Color(h) => { if let Some(c) = qcv_notes_color(&h) { self.annot.color = c; self.settings.set_str(settings::k::ANNOTATION_COLOR, &h); } }
@@ -500,12 +530,13 @@ impl App {
     /// thumbnail redrawn through the SAME geometry as the screen (vello, offscreen) — both QCView needs to show the note.
     fn after_annotation(&mut self, c: annotate::Committed) {
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
-        let Some(media) = self.annot.media.clone() else { return };
-        let dir = qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(&media)); let _ = std::fs::create_dir_all(&dir);
+        let Some(ndir) = self.annot.dir() else { return };
+        self.adopt_review_note(&c.key);   // a live freeze's first note takes it
+        let dir = qcv_notes::io::images_dir(&ndir); let _ = std::fs::create_dir_all(&dir);
         let clean = dir.join(qcv_notes::io::image_filename(&c.key)); let annotated = dir.join(qcv_notes::io::annotated_filename(&c.key));
         // the clean frame: a CAPTURE (row 216 — the clip's chain SDR-retargeted, the viewer aids, pixel aspect + rotation, no
         // strokes, no guide), captured once and never overwritten (QCView); the aids and the chain recorded on the note with it
-        let current = self.annot.note_at_frame(self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1)).is_some_and(|n| n.timecode == c.key);
+        let current = self.current_note().is_some_and(|cur| cur.key == c.key || self.annot.note_at(&cur).is_some_and(|n| n.timecode == c.key));
         if c.new_note && current && !clean.exists() {
             if let Some((px, w, h, _)) = self.capture_picture(false) {   // a note's clean frame: over black, as QCView
                 if let Err(e) = min_image::write::png8(&clean.to_string_lossy(), &min_present::capture::srgb8(&px), w, h) { log::warn!("note thumbnail: {e}"); }
@@ -853,11 +884,15 @@ impl App {
                 g.drawer.layout(&mut g.fonts, cr, 0.0, rails_bottom, w as f64, scale, now);
                 // the Notes drawer: its cards from the clip's notes (the annotated thumbnail when there is one), the current note, the tools
                 if g.notes.open || g.notes.visible_height(now, scale) > 0.0 {
-                    let dir = self.annot.media.as_ref().map(|m| qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(m)));
-                    let cards: Vec<notes_drawer::Card> = self.annot.notes.iter().map(|n| { let thumb = dir.as_ref().and_then(|d| { let a = d.join(qcv_notes::io::annotated_filename(&n.timecode)); let c = d.join(qcv_notes::io::image_filename(&n.timecode)); if a.exists() { Some(a) } else if c.exists() { Some(c) } else { None } }); notes_drawer::Card { key: n.timecode.clone(), frame: n.frame, text: n.text.clone(), addressed: n.addressed, thumb, viewer: !n.viewer.is_empty(), ocio: !n.ocio.is_empty() } }).collect();
-                    let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1);
-                    let current = self.annot.note_at_frame(frame).map(|n| n.timecode.clone());
-                    let clip = self.annot.media.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let dir = self.annot.dir().map(|d| qcv_notes::io::images_dir(&d));
+                    let stream = self.live.is_some();
+                    let cards: Vec<notes_drawer::Card> = self.annot.notes.iter().map(|n| { let (label, sub) = if stream || !n.captured_at.is_empty() { (live::capture_label(&n.captured_at, &n.timecode), n.host_timecode.clone()) } else { (n.timecode.clone(), String::new()) }; let thumb = dir.as_ref().and_then(|d| { let a = d.join(qcv_notes::io::annotated_filename(&n.timecode)); let c = d.join(qcv_notes::io::image_filename(&n.timecode)); if a.exists() { Some(a) } else if c.exists() { Some(c) } else { None } }); notes_drawer::Card { key: n.timecode.clone(), label, sub, frame: n.frame, text: n.text.clone(), addressed: n.addressed, thumb, viewer: !n.viewer.is_empty(), ocio: !n.ocio.is_empty() } }).collect();
+                    let stream_name = self.live.as_ref().and_then(|l| self.project.item(&l.item)).map(|i| i.name.clone()).unwrap_or_default();
+                    let cur = live::note_cur(self.live.as_ref(), self.player.as_ref(), &self.annot.notes, &stream_name);
+                    let current = cur.as_ref().and_then(|c| self.annot.note_at(c)).map(|n| n.timecode.clone());
+                    let clip = if stream { stream_name.clone() } else { self.annot.media.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+                    let mode = self.live.as_ref().map(|l| notes_drawer::StreamMode { review: l.review.as_ref().map(|r| r.label.clone()), needs_save: self.project.file_path().is_empty() });
+                    if g.notes.set_stream(mode) { g.ui_dirty = true; }
                     let moved = current != g.notes_current; g.notes_current = current.clone();
                     if g.notes.sync(&clip, cards, current, self.annot.active.then_some(self.annot.tool), &self.settings.string(settings::k::ANNOTATION_COLOR), self.annot.width) { g.ui_dirty = true; }
                     if moved { g.notes.reveal_current(); }
@@ -1015,7 +1050,7 @@ impl App {
                     }
                 }
                 // the frame's annotations, the live stroke, the selection (row 215: while annotating, single view)
-                if self.annot.active && self.dual.is_none() { if let (Some(p), Some(geo)) = (self.player.as_ref(), annot_geo(&g.presenter.engine)) { self.annot.paint(scene, p.current_frame(), &geo); } }
+                if self.annot.active && self.dual.is_none() { if let (Some(cur), Some(geo)) = (live::note_cur(self.live.as_ref(), self.player.as_ref(), &self.annot.notes, ""), annot_geo(&g.presenter.engine)) { self.annot.paint(scene, &cur, &geo); } }
                 // the safety guide over each picture (row 215): side by side → both sides; wipe / difference / single → A (QCView)
                 if let Some((_, gd)) = g.guide.as_ref() {
                     let st = &self.settings;
@@ -1249,16 +1284,20 @@ impl App {
             if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
         }
         // annotating (row 215): the active tool owns presses on the picture (and the drag that follows, wherever it goes)
+        // a live item: the stroke starts on a frozen frame (QCView froze at RELEASE, so the stroke landed on a later frame — row 228 1b)
+        if self.annot.active && self.dual.is_none() && !grabbed && self.live.as_ref().is_some_and(|l| l.review.is_none()) && let min_ui::Event::Down { x, y, button: min_ui::Button::Primary } = e
+            && g.presenter.engine.content_rect().is_some_and(|(cx, cy, cw, ch)| x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64) { let _ = g; self.freeze_live(); }
+        let cur = self.current_note();
+        let g = self.gpu.as_mut().unwrap();
         if self.annot.active && self.dual.is_none() && !grabbed {
-            if let (Some(p), Some(geo)) = (self.player.as_ref(), annot_geo(&g.presenter.engine)) {
-                let (frame, fps) = (p.current_frame(), p.rate().as_f64());
+            if let (Some(cur), Some(geo)) = (cur, annot_geo(&g.presenter.engine)) {
                 let content = g.presenter.engine.content_rect().map(|(x, y, w, h)| kurbo::Rect::new(x as f64, y as f64, (x + w) as f64, (y + h) as f64));
                 let in_view = e.pos().is_some_and(|(x, y)| content.is_some_and(|c| c.contains(kurbo::Point::new(x, y))));
                 let mut done = None;
                 let used = match e {
-                    min_ui::Event::Down { x, y, button: min_ui::Button::Primary } if in_view => { if p.is_playing() && self.annot.tool == annotate::Tool::Select { } self.annot.press(geo.to_norm(x, y), frame, &geo); true }
-                    min_ui::Event::Move { x, y } if self.annot.drawing() || (self.annot.tool == annotate::Tool::Eraser && g.annot_down) => { done = self.annot.motion(geo.to_norm(x, y), frame, fps, &geo, g.annot_down); true }
-                    min_ui::Event::Up { x, y, button: min_ui::Button::Primary } if self.annot.drawing() || g.annot_down => { done = self.annot.release(geo.to_norm(x, y), frame, fps, &geo); true }
+                    min_ui::Event::Down { x, y, button: min_ui::Button::Primary } if in_view => { self.annot.press(geo.to_norm(x, y), &cur, &geo); true }
+                    min_ui::Event::Move { x, y } if self.annot.drawing() || (self.annot.tool == annotate::Tool::Eraser && g.annot_down) => { done = self.annot.motion(geo.to_norm(x, y), &cur, &geo, g.annot_down); true }
+                    min_ui::Event::Up { x, y, button: min_ui::Button::Primary } if self.annot.drawing() || g.annot_down => { done = self.annot.release(geo.to_norm(x, y), &cur, &geo); true }
                     _ => false,
                 };
                 if let min_ui::Event::Down { button: min_ui::Button::Primary, .. } = e { if in_view { g.annot_down = true; } }
@@ -1813,6 +1852,12 @@ fn insp_slot(dual: &Option<qcv_player::DualTransport>, g: &Gpu) -> usize { if du
 fn insp_transport<'a>(dual: &'a mut Option<qcv_player::DualTransport>, player: &'a mut Option<Transport>, slot: usize) -> Option<&'a mut Transport> { match dual { Some(d) => d.side_mut(if slot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => player.as_mut() } }
 /// An item's per-clip choices as the player / engine take them (QCView's `loadRequested` applies them).
 fn range_of(m: &qcv_project::MediaItem) -> qcv_player::RangeOverride { match m.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto } }
+/// A folder copied file by file; files already at the destination are kept (QCView `carryStreamNotes`).
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)? { let e = e?; let (src, dst) = (e.path(), to.join(e.file_name())); if src.is_dir() { copy_tree(&src, &dst)?; } else if !dst.exists() { std::fs::copy(&src, &dst)?; } }
+    Ok(())
+}
 fn routing_of(m: &qcv_project::MediaItem) -> qcv_player::RoutingMode { match m.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto } }
 fn par_of(m: &qcv_project::MediaItem) -> min_present::engine::Par { match m.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(m.custom_par_num.max(1) as u32, m.custom_par_den.max(1) as u32) } }
 fn rotation_of(m: &qcv_project::MediaItem) -> Option<u16> { if m.rotation_override >= 0 { Some(m.rotation_override as u16) } else { None } }
@@ -2135,9 +2180,8 @@ impl ApplicationHandler for App {
                 } }
                 // annotating (row 215): Esc cancels the stroke (else clears the selection), Delete removes the selected stroke, Ctrl+4 the mode
                 if pressed && self.annot.active {
-                    let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(0);
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && self.annot.escape() { if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return }
-                    if self.annot.tool == annotate::Tool::Select && matches!(event.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) { if let Some(c) = self.annot.delete_selected(frame) { self.after_annotation(c); } return }
+                    if self.annot.tool == annotate::Tool::Select && matches!(event.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) { if let Some(cur) = self.current_note() && let Some(c) = self.annot.delete_selected(&cur) { self.after_annotation(c); } return }
                 }
                 if pressed && !event.repeat && self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "4") { self.toggle_notes(); return }
                 // Esc's ladder (QCView): the stroke, the selection (above), then Review, then compact / fullscreen
@@ -2158,12 +2202,15 @@ impl ApplicationHandler for App {
                     // live (row 228): the transport keys are locked; M still mutes (QCView's LiveStrip rule)
                     // Space / K / W / S on a live item: freeze ↔ live (QCView plan B2)
                     else if a == Action::TogglePlayback && self.live.is_some() { if !event.repeat { self.toggle_review(); } }
+                    // ← / → and Q / E in Review: the previous / next stream note (QCView `stepReviewNote`; ignored while live)
+                    else if let (Action::Step(d), Some(l)) = (a, self.live.as_ref()) { if l.review.is_some() { self.step_review(d); } }
                     else if a == Action::ToggleMute && self.live.is_some() { let m = !self.settings.bool(settings::k::MUTED); self.settings.set_bool(settings::k::MUTED, m); self.apply_setting(settings_panel::Cmd::Changed(settings::k::MUTED)); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
                     else if a == Action::Screenshot || a == Action::ScreenshotToClipboard { if !event.repeat { self.screenshot(if a == Action::Screenshot { capture::Dest::File } else { capture::Dest::Clipboard }); } }
                     else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.annot.active && self.dual.is_none() {
                         let c = if a == Action::AnnotationUndo { self.annot.undo() } else { self.annot.redo() };
                         if let Some(c) = c { self.after_annotation(c); }
+                        self.review_note_check();
                     }
                     else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.dual_editor.is_some() && self.dual.is_some() {
                         let ed = self.dual_editor.as_mut().unwrap(); let ok = if a == Action::AnnotationUndo { ed.undo_edit() } else { ed.redo_edit() };

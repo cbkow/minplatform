@@ -26,9 +26,28 @@ struct Drag { id: String, last: [f64; 2], moved: bool, before: Note, /// a corne
 /// A committed edit the app follows up: the note's key, and whether its clean thumbnail must be captured (a new note).
 pub struct Committed { pub key: String, pub new_note: bool }
 
+/// The note a drawing / Add note targets — QCView `currentNoteKey` + `noteIsCurrent`. A file's: the playhead's SMPTE key,
+/// matched by FRAME. A stream's (plan B1/B2): the note on the Review frame, or the stamp minted at the freeze, matched by KEY
+/// (every stream note has frame 0).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cur { pub key: String, pub secs: f64, pub frame: i64, pub stream: Option<StreamTag> }
+/// A stream note's fields (QCView `setNoteStreamFields`): ISO capture time with the UTC offset, the host's timecode (Premiere), the item's name.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct StreamTag { pub captured_at: String, pub host_timecode: String, pub name: String }
+impl Cur {
+    pub fn file(frame: i32, fps: f64) -> Cur { let (key, secs) = qcv_notes::note_key(frame, fps); Cur { key, secs, frame: frame as i64, stream: None } }
+    pub fn matches(&self, n: &Note) -> bool { if self.stream.is_some() { n.timecode == self.key } else { n.frame == self.frame } }
+    fn new_note(&self) -> Note {
+        let t = self.stream.clone().unwrap_or_default();
+        Note { timecode: self.key.clone(), timestamp_seconds: self.secs, frame: self.frame, image: format!("images/{}", io::image_filename(&self.key)), captured_at: t.captured_at, host_timecode: t.host_timecode, stream: t.name, ..Default::default() }
+    }
+}
+
 pub struct Annotations {
     pub active: bool, pub tool: Tool, pub color: [f32; 4], pub width: f32,
-    pub media: Option<PathBuf>, pub notes: Vec<Note>, pub selected: Option<String>,
+    pub media: Option<PathBuf>, /// a live item's notes (plan B1): its folder under the project's `.qcview/streams` + the header
+    pub stream: Option<(PathBuf, serde_json::Map<String, serde_json::Value>)>,
+    pub notes: Vec<Note>, pub selected: Option<String>,
     live: Option<Live>, drag: Option<Drag>, undo: Vec<Step>, redo: Vec<Step>, t0: std::time::Instant,
     /// minNotes' `VideoNotesModel` rules (canon §4.5): keys deleted here since the last save (a merge never brings them
     /// back), the sidecar's signature after our own write (its echo is no reload), the last poll
@@ -36,39 +55,51 @@ pub struct Annotations {
 }
 
 impl Annotations {
-    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, notes: vec![], selected: None, live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
+    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, stream: None, notes: vec![], selected: None, live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
     /// A media file loaded (or none): its notes from the sidecar; the history starts over (per clip).
     pub fn load(&mut self, media: Option<&Path>) {
+        self.stream = None;
         self.media = media.map(Path::to_path_buf); self.live = None; self.drag = None; self.selected = None; self.undo.clear(); self.redo.clear();
         self.notes = match media { Some(m) => io::load(m).unwrap_or_else(|e| { log::warn!("notes: {e}"); vec![] }), None => vec![] };
         self.tombstones.clear(); self.disk_sig = self.sidecar_sig();
     }
+    /// A live item's notes (QCView `loadNotesForStream`): the folder + header; the history starts over.
+    pub fn load_stream(&mut self, dir: PathBuf, header: serde_json::Map<String, serde_json::Value>) {
+        self.media = None; self.live = None; self.drag = None; self.selected = None; self.undo.clear(); self.redo.clear();
+        self.notes = io::load_at(&dir).map(|(_, n)| n).unwrap_or_else(|e| { log::warn!("stream notes: {e}"); vec![] });
+        self.stream = Some((dir, header));
+        self.tombstones.clear(); self.disk_sig = self.sidecar_sig();
+    }
+    /// Where the notes live (the media's sidecar folder, or the stream's folder) — None = no notes target.
+    pub fn dir(&self) -> Option<PathBuf> { self.stream.as_ref().map(|(d, _)| d.clone()).or_else(|| self.media.as_ref().map(|m| io::notes_dir(m))) }
+    pub fn has_target(&self) -> bool { self.media.is_some() || self.stream.is_some() }
+    fn load_disk(&self) -> Result<Vec<Note>, String> { match (&self.stream, &self.media) { (Some((d, _)), _) => io::load_at(d).map(|(_, n)| n), (None, Some(m)) => io::load(m), _ => Ok(vec![]) } }
     /// Merge-on-save (minNotes): notes another app wrote that we haven't seen join ours — for a key both hold, ours wins —
     /// unless we deleted that key since the last save. Then the deletes are durable and the write's signature is ours.
     pub fn save(&mut self) {
-        let Some(m) = self.media.clone() else { return };
-        if let Ok(disk) = io::load(&m) {
+        if !self.has_target() { return }
+        if let Ok(disk) = self.load_disk() {
             for d in disk { if !self.notes.iter().any(|n| n.timecode == d.timecode) && !self.tombstones.contains(&d.timecode) { self.notes.push(d); } }
             self.notes.sort_by(|a, b| a.timecode.cmp(&b.timecode));
         }
-        if let Err(e) = io::save(&m, &self.notes) { log::warn!("notes save: {e}"); return }
+        let r = match (&self.stream, &self.media) { (Some((d, h)), _) => io::save_at(d, h, &self.notes), (None, Some(m)) => io::save(m, &self.notes), _ => Ok(()) };
+        if let Err(e) = r { log::warn!("notes save: {e}"); return }
         self.tombstones.clear(); self.disk_sig = self.sidecar_sig();
     }
     fn sidecar_sig(&self) -> Option<(std::time::SystemTime, u64)> {
-        let md = std::fs::metadata(io::notes_json(&io::notes_dir(self.media.as_ref()?))).ok()?;
+        let md = std::fs::metadata(io::notes_json(&self.dir()?)).ok()?;
         Some((md.modified().ok()?, md.len()))
     }
     /// minNotes' watcher reload: another app (minNotes, a second QCView) rewrote the sidecar → its notes, less our tombstones.
     /// A stat twice a second, not an OS watcher: review media lives on SMB / NFS mounts where those don't fire (canon §19).
     /// Never mid-gesture. True when the notes changed.
     pub fn poll_disk(&mut self, now: std::time::Instant) -> bool {
-        if self.media.is_none() || self.drawing() || now.duration_since(self.last_poll) < std::time::Duration::from_millis(500) { return false }
+        if !self.has_target() || self.drawing() || now.duration_since(self.last_poll) < std::time::Duration::from_millis(500) { return false }
         self.last_poll = now;
         let sig = self.sidecar_sig();
         if sig == self.disk_sig { return false }
         self.disk_sig = sig;
-        let Some(m) = self.media.clone() else { return false };
-        let Ok(mut loaded) = io::load(&m) else { return false };
+        let Ok(mut loaded) = self.load_disk() else { return false };
         loaded.retain(|n| !self.tombstones.contains(&n.timecode));
         if loaded == self.notes { return false }
         log::info!("notes: {} reloaded from disk (changed by another app)", loaded.len());
@@ -76,32 +107,32 @@ impl Annotations {
         if let Some(id) = &self.selected && !self.notes.iter().any(|n| strokes::parse(n.annotation.as_ref()).iter().any(|s| &s.id == id)) { self.selected = None; }
         true
     }
-    pub fn note_at_frame(&self, frame: i32) -> Option<&Note> { self.notes.iter().find(|n| n.frame == frame as i64) }
-    pub fn strokes_at(&self, frame: i32) -> Vec<Stroke> { self.note_at_frame(frame).map(|n| strokes::parse(n.annotation.as_ref())).unwrap_or_default() }
+    pub fn note_at(&self, cur: &Cur) -> Option<&Note> { self.notes.iter().find(|n| cur.matches(n)) }
+    pub fn strokes_at(&self, cur: &Cur) -> Vec<Stroke> { self.note_at(cur).map(|n| strokes::parse(n.annotation.as_ref())).unwrap_or_default() }
     pub fn drawing(&self) -> bool { self.live.is_some() || self.drag.is_some() }
     fn t(&self) -> f64 { self.t0.elapsed().as_secs_f64() }
 
     // ---- pointer (normalized picture coordinates; outside 0..1 allowed) ----
-    pub fn press(&mut self, p: [f64; 2], frame: i32, geo: &Geo) {
+    pub fn press(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo) {
         match self.tool {
             Tool::Freehand => self.live = Some(Live::Ink(ink::Smoother::begin(p, self.t()), inside(p))),
             Tool::Eraser => {}
             Tool::Select => {
                 // QCView `onSelectPointer`: a corner handle of the selection wins over re-hit-testing (a neighbour can't steal the grab)
-                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) && let Some(s) = strokes::parse(n.annotation.as_ref()).into_iter().find(|s| s.id == id) {
+                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at(cur).cloned()) && let Some(s) = strokes::parse(n.annotation.as_ref()).into_iter().find(|s| s.id == id) {
                     if let Some(c) = self.sel_box(&s, geo).and_then(|bb| corner_at(bb, geo.to_px(p))) {
                         self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: Some((c, point_bounds(&s), s.points.clone())) });
                         return
                     }
                 }
-                self.selected = self.hit(p, frame, geo);
-                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) { self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: None }); }
+                self.selected = self.hit(p, cur, geo);
+                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at(cur).cloned()) { self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: None }); }
             }
             t => if let Some(tool) = t.shape() { self.live = Some(Live::Shape { tool, a: p, b: p }); },
         }
     }
     /// Returns a committed edit (the eraser commits as it passes over strokes).
-    pub fn motion(&mut self, p: [f64; 2], frame: i32, fps: f64, geo: &Geo, pressed: bool) -> Option<Committed> {
+    pub fn motion(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo, pressed: bool) -> Option<Committed> {
         let t = self.t();
         match &mut self.live {
             Some(Live::Ink(s, touched)) => { s.push(p, t); *touched |= inside(p); return None }
@@ -112,14 +143,14 @@ impl Annotations {
             let delta = [p[0] - d.last[0], p[1] - d.last[1]]; d.last = p; d.moved = true;
             let id = d.id.clone();
             if let Some((corner, b, orig)) = d.scale.clone() {
-                if let Some(n) = self.notes.iter_mut().find(|n| n.frame == frame as i64) {
+                if let Some(n) = self.notes.iter_mut().find(|n| cur.matches(n)) {
                     let mut ss = strokes::parse(n.annotation.as_ref());
                     if let Some(s) = ss.iter_mut().find(|s| s.id == id) && let Some(pts) = scale_points(s.tool, &orig, b, corner, p) { s.points = pts; }
                     n.annotation = Some(strokes::to_data(&ss));
                 }
                 return None
             }
-            if let Some(n) = self.notes.iter_mut().find(|n| n.frame == frame as i64) {
+            if let Some(n) = self.notes.iter_mut().find(|n| cur.matches(n)) {
                 let mut ss = strokes::parse(n.annotation.as_ref());
                 if let Some(s) = ss.iter_mut().find(|s| s.id == id) {
                     // QCView: the move is clamped so the stroke's visible bounds stay on the picture
@@ -134,10 +165,10 @@ impl Annotations {
             }
             return None
         }
-        if pressed && self.tool == Tool::Eraser { return self.erase(p, frame, fps, geo) }
+        if pressed && self.tool == Tool::Eraser { return self.erase(p, cur, geo) }
         None
     }
-    pub fn release(&mut self, p: [f64; 2], frame: i32, fps: f64, geo: &Geo) -> Option<Committed> {
+    pub fn release(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo) -> Option<Committed> {
         if let Some(d) = self.drag.take() {
             if !d.moved { return None }
             let key = d.before.timecode.clone(); let after = self.notes.iter().find(|n| n.timecode == key).cloned();
@@ -163,14 +194,14 @@ impl Annotations {
             }
         };
         let stroke = Stroke { id: strokes::new_id(), tool, color: Stroke::qcolor(self.color), width: self.width as f64, filled: false, is_modeled: tool == STool::Freehand, points };
-        Some(self.add_stroke(stroke, frame, fps))
+        Some(self.add_stroke(stroke, cur))
     }
     /// The stroke joins the note at the playhead (created if absent: QCView's `onStrokeFinalized`).
-    fn add_stroke(&mut self, s: Stroke, frame: i32, fps: f64) -> Committed {
-        let (key, secs) = qcv_notes::note_key(frame, fps);
+    fn add_stroke(&mut self, s: Stroke, cur: &Cur) -> Committed {
+        let key = cur.key.clone();
         let before = self.notes.iter().find(|n| n.timecode == key).cloned();
         let new_note = before.is_none();
-        let mut n = before.clone().unwrap_or_else(|| Note { timecode: key.clone(), timestamp_seconds: secs, frame: frame as i64, image: format!("images/{}", io::image_filename(&key)), ..Default::default() });
+        let mut n = before.clone().unwrap_or_else(|| cur.new_note());
         let mut ss = strokes::parse(n.annotation.as_ref()); ss.push(s); n.annotation = Some(strokes::to_data(&ss));
         self.put(n.clone());
         self.push_step(Step { key: key.clone(), before, after: Some(n) }); self.save();
@@ -179,28 +210,28 @@ impl Annotations {
     fn put(&mut self, n: Note) { self.tombstones.remove(&n.timecode); match self.notes.iter_mut().find(|x| x.timecode == n.timecode) { Some(x) => *x = n, None => { self.notes.push(n); self.notes.sort_by(|a, b| a.timecode.cmp(&b.timecode)); } } }
     fn remove_note(&mut self, key: &str) { self.notes.retain(|n| n.timecode != key); self.tombstones.insert(key.to_string()); }
     fn push_step(&mut self, s: Step) { self.undo.push(s); self.redo.clear(); }
-    fn erase(&mut self, p: [f64; 2], frame: i32, _fps: f64, geo: &Geo) -> Option<Committed> {
-        let id = self.hit(p, frame, geo)?;
-        let before = self.note_at_frame(frame)?.clone();
+    fn erase(&mut self, p: [f64; 2], cur: &Cur, geo: &Geo) -> Option<Committed> {
+        let id = self.hit(p, cur, geo)?;
+        let before = self.note_at(cur)?.clone();
         let mut n = before.clone(); let mut ss = strokes::parse(n.annotation.as_ref()); ss.retain(|s| s.id != id); n.annotation = Some(strokes::to_data(&ss));
         let key = n.timecode.clone(); self.put(n.clone());
         self.push_step(Step { key: key.clone(), before: Some(before), after: Some(n) }); self.save();
         Some(Committed { key, new_note: false })
     }
     /// Delete / Backspace with Select: the selected stroke goes.
-    pub fn delete_selected(&mut self, frame: i32) -> Option<Committed> {
+    pub fn delete_selected(&mut self, cur: &Cur) -> Option<Committed> {
         let id = self.selected.take()?;
-        let before = self.note_at_frame(frame)?.clone();
+        let before = self.note_at(cur)?.clone();
         let mut n = before.clone(); let mut ss = strokes::parse(n.annotation.as_ref()); ss.retain(|s| s.id != id); n.annotation = Some(strokes::to_data(&ss));
         let key = n.timecode.clone(); self.put(n.clone());
         self.push_step(Step { key: key.clone(), before: Some(before), after: Some(n) }); self.save();
         Some(Committed { key, new_note: false })
     }
     /// QCView's "Add note here": a note at the playhead without a drawing (its clean frame captured by the app).
-    pub fn add_note(&mut self, frame: i32, fps: f64) -> Option<Committed> {
-        let (key, secs) = qcv_notes::note_key(frame, fps);
+    pub fn add_note(&mut self, cur: &Cur) -> Option<Committed> {
+        let key = cur.key.clone();
         if self.notes.iter().any(|n| n.timecode == key) { return None }
-        let n = Note { timecode: key.clone(), timestamp_seconds: secs, frame: frame as i64, image: format!("images/{}", io::image_filename(&key)), ..Default::default() };
+        let n = cur.new_note();
         self.put(n.clone()); self.push_step(Step { key: key.clone(), before: None, after: Some(n) }); self.save();
         Some(Committed { key, new_note: true })
     }
@@ -212,7 +243,7 @@ impl Annotations {
     /// QCView's "Delete note": the note and both its images (a user delete is the one thing that removes the PNGs).
     pub fn delete_note(&mut self, key: &str) {
         self.notes.retain(|n| n.timecode != key); self.tombstones.insert(key.to_string()); self.undo.retain(|s| s.key != key); self.redo.retain(|s| s.key != key); self.save();
-        if let Some(m) = &self.media { let dir = io::images_dir(&io::notes_dir(m)); let _ = std::fs::remove_file(dir.join(io::image_filename(key))); let _ = std::fs::remove_file(dir.join(io::annotated_filename(key))); }
+        if let Some(d) = self.dir() { let dir = io::images_dir(&d); let _ = std::fs::remove_file(dir.join(io::image_filename(key))); let _ = std::fs::remove_file(dir.join(io::annotated_filename(key))); }
     }
     /// QCView: Escape cancels the stroke in progress, else clears the selection. True when it did something.
     pub fn escape(&mut self) -> bool { if self.live.take().is_some() { return true } self.selected.take().is_some() }
@@ -226,9 +257,9 @@ impl Annotations {
         Some(bb.inflate(g.width / 2.0 + 3.0, g.width / 2.0 + 3.0))
     }
     /// The stroke under `p` — the drawn line within its half-width + 4 px, topmost first.
-    fn hit(&self, p: [f64; 2], frame: i32, geo: &Geo) -> Option<String> {
+    fn hit(&self, p: [f64; 2], cur: &Cur, geo: &Geo) -> Option<String> {
         let pt = geo.to_px(p);
-        for s in self.strokes_at(frame).iter().rev() {
+        for s in self.strokes_at(cur).iter().rev() {
             let g = ink::geometry(s, geo.rect, geo.px_per_src);
             let reach = g.width / 2.0 + 4.0;
             let near = g.paths.iter().chain(g.head.iter()).any(|path| path.segments().any(|seg| seg.nearest(pt, 0.1).distance_sq <= reach * reach))
@@ -239,8 +270,8 @@ impl Annotations {
     }
 
     /// Draw the frame's strokes, the live one and the selection outline.
-    pub fn paint(&self, scene: &mut Scene, frame: i32, geo: &Geo) {
-        for s in self.strokes_at(frame) { draw(scene, &s, geo); }
+    pub fn paint(&self, scene: &mut Scene, cur: &Cur, geo: &Geo) {
+        for s in self.strokes_at(cur) { draw(scene, &s, geo); }
         match &self.live {
             Some(Live::Ink(sm, _)) => { let s = Stroke { id: String::new(), tool: STool::Freehand, color: Stroke::qcolor(self.color), width: self.width as f64, filled: false, is_modeled: true, points: sm.points().to_vec() }; draw(scene, &s, geo); }
             Some(Live::Shape { tool, a, b }) => {
@@ -250,7 +281,7 @@ impl Annotations {
             None => {}
         }
         // the selection: QCView's #0189f1 outline + corner handles, here on screen only
-        if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(frame).into_iter().find(|s| &s.id == id) {
+        if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(cur).into_iter().find(|s| &s.id == id) {
             let Some(bb) = self.sel_box(&s, geo) else { return };
             let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
             scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);

@@ -142,7 +142,6 @@ impl crate::App {
     /// EXR, PNG / TIFF sequences); None for opaque media, so those screenshots are exactly what they were.
     pub(crate) fn capture_picture(&mut self, overlay: bool) -> Option<(Vec<f32>, u32, u32, Option<Vec<f32>>)> {
         let dual = self.dual.is_some();
-        let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1);
         use min_present::engine::CaptureRegion;
         // single: the picture; dual: both sides at their source resolution (row 216), each side's chain re-targeted
         let got: Option<(Vec<f32>, Vec<f32>, u32, u32, Vec<CaptureRegion>)> = if dual {
@@ -167,7 +166,7 @@ impl crate::App {
         let mut alpha = has_alpha.then_some(alpha);
         // the overlay: the note's strokes at this frame (single view, QCView), the guide when the setting asks — over each side
         // side by side, over the whole picture (A's geometry) for a wipe / difference
-        let strokes = if dual { vec![] } else { self.annot.strokes_at(frame) };
+        let strokes = if dual { vec![] } else { self.current_note().map(|c| self.annot.strokes_at(&c)).unwrap_or_default() };
         let guide = self.settings.bool(k::SCREENSHOT_GUIDES).then(|| self.gpu.as_ref().and_then(|g| g.guide.as_ref().map(|(_, gd)| gd.clone()))).flatten();
         if !overlay || (strokes.is_empty() && guide.is_none()) { return Some((px, w, h, alpha)) }
         let side_by_side = self.gpu.as_ref().and_then(|g| g.presenter.engine.dual().map(|d| d.mode == CompareMode::SideBySide)).unwrap_or(false);

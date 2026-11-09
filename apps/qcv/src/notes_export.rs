@@ -11,9 +11,11 @@ fn png_dims(p: &Path) -> Option<(u32, u32)> { let f = std::fs::File::open(p).ok(
 
 impl crate::App {
     pub(crate) fn export_notes(&mut self, fmt: ExportFormat) {
-        let Some(media) = self.annot.media.clone() else { return };
+        // a file's sidecar, or a live item's folder with the project (its "Source:" = the stream URL, QCView)
+        let Some(ndir) = self.annot.dir() else { return };
+        let media = self.annot.media.clone().unwrap_or_else(|| PathBuf::from(self.live.as_ref().and_then(|l| self.project.item(&l.item)).map(|i| i.name.clone()).unwrap_or_default()));
         if self.annot.notes.is_empty() { self.toast(tr("No notes to export yet."), min_ui::ToastKind::Notice); return }
-        let item = self.project.item(&self.loaded_item).cloned();
+        let item = self.project.item(self.live.as_ref().map(|l| l.item.as_str()).unwrap_or(&self.loaded_item)).cloned();
         let media_name = item.as_ref().map(|i| i.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| media.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
         let media_path = item.as_ref().map(|i| i.path.clone()).filter(|p| !p.is_empty()).unwrap_or_else(|| media.to_string_lossy().into_owned());
         let now = jiff::Zoned::now();
@@ -27,7 +29,7 @@ impl crate::App {
         };
         let Some(picked) = picked else { return };
         // the notes in frame order, each with its pictures
-        let dir = qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(&media));
+        let dir = qcv_notes::io::images_dir(&ndir);
         let mut notes = self.annot.notes.clone(); notes.sort_by_key(|n| n.frame);
         let mut rows: Vec<(qcv_notes::Note, Option<PathBuf>, Option<PathBuf>, Option<Vec<u8>>)> = vec![];
         for n in notes {
