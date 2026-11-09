@@ -47,6 +47,7 @@ impl HostFeed {
     }
     pub fn facts(&self) -> Facts { Facts { status: self.status, detail: self.detail.clone(), width: self.size.0, height: self.size.1, frames: self.frames, restarts: self.restarts, non_finite: self.non_finite, has_frame: self.has_frame } }
     pub fn status(&self) -> Status { self.status }
+    pub fn host(&self) -> Host { self.host }
     pub fn host_fps(&self) -> Option<f64> { self.fps }
     pub fn live_seconds(&self) -> f64 { self.live_since.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0) }
     fn set_status(&mut self, s: Status) { if s != self.status { if s == Status::Live { self.live_since = Some(Instant::now()); } else { self.live_since = None; } self.status = s; } }

@@ -58,6 +58,8 @@ mod capture;
 mod thumb_color;
 mod notes_export;
 mod shortcuts;
+mod live;
+mod live_strip;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -75,7 +77,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
     /// each picture's peak since its clip loaded (0 = the single view / dual A, 1 = dual B)
-    clip_peak: [Option<[f32; 2]>; 2], ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, /// dual's B side (A uses `thumbs`)
+    clip_peak: [Option<[f32; 2]>; 2], ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, /// a live feed's one row (row 228): it stands in for the strip, the transport and the scrubber
+    live_strip: live_strip::LiveStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, /// dual's B side (A uses `thumbs`)
     thumbs_b: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
@@ -109,7 +112,8 @@ struct App {
     last_tick: Instant,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
-    drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// the window's screen shows HDR (None = unknown) — the Color drawer's "highlights clip" pill (row 222)
+    drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// a QCBridge host feed in the single view (rows 227–228)
+    live: Option<live::Live>, /// the window's screen shows HDR (None = unknown) — the Color drawer's "highlights clip" pill (row 222)
     pub(crate) screen_hdr: Option<bool>, snapped: bool, verified: bool,
     settings: min_settings::Settings,
     /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
@@ -203,6 +207,7 @@ impl App {
             qcv_project::MediaType::Video | qcv_project::MediaType::Audio => {}
             qcv_project::MediaType::Playlist => { let ok = self.load_playlist(id); self.project.set_load_failed(id, !ok); if ok { self.loaded_item = id.to_string(); } if let Some(g) = self.gpu.as_mut() { g.content_set = None; g.ui_dirty = true; } return }
             qcv_project::MediaType::ImageSequence => {}
+            qcv_project::MediaType::LiveStream => { let ok = self.start_live(id, &item); self.project.set_load_failed(id, !ok); return }
             other => { log::info!("load: {other:?} items load with their step; selected only"); return }
         }
         let ok = if item.media_type == qcv_project::MediaType::ImageSequence {
@@ -253,6 +258,8 @@ impl App {
         let mut admitted = vec![]; let mut refused: Vec<String> = vec![]; let mut dead_shortcut = false;
         for raw in paths {
             if raw.is_empty() { continue }
+            // QCView: any "://" goes to addLiveStream — a qcbae:// host connects (row 228); other streams arrive with step 2
+            if raw.contains("://") && !raw.starts_with("file://") { if let Some(h) = qcv_ring::url::Host::parse(raw) { self.connect_host(h); } else { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); } continue }
             // a Windows shortcut stands in for its target (QCView: the admitted list carries the target); a dead one has its own toast
             let p = match os_actions::resolve_shortcut(raw) { Some(t) => t, None => { refused.push(raw.clone()); dead_shortcut = true; continue } };
             if p.contains("://") || qcv_project::extensions::is_supported_media_file(&p) { admitted.push(p) } else { refused.push(p) }
@@ -711,6 +718,7 @@ impl App {
         let thumb_gen = [self.thumb_color_tick(0), if self.dual.is_some() { self.thumb_color_tick(1) } else { 0 }];
         self.poll_export();
         self.ensure_color_config();
+        self.live_tick(Instant::now());   // a QCBridge host feed's newest frame (row 228)
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
@@ -804,8 +812,10 @@ impl App {
             }
             let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let bar_h = if g.compact { 0.0 } else if self.pl_editor.is_some() { clip_bar::ClipBar::height(scale) } else if self.dual.is_some() { dual_bars::DualBars::height(scale) } else { 0.0 };   // +28 a playlist, +24 dual (row 169)   // +20 for a playlist (row 169)
-            let strip_h = if g.strip_hidden { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
-            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
+            // a live feed (row 228): ONE row, QCView's LiveStrip, in place of the strip, the transport and the scrubber
+            let live_on = self.live.is_some() && !g.compact;
+            let strip_h = if g.strip_hidden || live_on { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
+            let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else if live_on { t::TRANSPORT_BAR_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
                 // the pointer at the bottom edge (or on the shown bands) reveals; leaving starts the hide delay
                 let (px, py) = g.pointer;
@@ -816,7 +826,7 @@ impl App {
             }
             if g.bands.animating(now) { g.ui_dirty = true; }
             let slide = bands_h * (1.0 - g.bands.value(now) as f64);
-            let scrub_y = h as f64 - t::SCRUBBER_HEIGHT as f64 * scale - bar_h + slide;
+            let scrub_y = if live_on { h as f64 + slide } else { h as f64 - t::SCRUBBER_HEIGHT as f64 * scale - bar_h + slide };
             // the rails span the viewport row (QCView's layout: the bands run full width beneath); none in fullscreen
             let rails_bottom = if g.compact { scrub_y } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
@@ -952,8 +962,18 @@ impl App {
                 if g.thumbs_b.is_shown() { g.thumbs_b.tick(None, None, now, (0, &mut |_| None)); g.ui_dirty = true; }
             }
             let _ = frame;
+            if live_on {
+                if let Some(l) = self.live.as_ref() {
+                    let item = self.project.item(&l.item);
+                    let (name, transfer) = item.map(|i| (i.name.clone(), i.transfer_override)).unwrap_or_default();
+                    let facts = l.feed.facts(); let secs = l.feed.live_seconds(); let app = l.feed.host().app();
+                    if g.live_strip.sync(facts, &name, app, transfer, secs, now) { g.ui_dirty = true; }
+                }
+                if g.live_strip.animating() || g.live_strip.tick(now) { g.ui_dirty = true; }
+            }
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
                 let bands_y = scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale;
+                if live_on { g.live_strip.layout(&mut g.fonts, kurbo::Rect::new(0.0, bands_y, w as f64, scrub_y), scale); }
                 g.bar.layout(&mut g.fonts, w as f64, bands_y, scale);
                 g.strip.sync(pb(&self.dual, &self.player));
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
@@ -972,7 +992,7 @@ impl App {
                     g.compact_strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                     g.ui_shown_frame = key; g.ui_dirty = false;
                 } else {
-                ui_sketch::bands(scene, w, h, scale, slide, bar_h);
+                if live_on { scene.reset(); } else { ui_sketch::bands(scene, w, h, scale, slide, bar_h); }
                 if !g.fullscreen {
                     for (rail, is_left) in [(&g.left, true), (&g.right, false)] {
                         rail.paint_background(scene, now);
@@ -1000,12 +1020,15 @@ impl App {
                 if let (Some((sx, hot)), Some((_, cy, _, ch))) = (seam_line, g.presenter.engine.content_rect()) { let lw = (2.0 * scale).round().max(1.0); let c = if hot { min_theme::Color::rgba(1.0, 1.0, 1.0, 1.0) } else { min_theme::Color::rgba(0.4, 0.4, 0.4, 1.0) }; min_ui::paint::rect(scene, kurbo::Rect::new(sx - lw / 2.0, cy as f64, sx + lw / 2.0, (cy + ch) as f64), c); }
                 if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.notes.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
                 if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
+                if live_on { g.live_strip.paint(scene, &mut g.fonts, now); } else {
                 if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now); }
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
+                }
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint(scene, content, scale, Some(g.pointer.0)); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), gap); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
+                if live_on { g.live_strip.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
@@ -1198,6 +1221,15 @@ impl App {
             let g = self.gpu.as_mut().unwrap();
             if modal || pp_modal || g.project_panel.menu_open() || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
             let _ = g;
+        }
+        let g = self.gpu.as_mut().unwrap();
+        // a live feed's row (row 228): its own buttons and the Transfer menu; the bands it replaced take nothing
+        if self.live.is_some() && !g.compact {
+            let (lc, ld, consumed) = g.live_strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
+            if ld { g.ui_dirty = true; }
+            let _ = g;
+            for c in lc { self.live_cmd(c); }
+            if consumed { return }
         }
         let g = self.gpu.as_mut().unwrap();
         // dual view's controls (row 173) — they own the pointer while their slider drags
@@ -1479,6 +1511,9 @@ impl App {
             M::OpenProject => self.open_project_dialog(),
             M::SaveProject => self.save_project(),
             M::SaveProjectAs => self.save_project_as(),
+            M::RecentMedia(p) if p.contains("://") => { if let Some(h) = qcv_ring::url::Host::parse(&p) { self.connect_host(h) } else { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice) } }
+            M::ConnectAe => self.connect_host(qcv_ring::url::Host::AfterEffects),
+            M::ConnectPremiere => self.connect_host(qcv_ring::url::Host::Premiere),
             M::RecentMedia(p) => { if std::path::Path::new(&p).exists() { for a in self.admit_media_paths(&[p]) { self.add_and_load(&a, true); } } else { self.toast(trw("That file is no longer there"), min_ui::ToastKind::Notice); } }
             M::RecentProject(p) => { if std::path::Path::new(&p).exists() { self.open_project(&p); } else { self.toast(trw("That project is no longer there"), min_ui::ToastKind::Notice); } }
             M::ClearRecentMedia => { self.settings.set_str(settings::k::RECENT_MEDIA, ""); }
@@ -1681,7 +1716,7 @@ fn about_dialog() -> min_ui::Dialog { min_ui::Dialog::new("QCView", &format!("{}
 /// what they show each frame (values, rows built at sync) follows on its own. An open dialog keeps its words until it closes.
 fn relabel(g: &mut Gpu) {
     g.settings_panel.relabel(); g.background_panel.relabel(); g.guides_panel.relabel(); g.project_panel.relabel();
-    g.inspector.relabel(); g.shortcuts.relabel(); g.bar.relabel(); g.strip.relabel(); g.compact_strip.relabel();
+    g.inspector.relabel(); g.shortcuts.relabel(); g.bar.relabel(); g.strip.relabel(); g.live_strip.relabel(); g.compact_strip.relabel();
     g.dualc.relabel(); g.clip_popover.relabel(); g.drawer.relabel(); g.notes.relabel();
     if !g.about.open { g.about = about_dialog(); }
     if !g.dual_dialog.open { g.dual_dialog = dual_dialog(); }
@@ -1887,7 +1922,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
@@ -2219,7 +2254,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, screen_hdr: None, snapped: false, verified: false };
+    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

@@ -15,7 +15,7 @@
 pub enum Cmd {
     OpenMedia, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
-    Background, SafetyGuides, Shortcuts, Settings, Notes, Docs, CopyProjectLink, About, ColorPanel,
+    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, Docs, CopyProjectLink, About, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
@@ -52,7 +52,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     let mac = cfg!(target_os = "macos");
     let mut file = vec![
         item("Open Media…", sc(K::O), Cmd::OpenMedia), off("Open Stream…", None),
-        off("Connect to After Effects", None), off("Connect to Premiere Pro", None), off("Connect to Blender", None),
+        item("Connect to After Effects", None, Cmd::ConnectAe), item("Connect to Premiere Pro", None, Cmd::ConnectPremiere), off("Connect to Blender", None),
         Node::Recent { projects: false }, Node::Sep,
         item("New Project", None, Cmd::NewProject), item("Open Project…", sc_shift(K::O), Cmd::OpenProject), Node::Recent { projects: true },
         item("Save Project", sc(K::S), Cmd::SaveProject), item("Save Project As…", sc_shift(K::S), Cmd::SaveProjectAs),
