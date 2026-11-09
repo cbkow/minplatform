@@ -3125,6 +3125,7 @@ dependencies = [
  "qcv-player",
  "qcv-project",
  "qcv-ring",
+ "qcv-stream",
  "qcv-timeline",
  "raw-window-handle",
  "rfd",

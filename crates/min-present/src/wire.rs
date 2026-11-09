@@ -96,21 +96,8 @@ impl WireEncoder {
                 self.staging.len() - 1
             }
         };
-        let tf = fmt.texture_format();
-        // linear Rec.709 → Rec.2020 / P3-D65 (ITU-R BT.2087; SMPTE EG 432-1)
-        const TO_2020: [[f32; 3]; 3] = [[0.6274, 0.3293, 0.0433], [0.0691, 0.9195, 0.0114], [0.0164, 0.0880, 0.8956]];
-        const TO_P3: [[f32; 3]; 3] = [[0.8225, 0.1774, 0.0], [0.0332, 0.9669, 0.0], [0.0171, 0.0724, 0.9108]];
-        let (mode, m, white) = match encoding { WireEncoding::Sdr => (0.0, TO_2020, 100.0), WireEncoding::Pq { p3, white } => (1.0, if p3 { TO_P3 } else { TO_2020 }, white), WireEncoding::Hlg { white } => (2.0, TO_2020, white) };
-        let mut u = [0f32; 16]; for r in 0..3 { u[r * 4..r * 4 + 3].copy_from_slice(&m[r]); } u[12] = mode; u[13] = white; u[14] = if overlay.is_none() { 0.0 } else if mode == 0.0 { 1.0 } else { OVERLAY_HDR_GAIN * 100.0 / white };
-        queue.write_buffer(&self.ubuf, 0, bytemuck::cast_slice(&u));
-        let out = device.create_texture(&wgpu::TextureDescriptor { label: Some("wire"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: tf, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
-        let view = out.create_view(&Default::default());
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("wire"), layout: &self.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&canvas.create_view(&Default::default())) }, wgpu::BindGroupEntry { binding: 1, resource: self.ubuf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(overlay.unwrap_or(&self.none)) }] });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wire") });
-        {
-            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("wire"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
-            p.set_pipeline(&self.pipes.iter().find(|(f, _)| *f == tf).unwrap().1); p.set_bind_group(0, &bind, &[]); p.draw(0..3, 0..1);
-        }
+        let out = self.draw(device, queue, canvas, overlay, fmt, encoding, &mut enc);
         let s = &mut self.staging[i];
         enc.copy_texture_to_buffer(out.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &s.buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s.bpr), rows_per_image: Some(h) } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
         queue.submit([enc.finish()]);
@@ -118,6 +105,32 @@ impl WireEncoder {
         let st = s.state.clone();
         s.buf.slice(..).map_async(wgpu::MapMode::Read, move |r| st.store(if r.is_ok() { 2 } else { 3 }, Release));
         true
+    }
+    /// The wire picture as a TEXTURE (the stream's NV12 pass reads it; canon row 239): `canvas` (+ the overlay) in `fmt` /
+    /// `encoding`, no read-back.
+    pub fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: &wgpu::Texture, overlay: Option<&wgpu::TextureView>, fmt: WireFormat, encoding: WireEncoding) -> wgpu::Texture {
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wire") });
+        let out = self.draw(device, queue, canvas, overlay, fmt, encoding, &mut enc);
+        queue.submit([enc.finish()]);
+        out
+    }
+    fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: &wgpu::Texture, overlay: Option<&wgpu::TextureView>, fmt: WireFormat, encoding: WireEncoding, enc: &mut wgpu::CommandEncoder) -> wgpu::Texture {
+        let (w, h) = (canvas.width(), canvas.height());
+        let tf = fmt.texture_format();
+        // linear Rec.709 → Rec.2020 / P3-D65 (ITU-R BT.2087; SMPTE EG 432-1)
+        const TO_2020: [[f32; 3]; 3] = [[0.6274, 0.3293, 0.0433], [0.0691, 0.9195, 0.0114], [0.0164, 0.0880, 0.8956]];
+        const TO_P3: [[f32; 3]; 3] = [[0.8225, 0.1774, 0.0], [0.0332, 0.9669, 0.0], [0.0171, 0.0724, 0.9108]];
+        let (mode, m, white) = match encoding { WireEncoding::Sdr => (0.0, TO_2020, 100.0), WireEncoding::Pq { p3, white } => (1.0, if p3 { TO_P3 } else { TO_2020 }, white), WireEncoding::Hlg { white } => (2.0, TO_2020, white) };
+        let mut u = [0f32; 16]; for r in 0..3 { u[r * 4..r * 4 + 3].copy_from_slice(&m[r]); } u[12] = mode; u[13] = white; u[14] = if overlay.is_none() { 0.0 } else if mode == 0.0 { 1.0 } else { OVERLAY_HDR_GAIN * 100.0 / white };
+        queue.write_buffer(&self.ubuf, 0, bytemuck::cast_slice(&u));
+        let out = device.create_texture(&wgpu::TextureDescriptor { label: Some("wire"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: tf, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+        let view = out.create_view(&Default::default());
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("wire"), layout: &self.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&canvas.create_view(&Default::default())) }, wgpu::BindGroupEntry { binding: 1, resource: self.ubuf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(overlay.unwrap_or(&self.none)) }] });
+        {
+            let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("wire"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+            p.set_pipeline(&self.pipes.iter().find(|(f, _)| *f == tf).unwrap().1); p.set_bind_group(0, &bind, &[]); p.draw(0..3, 0..1);
+        }
+        out
     }
     /// The oldest finished frame, handed to `f` as (bytes with `bpr`-byte rows, w, h, bpr, tag); its buffer is free again after.
     pub fn take(&mut self, device: &wgpu::Device, f: &mut dyn FnMut(&[u8], u32, u32, u32, u64)) -> bool {

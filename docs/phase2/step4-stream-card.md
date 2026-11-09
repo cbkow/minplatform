@@ -103,8 +103,7 @@ decoded back matches the capture within 1 code value on flat regions; constant p
 | 10 | The rate shown | the session's rate to three decimals ("23.976 fps") |
 | 11 | State strings | translated; drafts in 11 languages for those QCView left as raw English |
 | 12 | Kept as QCView | no passphrase field; the master mute silences the stream; VideoToolbox's rate control (average + the 2× / 1 s cap); Auto follows any source rate; the kbps shown is the elementary streams' |
-
-Open (to raise at the card): the feed mute defaults to ON in the port (row 237) — a first stream to Louper would go out silent.
+| 13 | The feed mute | stays ON by default (row 237); **switching the stream on flips it off** — a stream to Louper starts with sound (the user 2026-11-09: "We can flip it when we enable the stream. It makes sense"); the header speaker still mutes every output |
 
 ## Order (the original's A0–A3)
 

@@ -51,6 +51,7 @@ mod sdr_white;
 mod dual_controls;
 mod dual_bars;
 mod guides;
+mod stream;
 mod guides_panel;
 mod annotate;
 mod notes_drawer;

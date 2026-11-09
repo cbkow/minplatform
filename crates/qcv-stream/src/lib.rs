@@ -4,8 +4,10 @@
 //! follows the Windows spike) that owns the NV12 surfaces, our own GPU conversion writing them in place ([`nv12`]: BT.709,
 //! limited range, QCView's maths — no CPU copy, never an encoder's default matrix), FFmpeg only for AAC, the muxers and the
 //! protocols ([`mux`]).
+pub mod aac;
 pub mod mux;
 pub mod nv12;
+pub mod sink;
 #[cfg(target_os = "macos")]
 pub mod vt;
 
