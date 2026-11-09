@@ -14,3 +14,5 @@
 
 # the pinned FFmpeg binaries (tools/ffmpeg/fetch-win64.ps1) — never committed
 external/ffmpeg/
+# the app's own icons (QCView's brand mark for exports) — not fixtures
+!apps/qcv/assets/icons/*.png
