@@ -144,11 +144,6 @@ impl Presenter {
         self.engine.queue.present(frame);
         true
     }
-    /// macOS: the potential EDR headroom of the screen holding the window (≤ 1 = no HDR there; canon row 220). None elsewhere.
-    pub fn window_screen_headroom(&self) -> Option<f64> {
-        #[cfg(target_os = "macos")] { if let Some(v) = self.ns_view { return mac::window_screen_headroom(v) } }
-        None
-    }
     /// What the Metal layer ended up with (format, colour space, EDR flag) and every screen's EDR headroom (current, potential).
     pub fn layer_report(&self) -> String {
         #[cfg(target_os = "macos")] { if let Some(v) = self.ns_view { return mac::report_layer(v) } }
@@ -185,13 +180,6 @@ mod mac {
     pub fn edr_now() -> Vec<f64> {
         let mtm = objc2::MainThreadMarker::new().expect("main thread");
         NSScreen::screens(mtm).iter().map(|s| s.maximumExtendedDynamicRangeColorComponentValue()).collect()
-    }
-    /// The potential EDR headroom of the screen the view's window is on (1.0 = an SDR screen, or HDR switched off).
-    pub fn window_screen_headroom(ns_view: *mut c_void) -> Option<f64> {
-        // SAFETY: as metal_layer — the window's own NSView, on the main thread
-        let view: &NSView = unsafe { &*(ns_view as *const NSView) };
-        let screen = view.window()?.screen()?;
-        Some(screen.maximumPotentialExtendedDynamicRangeColorComponentValue())
     }
     pub fn report_layer(ns_view: *mut c_void) -> String {
         let Some(metal) = metal_layer(ns_view) else { return "layer: no CAMetalLayer".into() };

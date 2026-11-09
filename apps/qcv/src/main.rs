@@ -720,9 +720,9 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let now = Instant::now();
         tab_presence(g, now);   // a parked pointer fades the tabs with no event to say so
-        // the window's screen, every 2 s (canon rows 184 + 220): Windows — HDR on → the fp16 scRGB surface with SDR white lifted to
-        // the user's SDR brightness; HDR off → the 10-bit sRGB surface (gain 1). macOS — EDR as ever; the screen's headroom only
-        // decides the chain's end, behind QCV_SCREEN_CHAIN_END until the user's test.
+        // the window's screen, every 2 s (canon rows 184 + 220, Windows): HDR on → the fp16 scRGB surface with SDR white lifted to the
+        // user's SDR brightness; HDR off → the 10-bit sRGB surface (gain 1) and the chain ending in SDR. macOS: EDR as ever — the
+        // screen-following chain end was tried and declined there (the user's A/B, 2026-11-09).
         let mut screen_sdr = self.screen_sdr;
         if g.presenter.info().output == Output::Edr && g.sdr_checked.is_none_or(|t| now.duration_since(t).as_secs_f32() >= 2.0) {
             g.sdr_checked = Some(now);
@@ -732,8 +732,6 @@ impl App {
                 if let Some(hdr) = hdr { screen_sdr = !hdr; if g.presenter.set_sdr_surface(!hdr) { g.ui_dirty = true; } }
                 let gain = if g.presenter.sdr_surface() { 1.0 } else { gain };
                 if (gain - g.presenter.engine.output_gain()).abs() > 1e-3 { log::info!("SDR white on {name}: {:.0} nits (gain {gain:.2})", gain * 80.0); g.presenter.engine.set_output_gain(gain); }
-            } else if *SCREEN_CHAIN_END && let Some(h) = g.presenter.window_screen_headroom() {
-                screen_sdr = h <= 1.0 + 1e-3;
             }
         }
         if screen_sdr != self.screen_sdr { log::info!("screen: {} — the chain ends {}", if screen_sdr { "no HDR" } else { "HDR" }, if screen_sdr { "in the SDR view" } else { "as chosen" }); self.screen_sdr = screen_sdr; self.screen_sdr_dirty = true; g.ui_dirty = true; }
@@ -2182,8 +2180,6 @@ impl ApplicationHandler for App {
 static TRACE_INPUT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("QCV_TRACE_INPUT").is_some());
 /// `QCV_TRACE_SCRUB=1`: every scrub request (target, wall ms), every served preview (target, request → ready ms, decoded, hit) and every
 /// preview SHOWN (frame, how far behind the latest request) — the windowed app's own scrub latency, which the headless bench cannot see.
-/// macOS: the chain's end follows the window's screen only with this set (canon row 220, pending the user's test).
-static SCREEN_CHAIN_END: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("QCV_SCREEN_CHAIN_END").is_some());
 static TRACE_SCRUB: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("QCV_TRACE_SCRUB").is_some());
 fn trace_ms() -> f64 { static T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now); T0.elapsed().as_secs_f64() * 1000.0 }
 
