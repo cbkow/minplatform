@@ -175,7 +175,7 @@ impl ProjectPanel {
             let gh = (fonts.detail(g.label, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64).max(t::ICON_SIZE_SMALL as f64 * scale);
             let gh = if g.kind == MediaType::Playlist { gh.max(t::COMPONENT_HEIGHT_75 as f64 * scale) } else { gh };
             g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + gap * 2.0;
-            if g.kind == MediaType::Playlist { let b = t::COMPONENT_HEIGHT_75 as f64 * scale; self.new_playlist.rect = Rect::new(g.header.x1 - b, g.header.y0 + (gh - b) / 2.0, g.header.x1, g.header.y0 + (gh + b) / 2.0); }
+            if g.kind == MediaType::Playlist { let b = t::COMPONENT_HEIGHT_75 as f64 * scale; self.new_playlist.rect = Rect::new(g.header.x1 - b, g.header.y0 + (gh - b) / 2.0, g.header.x1, g.header.y0 + (gh + b) / 2.0); self.new_playlist.icon_size = Some(t::ICON_SIZE_SMALL); self.new_playlist.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64 * scale);   /* the Output header's speaker: a 16-px glyph, the Notes tools' rounding (the walk 2026-11-09) */ }
             for r in &mut g.rows {
                 r.rect = Rect::new(x0 + pad / 2.0, cy, x1 - pad / 2.0, cy + row_h); cy += row_h + gap;
                 // the loaded playlist opens into its clips, indented one step
