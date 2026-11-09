@@ -26,7 +26,9 @@ pub enum Cmd { /// the image-sequence card's chips (QCView `ImageSequenceInspect
 
 /// What the Inspector shows for a live item (the shell gathers it from the feed and its audio reader).
 pub struct LiveInfo { pub url: String, pub name: String, pub host: &'static str, pub width: u32, pub height: u32, pub fps: Option<f64>,
-    pub audio_state: u32, pub audio_channels: u32, pub audio_rate: u32, pub peaks: [f32; 16] }
+    pub audio_state: u32, pub audio_channels: u32, pub audio_rate: u32, pub peaks: [f32; 16],
+    /// the wire's pixel format ("RGBA16F"; a stream's decoder format) and the Transfer chip's Auto label
+    pub pix_fmt: String, pub auto: String }
 struct Row { label: String, value: String, note: String, mono: bool, warn: bool }
 /// QCView's `KvChipRow`: a label and a fused row of choices, one selected.
 struct Chips { /// the English label: what a click dispatches on, whatever the language
@@ -180,7 +182,7 @@ impl InspectorPanel {
         let ch = (l.audio_channels as usize).min(16);
         if l.audio_state != 0 && (0..ch).any(|i| (l.peaks[i] - self.peaks[i]).abs() > 0.01) { self.peaks = l.peaks; dirty = true; }
         self.channels = ch;
-        let key = format!("{}|{}|{}x{}|{:?}|{}|{}|{}|{:?}|{:?}|{}", l.url, l.name, l.width, l.height, l.fps.map(|f| (f * 1000.0).round() as i64), l.audio_state, l.audio_channels, l.audio_rate, self.transfer, self.routing, min_i18n::generation());
+        let key = format!("{}|{}|{}|{}|{}x{}|{:?}|{}|{}|{}|{:?}|{:?}|{}", l.pix_fmt, l.auto, l.url, l.name, l.width, l.height, l.fps.map(|f| (f * 1000.0).round() as i64), l.audio_state, l.audio_channels, l.audio_rate, self.transfer, self.routing, min_i18n::generation());
         if key == self.live_key && !self.dirty_model { return dirty }
         self.live_key = key; self.dirty_model = false;
         let row = |label: &str, value: String, mono: bool| Item::Row(Row { label: tr(label).into(), value, note: String::new(), mono, warn: false });
@@ -192,14 +194,17 @@ impl InspectorPanel {
         };
         // QCView `hostbridge::facts` — each measured in QCBridgeAE; nothing inferred from the frame
         let (colour, range, alpha, note) = match l.host { "probe" => ("Synthetic ramp", "Runs past 1.0", "Opaque", "A test signal, no Adobe host needed."), "ae" => ("Working space, untransformed", "Unclamped float", "Opaque, flattened", "Set the OCIO input to the host's working space."), _ => ("Working space, untransformed", "Unclamped float", "Straight", "Set the OCIO input to the host's working space.") };
-        let file = vec![Item::Hero("broadcast"), row("Name", l.name.clone(), false), Item::PathLine(l.url.clone()), row("Colour", tr(colour).into(), false), row("Range", tr(range).into(), false), row("Alpha", tr(alpha).into(), false), Item::Caption(tr(note).into()),
-            actions(vec![("copy", "Copy URL", true, "", Cmd::Copy(l.url.clone()))])];
+        // the URL shown and copied without its passphrase (QCView showed it — row 227 2a); a stream has no source facts (QCView's are qcbae's)
+        let url = qcv_player::stream_feed::redact(&l.url);
+        let mut file = vec![Item::Hero("broadcast"), row("Name", l.name.clone(), false), Item::PathLine(url.clone())];
+        if !l.host.is_empty() { file.extend([row("Colour", tr(colour).into(), false), row("Range", tr(range).into(), false), row("Alpha", tr(alpha).into(), false), Item::Caption(tr(note).into())]); }
+        file.push(actions(vec![("copy", "Copy URL", true, "", Cmd::Copy(url))]));
         let mut video = vec![];
         if l.width > 0 { video.push(row("Resolution", tf(tr("%1 × %2"), &[&l.width, &l.height]), true)); }
         if let Some(f) = l.fps { video.push(row("Frame rate", format!("{f:.3} fps"), true)); }
-        video.push(row("Pixel format", "RGBA16F".into(), true));
+        if !l.pix_fmt.is_empty() { video.push(row("Pixel format", l.pix_fmt.clone(), true)); }
         let sel = match self.transfer { TransferOverride::Auto => "auto", TransferOverride::SdrRec709 => "sdr", TransferOverride::Pq2020 => "pq2020", TransferOverride::PqP3D65 => "pqp3", TransferOverride::Hlg => "hlg", TransferOverride::Linear => "linear" };
-        let color = vec![chips("Transfer", &[("auto", min_i18n::trc("LiveStrip", crate::live_strip::AUTO)), ("sdr", "SDR 709"), ("pq2020", "PQ 2020"), ("pqp3", "PQ P3"), ("hlg", "HLG"), ("linear", "Linear")], sel)];
+        let color = vec![chips("Transfer", &[("auto", l.auto.as_str()), ("sdr", "SDR 709"), ("pq2020", "PQ 2020"), ("pqp3", "PQ P3"), ("hlg", "HLG"), ("linear", "Linear")], sel)];
         let mut audio = vec![];
         if l.audio_state == 0 { audio.push(row("Audio", tr("none").into(), false)); } else {
             audio.push(row("State", tr(match l.audio_state { 1 => "Off in the host", 2 => "Idle", 3 => "Pushing", 4 => "Scrubbing", _ => "No audio" }).into(), false));

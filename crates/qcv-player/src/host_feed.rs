@@ -14,7 +14,10 @@ pub enum Status { Connecting, Live, Paused, Reconnecting }
 
 /// What the shell shows (the LiveStrip): the status, its detail as (English key, argument) — the shell translates and fills.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Facts { pub status: Status, pub detail: Option<(&'static str, String)>, pub width: u32, pub height: u32, pub frames: u64, pub restarts: u32, pub non_finite: bool, pub has_frame: bool }
+pub struct Facts { pub status: Status, pub detail: Option<(&'static str, String)>, pub width: u32, pub height: u32, pub frames: u64, pub restarts: u32, pub non_finite: bool, pub has_frame: bool,
+    /// a network stream (`StreamFeed`) rather than shared memory: the strip says CONNECTING / RECONNECTING (never WAITING), Mb/s,
+    /// "%n drop(s)"; the facts line = W×H · codec · pix_fmt (QCView LiveStrip `isShm`)
+    pub stream: bool, pub bytes: u64, pub codec: String, pub pix_fmt: String }
 
 pub const WAITING: &str = "Waiting for %1 (QCBridge Transmit device not publishing)";
 pub const NOT_RUNNING: &str = "%1 is not running";
@@ -48,7 +51,7 @@ impl HostFeed {
             restarts: 0, frames: 0, bytes: 0, size: (0, 0), non_finite: false, has_frame: false, last_time: None, run: (0, 0), fps: None, last_host_time: None,
             #[cfg(target_os = "macos")] slots: None, hold: Duration::ZERO, held: Default::default() }
     }
-    pub fn facts(&self) -> Facts { Facts { status: self.status, detail: self.detail.clone(), width: self.size.0, height: self.size.1, frames: self.frames, restarts: self.restarts, non_finite: self.non_finite, has_frame: self.has_frame } }
+    pub fn facts(&self) -> Facts { Facts { status: self.status, detail: self.detail.clone(), width: self.size.0, height: self.size.1, frames: self.frames, restarts: self.restarts, non_finite: self.non_finite, has_frame: self.has_frame, stream: false, bytes: self.bytes, codec: "Mercury Transmit".into(), pix_fmt: "RGBA16F".into() } }
     pub fn status(&self) -> Status { self.status }
     pub fn host(&self) -> Host { self.host }
     pub fn host_fps(&self) -> Option<f64> { self.fps }

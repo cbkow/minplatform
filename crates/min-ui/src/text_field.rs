@@ -33,18 +33,37 @@ pub struct TextField {
     /// A primary press began here: Move extends the selection until Up (drag-select, the walk 2026-11-08).
     drag: bool,
     clicks: crate::text_area::Clicks,
+    /// A SECRET field (a passphrase): the editor only ever holds bullets; the real text lives here and every edit is applied
+    /// to it by the selection's position (bullets map 1:1 to characters), so it is never laid out or drawn.
+    secret: Option<String>,
 }
 
 impl TextField {
     /// `size` in logical px (the editor scales it by the window's factor at layout).
     pub fn new(family: Family, size: f32) -> TextField {
-        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false, scroll_x: 0.0, drag: false, clicks: Default::default() }
+        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false, scroll_x: 0.0, drag: false, clicks: Default::default(), secret: None }
     }
-    pub fn text(&self) -> &str { self.editor.raw_text() }
+    /// A secret field (QCView's password echo).
+    pub fn secret(mut self) -> TextField { self.secret = Some(String::new()); self }
+    pub fn text(&self) -> &str { self.secret.as_deref().unwrap_or_else(|| self.editor.raw_text()) }
     pub fn set_text(&mut self, s: &str) { self.editor.set_text(s); }
     /// Set the text with the caret at its end (a staged or restored entry).
     pub fn set_text_end(&mut self, s: &str, fonts: &mut Fonts) { self.editor.set_text(s); let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_text_end(); drop(d); self.follow_caret(fonts); }
-    pub fn clear(&mut self) { self.editor.set_text(""); }
+    pub fn clear(&mut self) { self.editor.set_text(""); if let Some(s) = self.secret.as_mut() { s.clear(); } }
+    /// A secret field's edit: `ins` replaces the selection (or, with none, `back` / `fwd` characters around the caret).
+    fn secret_edit(&mut self, fonts: &mut Fonts, ins: &str, back: usize, fwd: usize) {
+        const B: usize = '•'.len_utf8();
+        let Some(real) = self.secret.as_mut() else { return };
+        let r = self.editor.raw_selection().text_range(); let (mut a, mut b) = (r.start / B, r.end / B);
+        let chars: Vec<char> = real.chars().collect(); let n = chars.len(); a = a.min(n); b = b.min(n);
+        if a == b { a = a.saturating_sub(back); b = (b + fwd).min(n); }
+        let ins: String = ins.chars().filter(|c| !c.is_control()).collect();
+        *real = chars[..a].iter().collect::<String>() + &ins + &chars[b..].iter().collect::<String>();
+        let caret = a + ins.chars().count(); let len = real.chars().count();
+        self.editor.set_text(&"•".repeat(len));
+        let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_byte(caret * B); drop(d);
+        self.follow_caret(fonts);
+    }
     pub fn select_all(&mut self, fonts: &mut Fonts) { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.select_all(); }
     pub fn hovered(&self) -> bool { self.hovered }
     /// A drag-select is in progress (the owner keeps feeding Move / Up wherever the pointer goes).
@@ -123,6 +142,7 @@ impl TextField {
         was != (self.hovered, self.focused) || matches!(e, Event::Down { .. })
     }
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) {
+        if self.secret.is_some() { if let ImeEvent::Commit(text) = e { self.secret_edit(fonts, text, 0, 0); } return }   // no preedit shown for a secret
         let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
         match e { ImeEvent::Preedit(text, cursor) => if text.is_empty() { d.clear_compose() } else { d.set_compose(text, *cursor) }, ImeEvent::Commit(text) => d.insert_or_replace_selection(&text.replace(['\n', '\r'], "")) }
         drop(d);
@@ -132,6 +152,19 @@ impl TextField {
     /// Escape are reported, not consumed by the text.
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> FieldResponse {
         if !self.focused { return FieldResponse::None }
+        if self.secret.is_some() {
+            let before = self.text().to_string();
+            match &k.key {
+                Key::Named(Named::Enter) => return FieldResponse::Accepted,
+                Key::Named(Named::Escape) => return FieldResponse::Cancelled,
+                Key::Named(Named::Backspace) => self.secret_edit(fonts, "", 1, 0),
+                Key::Named(Named::Delete) => self.secret_edit(fonts, "", 0, 1),
+                Key::Char(c) if k.cmd && c != "a" => {}
+                Key::Named(_) | Key::Char(_) if k.cmd || matches!(k.key, Key::Named(_)) => {}
+                _ => if let Some(txt) = &k.text { self.secret_edit(fonts, txt, 0, 0); },
+            }
+            if matches!(k.key, Key::Named(Named::Backspace | Named::Delete)) || k.text.is_some() { return if self.text() != before { FieldResponse::Changed } else { FieldResponse::None } }
+        }
         let before = self.editor.raw_text().to_string();
         let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
         match &k.key {
@@ -201,5 +234,22 @@ mod tests {
         f.ime(&ImeEvent::Commit("é\n".into()), &mut fonts);
         assert_eq!(f.text(), "100é");
         assert!(f.caret_rect(&mut fonts).is_some());
+    }
+    #[test]
+    fn a_secret_field_never_holds_its_text_in_the_editor() {
+        let mut fonts = Fonts::new();
+        let mut f = TextField::new(Family::Sans, 12.0).secret();
+        f.layout(&mut fonts, Rect::new(0.0, 0.0, 200.0, 24.0), 1.0); f.focused = true;
+        for ch in ["p", "a", "s", "s"] { assert_eq!(f.key(&key(Key::Char(ch.into()), Some(ch)), &mut fonts), FieldResponse::Changed); }
+        assert_eq!(f.text(), "pass"); assert_eq!(f.editor.raw_text(), "••••");
+        f.key(&key(Key::Named(Named::Left), None), &mut fonts); f.key(&key(Key::Named(Named::Left), None), &mut fonts);
+        f.key(&key(Key::Named(Named::Backspace), None), &mut fonts);
+        assert_eq!(f.text(), "pss", "the character before the caret, not the last");
+        f.key(&key(Key::Char("X".into()), Some("X")), &mut fonts);
+        assert_eq!(f.text(), "pXss"); assert_eq!(f.editor.raw_text(), "••••");
+        f.key(&key(Key::Named(Named::Delete), None), &mut fonts);
+        assert_eq!(f.text(), "pXs");
+        f.ime(&ImeEvent::Commit("é".into()), &mut fonts);
+        assert_eq!(f.text(), "pXés");
     }
 }

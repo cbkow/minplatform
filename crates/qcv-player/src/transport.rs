@@ -134,7 +134,7 @@ impl Slot {
             let (info, index) = (d.info.clone(), d.frame_index().clone());
             return Ok(Slot { clip: clip_index, decoder: SlotDecoder::Sequence(d), scrub: None, info, index, path: clip.media_path.clone(), src_rate: clip.source_rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
         }
-        let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), hw_intra: opts.hw_intra.clone(), seq: match &src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None }, fast: false };
+        let open = OpenOptions { threads: opts.threads, hw: opts.hw.clone(), hw_intra: opts.hw_intra.clone(), seq: match &src { Source::Sequence { rate, start, .. } => Some(SeqOptions { rate: *rate, start_number: *start }), _ => None }, fast: false , live: None };
         let mut decoder = VideoDecoder::new(Policy::Clocked { lookahead: LOOKAHEAD });
         decoder.open(src.path(), &open)?;
         let info = decoder.info.clone().unwrap();

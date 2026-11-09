@@ -30,7 +30,9 @@ pub struct LiveStrip {
     facts: Option<Facts>, name: String, app: String, /// QCView's REVIEW: the freeze's label ("HH:mm:ss")
     review: Option<String>, override_: TransferOverride, live_seconds: f64,
     /// QCView's 1-s timer: fps = frames taken per second
-    fps: (u64, Instant, f64),
+    fps: (u64, Instant, f64), /// a stream's Mb/s the same way (bytes taken per second)
+    mbps: (u64, f64), /// the Auto choice's label (QCView `autoLabel`)
+    auto: String,
     t0: Instant, scale: f64,
 }
 
@@ -43,19 +45,20 @@ impl LiveStrip {
         let buttons = ActionGroup::new(vec![b("speaker-x", min_i18n::trc("InspectorPanel", "Listen in QCView")), b("palette", tr("Color panel (⌃3)")), b("note-pencil", tr("Notes panel (⌃4)")),
             b("file-image", tr(if mac { "Screenshot to clipboard (⌘T)" } else { "Screenshot to clipboard (Ctrl+T)" })), b("file-arrow-down", tr("Screenshot to Desktop (T)"))]).compact();
         let now = Instant::now();
-        LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), review: None, override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), t0: now, scale: 1.0 }
+        LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), review: None, override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), mbps: (0, 0.0), auto: tr(AUTO).to_string(), t0: now, scale: 1.0 }
     }
     /// A language switch: the buttons' words.
     pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.buttons.buttons.iter_mut().zip(f.buttons.buttons) { b.tooltip = n.tooltip; } }
     /// Per tick: the feed's facts, the item's name and Transfer choice. True when what is shown changed.
-    pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, listen: bool, review: Option<&str>, now: Instant) -> bool {
+    pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, listen: bool, review: Option<&str>, auto: &str, now: Instant) -> bool {
+        let auto_changed = self.auto != auto; self.auto = auto.to_string();
         let review_changed = self.review.as_deref() != review; self.review = review.map(str::to_string);
         let lb = &mut self.buttons.buttons[0];
         let listen_changed = lb.selected != listen;
         lb.selected = listen; lb.icon = if listen { "speaker-high" } else { "speaker-x" };
-        if now.duration_since(self.fps.1).as_secs_f64() >= 1.0 { let dt = now.duration_since(self.fps.1).as_secs_f64(); self.fps = (facts.frames, now, (facts.frames.saturating_sub(self.fps.0)) as f64 / dt); }
-        let label = if transfer == TransferOverride::Auto { tr(AUTO).to_string() } else { tr(TRANSFERS.iter().find(|(o, _)| *o == transfer).map(|(_, l)| *l).unwrap_or("Auto")).to_string() };
-        let changed = review_changed || listen_changed || self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
+        if now.duration_since(self.fps.1).as_secs_f64() >= 1.0 { let dt = now.duration_since(self.fps.1).as_secs_f64(); self.mbps = (facts.bytes, facts.bytes.saturating_sub(self.mbps.0) as f64 * 8.0 / 1e6 / dt); self.fps = (facts.frames, now, (facts.frames.saturating_sub(self.fps.0)) as f64 / dt); }
+        let label = if transfer == TransferOverride::Auto { self.auto.clone() } else { tr(TRANSFERS.iter().find(|(o, _)| *o == transfer).map(|(_, l)| *l).unwrap_or("Auto")).to_string() };
+        let changed = auto_changed || review_changed || listen_changed || self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
         self.app = app.to_string(); self.transfer.label = label; self.override_ = transfer; self.name = name.to_string(); self.live_seconds = live_seconds;
         let shots = facts.has_frame;
         for i in [3, 4] { self.buttons.buttons[i].enabled = shots; }   // fix 5: nothing to capture before a frame
@@ -84,7 +87,7 @@ impl LiveStrip {
         }
         let (clicked, d) = self.transfer.event(e, now); dirty |= d;
         if clicked {
-            let items: Vec<MenuItem> = TRANSFERS.iter().map(|(o, l)| { let label = if *o == TransferOverride::Auto { tr(AUTO).to_string() } else { tr(l).to_string() }; MenuItem::Action { label, enabled: true, shortcut: String::new() } }).collect();
+            let items: Vec<MenuItem> = TRANSFERS.iter().map(|(o, l)| { let label = if *o == TransferOverride::Auto { self.auto.clone() } else { tr(l).to_string() }; MenuItem::Action { label, enabled: true, shortcut: String::new() } }).collect();
             let r = self.transfer.rect; self.menu.open_at(items, fonts, r.x0, r.y0, bounds, self.scale); dirty = true;
         }
         for (i, resp) in self.buttons.event(e, now) {
@@ -114,7 +117,7 @@ impl LiveStrip {
         let d = 8.0 * s; paint::rounded(scene, Rect::new(x, mid(d), x + d, mid(d) + d), d / 2.0, dot.with_alpha(alpha)); x += d + t::SPACING_200 as f64 * s;
         // the badge (shared memory: never CONNECTING / RECONNECTING — WAITING)
         let review_badge = self.review.as_ref().map(|l| min_i18n::fill(tr("REVIEW · %1"), &[l]));
-        let badge = if let Some(b) = review_badge.as_deref() { b } else { match f.status { Status::Live => tr("LIVE"), Status::Paused => tr("PAUSED"), Status::Connecting | Status::Reconnecting => tr("WAITING") } };
+        let badge = if let Some(b) = review_badge.as_deref() { b } else { match f.status { Status::Live => tr("LIVE"), Status::Paused => tr("PAUSED"), Status::Connecting if f.stream => tr("CONNECTING"), Status::Reconnecting if f.stream => tr("RECONNECTING"), Status::Connecting | Status::Reconnecting => tr("WAITING") } };   // a stream: never WAITING (QCView `isShm`)
         let bl = fonts.detail(badge, t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
         min_ui::fonts::draw_layout(scene, &bl, Affine::translate((x, mid(bl.height() as f64)))); x += bl.width() as f64 + t::SPACING_300 as f64 * s;
         let size = t::RAIL_LABEL_SIZE * s as f32;
@@ -126,13 +129,13 @@ impl LiveStrip {
         match (&f.detail, f.status) {
             (Some((key, arg)), st) if st != Status::Live => parts.push((detail_text(key, arg, &self.app), amber)),
             _ => {
-                if f.width > 0 { parts.push((format!("{}×{}  ·  Mercury Transmit  ·  {}  ·  RGBA16F", f.width, f.height, tr("shared memory")), t::RAIL_LABEL_COLOR)); }
-                if f.status == Status::Live { let el = self.live_seconds as u64; let elapsed = if el >= 3600 { format!("{}:{:02}:{:02}", el / 3600, el / 60 % 60, el % 60) } else { format!("{}:{:02}", el / 60, el % 60) }; parts.push((format!("{:.0} fps  ·  {elapsed}", self.fps.2), t::RAIL_LABEL_COLOR)); }
+                if f.width > 0 { parts.push((if f.stream { format!("{}×{}  ·  {}  ·  {}", f.width, f.height, f.codec, f.pix_fmt) } else { format!("{}×{}  ·  {}  ·  {}  ·  {}", f.width, f.height, f.codec, tr("shared memory"), f.pix_fmt) }, t::RAIL_LABEL_COLOR)); }
+                if f.status == Status::Live { let el = self.live_seconds as u64; let elapsed = if el >= 3600 { format!("{}:{:02}:{:02}", el / 3600, el / 60 % 60, el % 60) } else { format!("{}:{:02}", el / 60, el % 60) }; parts.push((if f.stream { format!("{:.0} fps  ·  {:.1} Mb/s  ·  {elapsed}", self.fps.2, self.mbps.1) } else { format!("{:.0} fps  ·  {elapsed}", self.fps.2) }, t::RAIL_LABEL_COLOR)); }
                 if let Some((key, arg)) = &f.detail { parts.push((detail_text(key, arg, &self.app), amber)); }   // an unaccepted frame while live (fix 4)
             }
         }
         if f.non_finite && matches!(f.status, Status::Live | Status::Paused) { parts.push((tr("inf/NaN in frame").to_string(), red)); }
-        if f.restarts > 0 { parts.push((min_i18n::trnc(Some("LiveStrip"), "%n restart(s)", f.restarts as i64), amber)); }
+        if f.restarts > 0 { parts.push((min_i18n::trnc(Some("LiveStrip"), if f.stream { "%n drop(s)" } else { "%n restart(s)" }, f.restarts as i64), amber)); }
         for (text, c) in parts {
             if x >= right { break }
             let l = fonts.layout_fit(&text, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, paint::color(c), right - x);
@@ -147,6 +150,16 @@ impl LiveStrip {
 /// A feed detail key (host_feed's English) in the language, its argument filled (the host app's name is a proper noun;
 /// UNSUPPORTED carries the frame's description as %2).
 pub fn detail_text(key: &str, arg: &str, app: &str) -> String {
-    let t = min_i18n::trc("qcv::HostBridgeSource", key);
+    use qcv_player::stream_feed::{WAITING_SENDER, WAITING_SENDER_PORT};
+    let t = min_i18n::trc(if key == WAITING_SENDER || key == WAITING_SENDER_PORT { "qcv::LiveStreamDecoder" } else { "qcv::HostBridgeSource" }, key);
     if key == qcv_player::host_feed::UNSUPPORTED { min_i18n::fill(t, &[&app, &arg]) } else { min_i18n::fill(t, &[&arg]) }
+}
+
+/// The Transfer chip's Auto label. A QCBridge host feed: the working-space label (row 230). A stream: QCView's tag rule
+/// (`LiveStrip.qml` autoLabel) on the item's live tags — PQ (P3 when the primaries say 431 / 432 / p3, else 2020), HLG, SDR, untagged.
+pub fn auto_label(stream: bool, transfer: &str, primaries: &str) -> String {
+    if !stream { return tr(AUTO).to_string() }
+    let (t, p) = (transfer.to_lowercase(), primaries.to_lowercase());
+    tr(if t == "smpte2084" { if p.contains("432") || p.contains("431") || p.contains("p3") { "Auto · PQ P3" } else { "Auto · PQ 2020" } }
+        else if t.contains("arib") || t.contains("hlg") { "Auto · HLG" } else if t.is_empty() { "Auto · SDR, untagged" } else { "Auto · SDR" }).to_string()
 }

@@ -52,7 +52,7 @@ impl SequenceDecoder {
         let meta = rgb_meta(if float { Sample::F16 } else { Sample::U8 });
         let info = SessionInfo { width: cache.width(), height: cache.height(), frame_count: frames, codec_name: name.into(), codec_short: short.into(), pix_fmt: if float { "gbrpf16le".into() } else { "gbrp".into() },
             hw_accel: String::new(), source_timecode: None, drop_frame: false, time_base: (rate.den as i32, rate.num as i32), frame_rate: (rate.num as i32, rate.den as i32), intra_only: true, meta,
-            duration_secs: frames as f64 / rate.as_f64() };
+            duration_secs: frames as f64 / rate.as_f64() , tags: Default::default() };
         let index = Arc::new(FrameIndex::new(rate.den as i32, rate.num as i32, rate.num as i32, rate.den as i32, frames, true));
         Ok(SequenceDecoder { cache, info, index, fps: rate.as_f64(), playing: AtomicBool::new(false), seeks: AtomicU32::new(0), published: AtomicU64::new(0), current: AtomicI32::new(-1),
             want: Mutex::new(Some(0)), seed: Mutex::new(None), ahead: Mutex::new(None), uploader: Mutex::new(None), last: AtomicI32::new(-1), shown: Mutex::new(None) })

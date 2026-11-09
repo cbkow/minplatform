@@ -176,6 +176,13 @@ impl ProjectManager {
         self.pool.push(item); self.route(&id, MediaType::LiveStream); self.mark_dirty();
         Some(id)
     }
+    /// QCView `setLiveVideoTags`: a live stream's colour tags as SESSION facts (no dirty flag) — `item.video.colorTransfer /
+    /// colorPrimaries / colorspace`, which the live row's Auto transfer label reads.
+    pub fn set_live_video_tags(&mut self, id: &str, transfer: &str, primaries: &str, matrix: &str) -> bool {
+        let Some(m) = self.pool.iter_mut().find(|m| m.id == id) else { return false };
+        if m.video.color_transfer == transfer && m.video.color_primaries == primaries && m.video.colorspace == matrix { return false }
+        m.video.color_transfer = transfer.into(); m.video.color_primaries = primaries.into(); m.video.colorspace = matrix.into(); true
+    }
     /// QCView `createPlaylist`: the clips land in the standard bins through `add_media_file` (the playlist references, never
     /// owns); audio-only files are skipped; an empty name → `Playlist-yyyyMMdd-HHmmss` (local time).
     pub fn create_playlist(&mut self, paths: &[String], name: &str, fps: f64, canvas_w: i32, canvas_h: i32, gap_frames: i32, utc_offset_secs: i64) -> (String, Vec<Probe>) {

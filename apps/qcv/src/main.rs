@@ -69,7 +69,8 @@ use min_i18n::fill;
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
     mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
     drawer: color_drawer::ColorDrawer, /// dual view's controls on the status strip + the Save dialog + the seam's grab (row 173)
-    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// the annotation tool's button is down
+    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, /// QCView's File ▸ Open Stream… (URL, name, passphrase)
+    stream_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// the annotation tool's button is down
     annot_down: bool, /// dual's A / B lanes (row 212) + the side the precision popover edits
     dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the Notes drawer (row 215; the colour drawer's slot)
     notes: notes_drawer::NotesDrawer, notes_current: Option<String>, /// the Inspector's subject last synced (slot, item): the Transfer chips refresh on a change
@@ -261,7 +262,7 @@ impl App {
         for raw in paths {
             if raw.is_empty() { continue }
             // QCView: any "://" goes to addLiveStream — a qcbae:// host connects (row 228); other streams arrive with step 2
-            if raw.contains("://") && !raw.starts_with("file://") { if let Some(h) = qcv_ring::url::Host::parse(raw) { self.connect_host(h); } else { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); } continue }
+            if raw.contains("://") && !raw.starts_with("file://") { let u = raw.clone(); self.connect_url(&u, ""); continue }
             // a Windows shortcut stands in for its target (QCView: the admitted list carries the target); a dead one has its own toast
             let p = match os_actions::resolve_shortcut(raw) { Some(t) => t, None => { refused.push(raw.clone()); dead_shortcut = true; continue } };
             if p.contains("://") || qcv_project::extensions::is_supported_media_file(&p) { admitted.push(p) } else { refused.push(p) }
@@ -721,6 +722,22 @@ impl App {
         }
     }
     /// The Save dialog closed with button `i` (1 = Save).
+    /// File ▸ Open Stream…
+    fn open_stream_dialog(&mut self) { if let Some(g) = self.gpu.as_mut() { g.stream_dialog = stream_dialog(); g.stream_dialog.show_with("", &mut g.fonts); set_ime(&**g.window, true); g.ui_dirty = true; } }
+    fn stream_dialog_done(&mut self, i: usize) {
+        let Some(g) = self.gpu.as_mut() else { return };
+        set_ime(&**g.window, false); g.ui_dirty = true;
+        if i != 1 { return }
+        let (url, name, pp) = (g.stream_dialog.value_at(0), g.stream_dialog.value_at(1), g.stream_dialog.value_at(2));
+        g.stream_dialog = stream_dialog();   // the passphrase never lingers in the dialog
+        if url.is_empty() { return }
+        self.connect_url(&compose_stream_url(&url, &pp), &name);
+    }
+    /// Any live URL (QCView `addLiveStream` + make it active): a `qcbae://` host, else a network stream named `name` (host:port when empty).
+    pub(crate) fn connect_url(&mut self, url: &str, name: &str) {
+        if let Some(h) = qcv_ring::url::Host::parse(url) { self.connect_host(h); return }
+        if let Some(id) = self.project.add_live_stream(url, name) { self.load_item(&id); }
+    }
     fn dual_dialog_done(&mut self, i: usize) {
         let Some(g) = self.gpu.as_mut() else { return };
         set_ime(&**g.window, false); g.ui_dirty = true;
@@ -993,7 +1010,7 @@ impl App {
                     let f = l.feed.facts(); let (st, ch, rate) = l.audio_src.as_ref().map(|a| a.facts()).unwrap_or((0, 0, 0));
                     let peaks = l.audio_src.as_ref().map(|a| { use qcv_player::audio::AudioSourceCtl; a.peak_levels() }).unwrap_or([0.0; 16]);
                     let item = self.project.item(&l.item);
-                    let info = inspector_panel::LiveInfo { url: item.map(|i| i.path.clone()).unwrap_or_default(), name: item.map(|i| i.name.clone()).unwrap_or_default(), host: l.feed.host().key(), width: f.width, height: f.height, fps: l.feed.host_fps(), audio_state: st, audio_channels: ch, audio_rate: rate, peaks };
+                    let info = inspector_panel::LiveInfo { url: item.map(|i| i.path.clone()).unwrap_or_default(), name: item.map(|i| i.name.clone()).unwrap_or_default(), host: l.feed.key(), width: f.width, height: f.height, fps: l.feed.host_fps(), audio_state: st, audio_channels: ch, audio_rate: rate, peaks, pix_fmt: f.pix_fmt.clone(), auto: live_strip::auto_label(l.feed.is_stream(), &item.map(|i| i.video.color_transfer.clone()).unwrap_or_default(), &item.map(|i| i.video.color_primaries.clone()).unwrap_or_default()) };
                     if g.inspector.sync_live(&info) { g.ui_dirty = true; }
                 } else if g.inspector.sync(match self.dual.as_ref() { Some(d) => d.side(if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => self.player.as_ref() }) { g.ui_dirty = true; }
                 { let tc = &mut self.thumb_color[islot.min(1)]; if g.inspector.apply_look(thumb_gen[islot.min(1)], &mut |px| tc.convert(px)) { g.ui_dirty = true; } }
@@ -1042,9 +1059,10 @@ impl App {
                 if let Some(l) = self.live.as_ref() {
                     let item = self.project.item(&l.item);
                     let (name, transfer) = item.map(|i| (i.name.clone(), i.transfer_override)).unwrap_or_default();
-                    let facts = l.feed.facts(); let secs = l.feed.live_seconds(); let app = l.feed.host().app();
+                    let facts = l.feed.facts(); let secs = l.feed.live_seconds(); let app = l.feed.app();
                     let review = l.review.as_ref().map(|r| r.label.clone());
-                    if g.live_strip.sync(facts, &name, app, transfer, secs, self.settings.bool(settings::k::LIVE_PLAYDOWN), review.as_deref(), now) { g.ui_dirty = true; }
+                    let auto = { let v = item.map(|i| (i.video.color_transfer.clone(), i.video.color_primaries.clone())).unwrap_or_default(); live_strip::auto_label(l.feed.is_stream(), &v.0, &v.1) };
+                    if g.live_strip.sync(facts, &name, app, transfer, secs, self.settings.bool(settings::k::LIVE_PLAYDOWN), review.as_deref(), &auto, now) { g.ui_dirty = true; }
                 }
                 if g.live_strip.animating() || g.live_strip.tick(now) { g.ui_dirty = true; }
             }
@@ -1122,6 +1140,7 @@ impl App {
                 if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint_menus(scene, &mut g.fonts, scale); }
                 if g.about.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.about.layout(&mut g.fonts, b, scale); g.about.paint(scene, &mut g.fonts, scale, b, now); }
                 if g.dual_dialog.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.dual_dialog.layout(&mut g.fonts, b, scale); g.dual_dialog.paint(scene, &mut g.fonts, scale, b, now); }
+                if g.stream_dialog.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.stream_dialog.layout(&mut g.fonts, b, scale); g.stream_dialog.paint(scene, &mut g.fonts, scale, b, now); }
                 g.ui_shown_frame = key; g.ui_dirty = false;
                 }
             }
@@ -1160,6 +1179,7 @@ impl App {
         if matches!(e, min_ui::Event::Down { .. }) { self.alt_clean = false; }
         // QCView's About modal takes everything while open
         if g.dual_dialog.open { let d1 = g.dual_dialog.pointer(&e, &mut g.fonts); let (b, d2) = g.dual_dialog.event(&e, now); if d1 || d2 { g.ui_dirty = true; } if let Some(i) = b { self.dual_dialog_done(i); } return }
+        if g.stream_dialog.open { let d1 = g.stream_dialog.pointer(&e, &mut g.fonts); let (b, d2) = g.stream_dialog.event(&e, now); if d1 || d2 { g.ui_dirty = true; } if let Some(i) = b { self.stream_dialog_done(i); } return }
         if g.about.open { let (b, _) = g.about.event(&e, now); match b { Some(0) => { let _ = os_actions::open("https://qcview.app/"); g.about.cancel(); } Some(_) => g.about.cancel(), None => {} } g.ui_dirty = true; return }
         // QCView's in-window menu bar (row 194): an open menu takes everything (its click-eater), the strip its own presses;
         // a band node's grab (a scrub released over the bar) is never the bar's
@@ -1438,7 +1458,7 @@ impl App {
                 k::ALWAYS_ON_TOP => { let _ = g; self.apply_pin(); }
                 k::LIVE_PLAYDOWN => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(self.settings.bool(key)); } }
                 k::LIVE_BUFFER_MS => qcv_player::audio::live::set_global_buffer_ms(self.settings.int(key) as i32),
-                k::LIVE_SYNC_OFFSET_MS | k::LIVE_SYNC_OFFSET_MS_AE | k::LIVE_SYNC_OFFSET_MS_PROBE => if self.live.as_ref().is_none_or(|l| k::live_sync_key(l.feed.host().key()) == key) { qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(key) as i32); if let Some(l) = self.live.as_mut() { l.feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms()); } }
+                k::LIVE_SYNC_OFFSET_MS | k::LIVE_SYNC_OFFSET_MS_AE | k::LIVE_SYNC_OFFSET_MS_PROBE => if self.live.as_ref().is_none_or(|l| k::live_sync_key(l.feed.key()) == key) { qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(key) as i32); if let Some(l) = self.live.as_mut() { l.feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms()); } }
                 _ => {}   // applies at the next open (performance/*) or has no consumer yet
             }
         }
@@ -1593,11 +1613,12 @@ impl App {
         let now = Instant::now();
         match c {
             M::OpenMedia => self.open_media_dialog(),
+            M::OpenStream => self.open_stream_dialog(),
             M::NewProject => self.new_project(),
             M::OpenProject => self.open_project_dialog(),
             M::SaveProject => self.save_project(),
             M::SaveProjectAs => self.save_project_as(),
-            M::RecentMedia(p) if p.contains("://") => { if let Some(h) = qcv_ring::url::Host::parse(&p) { self.connect_host(h) } else { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice) } }
+            M::RecentMedia(p) if p.contains("://") => self.connect_url(&p, ""),
             M::ConnectAe => self.connect_host(qcv_ring::url::Host::AfterEffects),
             M::ConnectPremiere => self.connect_host(qcv_ring::url::Host::Premiere),
             M::RecentMedia(p) => { if std::path::Path::new(&p).exists() { for a in self.admit_media_paths(&[p]) { self.add_and_load(&a, true); } } else { self.toast(trw("That file is no longer there"), min_ui::ToastKind::Notice); } }
@@ -1645,7 +1666,7 @@ impl App {
         let mut files = vec![];
         for a in args {
             if a.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("qcview://")) { self.open_project_link(&a); }
-            else if a.contains("://") { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); }
+            else if a.contains("://") { self.connect_url(&a, ""); }
             else if a.to_lowercase().ends_with(".qcvproj") { self.open_project(&a); }
             else { files.push(a); }
         }
@@ -1664,7 +1685,8 @@ impl App {
                 if let Some(m) = media_id && self.project.item(&m).is_some() { self.load_item(&m); }
                 true
             }
-            Some(min_paths::links::QcviewLink::Stream { .. }) => { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); false }
+            // the link's colour keys (QCView `applyStreamChainFromLink`) arrive with step 2c; the stream connects now
+            Some(min_paths::links::QcviewLink::Stream { url, name, .. }) => { self.connect_url(&url, name.as_deref().unwrap_or("")); true }
             None => { log::warn!("openProjectLink: not a qcview:// link"); false }
         }
     }
@@ -1795,6 +1817,21 @@ impl App {
     }
 }
 
+/// QCView `Main.qml`'s Open Stream modal: the URL (required), a name, a passphrase (password echo).
+fn stream_dialog() -> min_ui::Dialog {
+    min_ui::Dialog::new(trm("Open Stream"), "", vec![(trm("Cancel"), min_ui::Variant::Secondary), (trm("Connect"), min_ui::Variant::Primary)])
+        .with_field(trm("Stream URL"), "srt://host:9998?mode=caller").with_field(trm("Name (optional)"), trm("defaults to host:port")).with_secret_field(trm("Passphrase (optional)"), "")
+}
+/// QCView `composeUrl`: `srt://` when no scheme; SRT's latency 300 ms when the URL names none (only for srt:// — QCView added it to
+/// every scheme, corrupting rtmp / http URLs: row 227 2a); the passphrase + pbkeylen 16.
+fn compose_stream_url(url: &str, passphrase: &str) -> String {
+    let mut u = url.trim().to_string();
+    if !u.contains("://") { u = format!("srt://{u}"); }
+    let mut add = |kv: &str| { u.push(if u.contains('?') { '&' } else { '?' }); u.push_str(kv); };
+    if url.trim().contains("://").then_some(url.trim()).unwrap_or("srt://").to_lowercase().starts_with("srt://") && !url.contains("latency=") { add("latency=300000"); }
+    if !passphrase.is_empty() { let enc: String = passphrase.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect(); add(&format!("passphrase={enc}")); add("pbkeylen=16"); }
+    u
+}
 fn dual_dialog() -> min_ui::Dialog { min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), "") }
 fn about_dialog() -> min_ui::Dialog { min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) }
 
@@ -1806,6 +1843,7 @@ fn relabel(g: &mut Gpu) {
     g.dualc.relabel(); g.clip_popover.relabel(); g.drawer.relabel(); g.notes.relabel();
     if !g.about.open { g.about = about_dialog(); }
     if !g.dual_dialog.open { g.dual_dialog = dual_dialog(); }
+    if !g.stream_dialog.open { g.stream_dialog = stream_dialog(); }
     if g.menu_bar.is_some() { g.menu_bar = Some(menu::InWindowMenu::new(&mut g.fonts)); }
     g.ui_dirty = true;
 }
@@ -2014,7 +2052,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
@@ -2078,7 +2116,7 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.notes.has_focus() { g.notes.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else if g.shortcuts.has_focus() { g.shortcuts.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.stream_dialog.open { g.stream_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.notes.has_focus() { g.notes.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else if g.shortcuts.has_focus() { g.shortcuts.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -2086,6 +2124,10 @@ impl ApplicationHandler for App {
                 // the Save dual view dialog takes every key while open (Enter = Save, Escape = Cancel)
                 if let Some(g) = self.gpu.as_mut() { if g.dual_dialog.open {
                     if pressed { let k = to_key_event(&event, self.mods); let r = g.dual_dialog.key(&k, &mut g.fonts); g.ui_dirty = true; if let Some(i) = r { self.dual_dialog_done(i); } }
+                    return
+                } }
+                if let Some(g) = self.gpu.as_mut() { if g.stream_dialog.open {
+                    if pressed { let k = to_key_event(&event, self.mods); let r = g.stream_dialog.key(&k, &mut g.fonts); g.ui_dirty = true; if let Some(i) = r { self.stream_dialog_done(i); } }
                     return
                 } }
                 // QCView's About modal: Escape / Enter close it; it takes every key while open
@@ -2982,6 +3024,13 @@ fn run_cut_bench(o: Opts) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_stream_composes_urls_as_qcview_with_the_srt_only_latency() {
+        assert_eq!(super::compose_stream_url("host:9998?mode=caller", ""), "srt://host:9998?mode=caller&latency=300000");
+        assert_eq!(super::compose_stream_url("srt://h:1?latency=120000", ""), "srt://h:1?latency=120000");
+        assert_eq!(super::compose_stream_url("rtmp://h/live/key", ""), "rtmp://h/live/key", "no SRT option on another scheme");
+        assert_eq!(super::compose_stream_url("srt://h:1", "a b&c"), "srt://h:1?latency=300000&passphrase=a%20b%26c&pbkeylen=16");
+    }
     use super::*;
     #[test]
     fn a_dual_clip_survives_qcviews_clip_map() {

@@ -3,6 +3,25 @@
 //! way out — another item, a file or project opened, New Project, dual view, the item removed — changes the loaded item).
 use crate::{transfer_choice, trw};
 use qcv_player::host_feed::HostFeed;
+use qcv_player::stream_feed::StreamFeed;
+use std::sync::Arc;
+
+/// A live item's source: a QCBridge host over shared memory (step 1), or a network stream (step 2a: SRT / any FFmpeg URL).
+pub enum Feed { Host(HostFeed), Stream(StreamFeed) }
+impl Feed {
+    pub fn tick(&mut self, now: Instant, dev: Option<&wgpu::Device>) -> Option<Arc<min_present::Frame>> { match self { Feed::Host(h) => h.tick(now, dev).map(Arc::new), Feed::Stream(s) => s.tick() } }
+    pub fn facts(&self) -> qcv_player::host_feed::Facts { match self { Feed::Host(h) => h.facts(), Feed::Stream(s) => s.facts() } }
+    pub fn republish(&mut self) { match self { Feed::Host(h) => h.republish(), Feed::Stream(s) => s.republish() } }
+    pub fn live_seconds(&self) -> f64 { match self { Feed::Host(h) => h.live_seconds(), Feed::Stream(s) => s.live_seconds() } }
+    pub fn host_timecode(&self) -> String { match self { Feed::Host(h) => h.host_timecode(), Feed::Stream(_) => String::new() } }
+    pub fn host_fps(&self) -> Option<f64> { match self { Feed::Host(h) => h.host_fps(), Feed::Stream(s) => s.fps() } }
+    pub fn set_video_hold_ms(&mut self, ms: i32) { if let Feed::Host(h) = self { h.set_video_hold_ms(ms); } }
+    /// The host application's name for the details ("After Effects"), "" for a stream.
+    pub fn app(&self) -> &'static str { match self { Feed::Host(h) => h.host().app(), Feed::Stream(_) => "" } }
+    /// The host's settings key ("ae" / "premiere" / "probe"), "" for a stream.
+    pub fn key(&self) -> &'static str { match self { Feed::Host(h) => h.host().key(), Feed::Stream(_) => "" } }
+    pub fn is_stream(&self) -> bool { matches!(self, Feed::Stream(_)) }
+}
 use std::time::Instant;
 use qcv_ring::url::Host;
 
@@ -34,7 +53,7 @@ pub(crate) fn review_label(captured_at: &str, key: &str) -> String {
 pub(crate) fn capture_label(captured_at: &str, key: &str) -> String { if captured_at.len() >= 23 { captured_at[11..23].to_string() } else { review_label(captured_at, key) } }
 
 pub struct Live { pub review: Option<Review>, /// a saved note's frame being decoded off the UI thread (its key)
-    pub review_rx: Option<(String, std::sync::mpsc::Receiver<Option<min_present::Frame>>)>, pub feed: HostFeed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts>,
+    pub review_rx: Option<(String, std::sync::mpsc::Receiver<Option<min_present::Frame>>)>, pub feed: Feed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts>,
     /// the QCAA segment's player (QCView: the live AudioPlayer): it plays as packets arrive; Listen decides if it is heard
     pub audio: Option<qcv_player::audio::AudioPlayer>, /// its reader (the Inspector's Audio facts)
     pub audio_src: Option<std::sync::Arc<qcv_player::audio::LiveAudioSource>> }
@@ -45,9 +64,9 @@ impl crate::App {
         let Some(id) = self.project.add_live_stream(host.url(), host.label()) else { return };
         self.load_item(&id);
     }
-    /// QCView `startLiveStream` for a `qcbae://` item; other URLs (SRT) arrive with step 2.
+    /// QCView `startLiveStream`: a `qcbae://` item reads its host's shared memory; any other URL opens as a network stream.
     pub(crate) fn start_live(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
-        let Some(host) = Host::parse(&item.path) else { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); return false };
+        let Some(host) = Host::parse(&item.path) else { return self.start_stream(id, item) };
         self.player = None;   // the file transport stops; the feed owns the picture
         let sync_key = crate::settings::k::live_sync_key(host.key());
         if let Some(g) = self.gpu.as_mut() { g.settings_panel.set_live_sync_key(sync_key); }
@@ -67,7 +86,7 @@ impl crate::App {
             }
             Err(e) => { log::warn!("live audio: {e}"); None }
         };
-        let mut feed = HostFeed::new(host); feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms());
+        let mut feed = Feed::Host(HostFeed::new(host)); feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms());
         self.live = Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio, audio_src });
         self.loaded_item = id.to_string();
         self.source_path.clear(); self.source_label = item.name.clone();   // the screenshot's name (QCView: the stream's name)
@@ -92,10 +111,32 @@ impl crate::App {
         let dev = if cfg!(target_os = "macos") { Some(g.presenter.engine.device.clone()) } else { None };
         // in Review the feed keeps receiving but nothing reaches the screen (QCView: publish off)
         if let Some(f) = l.feed.tick(now, dev.as_ref()) && l.review.is_none() {
+            let f = &*f;
             match g.presenter.engine.show(&f) { Ok(()) => g.ui_dirty = true, Err(e) => log::warn!("live: show: {e}") }
         }
         let facts = l.feed.facts();
         if l.last_facts.as_ref() != Some(&facts) { l.last_facts = Some(facts); g.ui_dirty = true; }
+        // a stream's colour tags onto its item (QCView `pushLiveTags`: session facts, no dirty) — the Auto label reads them
+        if let Feed::Stream(s) = &l.feed { let (t, p, m) = s.tags(); let id = l.item.clone(); if self.project.set_live_video_tags(&id, &t, &p, &m) { if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
+    }
+    /// QCView `startLiveStream` for a network URL (`LiveStreamDecoder`): the decoder on its own thread, no audio (QCView
+    /// discards a stream's audio), the hardware decoder when the setting allows it (QCView's macOS ignored the setting).
+    fn start_stream(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
+        self.player = None;
+        let hw = if self.settings.bool(crate::settings::k::HW_DECODE) { self.hw.clone() } else { None };
+        let feed = Feed::Stream(StreamFeed::open(&item.path, hw));
+        self.live = Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio: None, audio_src: None });
+        self.loaded_item = id.to_string();
+        self.source_path.clear(); self.source_label = item.name.clone();
+        if let Some(g) = self.gpu.as_mut() {
+            g.presenter.engine.clear_frame();
+            g.presenter.engine.set_transfer_override(transfer_choice(item.transfer_override)); g.inspector.set_transfer(item.transfer_override);
+            g.presenter.engine.set_geometry(min_present::engine::Geometry::default()); g.content_set = None; g.ui_dirty = true;
+        }
+        self.apply_color();
+        self.sync_stream_notes();
+        log::info!("live: {} ({})", item.name, qcv_player::stream_feed::redact(&item.path));
+        true
     }
     /// The live row's buttons (QCView's LiveStrip): Transfer as the Inspector applies it, the panels, the screenshots.
     pub(crate) fn live_cmd(&mut self, c: crate::live_strip::Cmd) {

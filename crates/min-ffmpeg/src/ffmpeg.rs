@@ -19,7 +19,17 @@ pub struct OpenOptions { /// 0 = FFmpeg auto; the user's performance/ffmpegThrea
     pub threads: i32, pub hw: Option<HwDevice>, /// the device for the compute-decoded intra codecs (Windows: FFmpeg's Vulkan device for ProRes / FFV1 / APV, S6); None = `hw` serves every codec
     pub hw_intra: Option<HwDevice>, /// an image sequence (the path is an image2 printf pattern)
     pub seq: Option<SeqOptions>, /// `AV_CODEC_FLAG2_FAST` (the thumbnail loader: speed over spec)
-    pub fast: bool }
+    pub fast: bool, /// a LIVE network stream (QCView `LiveStreamDecoder::openStream`): the flag that interrupts every blocking call —
+    /// with it the demuxer runs low-delay (nobuffer, 1 s analyse, 2 MB probe, no fps probe), the best video stream only, the
+    /// codec in LOW_DELAY
+    pub live: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> }
+
+/// A live read (QCView's receive phases need to know a packet's kind and whether the read BLOCKED — a fast read is backlog).
+pub enum LiveRead { /// a video packet held in the session until `send_held` / `drop_held`
+    Video { key: bool, bytes: usize, blocked: bool }, Other { bytes: usize }, Eof, Error(i32) }
+/// QCView `kLiveEdgeBlockMs`: an `av_read_frame` that returns sooner than this came from the backlog, not the wire.
+pub const LIVE_EDGE_BLOCK: std::time::Duration = std::time::Duration::from_millis(4);
+unsafe extern "C" fn live_interrupt(p: *mut std::ffi::c_void) -> std::ffi::c_int { unsafe { (*(p as *const std::sync::atomic::AtomicBool)).load(std::sync::atomic::Ordering::Acquire) as std::ffi::c_int } }
 
 /// A hardware frame: an `av_frame_clone` reference that owns the platform buffer until dropped (QCView retains the
 /// CVPixelBuffer itself; holding the AVFrame ref is the same contract and covers D3D12VA's pool slot too).
@@ -48,6 +58,9 @@ pub struct SessionInfo {
     pub source_timecode: Option<String>, pub drop_frame: bool,
     pub time_base: (i32, i32), pub frame_rate: (i32, i32), pub intra_only: bool,
     pub meta: ColorMeta, pub duration_secs: f64,
+    /// the stream's colour tags by FFmpeg's names ("smpte2084", "bt2020", "bt2020nc"; unknown / unspecified → "") — QCView
+    /// `pushLiveTags`: a live item's Auto transfer label reads them
+    pub tags: (String, String, String),
 }
 impl SessionInfo { pub fn rate(&self) -> Rate { Rate::from_rational(self.frame_rate.0, self.frame_rate.1).unwrap_or(Rate::new(24, 1)) } }
 
@@ -62,6 +75,8 @@ pub struct Session {
     #[allow(dead_code)] logged_hw_fallback: bool, logged_native: bool, logged_planes: bool,
     /// S6 (Windows): the Vulkan → D3D12 bridge, built on the first Vulkan frame; `vk_bridge_tried` stops retrying after a failure
     #[cfg(windows)] vk_bridge: Option<crate::vk_bridge::VkBridge>, #[cfg(windows)] vk_bridge_tried: bool,
+    /// a live session's interrupt flag, kept alive as long as the demuxer can call back into it
+    _live: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 unsafe impl Send for Session {}
 
@@ -92,13 +107,24 @@ impl Session {
                 set(&mut dict, "framerate", &format!("{}/{}", seq.rate.num, seq.rate.den));
                 set(&mut dict, "start_number", &seq.start_number.to_string());
             }
+            if let Some(stop) = &opts.live {
+                // QCView: every blocking call bounded by the interrupt callback; SRT's mode / latency / passphrase come from the URL
+                fmt = ff::avformat_alloc_context();
+                (*fmt).interrupt_callback = ff::AVIOInterruptCB { callback: Some(live_interrupt), opaque: std::sync::Arc::as_ptr(stop) as *mut std::ffi::c_void };
+                let set = |d: &mut *mut ff::AVDictionary, k: &str, v: &str| { let k = CString::new(k).unwrap(); let v = CString::new(v).unwrap(); ff::av_dict_set(d, k.as_ptr(), v.as_ptr(), 0); };
+                set(&mut dict, "fflags", "nobuffer"); set(&mut dict, "analyzeduration", "1000000"); set(&mut dict, "probesize", "2000000");
+                set(&mut dict, "fpsprobesize", "0");   // QCView: an idle Blender sender made HEVC's fps probe wait ~5 s
+            }
             let r = ff::avformat_open_input(&mut fmt, cpath.as_ptr(), ptr::null_mut(), &mut dict);
             ff::av_dict_free(&mut dict);
             if r < 0 { return Err(Error::Open(format!("avformat_open_input: {}", av_err(r)))) }
             if ff::avformat_find_stream_info(fmt, ptr::null_mut()) < 0 { ff::avformat_close_input(&mut fmt); return Err(Error::Open("avformat_find_stream_info failed".into())) }
-            // the FIRST video stream (QCView), not av_find_best_stream
+            // the FIRST video stream (QCView), not av_find_best_stream — a live stream: the best one, the rest discarded
             let mut stream_idx = -1;
-            for i in 0..(*fmt).nb_streams { if (*(**(*fmt).streams.add(i as usize)).codecpar).codec_type == ff::AVMediaType::AVMEDIA_TYPE_VIDEO { stream_idx = i as i32; break } }
+            if opts.live.is_some() {
+                stream_idx = ff::av_find_best_stream(fmt, ff::AVMediaType::AVMEDIA_TYPE_VIDEO, -1, -1, ptr::null_mut(), 0);
+                if stream_idx >= 0 { for i in 0..(*fmt).nb_streams { if i as i32 != stream_idx { (**(*fmt).streams.add(i as usize)).discard = ff::AVDiscard::AVDISCARD_ALL; } } }
+            } else { for i in 0..(*fmt).nb_streams { if (*(**(*fmt).streams.add(i as usize)).codecpar).codec_type == ff::AVMediaType::AVMEDIA_TYPE_VIDEO { stream_idx = i as i32; break } } }
             if stream_idx < 0 { ff::avformat_close_input(&mut fmt); return Err(Error::NoVideo) }
             let st = *(*fmt).streams.add(stream_idx as usize);
             let codecpar = (*st).codecpar;
@@ -124,6 +150,7 @@ impl Session {
             }
             thread_policy::apply_software_thread_policy(cctx, codec, opts.threads);
             if opts.fast { (*cctx).flags2 |= ff::AV_CODEC_FLAG2_FAST as i32; }
+            if opts.live.is_some() { (*cctx).flags |= ff::AV_CODEC_FLAG_LOW_DELAY as i32; }
             log::info!("threading {} (count={})", thread_policy::thread_policy_name(cctx), (*cctx).thread_count);
             if let e @ ..=-1 = ff::avcodec_open2(cctx, codec, ptr::null_mut()) { let mut c = cctx; ff::avcodec_free_context(&mut c); ff::avformat_close_input(&mut fmt); return Err(Error::Open(format!("avcodec_open2: {}", av_err(e)))) }
             // metadata
@@ -147,12 +174,15 @@ impl Session {
             let mut duration_secs = if (*st).duration > 0 { (*st).duration as f64 * ff::av_q2d(tb) } else if (*fmt).duration > 0 { (*fmt).duration as f64 / ff::AV_TIME_BASE as f64 } else { 0.0 };
             if frame_count <= 0 && (*fmt).duration > 0 { frame_count = ff::av_rescale_q((*fmt).duration, ff::AVRational { num: 1, den: ff::AV_TIME_BASE }, ff::AVRational { num: fr_den, den: fr_num }) as i32; }
             if frame_count <= 0 && (*st).duration > 0 { frame_count = ff::av_rescale_q((*st).duration, tb, ff::AVRational { num: fr_den, den: fr_num }) as i32; }
-            if frame_count <= 0 {   // animated WebP / GIF / APNG: count the packets (stream_extent)
+            if frame_count <= 0 && opts.live.is_none() {   // animated WebP / GIF / APNG: count the packets (stream_extent)
                 let ext = stream_extent::scan_stream_extent(path, stream_idx, 512 << 20);
                 if ext.ok { frame_count = ext.frames; if duration_secs <= 0.0 { duration_secs = ext.duration_us as f64 * 1e-6; } }
             }
-            let info = SessionInfo { width: (*cctx).width as u32, height: (*cctx).height as u32, frame_count, codec_name, codec_short: cstr((*codec).name), pix_fmt, hw_accel, source_timecode, drop_frame, time_base: (tb.num, tb.den), frame_rate: (fr_num, fr_den), intra_only, meta: meta_from(&*cctx, format, RangeOverride::Auto), duration_secs };
-            Ok(Session { fmt, cctx, pkt: ff::av_packet_alloc(), frame: ff::av_frame_alloc(), sw_frame: ff::av_frame_alloc(), _hw: hw_keep, stream_idx, info, range_override: RangeOverride::Auto, #[cfg(windows)] vk_bridge: None, #[cfg(windows)] vk_bridge_tried: false, logged_hw_fallback: false, logged_native: false, logged_planes: false })
+            let info = SessionInfo { width: (*cctx).width as u32, height: (*cctx).height as u32, frame_count, codec_name, codec_short: cstr((*codec).name), pix_fmt, hw_accel, source_timecode, drop_frame, time_base: (tb.num, tb.den), frame_rate: (fr_num, fr_den), intra_only, meta: meta_from(&*cctx, format, RangeOverride::Auto), duration_secs, tags: {
+                let n = |p: *const std::ffi::c_char| { let v = cstr(p); if v == "unknown" || v == "unspecified" { String::new() } else { v } };
+                (n(ff::av_color_transfer_name((*codecpar).color_trc)), n(ff::av_color_primaries_name((*codecpar).color_primaries)), n(ff::av_color_space_name((*codecpar).color_space)))
+            } };
+            Ok(Session { fmt, cctx, pkt: ff::av_packet_alloc(), frame: ff::av_frame_alloc(), sw_frame: ff::av_frame_alloc(), _hw: hw_keep, stream_idx, info, range_override: RangeOverride::Auto, #[cfg(windows)] vk_bridge: None, #[cfg(windows)] vk_bridge_tried: false, logged_hw_fallback: false, logged_native: false, logged_planes: false, _live: opts.live.clone() })
         }
     }
     pub fn frame_index(&self) -> FrameIndex { let i = &self.info; FrameIndex::new(i.time_base.0, i.time_base.1, i.frame_rate.0, i.frame_rate.1, i.frame_count, i.intra_only) }
@@ -183,6 +213,26 @@ impl Session {
             }
         }
     }
+    /// A live stream's next packet, timed (QCView's receive phases). A video packet stays held for `send_held` / `drop_held`.
+    pub fn read_live(&mut self) -> LiveRead {
+        unsafe {
+            let t = Instant::now();
+            let rc = ff::av_read_frame(self.fmt, self.pkt);
+            if rc == ff::AVERROR_EOF { return LiveRead::Eof }
+            if rc < 0 { return LiveRead::Error(rc) }
+            let bytes = (*self.pkt).size.max(0) as usize;
+            if (*self.pkt).stream_index != self.stream_idx { ff::av_packet_unref(self.pkt); return LiveRead::Other { bytes } }
+            LiveRead::Video { key: ((*self.pkt).flags & ff::AV_PKT_FLAG_KEY as i32) != 0, bytes, blocked: t.elapsed() >= LIVE_EDGE_BLOCK }
+        }
+    }
+    /// The held packet to the codec (EAGAIN aside, a refused packet is skipped — QCView).
+    pub fn send_held(&mut self) { unsafe { let s = ff::avcodec_send_packet(self.cctx, self.pkt); ff::av_packet_unref(self.pkt); if s < 0 && s != averror(libc::EAGAIN) { log::debug!("live send_packet: {}", av_err(s)); } } }
+    pub fn drop_held(&mut self) { unsafe { ff::av_packet_unref(self.pkt) } }
+    /// The codec's pixel format NOW (a hw decode: its software format) — a live stream's low-delay probe can name it before
+    /// the first frame decodes (an HEVC 10-bit stream probed as "yuv420p").
+    pub fn current_pix_fmt(&self) -> String { unsafe { let f = if hw::is_hw_format((*self.cctx).pix_fmt) { (*self.cctx).sw_pix_fmt } else { (*self.cctx).pix_fmt }; cstr(ff::av_get_pix_fmt_name(f)) } }
+    /// QCView's draining state: non-reference frames are skipped while a backlog drains.
+    pub fn set_skip_nonref(&mut self, on: bool) { unsafe { (*self.cctx).skip_frame = if on { ff::AVDiscard::AVDISCARD_NONREF } else { ff::AVDiscard::AVDISCARD_DEFAULT }; } }
     /// One decoded frame if the codec has one ready, wrapped per its kind.
     pub fn receive(&mut self, index: &FrameIndex) -> Recv {
         unsafe {

@@ -13,7 +13,7 @@
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
-    OpenMedia, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
+    OpenMedia, OpenStream, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
     Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, Docs, CopyProjectLink, About, ColorPanel,
 }
@@ -51,7 +51,7 @@ fn off(label: &'static str, sc: Option<Sc>) -> Node { Node::Item { label: tr(lab
 pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     let mac = cfg!(target_os = "macos");
     let mut file = vec![
-        item("Open Media…", sc(K::O), Cmd::OpenMedia), off("Open Stream…", None),
+        item("Open Media…", sc(K::O), Cmd::OpenMedia), item("Open Stream…", None, Cmd::OpenStream),
         item("Connect to After Effects", None, Cmd::ConnectAe), item("Connect to Premiere Pro", None, Cmd::ConnectPremiere), off("Connect to Blender", None),
         Node::Recent { projects: false }, Node::Sep,
         item("New Project", None, Cmd::NewProject), item("Open Project…", sc_shift(K::O), Cmd::OpenProject), Node::Recent { projects: true },
@@ -81,7 +81,8 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
 }
 
 /// The store's recent lists → (label, path) rows: the file names (both separators split).
-fn recent_rows(list: &[String]) -> Vec<(String, String)> { list.iter().map(|p| (p.rsplit(['/', '\\']).next().unwrap_or(p).to_string(), p.clone())).collect() }
+/// (label, path): a file's name; a stream's URL with its passphrase hidden (QCView put the whole URL in Recents — row 227 2a).
+fn recent_rows(list: &[String]) -> Vec<(String, String)> { list.iter().map(|p| (if p.contains("://") { qcv_player::stream_feed::redact(p) } else { p.rsplit(['/', '\\']).next().unwrap_or(p).to_string() }, p.clone())).collect() }
 
 // ---------------------------------------------------------------------------------------------------------------- Windows
 
