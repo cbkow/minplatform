@@ -31,6 +31,8 @@ pub enum Cmd { Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config 
 pub struct View {
     /// "A · clip.mov", or "Project default" when nothing is loaded
     pub target: String,
+    /// dual view: the side being edited (the target, row 212) — its letter leads the label in the side colour
+    pub side: Option<qcv_player::Side>,
     pub has_clip: bool,
     /// the clip has its own chain (else it follows the project default)
     pub own: bool,
@@ -479,6 +481,7 @@ impl ColorDrawer {
         fn mid<B: parley::Brush>(l: &parley::Layout<B>, r: Rect) -> f64 { r.y0 + (r.height() - l.height() as f64) / 2.0 }
         let h = fonts.detail(tr("Color"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
         let mut x = self.header.x0; min_ui::fonts::draw_layout(scene, &h, Affine::translate((x, mid(&h, self.header)))); x += h.width() as f64 + t::SPACING_200 as f64 * s;
+        if let Some(side) = v.side { let a = side == qcv_player::Side::A; let l = fonts.layout(if a { "A" } else { "B" }, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if a { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR })); min_ui::fonts::draw_layout(scene, &l, Affine::translate((x, mid(&l, self.header)))); x += l.width() as f64 + t::SPACING_100 as f64 * s; }
         let tl = fonts.layout(&v.target, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(t::RAIL_LABEL_COLOR));
         min_ui::fonts::draw_layout(scene, &tl, Affine::translate((x, mid(&tl, self.header)))); x += tl.width() as f64 + t::SPACING_200 as f64 * s;
         let status = if !v.has_clip { tr("Clips without their own chain follow this one") } else if v.own { tr("Own chain") } else { tr("Following the project default") };

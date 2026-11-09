@@ -131,12 +131,18 @@ impl crate::App {
         if assigned { self.settings.set_bool(crate::settings::k::COLOR_ENABLED, true); }
     }
     pub(crate) fn color_default(&self) -> Stored { Stored::from_map(self.project.color_default()).unwrap_or_else(fallback_default) }
-    /// The loaded clip's chain and whether it is its own (else the project default's).
-    pub(crate) fn color_target(&self) -> (Option<String>, Stored, bool) {
+    /// The item a colour slot shows: slot 0 = the loaded clip (dual A), slot 1 = dual B's.
+    fn slot_item(&self, slot: usize) -> String { if slot == 0 { self.loaded_item.clone() } else if self.dual.is_some() { self.project.b_source_media_id().to_string() } else { String::new() } }
+    /// The slot the drawer edits: dual view's TARGET side (row 212 — one selection for the lanes, the keys and colour), else 0.
+    fn edit_slot(&self) -> usize { if self.dual.is_some() && self.gpu.as_ref().is_some_and(|g| g.dual_bars.target == qcv_player::Side::B) { 1 } else { 0 } }
+    /// An item's chain and whether it is its own (else the project default's).
+    fn chain_of(&self, id: &str) -> (Option<String>, Stored, bool) {
         let d = self.color_default();
-        let Some(item) = self.project.item(&self.loaded_item) else { return (None, d, false) };
+        let Some(item) = self.project.item(id) else { return (None, d, false) };
         match Stored::from_clip_maps(&item.ocio_clip, &item.min_color_clip, &d) { Some(s) => (Some(item.id.clone()), s, true), None => (Some(item.id.clone()), d, false) }
     }
+    /// The edited clip's chain and whether it is its own (else the project default's).
+    pub(crate) fn color_target(&self) -> (Option<String>, Stored, bool) { self.chain_of(&self.slot_item(self.edit_slot())) }
     pub(crate) fn color_view(&self) -> View {
         let (id, stored, own) = self.color_target();
         let target = id.as_ref().and_then(|i| self.project.item(i)).map(|m| m.name.clone()).unwrap_or_else(|| min_i18n::trc("ColorPanel", "Project default").to_string());
@@ -151,46 +157,58 @@ impl crate::App {
         let tags_hdr = id.as_ref().and_then(|i| self.project.item(i)).is_some_and(|m| { let t = m.video.color_transfer.to_lowercase(); t.contains("2084") || t.contains("pq") || t.contains("hlg") || t.contains("arib") });
         let on = self.settings.bool(crate::settings::k::COLOR_ENABLED);
         let hdr_source = match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => c.in_transfer == 14 || c.in_transfer == 15, ClipChain::Ocio(o) => { let n = o.input.to_uppercase(); n.contains("PQ") || n.contains("2084") || n.contains("HLG") } };
-        View { target, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source }
+        let side = self.dual.is_some().then(|| if self.edit_slot() == 1 { qcv_player::Side::B } else { qcv_player::Side::A });
+        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source }
     }
-    /// Bind what the drawer says to the engine's slot: off = bypass; minColor = the shared pass (a uniform update); OCIO = a
-    /// pass built on a worker (the previous chain stays on screen until it is ready).
+    /// Bind each visible picture's chain to its engine: the single view's (slot 0), or dual's A (slot 0) and B (slot 1), each
+    /// from its own clip (row 205); off = bypass. minColor = the slot's pass (a uniform update); OCIO = a pass built on a
+    /// worker (the previous chain stays on screen until it is ready).
     pub(crate) fn apply_color(&mut self) {
         if harness_active() { return }
         let on = self.settings.bool(crate::settings::k::COLOR_ENABLED);
-        let (_, stored, _) = self.color_target();
-        let Some(g) = self.gpu.as_mut() else { return };
-        if !on || self.player.is_none() {
-            if self.color_bound.is_some() { g.presenter.engine.set_color_pass(None); self.color_bound = None; self.ocio_rx = None; }
-            return
-        }
-        match stored.chain {
-            ClipChain::MinColor(c) => {
-                let Some(rc) = self.mincolor.clone() else { return };   // binds when the build lands
-                rc.borrow_mut().set_chain(c);
-                if self.color_bound.as_deref() != Some("minColor") { g.presenter.engine.set_color_pass(Some(Box::new(SharedPass(rc)))); self.color_bound = Some("minColor".into()); }
-                self.ocio_rx = None;
+        let slots = if self.dual.is_some() { 2 } else { 1 };
+        for slot in 0..2 {
+            let shown = slot < slots && (if self.dual.is_some() { self.dual.as_ref().unwrap().side(if slot == 0 { qcv_player::Side::A } else { qcv_player::Side::B }).is_some() } else { self.player.is_some() });
+            let (_, stored, _) = self.chain_of(&self.slot_item(slot));
+            let dual = self.dual.is_some();
+            let Some(g) = self.gpu.as_mut() else { return };
+            let Some(engine) = slot_engine(g, slot, dual) else { self.color_bound[slot] = None; self.ocio_rx[slot] = None; continue };
+            if !on || !shown {
+                if self.color_bound[slot].is_some() { engine.set_color_pass(None); self.color_bound[slot] = None; }
+                self.ocio_rx[slot] = None;
+                continue
             }
-            ClipChain::Ocio(o) => {
-                let key = format!("{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.knee);
-                if self.color_bound.as_deref() == Some(key.as_str()) || self.ocio_rx.as_ref().is_some_and(|(k, _)| *k == key) { return }
-                let cfg = ocio_config_path(&o.config);
-                let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut };
-                let (d, q, knee) = (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone(), o.knee);
-                let (tx, rx) = mpsc::channel();
-                std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
-                    match qcv_color::ocio::Config::open(&cfg).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee)) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); } Err(e) => log::error!("OCIO: {e}") }
-                }).ok();
-                self.ocio_rx = Some((key, rx));
+            match stored.chain {
+                ClipChain::MinColor(c) => {
+                    let Some(rc) = self.mincolor[slot].clone() else { continue };   // binds when the build lands
+                    rc.borrow_mut().set_chain(c);
+                    if self.color_bound[slot].as_deref() != Some("minColor") { engine.set_color_pass(Some(Box::new(SharedPass(rc)))); self.color_bound[slot] = Some("minColor".into()); }
+                    self.ocio_rx[slot] = None;
+                }
+                ClipChain::Ocio(o) => {
+                    let key = format!("{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.knee);
+                    if self.color_bound[slot].as_deref() == Some(key.as_str()) || self.ocio_rx[slot].as_ref().is_some_and(|(k, _)| *k == key) { continue }
+                    let cfg = ocio_config_path(&o.config);
+                    let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut };
+                    let (d, q, knee) = (engine.device.clone(), engine.queue.clone(), o.knee);
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
+                        match qcv_color::ocio::Config::open(&cfg).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee)) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); } Err(e) => log::error!("OCIO: {e}") }
+                    }).ok();
+                    self.ocio_rx[slot] = Some((key, rx));
+                }
             }
         }
     }
     /// The drawer's background builds landing (called every tick).
     pub(crate) fn poll_color(&mut self) {
-        if let Some(rx) = &self.mincolor_ready && let Ok(p) = rx.try_recv() { self.mincolor = Some(Rc::new(RefCell::new(p))); self.mincolor_ready = None; self.apply_color(); }
-        if let Some((key, rx)) = &self.ocio_rx && let Ok(p) = rx.try_recv() {
-            let key = key.clone(); self.ocio_rx = None;
-            if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_color_pass(Some(p)); self.color_bound = Some(key); g.ui_dirty = true; }
+        for slot in 0..2 {
+            if let Some(rx) = &self.mincolor_ready[slot] && let Ok(p) = rx.try_recv() { self.mincolor[slot] = Some(Rc::new(RefCell::new(p))); self.mincolor_ready[slot] = None; self.apply_color(); }
+            if let Some((key, rx)) = &self.ocio_rx[slot] && let Ok(p) = rx.try_recv() {
+                let key = key.clone(); self.ocio_rx[slot] = None;
+                let dual = self.dual.is_some();
+                if let Some(g) = self.gpu.as_mut() { if let Some(e) = slot_engine(g, slot, dual) { e.set_color_pass(Some(p)); self.color_bound[slot] = Some(key); } g.ui_dirty = true; }
+            }
         }
     }
     /// A config by its key (a bundled folder name, or a file path), loaded once and kept.
@@ -216,7 +234,7 @@ impl crate::App {
         if let ClipChain::Ocio(o) = st.chain { if !self.ocio_configs.contains_key(&o.config) { let _ = self.ocio_config(&o.config); } }
     }
     fn write_target(&mut self, st: Stored) {
-        match self.project.item(&self.loaded_item).cloned() {
+        match self.project.item(&self.slot_item(self.edit_slot())).cloned() {
             Some(item) => { let (oc, mc) = st.to_clip_maps(&item.ocio_clip, &item.min_color_clip); self.project.set_color_clip(&item.id, oc, mc); }
             None => { self.project.set_color_default(st.to_map()); }
         }
@@ -240,7 +258,7 @@ impl crate::App {
                     self.write_target(Stored { chain: ClipChain::Ocio(o), preset: st.preset });
                 }
             }
-            DCmd::ResetToDefault => { let id = self.loaded_item.clone(); if self.project.item(&id).is_some() { self.project.set_color_clip(&id, Default::default(), Default::default()); } }
+            DCmd::ResetToDefault => { let id = self.slot_item(self.edit_slot()); if self.project.item(&id).is_some() { self.project.set_color_clip(&id, Default::default(), Default::default()); } }
             DCmd::ApplyToAll => {
                 let (_, st, _) = self.color_target();
                 let ids: Vec<(String, _, _)> = self.project.pool().iter().filter(|m| !matches!(m.media_type, qcv_project::MediaType::Audio | qcv_project::MediaType::LiveStream)).map(|m| (m.id.clone(), m.ocio_clip.clone(), m.min_color_clip.clone())).collect();
@@ -275,4 +293,11 @@ impl crate::App {
         self.apply_color();
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
+}
+
+/// A colour slot's engine: 0 = the single view's (the main engine) or dual's A side, 1 = dual's B side.
+fn slot_engine(g: &mut crate::Gpu, slot: usize, dual: bool) -> Option<&mut min_present::engine::Engine> {
+    if !dual { return (slot == 0).then_some(&mut g.presenter.engine) }
+    let d = g.presenter.engine.dual_mut()?;
+    Some(if slot == 0 { &mut d.a } else { &mut d.b })
 }
