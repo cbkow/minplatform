@@ -132,9 +132,9 @@ impl crate::App {
     }
     pub(crate) fn color_default(&self) -> Stored { Stored::from_map(self.project.color_default()).unwrap_or_else(fallback_default) }
     /// The item a colour slot shows: slot 0 = the loaded clip (dual A), slot 1 = dual B's.
-    fn slot_item(&self, slot: usize) -> String { if slot == 0 { self.loaded_item.clone() } else if self.dual.is_some() { self.project.b_source_media_id().to_string() } else { String::new() } }
+    pub(crate) fn slot_item(&self, slot: usize) -> String { if slot == 0 { self.loaded_item.clone() } else if self.dual.is_some() { self.project.b_source_media_id().to_string() } else { String::new() } }
     /// The slot the drawer edits: dual view's TARGET side (row 212 — one selection for the lanes, the keys and colour), else 0.
-    fn edit_slot(&self) -> usize { if self.dual.is_some() && self.gpu.as_ref().is_some_and(|g| g.dual_bars.target == qcv_player::Side::B) { 1 } else { 0 } }
+    pub(crate) fn edit_slot(&self) -> usize { if self.dual.is_some() && self.gpu.as_ref().is_some_and(|g| g.dual_bars.target == qcv_player::Side::B) { 1 } else { 0 } }
     /// An item's chain and whether it is its own (else the project default's).
     fn chain_of(&self, id: &str) -> (Option<String>, Stored, bool) {
         let d = self.color_default();
@@ -296,7 +296,7 @@ impl crate::App {
 }
 
 /// A colour slot's engine: 0 = the single view's (the main engine) or dual's A side, 1 = dual's B side.
-fn slot_engine(g: &mut crate::Gpu, slot: usize, dual: bool) -> Option<&mut min_present::engine::Engine> {
+pub(crate) fn slot_engine(g: &mut crate::Gpu, slot: usize, dual: bool) -> Option<&mut min_present::engine::Engine> {
     if !dual { return (slot == 0).then_some(&mut g.presenter.engine) }
     let d = g.presenter.engine.dual_mut()?;
     Some(if slot == 0 { &mut d.a } else { &mut d.b })

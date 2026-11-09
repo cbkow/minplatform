@@ -96,6 +96,7 @@ impl DualTransport {
                 Ok(mut n) => {
                     n.set_follower(true); n.set_loop_enabled(self.loop_enabled); n.set_review_speed(self.review_speed);
                     let mut old = self.sides[i].take().unwrap();
+                    n.set_range_override(old.range_override());   // the clip's Range choice survives the rebuild
                     let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); n.set_audio(au); self.gains[i] = -1.0;
                     if self.user_wants_playback { n.play(); }
                     drop_off_thread(old); self.sides[i] = Some(n);

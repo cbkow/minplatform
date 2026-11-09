@@ -60,7 +60,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
     drawer: color_drawer::ColorDrawer, /// dual view's controls on the status strip + the Save dialog + the seam's grab (row 173)
     dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// dual's A / B lanes (row 212) + the side the precision popover edits
-    dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the pointer's last movement (the floating tabs fade when it parks over the picture)
+    dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the Inspector's subject last synced (slot, item): the Transfer chips refresh on a change
+    insp_seen: (usize, String), /// the pointer's last movement (the floating tabs fade when it parks over the picture)
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
     clip_peak: Option<[f32; 2]>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
@@ -350,6 +351,7 @@ impl App {
             }
         }
         if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.mode = mode; } g.presenter.engine.relayout_dual(); g.ui_dirty = true; }
+        for side in [qcv_player::Side::A, qcv_player::Side::B] { self.apply_item_to_side(side); }
         self.apply_color();   // each side's own chain on its engine (row 205)
     }
     /// QCView's Single: the dual session ends, A reloads as the single view at the same time.
@@ -427,6 +429,15 @@ impl App {
         let maps = |tr: &str| self.dual_editor.as_ref().and_then(|ed| ed.timeline.track(tr).map(|t| t.clips.iter().filter(|c| !c.is_gap).map(|c| clip_to_qcview(c, ed.timeline.rate)).collect())).unwrap_or_default();
         Some(qcv_project::DualPairData { media_id_a: self.loaded_item.clone(), media_id_b: self.project.b_source_media_id().to_string(), master_fps: fps, master_duration: d.frame_count() as f64 / fps.max(1e-9), clips_a: maps(qcv_timeline::TRACK_A), clips_b: maps(qcv_timeline::TRACK_B), in_point: d.in_point(), out_point: d.out_point() })
     }
+    /// A side's clip's own choices (QCView applies them per load): Range → its decoders, Aspect / Rotation / Transfer → its
+    /// engine, Mix → its audio; and its metadata requested (the Inspector shows the target side's).
+    fn apply_item_to_side(&mut self, side: qcv_player::Side) {
+        let slot = side as usize; let id = self.slot_item(slot);
+        let Some(item) = self.project.item(&id).cloned() else { return };
+        if let Some(t) = self.dual.as_mut().and_then(|d| d.side_mut(side)) { t.set_range_override(range_of(&item)); t.audio.set_routing_mode(routing_of(&item)); }
+        if let Some(g) = self.gpu.as_mut() { if let Some(en) = color::slot_engine(g, slot, true) { en.set_geometry(min_present::engine::Geometry { par: par_of(&item), rotation: rotation_of(&item) }); en.set_transfer_override(transfer_choice(item.transfer_override)); } g.content_set = None; g.insp_seen = (9, String::new()); }
+        if !item.path.is_empty() { self.meta.request_video_extraction(&id, &item.path); self.meta.request_adobe_extraction(&id, &item.path); }
+    }
     /// A side's media changed in place: its track becomes the full clip; the master rate re-times the other side's edits.
     fn dual_side_changed(&mut self, side: qcv_player::Side) {
         let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_mut()) else { return };
@@ -434,6 +445,7 @@ impl App {
         ed.set_track_media(dual_bars::track(side), d.media(side));
         d.set_timeline(&ed.timeline, false);
         if let Some(g) = self.gpu.as_mut() { if g.dual_bars.selected.as_ref().is_some_and(|(s, _)| *s == side) { g.dual_bars.selected = None; } g.ui_dirty = true; }
+        self.apply_item_to_side(side);
         self.apply_color();
     }
     /// An edit landed in the dual editor: the transport follows (a split / delete reopens the sides).
@@ -743,11 +755,14 @@ impl App {
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + bh, scale); g.left.content_height = ph + bh + lh;
-                g.inspector.set_geometry(g.presenter.engine.geometry(), g.presenter.engine.display_dims());
+                let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
+                { let en: &min_present::engine::Engine = match g.presenter.engine.dual() { Some(d) if self.dual.is_some() => if islot == 1 { &d.b } else { &d.a }, _ => &g.presenter.engine }; let (geo, dims) = (en.geometry(), en.display_dims()); g.inspector.set_geometry(geo, dims); }
+                let iid = if islot == 1 { self.project.b_source_media_id().to_string() } else { self.loaded_item.clone() };
+                if g.insp_seen != (islot, iid.clone()) { if let Some(m) = self.project.item(&iid) { g.inspector.set_transfer(m.transfer_override); } g.insp_seen = (islot, iid); }
                 // the EXR layer tiles: the loaded sequence item's layers (the project's), its current layer, its first frame
                 let (ls, cur, first) = self.project.item(&self.loaded_item).filter(|m| m.media_type == qcv_project::MediaType::ImageSequence && self.player.as_ref().is_some_and(|p| p.decoder().as_sequence().is_some())).map(|m| (m.image_seq.available_layers.clone(), m.image_seq.layer.clone(), m.path.clone())).unwrap_or_default();
                 g.inspector.set_seq_layers(ls, &cur, &first);
-                if g.inspector.sync(self.player.as_ref()) { g.ui_dirty = true; }
+                if g.inspector.sync(match self.dual.as_ref() { Some(d) => d.side(if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => self.player.as_ref() }) { g.ui_dirty = true; }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
             // the bar's volume / mute / loop and the keys write the store back (QCView persists them on change)
@@ -935,7 +950,7 @@ impl App {
             let mut cmds = vec![]; let mut pcmds: Vec<project_panel::Cmd> = vec![]; let mods = self.mods;
             // a press on a rail's own control (the collapse arrow, the scrollbar) is the rail's, not the panel's
             let rail_ctl = matches!(e, min_ui::Event::Down { .. }) && e.pos().is_some_and(|(x, y)| g.left.over_control(x, y, now) || g.right.over_control(x, y, now));
-            if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.inspector.has_focus() { let cmds = g.inspector.blur(); set_ime(&**g.window, false); g.ui_dirty = true; for c in cmds { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } } }
+            if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.inspector.has_focus() { let cmds = g.inspector.blur(); set_ime(&**g.window, false); g.ui_dirty = true; for c in cmds { if let inspector_panel::Cmd::Par(par) = c { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; } } }
             let pp_modal = g.project_panel.menu_open() || g.project_panel.is_editing() || g.project_panel.is_dragging(); let pp_modal_editing = g.project_panel.is_editing();
             if !rail_ctl && (modal || pp_modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus()) {
                 // a press outside the settings' fields commits a typed number
@@ -949,6 +964,9 @@ impl App {
                 let had = g.inspector.has_focus();
                 let (icmds, d) = g.inspector.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
                 if g.inspector.has_focus() != had { set_ime(&**g.window, g.inspector.has_focus()); }
+                // the Inspector's subject (the walk 2026-11-08: "that makes sense for the inspector too"): dual's target side, else the single view
+                let slot = insp_slot(&self.dual, g); let dual_on = self.dual.is_some();
+                let target_id = if slot == 1 { self.project.b_source_media_id().to_string() } else { self.loaded_item.clone() };
                 for c in icmds { match c {
                     // QCView: the timeline retunes live (`TimelineController::setFrameRate`) and the item keeps the rate (`setImageSeqFrameRate`)
                     // QCView `setImageSeqLayer`: the cache reloads at the layer, the item keeps it
@@ -960,12 +978,12 @@ impl App {
                     inspector_panel::Cmd::FrameRate(fps) => { if let Some(p) = self.player.as_mut() { p.set_sequence_rate(qcv_timeline::Rate::from_f64(fps)); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_frame_rate(&id, fps); } g.ui_dirty = true; }
                     // QCView `setImageSeqCacheStride`: the live cache + the item's session value
                     inspector_panel::Cmd::Stride(s) => { if let Some(c) = self.player.as_ref().and_then(|p| p.decoder().as_sequence()) { c.cache().set_stride(s); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_cache_stride(&id, s); } g.ui_dirty = true; }
-                    inspector_panel::Cmd::Range(r) => { if let Some(p) = self.player.as_mut() { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
-                    inspector_panel::Cmd::Transfer(t) => { g.presenter.engine.set_transfer_override(transfer_choice(t)); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_transfer_override(&id, t); } }
-                    inspector_panel::Cmd::Routing(m) => { if let Some(p) = self.player.as_mut() { p.audio.set_routing_mode(m); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
+                    inspector_panel::Cmd::Range(r) => { if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
+                    inspector_panel::Cmd::Transfer(t) => { if let Some(en) = color::slot_engine(g, slot, dual_on) { en.set_transfer_override(transfer_choice(t)); } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); self.project.set_transfer_override(&id, t); } }
+                    inspector_panel::Cmd::Routing(m) => { if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.audio.set_routing_mode(m); } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
                     inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(pb(&self.dual, &self.player)); }
-                    inspector_panel::Cmd::Par(par) => { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); let (mode, n, d) = match par { min_present::engine::Par::Square => (qcv_project::PixelAspectMode::Square, 1, 1), min_present::engine::Par::Detected => (qcv_project::PixelAspectMode::Detected, 1, 1), min_present::engine::Par::Custom(n, d) => (qcv_project::PixelAspectMode::Custom, n as i32, d as i32) }; self.project.set_pixel_aspect(&id, mode, n, d); } }
-                    inspector_panel::Cmd::Rotation(r) => { let mut geo = g.presenter.engine.geometry(); geo.rotation = r; g.presenter.engine.set_geometry(geo); g.content_set = None; if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
+                    inspector_panel::Cmd::Par(par) => { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); let (mode, n, d) = match par { min_present::engine::Par::Square => (qcv_project::PixelAspectMode::Square, 1, 1), min_present::engine::Par::Detected => (qcv_project::PixelAspectMode::Detected, 1, 1), min_present::engine::Par::Custom(n, d) => (qcv_project::PixelAspectMode::Custom, n as i32, d as i32) }; self.project.set_pixel_aspect(&id, mode, n, d); } }
+                    inspector_panel::Cmd::Rotation(r) => { if let Some(en) = color::slot_engine(g, slot, dual_on) { let mut geo = en.geometry(); geo.rotation = r; en.set_geometry(geo); } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
                 } }
             }
             let dragging = g.project_panel.is_dragging(); let ptr = e.pos();
@@ -1484,6 +1502,14 @@ fn content_rect(w: u32, h: u32, scale: f64) -> (u32, u32, u32, u32) {
     (0, 0, w, h.saturating_sub(bands).max(1))
 }
 
+/// The Inspector's subject: dual's target side (slot 1 = B), else the single view (0).
+fn insp_slot(dual: &Option<qcv_player::DualTransport>, g: &Gpu) -> usize { if dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 } }
+fn insp_transport<'a>(dual: &'a mut Option<qcv_player::DualTransport>, player: &'a mut Option<Transport>, slot: usize) -> Option<&'a mut Transport> { match dual { Some(d) => d.side_mut(if slot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => player.as_mut() } }
+/// An item's per-clip choices as the player / engine take them (QCView's `loadRequested` applies them).
+fn range_of(m: &qcv_project::MediaItem) -> qcv_player::RangeOverride { match m.video_range_override { qcv_project::VideoRange::Full => qcv_player::RangeOverride::Full, qcv_project::VideoRange::Limited => qcv_player::RangeOverride::Limited, _ => qcv_player::RangeOverride::Auto } }
+fn routing_of(m: &qcv_project::MediaItem) -> qcv_player::RoutingMode { match m.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto } }
+fn par_of(m: &qcv_project::MediaItem) -> min_present::engine::Par { match m.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(m.custom_par_num.max(1) as u32, m.custom_par_den.max(1) as u32) } }
+fn rotation_of(m: &qcv_project::MediaItem) -> Option<u16> { if m.rotation_override >= 0 { Some(m.rotation_override as u16) } else { None } }
 /// QCView's `TransferOverride` → the engine's choice.
 fn transfer_choice(t: qcv_project::TransferOverride) -> min_present::engine::TransferChoice {
     use min_present::engine::TransferChoice as C; use qcv_project::TransferOverride as T;
@@ -1575,7 +1601,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
@@ -1630,7 +1656,7 @@ impl ApplicationHandler for App {
                         // the window lost focus: every typed field commits (QCView's editingFinished)
                         pending = g.settings_panel.blur(&mut self.settings);
                         if let Some(c) = g.project_panel.commit_rename() { pending_pp.push(c); } set_ime(&**g.window, false);
-                        for c in g.inspector.blur() { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } }
+                        for c in g.inspector.blur() { if let inspector_panel::Cmd::Par(par) = c { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; } }
                         set_ime(&**g.window, false);
                     }
                     tab_presence(g, now);
@@ -1689,7 +1715,7 @@ impl ApplicationHandler for App {
                     let k = to_key_event(&event, self.mods);
                     let cmds = g.inspector.key(&k, &mut g.fonts); g.ui_dirty = true;
                     if !g.inspector.has_focus() { set_ime(&**g.window, false); }
-                    for c in cmds { if let inspector_panel::Cmd::Par(par) = c { let mut geo = g.presenter.engine.geometry(); geo.par = par; g.presenter.engine.set_geometry(geo); g.content_set = None; } }
+                    for c in cmds { if let inspector_panel::Cmd::Par(par) = c { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; } }
                     return
                 } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && (g.settings_panel.has_focus() || g.settings_panel.is_modal() || g.settings_panel.menu_open()) {
