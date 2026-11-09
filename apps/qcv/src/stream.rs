@@ -13,6 +13,7 @@ pub struct Stream {
     pub sink: Option<StreamSink>, /// why the last session ended or would not start
     pub error: Option<String>, /// the outputs' stamp of the picture last handed to the encoder
     pub published: Option<u64>, pub nv12: Option<qcv_stream::nv12::Nv12Pass>, spike_done: bool,
+    born: Option<std::time::Instant>,
 }
 impl Stream {
     pub fn running(&self) -> bool { self.sink.is_some() }
@@ -64,7 +65,9 @@ impl crate::App {
     }
     /// Each tick: the source's rate for a session still waiting, a session that ended by itself, the dev aid.
     pub(crate) fn stream_tick(&mut self) {
-        if !self.outputs.stream.spike_done && self.gpu.is_some() {
+        // `QCV_STREAM_SPIKE_DELAY=<seconds>`: the dev aid starts that long after launch (a session begun mid-playback)
+        let delay = std::env::var("QCV_STREAM_SPIKE_DELAY").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        if !self.outputs.stream.spike_done && self.gpu.is_some() && self.outputs.stream.born.get_or_insert_with(std::time::Instant::now).elapsed().as_secs_f64() >= delay {
             self.outputs.stream.spike_done = true;
             if let Ok(url) = std::env::var("QCV_STREAM_SPIKE") { let mut cfg = self.stream_config(); if !url.is_empty() { cfg.url = url; } self.stream_start_with(cfg); }
         }

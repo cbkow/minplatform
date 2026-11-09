@@ -109,5 +109,41 @@ decoded back matches the capture within 1 code value on flat regions; constant p
 
 1. **4a** macOS, headless: the VideoToolbox session + the NV12 pass + mpegts over SRT into a local listener (the A0 bar). — **DONE 2026-11-09**: `crates/qcv-stream` (`vt.rs`, `nv12.rs`, `mux.rs`, example `stream_out`); 1080p25 Baseline: pts delta 3600, GOP 25, no B-frames, VUI bt709 tv, every flat patch within 1 code value; 23.976 Main: pts average exactly 3753.75.
 2. **4b** audio, the session's lifecycle in the app, the card. — **BUILT 2026-11-09** (macOS; the user's walk owed): `aac.rs`, `sink.rs` (the session), the outputs' publish pass feeds the encoder's surface (`apps/qcv/src/outputs.rs`, `stream.rs`), `stream_card.rs`. From the app to a local SRT listener: H.264 Baseline + AAC, pts exact, 6043 kbps under motion against 6000, audio continuous, the guide in the picture; quitting waits for the session's threads (a quit during a connect crashed in the network library's teardown otherwise). `QCV_STREAM_SPIKE=<url>` starts a session at launch (QCView's dev aid). SRT only until 4c.
-3. **4c** RTMP / FLV, reconnect, counters; the walk; the Louper room is the user's test.
+3. **4c** RTMP / FLV, reconnect, counters; the walk; the Louper room is the user's test. — **BUILT 2026-11-09** (macOS): FLV over rtmp(s) with the header deferred to the first keyframe's SPS / PPS (cached for a reconnect), a 5 s socket timeout (`rw_timeout` — RTMP's own `timeout` option means LISTEN), and the test matrix below.
 4. **4d** the Windows spike, then Windows (in the one Windows walk).
+
+## Tested in a vacuum (2026-11-09, macOS)
+
+The user 2026-11-09: "we won't be able to do a full louper test before shipping" — so everything that can be checked without
+a Louper room was, from the real app (an isolated instance, synthetic clips) into local receivers: our own FFmpeg (SRT), Homebrew's
+FFmpeg (RTMP — a different build), and our own SRT input.
+
+**Against Louper's published requirements** (H.264 over RTMP or SRT; AAC; zero B-frames; a keyframe at most every 2 s; its
+recipe: Baseline, CBR ≥ 2500 kbps, keyframe every second): every run below is H.264 Baseline (or Main where chosen) with no
+B-frames, a keyframe every 1.0 s (0.96 s at 23.976), AAC-LC 48 kHz stereo, BT.709 limited-range tags; the bitrate under motion
+holds the target (6043 kbps average against 6000; per second 5134–6468).
+
+| # | Scenario | Result |
+|---|---|---|
+| 1 | RTMP (FLV) to an RTMP listener, the key as the stream name | 1080p25 Baseline level 4.0 + AAC, first frame a keyframe, frame gaps a constant 40 ms; the key appears in no log |
+| 2 | SRT, encrypted (passphrase, 16-byte key) + a stream id | streams; a WRONG passphrase never streams (retries with backoff, nothing received) |
+| 3 | SRT reconnect — the listener ends mid-session, a new one comes up later | "reconnecting", failed attempts with 1-2-4 s backoff, then streaming; the new listener starts on a keyframe (passed 4 runs; in 1 earlier run the second listener never received — most likely the single-connection test listener, not reproduced) |
+| 4 | RTMP reconnect, the same way | refused attempts, then streaming; the new listener starts on a keyframe, audio continuous |
+| 5 | A 23.976 source, frame rate Auto, 720p, Main, 4000 kbps, audio off | 24000/1001, level 3.1, frame gaps 41.70 / 41.71 ms (exact), video only |
+| 6 | Lip-sync: a flash + a beep in the source, measured in the received stream | a session started mid-playback: audio +1…+13 ms; started together with playback: −33…+12 ms; 3 minutes: no drift, memory flat after the first minute. (Before a fix: +67 ms for the whole session when started with playback — see below) |
+| 7 | Our own SRT input as the receiver (`stream_probe`) | 1920×1080 h264, bt709 tags, 0 drops |
+| 8 | RTMPS | the TLS handshake is made and an UNTRUSTED (self-signed) certificate is refused — so a full publish needs a server with a real certificate: **not tested** |
+| 9 | A UHD source into 2160p30, 16000 kbps | level 5.1, 16110 kbps average, playback dropped 0 frames meanwhile |
+| 10 | Quit while connecting / while streaming | clean exits (a quit during a connect crashed before the session's threads were waited for) |
+
+**Found and fixed by the matrix:** RTMP's `timeout` option turned the sender into a listener (now `rw_timeout`); a quit during a
+connect crashed; audio stamped late after a start-up burst — the tap's first second arrives late, after silence was already
+filled in, and QCView's rule (drop only above 8 buffered frames) left the rest of the session ~67 ms late: now what waits
+plus what went out may not run more than two frames ahead of the clock.
+
+**Known, by design (QCView's too):** the clock samples the newest picture, so a one-frame event can be skipped or doubled when
+the source's rate equals the clock's (12 of 180 one-frame flashes in 3 minutes) — "review latency, not sync".
+
+**Not testable here:** the Louper room itself (its ingest's handshake, its stream-key form, its player's tolerance); RTMPS end
+to end; a lossy or slow network (everything above is loopback); Windows (4d). Dev aids: `QCV_STREAM_SPIKE=<url | empty = the
+saved settings>` starts a session at launch, `QCV_STREAM_SPIKE_DELAY=<s>` starts it later, `QCV_STREAM_SPIKE_PASSPHRASE`.

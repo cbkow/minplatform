@@ -119,7 +119,7 @@ impl StreamSink {
     /// "auto" takes.
     pub fn start(cfg: StreamConfig, source_fps: (u32, u32)) -> Result<StreamSink, String> {
         if cfg.url.trim().is_empty() { return Err("enter the server URL first".into()) }
-        match mux::scheme(&cfg.url) { None => return Err(mux::scheme_error(&redact(&cfg.url))), Some(mux::Scheme::Rtmp) => return Err("rtmp:// arrives with step 4c".into()), Some(mux::Scheme::Srt) => {} }
+        if mux::scheme(&cfg.url).is_none() { return Err(mux::scheme_error(&redact(&cfg.url))) }
         if !available() { return Err("no hardware encoder on this platform yet".into()) }
         let pool = Arc::new(SurfacePool::new(cfg.width, cfg.height)?);
         let aac = if cfg.audio_kbps > 0 { Some(Aac::open(cfg.audio_kbps)?) } else { None };
@@ -247,6 +247,13 @@ fn audio_thread(sh: Arc<Shared>, mut aac: Aac) {
             let frames = a.len() / 2;
             if frames >= Aac::FRAME {
                 if frames > 8 * Aac::FRAME { let cut = (frames - 7 * Aac::FRAME) * 2; a.drain(..cut); }   // the tap runs ahead of the clock: stay near it
+                // A sample tapped NOW must be stamped now: what went out plus what waits may not run ahead of the clock by
+                // more than two frames. It does after silence was filled in and the tap's audio then arrived late, in a burst
+                // (playback and the stream starting together): the oldest of it goes, so the rest lands on time. Measured
+                // without this: audio 67 ms late for the whole session (QCView has the same start).
+                let frames = a.len() / 2;
+                let ahead = emitted + frames as i64 - (t0.elapsed().as_secs_f64() * 48000.0) as i64;
+                if ahead > 2 * Aac::FRAME as i64 { let cut = ((ahead as usize - Aac::FRAME).min(frames - Aac::FRAME)) * 2; a.drain(..cut); }
                 for i in 0..Aac::FRAME { l[i] = a.pop_front().unwrap_or(0.0); r[i] = a.pop_front().unwrap_or(0.0); }
                 true
             } else { false }

@@ -1,5 +1,7 @@
 //! The muxer and the wire (QCView `src/output/stream_muxer.cpp`): libavformat — MPEG-TS over `srt://` (caller mode; the key
-//! as the stream id; latency in ms) today, FLV over `rtmp(s)://` with step 4c. One video stream (H.264 Annex-B, 1 / 90000,
+//! as the stream id; latency in ms) or FLV over `rtmp(s)://` (the key as the stream name, in the URL). FLV wants the
+//! parameter sets in its header: known ones (a reconnect) go in at open; otherwise the header waits for the first keyframe
+//! and is written from the SPS / PPS inside it — libavformat turns the Annex-B units into length-prefixed ones itself. One video stream (H.264 Annex-B, 1 / 90000,
 //! BT.709 limited tags), optionally one audio stream (AAC, 1 / 48000). Every blocking call ends when the session's `stop`
 //! flag is set — the flag is the session's and is never reset here (QCView reset its own at each open, so a Stop racing a
 //! reconnect could wait out the 5 s connect timeout).
@@ -36,17 +38,19 @@ fn averr(code: i32) -> String {
 extern "C" fn interrupted(opaque: *mut c_void) -> i32 { unsafe { (*(opaque as *const AtomicBool)).load(Ordering::Acquire) as i32 } }
 fn set(d: &mut *mut ff::AVDictionary, k: &str, v: &str) { let (k, v) = (CString::new(k).unwrap(), CString::new(v).unwrap()); unsafe { ff::av_dict_set(d, k.as_ptr(), v.as_ptr(), 0); } }
 
-pub struct Muxer { ctx: *mut ff::AVFormatContext, pkt: *mut ff::AVPacket, stop: Arc<AtomicBool>, header: bool, video: *mut ff::AVStream, audio: *mut ff::AVStream, /// the elementary streams' payload written (the kbps shown)
+pub struct Muxer { ctx: *mut ff::AVFormatContext, pkt: *mut ff::AVPacket, stop: Arc<AtomicBool>, connected: bool, header: bool, flv: bool, /// the last keyframe's SPS + PPS (Annex-B)
+    params: Vec<u8>, video: *mut ff::AVStream, audio: *mut ff::AVStream, /// the elementary streams' payload written (the kbps shown)
     pub bytes: u64 }
 unsafe impl Send for Muxer {}
 
 impl Muxer {
-    pub fn new(stop: Arc<AtomicBool>) -> Muxer { Muxer { ctx: std::ptr::null_mut(), pkt: unsafe { ff::av_packet_alloc() }, stop, header: false, video: std::ptr::null_mut(), audio: std::ptr::null_mut(), bytes: 0 } }
-    pub fn is_open(&self) -> bool { !self.ctx.is_null() && self.header }
+    pub fn new(stop: Arc<AtomicBool>) -> Muxer { Muxer { ctx: std::ptr::null_mut(), pkt: unsafe { ff::av_packet_alloc() }, stop, connected: false, header: false, flv: false, params: vec![], video: std::ptr::null_mut(), audio: std::ptr::null_mut(), bytes: 0 } }
+    pub fn is_open(&self) -> bool { !self.ctx.is_null() && self.connected }
     /// Connect and write the header. The error strings are QCView's.
     pub fn open(&mut self, cfg: &MuxConfig) -> Result<(), String> {
         self.close();
-        let name = match scheme(&cfg.url) { Some(Scheme::Srt) => "mpegts", Some(Scheme::Rtmp) => return Err("rtmp:// arrives with step 4c".into()), None => return Err(scheme_error(&cfg.url)) };
+        let (name, flv) = match scheme(&cfg.url) { Some(Scheme::Srt) => ("mpegts", false), Some(Scheme::Rtmp) => ("flv", true), None => return Err(scheme_error(&cfg.url)) };
+        self.flv = flv;
         unsafe {
             let cname = CString::new(name).unwrap();
             let r = ff::avformat_alloc_output_context2(&mut self.ctx, std::ptr::null(), cname.as_ptr(), std::ptr::null());
@@ -60,6 +64,7 @@ impl Muxer {
             (*p).color_primaries = ff::AVColorPrimaries::AVCOL_PRI_BT709; (*p).color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
             (*p).color_space = ff::AVColorSpace::AVCOL_SPC_BT709; (*p).color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
             self.video = v;
+            if flv && !self.params.is_empty() && !self.set_video_extradata() { self.close(); return Err("could not allocate the video extradata".into()) }
             if cfg.audio_kbps > 0 {
                 let a = ff::avformat_new_stream(self.ctx, std::ptr::null());
                 if a.is_null() { self.close(); return Err("could not add the audio stream".into()) }
@@ -76,19 +81,42 @@ impl Muxer {
                 }
                 self.audio = a;
             }
-            // the protocol's options (QCView mux:157-171): a caller, the receive window in µs, live transport
+            // the protocol's options (QCView mux:157-171). SRT: a caller, the receive window in µs, live transport. RTMP: a live
+            // publish; the socket's timeout matches SRT's connect timeout (QCView set none: a silent host held "connecting" for
+            // the OS's own minute-plus)
             let mut popts: *mut ff::AVDictionary = std::ptr::null_mut();
-            set(&mut popts, "mode", "caller"); set(&mut popts, "latency", &(cfg.srt_latency_ms as u64 * 1000).to_string());
-            set(&mut popts, "connect_timeout", &CONNECT_TIMEOUT_MS.to_string()); set(&mut popts, "pkt_size", "1316"); set(&mut popts, "transtype", "live");
-            if !cfg.stream_id.is_empty() { set(&mut popts, "streamid", &cfg.stream_id); }
-            if !cfg.passphrase.is_empty() { set(&mut popts, "passphrase", &cfg.passphrase); set(&mut popts, "pbkeylen", "16"); }
+            if flv { set(&mut popts, "rtmp_live", "live"); set(&mut popts, "rw_timeout", &(CONNECT_TIMEOUT_MS as u64 * 1000).to_string()); }   // `rw_timeout`, the generic one: RTMP's own `timeout` means LISTEN
+            else {
+                set(&mut popts, "mode", "caller"); set(&mut popts, "latency", &(cfg.srt_latency_ms as u64 * 1000).to_string());
+                set(&mut popts, "connect_timeout", &CONNECT_TIMEOUT_MS.to_string()); set(&mut popts, "pkt_size", "1316"); set(&mut popts, "transtype", "live");
+                if !cfg.stream_id.is_empty() { set(&mut popts, "streamid", &cfg.stream_id); }
+                if !cfg.passphrase.is_empty() { set(&mut popts, "passphrase", &cfg.passphrase); set(&mut popts, "pbkeylen", "16"); }
+            }
             (*self.ctx).interrupt_callback = ff::AVIOInterruptCB { callback: Some(interrupted), opaque: Arc::as_ptr(&self.stop) as *mut c_void };
             let url = CString::new(cfg.url.as_str()).map_err(|_| scheme_error(&cfg.url))?;
             let r = ff::avio_open2(&mut (*self.ctx).pb, url.as_ptr(), ff::AVIO_FLAG_WRITE, &(*self.ctx).interrupt_callback, &mut popts);
             ff::av_dict_free(&mut popts);
             if r < 0 { self.close(); return Err(format!("connect: {}", averr(r))) }
+        }
+        self.connected = true;
+        // FLV with no parameter sets yet: the header waits for the first keyframe
+        if flv && self.params.is_empty() { return Ok(()) }
+        self.write_header()
+    }
+    fn set_video_extradata(&mut self) -> bool {
+        unsafe {
+            let p = (*self.video).codecpar; let n = self.params.len();
+            ff::av_freep(&mut (*p).extradata as *mut *mut u8 as *mut c_void); (*p).extradata_size = 0;
+            let e = ff::av_mallocz(n + ff::AV_INPUT_BUFFER_PADDING_SIZE as usize) as *mut u8;
+            if e.is_null() { return false }
+            std::ptr::copy_nonoverlapping(self.params.as_ptr(), e, n); (*p).extradata = e; (*p).extradata_size = n as i32;
+        }
+        true
+    }
+    fn write_header(&mut self) -> Result<(), String> {
+        unsafe {
             let mut mopts: *mut ff::AVDictionary = std::ptr::null_mut();
-            set(&mut mopts, "mpegts_flags", "+resend_headers+initial_discontinuity");
+            if self.flv { set(&mut mopts, "flvflags", "no_duration_filesize"); } else { set(&mut mopts, "mpegts_flags", "+resend_headers+initial_discontinuity"); }
             let r = ff::avformat_write_header(self.ctx, &mut mopts);
             ff::av_dict_free(&mut mopts);
             if r < 0 { self.close(); return Err(format!("write_header: {}", averr(r))) }
@@ -99,6 +127,14 @@ impl Muxer {
     /// One unit to the wire (interleaved). An error means the connection is gone: the session reconnects.
     pub fn write(&mut self, u: &EncodedUnit) -> Result<(), String> {
         if !self.is_open() { return Err("write: not connected".into()) }
+        if !u.audio && u.keyframe { let p = parameter_sets(&u.data); if !p.is_empty() { self.params = p; } }
+        if !self.header {
+            // FLV before its header: nothing goes out until a keyframe brings the parameter sets
+            if u.audio || !u.keyframe { return Ok(()) }
+            if self.params.is_empty() { return Err("the keyframe carries no SPS/PPS for the FLV header".into()) }
+            if !self.set_video_extradata() { return Err("could not allocate the video extradata".into()) }
+            self.write_header()?;
+        }
         let (st, tb) = if u.audio { (self.audio, ff::AVRational { num: 1, den: 48000 }) } else { (self.video, ff::AVRational { num: 1, den: 90000 }) };
         if st.is_null() { return Ok(()) }
         unsafe {
@@ -121,9 +157,22 @@ impl Muxer {
             if !(*self.ctx).pb.is_null() { ff::avio_closep(&mut (*self.ctx).pb); }
             ff::avformat_free_context(self.ctx);
         }
-        self.ctx = std::ptr::null_mut(); self.video = std::ptr::null_mut(); self.audio = std::ptr::null_mut(); self.header = false;
+        self.ctx = std::ptr::null_mut(); self.video = std::ptr::null_mut(); self.audio = std::ptr::null_mut(); self.header = false; self.connected = false;
     }
 }
+/// The SPS (7) and PPS (8) units of an Annex-B access unit, start codes kept.
+pub fn parameter_sets(annexb: &[u8]) -> Vec<u8> {
+    let mut starts = vec![]; let mut i = 0;
+    while i + 3 <= annexb.len() { if annexb[i] == 0 && annexb[i + 1] == 0 && annexb[i + 2] == 1 { starts.push(i + 3); i += 3; } else { i += 1; } }
+    let mut out = vec![];
+    for (n, &s) in starts.iter().enumerate() {
+        let mut e = starts.get(n + 1).map_or(annexb.len(), |x| x - 3);
+        while e > s && annexb[e - 1] == 0 { e -= 1; }   // the next start code's leading zero
+        if s < e && matches!(annexb[s] & 0x1f, 7 | 8) { out.extend_from_slice(&[0, 0, 0, 1]); out.extend_from_slice(&annexb[s..e]); }
+    }
+    out
+}
+
 impl Drop for Muxer { fn drop(&mut self) { self.close(); unsafe { ff::av_packet_free(&mut self.pkt); } } }
 
 #[cfg(test)]
@@ -134,5 +183,11 @@ mod tests {
         assert_eq!(scheme("srt://host:9000"), Some(Scheme::Srt)); assert_eq!(scheme("rtmp://host/app"), Some(Scheme::Rtmp)); assert_eq!(scheme("rtmps://host/app"), Some(Scheme::Rtmp));
         assert_eq!(scheme("SRT://host:9000"), None, "case-sensitive, as QCView"); assert_eq!(scheme("http://host"), None);
         assert_eq!(scheme_error("http://x"), "the URL must start with srt://, rtmp:// or rtmps://: http://x");
+    }
+    #[test]
+    fn the_parameter_sets_come_out_of_a_keyframe() {
+        let au = [0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 0, 1, 0x68, 9, 0, 0, 0, 1, 0x65, 7, 7, 7];
+        assert_eq!(parameter_sets(&au), vec![0, 0, 0, 1, 0x67, 1, 2, 3, 0, 0, 0, 1, 0x68, 9]);
+        assert!(parameter_sets(&[0, 0, 0, 1, 0x41, 5, 5]).is_empty(), "a P frame has none");
     }
 }
