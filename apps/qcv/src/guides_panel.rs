@@ -56,8 +56,10 @@ impl GuidesPanel {
         let mut cmds = vec![];
         let (toggled, mut dirty) = self.section.event(e, now); if toggled { dirty = true; }
         if !self.section.expanded { return (cmds, dirty) }
-        let (pick, d, _) = self.guide.event(e, now, fonts, bounds, scale); dirty |= d;
+        let (pick, d, consumed) = self.guide.event(e, now, fonts, bounds, scale); dirty |= d;
         if let Some(i) = pick { cmds.push(Cmd::Guide(if i == 0 { String::new() } else { self.guide.value().to_string() })); }
+        // the open menu lies over this section's own sliders and colour picker: what it consumes goes no further (the walk 2026-11-08)
+        if consumed { return (cmds, dirty) }
         let (v, d) = self.opacity.event(e, now, scale); dirty |= d; if let Some(v) = v { cmds.push(Cmd::Opacity((v * 100.0).round() / 100.0)); }
         let (v, d) = self.width.event(e, now, scale); dirty |= d; if let Some(v) = v { cmds.push(Cmd::Width((1.0 + v * 7.0).round())); }
         let (c, d) = self.color.event(e, fonts); dirty |= d; if let Some(c) = c { cmds.push(Cmd::Color(c)); }
