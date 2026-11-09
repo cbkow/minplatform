@@ -7,6 +7,7 @@
 //! (off by default). The encode + write runs on a worker (QCView's QtConcurrent route); the toast reports back.
 use crate::{annotate, color, guides, settings::k, trw};
 use qcv_color::ocio::view_is_sdr;
+use min_present::dual::CompareMode;
 use std::{path::PathBuf, sync::mpsc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,10 +105,18 @@ impl crate::App {
         }
     }
     /// The file's name stem: the shown media's (the user 2026-11-08: "media_name-datetime" instead of QCView's
-    /// `qcview-screenshot-`): the clip's file stem, else the playlist / item's name, made safe for a file name.
+    /// `qcview-screenshot-`): the clip's file stem, else the playlist / item's name (dual: the saved view's name, else
+    /// `<A>_vs_<B>`), made safe for a file name.
     fn capture_name(&self) -> String {
         let p = std::path::Path::new(&self.source_path);
-        let raw = if self.source_path.is_empty() { self.source_label.clone() } else { p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() };
+        let stem = |id: &str| self.project.item(id).map(|i| if i.path.is_empty() { i.name.clone() } else { std::path::Path::new(&i.path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| i.name.clone()) }).unwrap_or_default();
+        let raw = if self.dual.is_some() {
+            // dual: the saved Dual View's name, else "<A>_vs_<B>"
+            match self.project.item(&self.active_dual_view).map(|i| i.name.clone()).filter(|n| !n.is_empty()) {
+                Some(n) => n,
+                None => { let (a, b) = (stem(&self.slot_item(0)), stem(&self.slot_item(1))); if b.is_empty() { a } else { format!("{a}_vs_{b}") } }
+            }
+        } else if self.source_path.is_empty() { self.source_label.clone() } else { p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() };
         let safe: String = raw.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
         let safe = safe.trim().trim_matches('.').to_string();
         if safe.is_empty() { "qcview-screenshot".into() } else { safe }
@@ -123,18 +132,33 @@ impl crate::App {
     pub(crate) fn capture_picture(&mut self, overlay: bool) -> Option<(Vec<f32>, u32, u32)> {
         let dual = self.dual.is_some();
         let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1);
-        let restore = self.sdr_retarget(0);
-        let got = { let g = self.gpu.as_mut()?; color::slot_engine(g, 0, dual).map(|en| (en.bypass_hdr_peak(), en.picture_placement(), en.capture(true))) };
-        self.sdr_restore(0, restore);
-        let Some((peak, place, Ok((mut px, w, h)))) = got else {
+        use min_present::engine::CaptureRegion;
+        // single: the picture; dual: both sides at their source resolution (row 216), each side's chain re-targeted
+        let got: Option<(Vec<f32>, u32, u32, Vec<CaptureRegion>)> = if dual {
+            let (r0, r1) = (self.sdr_retarget(0), self.sdr_retarget(1));
+            let c = self.gpu.as_mut().map(|g| g.presenter.engine.capture_dual(true));
+            self.sdr_restore(1, r1); self.sdr_restore(0, r0);
+            c.and_then(|c| c.ok()).map(|c| (c.px, c.w, c.h, c.regions))
+        } else {
+            let restore = self.sdr_retarget(0);
+            let c = self.gpu.as_mut().and_then(|g| color::slot_engine(g, 0, false).map(|en| (en.bypass_hdr_peak(), en.picture_placement(), en.capture(true))));
+            self.sdr_restore(0, restore);
+            match c { Some((peak, place, Ok((px, w, h)))) => { let (src, quarters) = place.map(|p| (p.1, p.2)).unwrap_or(((w as f64, h as f64), 0)); Some((px, w, h, vec![CaptureRegion { rect: [0, 0, w, h], peak, src, quarters }])) } _ => None }
+        };
+        let Some((mut px, w, h, regions)) = got else {
             log::warn!("screenshot capture returned empty"); if overlay { self.toast(trw("Nothing to capture — load media first"), min_ui::ToastKind::Notice); } return None
         };
-        min_present::capture::to_sdr(&mut px, peak);
+        // an HDR side in bypass: BT.2390 over its own region
+        for r in &regions { if r.peak.is_some() { for y in r.rect[1]..r.rect[1] + r.rect[3] { let o = ((y * w + r.rect[0]) * 3) as usize; min_present::capture::to_sdr(&mut px[o..o + (r.rect[2] * 3) as usize], r.peak); } } }
         for v in px.iter_mut() { *v = v.clamp(0.0, 1.0); }
-        // the overlay: the note's strokes at this frame (single view, QCView), the guide when the setting asks
+        // the overlay: the note's strokes at this frame (single view, QCView), the guide when the setting asks — over each side
+        // side by side, over the whole picture (A's geometry) for a wipe / difference
         let strokes = if dual { vec![] } else { self.annot.strokes_at(frame) };
         let guide = self.settings.bool(k::SCREENSHOT_GUIDES).then(|| self.gpu.as_ref().and_then(|g| g.guide.as_ref().map(|(_, gd)| gd.clone()))).flatten();
         if !overlay || (strokes.is_empty() && guide.is_none()) { return Some((px, w, h)) }
+        let side_by_side = self.gpu.as_ref().and_then(|g| g.presenter.engine.dual().map(|d| d.mode == CompareMode::SideBySide)).unwrap_or(false);
+        let places: Vec<([f64; 4], (f64, f64), u8)> = if side_by_side || !dual { regions.iter().map(|r| ([r.rect[0] as f64, r.rect[1] as f64, r.rect[2] as f64, r.rect[3] as f64], r.src, r.quarters)).collect() }
+            else { regions.first().map(|r| ([0.0, 0.0, w as f64, h as f64], r.src, r.quarters)).into_iter().collect() };
         let (gw, gop, gcol) = { let st = &self.settings; (st.float(k::SAFETY_WIDTH), st.float(k::SAFETY_OPACITY) as f32, min_ui::color_picker::parse_hex(&st.string(k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0])) };
         let g = self.gpu.as_mut()?;
         let (dev, q) = (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone());
@@ -145,10 +169,11 @@ impl crate::App {
         let geo = annotate::Geo { rect: [0.0, 0.0, w as f64, h as f64], px_per_src: 1.0 };
         for s in &strokes { annotate::draw(scene, s, &geo); }
         if let Some(gd) = &guide {
-            // the screen's line width at a 1080-line picture, scaled with the capture
-            let k_ = (h as f64 / 1080.0).max(1.0);
-            let (src, quarters) = place.map(|p| (p.1, p.2)).unwrap_or(((w as f64, h as f64), 0));
-            guides::paint(scene, gd, guides::transform(gd.view, src, [0.0, 0.0, w as f64, h as f64], quarters), gw * k_, peniko::Color::new([gcol[0], gcol[1], gcol[2], gop.clamp(0.0, 1.0)]));
+            for (rect, src, quarters) in &places {
+                // the screen's line width at a 1080-line picture, scaled with the picture
+                let k_ = (rect[3] / 1080.0).max(1.0);
+                guides::paint(scene, gd, guides::transform(gd.view, *src, *rect, *quarters), gw * k_, peniko::Color::new([gcol[0], gcol[1], gcol[2], gop.clamp(0.0, 1.0)]));
+            }
         }
         layer.render(&dev, &q);
         let ov = min_present::readback::read_rgba8(&dev, &q, layer.texture(), w, h);

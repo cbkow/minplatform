@@ -142,6 +142,12 @@ impl Uploader {
     }
 }
 
+/// One picture's part of a dual capture: where it sits (x, y, w, h in capture px), its HDR peak when shown in bypass (the
+/// caller's BT.2390), its source size + rotation (a guide's placement).
+#[derive(Clone, Copy, Debug)]
+pub struct CaptureRegion { pub rect: [u32; 4], pub peak: Option<f32>, pub src: (f64, f64), pub quarters: u8 }
+pub struct DualCapture { pub px: Vec<f32>, pub w: u32, pub h: u32, pub regions: Vec<CaptureRegion> }
+
 /// QCView's viewer aids (linear_stage.h `ViewerAids` + the stage's gain): inspection only — on the screen pass alone, never in
 /// the chain-in, the snapshots or the scopes. Exposure in stops (a gain on the linear output), gamma (> 1 lifts: c^(1/γ)),
 /// the channel view (0 RGB · 1 R · 2 G · 3 B · 4 Alpha · 5 Luma).
@@ -719,6 +725,57 @@ impl Engine {
         // over black (premultiplied output): drop alpha
         Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), w, h))
     }
+    /// A DUAL capture (canon row 216: "dual captures at source resolution"): Single = A's capture; side by side = both native
+    /// pictures next to each other (each centred vertically on black); split wipe / difference = ONE picture at A's display
+    /// size through the screen's own compositor (B fitted, the same seam / gain). Each region says whose picture it is (its
+    /// HDR peak in bypass, its geometry for a guide).
+    pub fn capture_dual(&mut self, aids: bool) -> Result<DualCapture, Error> {
+        let Some(mut d) = self.dual.take() else { return Err(Error::NoFrame) };
+        let r = (|| {
+            if !d.a.has_frame() && !d.b.has_frame() { return Err(Error::NoFrame) }
+            let region = |e: &Engine, rect: [u32; 4]| CaptureRegion { rect, peak: e.bypass_hdr_peak(), src: (e.video.0 as f64, e.video.1 as f64), quarters: e.rotation_quarters() };
+            use crate::dual::CompareMode;
+            match d.mode {
+                CompareMode::Single => { let (px, w, h) = d.a.capture(aids)?; Ok(DualCapture { regions: vec![region(&d.a, [0, 0, w, h])], px, w, h }) }
+                CompareMode::SideBySide => {
+                    let ca = if d.a.has_frame() { Some(d.a.capture(aids)?) } else { None };
+                    let cb = if d.b.has_frame() { Some(d.b.capture(aids)?) } else { None };
+                    let (wa, ha) = ca.as_ref().map(|c| (c.1, c.2)).unwrap_or((0, 0)); let (wb, hb) = cb.as_ref().map(|c| (c.1, c.2)).unwrap_or((0, 0));
+                    let (w, h) = ((wa + wb).max(1), ha.max(hb).max(1));
+                    let mut px = vec![0f32; (w * h * 3) as usize]; let mut regions = vec![];
+                    for (c, x0, e) in [(ca, 0u32, &d.a), (cb, wa, &d.b)] {
+                        let Some((src, cw, ch)) = c else { continue };
+                        let y0 = (h - ch) / 2;
+                        for y in 0..ch { let o = (((y0 + y) * w + x0) * 3) as usize; let i = (y * cw * 3) as usize; px[o..o + (cw * 3) as usize].copy_from_slice(&src[i..i + (cw * 3) as usize]); }
+                        regions.push(region(e, [x0, y0, cw, ch]));
+                    }
+                    Ok(DualCapture { px, w, h, regions })
+                }
+                CompareMode::Split | CompareMode::Difference => {
+                    if self.target_format != wgpu::TextureFormat::Rgba16Float { return Err(Error::NoFormat) }
+                    let lead = if d.a.has_frame() { &d.a } else { &d.b };
+                    let lead_region = region(lead, [0, 0, 0, 0]);
+                    let (w, h) = lead.display_dims(); let (w, h) = (w.max(1), h.max(1));
+                    d.layout((w, h), None, self.display, if aids { self.aids } else { ViewerAids::default() }, 1.0, None);
+                    let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("dual capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+                    let view = tex.create_view(&Default::default());
+                    let mut enc = self.device.create_command_encoder(&Default::default());
+                    { let _ = pass(&mut enc, "dual capture clear", &view); }
+                    d.encode(&mut enc, &view);
+                    self.queue.submit([enc.finish()]);
+                    let px: Vec<f32> = readback::read_rgba16f(&self.device, &self.queue, &tex, w, h).chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
+                    let regions = if d.mode == CompareMode::Split {
+                        let sx = ((d.seam.clamp(0.0, 1.0) * w as f32).round() as u32).min(w);
+                        vec![region(&d.a, [0, 0, sx, h]), region(&d.b, [sx, 0, w - sx, h])]
+                    } else { vec![CaptureRegion { rect: [0, 0, w, h], peak: None, ..lead_region }] };
+                    Ok(DualCapture { px, w, h, regions })
+                }
+            }
+        })();
+        self.dual = Some(d);
+        self.relayout_dual();   // the screen's layout back
+        r
+    }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32
     /// (`Rgba16Float` targets) — the headless route for tests.
     pub fn render_offscreen(&mut self, w: u32, h: u32) -> Result<Vec<f32>, Error> {
@@ -1007,6 +1064,28 @@ mod tests {
         assert!(px[(8 * 128 + 4) * 3] < px[(8 * 128 + 120) * 3], "the ramp runs left → right");
         e.set_geometry(Geometry { par: Par::Square, rotation: Some(90) });
         let (_, w, h) = e.capture(false).unwrap(); assert_eq!((w, h), (16, 64), "rotated 90°: swapped");
+    }
+    #[test]
+    fn dual_captures_are_at_source_resolution() {
+        use crate::dual::CompareMode;
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        e.set_viewport(300, 100);
+        e.set_dual(true);
+        { let d = e.dual_mut().unwrap(); d.a.show(&flat_frame(64, 32, 60)).unwrap(); d.b.show(&flat_frame(32, 48, 200)).unwrap(); d.mode = CompareMode::SideBySide; }
+        e.relayout_dual();
+        // side by side: both native pictures, B (taller) sets the height, A centred
+        let c = e.capture_dual(false).unwrap();
+        assert_eq!((c.w, c.h), (96, 48)); assert_eq!(c.regions.len(), 2);
+        assert_eq!(c.regions[0].rect, [0, 8, 64, 32]); assert_eq!(c.regions[1].rect, [64, 0, 32, 48]);
+        let px = |x: u32, y: u32| c.px[((y * c.w + x) * 3) as usize];
+        assert!(px(32, 24) > 0.0 && px(80, 24) > px(32, 24) && px(32, 2) == 0.0, "A dark, B bright, black above A");
+        // split wipe: one picture at A's size, the seam's two regions
+        { let d = e.dual_mut().unwrap(); d.mode = CompareMode::Split; d.seam = 0.25; } e.relayout_dual();
+        let c = e.capture_dual(false).unwrap();
+        assert_eq!((c.w, c.h), (64, 32)); assert_eq!(c.regions[0].rect, [0, 0, 16, 32]); assert_eq!(c.regions[1].rect, [16, 0, 48, 32]);
+        // the screen's layout is back afterwards
+        assert_eq!(e.dual().unwrap().a.viewport, (300, 100));
     }
     #[test]
     fn dual_view_composes_the_four_modes() {
