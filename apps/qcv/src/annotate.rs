@@ -20,7 +20,8 @@ impl Tool { fn shape(self) -> Option<STool> { Some(match self { Tool::Freehand =
 struct Step { key: String, before: Option<Note>, after: Option<Note> }
 
 enum Live { Ink(ink::Smoother, bool), Shape { tool: STool, a: [f64; 2], b: [f64; 2] } }
-struct Drag { id: String, last: [f64; 2], moved: bool, before: Note }
+struct Drag { id: String, last: [f64; 2], moved: bool, before: Note, /// a corner handle's scale: (corner 0 tl · 1 tr · 2 bl · 3 br, the points' bounds and the points at the press)
+    scale: Option<(usize, [f64; 4], Vec<[f64; 2]>)> }
 
 /// A committed edit the app follows up: the note's key, and whether its clean thumbnail must be captured (a new note).
 pub struct Committed { pub key: String, pub new_note: bool }
@@ -50,8 +51,15 @@ impl Annotations {
             Tool::Freehand => self.live = Some(Live::Ink(ink::Smoother::begin(p, self.t()), inside(p))),
             Tool::Eraser => {}
             Tool::Select => {
+                // QCView `onSelectPointer`: a corner handle of the selection wins over re-hit-testing (a neighbour can't steal the grab)
+                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) && let Some(s) = strokes::parse(n.annotation.as_ref()).into_iter().find(|s| s.id == id) {
+                    if let Some(c) = self.sel_box(&s, geo).and_then(|bb| corner_at(bb, geo.to_px(p))) {
+                        self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: Some((c, point_bounds(&s), s.points.clone())) });
+                        return
+                    }
+                }
                 self.selected = self.hit(p, frame, geo);
-                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) { self.drag = Some(Drag { id, last: p, moved: false, before: n }); }
+                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) { self.drag = Some(Drag { id, last: p, moved: false, before: n, scale: None }); }
             }
             t => if let Some(tool) = t.shape() { self.live = Some(Live::Shape { tool, a: p, b: p }); },
         }
@@ -67,6 +75,14 @@ impl Annotations {
         if let Some(d) = &mut self.drag {
             let delta = [p[0] - d.last[0], p[1] - d.last[1]]; d.last = p; d.moved = true;
             let id = d.id.clone();
+            if let Some((corner, b, orig)) = d.scale.clone() {
+                if let Some(n) = self.notes.iter_mut().find(|n| n.frame == frame as i64) {
+                    let mut ss = strokes::parse(n.annotation.as_ref());
+                    if let Some(s) = ss.iter_mut().find(|s| s.id == id) && let Some(pts) = scale_points(s.tool, &orig, b, corner, p) { s.points = pts; }
+                    n.annotation = Some(strokes::to_data(&ss));
+                }
+                return None
+            }
             if let Some(n) = self.notes.iter_mut().find(|n| n.frame == frame as i64) {
                 let mut ss = strokes::parse(n.annotation.as_ref());
                 if let Some(s) = ss.iter_mut().find(|s| s.id == id) {
@@ -167,6 +183,12 @@ impl Annotations {
     pub fn undo(&mut self) -> Option<Committed> { let s = self.undo.pop()?; let key = s.key.clone(); match &s.before { Some(n) => self.put(n.clone()), None => self.remove_note(&key) } self.redo.push(s); self.save(); self.selected = None; Some(Committed { key, new_note: false }) }
     pub fn redo(&mut self) -> Option<Committed> { let s = self.redo.pop()?; let key = s.key.clone(); match &s.after { Some(n) => self.put(n.clone()), None => self.remove_note(&key) } self.undo.push(s); self.save(); self.selected = None; Some(Committed { key, new_note: false }) }
 
+    /// The selection's outline on screen: the drawn stroke's bounds + its half-width + 3 px (the handles sit on its corners).
+    fn sel_box(&self, s: &Stroke, geo: &Geo) -> Option<kurbo::Rect> {
+        let g = ink::geometry(s, geo.rect, geo.px_per_src);
+        let bb = g.paths.iter().chain(g.head.iter()).map(|p| p.bounding_box()).reduce(|a, b| a.union(b))?;
+        Some(bb.inflate(g.width / 2.0 + 3.0, g.width / 2.0 + 3.0))
+    }
     /// The stroke under `p` — the drawn line within its half-width + 4 px, topmost first.
     fn hit(&self, p: [f64; 2], frame: i32, geo: &Geo) -> Option<String> {
         let pt = geo.to_px(p);
@@ -193,9 +215,7 @@ impl Annotations {
         }
         // the selection: QCView's #0189f1 outline + corner handles, here on screen only
         if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(frame).into_iter().find(|s| &s.id == id) {
-            let g = ink::geometry(&s, geo.rect, geo.px_per_src);
-            let mut bb = g.paths.iter().chain(g.head.iter()).map(|p| p.bounding_box()).reduce(|a, b| a.union(b)).unwrap_or_default();
-            bb = bb.inflate(g.width / 2.0 + 3.0, g.width / 2.0 + 3.0);
+            let Some(bb) = self.sel_box(&s, geo) else { return };
             let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
             scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);
             for c in [bb.origin(), Point::new(bb.x1, bb.y0), Point::new(bb.x1, bb.y1), Point::new(bb.x0, bb.y1)] { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, blue, None, &kurbo::Rect::from_center_size(c, (8.0, 8.0))); }
@@ -209,6 +229,52 @@ impl Geo {
     pub fn to_norm(&self, x: f64, y: f64) -> [f64; 2] { [(x - self.rect[0]) / self.rect[2].max(1.0), (y - self.rect[1]) / self.rect[3].max(1.0)] }
     fn to_px(&self, p: [f64; 2]) -> Point { Point::new(self.rect[0] + p[0] * self.rect[2], self.rect[1] + p[1] * self.rect[3]) }
 }
+/// QCView `annotationHandleAt`: the corner within 9 px of the pointer (0 tl · 1 tr · 2 bl · 3 br), screen space.
+fn corner_at(bb: kurbo::Rect, pt: Point) -> Option<usize> {
+    [Point::new(bb.x0, bb.y0), Point::new(bb.x1, bb.y0), Point::new(bb.x0, bb.y1), Point::new(bb.x1, bb.y1)].iter().position(|c| c.distance(pt) <= 9.0)
+}
+/// A stroke's point bounds in picture coordinates (an oval = centre ± radii), clipped to the picture (QCView's visible bounds).
+fn point_bounds(s: &Stroke) -> [f64; 4] {
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    if s.tool == STool::Oval && !s.points.is_empty() { let c = s.points[0]; let r = s.points.get(1).copied().unwrap_or([0.0, 0.0]); (x0, y0, x1, y1) = (c[0] - r[0], c[1] - r[1], c[0] + r[0], c[1] + r[1]); }
+    else { for q in &s.points { x0 = x0.min(q[0]); y0 = y0.min(q[1]); x1 = x1.max(q[0]); y1 = y1.max(q[1]); } }
+    [x0.clamp(0.0, 1.0), y0.clamp(0.0, 1.0), x1.clamp(0.0, 1.0), y1.clamp(0.0, 1.0)]
+}
+/// QCView `annotationResizeTo`: uniform, aspect-locked scale about the opposite corner, by the drag's dominant axis; at
+/// least 0.03 of the picture; clamped so the scaled bounds stay inside it. None = nothing to scale (a flat bounds).
+fn scale_points(tool: STool, orig: &[[f64; 2]], b: [f64; 4], corner: usize, p: [f64; 2]) -> Option<Vec<[f64; 2]>> {
+    let [l, t, r, bt] = b;
+    let (grab, pivot) = match corner { 0 => ([l, t], [r, bt]), 1 => ([r, t], [l, bt]), 2 => ([l, bt], [r, t]), _ => ([r, bt], [l, t]) };
+    let (dxs, dys) = (grab[0] - pivot[0], grab[1] - pivot[1]);
+    let (ow, oh) = (dxs.abs(), dys.abs());
+    if ow <= 0.0 || oh <= 0.0 { return None }
+    let mut k = ((p[0] - pivot[0]).abs() / ow).max((p[1] - pivot[1]).abs() / oh);
+    k = k.max((0.03 / ow).max(0.03 / oh));
+    let kx = if dxs > 0.0 { (1.0 - pivot[0]) / dxs } else if dxs < 0.0 { -pivot[0] / dxs } else { 1e9 };
+    let ky = if dys > 0.0 { (1.0 - pivot[1]) / dys } else if dys < 0.0 { -pivot[1] / dys } else { 1e9 };
+    k = k.min(kx.min(ky));
+    if k <= 0.0 { return None }
+    let at = |q: [f64; 2]| [pivot[0] + (q[0] - pivot[0]) * k, pivot[1] + (q[1] - pivot[1]) * k];
+    Some(if tool == STool::Oval && orig.len() >= 2 { let mut v = orig.to_vec(); v[0] = at(orig[0]); v[1] = [orig[1][0] * k, orig[1][1] * k]; v } else { orig.iter().map(|q| at(*q)).collect() })
+}
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+    #[test] fn corner_scale_is_qcviews() {
+        let sq = vec![[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]; let b = [0.4, 0.4, 0.6, 0.6];
+        // the bottom-right handle dragged to (0.8, 0.7): the dominant axis wins (×2), the top-left corner stays put
+        let out = scale_points(STool::Rectangle, &sq, b, 3, [0.8, 0.7]).unwrap();
+        assert!((out[0][0] - 0.4).abs() < 1e-9 && (out[2][0] - 0.8).abs() < 1e-9 && (out[2][1] - 0.8).abs() < 1e-9, "{out:?}");
+        // dragged past the picture: clamped so the bounds stay inside
+        let out = scale_points(STool::Rectangle, &sq, b, 3, [2.0, 2.0]).unwrap(); assert!((out[2][0] - 1.0).abs() < 1e-9 && out[2][1] <= 1.0 + 1e-9);
+        // collapsed onto the pivot: the 0.03 floor
+        let out = scale_points(STool::Rectangle, &sq, b, 3, [0.4, 0.4]).unwrap(); assert!((out[2][0] - 0.43).abs() < 1e-9, "{out:?}");
+        // an oval: the centre moves about the pivot, the radii scale
+        let ov = vec![[0.5, 0.5], [0.1, 0.1]]; let out = scale_points(STool::Oval, &ov, [0.4, 0.4, 0.6, 0.6], 0, [0.2, 0.2]).unwrap();
+        assert!((out[1][0] - 0.2).abs() < 1e-9 && (out[0][0] - 0.4).abs() < 1e-9, "{out:?}");
+    }
+}
+
 fn inside(p: [f64; 2]) -> bool { (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]) }
 
 /// One stroke into `scene`, clipped to the picture (QCView scissors to the image rect): round caps and joins, its sRGB colour.
