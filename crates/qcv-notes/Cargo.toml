@@ -1,0 +1,15 @@
+[package]
+name = "qcv-notes"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "QCView's annotation notes as a FROZEN contract (canon row 215): the `.qcview/<media>/notes.json` sidecar + `images/` read and written byte-for-byte (minNotes reads the same files — 1:1 forever), annotation_data v2.0 strokes, the timecode key"
+
+[dependencies]
+serde_json = { workspace = true, features = ["float_roundtrip"] }   # exact parsing: the sidecar round-trips byte for byte
+log = { workspace = true }
+qcv-meta = { path = "../qcv-meta" }

@@ -3025,6 +3025,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcv-notes"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "qcv-meta",
+ "serde_json",
+]
+
+[[package]]
 name = "qcv-player"
 version = "0.1.0"
 dependencies = [
