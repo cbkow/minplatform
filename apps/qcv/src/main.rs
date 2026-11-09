@@ -928,7 +928,7 @@ impl App {
                 let hv = g.scrubber.hover_frame.filter(|_| !d.is_playing() && !d.is_scrubbing());
                 for (side, th, tc, look_gen) in [(qcv_player::Side::A, &mut g.thumbs, &mut *tc0, thumb_gen[0]), (qcv_player::Side::B, &mut g.thumbs_b, &mut *tc1, thumb_gen[1])] {
                     let f = hv.and_then(|m| d.side_frame_of(side, m)).map(|x| x as i32);
-                    if let Some(t) = d.side(side) { th.follow(t.path()); }
+                    if let Some(t) = d.side(side) { th.follow(&t.thumb_key()); }
                     if th.tick(d.side_mut(side), f, now, (look_gen, &mut |px| tc.convert(px))) { g.ui_dirty = true; }
                 }
             } else {

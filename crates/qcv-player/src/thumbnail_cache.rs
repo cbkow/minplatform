@@ -245,26 +245,38 @@ fn worker(sh: Arc<Shared>, id: usize) {
 
 /// QCView's `VideoImageLoader`: an own software session (one thread, `FLAG2_FAST`), seek-exact to the frame nearest
 /// (frame + 0.5) / fps (+ the stream's start), nearest-neighbour scale to RGBA8 fitting `max_size`.
-pub struct VideoThumbLoader { session: Session, fps: f64, frames: i32, sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32) }
+pub struct VideoThumbLoader { session: Session, fps: f64, frames: i32, sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32), range: crate::rgb_range::RangeOverride }
 unsafe impl Send for VideoThumbLoader {}
 impl VideoThumbLoader {
-    pub fn open(path: &str) -> Option<VideoThumbLoader> {
+    pub fn open(path: &str) -> Option<VideoThumbLoader> { Self::open_with(path, crate::rgb_range::RangeOverride::Auto) }
+    /// The clip's Range override applies to its thumbnails as to its picture (the 2026-11-09 owed item).
+    pub fn open_with(path: &str, range: crate::rgb_range::RangeOverride) -> Option<VideoThumbLoader> {
         // slice threads for intra codecs, frame threads at half the cores for inter ones (QCView: one thread; see the module doc)
         let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: None, fast: true }).ok()?;
         let fps = session.info.rate().as_f64(); let frames = session.info.frame_count;
-        Some(VideoThumbLoader { session, fps, frames, sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0) })
+        Some(VideoThumbLoader { session, fps, frames, sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range })
     }
-    pub fn factory() -> LoaderFactory { Arc::new(|path: &str| VideoThumbLoader::open(path).map(|l| Box::new(l) as Box<dyn ThumbLoader>)) }
+    pub fn factory() -> LoaderFactory { Arc::new(|key: &str| { let (path, r) = split_range_key(key); VideoThumbLoader::open_with(path, r).map(|l| Box::new(l) as Box<dyn ThumbLoader>) }) }
     /// QCView `getOrCreateLoader`: a still's key (an image-sequence frame's own file, `?layer=` for an EXR part) goes to the
     /// image loaders, anything else to the video loader.
     pub fn any_factory() -> LoaderFactory {
         Arc::new(|key: &str| {
             let (file, layer) = key.split_once("?layer=").unwrap_or((key, ""));
             if min_image::Format::of(file).is_some() { return Some(Box::new(ImageThumbLoader { path: file.to_string(), layer: layer.to_string() }) as Box<dyn ThumbLoader>) }
-            VideoThumbLoader::open(key).map(|l| Box::new(l) as Box<dyn ThumbLoader>)
+            let (path, r) = split_range_key(key);
+            VideoThumbLoader::open_with(path, r).map(|l| Box::new(l) as Box<dyn ThumbLoader>)
         })
     }
 }
+/// A video's cache key with its Range override (`?range=full` / `?range=limited`; Auto = the bare path), so thumbnails
+/// made under one override never answer for another — the `?layer=` pattern.
+pub fn range_key(path: &str, r: crate::rgb_range::RangeOverride) -> String {
+    match r { crate::rgb_range::RangeOverride::Full => format!("{path}?range=full"), crate::rgb_range::RangeOverride::Limited => format!("{path}?range=limited"), _ => path.to_string() }
+}
+pub fn split_range_key(key: &str) -> (&str, crate::rgb_range::RangeOverride) {
+    match key.rsplit_once("?range=") { Some((p, "full")) => (p, crate::rgb_range::RangeOverride::Full), Some((p, "limited")) => (p, crate::rgb_range::RangeOverride::Limited), _ => (key, crate::rgb_range::RangeOverride::Auto) }
+}
+
 impl Drop for VideoThumbLoader { fn drop(&mut self) { unsafe { if !self.sws.is_null() { ff::sws_freeContext(self.sws); } } } }
 impl ThumbLoader for VideoThumbLoader {
     fn load_thumbnail(&mut self, source_frame: i32, max_size: u32) -> Option<ThumbPixels> {
@@ -294,19 +306,19 @@ impl ThumbLoader for VideoThumbLoader {
             }
         }
         if best.is_null() { return None }
-        let out = unsafe { let mut c = VideoThumbLoaderSws { sws: self.sws, sws_key: self.sws_key }; let o = c.convert(best, max_size); self.sws = c.sws; self.sws_key = c.sws_key; o };
+        let out = unsafe { let mut c = VideoThumbLoaderSws { sws: self.sws, sws_key: self.sws_key, range: self.range }; let o = c.convert(best, max_size); self.sws = c.sws; self.sws_key = c.sws_key; o };
         unsafe { ff::av_frame_free(&mut best); }
         out
     }
 }
 /// An RGBA8 thumbnail from any planar AVFrame with a one-shot swscale context (the scrub cache's peek path).
-pub unsafe fn rgba_thumb_from_avframe(fr: *mut ff::AVFrame, max_size: u32) -> Option<ThumbPixels> { unsafe {
-    let mut tmp = VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0) };
+pub unsafe fn rgba_thumb_from_avframe(fr: *mut ff::AVFrame, max_size: u32, range: crate::rgb_range::RangeOverride) -> Option<ThumbPixels> { unsafe {
+    let mut tmp = VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range };
     let out = tmp.convert(fr, max_size);
     if !tmp.sws.is_null() { ff::sws_freeContext(tmp.sws); }
     out
 } }
-struct VideoThumbLoaderSws { sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32) }
+struct VideoThumbLoaderSws { sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32), range: crate::rgb_range::RangeOverride }
 impl VideoThumbLoaderSws {
     unsafe fn convert(&mut self, fr: *mut ff::AVFrame, max_size: u32) -> Option<ThumbPixels> { unsafe {
         let (w, h) = ((*fr).width, (*fr).height);
@@ -325,7 +337,7 @@ impl VideoThumbLoaderSws {
             if !is_rgb {
                 use crate::yuv_planar::{effective_matrix, effective_source_range};
                 let cs = match effective_matrix((*fr).colorspace) { min_present::Matrix::Bt601 => ff::SWS_CS_ITU601, min_present::Matrix::Smpte240m => ff::SWS_CS_SMPTE240M, min_present::Matrix::Fcc => ff::SWS_CS_FCC, min_present::Matrix::Bt2020 => ff::SWS_CS_BT2020, _ => ff::SWS_CS_ITU709 };
-                let full = effective_source_range((*fr).color_range, false, crate::rgb_range::RangeOverride::Auto) == min_present::Range::Full;
+                let full = effective_source_range((*fr).color_range, false, self.range) == min_present::Range::Full;
                 ff::sws_setColorspaceDetails(self.sws, ff::sws_getCoefficients(cs), full as i32, ff::sws_getCoefficients(ff::SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
             }
             self.sws_key = key;
@@ -339,7 +351,7 @@ impl VideoThumbLoaderSws {
         // RGB sources tagged limited get the legal expansion swscale skips (rgb_range.h)
         for v in rgb.iter_mut() { *v = u16::from_le(*v); }
         // RGB sources tagged limited: rgb_range's 16–235 rule, at 16 bits
-        if crate::rgb_range::rgb_frame_needs_legal_expansion(fr, crate::rgb_range::RangeOverride::Auto) { for v in rgb.iter_mut() { *v = (((*v as i64 - 4096) * 65535 + 28032) / 56064).clamp(0, 65535) as u16; } }
+        if crate::rgb_range::rgb_frame_needs_legal_expansion(fr, self.range) { for v in rgb.iter_mut() { *v = (((*v as i64 - 4096) * 65535 + 28032) / 56064).clamp(0, 65535) as u16; } }
         Some(ThumbPixels { width: ow as u32, height: oh as u32, samples: ThumbSamples::Code16(rgb) })
     } }
 }
@@ -429,14 +441,25 @@ mod colour_tests {
     fn thumbnails_use_the_frames_matrix_and_range() { unsafe {
         // BT.709 limited red: Y 63, Cb 102, Cr 240 → (255, 0, 0); BT.601's table would give a pink-orange
         let mut f = frame(63, 102, 240, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_MPEG);
-        let t = super::rgba_thumb_from_avframe(f, 0).unwrap();
+        let t = super::rgba_thumb_from_avframe(f, 0, crate::rgb_range::RangeOverride::Auto).unwrap();
         let q = t.rgba8(); let (r, g, b) = (q[0] as i32, q[1] as i32, q[2] as i32);
         assert!(r > 245 && g < 12 && b < 12, "709 red → ({r}, {g}, {b})");
         ff::av_frame_free(&mut f);
         // full range grey 128 stays 128 (limited would stretch it)
         let mut f = frame(128, 128, 128, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_JPEG);
-        let t = super::rgba_thumb_from_avframe(f, 0).unwrap();
+        let t = super::rgba_thumb_from_avframe(f, 0, crate::rgb_range::RangeOverride::Auto).unwrap();
         assert!((t.rgba8()[0] as i32 - 128).abs() <= 2, "full-range grey → {}", t.rgba8()[0]);
         ff::av_frame_free(&mut f);
+        // the clip's Range override wins over the tag (the picture's rule): limited-tagged Y 16 is black as tagged, 16 when forced Full
+        let mut f = frame(16, 128, 128, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_MPEG);
+        let auto = super::rgba_thumb_from_avframe(f, 0, crate::rgb_range::RangeOverride::Auto).unwrap().rgba8()[0] as i32;
+        let full = super::rgba_thumb_from_avframe(f, 0, crate::rgb_range::RangeOverride::Full).unwrap().rgba8()[0] as i32;
+        assert!(auto <= 2 && (full - 16).abs() <= 2, "Y 16: auto {auto}, forced full {full}");
+        ff::av_frame_free(&mut f);
     } }
+    #[test] fn range_keys_round_trip() {
+        use crate::rgb_range::RangeOverride as R;
+        for r in [R::Auto, R::Full, R::Limited] { let k = super::range_key("/m/a.mov", r); assert_eq!(super::split_range_key(&k), ("/m/a.mov", r)); }
+        assert_eq!(super::range_key("/m/a.mov", R::Auto), "/m/a.mov");
+    }
 }

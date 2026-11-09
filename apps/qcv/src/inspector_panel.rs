@@ -175,7 +175,7 @@ impl InspectorPanel {
         // QCView's hero: a video's MID-clip frame (first frames are routinely black leaders), a sequence's first frame at its layer
         let (key, src, frame, layer) = match p.decoder().as_sequence() {
             Some(s) => { let c = s.cache(); let f = c.frame_path(0); (format!("{f}?layer={}", c.layer()), f, 0, c.layer()) }
-            None => (path.clone(), path.clone(), (p.frame_count() / 2).max(0), String::new()),
+            None => (p.thumb_key(), p.thumb_key(), (p.frame_count() / 2).max(0), String::new()),   // the key carries the Range override: a change redoes the hero
         };
         if key != self.hero_key {
             self.hero_key = key.clone(); self.hero = None; self.hero_raw = None; dirty = true;
@@ -184,7 +184,7 @@ impl InspectorPanel {
             std::thread::Builder::new().name("qcv-hero".into()).spawn(move || {
                 use qcv_player::ThumbLoader;
                 let px = if seq { qcv_player::min_image::load_thumbnail(&src, &layer, 480).ok().and_then(|img| qcv_player::thumbnail_cache::image_thumb(&img, 480)) }
-                         else { qcv_player::VideoThumbLoader::open(&src).and_then(|mut l| l.load_thumbnail(frame, 480)) };
+                         else { let (file, r) = qcv_player::thumbnail_cache::split_range_key(&src); qcv_player::VideoThumbLoader::open_with(file, r).and_then(|mut l| l.load_thumbnail(frame, 480)) };
                 let _ = tx.send((key, px));
             }).ok();
         }

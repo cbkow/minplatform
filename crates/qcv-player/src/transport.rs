@@ -287,6 +287,8 @@ impl Transport {
         if let Some(sc) = slot.scrub.as_mut() { sc.set_range_override(r); }
     }
     pub fn range_override(&self) -> crate::RangeOverride { self.range_override }
+    /// The thumbnail cache's key for the open video (its Range override included).
+    pub fn thumb_key(&self) -> String { crate::thumbnail_cache::range_key(self.path(), self.range_override) }
     pub fn in_point(&self) -> i32 { self.in_point }
     pub fn out_point(&self) -> i32 { self.out_point }
     pub fn has_in_out_range(&self) -> bool { self.in_point >= 0 && self.out_point > self.in_point }
@@ -781,10 +783,10 @@ impl Transport {
             }
             return (cache.get_thumbnail(&path, 0, true), false)
         }
-        let path = c.media_path.clone();
+        let path = crate::thumbnail_cache::range_key(&c.media_path, self.range_override);   // the clip's Range override, its own keys
         let key = crate::thumbnail_cache::ThumbKey { source_path: path.clone(), source_frame: src as i32 };
         if !cache.contains(&path, src as i32) {
-            if let Some(sd) = self.slots.iter().find(|s| s.clip == clip).and_then(|s| s.scrub.as_ref()) { if let Some(px) = sd.peek_thumbnail(src as i32, max_size) { cache.offer(key, px); return (cache.get_thumbnail(&path, src as i32, true), true) } }
+            if let Some(sd) = self.slots.iter().find(|s| s.clip == clip).and_then(|s| s.scrub.as_ref()) { if let Some(px) = sd.peek_thumbnail(src as i32, max_size, self.range_override) { cache.offer(key, px); return (cache.get_thumbnail(&path, src as i32, true), true) } }
         }
         (cache.get_thumbnail(&path, src as i32, true), false)
     }

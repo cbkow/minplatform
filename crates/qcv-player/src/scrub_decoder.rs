@@ -85,10 +85,10 @@ impl ScrubDecoder {
     /// The hover thumbnail's first stop (the platform's addition beside QCView's loader): a frame already in the GOP cache
     /// becomes an RGBA8 thumbnail on the calling thread (`peek`: never touches the LRU, never decodes; ~1–2 ms for 4K via
     /// swscale). Only planar entries convert here; a VideoToolbox entry (and a miss) returns None and the loader answers.
-    pub fn peek_thumbnail(&self, frame: i32, max_size: u32) -> Option<crate::thumbnail_cache::ThumbPixels> {
+    pub fn peek_thumbnail(&self, frame: i32, max_size: u32, range: crate::rgb_range::RangeOverride) -> Option<crate::thumbnail_cache::ThumbPixels> {
         let e = self.cache.peek(&frame)?;
         if e.kind() != Kind::Planar { return None }
-        unsafe { crate::thumbnail_cache::rgba_thumb_from_avframe(e.avframe(), max_size) }
+        unsafe { crate::thumbnail_cache::rgba_thumb_from_avframe(e.avframe(), max_size, range) }
     }
     /// The Range pill: CPU entries baked the old range into their levels and native ones snapshot it — the worker drops
     /// the cache before its next decode, and the held frame is re-requested so a paused scrub updates live.
