@@ -69,8 +69,8 @@ impl TransportBar {
                 (b("arrows-in-simple", "Compact Mode (Ctrl+Shift+C)"), Bind::ToggleCompact),
             ]),
             (true, vec![
-                (b("file-image", "Screenshot to clipboard (⌥T)"), Bind::Later),
-                (b("file-arrow-down", "Screenshot to Desktop (T)"), Bind::Later),
+                (b("file-image", if cfg!(target_os = "macos") { "Screenshot to clipboard (⌘T)" } else { "Screenshot to clipboard (Ctrl+T)" }), Bind::Act(Action::ScreenshotToClipboard)),
+                (b("file-arrow-down", "Screenshot to Desktop (T)"), Bind::Act(Action::Screenshot)),
             ]),
             (true, vec![
                 (b("rectangle-dashed", "Safety guides"), Bind::RevealGuides),

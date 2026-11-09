@@ -136,7 +136,7 @@ impl crate::App {
     /// The slot the drawer edits: dual view's TARGET side (row 212 — one selection for the lanes, the keys and colour), else 0.
     pub(crate) fn edit_slot(&self) -> usize { if self.dual.is_some() && self.gpu.as_ref().is_some_and(|g| g.dual_bars.target == qcv_player::Side::B) { 1 } else { 0 } }
     /// An item's chain and whether it is its own (else the project default's).
-    fn chain_of(&self, id: &str) -> (Option<String>, Stored, bool) {
+    pub(crate) fn chain_of(&self, id: &str) -> (Option<String>, Stored, bool) {
         let d = self.color_default();
         let Some(item) = self.project.item(id) else { return (None, d, false) };
         match Stored::from_clip_maps(&item.ocio_clip, &item.min_color_clip, &d) { Some(s) => (Some(item.id.clone()), s, true), None => (Some(item.id.clone()), d, false) }

@@ -61,7 +61,8 @@ impl SettingsPanel {
                 sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
                 sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", false),
                 sw(k::TIMELINE_WAVEFORMS, "Timeline audio waveforms", "Draw the audio waveform in the scrubber. Peaks decode lazily in the background.", true),
-                pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", false, &["PNG", "JPEG", "TIFF"], &["png", "jpeg", "tiff"]),
+                pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", true, &["PNG", "JPEG", "TIFF"], &["png", "jpeg", "tiff"]),
+                sw(k::SCREENSHOT_GUIDES, "Include safety guides in screenshots", "Draw the active safety guide into Desktop and clipboard screenshots.", true),
             ] },
             Group { title: tr("Audio"), header: Rect::ZERO, rows: vec![
                 num(k::SYNC_OFFSET_MS, "A/V sync (Single)", "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),

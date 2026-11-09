@@ -54,6 +54,7 @@ mod guides;
 mod guides_panel;
 mod annotate;
 mod notes_drawer;
+mod capture;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -121,6 +122,8 @@ struct App {
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// colour (canon rows 198–208): the user's presets; the shared minColor pass (and its build); what the slot holds; an OCIO build in flight
     colors: color_model::Library, /// per colour SLOT (0 = the single view / dual A, 1 = dual B): the minColor pass, its build in flight
+    /// screenshots being encoded on workers (row 216): the format's name on success
+    capture_rx: Vec<std::sync::mpsc::Receiver<Option<&'static str>>>,
     mincolor: [Option<std::rc::Rc<std::cell::RefCell<qcv_color::MinColorPass>>>; 2], mincolor_ready: [Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>; 2],
     /// the OCIO configs the drawer has opened, by key
     ocio_configs: HashMap<String, std::sync::Arc<qcv_color::ocio::Config>>,
@@ -684,6 +687,7 @@ impl App {
     }
     fn tick(&mut self) {
         self.poll_color();
+        self.poll_capture();
         self.ensure_color_config();
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
@@ -1217,6 +1221,7 @@ impl App {
                     let handled = pb_mut(&mut self.dual, &mut self.player).map(|p| p.apply(a, now)).unwrap_or(false);
                     if !handled && a == Action::ToggleFullscreen { self.toggle_fullscreen(); return }
                     else if !handled && a == Action::CycleBackground { self.cycle_background(); }
+                    else if !handled && (a == Action::Screenshot || a == Action::ScreenshotToClipboard) { self.screenshot(if a == Action::Screenshot { capture::Dest::File } else { capture::Dest::Clipboard }); }
                     else if !handled { log::info!("{a:?}: nothing to apply it to"); }
                 }
                 transport_bar::Cmd::Open => self.open_media_dialog(),
@@ -2005,6 +2010,7 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
+                    else if a == Action::Screenshot || a == Action::ScreenshotToClipboard { if !event.repeat { self.screenshot(if a == Action::Screenshot { capture::Dest::File } else { capture::Dest::Clipboard }); } }
                     else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.annot.active && self.dual.is_none() {
                         let c = if a == Action::AnnotationUndo { self.annot.undo() } else { self.annot.redo() };
                         if let Some(c) = c { self.after_annotation(c); }
@@ -2116,7 +2122,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { capture_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

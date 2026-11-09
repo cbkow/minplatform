@@ -12,6 +12,7 @@ macro_rules! guides { ($($n:literal),*) => { &[$(($n, include_str!(concat!("../a
 pub const GUIDES: &[(&str, &str)] = guides!("16x9", "Meta_9x16", "Meta_Feed_4x5", "Meta_Post_3x4", "Pinterest_9x16", "Pinterest_PremiumSpotlight_1x1", "Samsung_9x16_Safety", "Snapchat_9x16_unofficial", "TikTok_9x16", "Youtube_16x9", "Youtube_16x9_Masthead", "Youtube_1x1", "Youtube_9x16");
 
 /// A parsed guide: its viewBox (w, h) and outlines in viewBox units.
+#[derive(Clone)]
 pub struct Guide { pub view: (f64, f64), pub paths: Vec<BezPath> }
 
 fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {

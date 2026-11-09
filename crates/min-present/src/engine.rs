@@ -325,6 +325,8 @@ impl Engine {
     pub fn display(&self) -> DisplayMode { self.display }
     pub fn set_color_pass(&mut self, cp: Option<Box<dyn ColorPass>>) { self.color_pass = cp; self.inter = None; self.write_uniforms(); }
     pub fn has_color_pass(&self) -> bool { self.color_pass.is_some() }
+    /// Take the slot's pass out (a capture swaps an SDR twin in and puts this one back with `set_color_pass`).
+    pub fn take_color_pass(&mut self) -> Option<Box<dyn ColorPass>> { let p = self.color_pass.take(); self.inter = None; self.write_uniforms(); p }
     pub fn has_frame(&self) -> bool { self.shown.is_some() }
     /// Show nothing (a dual side in a gap or past its end: the background shows through).
     pub fn clear_frame(&mut self) { self.shown = None; }

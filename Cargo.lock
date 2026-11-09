@@ -257,9 +257,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
 dependencies = [
  "clipboard-win",
+ "image",
  "log",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
@@ -1541,6 +1544,8 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
+ "png 0.18.1",
+ "tiff",
 ]
 
 [[package]]
@@ -2961,12 +2966,14 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 name = "qcv"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "env_logger",
  "interprocess",
  "jiff",
  "kurbo",
  "log",
  "min-i18n",
+ "min-image",
  "min-paths",
  "min-present",
  "min-settings",
