@@ -1,4 +1,4 @@
-//! Dual view's two clip lanes under the scrubber (canon rows 167 / 212): A over B, 12 px each, on the scrubber's camera — NO
+//! Dual view's two clip lanes under the scrubber (canon rows 167 / 212): A over B, 16 px each (12 on the first build; the walk: "a few pix taller for ergonomics"), on the scrubber's camera — NO
 //! edit mode, a gesture means what its target means. The 8 px at a clip's ends trim its head / tail, dragging the body SLIDES it
 //! in time carrying the later clips on its side (Shift: alone), Ctrl / Cmd + drag slips the source window, a click seeks there,
 //! selects the clip and makes its side the TARGET (⌘K and the keys act there), a double-click opens the precision popover.
@@ -16,7 +16,7 @@ use vello::Scene;
 const THRESHOLD_PX: f64 = 5.0;
 const DOUBLE_CLICK_MS: u128 = 400;
 const SNAP_PX: f64 = 8.0;
-pub const LANE: f64 = 12.0;
+pub const LANE: f64 = 16.0;
 /// The row label cell (logical px) — the scrubber's end inset, so frame 0 starts just past it.
 pub const LABEL_W: f64 = 28.0;
 
@@ -151,7 +151,7 @@ impl DualBars {
             // cell is filled (⌘K and the keys act there) — the walk 2026-11-08: neutral clips, labelled rows
             let cell = Rect::new(lane.x0, lane.y0, lane.x0 + LABEL_W * scale, lane.y1);
             if self.target == side { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, t::NEUTRAL_SUBTLE_BACKGROUND_COLOR_DEFAULT); }
-            let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, (LANE - 3.0) as f32 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
+            let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, 10.0 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x1 - l.width() as f64 - 4.0 * scale, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));   // flush right, by the clips
             for c in clips(tl, side) {
                 let (mut x0, mut x1) = Self::span(c, sc, st, scale);
