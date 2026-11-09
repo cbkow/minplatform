@@ -173,6 +173,9 @@ pub struct Engine {
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
     out_gain: f32,
+    /// Windows HDR (canon row 221): HDR pictures leave at absolute nits — the SDR-brightness slider (`out_gain`) moves SDR
+    /// material and the UI only. `chain_hdr` = this engine's chain renders above SDR (set by the shell from the chain's target).
+    abs_hdr: bool, chain_hdr: bool,
     scope: Option<Scope>, scope_view: Option<ScopeView>, /// dual view's waveform tints, A / B (linear RGB; QCView's cyan / orange until the shell sets the theme's)
     side_tints: ([f32; 3], [f32; 3]),
     /// dual view: the two side engines + the compare state (None = single view)
@@ -291,7 +294,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, abs_hdr: false, chain_hdr: false, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -322,7 +325,7 @@ impl Engine {
     /// Push this engine's viewport, content rect, display, aids and output gain to the side engines for the current mode.
     pub fn relayout_dual(&mut self) {
         let Some(mut d) = self.dual.take() else { return };
-        d.layout(self.viewport, self.content, self.display, self.aids, self.out_gain, self.scope_view);
+        d.layout(self.viewport, self.content, self.display, self.aids, self.out_gain, self.abs_hdr, self.scope_view);
         self.dual = Some(d);
     }
     pub fn content_rect(&self) -> Option<(u32, u32, u32, u32)> { self.content }
@@ -476,6 +479,12 @@ impl Engine {
     /// The screen pass only — snapshots and the waveform never see it.
     pub fn set_output_gain(&mut self, g: f32) { let g = if g.is_finite() && g > 0.0 { g } else { 1.0 }; if (g - self.out_gain).abs() > 1e-4 { self.out_gain = g; self.write_uniforms(); self.relayout_dual(); } }
     pub fn output_gain(&self) -> f32 { self.out_gain }
+    /// Canon row 221 (Windows HDR): an HDR picture — a PQ / HLG file with no chain, or a chain the shell marks HDR — is placed at
+    /// absolute nits (scRGB 1.0 = 80 nits) instead of riding the SDR-white gain; SDR pictures and the UI keep the gain.
+    pub fn set_absolute_hdr(&mut self, on: bool) { if on != self.abs_hdr { self.abs_hdr = on; self.write_uniforms(); self.relayout_dual(); } }
+    pub fn set_chain_hdr(&mut self, on: bool) { if on != self.chain_hdr { self.chain_hdr = on; self.write_uniforms(); } }
+    /// The factor that turns the gained output back into absolute nits for an HDR picture (1.0 = 100 nits → ×100/80 ÷ gain); 0 = none.
+    fn abs_scale(&self, picture_hdr: bool) -> f32 { if self.abs_hdr && picture_hdr && self.out_gain > 0.0 { 1.25 / self.out_gain } else { 0.0 } }
 
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
@@ -588,7 +597,8 @@ impl Engine {
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
         let rot = self.rotation_quarters() as f32;
         let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear), u([1.0, 1.0], [0.0, 0.0], display_out)];
-        sets[0].rot = rot; sets[0].aids = self.aids.gpu(); sets[0].pad1 = [self.out_gain, 0.0];
+        let bypass_abs = self.abs_scale(self.bypass_hdr_peak().is_some());
+        sets[0].rot = rot; sets[0].aids = self.aids.gpu(); sets[0].pad1 = [self.out_gain, bypass_abs];
         // BYPASS = AS STORED (canon row 180, QCView's rule): with no chain engaged, display-referred SDR (sRGB / BT.1886 tags) is
         // linearised with the sRGB EOTF so the surface's encode is a no-op and the screen shows the stored values — on the EDR
         // layer as on an 8-bit sRGB surface. NOT a transfer opinion: the 2.2-vs-2.4 question is the chain's Input, which still
@@ -599,7 +609,7 @@ impl Engine {
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
         let rotq = self.rotation_quarters() as f32;
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, 0.0], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, self.abs_scale(self.chain_hdr && self.color_pass.is_some())], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -713,8 +723,8 @@ impl Engine {
     pub fn capture(&mut self, aids: bool) -> Result<(Vec<f32>, u32, u32), Error> {
         if self.shown.is_none() { return Err(Error::NoFrame) }
         let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
-        let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
-        self.viewport = (w, h); self.content = None; self.out_gain = 1.0; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
+        let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view, self.abs_hdr);
+        self.viewport = (w, h); self.content = None; self.out_gain = 1.0; self.abs_hdr = false; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
         self.write_uniforms();
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = tex.create_view(&Default::default());
@@ -723,7 +733,7 @@ impl Engine {
         self.encode_picture(&mut enc, &view, None);
         self.queue.submit([enc.finish()]);
         let px = if self.target_format == wgpu::TextureFormat::Rgba16Float { readback::read_rgba16f(&self.device, &self.queue, &tex, w, h) } else { vec![] };
-        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.write_uniforms();
+        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view, self.abs_hdr) = saved; self.write_uniforms();
         if px.is_empty() { return Err(Error::NoFormat) }
         // over black (premultiplied output): drop alpha
         Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), w, h))
@@ -759,7 +769,7 @@ impl Engine {
                     let lead = if d.a.has_frame() { &d.a } else { &d.b };
                     let lead_region = region(lead, [0, 0, 0, 0]);
                     let (w, h) = lead.display_dims(); let (w, h) = (w.max(1), h.max(1));
-                    d.layout((w, h), None, self.display, if aids { self.aids } else { ViewerAids::default() }, 1.0, None);
+                    d.layout((w, h), None, self.display, if aids { self.aids } else { ViewerAids::default() }, 1.0, false, None);   // a capture: relative, no gain
                     let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("dual capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
                     let view = tex.create_view(&Default::default());
                     let mut enc = self.device.create_command_encoder(&Default::default());
@@ -1049,6 +1059,28 @@ mod tests {
         e.set_transfer_override(TransferChoice::Linear); let (linr, _, _) = e.snapshot(Snapshot::Display).unwrap();
         for x in (0..256).step_by(17) { assert!((linr[x * 4] - enc[x * 4]).abs() < 2e-3, "linear override at {x}: {} vs {}", linr[x * 4], enc[x * 4]); }
         e.set_transfer_override(TransferChoice::Auto); assert_eq!(e.transfer_override(), TransferChoice::Auto);
+    }
+
+    /// Canon row 221 (Windows HDR): with the SDR-white gain at 3 (a 240-nit slider), an SDR picture rides the gain while an HDR
+    /// one (PQ in bypass) leaves at absolute nits — scRGB = nits / 80 — whatever the slider; captures stay relative.
+    #[test]
+    fn windows_hdr_places_hdr_at_absolute_nits() {
+        let mut e = Engine::headless(wgpu::TextureFormat::Rgba16Float).unwrap();
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 }); e.show(&ramp_frame(256, 1)).unwrap();
+        e.set_output_gain(3.0); e.set_absolute_hdr(true);
+        let px = |v: &Vec<f32>, x: usize| v[x * 4];
+        let sdr = e.render_offscreen(256, 1).unwrap();
+        e.set_absolute_hdr(false); let sdr_rel = e.render_offscreen(256, 1).unwrap(); e.set_absolute_hdr(true);
+        assert!((px(&sdr, 200) - px(&sdr_rel, 200)).abs() < 1e-3, "SDR rides the gain either way");
+        e.set_transfer_override(TransferChoice::PqP3);
+        let (raw, _, _) = e.snapshot(Snapshot::Display).unwrap();   // nits / 100, no gain
+        let abs = e.render_offscreen(256, 1).unwrap();
+        for x in [64usize, 128, 200] { let want = px(&raw, x) * 100.0 / 80.0; assert!((px(&abs, x) - want).abs() < want * 2e-3 + 1e-3, "x {x}: {} vs nits/80 {want}", px(&abs, x)); }
+        e.set_output_gain(1.5);   // the slider moved: HDR stays put
+        let abs2 = e.render_offscreen(256, 1).unwrap();
+        assert!((px(&abs2, 200) - px(&abs, 200)).abs() < 2e-3, "the slider moved the HDR picture: {} vs {}", px(&abs2, 200), px(&abs, 200));
+        let (cap, _, _) = e.capture(false).unwrap();
+        assert!((cap[200 * 3] - px(&raw, 200)).abs() < 2e-3, "captures stay relative (no gain, no absolute)");
     }
 
     /// A flat grey frame (8-bit limited Y′ = `y`, neutral chroma).

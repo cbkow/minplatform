@@ -727,6 +727,8 @@ impl App {
                 let name = g.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())).unwrap_or_default();
                 let (gain, hdr) = sdr_white::screen_for(&name);
                 if let Some(hdr) = hdr && g.presenter.set_sdr_surface(!hdr) { g.ui_dirty = true; }
+                // row 221: on the HDR surface an HDR picture leaves at absolute nits — the SDR-brightness slider moves SDR and the UI only
+                let abs = !g.presenter.sdr_surface(); g.presenter.engine.set_absolute_hdr(abs);
                 let gain = if g.presenter.sdr_surface() { 1.0 } else { gain };
                 if (gain - g.presenter.engine.output_gain()).abs() > 1e-3 { log::info!("SDR white on {name}: {:.0} nits (gain {gain:.2})", gain * 80.0); g.presenter.engine.set_output_gain(gain); }
             }

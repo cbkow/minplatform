@@ -17,7 +17,8 @@ struct U {
   rgb_expand: f32,       // legal-range RGB → full (rgb_range.h's rule)
   rot: f32,              // display rotation, quarter turns CW; the sampler inverse-rotates (QCView's rotatedSrcUv)
   off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
-  pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y —
+  pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y = an HDR
+                         //   picture's factor back to absolute nits (Windows HDR, canon row 221: 1.25 ÷ x; 0 = none)
   bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
   media: vec4<f32>,      // the media rect in viewport px (x, y, w, h; y down)
   vp: vec4<f32>,         // the viewport size in px
@@ -95,7 +96,7 @@ fn alpha_view() -> bool { return u.aids.w > 0.5 && u.aids.z > 3.5 && u.aids.z < 
 fn stage3(lin_in: vec3<f32>, mode: f32, white: f32) -> vec4<f32> {
   let lin = viewer_aids(lin_in);
   // the extended-linear surface: on Windows scRGB 1.0 is 80 nits, so SDR white (1.0 here) is lifted to the user's SDR brightness
-  if (mode < 0.5) { return vec4(max(lin, vec3(0.0)) * select(1.0, u.pad1.x, u.pad1.x > 0.0), 1.0); }
+  if (mode < 0.5) { return vec4(max(lin, vec3(0.0)) * select(1.0, u.pad1.x, u.pad1.x > 0.0) * select(1.0, u.pad1.y, u.pad1.y > 0.0), 1.0); }
   if (mode < 2.5) { return vec4(pq_oetf(max(lin, vec3(0.0)) * white), 1.0); }
   if (mode < 3.5) { return vec4(clamp(lin, vec3(0.0), vec3(1.0)), 1.0); }
   return vec4(srgb_oetf(clamp(lin, vec3(0.0), vec3(1.0))), 1.0);

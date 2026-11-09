@@ -31,7 +31,7 @@ impl Dual {
             device: device.clone(), queue: queue.clone(), format, content: (0, 0, 1, 1), viewport: (1, 1), out_gain: 1.0, diff: None }
     }
     /// The content rect's split for the current mode → each side's viewport + content (called by the main engine on any change).
-    pub(crate) fn layout(&mut self, viewport: (u32, u32), content: Option<(u32, u32, u32, u32)>, display: DisplayMode, aids: ViewerAids, out_gain: f32, scope: Option<ScopeView>) {
+    pub(crate) fn layout(&mut self, viewport: (u32, u32), content: Option<(u32, u32, u32, u32)>, display: DisplayMode, aids: ViewerAids, out_gain: f32, abs_hdr: bool, scope: Option<ScopeView>) {
         let c = content.unwrap_or((0, 0, viewport.0, viewport.1));
         self.content = c; self.viewport = viewport; self.out_gain = out_gain;
         let (x, y, w, h) = c;
@@ -41,6 +41,7 @@ impl Dual {
             // Difference renders the sides plain (the aids and the SDR-white gain apply once, after the difference)
             e.set_viewer_aids(if diff { ViewerAids::default() } else { aids });
             e.set_output_gain(if diff { 1.0 } else { out_gain });
+            e.set_absolute_hdr(abs_hdr && !diff);   // Difference compares encoded values, the gain applied once after it: relative
             // each side taps its own waveform (QCView: one grid per side); the main engine draws them overlaid
             e.set_scope(scope);
         }

@@ -173,6 +173,8 @@ impl crate::App {
             let dual = self.dual.is_some();
             let Some(g) = self.gpu.as_mut() else { return };
             let Some(engine) = slot_engine(g, slot, dual) else { self.color_bound[slot] = None; self.ocio_rx[slot] = None; continue };
+            // row 221: a chain rendering above SDR is an HDR picture (absolute nits on Windows HDR); SDR chains follow the slider
+            engine.set_chain_hdr(on && shown && match &stored.chain { ClipChain::MinColor(c) => c.peak_nits > 100.5 || c.agx_peak > 100.5, ClipChain::Ocio(o) => !qcv_color::ocio::view_is_sdr(&o.view) });
             if !on || !shown {
                 if self.color_bound[slot].is_some() { engine.set_color_pass(None); self.color_bound[slot] = None; }
                 self.ocio_rx[slot] = None;
