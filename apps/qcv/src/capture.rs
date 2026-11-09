@@ -3,7 +3,7 @@
 //! the user 2026-11-08: "give them 16 bit tiffs"); Ctrl/Cmd+T = to the clipboard (8-bit). The picture is the screen's: the
 //! clip's tags + overrides, its chain RE-TARGETED to SDR when the view targets HDR (QCView's `setSdrCapture`: minColor at
 //! peak 100, OCIO the nearest SDR view), the viewer aids, pixel aspect + rotation applied; an HDR source in bypass is
-//! tone-mapped by BT.2390 (never raw code values); annotations baked; safety guides only with the "include guides" setting
+//! tone-mapped by BT.2390 (never raw code values); annotations baked while the Notes panel shows them (row 238); safety guides only with the "include guides" setting
 //! (off by default). The encode + write runs on a worker (QCView's QtConcurrent route); the toast reports back.
 use crate::{annotate, color, guides, settings::k, trw};
 use qcv_color::ocio::view_is_sdr;
@@ -164,9 +164,10 @@ impl crate::App {
         // row 223: alpha only when a PICTURE region has transparency (a side-by-side gap is transparent but says nothing)
         let has_alpha = regions.iter().any(|r| (r.rect[1]..r.rect[1] + r.rect[3]).any(|y| { let o = (y * w + r.rect[0]) as usize; alpha[o..o + r.rect[2] as usize].iter().any(|a| *a < 0.999) }));
         let mut alpha = has_alpha.then_some(alpha);
-        // the overlay: the note's strokes at this frame (single view, QCView), the guide when the setting asks — over each side
+        // the overlay: the note's strokes at this frame while the viewport draws them (the Notes panel open, single view — row
+        // 238, the outputs' rule; QCView baked them with the panel closed too), the guide when the setting asks — over each side
         // side by side, over the whole picture (A's geometry) for a wipe / difference
-        let strokes = if dual { vec![] } else { self.current_note().map(|c| self.annot.strokes_at(&c)).unwrap_or_default() };
+        let strokes = if dual || !self.annot.active { vec![] } else { self.current_note().map(|c| self.annot.strokes_at(&c)).unwrap_or_default() };
         let guide = self.settings.bool(k::SCREENSHOT_GUIDES).then(|| self.gpu.as_ref().and_then(|g| g.guide.as_ref().map(|(_, gd)| gd.clone()))).flatten();
         if !overlay || (strokes.is_empty() && guide.is_none()) { return Some((px, w, h, alpha)) }
         let side_by_side = self.gpu.as_ref().and_then(|g| g.presenter.engine.dual().map(|d| d.mode == CompareMode::SideBySide)).unwrap_or(false);
