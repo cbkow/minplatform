@@ -48,7 +48,7 @@ impl SettingsPanel {
     pub fn new() -> SettingsPanel {
         let sw = |key, label, help, backed| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Switch(Switch::new(false)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
         let num = |key, label, help, backed, min, max, step| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Number(NumberField::new(0, min, max, step)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
-        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| if LANG_NAMES[1..].contains(s) || ["PNG", "JPEG", "TIFF"].contains(s) { s.to_string() } else { tr(s).to_string() }).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| if LANG_NAMES[1..].contains(s) || ["PNG", "PNG 16-bit", "JPEG", "TIFF 16-bit"].contains(s) { s.to_string() } else { tr(s).to_string() }).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
         let mut threads = num(k::FFMPEG_THREADS, "Video decode threads", "0 = Auto. Single-video playback only; applies on the next open.", true, 0, 32, 1);
         if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label(tr("Auto")); }
         let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (D3D12VA) when the format allows; applies on the next open.", true);
@@ -68,7 +68,7 @@ impl SettingsPanel {
                 sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
                 sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", false),
                 sw(k::TIMELINE_WAVEFORMS, "Timeline audio waveforms", "Draw the audio waveform in the scrubber. Peaks decode lazily in the background.", true),
-                pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", true, &["PNG", "JPEG", "TIFF"], &["png", "jpeg", "tiff"]),
+                pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", true, &["PNG", "PNG 16-bit", "JPEG", "TIFF 16-bit"], &["png", "png16", "jpeg", "tiff"]),
                 sw(k::SCREENSHOT_GUIDES, "Include safety guides in screenshots", "Draw the active safety guide into Desktop and clipboard screenshots.", true),
             ] },
             Group { title: tr("Audio"), header: Rect::ZERO, rows: vec![

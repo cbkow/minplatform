@@ -39,6 +39,18 @@ pub fn png_rgba8_bytes(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// PNG 16-bit RGB (the "PNG 16-bit" screenshot choice, row 224) — samples big-endian, as PNG stores them.
+pub fn png16(path: &str, rgb: &[u16], w: u32, h: u32) -> Result<(), Error> { png16_any(path, rgb, w, h, png::ColorType::Rgb) }
+/// PNG 16-bit RGBA, straight alpha (row 224 + 223).
+pub fn png_rgba16(path: &str, rgba: &[u16], w: u32, h: u32) -> Result<(), Error> { png16_any(path, rgba, w, h, png::ColorType::Rgba) }
+fn png16_any(path: &str, samples: &[u16], w: u32, h: u32, color: png::ColorType) -> Result<(), Error> {
+    let f = std::fs::File::create(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let mut enc = png::Encoder::new(BufWriter::new(f), w, h);
+    enc.set_color(color); enc.set_depth(png::BitDepth::Sixteen); enc.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    let mut wr = enc.write_header().map_err(|e| Error::Decode(path.into(), e.to_string()))?;
+    let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_be_bytes()).collect();
+    wr.write_image_data(&bytes).map_err(|e| Error::Decode(path.into(), e.to_string()))
+}
 /// PNG 8-bit with straight alpha (a screenshot of media with alpha, row 223).
 pub fn png_rgba8(path: &str, rgba: &[u8], w: u32, h: u32) -> Result<(), Error> {
     let bytes = png_rgba8_bytes(rgba, w, h).map_err(|e| Error::Decode(path.into(), e))?;
@@ -77,5 +89,11 @@ mod tests {
         let rgba16: Vec<u16> = rgba.iter().map(|v| *v as u16 * 257).collect();
         let p = dir.join(format!("mi-wa-{}.tif", std::process::id())).to_string_lossy().into_owned(); super::tiff16_rgba(&p, &rgba16, w, h).unwrap();
         let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+        // PNG 16-bit, with and without alpha (row 224)
+        for (n, alpha) in [("p16", false), ("pa16", true)] {
+            let p = dir.join(format!("mi-{n}-{}.png", std::process::id())).to_string_lossy().into_owned();
+            if alpha { super::png_rgba16(&p, &rgba16, w, h).unwrap() } else { super::png16(&p, &rgb16, w, h).unwrap() }
+            let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+        }
     }
 }

@@ -31,7 +31,7 @@ pub fn desktop_dir() -> Option<PathBuf> {
 
 /// `export/screenshotFormat` → (QCView's token, the extension, the toast's format name).
 fn format(token: &str) -> (&'static str, &'static str, &'static str) {
-    match token { "jpeg" => ("jpeg", "jpg", "JPEG"), "tiff" => ("tiff", "tif", "TIFF"), _ => ("png", "png", "PNG") }
+    match token { "jpeg" => ("jpeg", "jpg", "JPEG"), "tiff" => ("tiff", "tif", "TIFF"), "png16" => ("png16", "png", "PNG"), _ => ("png", "png", "PNG") }
 }
 
 /// QCView's nearest SDR view for an HDR one (`sdrCaptureDisplayView`, over our one display's views): the Blender name without
@@ -100,6 +100,9 @@ impl crate::App {
                         "jpeg" => min_image::write::jpeg8(&path, &min_present::capture::srgb8(&px), w, h, 95),   // no alpha in JPEG: over black
                         "tiff" => match &alpha { Some(al) => { let rgb = min_present::capture::srgb16(&straight(&px, al)); min_image::write::tiff16_rgba(&path, &rgb.chunks(3).zip(al).flat_map(|(c, a)| [c[0], c[1], c[2], (a * 65535.0 + 0.5) as u16]).collect::<Vec<_>>(), w, h) }
                                              None => min_image::write::tiff16(&path, &min_present::capture::srgb16(&px), w, h) },
+                        // PNG 16-bit (row 224): the TIFF's precision in a PNG — for pipelines that take PNG
+                        "png16" => match &alpha { Some(al) => { let rgb = min_present::capture::srgb16(&straight(&px, al)); min_image::write::png_rgba16(&path, &rgb.chunks(3).zip(al).flat_map(|(c, a)| [c[0], c[1], c[2], (a * 65535.0 + 0.5) as u16]).collect::<Vec<_>>(), w, h) }
+                                             None => min_image::write::png16(&path, &min_present::capture::srgb16(&px), w, h) },
                         _ => match &alpha { Some(al) => { let rgb = min_present::capture::srgb8(&straight(&px, al)); min_image::write::png_rgba8(&path, &rgb.chunks(3).zip(al).flat_map(|(c, a)| [c[0], c[1], c[2], (a * 255.0 + 0.5) as u8]).collect::<Vec<_>>(), w, h) }
                                        None => min_image::write::png8(&path, &min_present::capture::srgb8(&px), w, h) },
                     };
