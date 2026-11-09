@@ -4498,3 +4498,28 @@ msgstr "Хост надсилає робочий колірний простір
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "Увімкніть Файл ▸ Підключитися до Blender, щоб приймати цей сеанс Blender"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Transfer"
+msgstr "Передавальна функція"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Raster"
+msgstr "Растр"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Primaries"
+msgstr "Основні кольори"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Nits"
+msgstr "Ніти"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in %1."
+msgstr "Виходи не встановлено. Вихід реєструється в %1."

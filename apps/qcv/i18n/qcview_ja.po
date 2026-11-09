@@ -4482,3 +4482,28 @@ msgstr "ホストは作業用カラースペースを名前なしで送信しま
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "このBlenderセッションを受信するには、ファイル ▸ Blenderに接続 をオンにしてください"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Transfer"
+msgstr "伝達特性"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Raster"
+msgstr "ラスター"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Primaries"
+msgstr "原色"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Nits"
+msgstr "nit"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in %1."
+msgstr "出力はインストールされていません。出力は %1 に自身を登録します。"

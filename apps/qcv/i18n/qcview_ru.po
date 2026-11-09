@@ -4498,3 +4498,28 @@ msgstr "Хост отправляет рабочее цветовое прост
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "Включите Файл ▸ Подключиться к Blender, чтобы принимать этот сеанс Blender"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Transfer"
+msgstr "Передаточная функция"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Raster"
+msgstr "Растр"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Primaries"
+msgstr "Основные цвета"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Nits"
+msgstr "Ниты"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in %1."
+msgstr "Выходы не установлены. Выход регистрируется в %1."

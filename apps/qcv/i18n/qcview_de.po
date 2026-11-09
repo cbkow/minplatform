@@ -4490,3 +4490,28 @@ msgstr "Der Host sendet seinen Arbeitsfarbraum, ohne ihn zu benennen; wählen Si
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "Aktivieren Sie Datei ▸ Mit Blender verbinden, um auf diese Blender-Sitzung zu warten"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Transfer"
+msgstr "Übertragung"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Raster"
+msgstr "Raster"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Primaries"
+msgstr "Primärvalenzen"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Nits"
+msgstr "Nits"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in %1."
+msgstr "Keine Ausgaben installiert. Eine Ausgabe registriert sich in %1."

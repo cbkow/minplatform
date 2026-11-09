@@ -4482,3 +4482,28 @@ msgstr "호스트가 작업 색 공간을 이름 없이 보냅니다. 사용하�
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "이 Blender 세션을 수신하려면 파일 ▸ Blender에 연결을 켜세요"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Transfer"
+msgstr "전달 함수"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Raster"
+msgstr "래스터"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Primaries"
+msgstr "원색"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Nits"
+msgstr "니트"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs installed. An output registers itself in %1."
+msgstr "설치된 출력이 없습니다. 출력은 %1에 스스로 등록됩니다."
