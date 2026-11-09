@@ -14,11 +14,13 @@
 //!
 //! A message QCView's catalogs hold under several contexts with different translations (four in German: Display,
 //! Range, Media, "(none)") is looked up with [`trc`] and the context name; [`tr`] takes the first one found. A message
-//! with an empty translation, or no catalog at all, reads as its English. Live switching, the Language picker, the
-//! system-locale default and the CJK font check are the end-of-port localisation pass (row 197) — until then the
-//! language comes only from the app (`QCV_LANG`).
+//! with an empty translation, or no catalog at all, reads as its English. [`set_language`] can run at any time:
+//! [`generation`] counts the switches so an app rebuilds the labels it built at construction (row 197's live
+//! switching). Two aids for the people who check translations: [`set_pseudo`] (every looked-up text accented and
+//! lengthened ~40 %, the placeholders and parenthesised key hints kept — untranslated literals and clipping stand out)
+//! and [`record_misses`] / [`misses`] (what was looked up under a language and found no translation).
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Mutex, OnceLock, RwLock};
 
 /// Qt's numerus rules for the languages QCView shipped (gettext's Plural-Forms in each catalog match).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +75,8 @@ impl Catalog {
         c
     }
     pub fn len(&self) -> usize { self.by_ctx.len() }
+    /// The catalog's text for `english` under `context` (any context's when that one lacks it), if it has one.
+    pub fn text(&self, context: &str, english: &str) -> Option<&'static str> { self.get(Some(context), english).and_then(|v| v.first().copied()).filter(|t| !t.is_empty()) }
     pub fn is_empty(&self) -> bool { self.by_ctx.is_empty() }
     fn get(&self, ctx: Option<&str>, id: &str) -> Option<&Vec<&'static str>> {
         ctx.and_then(|c| self.by_ctx.get(&format!("{c}\u{4}{id}"))).or_else(|| self.by_id.get(id))
@@ -176,7 +180,39 @@ pub fn set_language(want: &str) -> &'static str {
         }
     };
     s.active = Some(cat);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
     code
+}
+
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static PSEUDO: AtomicBool = AtomicBool::new(false);
+static RECORD: AtomicBool = AtomicBool::new(false);
+fn missed() -> &'static Mutex<std::collections::BTreeSet<(String, String)>> { static M: OnceLock<Mutex<std::collections::BTreeSet<(String, String)>>> = OnceLock::new(); M.get_or_init(Default::default) }
+fn pseudo_cache() -> &'static Mutex<HashMap<String, &'static str>> { static M: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new(); M.get_or_init(Default::default) }
+
+/// Bumped by every [`set_language`] (and [`set_pseudo`]): labels built before a change differ from it.
+pub fn generation() -> u64 { GENERATION.load(Ordering::Relaxed) }
+/// Pseudo-localisation on / off (QCView's `QCV_PSEUDO_LOC`).
+pub fn set_pseudo(on: bool) { PSEUDO.store(on, Ordering::Relaxed); GENERATION.fetch_add(1, Ordering::Relaxed); }
+/// Start recording the lookups the active language has no translation for.
+pub fn record_misses(on: bool) { RECORD.store(on, Ordering::Relaxed); }
+/// The recorded misses as (context, English), sorted.
+pub fn misses() -> Vec<(String, String)> { missed().lock().unwrap().iter().cloned().collect() }
+
+/// The pseudo form: Latin letters accented, ~40 % longer, in brackets; `%1`..`%9`, `%n`, a trailing "(key)" hint and
+/// the text inside `{…}` untouched.
+pub fn pseudo(text: &str) -> String {
+    let (body, hint) = match text.rfind(" (") { Some(i) if text.ends_with(')') => (&text[..i], &text[i..]), _ => (text, "") };
+    let mut out = String::from("[");
+    let mut it = body.chars().peekable(); let mut letters = 0usize;
+    while let Some(c) = it.next() {
+        if c == '%' { if let Some(&n) = it.peek() { if n.is_ascii_digit() || n == 'n' { out.push('%'); out.push(n); it.next(); continue } } }
+        let m = match c { 'a' => 'á', 'e' => 'é', 'i' => 'î', 'o' => 'ö', 'u' => 'ü', 'c' => 'ç', 'n' => 'ñ', 'y' => 'ý', 'A' => 'Å', 'E' => 'É', 'I' => 'Î', 'O' => 'Ö', 'U' => 'Ü', 'C' => 'Ç', 'N' => 'Ñ', 's' => 'š', 'S' => 'Š', 'z' => 'ž', other => other };
+        if c.is_alphabetic() { letters += 1; }
+        out.push(m);
+    }
+    for i in 0..(letters * 2).div_ceil(5) { out.push(if i % 2 == 0 { '~' } else { '·' }); }
+    out.push(']'); out += hint; out
 }
 
 /// The active language code ("en" when none).
@@ -186,7 +222,15 @@ pub fn language() -> &'static str {
 
 fn lookup<'a>(ctx: Option<&str>, id: &'a str) -> &'a str {
     let s = state().read().unwrap();
-    s.active.and_then(|c| c.get(ctx, id)).and_then(|v| v.first().copied()).filter(|t| !t.is_empty()).unwrap_or(id)
+    let found = s.active.and_then(|c| c.get(ctx, id)).and_then(|v| v.first().copied()).filter(|t| !t.is_empty());
+    if found.is_none() && s.active.is_some() && RECORD.load(Ordering::Relaxed) && !id.trim().is_empty() { missed().lock().unwrap().insert((ctx.unwrap_or("").to_string(), id.to_string())); }
+    let text = found.unwrap_or(id);
+    if PSEUDO.load(Ordering::Relaxed) && !text.trim().is_empty() {
+        let mut c = pseudo_cache().lock().unwrap();
+        if let Some(p) = c.get(text) { return p }
+        let p: &'static str = Box::leak(pseudo(text).into_boxed_str()); c.insert(text.to_string(), p); return p
+    }
+    text
 }
 
 /// The active language's text for `english`.
@@ -211,7 +255,10 @@ pub fn trn(english: &str, n: i64) -> String { trnc(None, english, n) }
 pub fn trnc(context: Option<&str>, english: &str, n: i64) -> String {
     let s = state().read().unwrap();
     let pick = |c: &Catalog| c.get(context, english).and_then(|v| v.get(c.rule.form(n)).or(v.first()).copied()).filter(|t| !t.is_empty());
-    let text = s.active.and_then(pick).or_else(|| s.english_plurals.and_then(pick)).unwrap_or(english);
+    let found = s.active.and_then(pick);
+    if found.is_none() && s.active.is_some() && RECORD.load(Ordering::Relaxed) { missed().lock().unwrap().insert((context.unwrap_or("").to_string(), english.to_string())); }
+    let text = found.or_else(|| s.english_plurals.and_then(pick)).unwrap_or(english);
+    let text = if PSEUDO.load(Ordering::Relaxed) { pseudo(text) } else { text.to_string() };
     text.replace("%n", &n.to_string())
 }
 
@@ -270,6 +317,13 @@ mod tests {
         assert_eq!([1, 2, 5, 11, 21, 111, 112].map(|n| EastSlavic.form(n)), [0, 1, 2, 2, 0, 2, 2]);
         assert_eq!(PluralRule::for_language("pt_BR"), French);
         assert_eq!(PluralRule::for_language("zh_CN"), One);
+    }
+
+    #[test]
+    fn pseudo_keeps_placeholders_and_hints() {
+        assert_eq!(pseudo("Play (Space)"), "[Pláý~·] (Space)");
+        let p = pseudo("Couldn't open: %1"); assert!(p.contains("%1") && p.starts_with('[') && p.chars().count() > "Couldn't open: %1".chars().count() + 4, "{p}");
+        assert!(pseudo("%n frames").starts_with("[%n"));
     }
 
     #[test]

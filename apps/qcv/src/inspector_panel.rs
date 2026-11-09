@@ -120,6 +120,8 @@ fn fmt_dur(s: f64) -> String { let ms = (s * 1000.0).round() as i64; format!("{:
 fn fmt_bitrate(bps: i64) -> String { if bps <= 0 { String::new() } else if bps >= 1_000_000_000 { format!("{:.2} Gb/s", bps as f64 / 1e9) } else if bps >= 1_000_000 { format!("{:.1} Mb/s", bps as f64 / 1e6) } else if bps >= 1000 { format!("{:.0} kb/s", bps as f64 / 1e3) } else { format!("{bps} b/s") } }
 
 impl InspectorPanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); for (g, n) in self.groups.iter_mut().zip(f.groups) { g.section.title = n.section.title; } self.dirty_model = true; }
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(tr(title), true), items: vec![], rects: vec![], shown: true };
         InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_raw: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), hero_key: String::new(), hero_raw: None, hero_gen: u64::MAX, hero: None, hero_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,

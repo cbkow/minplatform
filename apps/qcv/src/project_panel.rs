@@ -70,6 +70,8 @@ fn section_label(t: MediaType) -> &'static str { match t { MediaType::Video => "
 const DOUBLE_CLICK_MS: u128 = 400;
 
 impl ProjectPanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.add.label = f.add.label; self.revision_seen = u64::MAX; }
     pub fn new() -> ProjectPanel { ProjectPanel { section: Section::new(tr("Media"), true), add: TextButton::new(tr("Add Media…"), Variant::Secondary).size_s(), groups: vec![], selected: vec![], last_selected: None, active: String::new(), title: String::new(), dirty: false, revision_seen: u64::MAX, height: 0.0, last_click: None, menu: Menu::new(), editing: None, pending_rename: None, new_playlist: ActionButton::new("plus", "New Playlist").size_s(), press: None, drag: None, tooltips: Tooltips::default(), badge_rects: vec![], tree: None } }
     /// The loaded playlist's tree (None = no playlist loaded); true when it changed.
     pub fn set_tree(&mut self, m: Option<TreeModel>) -> bool {

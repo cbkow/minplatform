@@ -13,22 +13,6 @@ use qcv_player::Action;
 use std::time::Instant;
 use vello::Scene;
 
-/// A keycap's text in pieces: Geist (Sans or Mono) has no ⌘ / ⌥ (they drew as boxes in the snap), so those two are
-/// Phosphor's `command` / `option`; everything else, ⇧ included, is Geist Sans.
-fn cap_pieces(fonts: &mut Fonts, cap: &str, scale: f64, color: peniko::Color) -> Vec<min_ui::fonts::TextLayout> {
-    let size = t::CODE_SIZE_S * scale as f32;
-    let mut out = vec![]; let mut run = String::new();
-    for ch in cap.chars() {
-        let icon = match ch { '⌘' => Some("command"), '⌥' => Some("option"), _ => None };
-        match icon {
-            Some(slug) => { if !run.is_empty() { out.push(fonts.layout(&std::mem::take(&mut run), Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, color)); } if let Some(l) = fonts.icon(slug, size * 0.95, color) { out.push(l); } }
-            None => run.push(ch),
-        }
-    }
-    if !run.is_empty() { out.push(fonts.layout(&run, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, color)); }
-    out
-}
-
 fn tr(s: &str) -> &str { min_i18n::trc("RightRail", s) }
 
 /// One binding. `cmd` = Ctrl on Windows, ⌘ on macOS (the shell's `mods.ctrl`).
@@ -114,6 +98,8 @@ struct Shown { heading: String, rect: Rect, rows: Vec<Row> }
 pub struct ShortcutsPanel { pub section: Section, filter: TextField, shown: Vec<Shown>, height: f64, mac: bool, empty: Option<Rect> }
 
 impl ShortcutsPanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.filter.placeholder = f.filter.placeholder; }
     pub fn new() -> ShortcutsPanel {
         let mut filter = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); filter.placeholder = tr("Filter shortcuts").to_string();
         ShortcutsPanel { section: Section::new(tr("Keyboard Shortcuts"), false), filter, shown: vec![], height: 0.0, mac: cfg!(target_os = "macos"), empty: None }
@@ -137,7 +123,7 @@ impl ShortcutsPanel {
             (!rows.is_empty()).then_some((head, rows))
         }).collect()
     }
-    fn cap_w(fonts: &mut Fonts, cap: &str, scale: f64) -> f64 { cap_pieces(fonts, cap, scale, peniko::Color::WHITE).iter().map(|l| l.width() as f64).sum::<f64>() + 10.0 * scale }
+    fn cap_w(fonts: &mut Fonts, cap: &str, scale: f64) -> f64 { fonts.layout(cap, Family::Sans, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 + 10.0 * scale }
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
@@ -204,12 +190,11 @@ impl ShortcutsPanel {
                 // keycaps right-aligned, each binding its own recessed cap (QCView: the KvRow wells' tone, mono text)
                 let mut x = r.rect.x1;
                 for cap in r.caps.iter().rev() {
-                    let pieces = cap_pieces(fonts, cap, scale, paint::color(t::RAIL_LABEL_COLOR));
-                    let w = pieces.iter().map(|l| l.width() as f64).sum::<f64>() + 10.0 * scale; let cy = r.rect.y0 + (r.rect.height() - cap_h) / 2.0;
+                    let tl = fonts.layout(cap, Family::Sans, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
+                    let w = tl.width() as f64 + 10.0 * scale; let cy = r.rect.y0 + (r.rect.height() - cap_h) / 2.0;
                     let cr = Rect::new(x - w, cy, x, cy + cap_h);
                     paint::rounded(scene, cr, rad, t::FIELD_BACKGROUND_COLOR);
-                    let mut px = cr.x0 + 5.0 * scale;
-                    for l in &pieces { min_ui::fonts::draw_layout(scene, l, Affine::translate((px, cr.y0 + (cap_h - l.height() as f64) / 2.0))); px += l.width() as f64; }
+                    min_ui::fonts::draw_layout(scene, &tl, Affine::translate((cr.x0 + 5.0 * scale, cr.y0 + (cap_h - tl.height() as f64) / 2.0)));
                     x -= w + cap_gap;
                 }
             }
@@ -254,6 +239,16 @@ mod tests {
             assert!(all.contains(&sc.label()), "the menu's {} is not on the card", sc.label()); n += 1;
         } }
         assert!(n >= 15, "{n}");
+    }
+    /// Every heading and label on the card reads in every carried language (a new shortcut arrives translated).
+    #[test] fn every_label_is_translated() {
+        let mut gaps = vec![];
+        for (code, po) in crate::i18n::CATALOGS.iter().filter(|(c, _)| *c != "en") {
+            let cat = min_i18n::Catalog::parse(code, po);
+            for g in GROUPS { for text in std::iter::once(g.heading).chain(g.entries.iter().map(|e| e.label)) { if cat.text("RightRail", text).is_none() { gaps.push(format!("{code}: {text}")); } } }
+            for text in ["Keyboard Shortcuts", "Filter shortcuts", "No shortcut matches", "Scroll"] { if cat.text("RightRail", text).is_none() { gaps.push(format!("{code}: {text}")); } }
+        }
+        assert!(gaps.is_empty(), "untranslated: {gaps:?}");
     }
     #[test] fn spellings() {
         assert_eq!(cs("O").label(false), "Ctrl+Shift+O"); assert_eq!(cs("O").label(true), "⇧⌘O");

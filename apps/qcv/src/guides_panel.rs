@@ -15,6 +15,8 @@ pub enum Cmd { Guide(String), Opacity(f32), Width(f32), Color(String) }
 pub struct GuidesPanel { pub section: Section, guide: Picker, opacity: Slider, width: Slider, color: ColorPicker, labels: [Rect; 4], readouts: [Rect; 2], height: f64, vals: (f32, f32) }
 
 impl GuidesPanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; if let (Some(o), Some(n)) = (self.guide.options.first_mut(), f.guide.options.first()) { *o = n.clone(); } }
     pub fn new() -> GuidesPanel {
         let mut names: Vec<String> = crate::guides::GUIDES.iter().map(|g| g.0.to_string()).collect(); names.sort();
         let mut opts = vec![tr("(none)").to_string()]; opts.extend(names);

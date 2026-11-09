@@ -50,7 +50,7 @@ impl ColorPicker {
         self.sv = Rect::new(x0, y, x1, y + sq);
         let hb = 12.0 * scale; self.hue = Rect::new(x0, self.sv.y1 + gap, x1, self.sv.y1 + gap + hb);
         let fh = t::FIELD_HEIGHT_S as f64 * scale; let fy = self.hue.y1 + gap;
-        let lw = fonts.layout("Hex", Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR)).width() as f64 + gap;
+        let lw = fonts.layout(min_i18n::trc("ColorPickerInline", "Hex"), Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR)).width() as f64 + gap;
         self.label = Rect::new(x0, fy, x0 + lw, fy + fh);
         self.field.layout(fonts, Rect::new(x0 + lw, fy, x1, fy + fh), scale);
         self.rect = Rect::new(x0, y, x1, fy + fh);
@@ -116,7 +116,7 @@ impl ColorPicker {
         let hx = self.hue.x0 + self.h as f64 * self.hue.width();
         scene.stroke(&Stroke::new(2.0 * scale), Affine::IDENTITY, peniko::Color::WHITE, None, &kurbo::RoundedRect::new(hx - 3.0 * scale, self.hue.y0 - 2.0 * scale, hx + 3.0 * scale, self.hue.y1 + 2.0 * scale, 2.0 * scale));
         // the Hex row: its label, the field, a swatch of the colour at its end
-        let l = fonts.layout("Hex", Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
+        let l = fonts.layout(min_i18n::trc("ColorPickerInline", "Hex"), Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
         crate::fonts::draw_layout(scene, &l, Affine::translate((self.label.x0, self.label.y0 + (self.label.height() - l.height() as f64) / 2.0)));
         self.field.paint(scene, fonts, scale);
         let sw = self.field.rect.height() - 8.0 * scale;

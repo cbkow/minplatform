@@ -25,6 +25,8 @@ pub struct CompactStrip {
 fn tr(s: &str) -> String { min_i18n::trc_hint("CompactStrip", s) }
 
 impl CompactStrip {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.play.tooltip = f.play.tooltip; self.pin.tooltip = f.pin.tooltip; self.exit.tooltip = f.exit.tooltip; }
     pub fn new() -> CompactStrip {
         CompactStrip { play: ActionButton::new("play", &tr("Play (Space)")).size_s(), pin: ActionButton::new("push-pin", &tr("Always on Top (Ctrl+Alt+T)")).size_s(), exit: ActionButton::new("arrows-out-simple", &tr("Leave Compact Mode (Ctrl+Shift+C, Esc)")).size_s(),
             tc: String::new(), tc_rect: Rect::ZERO, tc_hover: false, tooltips: Tooltips::default(), rect: Rect::ZERO, scrub_rect: Rect::ZERO }

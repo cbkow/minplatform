@@ -37,11 +37,18 @@ const CONTROL_W: f64 = 110.0;
 /// QCView's catalog context for the left rail (canon row 195).
 fn tr(s: &'static str) -> &'static str { min_i18n::trc("LeftRail", s) }
 
+/// The Language picker's rows (`crate::i18n::LANGUAGES`): native names, never translated — only "System default" is.
+const LANG_CODES: &[&str] = &["", "en", "de", "es", "fr", "it", "ja", "ko", "pl", "pt_BR", "ru", "uk", "zh_CN"];
+const LANG_NAMES: &[&str] = &["System default", "English", "Deutsch", "Español", "Français", "Italiano", "日本語", "한국어", "Polski", "Português (Brasil)", "Русский", "Українська", "简体中文 (中国)"];
+
 impl SettingsPanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    /// Every row's text is the constructor's and the values come from the store each frame: a fresh panel, the section's state kept.
+    pub fn relabel(&mut self) { let expanded = self.section.expanded; *self = Self::new(); self.section.expanded = expanded; }
     pub fn new() -> SettingsPanel {
         let sw = |key, label, help, backed| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Switch(Switch::new(false)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
         let num = |key, label, help, backed, min, max, step| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Number(NumberField::new(0, min, max, step)), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
-        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| tr(s).to_string()).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
+        let pick = |key, label, help, backed, opts: &'static [&'static str], values: &'static [&'static str]| Row { key, label: tr(label), help: tr(help), backed, windows_only: false, ctl: Ctl::Picker(Picker::new(opts.iter().map(|s| if LANG_NAMES[1..].contains(s) || ["PNG", "JPEG", "TIFF"].contains(s) { s.to_string() } else { tr(s).to_string() }).collect(), 0), values), rect: Rect::ZERO, label_rect: Rect::ZERO, label_hover: false };
         let mut threads = num(k::FFMPEG_THREADS, "Video decode threads", "0 = Auto. Single-video playback only; applies on the next open.", true, 0, 32, 1);
         if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label(tr("Auto")); }
         let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (D3D12VA) when the format allows; applies on the next open.", true);
@@ -56,7 +63,7 @@ impl SettingsPanel {
                 sw(k::HW_SCRUB_INTER, "Hardware scrub for h264/h265 (experimental)", "GPU decode while scrubbing h264/h265; applies on the next open.", true),
             ] },
             Group { title: tr("Interface"), header: Rect::ZERO, rows: vec![
-                pick(k::LANGUAGE, "Language", "Language of the interface. System follows the OS.", false, &["System"], &[""]),
+                pick(k::LANGUAGE, "Language", "Language of the interface. System default follows the OS setting. Applies at once.", true, LANG_NAMES, LANG_CODES),
                 sw(k::ALWAYS_OPEN_MINIMAL, "Always open in minimal mode", "Launch with the rails collapsed.", true),
                 sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
                 sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", false),
@@ -113,6 +120,8 @@ impl SettingsPanel {
             let gh = fonts.detail(g.title, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).height() as f64;
             g.header = Rect::new(x0 + pad, cy, x1 - pad, cy + gh); cy += gh + pad;
             for r in g.rows.iter_mut().filter(|r| !r.windows_only || cfg!(windows)) {
+                // QCView's Language picker is wider than the rest (`Layout.preferredWidth: 190`): native names and "System default" in German / Russian
+                let (cw, label_w) = if r.key == k::LANGUAGE { let w = (190.0 * scale).min(x1 - x0 - 2.0 * pad - pad - 72.0 * scale).max(cw); (w, (x1 - x0 - 2.0 * pad - w - pad).max(40.0)) } else { (cw, label_w) };
                 let lh = fonts.layout_width(r.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some(label_w as f32)).height() as f64;
                 let h = row_h.max(lh + 2.0 * gap);
                 r.rect = Rect::new(x0 + pad, cy, x1 - pad, cy + h);

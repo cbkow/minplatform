@@ -92,7 +92,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
     guide: Option<(String, guides::Guide)>, /// the annotated thumbnail's offscreen vello layer (built on first use)
     thumb_layer: Option<min_ui::UiLayer>, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, /// the Keyboard Shortcuts card under it (row 218) and a pending Ctrl+/ scroll
-    shortcuts: shortcuts::ShortcutsPanel, shortcuts_reveal: bool, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
+    shortcuts: shortcuts::ShortcutsPanel, shortcuts_reveal: bool, /// the language generation the labels were built in (row 197's live switching)
+    lang_gen: u64, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
     /// QCView's in-window menu bar (Windows; row 194) + its About modal
     menu_bar: Option<menu::InWindowMenu>, about: min_ui::Dialog }
 
@@ -755,6 +756,8 @@ impl App {
         }
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
+        // a language switch (row 197): relabel once per change
+        if g.lang_gen != min_i18n::generation() { g.lang_gen = min_i18n::generation(); relabel(g); #[cfg(target_os = "macos")] { let m = menu::AppMenu::new(); m.menu.init_for_nsapp(); self.menu = Some(m); } }
         if let Some(u) = g.ui.as_mut() {
             // the bands repaint when the playhead moves (single: once its first frame landed; dual: the master's frame)
             let frame = match &self.dual { Some(d) => Some((d.current_frame(), d.frame_count(), d.rate().as_f64())), None => self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64()))) };
@@ -1280,6 +1283,7 @@ impl App {
         let keys: Vec<&'static str> = match c { settings_panel::Cmd::Changed(k) => vec![k], settings_panel::Cmd::ResetAll => vec![k::TIMELINE_HOVER_THUMBS, k::TIMELINE_WAVEFORMS, k::VOLUME, k::MUTED, k::SYNC_OFFSET_MS, k::SCRUB_MUTED, k::LOOP_ENABLED, k::LEFT_RAIL_WIDTH, k::RIGHT_RAIL_WIDTH, k::LEFT_RAIL_COLLAPSED, k::RIGHT_RAIL_COLLAPSED, k::BACKGROUND_MODE, k::ALWAYS_ON_TOP] };
         let now = Instant::now();
         for key in keys {
+            if key == k::LANGUAGE { i18n::apply(&self.settings.string(k::LANGUAGE)); }   // the panels relabel on the next tick (QCView: "Applies at once")
             let Some(g) = self.gpu.as_mut() else { return };
             match key {
                 k::TIMELINE_HOVER_THUMBS => { g.thumbs.enabled = self.settings.bool(key); g.ui_dirty = true; }
@@ -1608,6 +1612,7 @@ impl App {
         g.ui_dirty = true;
     }
     fn finish(&mut self) {
+        i18n::write_misses();
         if let Some(g) = self.gpu.as_mut() {
             g.thumbs.shutdown(); g.thumbs_b.shutdown();
             if !g.fullscreen {
@@ -1645,6 +1650,21 @@ impl App {
         }
         println!("close: total {:.0} ms · wall {}", t_all.elapsed().as_secs_f32() * 1000.0, unix_ms());
     }
+}
+
+fn dual_dialog() -> min_ui::Dialog { min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), "") }
+fn about_dialog() -> min_ui::Dialog { min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) }
+
+/// A language switch (canon row 197, QCView's `retranslate`): every panel's construction-time labels in the new language;
+/// what they show each frame (values, rows built at sync) follows on its own. An open dialog keeps its words until it closes.
+fn relabel(g: &mut Gpu) {
+    g.settings_panel.relabel(); g.background_panel.relabel(); g.guides_panel.relabel(); g.project_panel.relabel();
+    g.inspector.relabel(); g.shortcuts.relabel(); g.bar.relabel(); g.strip.relabel(); g.compact_strip.relabel();
+    g.dualc.relabel(); g.clip_popover.relabel(); g.drawer.relabel(); g.notes.relabel();
+    if !g.about.open { g.about = about_dialog(); }
+    if !g.dual_dialog.open { g.dual_dialog = dual_dialog(); }
+    if g.menu_bar.is_some() { g.menu_bar = Some(menu::InWindowMenu::new(&mut g.fonts)); }
+    g.ui_dirty = true;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1845,9 +1865,9 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
-            about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
+            about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
         // the scrubber's camera insets 16 px at both ends (the walk, 2026-11-08): past macOS's rounded bottom corners, so the
         // timeline's ends keep their trim zones reachable, and room for the dual lanes' A / B row labels on every OS
@@ -2163,7 +2183,7 @@ fn main() {
     let scrub = arg("--scrub").and_then(|v| { let (r, ms) = v.rsplit_once(':')?; let (a, b) = r.split_once('-')?; Some((a.parse().ok()?, b.parse().ok()?, ms.parse().ok()?)) });
     let o = Opts { dual: arg("--dual"), snap_display, cut: arg("--cut"), hover: arg("--hover").and_then(|v| v.parse().ok()), seek_gap_ms: arg("--seek-gap").and_then(|v| v.parse().ok()).unwrap_or(0), seeks: arg("--seeks").and_then(|v| v.parse().ok()), scrub, scrub_hw: has("--scrub-hw"), headless: arg("--headless").and_then(|v| v.parse().ok()), looping: has("--loop"), file, files, sw: has("--sw"), out, white: arg("--white").and_then(|v| v.parse().ok()).unwrap_or(100.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), stats: has("--stats"), snap_out, verify_pq: has("--verify-pq"), identity_chain: has("--identity-chain"), refresh_ms: arg("--refresh").and_then(|v| v.parse().ok()).unwrap_or(1000.0 / 60.0), screen: arg("--screen").and_then(|v| v.parse().ok()), threads: arg("--threads").and_then(|v| v.parse().ok()).unwrap_or(0), autoplay: has("--play") };
     if let Some(secs) = arg("--audio-bench").and_then(|v| v.parse().ok()) { run_audio_bench(o, secs); return }
-    if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap"), arg("--ui-size").and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))); return }
+    if let Some(n) = arg("--ui-bench").and_then(|v| v.parse().ok()) { run_ui_bench(o, n, arg("--ui-snap"), arg("--ui-size").and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))); i18n::write_misses(); return }
     if o.headless.is_some() { run_headless(o); return }
     // QCView's single-instance handoff: a running window takes this launch's arguments (absolute: its working folder differs)
     let multi = std::env::var_os("QCV_MULTI_INSTANCE").is_some();
@@ -2173,6 +2193,7 @@ fn main() {
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
     let settings = settings::open();
+    i18n::apply(&settings.string(settings::k::LANGUAGE));   // row 197: the picker's language (QCV_LANG wins), before the window builds its panels
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
@@ -2311,6 +2332,8 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     } else { loaded };
     let _ = pp.sync(&project, &loaded);
     let mut bgp = background_panel::BackgroundPanel::new(); bgp.sync(2); engine.set_background(2); engine.set_ui_scale(scale as f32);
+    // `QCV_UI_SNAP_RELABEL=<code>`: the panels built in the launch language, then the live switch (row 197) — what the Language picker does
+    if let Ok(code) = std::env::var("QCV_UI_SNAP_RELABEL") { min_i18n::set_language(&code); panel.relabel(); panel.sync(&store, t0); pp.relabel(); let _ = pp.sync(&project, &loaded); bgp.relabel(); bar.relabel(); strip.relabel(); println!("relabel: {} (generation {})", min_i18n::language(), min_i18n::generation()); }
     let lc = left.content_rect(); let pph = pp.layout(&mut fonts, lc.x0, lc.x1, lc.y0, scale); let bh = bgp.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph, scale); let ph = panel.layout(&mut fonts, lc.x0, lc.x1, lc.y0 + pph + bh, scale); left.content_height = pph + bh + ph;
     // the tree drag, scripted: clip 0 dragged below the last row → MoveClip to slot 3; then pressed + dragged again for the snap
     if std::env::var_os("QCV_UI_SNAP_TREE").is_some() && let (Some(r0), Some(r2)) = (pp.tree_rows().first().copied(), pp.tree_rows().last().copied()) {

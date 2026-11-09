@@ -11,6 +11,8 @@ description = "minplatform — the family's UI toolkit (canon §8.9, §16, §25)
 
 [dependencies]
 min-theme = { path = "../min-theme" }
+# the few words the widgets own (Hex, Filter…, the rail tab's tooltip) under QCView's contexts, looked up at paint so a language switch reaches them
+min-i18n = { path = "../min-i18n" }
 vello = { workspace = true }
 parley = { workspace = true }
 peniko = { workspace = true }

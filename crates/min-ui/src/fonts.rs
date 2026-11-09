@@ -39,16 +39,33 @@ impl Fonts {
     /// As `layout`, wrapping at `max_width` physical pixels when given.
     pub fn layout_width(&mut self, text: &str, family: Family, size_px: f32, weight: f32, color: Color, max_width: Option<f32>) -> Layout<Brush> {
         let name = self.family_name(family).to_string();
+        // Geist has no ⌘ / ⌥ (they drew as boxes in tooltips and the shortcuts card): those two come from Phosphor's
+        // `command` / `option`, swapped in as ranges of the icon family
+        let (text, marks) = mac_glyphs(text, family);
+        let text = text.as_str();
+        let icon = self.icon.clone();
         let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, text, 1.0, true);
         b.push_default(StyleProperty::FontFamily(FontFamily::Single(FontFamilyName::Named(Cow::Owned(name)))));
         b.push_default(StyleProperty::FontSize(size_px));
         b.push_default(StyleProperty::FontWeight(FontWeight::new(weight)));
         b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(min_theme::tokens::UI_LINE_HEIGHT as f32)));
         b.push_default(StyleProperty::Brush(Brush::Solid(color)));
+        for r in marks { b.push(StyleProperty::FontFamily(FontFamily::Single(FontFamilyName::Named(Cow::Owned(icon.clone())))), r.clone()); b.push(StyleProperty::FontWeight(FontWeight::new(400.0)), r); }
         let mut layout = b.build(text);
         layout.break_all_lines(max_width);
         layout.align(Alignment::Start, AlignmentOptions::default());
         layout
+    }
+    /// As `layout`, cut with "…" to fit `max_w` physical px (a long translation in a fixed control: the walk 2026-11-09,
+    /// German "Dunkles Schachbrett" ran out of its chip). The whole text when it fits.
+    pub fn layout_fit(&mut self, text: &str, family: Family, size_px: f32, weight: f32, color: Color, max_w: f64) -> Layout<Brush> {
+        let full = self.layout(text, family, size_px, weight, color);
+        if full.width() as f64 <= max_w || max_w <= 0.0 { return full }
+        let chars: Vec<char> = text.chars().collect();
+        let (mut lo, mut hi) = (0usize, chars.len());
+        while lo < hi { let mid = (lo + hi).div_ceil(2); let s: String = chars[..mid].iter().collect::<String>().trim_end().to_string() + "…"; if self.layout(&s, family, size_px, weight, color).width() as f64 <= max_w { lo = mid; } else { hi = mid - 1; } }
+        let s: String = chars[..lo].iter().collect::<String>().trim_end().to_string() + "…";
+        self.layout(&s, family, size_px, weight, color)
     }
     /// A tracked-capitals "detail" layout (Spectrum 2's detail style; the go-to popover's title): bold, `letter_spacing` in em.
     pub fn detail(&mut self, text: &str, size_px: f32, color: Color) -> Layout<Brush> {
@@ -71,6 +88,17 @@ impl Fonts {
         let ch = min_theme::icons::glyph(slug)?;
         Some(self.layout(&ch.to_string(), Family::Icon, size_px, 400.0, color))
     }
+}
+
+/// `text` with ⌘ / ⌥ swapped for Phosphor's glyphs, and the byte ranges they occupy (none for the icon family).
+fn mac_glyphs(text: &str, family: Family) -> (String, Vec<std::ops::Range<usize>>) {
+    if family == Family::Icon || !text.contains(['⌘', '⌥']) { return (text.to_string(), vec![]) }
+    let mut out = String::with_capacity(text.len()); let mut marks = vec![];
+    for ch in text.chars() {
+        let sub = match ch { '⌘' => min_theme::icons::glyph("command"), '⌥' => min_theme::icons::glyph("option"), _ => None };
+        match sub { Some(g) => { let at = out.len(); out.push(g); marks.push(at..out.len()); } None => out.push(ch) }
+    }
+    (out, marks)
 }
 
 impl Default for Fonts { fn default() -> Self { Fonts::new() } }

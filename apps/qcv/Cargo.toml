@@ -42,6 +42,7 @@ min-image = { path = "../../crates/min-image" }
 arboard = { workspace = true, features = ["image-data"] }
 env_logger = { workspace = true }
 log = { workspace = true }
+sys-locale = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # the native menu bar (row 143); Windows draws QCView's in-window bar instead (row 194)

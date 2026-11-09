@@ -43,6 +43,8 @@ pub struct TransportBar {
 fn tr(s: &str) -> String { min_i18n::trc_hint("TransportBar", s) }
 
 impl TransportBar {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); for (g, n) in self.groups.iter_mut().zip(f.groups) { for (b, n) in g.buttons.iter_mut().zip(n.buttons) { b.tooltip = n.tooltip; b.label = n.label; } } for (b, n) in self.pin.buttons.iter_mut().zip(f.pin.buttons) { b.tooltip = n.tooltip; b.label = n.label; } self.volume.tooltip = f.volume.tooltip; }
     pub fn new() -> TransportBar {
         let b = |icon, tip| ActionButton::new(icon, &tr(tip));
         let groups: Vec<(bool, Vec<(ActionButton, Bind)>)> = vec![

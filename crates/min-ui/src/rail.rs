@@ -178,9 +178,10 @@ impl Rail {
         self.collapse_ramp.set_target(if self.collapse_hover { 1.0 } else { 0.0 }, now);
         // the arrow's tooltip: hide when open, show when collapsed
         if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
-        let side = match self.side { Side::Left => "left", Side::Right => "right" };
+        // QCView's words (`LeftRail` / `RightRail.qml`: "Expand panel" / "Collapse panel"), translated at hover time
+        let ctx = match self.side { Side::Left => "LeftRail", Side::Right => "RightRail" };
         let key = if self.shortcut.is_empty() { String::new() } else { format!(" ({})", self.shortcut) };
-        let over = if self.tab_hover { Some((2u64, self.tab, if self.collapsed { format!("Show the {side} rail{key}") } else { format!("Hide the {side} rail{key}") })) } else { None };
+        let over = if self.tab_hover { Some((2u64, self.tab, format!("{}{key}", min_i18n::trc(ctx, if self.collapsed { "Expand panel" } else { "Collapse panel" })))) } else { None };
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { r.dirty = true; }
         r.dirty = was != (self.splitter_hover, self.tab_hover, self.inside, self.drag.is_some(), self.sb_hover, self.sb_drag.is_some(), self.collapse_hover) || r.width_changed || r.toggled;
         r

@@ -42,6 +42,8 @@ const POPOVER_W: f64 = 210.0;   // QCView's go-to popup width (logical), padding
 fn tr(s: &str) -> &str { min_i18n::trc("TimelineStatus", s) }
 
 impl StatusStrip {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.field.placeholder = f.field.placeholder.clone(); self.popover.title = f.popover.title.clone(); }
     pub fn new() -> StatusStrip {
         let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S);
         field.placeholder = tr("frame number").into();

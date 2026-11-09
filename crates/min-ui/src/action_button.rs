@@ -118,7 +118,7 @@ impl ActionButton {
         }
         if let Some(label) = &self.label {
             let (fs, fw) = self.label_font();
-            let l = fonts.layout(label, Family::Sans, fs * scale as f32, fw, paint::color(fg));
+            let l = fonts.layout_fit(label, Family::Sans, fs * scale as f32, fw, paint::color(fg), self.rect.x1 - x - t::ACTION_BUTTON_EDGE_TO_TEXT_M as f64 * scale);   // the tooltip carries the whole label
             crate::fonts::draw_layout(scene, &l, Affine::translate((x, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
         }
     }

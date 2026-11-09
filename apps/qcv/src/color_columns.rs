@@ -106,6 +106,8 @@ pub struct KneePanel {
 }
 
 impl KneePanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.f.title = f.f.title; self.reset.tooltip = f.reset.tooltip; }
     pub fn new() -> KneePanel {
         KneePanel { f: Frame::new(tr("Highlight Knee")), chain: Chain::default(), file: (0, 0.0), on: Switch::new(false), src: NumberField::new(1000, 100, 10000, 100), use_file: TextButton::new("", Variant::Secondary).size_s(),
             tgt: NumberField::new(100, 100, 10000, 50), start: Slider::new(0.5), reset: ActionButton::new("arrow-counter-clockwise", tr("Reset knee start to BT.2390")).size_s(), rows: vec![], last_press: None, sdr: false }

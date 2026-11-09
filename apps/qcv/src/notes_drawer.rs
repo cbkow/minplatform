@@ -49,6 +49,8 @@ pub struct NotesDrawer {
 }
 
 impl NotesDrawer {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.tools.iter_mut().zip(f.tools) { b.tooltip = n.tooltip; b.label = n.label; } }
     pub fn new() -> NotesDrawer {
         NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, hbar: ScrollBar::horizontal(), panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),

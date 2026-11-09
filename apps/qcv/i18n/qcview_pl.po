@@ -3823,3 +3823,653 @@ msgstr "ustawienia koloru hosta i repliki różnią się (%1)"
 msgctxt "qcv::WindowManager"
 msgid "Blender stream: %1"
 msgstr "Strumień Blendera: %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Apply to all clips"
+msgstr "Zastosuj do wszystkich klipów"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Clips without their own chain follow this one"
+msgstr "Klipy bez własnego łańcucha używają tego"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Color Off"
+msgstr "Kolor wył."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Color On"
+msgstr "Kolor wł."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Config"
+msgstr "Konfiguracja"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Couldn't load the OCIO config: %1"
+msgstr "Nie udało się wczytać konfiguracji OCIO: %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Following the project default"
+msgstr "Według domyślnych projektu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Loading the OCIO config…"
+msgstr "Wczytywanie konfiguracji OCIO…"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Make project default"
+msgstr "Ustaw jako domyślne projektu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "New OCIO chain…"
+msgstr "Nowy łańcuch OCIO…"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "None"
+msgstr "Brak"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Open OCIO config"
+msgstr "Otwórz konfigurację OCIO"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Open config…"
+msgstr "Otwórz konfigurację…"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Own chain"
+msgstr "Własny łańcuch"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "PRESET NAME"
+msgstr "NAZWA PRESETU"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Project default"
+msgstr "Domyślne projektu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "RENAME PRESET"
+msgstr "ZMIEŃ NAZWĘ PRESETU"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Rename…"
+msgstr "Zmień nazwę…"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Reset to default"
+msgstr "Przywróć domyślne"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Save as preset…"
+msgstr "Zapisz jako preset…"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Update to this chain"
+msgstr "Zaktualizuj do tego łańcucha"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Yours"
+msgstr "Twoje"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "from"
+msgstr "z"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "peak"
+msgstr "szczyt"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "CompactStrip"
+msgid "Leave Compact Mode"
+msgstr "Wyjdź z trybu kompaktowego"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "InspectorPanel"
+msgid "Folder"
+msgstr "Folder"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "InspectorPanel"
+msgid "Meters"
+msgstr "Wskaźniki"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "InspectorPanel"
+msgid "none"
+msgstr "brak"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "InspectorPanel"
+msgid "software"
+msgstr "programowo"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "0 = Auto. Single-video playback only; applies on the next open."
+msgstr "0 = Auto. Tylko odtwarzanie pojedynczego wideo; obowiązuje od następnego otwarcia."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Add Media…"
+msgstr "Dodaj media…"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Applies on the next sequence load."
+msgstr "Obowiązuje od następnego wczytania sekwencji."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Decoded frames kept near the playhead while scrubbing; applies on the next open."
+msgstr "Zdekodowane klatki trzymane przy głowicy podczas scrubu; obowiązuje od następnego otwarcia."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Dragging the picture moves the window."
+msgstr "Przeciąganie obrazu przesuwa okno."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Draw the active safety guide into Desktop and clipboard screenshots."
+msgstr "Rysuj aktywną linię bezpieczeństwa na zrzutach na Pulpit i do schowka."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Draw the audio waveform in the scrubber. Peaks decode lazily in the background."
+msgstr "Rysuj przebieg audio na pasku scrubu. Szczyty są dekodowane w tle w miarę potrzeby."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open."
+msgstr "Wszystkie ustawienia wracają do domyślnych, w tym rozmiar i położenie okna oraz układ paneli bocznych. Media pozostają otwarte."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless."
+msgstr "Format zrzutów na Pulpit. JPEG jest mniejszy, PNG i TIFF są bezstratne."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Frames cached ahead of the playhead for image sequences."
+msgstr "Klatki buforowane przed głowicą dla sekwencji obrazów."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "GPU decode (D3D12VA) when the format allows; applies on the next open."
+msgstr "Dekodowanie GPU (D3D12VA), gdy format na to pozwala; obowiązuje od następnego otwarcia."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "GPU decode while scrubbing h264/h265; applies on the next open."
+msgstr "Dekodowanie GPU podczas scrubu h264/h265; obowiązuje od następnego otwarcia."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "How much bridge audio is queued before it plays; in milliseconds."
+msgstr "Ile dźwięku z bridge'a jest buforowane przed odtworzeniem, w milisekundach."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Include safety guides in screenshots"
+msgstr "Linie bezpieczeństwa na zrzutach"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Launch with the rails collapsed."
+msgstr "Uruchamiaj ze zwiniętymi panelami bocznymi."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Off at every launch. On: listen for a Blender bridge session."
+msgstr "Wyłączone przy każdym uruchomieniu. Włączone: nasłuchuj sesji bridge'a Blendera."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Play audio pushed by Premiere Pro over the bridge."
+msgstr "Odtwarzaj dźwięk wysyłany przez Premiere Pro przez bridge."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Show a frame thumbnail while the pointer rests on the timeline."
+msgstr "Pokazuj miniaturę klatki, gdy wskaźnik spoczywa na osi czasu."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Silence the audio feedback while scrubbing and shuttling."
+msgstr "Wyciszaj dźwięk podczas scrubu i shuttle."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "All media"
+msgstr "Wszystkie media"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Audio files"
+msgstr "Pliki audio"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Image / sequence files"
+msgstr "Pliki obrazów / sekwencji"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Open Media"
+msgstr "Otwórz media"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Open Project"
+msgstr "Otwórz projekt"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView Project"
+msgstr "Projekt QCView"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Save Project As"
+msgstr "Zapisz projekt jako"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Video files"
+msgstr "Pliki wideo"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "NotesPanel"
+msgid "Export failed: %1"
+msgstr "Eksport nie powiódł się: %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "NotesPanel"
+msgid "Notes exported"
+msgstr "Wyeksportowano notatki"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Annotations (in annotation mode)"
+msgstr "Adnotacje (w trybie adnotacji)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Bins (when item selected)"
+msgstr "Kosze (gdy wybrano element)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Cancel In-Flight Stroke / Clear Selection"
+msgstr "Anuluj rysowaną kreskę / Wyczyść zaznaczenie"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Clear In/Out Points"
+msgstr "Wyczyść punkty początkowy/końcowy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Cut Target Side at Playhead"
+msgstr "Przetnij stronę docelową przy głowicy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Cycle Background"
+msgstr "Przełącz tło"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Delete Clip (close gap)"
+msgstr "Usuń klip (zamknij lukę)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Delete Clip (leave gap)"
+msgstr "Usuń klip (zostaw lukę)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Delete Item"
+msgstr "Usuń element"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Delete Selected Clip"
+msgstr "Usuń zaznaczony klip"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Delete Selected Stroke"
+msgstr "Usuń zaznaczoną kreskę"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Exit Fullscreen / Compact"
+msgstr "Wyjdź z pełnego ekranu / kompaktowego"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Fast Forward (hold)"
+msgstr "Przewiń do przodu (przytrzymaj)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Filter shortcuts"
+msgstr "Filtruj skróty"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Mute / Unmute"
+msgstr "Wycisz / Wyłącz wyciszenie"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Next Frame"
+msgstr "Następna klatka"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "No shortcut matches"
+msgstr "Brak pasujących skrótów"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Notes Panel"
+msgstr "Panel notatek"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Pan horizontally"
+msgstr "Przesuń w poziomie"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Play / Pause"
+msgstr "Odtwórz / Wstrzymaj"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Previous Frame"
+msgstr "Poprzednia klatka"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Quit"
+msgstr "Zakończ"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Redo Edit"
+msgstr "Ponów edycję"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Redo Stroke"
+msgstr "Ponów kreskę"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Rename Item"
+msgstr "Zmień nazwę elementu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Review Speed (cycle)"
+msgstr "Prędkość przeglądu (przełącz)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Review Speed to 1×"
+msgstr "Prędkość przeglądu na 1×"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Screenshot to Clipboard"
+msgstr "Zrzut ekranu do schowka"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Screenshot to Desktop"
+msgstr "Zrzut ekranu na Pulpit"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Screenshots"
+msgstr "Zrzuty ekranu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Scroll"
+msgstr "Przewijanie"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Seek to End"
+msgstr "Przejdź na koniec"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Seek to Start"
+msgstr "Przejdź na początek"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Select All"
+msgstr "Zaznacz wszystko"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Set In Point"
+msgstr "Ustaw punkt początkowy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Set Out Point"
+msgstr "Ustaw punkt końcowy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Slide Clip 10 Frames"
+msgstr "Przesuń klip o 10 klatek"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Slide Clip a Frame"
+msgstr "Przesuń klip o klatkę"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Split Clip at Playhead"
+msgstr "Podziel klip przy głowicy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Timeline (zoom + pan)"
+msgstr "Oś czasu (powiększenie + przesuwanie)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Toggle Loop"
+msgstr "Przełącz pętlę"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Transport"
+msgstr "Transport"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Trim Head to Playhead"
+msgstr "Przytnij początek do głowicy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Trim Tail to Playhead"
+msgstr "Przytnij koniec do głowicy"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Undo Edit"
+msgstr "Cofnij edycję"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Undo Stroke"
+msgstr "Cofnij kreskę"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Volume Down"
+msgstr "Ciszej"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Volume Up"
+msgstr "Głośniej"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Zoom (cursor anchored)"
+msgstr "Powiększenie (zakotwiczone przy wskaźniku)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Zoom In"
+msgstr "Powiększ"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Zoom Out"
+msgstr "Pomniejsz"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TimelineStatus"
+msgid "Frame number"
+msgstr "Numer klatki"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TimelineStatus"
+msgid "Frame number — click to go to a frame"
+msgstr "Numer klatki — kliknij, aby przejść do klatki"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TimelineStatus"
+msgid "Frame rate of the open media"
+msgstr "Liczba klatek/s otwartego materiału"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TimelineStatus"
+msgid "Timecode (drop-frame) — click to go to a timecode"
+msgstr "Kod czasowy (drop-frame) — kliknij, aby przejść do kodu czasowego"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TimelineStatus"
+msgid "Timecode — click to go to a timecode"
+msgstr "Kod czasowy — kliknij, aby przejść do kodu czasowego"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Fast-forward"
+msgstr "Przewiń do przodu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Fast-forward (hold; L)"
+msgstr "Przewiń do przodu (przytrzymaj; L)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Loop"
+msgstr "Pętla"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Rewind"
+msgstr "Przewiń wstecz"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Rewind (hold; J)"
+msgstr "Przewiń wstecz (przytrzymaj; J)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Screenshot to clipboard"
+msgstr "Zrzut ekranu do schowka"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "TransportBar"
+msgid "Volume"
+msgstr "Głośność"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Copied to the clipboard"
+msgstr "Skopiowano do schowka"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Couldn’t copy: %1"
+msgstr "Nie udało się skopiować: %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Couldn’t open: %1"
+msgstr "Nie udało się otworzyć: %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Live streams arrive with the stream step"
+msgstr "Strumienie na żywo pojawią się w etapie streamingu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Load an item to copy its link"
+msgstr "Wczytaj element, aby skopiować jego link"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Project link copied"
+msgstr "Skopiowano link projektu"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "That file is no longer there"
+msgstr "Tego pliku już nie ma"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "That project is no longer there"
+msgstr "Tego projektu już nie ma"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "View"
+msgstr "Widok"

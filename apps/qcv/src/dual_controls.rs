@@ -39,6 +39,8 @@ pub struct DualControls {
 }
 
 impl DualControls {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.modes.buttons.iter_mut().zip(f.modes.buttons) { b.tooltip = n.tooltip; b.label = n.label; } self.close_b.tooltip = f.close_b.tooltip; self.update.tooltip = f.update.tooltip; self.save.tooltip = f.save.tooltip; }
     pub fn new() -> DualControls {
         let modes = ActionGroup::new(vec![
             ActionButton::new("rectangle", tr("Single view")).size_s(), ActionButton::new("square-split-horizontal", tr("Side-by-side")).size_s(),

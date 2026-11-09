@@ -103,6 +103,16 @@ const WAVEFORM_W: f64 = 360.0;
 const COLLAPSED: f64 = 32.0;
 
 impl ColorDrawer {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) {
+        let f = Self::new(self.open, self.height, (self.wf_hdr, self.wf_peak_nits, self.wf_expanded));
+        for (c, n) in [(&mut self.presets, &f.presets), (&mut self.gamut, &f.gamut), (&mut self.transfer, &f.transfer), (&mut self.render, &f.render), (&mut self.ocfg, &f.ocfg), (&mut self.oinput, &f.oinput), (&mut self.olook, &f.olook), (&mut self.oview, &f.oview)] { c.title = n.title.clone(); }
+        self.knee.relabel();
+        for (b, n) in self.chan.buttons.iter_mut().zip(f.chan.buttons) { b.label = n.label; }
+        self.aids_reset.tooltip = f.aids_reset.tooltip;
+        for (b, n) in [(&mut self.save_as, &f.save_as), (&mut self.reset, &f.reset), (&mut self.apply_all, &f.apply_all), (&mut self.make_default, &f.make_default)] { b.label = n.label.clone(); }
+        self.view = None;   // the next sync rebuilds the preset list and the header in the new language
+    }
     /// `wf` = the waveform as last left: (scale override, HDR top in nits, open).
     pub fn new(open: bool, height: f64, wf: (Option<bool>, f32, bool)) -> ColorDrawer {
         let mut gamut_names = qcv_color::input_gamut_names(); gamut_names.truncate(15);

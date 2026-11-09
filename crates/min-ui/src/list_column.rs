@@ -51,7 +51,7 @@ impl ListColumn {
     pub fn new(title: impl Into<String>) -> ListColumn { ListColumn { title: title.into(), rows: vec![], selected: None, rect: Rect::ZERO, sb: ScrollBar::default(), filter: None, shown: vec![], reveal_pending: false, hover: None, hover_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 } }
     pub fn rows(&self) -> &[ListRow] { &self.rows }
     /// Give the column a filter field (QCView's "Filter…").
-    pub fn with_filter(mut self) -> ListColumn { let mut f = TextField::new(crate::Family::Sans, t::RAIL_LABEL_SIZE); f.placeholder = "Filter…".into(); self.filter = Some(f); self }
+    pub fn with_filter(mut self) -> ListColumn { let mut f = TextField::new(crate::Family::Sans, t::RAIL_LABEL_SIZE); f.placeholder = min_i18n::trc("ColorPanel", "Filter…").into(); self.filter = Some(f); self }
     pub fn set_filter_placeholder(&mut self, p: &str) { if let Some(f) = self.filter.as_mut() { f.placeholder = p.to_string(); } }
     fn refilter(&mut self) {
         let q = self.filter.as_ref().map(|f| f.text().trim().to_lowercase()).unwrap_or_default();
@@ -133,6 +133,7 @@ impl ListColumn {
     }
     pub fn animating(&self, now: Instant) -> bool { self.hover_ramp.animating(now) || self.sb.animating(now) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
+        if let Some(f) = self.filter.as_mut() { let p = min_i18n::trc("ColorPanel", "Filter…"); if f.placeholder != p { f.placeholder = p.to_string(); } }   // a language switch reaches it
         let s = self.scale; let pad = t::SPACING_100 as f64 * s;
         let cap = fonts.detail(&self.title, t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
         crate::fonts::draw_layout(scene, &cap, Affine::translate((self.rect.x0 + pad / 2.0, self.rect.y0 + (self.caption_h() - cap.height() as f64) / 2.0)));

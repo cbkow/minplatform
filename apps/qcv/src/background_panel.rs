@@ -17,6 +17,8 @@ pub const LABELS: [&str; 4] = ["Black", "Dark Gray", "Dark Check", "Light Check"
 pub struct BackgroundPanel { pub section: Section, buttons: Vec<ActionButton>, mode: u8, height: f64 }
 
 impl BackgroundPanel {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; for (b, n) in self.buttons.iter_mut().zip(f.buttons) { b.tooltip = n.tooltip; b.label = n.label; } }
     pub fn new() -> BackgroundPanel {
         let buttons = LABELS.iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", tr(l)).size_s(); b.label = Some(tr(l).to_string()); b.selected = i == 0; b }).collect();
         BackgroundPanel { section: Section::new(tr("Background"), true), buttons, mode: 0, height: 0.0 }

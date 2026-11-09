@@ -19,6 +19,8 @@ const LABEL_W: f64 = 76.0; const FIELD_W: f64 = 120.0; const GAP: f64 = 6.0;
 pub struct ClipPopover { pub popover: Popover, fields: [TextField; 3], focus: usize, clip: Option<Clip>, master: Rate, fmt: TimecodeFormatter, rows: [Rect; 3] }
 
 impl ClipPopover {
+    /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
+    pub fn relabel(&mut self) { self.popover.title = Self::new().popover.title; }
     pub fn new() -> ClipPopover {
         let f = || TextField::new(Family::Mono, t::CODE_SIZE_S);
         ClipPopover { popover: Popover::new(tr("Clip")), fields: [f(), f(), f()], focus: 0, clip: None, master: Rate::new(24, 1), fmt: TimecodeFormatter::new(24, 1, false), rows: [Rect::ZERO; 3] }

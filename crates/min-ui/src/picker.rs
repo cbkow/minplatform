@@ -74,10 +74,10 @@ impl Picker {
         let bg = if !self.enabled { t::PICKER_BACKGROUND_COLOR.with_alpha(0.5) } else if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(t::PICKER_BACKGROUND_COLOR, t::HOVER_BACKGROUND_COLOR, hv) };
         paint::rounded(scene, self.rect, t::PICKER_CORNER_RADIUS as f64 * scale, bg);
         let c = if !self.enabled { t::DISABLED_CONTENT_COLOR } else if self.hovered || self.menu.open { t::PICKER_CONTENT_COLOR_HOVER } else { t::PICKER_CONTENT_COLOR };
-        let l = fonts.layout(self.value(), Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
         let edge = t::PICKER_EDGE_TO_TEXT as f64 * scale;
-        crate::fonts::draw_layout(scene, &l, Affine::translate((self.rect.x0 + edge, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
         let sz = t::PICKER_CHEVRON_SIZE * scale as f32;
+        let l = fonts.layout_fit(self.value(), Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c), self.rect.width() - 2.0 * edge - sz as f64 - t::SPACING_100 as f64 * scale);
+        crate::fonts::draw_layout(scene, &l, Affine::translate((self.rect.x0 + edge, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
         if let Some(g) = fonts.icon("caret-down", sz, paint::color(c)) { crate::fonts::draw_layout(scene, &g, Affine::translate((self.rect.x1 - edge - g.width() as f64, self.rect.y0 + (self.rect.height() - g.height() as f64) / 2.0))); }
     }
     /// The open menu, drawn last so it sits over the panel.
