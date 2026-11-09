@@ -136,7 +136,8 @@ impl DualControls {
         let r = t::FIELD_CORNER_RADIUS_S as f64 * scale; let pad = t::FIELD_EDGE_TO_TEXT as f64 * scale;
         for (side, c) in [(Side::A, &self.a), (Side::B, &self.b)] {
             if c.rect.area() <= 0.0 { continue }
-            let bg = mix(t::FIELD_BACKGROUND_COLOR, t::HOVER_BACKGROUND_COLOR, c.hover.value(now));
+            // the edit target's chip (row 212) rests on the selected grey (neutral-subtle, gray-300), a step past the hover grey
+            let bg = if self.shows_b() && self.target == side { mix(t::NEUTRAL_SUBTLE_BACKGROUND_COLOR_DEFAULT, t::GRAY_400, c.hover.value(now)) } else { mix(t::FIELD_BACKGROUND_COLOR, t::HOVER_BACKGROUND_COLOR, c.hover.value(now)) };
             paint::rounded(scene, c.rect, r, bg);
             let letter_c = if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR };
             let l = fonts.layout(if side == Side::A { tr("A") } else { tr("B") }, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(letter_c));

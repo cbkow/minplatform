@@ -150,9 +150,9 @@ impl DualBars {
             // the row's label cell in the scrubber's end inset: the side letter in its colour (as on the chips); the TARGET lane's
             // cell is filled (⌘K and the keys act there) — the walk 2026-11-08: neutral clips, labelled rows
             let cell = Rect::new(lane.x0, lane.y0, lane.x0 + LABEL_W * scale, lane.y1);
-            if self.target == side { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, t::GRAY_300); }
+            if self.target == side { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, t::NEUTRAL_SUBTLE_BACKGROUND_COLOR_DEFAULT); }
             let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, (LANE - 3.0) as f32 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
-            min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x0 + (cell.width() - l.width() as f64) / 2.0, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));
+            min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x1 - l.width() as f64 - 4.0 * scale, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));   // flush right, by the clips
             for c in clips(tl, side) {
                 let (mut x0, mut x1) = Self::span(c, sc, st, scale);
                 match &preview {
