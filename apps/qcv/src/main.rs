@@ -51,8 +51,6 @@ mod sdr_white;
 mod dual_controls;
 mod dual_bars;
 mod guides;
-mod stream;
-mod stream_card;
 mod guides_panel;
 mod annotate;
 mod notes_drawer;
@@ -1009,7 +1007,7 @@ impl App {
                 let gh = g.guides_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);   // QCView's order: Media, Safety Guides, Background, Settings
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh, scale);
                 // the Output section (QCView: after Background, before Settings)
-                { let views = outputs::views(&self.outputs, &self.settings); let sv = stream::view(&self.outputs, &self.settings); if g.output_panel.sync(views, sv, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), self.settings.bool(settings::k::OUTPUT_GUIDES), self.settings.bool(settings::k::OUTPUT_NOTES), now, &mut g.fonts) { g.ui_dirty = true; } }
+                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), self.settings.bool(settings::k::OUTPUT_GUIDES), self.settings.bool(settings::k::OUTPUT_NOTES), now) { g.ui_dirty = true; } }
                 let oh = g.output_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh + oh, scale); g.left.content_height = ph + gh + bh + oh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
@@ -1803,7 +1801,6 @@ impl App {
     fn finish(&mut self) {
         i18n::write_misses();
         { let ids: Vec<String> = self.outputs.outputs.iter().filter(|o| o.enabled).map(|o| o.m.id.clone()).collect(); for id in ids { self.output_stop_quitting(&id); } }
-        if let Some(mut s) = self.outputs.stream.sink.take() { s.stop_wait(std::time::Duration::from_secs(3)); }   // the stream's threads end before the process does
         if let Some(g) = self.gpu.as_mut() {
             g.thumbs.shutdown(); g.thumbs_b.shutdown();
             if !g.fullscreen {

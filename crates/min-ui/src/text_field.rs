@@ -49,8 +49,6 @@ impl TextField {
     pub fn set_text(&mut self, s: &str) { self.editor.set_text(s); }
     /// Set the text with the caret at its end (a staged or restored entry).
     pub fn set_text_end(&mut self, s: &str, fonts: &mut Fonts) { self.editor.set_text(s); let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_text_end(); drop(d); self.follow_caret(fonts); }
-    /// A secret field's text, whole (a stored key shown as bullets).
-    pub fn set_secret(&mut self, s: &str) { if let Some(real) = self.secret.as_mut() { *real = s.to_string(); let n = s.chars().count(); self.editor.set_text(&"•".repeat(n)); self.scroll_x = 0.0; } }
     pub fn clear(&mut self) { self.editor.set_text(""); if let Some(s) = self.secret.as_mut() { s.clear(); } }
     /// A secret field's edit: `ins` replaces the selection (or, with none, `back` / `fwd` characters around the caret).
     fn secret_edit(&mut self, fonts: &mut Fonts, ins: &str, back: usize, fwd: usize) {

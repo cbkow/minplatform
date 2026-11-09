@@ -92,12 +92,11 @@ pub struct Output {
 
 #[derive(Default)]
 pub struct OutputBus { pub outputs: Vec<Output>, last_poll: Option<Instant>, restored: bool, enc: Option<min_present::wire::WireEncoder>, tap: Vec<f32>, audio_t: i64, /// the overlay (guides / strokes): its vello layer and what it holds (size + the overlay's signature)
-    layer: Option<min_ui::UiLayer>, layer_key: Option<u64>, /// the Stream card's session (row 239): a target of the same publish pass
-    pub stream: crate::stream::Stream }
+    layer: Option<min_ui::UiLayer>, layer_key: Option<u64> }
 
 impl OutputBus {
     pub fn new() -> OutputBus { OutputBus { outputs: scan().into_iter().map(|m| Output { m, enabled: false, ring: None, audio: None, child: None, launched: false, launch_due: None, restarts: vec![], dying: None, plugin: String::new(), spec: None, spec_gen: 0, present: false, status: String::new(), shape: String::new(), req: None, req_gen: 0, auto_class: None, published: None, pub_tag: 0, drawn: 0, pinned_transfer: false, reanswer: false }).collect(), ..Default::default() } }
-    pub fn any_enabled(&self) -> bool { self.outputs.iter().any(|o| o.enabled) || self.stream.running() }
+    pub fn any_enabled(&self) -> bool { self.outputs.iter().any(|o| o.enabled) }
 }
 
 fn setting_of(st: &min_settings::Settings, id: &str, field: &str, default: f64) -> f64 { match k::output_key(id, field) { Some(key) => if matches!(field, "peakNits" | "minNits") { st.float(key) } else { st.int(key) as f64 }, None => default } }
@@ -170,7 +169,6 @@ impl crate::App {
         // the dying sinks: a launched one still running 3 s after Stop is stopped
         for o in &mut self.outputs.outputs { if let Some((c, due)) = o.dying.as_mut() && now >= *due { let _ = c.kill(); let _ = c.wait(); o.dying = None; } else if let Some((c, _)) = o.dying.as_mut() && matches!(c.try_wait(), Ok(Some(_))) { o.dying = None; } }
         if !self.outputs.restored && self.gpu.is_some() { self.outputs.restored = true; self.outputs_restore(); }
-        self.stream_tick();
         if !self.outputs.any_enabled() { return }
         self.outputs_audio();
         self.outputs_publish();
@@ -231,10 +229,6 @@ impl crate::App {
             Cmd::Start(id) => self.output_start(&id),
             Cmd::Stop(id) => self.output_stop(&id),
             Cmd::FeedMute(on) => { self.settings.set_bool(k::OUTPUT_FEED_MUTED, on); }
-            Cmd::StreamStart => self.stream_start(),
-            Cmd::StreamStop => self.stream_stop(),
-            Cmd::StreamStr(key, v) => { self.settings.set_str(key, &v); }
-            Cmd::StreamInt(key, v) => { self.settings.set_int(key, v); }
             // QCView `layersChanged`: every standing request answered again with the new grant
             Cmd::Guides(on) | Cmd::Notes(on) => { self.settings.set_bool(if matches!(c, Cmd::Guides(_)) { k::OUTPUT_GUIDES } else { k::OUTPUT_NOTES }, on); for o in &mut self.outputs.outputs { o.reanswer = true; } self.outputs.last_poll = None; }
             Cmd::Transfer(id, v) => { set(&mut self.settings, &id, "transfer", v); self.output_reanswer(&id); }
@@ -343,22 +337,11 @@ impl crate::App {
             if let Some((_, drop)) = tcp { flags |= v::FRAME_TIMECODE_VALID | if drop { v::FRAME_DROP_FRAME } else { 0 }; }
             ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: o.drawn, flags, presentation_ns: qcvo::now_ns(), source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
         });
-        // the new frames: every ring output, then the stream (the same pass; its target is the encoder's own surface)
-        let n_out = self.outputs.outputs.len();
-        let layers_on = (if self.settings.bool(k::OUTPUT_GUIDES) { v::LAYER_GUIDES } else { 0 }) | (if self.settings.bool(k::OUTPUT_NOTES) { v::LAYER_ANNOTATIONS } else { 0 });
-        for i in 0..=n_out {
-            let stream = i == n_out;
-            let spec = if stream {
-                let Some(s) = self.outputs.stream.sink.as_ref() else { continue };
-                if self.outputs.stream.published == Some(stamp) { continue }
-                // SDR Rec.709, the composite, letterboxed; the layers follow the toggles LIVE (ruling 3)
-                let c = s.config(); Spec { w: c.width, h: c.height, fmt: min_present::wire::WireFormat::Bgra8, transfer: v::TRANSFER_SDR, content: v::CONTENT_COMPOSITE, primaries: 1, layers: layers_on }
-            } else {
-                let o = &self.outputs.outputs[i];
-                let (true, true, Some(spec)) = (o.enabled, o.present, o.spec) else { continue };
-                if o.published == Some(stamp) { continue }
-                spec
-            };
+        // the new frames
+        for i in 0..self.outputs.outputs.len() {
+            let o = &self.outputs.outputs[i];
+            let (true, true, Some(spec)) = (o.enabled, o.present, o.spec) else { continue };
+            if o.published == Some(stamp) { continue }
             // the canvas in linear light; the wire encoder encodes it: SDR · PQ in the output's primaries · HLG (1.0 = 100 nits)
             let encoding = match spec.transfer { v::TRANSFER_PQ => min_present::wire::WireEncoding::Pq { p3: spec.primaries == 2, white: 100.0 }, v::TRANSFER_HLG => min_present::wire::WireEncoding::Hlg { white: 100.0 }, _ => min_present::wire::WireEncoding::Sdr };
             let lin = min_present::engine::OutMode::Linear;
@@ -396,29 +379,13 @@ impl crate::App {
                     overlay = Some(layer.view());
                 }
             }
-            if stream {
-                let Some(sink) = self.outputs.stream.sink.as_ref() else { continue };
-                // the encoder's own surface; none free = it is behind: this picture is skipped (≤ 3 in flight, never queued)
-                let Some(surface) = sink.pool().acquire(&dev) else { continue };
-                let wire = enc.texture(&dev, &q, &canvas, overlay, spec.fmt, encoding);
-                let pass = self.outputs.stream.nv12.get_or_insert_with(|| qcv_stream::nv12::Nv12Pass::new(&dev));
-                let mut ce = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stream nv12") });
-                pass.encode(&dev, &mut ce, &wire.create_view(&Default::default()), &surface.y, &surface.cbcr);
-                surface.before_submit(&mut ce);
-                q.submit([ce.finish()]);
-                surface.after_submit(&dev, &q);   // Windows: the planes into the encoder's texture, on the GPU (spike S7)
-                let sub = sink.submitter();
-                q.on_submitted_work_done(move || sub.submit(surface));   // the surface is the encoder's once the GPU is done
-                self.outputs.stream.published = Some(stamp);
-                continue
-            }
             let o = &mut self.outputs.outputs[i];
             o.pub_tag += 1;
             if enc.submit(&dev, &q, &canvas, overlay, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); o.drawn = if overlay.is_some() { drawn } else { 0 }; }
         }
     }
     /// The frame's transport facts: playing, the source frame, its fps, the timecode (QCView fills none of these — fix 7).
-    pub(crate) fn output_transport(&self) -> (bool, i64, f64, Option<String>) {
+    fn output_transport(&self) -> (bool, i64, f64, Option<String>) {
         if let Some(l) = self.live.as_ref() { let tc = l.feed.host_timecode(); return (l.review.is_none(), l.feed.facts().frames as i64, l.feed.host_fps().unwrap_or(0.0), (!tc.is_empty() && !tc.contains('.')).then_some(tc)) }
         if let Some(p) = self.player.as_ref() {
             let i = p.timecode_info(); let fmt = qcv_meta::TimecodeFormatter::new(i.frame_rate.0, i.frame_rate.1, i.drop_frame);
@@ -438,7 +405,6 @@ impl crate::App {
         let n = buf.len() / 2 / 1024 * 1024;
         if n == 0 { self.outputs.tap = buf; return }
         let base = qcvo::now_ns();
-        if let Some(s) = self.outputs.stream.sink.as_ref() { s.push_audio(&buf[..n * 2], muted); }
         for c in 0..n / 1024 {
             let chunk = &buf[c * 2048..(c + 1) * 2048];
             let (l, r): (Vec<f32>, Vec<f32>) = if muted { (vec![0.0; 1024], vec![0.0; 1024]) } else { (chunk.iter().step_by(2).copied().collect(), chunk.iter().skip(1).step_by(2).copied().collect()) };

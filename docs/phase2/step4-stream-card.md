@@ -1,5 +1,10 @@
 # Step 4 — the Stream card (SRT / RTMP out, built for Louper)
 
+> **WITHDRAWN 2026-11-09 (canon row 244).** Built on both OSes and tested, then removed the same day on the user's ruling after
+> walking it against NDI between two machines: "Lets rip out SRT streaming. We don't need it. NDI is better all around, even in
+> the old app. It was a failed expirament". This page is the record of what was built and measured; none of the code it names
+> is in the tree (it is in git history through 0de03e7). QCView's own Stream card is not ported.
+
 Canon row 239 (ruled 2026-11-09). QCView's sources: `src/output/` (stream_sink, stream_muxer, aac_encoder, vt_video_encoder,
 mf_video_encoder), `src/window/output_bus.cpp` (the stream parts), `LeftRail.qml` 2318–2605, `docs/output.md` § Stream; commits
 f33b3b74 (A0), dd4f562d (A1), 71666829 + 44be3223 (A2), c765a8aa (A3). File:line references below are QCView's.

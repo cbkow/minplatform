@@ -28,7 +28,6 @@ parley = { workspace = true }
 kurbo = { workspace = true }
 qcv-player = { path = "../../crates/qcv-player" }
 qcv-ring = { path = "../../crates/qcv-ring" }
-qcv-stream = { path = "../../crates/qcv-stream" }
 qcv-meta = { path = "../../crates/qcv-meta" }
 qcv-notes = { path = "../../crates/qcv-notes" }
 qcv-project = { path = "../../crates/qcv-project" }

@@ -24,15 +24,6 @@ pub mod k {
     pub const BLENDER_SESSIONS: &str = "bridge/blenderSessions";
     /// QCView's Output section (row 227 step 3): the feed mute, and per shipped sink (ndi, aja) the enabled flag + its settings
     pub const OUTPUT_FEED_MUTED: &str = "output/feedMuted";
-    /// QCView's Stream card (row 239): `output/stream/*`, its keys and defaults; the running state is never stored
-    pub const STREAM_URL: &str = "output/stream/url";
-    pub const STREAM_KEY: &str = "output/stream/key";
-    pub const STREAM_BITRATE: &str = "output/stream/bitrateKbps";
-    pub const STREAM_RESOLUTION: &str = "output/stream/resolution";
-    pub const STREAM_SRT_LATENCY: &str = "output/stream/srtLatencyMs";
-    pub const STREAM_PROFILE: &str = "output/stream/profile";
-    pub const STREAM_AUDIO: &str = "output/stream/audioKbps";
-    pub const STREAM_FPS_MODE: &str = "output/stream/fpsMode";
     /// QCView's Guides / Notes chips (row 238): the safety guides and the note strokes drawn into the outputs that ask
     pub const OUTPUT_GUIDES: &str = "output/includeGuides";
     pub const OUTPUT_NOTES: &str = "output/includeAnnotations";
@@ -106,7 +97,6 @@ static KEYS: &[Key] = &[
     Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_AE, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_PROBE, 0, -200, 200),
     Key::int(k::LIVE_BUFFER_MS, 60, 20, 200),
     Key::bool(k::BLENDER_SESSIONS, false),
-    Key::str(k::STREAM_URL, ""), Key::str(k::STREAM_KEY, ""), Key::int(k::STREAM_BITRATE, 6000, 500, 50000), Key::str(k::STREAM_RESOLUTION, "1080p"), Key::int(k::STREAM_SRT_LATENCY, 120, 20, 5000), Key::str(k::STREAM_PROFILE, "baseline"), Key::int(k::STREAM_AUDIO, 160, 0, 320), Key::str(k::STREAM_FPS_MODE, "auto"),
     Key::bool(k::OUTPUT_GUIDES, true), Key::bool(k::OUTPUT_NOTES, true),   // QCView: both on
     Key::bool(k::OUTPUT_FEED_MUTED, true),   // the user 2026-11-09: the feed starts muted (QCView: on)
     Key::bool("output/enabled/ndi", false), Key::int("output/ndi/raster", 0, 0, 2), Key::int("output/ndi/transfer", 1, 1, 3), Key::int("output/ndi/primaries", 1, 1, 2), Key::float("output/ndi/peakNits", 1000.0, 1.0, 10000.0), Key::float("output/ndi/minNits", 0.005, 0.0, 1000.0), Key::int("output/ndi/maxCll", 1000, 0, 10000), Key::int("output/ndi/maxFall", 400, 0, 10000),

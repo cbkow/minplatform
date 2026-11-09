@@ -106,14 +106,6 @@ impl WireEncoder {
         s.buf.slice(..).map_async(wgpu::MapMode::Read, move |r| st.store(if r.is_ok() { 2 } else { 3 }, Release));
         true
     }
-    /// The wire picture as a TEXTURE (the stream's NV12 pass reads it; canon row 239): `canvas` (+ the overlay) in `fmt` /
-    /// `encoding`, no read-back.
-    pub fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: &wgpu::Texture, overlay: Option<&wgpu::TextureView>, fmt: WireFormat, encoding: WireEncoding) -> wgpu::Texture {
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wire") });
-        let out = self.draw(device, queue, canvas, overlay, fmt, encoding, &mut enc);
-        queue.submit([enc.finish()]);
-        out
-    }
     fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: &wgpu::Texture, overlay: Option<&wgpu::TextureView>, fmt: WireFormat, encoding: WireEncoding, enc: &mut wgpu::CommandEncoder) -> wgpu::Texture {
         let (w, h) = (canvas.width(), canvas.height());
         let tf = fmt.texture_format();
@@ -123,7 +115,7 @@ impl WireEncoder {
         let (mode, m, white) = match encoding { WireEncoding::Sdr => (0.0, TO_2020, 100.0), WireEncoding::Pq { p3, white } => (1.0, if p3 { TO_P3 } else { TO_2020 }, white), WireEncoding::Hlg { white } => (2.0, TO_2020, white) };
         let mut u = [0f32; 16]; for r in 0..3 { u[r * 4..r * 4 + 3].copy_from_slice(&m[r]); } u[12] = mode; u[13] = white; u[14] = if overlay.is_none() { 0.0 } else if mode == 0.0 { 1.0 } else { OVERLAY_HDR_GAIN * 100.0 / white };
         queue.write_buffer(&self.ubuf, 0, bytemuck::cast_slice(&u));
-        let out = device.create_texture(&wgpu::TextureDescriptor { label: Some("wire"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: tf, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+        let out = device.create_texture(&wgpu::TextureDescriptor { label: Some("wire"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: tf, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = out.create_view(&Default::default());
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("wire"), layout: &self.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&canvas.create_view(&Default::default())) }, wgpu::BindGroupEntry { binding: 1, resource: self.ubuf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(overlay.unwrap_or(&self.none)) }] });
         {

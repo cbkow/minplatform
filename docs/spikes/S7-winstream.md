@@ -9,6 +9,7 @@ keyframe a second, no B-frames, BT.709 limited-range tags, **every flat patch de
 maths (the macOS bar, and QCView's own result on this box: "picture within 1 code value"), no CPU copy of the picture
 anywhere. Reference: QCView's A2 on this box — 6.05 Mbps at a 6000 target, exact pts.
 **Time box:** one session, 2026-11-09. **Status: VERDICT GO by route B (2026-11-09). Route A: NO on this encoder.**
+**Afterwards:** the feature it served was withdrawn the same day (canon row 244); the spike crate is gone, as spikes go. The verdict stands as a finding: a wgpu DX12 picture can reach a hardware MFT with no CPU copy.
 
 ## What the spike is
 `spikes/s7-winstream` (Windows only; `windows` 0.62 + wgpu, no FFmpeg): wgpu (DX12) uploads the macOS harness's picture (8
