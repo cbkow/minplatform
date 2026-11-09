@@ -57,6 +57,7 @@ impl TextField {
         st.insert(StyleProperty::FontSize(self.size));
         st.insert(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(t::UI_LINE_HEIGHT as f32)));
         st.insert(StyleProperty::Brush(Brush::Solid(color)));
+        st.insert(StyleProperty::Locale(crate::fonts::ui_locale()));
         self.styled = true;
     }
     /// Place the field; `scale` is the window's factor.

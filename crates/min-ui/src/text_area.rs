@@ -27,6 +27,7 @@ impl TextArea {
         st.insert(StyleProperty::FontSize(self.size));
         st.insert(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(t::UI_LINE_HEIGHT as f32)));
         st.insert(StyleProperty::Brush(Brush::Solid(paint::color(t::FIELD_CONTENT_COLOR))));
+        st.insert(StyleProperty::Locale(crate::fonts::ui_locale()));
         self.styled = true;
     }
     pub fn layout(&mut self, fonts: &mut Fonts, rect: Rect, scale: f64) {

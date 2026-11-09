@@ -50,6 +50,7 @@ impl Fonts {
         b.push_default(StyleProperty::FontWeight(FontWeight::new(weight)));
         b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(min_theme::tokens::UI_LINE_HEIGHT as f32)));
         b.push_default(StyleProperty::Brush(Brush::Solid(color)));
+        b.push_default(StyleProperty::Locale(ui_locale()));
         for r in marks { b.push(StyleProperty::FontFamily(FontFamily::Single(FontFamilyName::Named(Cow::Owned(icon.clone())))), r.clone()); b.push(StyleProperty::FontWeight(FontWeight::new(400.0)), r); }
         let mut layout = b.build(text);
         layout.break_all_lines(max_width);
@@ -76,6 +77,7 @@ impl Fonts {
         b.push_default(StyleProperty::FontSize(size_px));
         b.push_default(StyleProperty::FontWeight(FontWeight::new(min_theme::tokens::FONT_WEIGHT_BOLD as f32)));
         b.push_default(StyleProperty::LetterSpacing(size_px * min_theme::tokens::DETAIL_LETTER_SPACING));
+        b.push_default(StyleProperty::Locale(ui_locale()));
         b.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(min_theme::tokens::UI_LINE_HEIGHT as f32)));
         b.push_default(StyleProperty::Brush(Brush::Solid(color)));
         let mut layout = b.build(&upper);
@@ -88,6 +90,14 @@ impl Fonts {
         let ch = min_theme::icons::glyph(slug)?;
         Some(self.layout(&ch.to_string(), Family::Icon, size_px, 400.0, color))
     }
+}
+
+/// The interface language as the text's locale: the system fallback for Han characters follows it (rhombus 2026-11-09:
+/// without it Windows drew Simplified Chinese from a Japanese face — 设 / 项 / 显 came out as boxes).
+pub fn ui_locale() -> Option<parley::Language> {
+    let code = min_i18n::language();
+    if code == "en" { return None }
+    parley::Language::parse(&code.replace('_', "-")).ok()
 }
 
 /// `text` with ⌘ / ⌥ swapped for Phosphor's glyphs, and the byte ranges they occupy (none for the icon family).
