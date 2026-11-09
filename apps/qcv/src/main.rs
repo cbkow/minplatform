@@ -1914,6 +1914,9 @@ fn to_key_event(event: &winit::event::KeyEvent, mods: qcv_player::Mods) -> min_u
         Key::Named(NamedKey::Home) => min_ui::Key::Named(min_ui::Named::Home), Key::Named(NamedKey::End) => min_ui::Key::Named(min_ui::Named::End),
         Key::Character(c) => min_ui::Key::Char(c.to_string()), _ => min_ui::Key::Char(String::new()),
     };
+    // PASTE (⌘V / Ctrl+V) for every text field (the walk 2026-11-09: a URL could not be pasted into Open Stream): the
+    // clipboard's text arrives as typed text — one-line fields drop its line breaks themselves
+    if mods.ctrl && matches!(&key, min_ui::Key::Char(c) if c.eq_ignore_ascii_case("v")) { let text = min_paths::clipboard::text::clipboard_text(); if !text.is_empty() { return min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(text), shift: false, cmd: false } } }
     min_ui::KeyEvent { key, text: event.text.as_ref().map(|t| t.to_string()), shift: mods.shift, cmd: mods.ctrl }
 }
 fn st_hit(p: Option<&Transport>, sc: &min_ui::Scrubber, pos: Option<(f64, f64)>) -> bool { p.is_some_and(|p| p.frame_count() > 0) && pos.is_some_and(|(x, y)| sc.hit(x, y)) }
@@ -2221,9 +2224,7 @@ impl ApplicationHandler for App {
                     return
                 } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if g.output_panel.has_focus() {
-                    let mut k = to_key_event(&event, self.mods);
-                    // paste (⌘V / Ctrl+V) into the field in edit — the server URL and the key come from the service's page
-                    if k.cmd && matches!(&k.key, min_ui::Key::Char(c) if c.eq_ignore_ascii_case("v")) { let text = min_paths::clipboard::text::clipboard_text(); k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(text.trim().to_string()), shift: false, cmd: false }; }
+                    let k = to_key_event(&event, self.mods);
                     let cmds = g.output_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
                     if !g.output_panel.has_focus() { set_ime(&**g.window, false); }
                     for c in cmds { self.output_cmd(c); }
