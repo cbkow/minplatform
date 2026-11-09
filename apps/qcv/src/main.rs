@@ -1005,7 +1005,7 @@ impl App {
                 let gh = g.guides_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);   // QCView's order: Media, Safety Guides, Background, Settings
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh, scale);
                 // the Output section (QCView: after Background, before Settings)
-                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED)) { g.ui_dirty = true; } }
+                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), now) { g.ui_dirty = true; } }
                 let oh = g.output_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh + oh, scale); g.left.content_height = ph + gh + bh + oh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
@@ -1283,7 +1283,7 @@ impl App {
             if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.shortcuts.has_focus() { g.shortcuts.blur(); set_ime(&**g.window, false); g.ui_dirty = true; }
             if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.inspector.has_focus() { let cmds = g.inspector.blur(); set_ime(&**g.window, false); g.ui_dirty = true; for c in cmds { if let inspector_panel::Cmd::Par(par) = c { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; } } }
             let pp_modal = g.project_panel.menu_open() || g.project_panel.is_editing() || g.project_panel.is_dragging(); let pp_modal_editing = g.project_panel.is_editing();
-            if !rail_ctl && (modal || pp_modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus()) {
+            if !rail_ctl && (modal || pp_modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus() || g.output_panel.has_focus()) {
                 // a press outside the settings' fields commits a typed number
                 if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
                 if !guides_pop && !project_pop { let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more); }
@@ -1294,7 +1294,12 @@ impl App {
                     for c in gc { guide_setting(&mut self.settings, c, &mut cmds); }
                     if g.guides_panel.has_focus() != had { set_ime(&**g.window, g.guides_panel.has_focus()); }
                 }
-                if !settings_pop && !guides_pop && !project_pop { let (oc, d, _) = g.output_panel.event(&e, now, &mut g.fonts, bounds); if d { g.ui_dirty = true; } ocmds = oc; }
+                if !settings_pop && !guides_pop && !project_pop {
+                    let had = g.output_panel.has_focus();
+                    if let min_ui::Event::Down { x, y, .. } = e && had && !g.output_panel.field_hit(x, y) { ocmds.extend(g.output_panel.blur()); }
+                    let (oc, d, _) = g.output_panel.event(&e, now, &mut g.fonts, bounds); if d { g.ui_dirty = true; } ocmds.extend(oc);
+                    if g.output_panel.has_focus() != had { set_ime(&**g.window, g.output_panel.has_focus()); }
+                }
                 if !settings_pop && !guides_pop && !project_pop && !g.guides_panel.menu_open() && !g.output_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
                 if !settings_pop && !guides_pop && !g.guides_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; } if g.project_panel.is_editing() != pp_modal_editing { set_ime(&**g.window, g.project_panel.is_editing()); } pcmds.extend(p); }
             }
@@ -2132,7 +2137,7 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.stream_dialog.open { g.stream_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.notes.has_focus() { g.notes.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else if g.shortcuts.has_focus() { g.shortcuts.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.stream_dialog.open { g.stream_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.notes.has_focus() { g.notes.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.output_panel.has_focus() { g.output_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else if g.shortcuts.has_focus() { g.shortcuts.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -2210,6 +2215,13 @@ impl ApplicationHandler for App {
                     let gc = g.guides_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
                     if !g.guides_panel.has_focus() { set_ime(&**g.window, false); }
                     let mut cmds = vec![]; for c in gc { guide_setting(&mut self.settings, c, &mut cmds); } for c in cmds { self.apply_setting(c); }
+                    return
+                } } }
+                if pressed { if let Some(g) = self.gpu.as_mut() { if g.output_panel.has_focus() {
+                    let k = to_key_event(&event, self.mods);
+                    let cmds = g.output_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.output_panel.has_focus() { set_ime(&**g.window, false); }
+                    for c in cmds { self.output_cmd(c); }
                     return
                 } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && (g.settings_panel.has_focus() || g.settings_panel.is_modal() || g.settings_panel.menu_open()) {

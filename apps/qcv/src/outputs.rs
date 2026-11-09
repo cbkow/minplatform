@@ -221,33 +221,36 @@ impl crate::App {
             Cmd::Transfer(id, v) => { set(&mut self.settings, &id, "transfer", v); self.output_reanswer(&id); }
             Cmd::Raster(id, v) => { set(&mut self.settings, &id, "raster", v); self.output_reanswer(&id); }
             Cmd::Primaries(id, v) => { set(&mut self.settings, &id, "primaries", v); self.output_reanswer(&id); }
+            Cmd::Peak(id, v) => { if let Some(key) = k::output_key(&id, "peakNits") { self.settings.set_float(key, v as f64); } self.output_reanswer(&id); }
+            Cmd::Cll(id, v) => { set(&mut self.settings, &id, "maxCll", v); self.output_reanswer(&id); }
+            Cmd::Fall(id, v) => { set(&mut self.settings, &id, "maxFall", v); self.output_reanswer(&id); }
         }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
     fn output_reanswer(&mut self, id: &str) { if let Some(o) = self.outputs.outputs.iter_mut().find(|o| o.m.id == id) { o.reanswer = true; } self.outputs.last_poll = None; }
 }
 
-/// The cards (QCView LeftRail's Output section): the state word, the line, the settings.
+/// The cards (the Output section): the dot + its reason, the shape and the sink's report, the settings it lets QCView choose.
 pub(crate) fn views(bus: &OutputBus, st: &min_settings::Settings) -> Vec<crate::output_panel::CardView> {
-    {
-        let out_setting = |id: &str, f: &str, d: f64| setting_of(st, id, f, d);
-        let tr = |s: &str| min_i18n::trc("LeftRail", s).to_string();
-        bus.outputs.iter().map(|o| {
-            let (transfer, raster, primaries) = (out_setting(&o.m.id, "transfer", 1.0) as usize, out_setting(&o.m.id, "raster", 0.0) as usize, out_setting(&o.m.id, "primaries", 1.0) as usize);
-            let state = if !o.enabled { if o.m.installed { "" } else { "not installed" } } else if o.present && o.spec.is_some() { "live" } else if o.present && o.req.is_some() { "refused" } else { "starting" };
-            let line = if o.enabled {
-                if o.present && o.spec.is_some() { if o.status.is_empty() { o.shape.clone() } else { format!("{}  ·  {}", o.shape, o.status) } }
-                else if o.present && !o.shape.is_empty() { o.shape.clone() }
-                else if !o.plugin.is_empty() && o.plugin != "running" { o.plugin.clone() } else { tr("waiting for the sink") }
-            } else {
-                let tname = if transfer == 2 { "PQ Rec.2100" } else { "SDR Rec.709" };
-                let r = if o.m.raster_settable { format!("{}  ·  ", [tr("Auto"), tr("1080p"), tr("UHD")][raster.min(2)]) } else { String::new() };
-                format!("{r}{}", tr(tname))
-            };
-            crate::output_panel::CardView { id: o.m.id.clone(), label: o.m.label.clone(), product: o.m.product.clone(), state, line, enabled: o.enabled, installed: o.m.installed,
-                transfer: transfer.saturating_sub(1).min(1), raster: raster.min(2), primaries: primaries.saturating_sub(1).min(1), show_transfer: !o.pinned_transfer, show_raster: o.m.raster_settable }
-        }).collect()
-    }
+    let tr = |s: &str| min_i18n::trc("LeftRail", s).to_string();
+    bus.outputs.iter().map(|o| {
+        let g = |f: &str, d: f64| setting_of(st, &o.m.id, f, d);
+        let (transfer, raster, primaries) = (g("transfer", 1.0) as usize, g("raster", 0.0) as usize, g("primaries", 1.0) as usize);
+        let failed = o.plugin.starts_with("failed") || o.plugin.starts_with("exited") || o.plugin.starts_with("ring");
+        let (dot, reason, shape, status) = if !o.enabled {
+            if o.m.installed { (0, String::new(), String::new(), String::new()) } else { (0, tr("not installed"), tr("not installed"), String::new()) }
+        } else if o.present && let Some(sp) = o.spec {
+            let f = if sp.fmt == min_present::wire::WireFormat::Rgb10 { "RGB10" } else { "BGRA8" };
+            let tn = if sp.transfer == v::TRANSFER_PQ { "PQ Rec.2100" } else { "SDR Rec.709" };
+            (1, tr("live"), format!("{}×{}  ·  {f}  ·  {tn}", sp.w, sp.h), o.status.clone())
+        } else if o.present && o.req.is_some() { (3, format!("{}: {}", tr("refused"), o.shape), o.shape.clone(), o.status.clone()) }
+        else if failed { (3, o.plugin.clone(), o.plugin.clone(), String::new()) }
+        else { let w = if o.plugin.starts_with("restarting") { o.plugin.clone() } else { tr("waiting for the sink") }; (2, w.clone(), w, String::new()) };
+        crate::output_panel::CardView { id: o.m.id.clone(), label: o.m.label.clone(), product: o.m.product.clone(), dot, reason, shape, status, enabled: o.enabled, installed: o.m.installed,
+            transfer: transfer.saturating_sub(1).min(1), raster: raster.min(2), primaries: primaries.saturating_sub(1).min(1),
+            peak: g("peakNits", 1000.0).round() as i64, cll: g("maxCll", 1000.0) as i64, fall: g("maxFall", 400.0) as i64,
+            show_transfer: !o.pinned_transfer, show_raster: o.m.raster_settable }
+    }).collect()
 }
 
 impl crate::App {
