@@ -20,6 +20,7 @@ pub mod image_sequence_cache;
 pub mod sequence_decoder;
 pub mod video_decoder;
 pub mod audio;
+pub mod host_feed;
 pub use ffmpeg::{OpenOptions, SeqOptions, Session, SessionInfo};
 pub use frame_handle::FrameHandle;
 pub use frame_index::FrameIndex;

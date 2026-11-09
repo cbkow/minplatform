@@ -53,6 +53,10 @@ impl Mapping {
 impl Drop for Mapping {
     fn drop(&mut self) { unsafe { libc::munmap(self.base as *mut _, self.size); libc::close(self.fd); if self.owner { let c = CString::new(self.name.as_str()).unwrap(); libc::shm_unlink(c.as_ptr()); } } }
 }
+/// POSIX: remove a ring a dead producer left (QCView does — "removed the ring a dead producer left"); Windows: nothing to do,
+/// a section goes with its last handle.
+#[cfg(unix)] pub fn unlink(name: &str) -> bool { let Ok(c) = CString::new(name) else { return false }; unsafe { libc::shm_unlink(c.as_ptr()) == 0 } }
+#[cfg(windows)] pub fn unlink(_name: &str) -> bool { false }
 #[cfg(unix)] pub fn process_alive(pid: u32) -> bool { unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM } }
 
 #[cfg(windows)]

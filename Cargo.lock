@@ -3192,9 +3192,11 @@ dependencies = [
  "objc2-audio-toolbox",
  "objc2-core-audio-types",
  "qcv-meta",
+ "qcv-ring",
  "qcv-timeline",
  "soundtouch",
  "thiserror 2.0.21",
+ "wgpu",
  "windows",
  "windows-sys 0.60.2",
 ]
