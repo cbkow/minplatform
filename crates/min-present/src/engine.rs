@@ -159,6 +159,9 @@ impl ViewerAids {
     fn gpu(&self) -> [f32; 4] { [2f32.powf(self.exposure), 1.0 / self.gamma.clamp(0.1, 10.0), self.channel as f32, if self.is_identity() { 0.0 } else { 1.0 }] }
 }
 
+/// Row 221: 100 / 203 — an HDR picture's SDR-white reference (1.0 = 100 nits) onto BT.2408's 203-nit HDR reference white.
+pub const HDR_BENCH: f32 = 100.0 / 203.0;
+
 pub struct Engine {
     /// No presenter will submit after `show` (a headless engine): flush + maintain per show.
     pub standalone: bool,
@@ -173,8 +176,8 @@ pub struct Engine {
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
     out_gain: f32,
-    /// Windows HDR (canon row 221): HDR pictures leave at absolute nits — the SDR-brightness slider (`out_gain`) moves SDR
-    /// material and the UI only. `chain_hdr` = this engine's chain renders above SDR (set by the shell from the chain's target).
+    /// Windows HDR (canon row 221): HDR pictures are benched on BT.2408's 203-nit reference white = the user's SDR white;
+    /// SDR pictures and the UI ride the slider's gain as is. `chain_hdr` = this engine's chain can output above SDR white.
     abs_hdr: bool, chain_hdr: bool,
     scope: Option<Scope>, scope_view: Option<ScopeView>, /// dual view's waveform tints, A / B (linear RGB; QCView's cyan / orange until the shell sets the theme's)
     side_tints: ([f32; 3], [f32; 3]),
@@ -479,12 +482,13 @@ impl Engine {
     /// The screen pass only — snapshots and the waveform never see it.
     pub fn set_output_gain(&mut self, g: f32) { let g = if g.is_finite() && g > 0.0 { g } else { 1.0 }; if (g - self.out_gain).abs() > 1e-4 { self.out_gain = g; self.write_uniforms(); self.relayout_dual(); } }
     pub fn output_gain(&self) -> f32 { self.out_gain }
-    /// Canon row 221 (Windows HDR): an HDR picture — a PQ / HLG file with no chain, or a chain the shell marks HDR — is placed at
-    /// absolute nits (scRGB 1.0 = 80 nits) instead of riding the SDR-white gain; SDR pictures and the UI keep the gain.
+    /// Canon row 221 (Windows HDR): an HDR picture — a PQ / HLG file with no chain, or a chain the shell marks HDR — is benched
+    /// on BT.2408's 203-nit reference white = the user's SDR white (`abs_scale`); SDR pictures and the UI keep the plain gain.
     pub fn set_absolute_hdr(&mut self, on: bool) { if on != self.abs_hdr { self.abs_hdr = on; self.write_uniforms(); self.relayout_dual(); } }
     pub fn set_chain_hdr(&mut self, on: bool) { if on != self.chain_hdr { self.chain_hdr = on; self.write_uniforms(); } }
-    /// The factor that turns the gained output back into absolute nits for an HDR picture (1.0 = 100 nits → ×100/80 ÷ gain); 0 = none.
-    fn abs_scale(&self, picture_hdr: bool) -> f32 { if self.abs_hdr && picture_hdr && self.out_gain > 0.0 { 1.25 / self.out_gain } else { 0.0 } }
+    /// The HDR bench (row 221, BT.2408): PQ's 203-nit reference white lands on the user's SDR white — an HDR picture (1.0 = 100
+    /// nits) is scaled by 100 / 203 after the slider's gain; at a 203-nit slider that is literal nits. 0 = none.
+    fn abs_scale(&self, picture_hdr: bool) -> f32 { if self.abs_hdr && picture_hdr { HDR_BENCH } else { 0.0 } }
 
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
@@ -1061,26 +1065,26 @@ mod tests {
         e.set_transfer_override(TransferChoice::Auto); assert_eq!(e.transfer_override(), TransferChoice::Auto);
     }
 
-    /// Canon row 221 (Windows HDR): with the SDR-white gain at 3 (a 240-nit slider), an SDR picture rides the gain while an HDR
-    /// one (PQ in bypass) leaves at absolute nits — scRGB = nits / 80 — whatever the slider; captures stay relative.
+    /// Canon row 221 (Windows HDR): SDR pictures ride the slider's gain; an HDR one (PQ in bypass) is benched on BT.2408 —
+    /// 203 nits in the file = the user's SDR white, so with the slider at 203 nits it leaves at literal nits; captures stay relative.
     #[test]
-    fn windows_hdr_places_hdr_at_absolute_nits() {
+    fn windows_hdr_benches_hdr_on_203_nits() {
         let mut e = Engine::headless(wgpu::TextureFormat::Rgba16Float).unwrap();
         e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 }); e.show(&ramp_frame(256, 1)).unwrap();
-        e.set_output_gain(3.0); e.set_absolute_hdr(true);
         let px = |v: &Vec<f32>, x: usize| v[x * 4];
+        e.set_output_gain(203.0 / 80.0); e.set_absolute_hdr(true);
         let sdr = e.render_offscreen(256, 1).unwrap();
         e.set_absolute_hdr(false); let sdr_rel = e.render_offscreen(256, 1).unwrap(); e.set_absolute_hdr(true);
         assert!((px(&sdr, 200) - px(&sdr_rel, 200)).abs() < 1e-3, "SDR rides the gain either way");
         e.set_transfer_override(TransferChoice::PqP3);
         let (raw, _, _) = e.snapshot(Snapshot::Display).unwrap();   // nits / 100, no gain
-        let abs = e.render_offscreen(256, 1).unwrap();
-        for x in [64usize, 128, 200] { let want = px(&raw, x) * 100.0 / 80.0; assert!((px(&abs, x) - want).abs() < want * 2e-3 + 1e-3, "x {x}: {} vs nits/80 {want}", px(&abs, x)); }
-        e.set_output_gain(1.5);   // the slider moved: HDR stays put
-        let abs2 = e.render_offscreen(256, 1).unwrap();
-        assert!((px(&abs2, 200) - px(&abs, 200)).abs() < 2e-3, "the slider moved the HDR picture: {} vs {}", px(&abs2, 200), px(&abs, 200));
+        let lit = e.render_offscreen(256, 1).unwrap();
+        for x in [64usize, 128, 200] { let want = px(&raw, x) * 100.0 / 80.0; assert!((px(&lit, x) - want).abs() < want * 3e-3 + 1e-3, "slider 203: x {x}: {} vs literal nits/80 {want}", px(&lit, x)); }
+        e.set_output_gain(3.0);   // a 240-nit slider: the HDR picture keeps its ratio to SDR white (×240/203)
+        let up = e.render_offscreen(256, 1).unwrap();
+        assert!((px(&up, 200) / px(&lit, 200) - 240.0 / 203.0).abs() < 3e-3, "ratio {}", px(&up, 200) / px(&lit, 200));
         let (cap, _, _) = e.capture(false).unwrap();
-        assert!((cap[200 * 3] - px(&raw, 200)).abs() < 2e-3, "captures stay relative (no gain, no absolute)");
+        assert!((cap[200 * 3] - px(&raw, 200)).abs() < 2e-3, "captures stay relative (no gain, no bench)");
     }
 
     /// A flat grey frame (8-bit limited Y′ = `y`, neutral chroma).

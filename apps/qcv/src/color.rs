@@ -174,7 +174,7 @@ impl crate::App {
             let Some(g) = self.gpu.as_mut() else { return };
             let Some(engine) = slot_engine(g, slot, dual) else { self.color_bound[slot] = None; self.ocio_rx[slot] = None; continue };
             // row 221: a chain rendering above SDR is an HDR picture (absolute nits on Windows HDR); SDR chains follow the slider
-            engine.set_chain_hdr(on && shown && match &stored.chain { ClipChain::MinColor(c) => c.peak_nits > 100.5 || c.agx_peak > 100.5, ClipChain::Ocio(o) => !qcv_color::ocio::view_is_sdr(&o.view) });
+            engine.set_chain_hdr(on && shown && match &stored.chain { ClipChain::MinColor(c) => mincolor_outputs_hdr(c), ClipChain::Ocio(o) => !qcv_color::ocio::view_is_sdr(&o.view) });
             if !on || !shown {
                 if self.color_bound[slot].is_some() { engine.set_color_pass(None); self.color_bound[slot] = None; }
                 self.ocio_rx[slot] = None;
@@ -303,4 +303,26 @@ pub(crate) fn slot_engine(g: &mut crate::Gpu, slot: usize, dual: bool) -> Option
     if !dual { return (slot == 0).then_some(&mut g.presenter.engine) }
     let d = g.presenter.engine.dual_mut()?;
     Some(if slot == 0 { &mut d.a } else { &mut d.b })
+}
+
+/// Row 221: whether a minColor chain can put out more than SDR white — its LAST stage decides: AgX or OpenDRT by their target
+/// peak; un-tone-mapped, the Highlight Knee's target when it is on, else the input (a PQ / HLG source passes its highlights
+/// through; scene-linear / SDR inputs are SDR-referred, 1.0 = SDR white). An HDR chain is benched like an HDR file.
+pub(crate) fn mincolor_outputs_hdr(c: &qcv_color::Chain) -> bool {
+    if c.agx_on != 0 { return c.agx_peak > 100.5 }
+    if c.open_drt != 0 { return c.peak_nits > 100.5 }
+    if c.knee_on != 0 { return c.knee_tgt > 100.5 }
+    c.in_transfer == 14 || c.in_transfer == 15
+}
+
+#[cfg(test)]
+mod hdr_chain_tests {
+    #[test] fn the_last_stage_decides() {
+        let mut c = qcv_color::Chain::default(); assert!(!super::mincolor_outputs_hdr(&c), "Rec.1886 in, un-tone-mapped");
+        c.in_transfer = 14; assert!(super::mincolor_outputs_hdr(&c), "PQ in, un-tone-mapped: the highlights pass");
+        c.knee_on = 1; c.knee_tgt = 100.0; assert!(!super::mincolor_outputs_hdr(&c), "the knee to 100 nits");
+        c.knee_tgt = 600.0; assert!(super::mincolor_outputs_hdr(&c));
+        c.agx_on = 1; c.agx_peak = 100.0; assert!(!super::mincolor_outputs_hdr(&c), "AgX to SDR");
+        c.agx_on = 0; c.knee_on = 0; c.open_drt = 1; c.peak_nits = 1000.0; assert!(super::mincolor_outputs_hdr(&c), "OpenDRT at 1000 nits");
+    }
 }
