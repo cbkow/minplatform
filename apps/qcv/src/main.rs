@@ -757,8 +757,9 @@ impl App {
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
         // the notes sidecar rewritten by another app (minNotes, a second QCView): reload (canon §4.5's watcher)
-        // (paused only: a stat on a slow mount must never hitch playback; a review edit lands when you stop)
-        if !self.player.as_ref().is_some_and(|p| p.is_playing()) && self.annot.poll_disk(Instant::now()) { g.ui_dirty = true; }
+        // (only with the Notes panel open — the user 2026-11-09 — and paused: a stat on a slow mount must never hitch playback;
+        // opening the panel polls on its first tick, so edits made while it was shut land then)
+        if g.notes.open && !self.player.as_ref().is_some_and(|p| p.is_playing()) && self.annot.poll_disk(Instant::now()) { g.ui_dirty = true; }
         // a language switch (row 197): relabel once per change
         if g.lang_gen != min_i18n::generation() { g.lang_gen = min_i18n::generation(); relabel(g); #[cfg(target_os = "macos")] { let m = menu::AppMenu::new(); m.menu.init_for_nsapp(); self.menu = Some(m); } }
         if let Some(u) = g.ui.as_mut() {
