@@ -149,8 +149,8 @@ mod native {
         pub fn new() -> AppMenu {
             let mut ids = HashMap::new();
             let menu = Menu::new();
-            let app = Submenu::new("qcv", true);
-            let quit = MenuItem::new("Quit qcv", true, Some(accel(Sc { shift: false, alt: false, k: K::Q })));   // ours, not the predefined Quit: the settings + window frame save first
+            let app = Submenu::new("QCView", true);
+            let quit = MenuItem::new("Quit QCView", true, Some(accel(Sc { shift: false, alt: false, k: K::Q })));   // ours, not the predefined Quit: the settings + window frame save first
             ids.insert(quit.id().clone(), Cmd::Quit);
             let _ = app.append_items(&[&PredefinedMenuItem::about(Some(tr("About QCView…")), Some(about())), &PredefinedMenuItem::separator(), &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
             let _ = menu.append(&app);

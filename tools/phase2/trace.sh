@@ -6,7 +6,7 @@
 set -u
 ROOT=${0:A:h:h:h}; OUT=$ROOT/fixtures/phase2; mkdir -p $OUT
 label=$1; secs=$2; shift 2
-BIN=$ROOT/target/release/qcv
+BIN=$ROOT/target/release/QCView
 rm -rf $OUT/$label.trace
 $BIN --stats --seconds $secs "$@" > $OUT/$label.out 2>&1 & pid=$!
 sleep 1.5

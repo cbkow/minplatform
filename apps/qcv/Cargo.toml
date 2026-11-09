@@ -9,6 +9,12 @@ publish = false
 license = "GPL-3.0-or-later"
 description = "minplatform — the QCView-shaped reference app where min-ui is born (canon §21.4, Phase 2)"
 
+# the user 2026-11-09: the app is QCView — the binary (Dock, ⌘-Tab, Task Manager) says so; the package, crates, settings store,
+# log folder and single-instance socket keep the short `qcv` (they must not collide with the Qt QCView beside it)
+[[bin]]
+name = "QCView"
+path = "src/main.rs"
+
 [dependencies]
 min-present = { path = "../../crates/min-present" }
 min-ui = { path = "../../crates/min-ui" }

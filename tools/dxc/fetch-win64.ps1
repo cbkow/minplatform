@@ -1,5 +1,5 @@
 # Fetch the pinned DXC (tools/dxc/dxc.pin) into <repo>/external/dxc/win64 (gitignored): dxcompiler.dll + its licences only.
-# qcv finds it beside qcv.exe (packaging) or here (development); canon row 226.
+# qcv finds it beside QCView.exe (packaging) or here (development); canon row 226.
 $ErrorActionPreference = "Stop"
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $pin = @{}; Get-Content (Join-Path $PSScriptRoot "dxc.pin") | Where-Object { $_ -match "^[A-Z0-9_]+=" } | ForEach-Object { $k, $v = $_ -split "=", 2; $pin[$k] = $v }

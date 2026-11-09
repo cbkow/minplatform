@@ -56,7 +56,7 @@ impl Sdr10 {
 }
 
 /// The bundled DXC (canon row 226): beside the executable (the package), else the repo's `external/dxc/win64` (development:
-/// `target/<profile>/qcv.exe` → two folders up).
+/// `target/<profile>/QCView.exe` → two folders up).
 fn bundled_dxc() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?; let dir = exe.parent()?;
     [dir.join("dxcompiler.dll"), dir.join("../../external/dxc/win64/dxcompiler.dll")].into_iter().find(|p| p.is_file())
@@ -74,7 +74,7 @@ impl Presenter {
             log::info!("DX12 shader compiler: {}", dxc.display());
             d.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc { dxc_path: dxc.to_string_lossy().into_owned() };
         } else if cfg!(windows) {
-            log::warn!("no bundled dxcompiler.dll beside qcv.exe or in external/dxc/win64 — wgpu falls back to DXC on PATH or FXC (slow first colour)");
+            log::warn!("no bundled dxcompiler.dll beside QCView.exe or in external/dxc/win64 — wgpu falls back to DXC on PATH or FXC (slow first colour)");
         }
         // wgpu's own switches (WGPU_DX12_COMPILER = fxc | dxc …) still win — the measurements
         d.backend_options = d.backend_options.with_env();

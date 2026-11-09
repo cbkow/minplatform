@@ -7,10 +7,10 @@ pub fn menu_bar() {
     let app = NSApplication::sharedApplication(mtm);
     let bar = NSMenu::new(mtm);
     let app_item = NSMenuItem::new(mtm);
-    let app_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("qcv"));
+    let app_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("QCView"));
     unsafe {
         let fs = NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str("Toggle Full Screen"), Some(objc2::sel!(toggleFullScreen:)), &NSString::from_str("f"));
-        let quit = NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str("Quit qcv"), Some(objc2::sel!(terminate:)), &NSString::from_str("q"));
+        let quit = NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &NSString::from_str("Quit QCView"), Some(objc2::sel!(terminate:)), &NSString::from_str("q"));
         app_menu.addItem(&fs); app_menu.addItem(&NSMenuItem::separatorItem(mtm)); app_menu.addItem(&quit);
     }
     app_item.setSubmenu(Some(&app_menu));

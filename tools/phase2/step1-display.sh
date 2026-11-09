@@ -13,7 +13,7 @@ echo "== 3. H.264 4K zero-copy"; $T h264-hw 10 $FIX/h264_4k.mp4 $S
 echo "== 4. HEVC Main10 4K zero-copy"; $T hevc10-hw 10 $FIX/hevc10_pq_4k.mp4 $S
 echo "== 5. 1080p ProRes zero-copy"; $T p1080-hw 10 $FIX/prores_1080.mov $S
 echo "== 6. the EXR sequence from one frame"; $T exr 8 $FIX/exr_4k/frame_0010.exr $S
-echo "== 7. PQ ramp on the PQ surface + the arithmetic"; $ROOT/target/release/qcv $FIX/pq_ramp_4k.mp4 --out pq --verify-pq --stats --seconds 6 $S > $OUT/pq-surface.out 2>&1; grep -E "presenter:|layer:|verify-pq|band|present ms|EDR" $OUT/pq-surface.out | head -12
-echo "== 8. SDR surface"; $ROOT/target/release/qcv $FIX/prores_4k.mov --out sdr --stats --seconds 6 $S > $OUT/sdr.out 2>&1; grep -E "presenter:|present ms|play:" $OUT/sdr.out | tail -3
-echo "== 9. the windowed snapshot equals the headless one"; $ROOT/target/release/qcv $FIX/prores_4k.mov --snap-out $OUT/qcv_p4k_hw_windowed.png@1 --seconds 3 $S > $OUT/snap-windowed.out 2>&1; cmp $OUT/qcv_p4k_hw_windowed.png $OUT/qcv_p4k_hw.png && echo "   identical"
+echo "== 7. PQ ramp on the PQ surface + the arithmetic"; $ROOT/target/release/QCView $FIX/pq_ramp_4k.mp4 --out pq --verify-pq --stats --seconds 6 $S > $OUT/pq-surface.out 2>&1; grep -E "presenter:|layer:|verify-pq|band|present ms|EDR" $OUT/pq-surface.out | head -12
+echo "== 8. SDR surface"; $ROOT/target/release/QCView $FIX/prores_4k.mov --out sdr --stats --seconds 6 $S > $OUT/sdr.out 2>&1; grep -E "presenter:|present ms|play:" $OUT/sdr.out | tail -3
+echo "== 9. the windowed snapshot equals the headless one"; $ROOT/target/release/QCView $FIX/prores_4k.mov --snap-out $OUT/qcv_p4k_hw_windowed.png@1 --seconds 3 $S > $OUT/snap-windowed.out 2>&1; cmp $OUT/qcv_p4k_hw_windowed.png $OUT/qcv_p4k_hw.png && echo "   identical"
 echo "== footprint: run 'footprint <pid>' by hand during run 1 if the RSS row needs Apple's number (S1 compared footprint, not RSS)"

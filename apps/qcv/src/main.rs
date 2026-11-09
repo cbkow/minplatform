@@ -887,7 +887,7 @@ impl App {
                 g.ui_dirty = true;
             }
             // the window title: QCView's "clip — project" with a dot while unsaved
-            { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("qcv — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("qcv — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
+            { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("QCView — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("QCView — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
             g.settings_panel.sync(&self.settings, now);
             if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.shortcuts.animating(now) || g.background_panel.animating(now) || g.background_panel.tooltips.tick(now) || g.guides_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {
@@ -1888,7 +1888,7 @@ impl ApplicationHandler for App {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.gpu.is_some() { return }
         for (i, m) in el.available_monitors().enumerate() { println!("monitor {i}: {:?} at {:?} scale {}", m.name(), m.position(), m.scale_factor()); }
-        let mut attrs = WindowAttributes::default().with_title("qcv").with_surface_size(LogicalSize::new(1280.0, 720.0));
+        let mut attrs = WindowAttributes::default().with_title("QCView").with_surface_size(LogicalSize::new(1280.0, 720.0));
         // QCView's `window/*` restore: the saved physical size and position when there is one (first run: 1280 × 720, the OS places it)
         { let st = &self.settings; use settings::k;
           if st.is_set(k::WINDOW_WIDTH) && st.int(k::WINDOW_WIDTH) >= 320 && st.int(k::WINDOW_HEIGHT) >= 200 { attrs = attrs.with_surface_size(winit::dpi::PhysicalSize::new(st.int(k::WINDOW_WIDTH) as u32, st.int(k::WINDOW_HEIGHT) as u32)); }
