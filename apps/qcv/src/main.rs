@@ -743,6 +743,8 @@ impl App {
     /// Any live URL (QCView `addLiveStream` + make it active): a `qcbae://` host, else a network stream named `name` (host:port when empty).
     pub(crate) fn connect_url(&mut self, url: &str, name: &str) {
         if let Some(h) = qcv_ring::url::Host::parse(url) { self.connect_host(h); return }
+        // a listener the user asks for listens (row 243); the Blender card's sessions keep their switch
+        if url.contains("mode=listener") { self.blender.user_listeners.insert(url.trim().to_string()); }
         if let Some(id) = self.project.add_live_stream(url, name) { self.load_item(&id); }
     }
     fn dual_dialog_done(&mut self, i: usize) {

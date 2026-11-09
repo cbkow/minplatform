@@ -58,12 +58,15 @@ pub struct BlenderInput {
     card_name: Option<String>, /// a project replaced while on: the next card keeps the item in the bin (QCView `m_blenderCarry`)
     pub carry: bool,
     pub last_poll: Option<Instant>, logged_error: Option<String>,
+    /// listener URLs the USER opened this session (Open Stream, a launch argument, a recent item, a link): they listen
+    /// without the switch (canon row 243) — the gate is for the sessions the Blender card brings
+    pub user_listeners: std::collections::HashSet<String>,
 }
 pub enum Event { Arrived, Changed, Removed }
 
 impl Default for BlenderInput { fn default() -> Self { Self::new() } }
 impl BlenderInput {
-    pub fn new() -> BlenderInput { BlenderInput { enabled: false, card: None, ended: false, item: None, card_name: None, carry: false, last_poll: None, logged_error: None } }
+    pub fn new() -> BlenderInput { BlenderInput { enabled: false, card: None, ended: false, item: None, card_name: None, carry: false, last_poll: None, logged_error: None, user_listeners: Default::default() } }
     /// The 2-s poll (an immediate one right after switching on).
     pub fn poll(&mut self, now: Instant) -> Option<Event> {
         if !self.enabled || self.last_poll.is_some_and(|t| now.duration_since(t) < POLL) { return None }
