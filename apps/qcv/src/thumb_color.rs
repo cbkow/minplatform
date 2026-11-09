@@ -6,7 +6,7 @@
 //! cache re-renders what it shows (and nothing it does not).
 use crate::color_model::ClipChain;
 use min_present::{engine::Engine, ColorPass, Frame, Pixels, PlanarLayout, Plane};
-use qcv_player::ThumbPixels;
+use qcv_player::{ThumbPixels, ThumbSamples};
 use std::sync::mpsc;
 
 #[derive(Default)]
@@ -24,13 +24,18 @@ impl ThumbColor {
         let en = self.engine.as_mut()?;
         let (w, h) = (px.width, px.height);
         if w == 0 || h == 0 { return None }
-        let pitch = w.div_ceil(256) * 256;
+        // the source's own samples as planar G, B, R at 16 bits (code values, or half floats for EXR) — row 216
+        let (data, float) = match &px.samples { ThumbSamples::Code16(v) => (v, false), ThumbSamples::Half(v) => (v, true) };
+        let pitch = (w * 2).div_ceil(256) * 256;
         let mut planes = [vec![0u8; (pitch * h) as usize], vec![0u8; (pitch * h) as usize], vec![0u8; (pitch * h) as usize]];
-        for y in 0..h { for x in 0..w { let i = ((y * w + x) * 4) as usize; let o = (y * pitch + x) as usize; planes[0][o] = px.rgba[i + 1]; planes[1][o] = px.rgba[i + 2]; planes[2][o] = px.rgba[i]; } }
+        for y in 0..h { for x in 0..w {
+            let i = ((y * w + x) * 3) as usize; let o = (y * pitch + x * 2) as usize;
+            for (pl, c) in [(0usize, 1usize), (1, 2), (2, 0)] { planes[pl][o..o + 2].copy_from_slice(&data[i + c].to_ne_bytes()); }
+        } }
         let meta = self.meta.unwrap_or_default();
-        let m = min_present::ColorMeta { matrix: min_present::Matrix::Identity, range: min_present::Range::Full, chroma: min_present::Chroma::Rgb, bit_depth: 8, rotation: 0, sar: (1, 1), range_forced: false, ..meta };
+        let m = min_present::ColorMeta { matrix: min_present::Matrix::Identity, range: min_present::Range::Full, chroma: min_present::Chroma::Rgb, bit_depth: 16, rotation: 0, sar: (1, 1), range_forced: false, ..meta };
         let [g, b, r] = planes;
-        let frame = Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![Plane::owned(g, w, h, pitch), Plane::owned(b, w, h, pitch), Plane::owned(r, w, h, pitch)], layout: PlanarLayout::Rgb { bytes_per_sample: 1, code_bits: 8, float: false, alpha: false, legal_expand: false } }, meta: m };
+        let frame = Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![Plane::owned(g, w, h, pitch), Plane::owned(b, w, h, pitch), Plane::owned(r, w, h, pitch)], layout: PlanarLayout::Rgb { bytes_per_sample: 2, code_bits: 16, float, alpha: false, legal_expand: false } }, meta: m };
         en.show(&frame).ok()?;
         let peak = en.bypass_hdr_peak();
         let (mut lin, cw, ch) = en.capture(false).ok()?;
@@ -93,9 +98,23 @@ mod tests {
         let Ok(en) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
         let mut tc = ThumbColor { engine: Some(en), meta: Some(min_present::ColorMeta { transfer: min_present::Transfer::Bt1886, ..Default::default() }), ..Default::default() };
         let rgba: Vec<u8> = (0..32 * 18).flat_map(|i| { let v = (i % 32 * 8) as u8; [v, 255 - v, 128, 255] }).collect();
-        let img = tc.convert(&ThumbPixels { width: 32, height: 18, rgba: rgba.clone() }).unwrap();
+        let img = tc.convert(&ThumbPixels::from_rgba8(32, 18, &rgba)).unwrap();
         let out = img.image.data.data();
         let worst = rgba.iter().zip(out.iter()).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
         assert!(worst <= 2, "code values round-trip within 2: worst {worst}");
+    }
+    #[test]
+    fn a_linear_exr_thumbnail_reads_like_the_viewport() {
+        let Ok(en) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        let mut tc = ThumbColor { engine: Some(en), meta: Some(min_present::ColorMeta { transfer: min_present::Transfer::Linear, ..Default::default() }), ..Default::default() };
+        // a linear ramp, deep shadows included (8-bit linear would have flattened them)
+        let v: Vec<u16> = (0..32 * 18).flat_map(|i| { let x = (i % 32) as f32 / 31.0; let l = x * x * x; [half::f16::from_f32(l).to_bits(), half::f16::from_f32(l * 0.5).to_bits(), half::f16::from_f32(0.18).to_bits()] }).collect();
+        let px = ThumbPixels { width: 32, height: 18, samples: ThumbSamples::Half(v) };
+        let img = tc.convert(&px).unwrap();
+        let (out, want) = (img.image.data.data(), px.rgba8());
+        let worst = want.iter().zip(out.iter()).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
+        assert!(worst <= 2, "linear → the sRGB encode, as the viewport's bypass: worst {worst}");
+        let distinct: std::collections::HashSet<u8> = out.chunks(4).take(32).map(|c| c[0]).collect();
+        assert!(distinct.len() >= 28, "the shadows keep their steps: {} distinct of 32", distinct.len());
     }
 }

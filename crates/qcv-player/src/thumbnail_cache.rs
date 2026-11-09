@@ -43,7 +43,31 @@ pub const QCVIEW_CACHE_SIZE: usize = 100;
 /// The strip: about this many thumbnails across the file, never denser than `PREFETCH_STRIDE`.
 pub const STRIP_TARGET: i64 = 400;
 /// RGBA8, tightly packed.
-pub struct ThumbPixels { pub width: u32, pub height: u32, pub rgba: Vec<u8> }
+/// A thumbnail's samples, interleaved RGB at the source's precision (canon row 216: the chain needs the file's own values —
+/// 8-bit RGBA with a curve baked in banded log and lost linear shadows).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ThumbSamples {
+    /// the source's code values (R'G'B', full range), scaled to 16 bits
+    Code16(Vec<u16>),
+    /// linear light, IEEE half bits (EXR)
+    Half(Vec<u16>),
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThumbPixels { pub width: u32, pub height: u32, pub samples: ThumbSamples }
+impl ThumbPixels {
+    /// 8-bit code values as RGBA (opaque) — 8-bit sources exactly.
+    pub fn from_rgba8(width: u32, height: u32, rgba: &[u8]) -> ThumbPixels {
+        ThumbPixels { width, height, samples: ThumbSamples::Code16(rgba.chunks(4).flat_map(|c| [c[0] as u16 * 257, c[1] as u16 * 257, c[2] as u16 * 257]).collect()) }
+    }
+    /// The picture without the look stage: code values as stored; half floats through the sRGB curve (the old rule, so a
+    /// fallback reads like the viewport's bypass).
+    pub fn rgba8(&self) -> Vec<u8> {
+        match &self.samples {
+            ThumbSamples::Code16(v) => v.chunks(3).flat_map(|c| [(c[0] >> 8) as u8, (c[1] >> 8) as u8, (c[2] >> 8) as u8, 255]).collect(),
+            ThumbSamples::Half(v) => v.chunks(3).flat_map(|c| { let e = |b: u16| { let v = half::f16::from_bits(b).to_f32(); let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }; ((if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }) * 255.0 + 0.5) as u8 }; [e(c[0]), e(c[1]), e(c[2]), 255] }).collect(),
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ThumbEntry { pub texture: u64, pub width: u32, pub height: u32 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -292,7 +316,7 @@ impl VideoThumbLoaderSws {
         let key = (w, h, (*fr).format, ow, oh);
         if self.sws.is_null() || self.sws_key != key {
             if !self.sws.is_null() { ff::sws_freeContext(self.sws); }
-            self.sws = ff::sws_getContext(w, h, std::mem::transmute::<i32, ff::AVPixelFormat>((*fr).format), ow, oh, ff::AVPixelFormat::AV_PIX_FMT_RGBA, SWS_POINT, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            self.sws = ff::sws_getContext(w, h, std::mem::transmute::<i32, ff::AVPixelFormat>((*fr).format), ow, oh, ff::AVPixelFormat::AV_PIX_FMT_RGB48LE, SWS_POINT, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
             if self.sws.is_null() { return None }
             // the screen's matrix + range rules (yuv_planar: tagged, else BT.709 at every size; the range tag, untagged →
             // limited) — swscale's own default was BT.601 with the range taken from the pixel format (canon row 216)
@@ -306,15 +330,17 @@ impl VideoThumbLoaderSws {
             }
             self.sws_key = key;
         }
-        let mut rgba = vec![0u8; (ow * oh * 4) as usize];
-        let dst = [rgba.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()];
-        let dst_stride = [ow * 4, 0, 0, 0];
+        let mut rgb = vec![0u16; (ow * oh * 3) as usize];
+        let dst = [rgb.as_mut_ptr() as *mut u8, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()];
+        let dst_stride = [ow * 6, 0, 0, 0];
         let src: [*const u8; 4] = [(*fr).data[0], (*fr).data[1], (*fr).data[2], (*fr).data[3]];
         let src_stride = [(*fr).linesize[0], (*fr).linesize[1], (*fr).linesize[2], (*fr).linesize[3]];
         ff::sws_scale(self.sws, src.as_ptr(), src_stride.as_ptr(), 0, h, dst.as_ptr(), dst_stride.as_ptr());
         // RGB sources tagged limited get the legal expansion swscale skips (rgb_range.h)
-        if crate::rgb_range::rgb_frame_needs_legal_expansion(fr, crate::rgb_range::RangeOverride::Auto) { crate::rgb_range::expand_rgba8_legal_to_full(&mut rgba); }
-        Some(ThumbPixels { width: ow as u32, height: oh as u32, rgba })
+        for v in rgb.iter_mut() { *v = u16::from_le(*v); }
+        // RGB sources tagged limited: rgb_range's 16–235 rule, at 16 bits
+        if crate::rgb_range::rgb_frame_needs_legal_expansion(fr, crate::rgb_range::RangeOverride::Auto) { for v in rgb.iter_mut() { *v = (((*v as i64 - 4096) * 65535 + 28032) / 56064).clamp(0, 65535) as u16; } }
+        Some(ThumbPixels { width: ow as u32, height: oh as u32, samples: ThumbSamples::Code16(rgb) })
     } }
 }
 
@@ -333,25 +359,14 @@ pub fn image_thumb(img: &min_image::Image, max_size: u32) -> Option<ThumbPixels>
     let skip = (img.width.max(img.height) / max_size.max(1)).max(1);
     let (w, h) = ((img.width / skip).max(1), (img.height / skip).max(1));
     let bps = img.sample.bytes();
-    let read = |plane: usize, x: u32, y: u32| -> u8 {
+    // the planes are G, B, R (gbrp); the samples stay the file's: 8-bit → ×257, 16-bit as is, half floats as half bits
+    let read = |plane: usize, x: u32, y: u32| -> u16 {
         let o = (y * img.pitch) as usize + x as usize * bps; let p = &img.planes[plane];
-        match img.sample {
-            min_image::Sample::U8 => p[o],
-            min_image::Sample::U16 => (u16::from_ne_bytes([p[o], p[o + 1]]) >> 8) as u8,
-            min_image::Sample::F16 => {
-                let v = half::f16::from_bits(u16::from_ne_bytes([p[o], p[o + 1]])).to_f32();
-                let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
-                let e = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
-                (e * 255.0 + 0.5) as u8
-            }
-        }
+        match img.sample { min_image::Sample::U8 => p[o] as u16 * 257, _ => u16::from_ne_bytes([p[o], p[o + 1]]) }
     };
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h { for x in 0..w {
-        let (sx, sy) = (x * skip, y * skip);
-        rgba.extend_from_slice(&[read(2, sx, sy), read(0, sx, sy), read(1, sx, sy), if img.alpha && img.planes.len() > 3 { if img.sample == min_image::Sample::F16 { let p = &img.planes[3]; let o = (sy * img.pitch) as usize + sx as usize * bps; (half::f16::from_bits(u16::from_ne_bytes([p[o], p[o + 1]])).to_f32().clamp(0.0, 1.0) * 255.0 + 0.5) as u8 } else { read(3, sx, sy) } } else { 255 }]);
-    } }
-    Some(ThumbPixels { width: w, height: h, rgba })
+    let mut v = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h { for x in 0..w { let (sx, sy) = (x * skip, y * skip); v.extend_from_slice(&[read(2, sx, sy), read(0, sx, sy), read(1, sx, sy)]); } }
+    Some(ThumbPixels { width: w, height: h, samples: if img.sample == min_image::Sample::F16 { ThumbSamples::Half(v) } else { ThumbSamples::Code16(v) } })
 }
 
 #[cfg(test)]
@@ -377,13 +392,13 @@ mod tests {
         let img = Image { width: w, height: h, sample: Sample::F16, planes: vec![plane(0.5), plane(0.0), plane(1.0)], pitch, alpha: false, sentinel: None };
         let t = image_thumb(&img, 320).unwrap();
         assert_eq!((t.width, t.height), (320, 180));
-        assert_eq!(&t.rgba[..4], &[255, 188, 0, 255], "R 1.0, G 0.5 linear → sRGB 188, B 0, opaque");
+        assert_eq!(&t.rgba8()[..4], &[255, 188, 0, 255], "R 1.0, G 0.5 linear → sRGB 188, B 0, opaque");
     }
     #[test] fn sequence_parts() {
         assert_eq!(parse_sequence_parts("/s/shot_0042.exr?layer=diffuse"), Some(("/s/shot_".into(), 42, ".exr?layer=diffuse".into())));
         assert_eq!(parse_sequence_parts("/s/clip.mov"), None);
     }
-    struct Fake; impl ThumbLoader for Fake { fn load_thumbnail(&mut self, f: i32, _m: u32) -> Option<ThumbPixels> { Some(ThumbPixels { width: 2, height: 1, rgba: vec![f as u8; 8] }) } }
+    struct Fake; impl ThumbLoader for Fake { fn load_thumbnail(&mut self, f: i32, _m: u32) -> Option<ThumbPixels> { Some(ThumbPixels::from_rgba8(2, 1, &[f as u8; 8])) } }
     #[test] fn misses_queue_land_and_fall_back() {
         let factory: LoaderFactory = Arc::new(|_| Some(Box::new(Fake) as Box<dyn ThumbLoader>));
         let evicted = Arc::new(Mutex::new(vec![])); let ev = evicted.clone();
@@ -415,13 +430,13 @@ mod colour_tests {
         // BT.709 limited red: Y 63, Cb 102, Cr 240 → (255, 0, 0); BT.601's table would give a pink-orange
         let mut f = frame(63, 102, 240, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_MPEG);
         let t = super::rgba_thumb_from_avframe(f, 0).unwrap();
-        let (r, g, b) = (t.rgba[0] as i32, t.rgba[1] as i32, t.rgba[2] as i32);
+        let q = t.rgba8(); let (r, g, b) = (q[0] as i32, q[1] as i32, q[2] as i32);
         assert!(r > 245 && g < 12 && b < 12, "709 red → ({r}, {g}, {b})");
         ff::av_frame_free(&mut f);
         // full range grey 128 stays 128 (limited would stretch it)
         let mut f = frame(128, 128, 128, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_JPEG);
         let t = super::rgba_thumb_from_avframe(f, 0).unwrap();
-        assert!((t.rgba[0] as i32 - 128).abs() <= 2, "full-range grey → {}", t.rgba[0]);
+        assert!((t.rgba8()[0] as i32 - 128).abs() <= 2, "full-range grey → {}", t.rgba8()[0]);
         ff::av_frame_free(&mut f);
     } }
 }

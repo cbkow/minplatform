@@ -36,6 +36,7 @@ serde_json = { workspace = true }
 # local timestamps for the file log (already in the tree through env_logger)
 jiff = "0.2"
 png = { workspace = true }
+half = "2.4"
 # captures (row 216): the writers, and the clipboard's image
 min-image = { path = "../../crates/min-image" }
 arboard = { workspace = true, features = ["image-data"] }

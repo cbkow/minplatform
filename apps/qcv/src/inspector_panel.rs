@@ -64,7 +64,8 @@ pub struct InspectorPanel {
     seq_shape: Option<(i32, f64)>, seq_fill: (i32, i32),
     /// the loaded EXR sequence's layers (the project item's), the current one, its first frame — and the tiles' thumbnails,
     /// decoded off-thread per (frame, layer) (QCView's `image://thumb/<first>?layer=`)
-    seq_layers: (Vec<String>, String, String), layer_thumbs: std::collections::HashMap<String, peniko::ImageBrush>,
+    seq_layers: (Vec<String>, String, String), layer_thumbs: std::collections::HashMap<String, peniko::ImageBrush>, /// the tiles' samples and the look generation they were drawn in
+    layer_raw: std::collections::HashMap<String, (qcv_player::ThumbPixels, u64)>,
     layer_rx: Option<std::sync::mpsc::Receiver<(String, String, Option<qcv_player::ThumbPixels>)>>,
     tooltips: min_ui::Tooltips,
     /// the hero thumbnail: its key (path + layer), the picture once decoded, the worker's channel
@@ -121,7 +122,7 @@ fn fmt_bitrate(bps: i64) -> String { if bps <= 0 { String::new() } else if bps >
 impl InspectorPanel {
     pub fn new() -> InspectorPanel {
         let g = |title| Group { section: Section::new(tr(title), true), items: vec![], rects: vec![], shown: true };
-        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), hero_key: String::new(), hero_raw: None, hero_gen: u64::MAX, hero: None, hero_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
+        InspectorPanel { groups: vec![g("File"), g("Video"), g("Geometry"), g("Color"), g("Audio"), g("Timecode"), g("Linked Projects"), g("Image Sequence")], seq_shape: None, seq_fill: (-1, -1), seq_layers: Default::default(), layer_thumbs: Default::default(), layer_raw: Default::default(), layer_rx: None, tooltips: min_ui::Tooltips::default(), hero_key: String::new(), hero_raw: None, hero_gen: u64::MAX, hero: None, hero_rx: None, path: String::new(), size_bytes: None, vmeta: None, ameta: None, pending_v: None, pending_a: None, peaks: [0.0; 16], channels: 0,
             range: RangeOverride::Auto, transfer: TransferOverride::Auto, routing: RoutingMode::Auto, origin: None, geometry: Geometry::default(), display_dims: (0, 0), storage: (0, 0), height: 0.0, dirty_model: true }
     }
     /// The extractor's result for `path` (the service delivers it after the open).
@@ -137,7 +138,7 @@ impl InspectorPanel {
     pub fn set_seq_layers(&mut self, layers: Vec<String>, current: &str, first_frame: &str) {
         if self.seq_layers.0 == layers && self.seq_layers.1 == current && self.seq_layers.2 == first_frame { return }
         if self.seq_layers.2 != first_frame || self.seq_layers.0 != layers {
-            self.layer_thumbs.clear(); self.layer_rx = None;
+            self.layer_thumbs.clear(); self.layer_raw.clear(); self.layer_rx = None;
             if !layers.is_empty() && !first_frame.is_empty() {
                 let (tx, rx) = std::sync::mpsc::channel(); self.layer_rx = Some(rx);
                 let (names, first) = (layers.clone(), first_frame.to_string());
@@ -148,12 +149,19 @@ impl InspectorPanel {
         }
         self.seq_layers = (layers, current.to_string(), first_frame.to_string()); self.dirty_model = true;
     }
-    /// A video hero in the clip's look (the thumbnail pipeline, row 216); true when it was redrawn.
+    /// The hero (video or sequence) in the clip's look (the thumbnail pipeline, row 216); true when it was redrawn.
     pub fn apply_look(&mut self, generation: u64, conv: &mut dyn FnMut(&qcv_player::ThumbPixels) -> Option<peniko::ImageBrush>) -> bool {
-        let Some(raw) = &self.hero_raw else { return false };
+        let layers = self.apply_layer_look(generation, conv);
+        let Some(raw) = &self.hero_raw else { return layers };
         if self.hero_gen == generation { return false }
         if let Some(img) = conv(raw) { self.hero = Some(img); }
         self.hero_gen = generation; true
+    }
+    /// The EXR layer tiles in the clip's look (row 216); true when any was redrawn.
+    pub fn apply_layer_look(&mut self, generation: u64, conv: &mut dyn FnMut(&qcv_player::ThumbPixels) -> Option<peniko::ImageBrush>) -> bool {
+        let mut any = false;
+        for (n, (raw, g)) in self.layer_raw.iter_mut() { if *g != generation { if let Some(img) = conv(raw) { self.layer_thumbs.insert(n.clone(), img); } *g = generation; any = true; } }
+        any
     }
     pub fn sync(&mut self, p: Option<&Transport>) -> bool {
         let Some(p) = p else { if !self.path.is_empty() { self.path.clear(); self.vmeta = None; self.ameta = None; for g in &mut self.groups { g.items.clear(); } self.dirty_model = false; return true } return false };
@@ -178,8 +186,8 @@ impl InspectorPanel {
                 let _ = tx.send((key, px));
             }).ok();
         }
-        if let Some(rx) = &self.hero_rx && let Ok((k, px)) = rx.try_recv() { if k == self.hero_key { let seq = p.decoder().as_sequence().is_some(); self.hero = px.as_ref().map(|px| paint::image_rgba8(px.width, px.height, px.rgba.clone())); self.hero_raw = if seq { None } else { px }; self.hero_gen = u64::MAX; dirty = true; } self.hero_rx = None; }
-        if let Some(rx) = &self.layer_rx { while let Ok((first, n, px)) = rx.try_recv() { if first == self.seq_layers.2 && let Some(px) = px { self.layer_thumbs.insert(n, paint::image_rgba8(px.width, px.height, px.rgba)); dirty = true; } } }
+        if let Some(rx) = &self.hero_rx && let Ok((k, px)) = rx.try_recv() { if k == self.hero_key { let seq = p.decoder().as_sequence().is_some(); self.hero = px.as_ref().map(|px| paint::image_rgba8(px.width, px.height, px.rgba8())); let _ = seq; self.hero_raw = px; self.hero_gen = u64::MAX; dirty = true; } self.hero_rx = None; }
+        if let Some(rx) = &self.layer_rx { while let Ok((first, n, px)) = rx.try_recv() { if first == self.seq_layers.2 && let Some(px) = px { self.layer_thumbs.insert(n.clone(), paint::image_rgba8(px.width, px.height, px.rgba8())); self.layer_raw.insert(n, (px, u64::MAX)); dirty = true; } } }
         if p.audio.has_audio() {
             let pk = p.audio.peak_levels(); let ch = p.audio.source_channels().min(16);
             if ch != self.channels { self.channels = ch; self.dirty_model = true; }

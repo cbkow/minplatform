@@ -45,7 +45,7 @@ impl HoverThumbs {
         let playing = p.as_ref().is_some_and(|p| p.is_playing());
         if playing != self.playing { self.playing = playing; self.cache.notify_playback_state(playing); }
         let (images, next) = (self.images.clone(), &mut self.next);
-        let n = self.cache.process_pending_uploads(|_: &ThumbKey, px: &ThumbPixels| { *next += 1; images.borrow_mut().insert(*next, (ThumbPixels { width: px.width, height: px.height, rgba: px.rgba.clone() }, None)); *next });
+        let n = self.cache.process_pending_uploads(|_: &ThumbKey, px: &ThumbPixels| { *next += 1; images.borrow_mut().insert(*next, (px.clone(), None)); *next });
         if n > 0 { changed = true; }
         match (hover.filter(|_| self.enabled), p) {
             (Some(f), Some(p)) => {
@@ -64,7 +64,7 @@ impl HoverThumbs {
         if let Some((h, _, _)) = self.shown {
             let mut imgs = self.images.borrow_mut();
             if let Some((raw, img)) = imgs.get_mut(&h) && img.as_ref().map(|x| x.0) != Some(look.0) {
-                let pic = (look.1)(raw).unwrap_or_else(|| paint::image_rgba8(raw.width, raw.height, raw.rgba.clone()));
+                let pic = (look.1)(raw).unwrap_or_else(|| paint::image_rgba8(raw.width, raw.height, raw.rgba8()));
                 *img = Some((look.0, pic)); changed = true;
             }
         }

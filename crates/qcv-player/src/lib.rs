@@ -33,7 +33,7 @@ pub use playback::{Playback, TimecodeInfo};
 pub use playback_timer::{PlaybackTimer, ClockPolicy};
 pub use qcv_meta::{stream_extent, TimecodeFormatter};
 pub use key_map::{Action, Key, Mods, map_key};
-pub use thumbnail_cache::{TimelineThumbnailCache, ThumbConfig, ThumbKey, ThumbEntry, ThumbPixels, ThumbLoader, VideoThumbLoader};
+pub use thumbnail_cache::{TimelineThumbnailCache, ThumbConfig, ThumbKey, ThumbEntry, ThumbPixels, ThumbSamples, ThumbLoader, VideoThumbLoader};
 pub use source::Source;
 pub use video_decoder::{Policy, State, VideoDecoder};
 

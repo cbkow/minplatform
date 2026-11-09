@@ -3096,6 +3096,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "env_logger",
+ "half",
  "interprocess",
  "jiff",
  "kurbo",
