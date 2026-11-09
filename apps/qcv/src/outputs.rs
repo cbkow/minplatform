@@ -267,6 +267,10 @@ impl crate::App {
             if let Some(d) = e.dual() { format!("{:?}", d.mode).hash(&mut h); d.seam.to_bits().hash(&mut h); }
         }
         self.color_bound.hash(&mut h); self.loaded_item.hash(&mut h);
+        // the chain's SETTINGS, not only which engine is bound (a slider drag keeps the engine; QCView's stamp holds the chain)
+        self.settings.bool(k::COLOR_ENABLED).hash(&mut h);
+        format!("{:?}", self.chain_of(&self.slot_item(0)).1.chain).hash(&mut h);
+        if self.dual.is_some() { format!("{:?}", self.chain_of(&self.slot_item(1)).1.chain).hash(&mut h); }
         self.live.as_ref().and_then(|l| l.review.as_ref()).map(|r| (&r.label, &r.note, r.stored)).hash(&mut h);
         h.finish()
     }
