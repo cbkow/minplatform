@@ -1,0 +1,25 @@
+[package]
+name = "qcv-stream"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform — QCView's stream output (canon row 239; QCView `src/output/`): a native hardware H.264 session per OS (VideoToolbox / Media Foundation) fed zero-copy from our own GPU NV12 pass, FFmpeg's AAC, mpegts over SRT / flv over RTMP, the paced session"
+
+[dependencies]
+wgpu = { workspace = true }
+ffmpeg-sys-next = { workspace = true }
+bytemuck = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true, features = ["objc2-io-surface"] }
+objc2-io-surface = { workspace = true }
+
+[dev-dependencies]
+min-present = { path = "../min-present" }
