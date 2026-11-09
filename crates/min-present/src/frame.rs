@@ -57,6 +57,9 @@ pub enum PlanarLayout {
     /// Planar RGB in FFmpeg's `gbrp` order (G, B, R [, A]); `float` = half floats, linear light (EXR); `legal_expand` =
     /// `rgb_range`'s 16–235 → 0–255 rule for legal-range RGB masters. The matrix is `Identity`.
     Rgb { bytes_per_sample: u32, code_bits: u32, float: bool, alpha: bool, legal_expand: bool },
+    /// ONE packed RGBA half-float plane (a QCBridge host frame, canon row 228): the host's working-space values as sent —
+    /// unclamped, untransformed; `premultiplied` = the frame's flag (else straight alpha, premultiplied in the shader).
+    RgbaF16 { premultiplied: bool },
 }
 
 /// A platform frame the GPU can sample without a copy. `handle` is the OS object (macOS: `CVPixelBufferRef`;
