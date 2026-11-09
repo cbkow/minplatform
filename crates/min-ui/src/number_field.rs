@@ -15,12 +15,14 @@ pub struct NumberField {
     pub rect: Rect,
     up: Rect, down: Rect, hover_up: bool, hover_down: bool,
     scale: f64,
+    /// the well's background (None = the field token's) — the Output card's controls share one recessed grey
+    pub bg: Option<min_theme::Color>,
 }
 
 impl NumberField {
     pub fn new(value: i64, min: i64, max: i64, step: i64) -> NumberField {
         let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S); field.bare = true;
-        let mut f = NumberField { field, value: value.clamp(min, max), min, max, step: step.max(1), zero_label: None, enabled: true, rect: Rect::ZERO, up: Rect::ZERO, down: Rect::ZERO, hover_up: false, hover_down: false, scale: 1.0 };
+        let mut f = NumberField { field, value: value.clamp(min, max), min, max, step: step.max(1), zero_label: None, enabled: true, rect: Rect::ZERO, up: Rect::ZERO, down: Rect::ZERO, hover_up: false, hover_down: false, scale: 1.0, bg: None };
         f.show();
         f
     }
@@ -93,7 +95,7 @@ impl NumberField {
         let r = t::FIELD_CORNER_RADIUS_S as f64 * scale; let bw = t::BORDER_WIDTH_100 as f64 * scale;
         let border = if !self.enabled { t::DISABLED_BORDER_COLOR } else if self.field.focused { t::FIELD_BORDER_COLOR_FOCUS } else if self.field.hovered() || self.hover_up || self.hover_down { t::FIELD_BORDER_COLOR_HOVER } else { t::FIELD_BORDER_COLOR };
         paint::rounded(scene, self.rect, r, border);
-        paint::rounded(scene, self.rect.inset(-bw), (r - bw).max(0.0), t::FIELD_BACKGROUND_COLOR);
+        paint::rounded(scene, self.rect.inset(-bw), (r - bw).max(0.0), self.bg.unwrap_or(t::FIELD_BACKGROUND_COLOR));
         if self.enabled {
             self.field.paint(scene, fonts, scale);   // bare: the text alone inside this one well (no inner corners against the stepper seam — the user's nit, 2026-11-07)
         } else {

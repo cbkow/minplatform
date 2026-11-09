@@ -94,7 +94,7 @@ static KEYS: &[Key] = &[
     Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_AE, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_PROBE, 0, -200, 200),
     Key::int(k::LIVE_BUFFER_MS, 60, 20, 200),
     Key::bool(k::BLENDER_SESSIONS, false),
-    Key::bool(k::OUTPUT_FEED_MUTED, false),
+    Key::bool(k::OUTPUT_FEED_MUTED, true),   // the user 2026-11-09: the feed starts muted (QCView: on)
     Key::bool("output/enabled/ndi", false), Key::int("output/ndi/raster", 0, 0, 2), Key::int("output/ndi/transfer", 1, 1, 3), Key::int("output/ndi/primaries", 1, 1, 2), Key::float("output/ndi/peakNits", 1000.0, 1.0, 10000.0), Key::float("output/ndi/minNits", 0.005, 0.0, 1000.0), Key::int("output/ndi/maxCll", 1000, 0, 10000), Key::int("output/ndi/maxFall", 400, 0, 10000),
     Key::bool("output/enabled/aja", false), Key::int("output/aja/raster", 0, 0, 2), Key::int("output/aja/transfer", 1, 1, 3), Key::int("output/aja/primaries", 1, 1, 2), Key::float("output/aja/peakNits", 1000.0, 1.0, 10000.0), Key::float("output/aja/minNits", 0.005, 0.0, 1000.0), Key::int("output/aja/maxCll", 1000, 0, 10000), Key::int("output/aja/maxFall", 400, 0, 10000),
     Key::int(k::BACKGROUND_MODE, 0, 0, 3),

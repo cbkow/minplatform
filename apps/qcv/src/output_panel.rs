@@ -26,6 +26,8 @@ struct Card { v: CardView, on: Switch, transfer: Picker, raster: Picker, primari
 pub struct OutputPanel { pub section: Section, mute: ActionButton, cards: Vec<Card>, empty: Rect, height: f64, scale: f64, pub tooltips: min_ui::Tooltips }
 
 const LABEL_W: f64 = 84.0;
+/// The controls' background on a card (layer 2 = GRAY_100): one step darker.
+const CONTROL_BG: min_theme::Color = t::GRAY_75;
 
 impl OutputPanel {
     pub fn new() -> OutputPanel {
@@ -44,7 +46,12 @@ impl OutputPanel {
             self.cards = views.iter().map(|v| Card { v: v.clone(), on: Switch::new(v.enabled),
                 transfer: Picker::new(vec![tr("SDR Rec.709").into(), tr("PQ Rec.2100").into()], 0), raster: Picker::new(vec![tr("Auto").into(), tr("1080p").into(), tr("UHD").into()], 0), primaries: Picker::new(vec![tr("Rec.2020").into(), tr("P3-D65").into()], 0),
                 nits: [NumberField::new(v.peak, 100, 10000, 100), NumberField::new(v.cll, 0, 10000, 100), NumberField::new(v.fall, 0, 10000, 50)],
-                tile: Rect::ZERO, dot: Rect::ZERO, header: Rect::ZERO, lines: vec![], rows: vec![] }).collect();
+                tile: Rect::ZERO, dot: Rect::ZERO, header: Rect::ZERO, lines: vec![], rows: vec![] }).map(|mut c| {
+                    // the card is the picker token's own grey: its controls sit one step darker, recessed (the walk 2026-11-09)
+                    for p in [&mut c.transfer, &mut c.raster, &mut c.primaries] { p.bg = Some(CONTROL_BG); }
+                    for n in c.nits.iter_mut() { n.bg = Some(CONTROL_BG); }
+                    c
+                }).collect();
             changed = true;
         }
         for (c, v) in self.cards.iter_mut().zip(views) {
@@ -61,7 +68,7 @@ impl OutputPanel {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
         // the Mute feed toggle sits in the header, left of the collapse arrow
-        let (mw, mh) = self.mute.measure(fonts, scale); let mx = x1 - 36.0 * scale - mw;
+        let (mw, mh) = self.mute.measure(fonts, scale); let mx = x1 - t::SPACING_100 as f64 * scale - mw;   // flush right: the section's caret is on the left
         self.mute.rect = Rect::new(mx, y + (hh - mh) / 2.0, mx + mw, y + (hh + mh) / 2.0);
         if !self.section.expanded { self.height = hh; return hh }
         let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale; let row = t::RAIL_ROW_HEIGHT as f64 * scale; let ins = t::SPACING_200 as f64 * scale;

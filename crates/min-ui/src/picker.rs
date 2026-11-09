@@ -11,10 +11,13 @@ use vello::Scene;
 pub struct Picker {
     pub options: Vec<String>, pub selected: usize, pub enabled: bool, pub rect: Rect,
     pub menu: Popover, hovered: bool, hover: Ramp, hover_item: Option<usize>, pressed_item: Option<usize>, scale: f64,
+    /// the resting background (None = the token's): a picker on a layer-2 card sits one step darker, recessed (the token is the
+    /// card's own grey there — the walk 2026-11-09)
+    pub bg: Option<min_theme::Color>,
 }
 
 impl Picker {
-    pub fn new(options: Vec<String>, selected: usize) -> Picker { Picker { selected: selected.min(options.len().saturating_sub(1)), options, enabled: true, rect: Rect::ZERO, menu: Popover::new(""), hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), hover_item: None, pressed_item: None, scale: 1.0 } }
+    pub fn new(options: Vec<String>, selected: usize) -> Picker { Picker { selected: selected.min(options.len().saturating_sub(1)), options, enabled: true, rect: Rect::ZERO, menu: Popover::new(""), hovered: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), hover_item: None, pressed_item: None, scale: 1.0, bg: None } }
     pub fn hovered(&self) -> bool { self.hovered }
     pub fn is_open(&self) -> bool { self.menu.open }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
@@ -71,7 +74,8 @@ impl Picker {
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
         let hv = self.hover.value(now);
         // a resting fill a step lighter than the rail's tiles (the walk 2026-11-08: dropdowns read as controls), the hover grey over it
-        let bg = if !self.enabled { t::PICKER_BACKGROUND_COLOR.with_alpha(0.5) } else if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(t::PICKER_BACKGROUND_COLOR, t::HOVER_BACKGROUND_COLOR, hv) };
+        let base = self.bg.unwrap_or(t::PICKER_BACKGROUND_COLOR);
+        let bg = if !self.enabled { base.with_alpha(0.5) } else if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(base, t::HOVER_BACKGROUND_COLOR, hv) };
         paint::rounded(scene, self.rect, t::PICKER_CORNER_RADIUS as f64 * scale, bg);
         let c = if !self.enabled { t::DISABLED_CONTENT_COLOR } else if self.hovered || self.menu.open { t::PICKER_CONTENT_COLOR_HOVER } else { t::PICKER_CONTENT_COLOR };
         let edge = t::PICKER_EDGE_TO_TEXT as f64 * scale;
