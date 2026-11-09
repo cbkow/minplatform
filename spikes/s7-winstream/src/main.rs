@@ -194,11 +194,16 @@ mod win {
             let out_type = MFCreateMediaType()?;
             out_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?; out_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?; colour(&out_type)?;
             out_type.SetUINT32(&MF_MT_AVG_BITRATE, kbps * 1000)?; out_type.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base.0 as u32)?;
-            mft.SetOutputType(0, &out_type, 0)?;
+            if let Err(e) = mft.SetOutputType(0, &out_type, 0) { println!("SetOutputType failed: {e}"); return Err(e) }
             let in_type = MFCreateMediaType()?;
             in_type.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?; in_type.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?; colour(&in_type)?;
-            if route_d3d12 { let _ = in_type.SetUINT32(&MF_MT_D3D_RESOURCE_VERSION, MF_D3D12_RESOURCE.0 as u32); }
-            mft.SetInputType(0, &in_type, 0)?;
+            if route_d3d12 && std::env::var_os("S7_NO_RESOURCE_VERSION").is_none() { let _ = in_type.SetUINT32(&MF_MT_D3D_RESOURCE_VERSION, MF_D3D12_RESOURCE.0 as u32); }
+            if let Err(e) = mft.SetInputType(0, &in_type, 0) {
+                println!("SetInputType failed: {e}");
+                // what the MFT itself offers as input
+                for i in 0..8 { match mft.GetInputAvailableType(0, i) { Ok(t) => println!("    offers input {i}: subtype {:?} d3d resource version {:?}", t.GetGUID(&MF_MT_SUBTYPE).ok(), t.GetUINT32(&MF_MT_D3D_RESOURCE_VERSION).ok()), Err(_) => break } }
+                return Err(e)
+            }
             println!("the MFT took the output type (H.264 Baseline) and the NV12 input type");
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?; mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
             let events: IMFMediaEventGenerator = mft.cast()?;
@@ -213,6 +218,10 @@ mod win {
             let (mut lat, mut gpu_ms): (Vec<f64>, Vec<f64>) = (vec![], vec![]);
             let t0 = Instant::now();
             let block = vec![255u8; 64 * 64 * 4]; let black = vec![0u8; 64 * 64 * 4];
+            let busy = std::env::var_os("S7_BUSY").is_some();
+            let mut seed = 0x2545F4914F6CDD1Du64;
+            let (nw, nh) = (w / 2, h / 4);
+            let mut noise = vec![0u8; (nw * nh * 4) as usize];
             let block_at = |k: u64| ((k * 8) % (w as u64 - 64)) as u32;
             let region = |x: u32| wgpu::TexelCopyTextureInfo { texture: &src, mip_level: 0, origin: wgpu::Origin3d { x, y: 0, z: 0 }, aspect: wgpu::TextureAspect::All };
             let small = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(64 * 4), rows_per_image: Some(64) };
@@ -228,6 +237,8 @@ mod win {
                     let g0 = Instant::now();
                     if k > 0 { queue.write_texture(region(block_at(k - 1)), &black, small, e64); }
                     queue.write_texture(region(block_at(k)), &block, small, e64);
+                    if busy { for c in noise.chunks_mut(4) { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; c.copy_from_slice(&[(seed >> 8) as u8, (seed >> 24) as u8, (seed >> 40) as u8, 255]); }
+                        queue.write_texture(wgpu::TexelCopyTextureInfo { texture: &src, mip_level: 0, origin: wgpu::Origin3d { x: w / 4, y: 64, z: 0 }, aspect: wgpu::TextureAspect::All }, &noise, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(nw * 4), rows_per_image: Some(nh) }, wgpu::Extent3d { width: nw, height: nh, depth_or_array_layers: 1 }); }
                     let mut enc = device.create_command_encoder(&Default::default());
                     pass.encode(&device, &mut enc, &sv, &yv, &cv);
                     let one = wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 };
