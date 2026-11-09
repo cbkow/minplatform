@@ -4490,18 +4490,3 @@ msgstr "L'hôte envoie son espace colorimétrique de travail sans le nommer ; ch
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "Activez Fichier ▸ Se connecter à Blender pour écouter cette session Blender"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host view %1: shown through the Blender config (OCIO)"
-msgstr "vue de l'hôte %1 : affichée via la configuration Blender (OCIO)"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host display %1 not emulated"
-msgstr "écran de l'hôte %1 non émulé"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "LiveStrip"
-msgid "The host's view, reproduced here"
-msgstr "La vue de l'hôte, reproduite ici"

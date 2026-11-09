@@ -31,8 +31,7 @@ pub struct LiveStrip {
     review: Option<String>, override_: TransferOverride, live_seconds: f64,
     /// QCView's 1-s timer: fps = frames taken per second
     fps: (u64, Instant, f64), /// a stream's Mb/s the same way (bytes taken per second)
-    mbps: (u64, f64), /// a Blender stream's Host chip: (label, the tooltip — what was not reproduced; empty = all of it), its rect
-    host: Option<(String, String)>, host_rect: Rect, /// the Auto choice's label (QCView `autoLabel`)
+    mbps: (u64, f64), /// the Auto choice's label (QCView `autoLabel`)
     auto: String,
     t0: Instant, scale: f64,
 }
@@ -46,12 +45,7 @@ impl LiveStrip {
         let buttons = ActionGroup::new(vec![b("speaker-x", min_i18n::trc("InspectorPanel", "Listen in QCView")), b("palette", tr("Color panel (⌃3)")), b("note-pencil", tr("Notes panel (⌃4)")),
             b("file-image", tr(if mac { "Screenshot to clipboard (⌘T)" } else { "Screenshot to clipboard (Ctrl+T)" })), b("file-arrow-down", tr("Screenshot to Desktop (T)"))]).compact();
         let now = Instant::now();
-        LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), review: None, override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), mbps: (0, 0.0), host: None, host_rect: Rect::ZERO, auto: tr(AUTO).to_string(), t0: now, scale: 1.0 }
-    }
-    /// A Blender stream's Host chip (QCView `Host display %1 · %2`), None otherwise. True when it changed.
-    pub fn set_host(&mut self, h: Option<(String, String, String)>) -> bool {
-        let v = h.map(|(d, v, notes)| (min_i18n::fill(tr("Host display %1 · %2"), &[&d, &v]), notes));
-        if v == self.host { return false } self.host = v; true
+        LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), review: None, override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), mbps: (0, 0.0), auto: tr(AUTO).to_string(), t0: now, scale: 1.0 }
     }
     /// A language switch: the buttons' words.
     pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.buttons.buttons.iter_mut().zip(f.buttons.buttons) { b.tooltip = n.tooltip; } }
@@ -81,7 +75,6 @@ impl LiveStrip {
         let (tw, th) = self.transfer.measure(fonts, scale);
         let ty = rect.y0 + (rect.height() - th) / 2.0;
         self.transfer.rect = Rect::new(gx - t::SPACING_300 as f64 * scale - tw, ty, gx - t::SPACING_300 as f64 * scale, ty + th);
-        self.host_rect = match &self.host { Some((l, _)) => { let w = fonts.detail(l, t::RAIL_GROUP_HEADER_SIZE * scale as f32, peniko::Color::WHITE).width() as f64 + 16.0 * scale; let x1 = self.transfer.rect.x0 - t::SPACING_200 as f64 * scale; Rect::new(x1 - w, ty, x1, ty + th) } None => Rect::ZERO };
     }
     /// The status row's animation: the live dot pulses (QCView: 1 → 0.35 over 900 ms each way).
     pub fn animating(&self) -> bool { (self.review.is_none() && self.facts.as_ref().is_some_and(|f| f.status == Status::Live)) || self.tips.next_change(Instant::now()).is_some() }
@@ -103,7 +96,6 @@ impl LiveStrip {
         }
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); }
         let over = if self.transfer.rect.contains(e.pos().map(|(x, y)| kurbo::Point::new(x, y)).unwrap_or_default()) && !matches!(e, Event::Leave) { Some((99u64, self.transfer.rect, tr(AUTO_TIP).to_string())) }
-            else if self.host.is_some() && e.pos().is_some_and(|(x, y)| self.host_rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave) { let n = &self.host.as_ref().unwrap().1; Some((98u64, self.host_rect, if n.is_empty() { tr("The host's view, reproduced here").to_string() } else { n.clone() })) }
             else { self.buttons.hovered().map(|i| (i as u64, self.buttons.buttons[i].rect, self.buttons.buttons[i].tooltip.clone())) };
         if self.tips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y)));
@@ -131,7 +123,7 @@ impl LiveStrip {
         let size = t::RAIL_LABEL_SIZE * s as f32;
         let nl = fonts.layout_fit(&self.name, Family::Sans, size, t::FONT_WEIGHT_BOLD as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), 220.0 * s);
         min_ui::fonts::draw_layout(scene, &nl, Affine::translate((x, mid(nl.height() as f64)))); x += nl.width() as f64 + t::SPACING_300 as f64 * s;
-        let right = (if self.host.is_some() { self.host_rect.x0 } else { self.transfer.rect.x0 }) - t::SPACING_300 as f64 * s;
+        let right = self.transfer.rect.x0 - t::SPACING_300 as f64 * s;
         // the detail (amber) when not live, else the facts and the rates
         let mut parts: Vec<(String, min_theme::Color)> = vec![];
         match (&f.detail, f.status) {
@@ -148,13 +140,6 @@ impl LiveStrip {
             if x >= right { break }
             let l = fonts.layout_fit(&text, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, paint::color(c), right - x);
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64)))); x += l.width() as f64 + t::SPACING_400 as f64 * s;
-        }
-        if let Some((l, notes)) = &self.host {
-            // amber when the host's picture is not reproduced in full (the tooltip says what), quiet otherwise
-            let c = if notes.is_empty() { t::RAIL_LABEL_COLOR } else { amber };
-            paint::rounded(scene, self.host_rect, self.host_rect.height() / 2.0, t::BACKGROUND_LAYER_2_COLOR);
-            let hl = fonts.detail(l, t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(c));
-            min_ui::fonts::draw_layout(scene, &hl, Affine::translate((self.host_rect.x0 + 8.0 * s, self.host_rect.y0 + (self.host_rect.height() - hl.height() as f64) / 2.0)));
         }
         self.transfer.paint(scene, fonts, s, now);
         self.buttons.paint(scene, fonts, s, now);

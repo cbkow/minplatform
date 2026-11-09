@@ -4490,18 +4490,3 @@ msgstr "El host envía su espacio de color de trabajo sin nombrarlo; elija la tr
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "Active Archivo ▸ Conectar con Blender para escuchar esta sesión de Blender"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host view %1: shown through the Blender config (OCIO)"
-msgstr "vista del host %1: mostrada mediante la configuración de Blender (OCIO)"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host display %1 not emulated"
-msgstr "pantalla del host %1 no emulada"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "LiveStrip"
-msgid "The host's view, reproduced here"
-msgstr "La vista del host, reproducida aquí"

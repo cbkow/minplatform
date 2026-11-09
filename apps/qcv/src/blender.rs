@@ -58,15 +58,12 @@ pub struct BlenderInput {
     card_name: Option<String>, /// a project replaced while on: the next card keeps the item in the bin (QCView `m_blenderCarry`)
     pub carry: bool,
     pub last_poll: Option<Instant>, logged_error: Option<String>,
-    /// the colour block last applied, by item (re-applied only when IT changes — QCView re-ran on any card change)
-    applied: Option<(String, String)>, /// the live row's Host chip (QCView "Host display %1 · %2"): (display, view, what was not reproduced — empty = all of it)
-    pub chip: Option<(String, String, String)>,
 }
 pub enum Event { Arrived, Changed, Removed }
 
 impl Default for BlenderInput { fn default() -> Self { Self::new() } }
 impl BlenderInput {
-    pub fn new() -> BlenderInput { BlenderInput { enabled: false, card: None, ended: false, item: None, card_name: None, carry: false, last_poll: None, logged_error: None, applied: None, chip: None } }
+    pub fn new() -> BlenderInput { BlenderInput { enabled: false, card: None, ended: false, item: None, card_name: None, carry: false, last_poll: None, logged_error: None } }
     /// The 2-s poll (an immediate one right after switching on).
     pub fn poll(&mut self, now: Instant) -> Option<Event> {
         if !self.enabled || self.last_poll.is_some_and(|t| now.duration_since(t) < POLL) { return None }
@@ -97,7 +94,7 @@ impl crate::App {
     /// on screen, the watcher stops, the item leaves the project, the card is forgotten.
     pub(crate) fn blender_disconnect(&mut self) {
         let item = self.blender.item.take();
-        self.blender.enabled = false; self.blender.card = None; self.blender.ended = false; self.blender.card_name = None; self.blender.applied = None; self.blender.chip = None;
+        self.blender.enabled = false; self.blender.card = None; self.blender.ended = false; self.blender.card_name = None;
         if let Some(id) = item {
             if self.loaded_item == id { self.stop_live(); self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.clear_frame(); } }
             self.project.remove_media_item(&id);
@@ -139,7 +136,6 @@ impl crate::App {
         if cur != name && self.blender.card_name.as_deref().is_none_or(|n| n == cur) { self.project.rename_media_item(&id, &name); }
         self.blender.card_name = Some(name);
         self.blender.item = Some(id.clone());
-        self.apply_stream_chain(&id, &c.colour);
         let carry = std::mem::take(&mut self.blender.carry);
         let streaming = self.live.as_ref().is_some_and(|l| l.item == id);
         if self.loaded_item != id { if !carry { log::info!("blenderInput: listening for {} on port {} ({})", c.host, c.port, qcv_player::stream_feed::redact(&c.url)); self.load_item(&id); } }
@@ -167,80 +163,5 @@ impl crate::App {
         }];
         if let Some(c) = &self.blender.card { for (lvl, _, msg) in &c.mismatches { if lvl == "error" { v.push((msg.clone(), 2)); } } }
         v
-    }
-
-    /// QCView `applyStreamChainFromLink` (the 2026-10-27 colour rule, by step), made automatic for the port (the user 2026-11-09:
-    /// "since we know for this … we can do it automatically"): the wire is QCBridge's `pq-bt2020-100` — the scene in the host's
-    /// working space BEFORE its view, PQ-packed with 1.0 = 100 nits. Per clip (the port's chain lives on the clip, its OCIO config
-    /// too: no global config switch, no prompt): minColor → input Rec.2020 / PQ (100 nits = 1.0) + AgX at its Blender defaults on
-    /// the Rec.2020 target (the user: "2020 is where we want to land"); a host view minColor can't render (Filmic, Standard,
-    /// Khronos…) or an OCIO default → the bundled Blender 5.2 config, input `Rec.2100-PQ Scene`, the host's view and look. Colour
-    /// management turns on; the host's exposure / gamma join while the viewer's are at their defaults; a chain the user gave the
-    /// clip is never overwritten. The host's DISPLAY is not emulated (the port's one display, canon §18.6): a non-sRGB host
-    /// display is said, with QCView's other facts, in one toast and the Host chip.
-    pub(crate) fn apply_stream_chain(&mut self, id: &str, colour: &Map<String, Value>) {
-        use crate::color_model::{ClipChain, OcioChain, Stored};
-        let digest = serde_json::to_string(colour).unwrap_or_default();
-        if self.blender.applied.as_ref().is_some_and(|(i, d)| i == id && *d == digest) { return }
-        self.blender.applied = Some((id.to_string(), digest));
-        let item = |k: &str| colour.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
-        let wtr = |s: &str| min_i18n::trc("qcv::WindowManager", s).to_string();
-        let wire = item("wire");
-        if wire.is_empty() { return }
-        if wire != "pq-bt2020-100" {
-            log::warn!("blender: stream wire '{wire}' is not one QCView knows; chain left as is");
-            self.toast(&min_i18n::fill(&wtr("The stream names a wire this QCView does not know (%1); set the Input yourself"), &[&wire]), min_ui::ToastKind::Notice);
-            self.blender.chip = None; return
-        }
-        let (view, look, display) = (item("view"), item("look"), item("display"));
-        let look = if look == "None" { String::new() } else { look };
-        let mut notes: Vec<String> = vec![];
-        let (_, _, own) = self.chain_of(id);
-        if own { log::info!("blender: the clip carries its own chain; the card leaves it"); }
-        else {
-            let default_is_mc = !self.color_default().chain.is_ocio();
-            let agx = view.is_empty() || view == "AgX";
-            let st = if default_is_mc && agx && look.is_empty() {
-                let mut c = qcv_color::Chain::default();
-                c.in_gamut = qcv_color::ids::IN_REC2020; c.in_transfer = 14 /* DRT_OETF_PQ_100: ST 2084, 100 nits = 1.0 */; c.in_limited = 0;
-                c.agx_on = 1; c.agx_target = 0 /* Rec.2020 */;
-                Stored { chain: ClipChain::MinColor(c), preset: "Blender stream".into() }
-            } else {
-                if default_is_mc { notes.push(min_i18n::fill(&wtr("host view %1: shown through the Blender config (OCIO)"), &[&view])); }
-                let mut o = OcioChain { config: "Blender5.2".into(), input: "Rec.2100-PQ Scene".into(), look: look.clone(), view: view.clone(), scene_lut: String::new(), knee: Default::default() };
-                if let Some(cfg) = self.ocio_config("Blender5.2") {
-                    if !cfg.inputs().contains(&o.input) { notes.push(min_i18n::fill(&wtr("no %1 input in this config"), &[&o.input])); }
-                    if !o.view.is_empty() && !cfg.views().contains(&o.view) { notes.push(min_i18n::fill(&wtr("view %1 not on %2"), &[&o.view, &"sRGB"])); o.view.clear(); }
-                    if !o.look.is_empty() && !cfg.looks().contains(&o.look) { notes.push(min_i18n::fill(&wtr("look %1 not in this config"), &[&o.look])); o.look.clear(); }
-                }
-                Stored { chain: ClipChain::Ocio(o), preset: "Blender stream".into() }
-            };
-            if let Some(m) = self.project.item(id).cloned() { let (oc, mc) = st.to_clip_maps(&m.ocio_clip, &m.min_color_clip); self.project.set_color_clip(id, oc, mc); }
-        }
-        if !self.settings.bool(crate::settings::k::COLOR_ENABLED) {
-            self.settings.set_bool(crate::settings::k::COLOR_ENABLED, true);
-            log::info!("blender: colour management turned on for the stream");
-            self.toast(&wtr("Colour management turned on for the Blender stream"), min_ui::ToastKind::Positive);
-        }
-        // the host's exposure / gamma, while the viewer's are at their defaults (QCView)
-        if let Some(g) = self.gpu.as_mut() {
-            let mut a = g.drawer.aids; let mut changed = false;
-            if let Ok(e) = item("exposure").parse::<f32>() && a.exposure.abs() < 1e-4 && e.abs() > 1e-4 { a.exposure = e; changed = true; }
-            if let Ok(gm) = item("gamma").parse::<f32>() && (a.gamma - 1.0).abs() < 1e-4 && gm > 0.0 && (gm - 1.0).abs() > 1e-4 { a.gamma = gm; changed = true; }
-            if changed { g.drawer.set_aids(a); g.presenter.engine.set_viewer_aids(a); }
-        }
-        // what the host does that QCView can't, one plain sentence each
-        if !display.is_empty() && !display.to_lowercase().contains("srgb") { notes.push(min_i18n::fill(&wtr("host display %1 not emulated"), &[&display])); }
-        if item("wb") == "1" { notes.push(wtr("host white balance not reproduced")); }
-        if item("curves") == "1" { notes.push(wtr("host curves not reproduced")); }
-        if item("hdr") == "1" { notes.push(wtr("host HDR view: shown SDR")); }
-        if item("ws_assumed") == "1" { notes.push(wtr("working space assumed Linear Rec.709")); }
-        if item("cm_ok") == "0" { notes.push(min_i18n::fill(&wtr("host and replica colour setups differ (%1)"), &[&item("cm_n")])); }
-        log::info!("blender: stream colour — view {view}, look {look}, display {display}, notes [{}]", notes.join(" | "));
-        if !notes.is_empty() { self.toast(&min_i18n::fill(&wtr("Blender stream: %1"), &[&notes.join(" · ")]), min_ui::ToastKind::Notice); }
-        let shown_view = if view.is_empty() { "AgX".to_string() } else { view };
-        self.blender.chip = Some((if display.is_empty() { "sRGB".to_string() } else { display }, shown_view, notes.join("\n")));
-        self.apply_color();
-        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
 }

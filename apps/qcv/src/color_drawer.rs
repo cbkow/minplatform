@@ -91,7 +91,7 @@ pub struct ColorDrawer {
     /// the readout's band under the card (QCView's readout sits below its waveform; the caption row had no room)
     wf_readout: Rect, /// the readout's tooltip (QCView: the brightest channel lives there, not inline)
     tips: min_ui::Tooltips,
-    exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, pub(crate) aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
+    exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
     menu: Menu, menu_for: Option<String>,
@@ -326,7 +326,7 @@ impl ColorDrawer {
         let r = self.wf_trace;
         Some(min_present::ScopeView { rect: [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32], hdr: self.scope_hdr(), peak_nits: self.wf_peak_nits, brightness: 1.0 })
     }
-    pub(crate) fn set_aids(&mut self, a: ViewerAids) {
+    fn set_aids(&mut self, a: ViewerAids) {
         self.aids = a;
         if !self.exp.dragging() { self.exp.value = ((a.exposure + 4.0) / 8.0).clamp(0.0, 1.0); }
         if !self.gam.dragging() { self.gam.value = ((a.gamma - 0.25) / 3.75).clamp(0.0, 1.0); }

@@ -4498,18 +4498,3 @@ msgstr "Хост отправляет рабочее цветовое прост
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "Включите Файл ▸ Подключиться к Blender, чтобы принимать этот сеанс Blender"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host view %1: shown through the Blender config (OCIO)"
-msgstr "вид хоста %1: показан через конфигурацию Blender (OCIO)"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host display %1 not emulated"
-msgstr "дисплей хоста %1 не эмулируется"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "LiveStrip"
-msgid "The host's view, reproduced here"
-msgstr "Вид хоста, воспроизведённый здесь"

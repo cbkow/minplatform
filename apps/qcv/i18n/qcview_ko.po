@@ -4482,18 +4482,3 @@ msgstr "호스트가 작업 색 공간을 이름 없이 보냅니다. 사용하�
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "이 Blender 세션을 수신하려면 파일 ▸ Blender에 연결을 켜세요"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host view %1: shown through the Blender config (OCIO)"
-msgstr "호스트 뷰 %1: Blender 구성(OCIO)으로 표시"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "qcv::WindowManager"
-msgid "host display %1 not emulated"
-msgstr "호스트 디스플레이 %1은(는) 에뮬레이션되지 않음"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "LiveStrip"
-msgid "The host's view, reproduced here"
-msgstr "여기에서 재현된 호스트의 뷰"
