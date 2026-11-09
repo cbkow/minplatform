@@ -14,17 +14,18 @@ fn tr(s: &str) -> &str { min_i18n::trc("LeftRail", s) }
 
 pub const LABELS: [&str; 4] = ["Black", "Dark Gray", "Dark Check", "Light Check"];
 
-pub struct BackgroundPanel { pub section: Section, buttons: Vec<ActionButton>, mode: u8, height: f64 }
+pub struct BackgroundPanel { pub section: Section, buttons: Vec<ActionButton>, mode: u8, height: f64, /// a cell whose label is cut (German "Dunkles Schachbrett") names itself in a tooltip
+    cut: [bool; 4], pub tooltips: min_ui::Tooltips }
 
 impl BackgroundPanel {
     /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
     pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; for (b, n) in self.buttons.iter_mut().zip(f.buttons) { b.tooltip = n.tooltip; b.label = n.label; } }
     pub fn new() -> BackgroundPanel {
         let buttons = LABELS.iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", tr(l)).size_s(); b.label = Some(tr(l).to_string()); b.selected = i == 0; b }).collect();
-        BackgroundPanel { section: Section::new(tr("Background"), true), buttons, mode: 0, height: 0.0 }
+        BackgroundPanel { section: Section::new(tr("Background"), true), buttons, mode: 0, height: 0.0, cut: [false; 4], tooltips: min_ui::Tooltips::default() }
     }
     pub fn sync(&mut self, mode: u8) { self.mode = mode.min(3); for (i, b) in self.buttons.iter_mut().enumerate() { b.selected = i as u8 == self.mode; } }
-    pub fn layout(&mut self, _fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
+    pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
         if !self.section.expanded { self.height = hh; return hh }
@@ -37,6 +38,7 @@ impl BackgroundPanel {
             b.rect = Rect::new(x0 + col * cw, top + row * ch, x0 + (col + 1.0) * cw, top + (row + 1.0) * ch);
             b.corners = Corners { tl: if i == 0 { r } else { 0.0 }, tr: if i == 1 { r } else { 0.0 }, bl: if i == 2 { r } else { 0.0 }, br: if i == 3 { r } else { 0.0 } };
         }
+        for (i, b) in self.buttons.iter().enumerate() { self.cut[i] = b.label_cut(fonts, scale); }
         self.height = hh + pad / 2.0 + 2.0 * ch + t::RAIL_SECTION_GAP as f64 * scale;
         self.height
     }
@@ -46,6 +48,9 @@ impl BackgroundPanel {
         if toggled { dirty = true; }
         let mut chosen = None;
         if self.section.expanded { for (i, b) in self.buttons.iter_mut().enumerate() { match b.event(e, now) { Response::None => {} r => { dirty = true; if r == Response::Clicked && i as u8 != self.mode { chosen = Some(i as u8); } } } } }
+        if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
+        let over = if self.section.expanded { self.buttons.iter().enumerate().find(|(i, b)| b.hovered() && self.cut[*i]).map(|(i, b)| (i as u64, b.rect, b.tooltip.clone())) } else { None };
+        if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         (chosen, dirty)
     }
     pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.buttons.iter().any(|b| b.animating(now)) }

@@ -49,6 +49,14 @@ impl ActionButton {
     pub fn size_s(mut self) -> ActionButton { self.size_s = true; self }
     fn label_font(&self) -> (f32, f32) { if self.size_s { (t::BODY_SIZE_S, t::FONT_WEIGHT_BOLD as f32) } else { (t::BODY_SIZE_M, t::FONT_WEIGHT_REGULAR as f32) } }
     pub fn hovered(&self) -> bool { self.hovered }
+    /// The label is cut with … at this size (paint's arithmetic): an owner without tooltips shows one then.
+    pub fn label_cut(&self, fonts: &mut Fonts, scale: f64) -> bool {
+        let Some(label) = &self.label else { return false };
+        let (fs, fw) = self.label_font();
+        let edge = t::ACTION_BUTTON_EDGE_TO_TEXT_M as f64 * scale;
+        let icon = if self.icon.is_empty() { 0.0 } else { t::ICON_SIZE_TOOLBAR as f64 * scale + t::ACTION_BUTTON_TEXT_TO_VISUAL_M as f64 * scale };
+        fonts.layout(label, Family::Sans, fs * scale as f32, fw, peniko::Color::WHITE).width() as f64 > self.rect.width() - 2.0 * edge - icon
+    }
     pub fn pressed(&self) -> bool { self.pressed }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     /// The natural size at `scale`: a square for an icon alone; a label adds its width plus the edge insets.
