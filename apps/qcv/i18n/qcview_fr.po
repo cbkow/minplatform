@@ -4466,5 +4466,12 @@ msgctxt "RightRail"
 msgid "View"
 msgstr "Affichage"
 
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display — highlights clip"
+msgstr "Écran SDR — les hautes lumières sont écrêtées"
 
-
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
+msgstr "Cet écran n'a pas de marge HDR : les hautes lumières au-dessus du blanc SDR sont écrêtées. Activez le Highlight Knee pour les faire tenir."

@@ -49,6 +49,8 @@ pub struct View {
     pub ocio: Option<OcioLists>,
     /// the source is HDR (PQ / HLG): the waveform opens on its HDR scale
     pub hdr_source: bool,
+    /// row 222: an HDR picture on a screen with no headroom — its highlights clip (the amber pill beside KNEE)
+    pub clip_warn: bool,
 }
 
 /// What an OCIO chain's columns offer (from the loaded config; the configs are the bundled three + a user's file).
@@ -68,7 +70,7 @@ pub struct ColorDrawer {
     pub rect: Rect,
     /// the top edge's resize grip (the rails' splitter, turned): hovered, and the drag's (pointer y, height) at the press
     split_hover: bool, split_drag: Option<(f64, f64)>,
-    tab: Rect, tab_hover: bool, tab_ramp: Ramp, present: Ramp, /// the Notes panel is open: the caret points down and closes IT (the user 2026-11-09)
+    tab: Rect, tab_hover: bool, tab_ramp: Ramp, present: Ramp, clip_pill: Rect, /// the Notes panel is open: the caret points down and closes IT (the user 2026-11-09)
     pub notes_open: bool,
     presets: ListColumn, gamut: ListColumn, transfer: ListColumn, render: ListColumn,
     /// OCIO's columns (QCView: Config · Input · Look · View)
@@ -121,7 +123,7 @@ impl ColorDrawer {
         let transfer_names = qcv_color::input_transfer_names();
         ColorDrawer {
             open, open_ramp: Ramp::new(if open { 1.0 } else { 0.0 }, t::RAIL_COLLAPSE_DURATION), height, rect: Rect::ZERO, split_hover: false, split_drag: None,
-            tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), notes_open: false,
+            tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), clip_pill: Rect::ZERO, notes_open: false,
             presets: ListColumn::new(tr("Presets")), gamut: ListColumn::new(tr("Input gamut")), transfer: ListColumn::new(tr("Input transfer")), render: ListColumn::new(tr("Rendering")),
             ocfg: ListColumn::new(tr("Config")), oinput: ListColumn::new(tr("Input")).with_filter(), olook: ListColumn::new(tr("Look")), oview: ListColumn::new(tr("View")), ocfg_keys: vec![],
             preset_rows: vec![],
@@ -349,6 +351,7 @@ impl ColorDrawer {
         // the readout's tooltip: QCView `ScopeController` — the brightest channel, this frame and the clip's max, for the row under the pointer
         let tip = e.pos().filter(|_| !matches!(e, Event::Leave) && self.naming.is_none() && !self.menu.is_open()).and_then(|(x, y)| {
             // the caret: QCView's rail words with the panel's key — it collapses whichever bottom panel is open, else opens Color
+            if self.clip_pill.contains(kurbo::Point::new(x, y)) { return Some((6998, self.clip_pill, tr("This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them.").to_string())) }
             if self.tab.contains(kurbo::Point::new(x, y)) && self.present.value(now) > 0.5 {
                 let mac = cfg!(target_os = "macos");
                 let (word, key) = if self.notes_open { ("Collapse panel", if mac { "⌘4" } else { "Ctrl+4" }) } else if self.open { ("Collapse panel", if mac { "⌘3" } else { "Ctrl+3" }) } else { ("Expand panel", if mac { "⌘3" } else { "Ctrl+3" }) };
@@ -534,7 +537,17 @@ impl ColorDrawer {
             let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
             paint::rounded(scene, Rect::new(x, py, x + pw, py + ph), ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
             min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
+            x += pw + t::SPACING_100 as f64 * s;
         } }
+        // row 222: the display can't show this picture's highlights — they clip; informational, the tooltip names the Knee
+        self.clip_pill = Rect::ZERO;
+        if v.clip_warn {
+            let pl = fonts.detail(tr("SDR display — highlights clip"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
+            self.clip_pill = Rect::new(x, py, x + pw, py + ph);
+            paint::rounded(scene, self.clip_pill, ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
+            min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
+        }
         for b in [&self.reset, &self.apply_all, &self.make_default] { if v.has_clip { b.paint(scene, fonts, s, now); } }
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &Rect::new(self.body.x0, self.body.y0, self.body.x1, self.body.y1));
         self.presets.paint(scene, fonts, now);

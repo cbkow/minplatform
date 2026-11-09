@@ -158,7 +158,11 @@ impl crate::App {
         let on = self.settings.bool(crate::settings::k::COLOR_ENABLED);
         let hdr_source = match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => c.in_transfer == 14 || c.in_transfer == 15, ClipChain::Ocio(o) => { let n = o.input.to_uppercase(); n.contains("PQ") || n.contains("2084") || n.contains("HLG") } };
         let side = self.dual.is_some().then(|| if self.edit_slot() == 1 { qcv_player::Side::B } else { qcv_player::Side::A });
-        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source }
+        // row 222: the picture can exceed SDR white (an HDR file shown as is, or a chain whose last stage outputs HDR) on a screen
+        // that has no headroom — its highlights clip; the drawer says so and points at the Highlight Knee
+        let picture_hdr = match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => mincolor_outputs_hdr(c), ClipChain::Ocio(o) => !qcv_color::ocio::view_is_sdr(&o.view) && !(o.knee.enabled && o.knee.target_nits <= 100.5) };
+        let clip_warn = self.screen_hdr == Some(false) && picture_hdr && id.is_some();
+        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn }
     }
     /// Bind each visible picture's chain to its engine: the single view's (slot 0), or dual's A (slot 0) and B (slot 1), each
     /// from its own clip (row 205); off = bypass. minColor = the slot's pass (a uniform update); OCIO = a pass built on a
@@ -301,4 +305,26 @@ pub(crate) fn slot_engine(g: &mut crate::Gpu, slot: usize, dual: bool) -> Option
     if !dual { return (slot == 0).then_some(&mut g.presenter.engine) }
     let d = g.presenter.engine.dual_mut()?;
     Some(if slot == 0 { &mut d.a } else { &mut d.b })
+}
+
+/// Row 222: whether a minColor chain can put out more than SDR white — its LAST stage decides: AgX or OpenDRT by their target
+/// peak; un-tone-mapped, the Highlight Knee's target when it is on, else the input (a PQ / HLG source passes its highlights
+/// through; scene-linear / SDR inputs are SDR-referred).
+pub(crate) fn mincolor_outputs_hdr(c: &qcv_color::Chain) -> bool {
+    if c.agx_on != 0 { return c.agx_peak > 100.5 }
+    if c.open_drt != 0 { return c.peak_nits > 100.5 }
+    if c.knee_on != 0 { return c.knee_tgt > 100.5 }
+    c.in_transfer == 14 || c.in_transfer == 15
+}
+
+#[cfg(test)]
+mod hdr_chain_tests {
+    #[test] fn the_last_stage_decides() {
+        let mut c = qcv_color::Chain::default(); assert!(!super::mincolor_outputs_hdr(&c), "Rec.1886 in, un-tone-mapped");
+        c.in_transfer = 14; assert!(super::mincolor_outputs_hdr(&c), "PQ in, un-tone-mapped: the highlights pass");
+        c.knee_on = 1; c.knee_tgt = 100.0; assert!(!super::mincolor_outputs_hdr(&c), "the knee to 100 nits fits them");
+        c.knee_tgt = 600.0; assert!(super::mincolor_outputs_hdr(&c));
+        c.agx_on = 1; c.agx_peak = 100.0; assert!(!super::mincolor_outputs_hdr(&c), "AgX to SDR");
+        c.agx_on = 0; c.knee_on = 0; c.open_drt = 1; c.peak_nits = 1000.0; assert!(super::mincolor_outputs_hdr(&c), "OpenDRT at 1000 nits");
+    }
 }

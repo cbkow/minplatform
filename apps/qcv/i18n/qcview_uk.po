@@ -4474,5 +4474,12 @@ msgctxt "RightRail"
 msgid "View"
 msgstr "Вигляд"
 
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display — highlights clip"
+msgstr "SDR-дисплей — світла обрізаються"
 
-
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
+msgstr "Цей дисплей не має запасу HDR: світла вище білого SDR обрізаються. Увімкніть Highlight Knee, щоб умістити їх."

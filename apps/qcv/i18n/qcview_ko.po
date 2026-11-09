@@ -4458,5 +4458,12 @@ msgctxt "RightRail"
 msgid "View"
 msgstr "보기"
 
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display — highlights clip"
+msgstr "SDR 디스플레이 — 하이라이트 클리핑"
 
-
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
+msgstr "이 디스플레이에는 HDR 여유가 없습니다. SDR 화이트를 넘는 하이라이트는 클리핑됩니다. Highlight Knee를 켜서 맞추십시오."
