@@ -1,0 +1,23 @@
+[package]
+name = "qcv-ring"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform — QCView's end of the QCBridge shared-memory contracts (canon §20, rows 101-104, 227): the QCAE frame ring and QCAA audio ring consumers (and the QCVO layout), byte-exact with vendor/qcbae"
+
+[build-dependencies]
+cc = { workspace = true }
+
+[dependencies]
+wgpu = { workspace = true }
+log = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-metal = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_SystemInformation"] }

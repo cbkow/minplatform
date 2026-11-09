@@ -3211,6 +3211,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "qcv-ring"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "log",
+ "objc2 0.6.5",
+ "objc2-metal 0.3.2",
+ "wgpu",
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "qcv-timeline"
 version = "0.1.0"
 
