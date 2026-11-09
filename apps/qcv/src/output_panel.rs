@@ -32,7 +32,10 @@ const CONTROL_BG: min_theme::Color = t::GRAY_75;
 impl OutputPanel {
     pub fn new() -> OutputPanel {
         let mut section = Section::new(tr("Output"), true); section.expanded = false;
-        OutputPanel { section, mute: ActionButton::new("speaker-high", tr("Silence the audio sent to outputs while you keep listening. The master mute (M) silences both.")).size_s(), cards: vec![], empty: Rect::ZERO, height: 0.0, scale: 1.0, tooltips: Default::default() }
+        // the speaker: the chip's size kept, a smaller glyph, the Notes tools' rounding (the walk 2026-11-09)
+        let mut mute = ActionButton::new("speaker-high", tr("Silence the audio sent to outputs while you keep listening. The master mute (M) silences both.")).size_s();
+        mute.icon_size = Some(t::ICON_SIZE_SMALL); mute.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64);
+        OutputPanel { section, mute, cards: vec![], empty: Rect::ZERO, height: 0.0, scale: 1.0, tooltips: Default::default() }
     }
     pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.mute.tooltip = f.mute.tooltip; let vs: Vec<CardView> = self.cards.iter().map(|c| c.v.clone()).collect(); let m = self.mute.selected; self.cards.clear(); self.sync(vs, m, Instant::now()); }
     pub fn menu_open(&self) -> bool { self.cards.iter().any(|c| c.transfer.is_open() || c.raster.is_open() || c.primaries.is_open()) }
@@ -69,7 +72,7 @@ impl OutputPanel {
         self.section.rect = Rect::new(x0, y, x1, y + hh);
         // the Mute feed toggle sits in the header, left of the collapse arrow
         let (mw, mh) = self.mute.measure(fonts, scale); let mx = x1 - t::SPACING_100 as f64 * scale - mw;   // flush right: the section's caret is on the left
-        self.mute.rect = Rect::new(mx, y + (hh - mh) / 2.0, mx + mw, y + (hh + mh) / 2.0);
+        self.mute.rect = Rect::new(mx, y + (hh - mh) / 2.0, mx + mw, y + (hh + mh) / 2.0); self.mute.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64 * scale);
         if !self.section.expanded { self.height = hh; return hh }
         let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale; let row = t::RAIL_ROW_HEIGHT as f64 * scale; let ins = t::SPACING_200 as f64 * scale;
         let (x0, x1) = (x0 + pad, x1 - pad);

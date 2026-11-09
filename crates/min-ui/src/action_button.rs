@@ -33,6 +33,8 @@ pub struct ActionButton {
     pub size_s: bool,
     pub rect: Rect,
     pub corners: Corners,
+    /// a smaller glyph in the same button (logical px; None = the toolbar size) — the Output header's speaker
+    pub icon_size: Option<f32>,
     hovered: bool,
     pressed: bool,
     hover: Ramp,
@@ -40,7 +42,7 @@ pub struct ActionButton {
 
 impl ActionButton {
     pub fn new(icon: &'static str, tooltip: &str) -> ActionButton {
-        ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, size_s: false, rect: Rect::ZERO, corners: Corners::all(0.0), hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
+        ActionButton { icon, label: None, tooltip: tooltip.to_string(), enabled: true, selected: false, emphasized: false, hold: false, focused: false, size_s: false, rect: Rect::ZERO, corners: Corners::all(0.0), icon_size: None, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ACTION_BUTTON_ANIMATION_DURATION) }
     }
     pub fn hold(mut self) -> ActionButton { self.hold = true; self }
     /// The primary button is down on this node (a hold in progress, or a click not yet released).
@@ -115,7 +117,7 @@ impl ActionButton {
             let ring = RoundedRect::from_rect(self.rect.inflate(o, o), RoundedRectRadii::new(self.corners.tl + o, self.corners.tr + o, self.corners.br + o, self.corners.bl + o));
             scene.stroke(&Stroke::new(th), Affine::IDENTITY, paint::color(t::ACTION_BUTTON_FOCUS_INDICATOR_COLOR), None, &ring);
         }
-        let icon_px = t::ICON_SIZE_TOOLBAR * scale as f32;
+        let icon_px = self.icon_size.unwrap_or(t::ICON_SIZE_TOOLBAR) * scale as f32;
         let mut x = self.rect.x0 + if self.label.is_some() { t::ACTION_BUTTON_EDGE_TO_TEXT_M as f64 * scale } else { (self.rect.width() - icon_px as f64) / 2.0 };
         if !self.icon.is_empty() {
             if let Some(l) = fonts.icon(self.icon, icon_px, paint::color(fg)) {
