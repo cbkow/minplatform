@@ -165,7 +165,7 @@ td.num{font:12px/20px var(--mono);color:var(--g500);text-align:right}
 .thumb:focus-visible{box-shadow:0 0 0 2px var(--accent)}
 .thumb::after{content:"";position:absolute;inset:0;border:1px solid rgba(255,255,255,.08);border-radius:var(--rs);pointer-events:none}
 .nothumb{width:248px;aspect-ratio:16/9;border-radius:var(--rs);background:var(--l2)}
-html.noink .ink{display:none}
+html.noink .ink,html.noink #lb .stage .ink{display:none}   /* the lightbox's img rule outranks the plain one */
 td.tc .main{font:500 13px/20px var(--mono);color:var(--g900);white-space:nowrap}
 td.tc .sub{font:12px/18px var(--mono);color:var(--g600)}
 .text{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--g800)}
@@ -272,7 +272,7 @@ mod sample {
         let Some(out) = std::env::var_os("QCV_EXPORT_SAMPLE") else { return };
         let svg = |h: u32| format!("<svg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'><defs><linearGradient id='g' x2='1' y2='1'><stop offset='0' stop-color='hsl({h},45%,30%)'/><stop offset='1' stop-color='hsl({},40%,12%)'/></linearGradient></defs><rect width='1920' height='1080' fill='url(#g)'/><circle cx='1300' cy='420' r='220' fill='hsl({h},30%,55%)'/></svg>", h + 60).into_bytes();
         let texts = ["Flicker on the left edge — check the comp's matte, it pops for two frames.", "", "Logo too close to title safe.\nMove 40 px in and re-render.", "Colour shift after the cut: the grade on shot 12 doesn't match 11."];
-        let items = (0..8).map(|i| Item { note: Note { timecode: format!("00:00:{:02}:{:02}", i * 3, (i * 7) % 24), frame: (i * 79) as i64, text: texts[i % 4].into(), addressed: i % 3 == 1, viewer: if i == 2 { "Viewer: +1.0 stops · luma".into() } else { String::new() }, ocio: if i % 4 == 3 { "OCIO: ACEScg → ACES 2.0 - SDR 100 nits (Rec.709)".into() } else { String::new() }, ..Default::default() }, frame: Some((svg(i as u32 * 40), "image/svg+xml")), ink: None, flat: None }).collect();
+        let items = (0..8).map(|i| Item { note: Note { timecode: format!("00:00:{:02}:{:02}", i * 3, (i * 7) % 24), frame: (i * 79) as i64, text: texts[i % 4].into(), addressed: i % 3 == 1, viewer: if i == 2 { "Viewer: +1.0 stops · luma".into() } else { String::new() }, ocio: if i % 4 == 3 { "OCIO: ACEScg → ACES 2.0 - SDR 100 nits (Rec.709)".into() } else { String::new() }, ..Default::default() }, frame: Some((svg(i as u32 * 40), "image/svg+xml")), ink: (i == 0).then(|| include_bytes!("../../../apps/qcv/assets/icons/qcview_export.png").to_vec()), flat: None }).collect();
         let fonts = vec![("Geist", 400, "normal", &include_bytes!("../../min-theme/assets/fonts/Geist-Regular.ttf")[..]), ("Geist", 700, "normal", &include_bytes!("../../min-theme/assets/fonts/Geist-Bold.ttf")[..]), ("Geist Mono", 400, "normal", &include_bytes!("../../min-theme/assets/fonts/GeistMono-Regular.ttf")[..])];
         let d = Doc { media_name: "sample_shot_v003".into(), media_path: "/Volumes/projects/sample/renders/sample_shot_v003.mov".into(), exported: "2026-11-08 21:30".into(), items, brand_png: include_bytes!("../../../apps/qcv/assets/icons/qcview_export.png"), fonts };
         std::fs::write(out, html(&d)).unwrap();
