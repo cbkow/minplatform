@@ -75,10 +75,10 @@ impl SettingsPanel {
                 num(k::SYNC_OFFSET_MS, "A/V sync (Single)", "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
                 num(k::DUAL_SYNC_OFFSET_MS, "A/V sync (Dual)", "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
                 sw(k::SCRUB_MUTED, "Mute scrub audio", "Silence the audio feedback while scrubbing and shuttling.", true),
-                sw(k::LIVE_PLAYDOWN, "Listen to live audio", "Play audio pushed by Premiere Pro over the bridge.", false),
+                sw(k::LIVE_PLAYDOWN, "Listen to live audio", "Play audio pushed by Premiere Pro over the bridge.", true),
                 sw(k::BLENDER_SESSIONS, "Blender sessions", "Off at every launch. On: listen for a Blender bridge session.", false),
-                num(k::LIVE_SYNC_OFFSET_MS, "A/V sync (Live)", "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear.", false, -200, 200, 1),
-                num(k::LIVE_BUFFER_MS, "Live audio buffer", "How much bridge audio is queued before it plays; in milliseconds.", false, 20, 200, 10),
+                num(k::LIVE_SYNC_OFFSET_MS, "A/V sync (Live)", "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear.", true, -200, 200, 1),
+                num(k::LIVE_BUFFER_MS, "Live audio buffer", "How much bridge audio is queued before it plays; in milliseconds.", true, 20, 200, 10),
             ] },
         ];
         SettingsPanel {

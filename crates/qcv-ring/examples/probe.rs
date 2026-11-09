@@ -1,8 +1,10 @@
 //! A synthetic QCBridge host (QCView's `qcbae://probe` test signal): publishes a moving RGBA16F ramp that runs past 1.0 into a
 //! QCAE ring, as the QCBridgeAE Transmit device does, so the live feed can be walked without After Effects.
-//!   cargo run -p qcv-ring --example probe -- [probe|ae|premiere] [WxH] [fps] [seconds]
+//!   cargo run --release -p qcv-ring --example probe -- [probe|ae|premiere] [WxH] [fps] [seconds] [audio Hz, 0 = none; default 48000]
+//! RELEASE: a debug build fills 1080p at ~13 fps (scalar half-float per pixel) — the producer, not the viewer.
+//! Audio: a stereo 440 Hz tone (L) / 660 Hz (R), beeping once a second, into the QCAA segment beside the frame ring.
 //! The ring's name follows the host (`/qcbae-probe` by default); Ctrl+C stops it — the next producer replaces the ring.
-use qcv_ring::{layout::*, qcae::SharedRing, url::Host};
+use qcv_ring::{audio::{self, AudioRing}, layout::*, qcae::SharedRing, url::Host};
 use std::time::{Duration, Instant};
 
 fn half(v: f32) -> u16 { let b = v.to_bits(); let s = ((b >> 16) & 0x8000) as u16; let e = ((b >> 23) & 0xff) as i32 - 127 + 15; let m = (b & 0x7f_ffff) >> 13; if e <= 0 { s } else if e >= 31 { s | 0x7c00 } else { s | ((e as u16) << 10) | m as u16 } }
@@ -13,12 +15,31 @@ fn main() {
     let (w, h) = a.get(1).and_then(|s| s.split_once('x')).and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))).unwrap_or((1920u32, 1080u32));
     let fps: f64 = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(24.0);
     let seconds: f64 = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(600.0);
+    let rate: u32 = a.get(4).and_then(|s| s.parse().ok()).unwrap_or(48000);
     let bpr = aligned_bytes_per_row(w, 8);
+    let _ = qcv_ring::mapping::unlink(&host.audio_ring_name());
+    let mut aring = (rate > 0).then(|| AudioRing::create(&host.audio_ring_name(), rate as i64, audio::DEFAULT_SLOTS, audio::DEFAULT_SLOT_FRAMES, 2).expect("create the audio ring"));
+    if let Some(ar) = aring.as_ref() { ar.set_host_audio(audio::HostAudio::On); ar.begin_session(AudioSession { sample_rate: rate, channels: 2, speed: 1.0, push_frames: 1024, ..Default::default() }); }
+    // the host's push: one 1024-frame packet when its device has played it (Premiere pushes per packet), on its own thread
+    let t0 = Instant::now();
+    let audio_thread = aring.take().map(|mut ar| std::thread::spawn(move || {
+        let mut a_sent = 0u64;
+        while t0.elapsed().as_secs_f64() < seconds {
+            let due = (t0.elapsed().as_secs_f64() * rate as f64) as u64;
+            while a_sent + 1024 <= due {
+                let tone = |f: f64, i: u64| { let t = i as f64 / rate as f64; let on = (t % 1.0) < 0.25; if on { (0.2 * (std::f64::consts::TAU * f * t).sin()) as f32 } else { 0.0 } };
+                let l: Vec<f32> = (a_sent..a_sent + 1024).map(|i| tone(440.0, i)).collect(); let r: Vec<f32> = (a_sent..a_sent + 1024).map(|i| tone(660.0, i)).collect();
+                ar.push(&[&l, &r], rate, 1024, a_sent as i64, 0); a_sent += 1024;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        ar.set_state(audio::State::Retired);
+    }));
     let _ = qcv_ring::mapping::unlink(host.ring_name());
     let mut ring = SharedRing::create(host.ring_name(), bpr as u64 * h as u64, 3).expect("create the ring");
     ring.set_host_state(HostState::Active);
     println!("probe: {} {w}x{h} @ {fps} fps for {seconds} s — connect qcv to {}", host.ring_name(), host.url());
-    let t0 = Instant::now(); let dt = Duration::from_secs_f64(1.0 / fps); let mut n = 0u64;
+    let dt = Duration::from_secs_f64(1.0 / fps); let mut n = 0u64;
     let mut row = vec![0u16; (bpr / 2) as usize];
     while t0.elapsed().as_secs_f64() < seconds {
         if let Some(d) = (t0 + dt.mul_f64(n as f64)).checked_duration_since(Instant::now()) { std::thread::sleep(d); }
@@ -39,6 +60,7 @@ fn main() {
         desc.comp_name[..5].copy_from_slice(b"probe");
         ring.commit(desc); n += 1;
     }
+    if let Some(t) = audio_thread { let _ = t.join(); }
     ring.set_host_state(HostState::Retired);
     println!("probe: {n} frames, retired");
 }

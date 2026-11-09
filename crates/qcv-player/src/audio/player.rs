@@ -39,6 +39,9 @@ struct CbShared {
     source: Mutex<Option<Arc<dyn AudioSourceCtl>>>,
     drain: Mutex<(AudioDrainStage, Vec<f32>)>,
     shuttle: ShuttleAudioEngine,
+    /// a live source (row 228): it plays as it arrives; `playdown` = QCView's Listen (`audio/livePlaydown`, default off) —
+    /// off, the drain still runs (meters, taps) and the output is zeroed
+    live: AtomicBool, playdown: AtomicBool,
     callbacks: AtomicU64, contended: AtomicU64,
     /// Callbacks whose output block had signal (peak > −60 dBFS) — the bench's proof that audio actually flowed.
     audible: AtomicU64,
@@ -76,7 +79,7 @@ impl AudioPlayer {
     /// A silent, wall-paced device (headless benches).
     pub fn headless() -> Result<AudioPlayer, crate::Error> { Self::with_device(|r| Ok(Box::new(NullDevice::new(r, 48000, 10)) as Box<dyn AudioDevice>)) }
     fn with_device(make: impl FnOnce(RenderFn) -> Result<Box<dyn AudioDevice>, crate::Error>) -> Result<AudioPlayer, crate::Error> {
-        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), side_gain: AtomicU32::new(1.0f32.to_bits()), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
+        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), side_gain: AtomicU32::new(1.0f32.to_bits()), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), live: AtomicBool::new(false), playdown: AtomicBool::new(false), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
         let c = cb.clone();
         let render: RenderFn = Box::new(move |out: &mut [f32]| Self::process_audio(&c, out));
         let device = make(render)?;
@@ -103,7 +106,7 @@ impl AudioPlayer {
         let ratio = f32::from_bits(c.servo_ratio.load(Relaxed)) as f64;
         let extra_hold = !c.playing.load(Acquire);
         drain.process(&**dec, out, frames, ratio, scratch, &c.consumed, &c.req, extra_hold);
-        if c.muted.load(Relaxed) { out.fill(0.0); return }
+        if c.muted.load(Relaxed) || (c.live.load(Relaxed) && !c.playdown.load(Relaxed)) { out.fill(0.0); return }
         let vol = f32::from_bits(c.volume.load(Relaxed)) * f32::from_bits(c.side_gain.load(Relaxed));
         let mut peak = 0.0f32;
         for v in out.iter_mut() { *v = soft_limit(*v * vol); peak = peak.max(v.abs()); }
@@ -116,6 +119,21 @@ impl AudioPlayer {
     pub fn set_volume(&mut self, v: f32) { self.cb.volume.store(v.clamp(0.0, 1.0).to_bits(), Relaxed); }
     pub fn set_muted(&mut self, m: bool) { self.cb.muted.store(m, Relaxed); }
     pub fn set_sync_offset_ms(&mut self, ms: i32) { self.sync_offset_ms = ms; }
+    /// QCView `AudioPlayer::open` on a live URL: the QCAA segment's reader; the device starts before any audio has
+    /// arrived (the jitter buffer primes), no servo, no seek.
+    pub fn open_live(&mut self, segment: &str) {
+        AudioHooks::close(self);
+        let d: Arc<dyn AudioSourceCtl> = Arc::new(super::live::LiveAudioSource::open(segment, self.routing));
+        d.start();
+        *self.cb.source.lock().unwrap() = Some(d.clone()); self.decoder = Some(d);
+        self.cb.live.store(true, Release); self.cb.playing.store(true, Release); self.cb.req.restart.store(true, Release);
+        self.device.start();
+        log::info!("AudioPlayer: live source playing, device buffer latency {:.1} ms", self.device.buffer_latency_seconds() * 1000.0);
+    }
+    /// QCView's Listen toggle for a live source (`setLivePlaydown`).
+    pub fn set_live_playdown(&mut self, on: bool) { self.cb.playdown.store(on, Release); }
+    pub fn live_playdown(&self) -> bool { self.cb.playdown.load(Acquire) }
+    pub fn source_is_live(&self) -> bool { self.cb.live.load(Acquire) }
     pub fn device_latency_ms(&self) -> f64 { self.device.buffer_latency_seconds() * 1000.0 }
     pub fn playout_position(&self) -> f64 { self.anchor_src_sec + self.consumed_sec() - self.device.buffer_latency_seconds() * f32::from_bits(self.cb.servo_ratio.load(Relaxed)) as f64 * self.tempo }
 }
@@ -141,6 +159,7 @@ impl AudioHooks for AudioPlayer {
         self.pause();
         *self.cb.source.lock().unwrap() = None;
         if let Some(d) = self.decoder.take() { d.stop(); }
+        self.cb.live.store(false, Release);
         self.cb.consumed.store(0, Relaxed);
     }
     fn has_audio(&self) -> bool { self.decoder.is_some() }
@@ -193,6 +212,7 @@ impl AudioHooks for AudioPlayer {
     }
     fn update(&mut self, video_position_seconds: f64) {
         let Some(d) = &self.decoder else { return };
+        if d.is_live() { return }   // a live source plays what arrives; there is no position to servo
         if !self.cb.playing.load(Acquire) || self.cb.req.hold.load(Acquire) { return }
         if d.seek_pending() { self.last_servo_update = None; return }
         let off = self.sync_offset_ms as f64 / 1000.0;

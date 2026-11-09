@@ -16,4 +16,6 @@ pub trait AudioSourceCtl: AudioSource {
     fn source_channels(&self) -> usize;
     fn layout_name(&self) -> String;
     fn peak_levels(&self) -> [f32; 16];
+    /// A QCBridge host's audio (QCView `isLive`): no timeline, the player's servo stays off it.
+    fn is_live(&self) -> bool { false }
 }

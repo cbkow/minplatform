@@ -37,13 +37,16 @@ pub struct HostFeed {
     /// host-time deltas toward the rate (QCView: three equal positive deltas)
     last_time: Option<(i64, i64)>, run: (i64, u32), fps: Option<f64>, last_host_time: Option<(i64, i64)>,
     #[cfg(target_os = "macos")] slots: Option<(usize, qcv_ring::mtl::SlotBuffers)>,
+    /// QCView `setVideoHoldMs` (the negative part of the live A/V offset): frames wait this long before they show — copied
+    /// out of the ring (a held slot would stall a 3-slot producer), queued with their due time
+    hold: Duration, held: std::collections::VecDeque<(Instant, Frame)>,
 }
 
 impl HostFeed {
     pub fn new(host: Host) -> HostFeed {
         HostFeed { host, ring: None, last_try: None, status: Status::Connecting, detail: Some((WAITING, host.app().into())), ever_live: false, live_since: None, counted_dead: None,
             restarts: 0, frames: 0, bytes: 0, size: (0, 0), non_finite: false, has_frame: false, last_time: None, run: (0, 0), fps: None, last_host_time: None,
-            #[cfg(target_os = "macos")] slots: None }
+            #[cfg(target_os = "macos")] slots: None, hold: Duration::ZERO, held: Default::default() }
     }
     pub fn facts(&self) -> Facts { Facts { status: self.status, detail: self.detail.clone(), width: self.size.0, height: self.size.1, frames: self.frames, restarts: self.restarts, non_finite: self.non_finite, has_frame: self.has_frame } }
     pub fn status(&self) -> Status { self.status }
@@ -62,7 +65,21 @@ impl HostFeed {
 
     /// Per tick: the newest frame when there is one (latest wins). `device`: the Mac wraps the ring slot for the GPU without a
     /// copy (S4: 0.2 ms at 4K); elsewhere, and without a device, the slot is copied (DX12: one copy).
+    /// The negative part of the live A/V offset (QCView's video hold), 0 = none.
+    pub fn set_video_hold_ms(&mut self, ms: i32) { self.hold = Duration::from_millis(ms.max(0) as u64); }
+    /// Per tick: the frame to show now, if any (a hold delays each frame by its time; switched off, the newest held one shows).
     pub fn tick(&mut self, now: Instant, device: Option<&wgpu::Device>) -> Option<Frame> {
+        if self.hold.is_zero() {
+            let flushed = self.held.drain(..).last().map(|(_, f)| f);
+            return self.take(now, device).or(flushed)
+        }
+        if let Some(f) = self.take(now, None) { self.held.push_back((now + self.hold, f)); }
+        while self.held.len() > 64 { self.held.pop_front(); }   // a bound, never reached at ≤ 200 ms
+        let mut out = None;
+        while self.held.front().is_some_and(|(due, _)| *due <= now) { out = self.held.pop_front().map(|(_, f)| f); }
+        out
+    }
+    fn take(&mut self, now: Instant, device: Option<&wgpu::Device>) -> Option<Frame> {
         let _ = &device;
         if self.ring.is_none() {
             if self.last_try.is_some_and(|t| now.duration_since(t) < ABSENT_POLL) { return None }

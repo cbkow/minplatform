@@ -6,7 +6,9 @@ use qcv_player::host_feed::HostFeed;
 use std::time::Instant;
 use qcv_ring::url::Host;
 
-pub struct Live { pub feed: HostFeed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts> }
+pub struct Live { pub feed: HostFeed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts>,
+    /// the QCAA segment's player (QCView: the live AudioPlayer): it plays as packets arrive; Listen decides if it is heard
+    pub audio: Option<qcv_player::audio::AudioPlayer> }
 
 impl crate::App {
     /// QCView `connectHostBridge`: the host's item ("QCBridge After Effects" in the Live bin, deduped by URL), made active.
@@ -18,7 +20,21 @@ impl crate::App {
     pub(crate) fn start_live(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
         let Some(host) = Host::parse(&item.path) else { self.toast(trw("Live streams arrive with the stream step"), min_ui::ToastKind::Notice); return false };
         self.player = None;   // the file transport stops; the feed owns the picture
-        self.live = Some(Live { feed: HostFeed::new(host), item: id.to_string(), last_facts: None });
+        let audio = match qcv_player::audio::AudioPlayer::new() {
+            Ok(mut au) => {
+                use crate::settings::k;
+                qcv_player::audio::live::set_global_buffer_ms(self.settings.int(k::LIVE_BUFFER_MS) as i32);
+                qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(k::LIVE_SYNC_OFFSET_MS) as i32);
+                qcv_player::audio::live::set_global_scrub_mute(self.settings.bool(k::SCRUB_MUTED));
+                au.set_volume(self.settings.float(k::VOLUME) as f32); au.set_muted(self.settings.bool(k::MUTED));
+                au.set_live_playdown(self.settings.bool(k::LIVE_PLAYDOWN));
+                au.open_live(&host.audio_ring_name());
+                Some(au)
+            }
+            Err(e) => { log::warn!("live audio: {e}"); None }
+        };
+        let mut feed = HostFeed::new(host); feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms());
+        self.live = Some(Live { feed, item: id.to_string(), last_facts: None, audio });
         self.loaded_item = id.to_string();
         self.source_path.clear(); self.source_label = item.name.clone();   // the screenshot's name (QCView: the stream's name)
         if let Some(g) = self.gpu.as_mut() {

@@ -1340,8 +1340,8 @@ impl App {
             match key {
                 k::TIMELINE_HOVER_THUMBS => { g.thumbs.enabled = self.settings.bool(key); g.ui_dirty = true; }
                 k::TIMELINE_WAVEFORMS => { g.waveform_enabled = self.settings.bool(key); if !g.waveform_enabled { g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); } g.ui_dirty = true; }
-                k::VOLUME => { let v = self.settings.float(key) as f32; if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
-                k::MUTED => { let m = self.settings.bool(key); if let Some(p) = self.player.as_mut() { p.audio.set_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_muted(m)); } }
+                k::VOLUME => { let v = self.settings.float(key) as f32; if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_volume(v); } if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
+                k::MUTED => { let m = self.settings.bool(key); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_muted(m); } if let Some(p) = self.player.as_mut() { p.audio.set_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_muted(m)); } }
                 k::DUAL_SYNC_OFFSET_MS => if let Some(d) = self.dual.as_mut() { let ms = self.settings.int(key) as i32; d.for_each_audio(|au| au.set_sync_offset_ms(ms)); },
                 k::SYNC_OFFSET_MS => if let Some(p) = self.player.as_mut() { p.audio.set_sync_offset_ms(self.settings.int(key) as i32); },
                 k::SCRUB_MUTED => { let m = self.settings.bool(key); if let Some(p) = self.player.as_mut() { p.audio.set_scrub_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_scrub_muted(m)); } }
@@ -1353,6 +1353,9 @@ impl App {
                 k::SAFETY_COLOR | k::SAFETY_OPACITY | k::SAFETY_WIDTH | k::SAFETY_GUIDE => { g.ui_dirty = true; }
                 k::BACKGROUND_MODE => { g.presenter.engine.set_background(self.settings.int(key) as u8); g.ui_dirty = true; }
                 k::ALWAYS_ON_TOP => { let _ = g; self.apply_pin(); }
+                k::LIVE_PLAYDOWN => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(self.settings.bool(key)); } }
+                k::LIVE_BUFFER_MS => qcv_player::audio::live::set_global_buffer_ms(self.settings.int(key) as i32),
+                k::LIVE_SYNC_OFFSET_MS => { qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(key) as i32); if let Some(l) = self.live.as_mut() { l.feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms()); } }
                 _ => {}   // applies at the next open (performance/*) or has no consumer yet
             }
         }
@@ -2140,6 +2143,8 @@ impl ApplicationHandler for App {
                     let handled = pb_mut(&mut self.dual, &mut self.player).map(|p| p.apply(a, Instant::now())).unwrap_or(false);
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
+                    // live (row 228): the transport keys are locked; M still mutes (QCView's LiveStrip rule)
+                    else if a == Action::ToggleMute && self.live.is_some() { let m = !self.settings.bool(settings::k::MUTED); self.settings.set_bool(settings::k::MUTED, m); self.apply_setting(settings_panel::Cmd::Changed(settings::k::MUTED)); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
                     else if a == Action::Screenshot || a == Action::ScreenshotToClipboard { if !event.repeat { self.screenshot(if a == Action::Screenshot { capture::Dest::File } else { capture::Dest::Clipboard }); } }
                     else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.annot.active && self.dual.is_none() {
