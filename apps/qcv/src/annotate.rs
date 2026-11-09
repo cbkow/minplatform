@@ -20,7 +20,7 @@ impl Tool { fn shape(self) -> Option<STool> { Some(match self { Tool::Freehand =
 struct Step { key: String, before: Option<Note>, after: Option<Note> }
 
 enum Live { Ink(ink::Smoother, bool), Shape { tool: STool, a: [f64; 2], b: [f64; 2] } }
-struct Drag { id: String, from: [f64; 2], last: [f64; 2], moved: bool, before: Note }
+struct Drag { id: String, last: [f64; 2], moved: bool, before: Note }
 
 /// A committed edit the app follows up: the note's key, and whether its clean thumbnail must be captured (a new note).
 pub struct Committed { pub key: String, pub new_note: bool }
@@ -51,7 +51,7 @@ impl Annotations {
             Tool::Eraser => {}
             Tool::Select => {
                 self.selected = self.hit(p, frame, geo);
-                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) { self.drag = Some(Drag { id, from: p, last: p, moved: false, before: n }); }
+                if let (Some(id), Some(n)) = (self.selected.clone(), self.note_at_frame(frame).cloned()) { self.drag = Some(Drag { id, last: p, moved: false, before: n }); }
             }
             t => if let Some(tool) = t.shape() { self.live = Some(Live::Shape { tool, a: p, b: p }); },
         }
@@ -143,6 +143,22 @@ impl Annotations {
         let key = n.timecode.clone(); self.put(n.clone());
         self.push_step(Step { key: key.clone(), before: Some(before), after: Some(n) }); self.save();
         Some(Committed { key, new_note: false })
+    }
+    /// QCView's "Add note here": a note at the playhead without a drawing (its clean frame captured by the app).
+    pub fn add_note(&mut self, frame: i32, fps: f64) -> Option<Committed> {
+        let (key, secs) = qcv_notes::note_key(frame, fps);
+        if self.notes.iter().any(|n| n.timecode == key) { return None }
+        let n = Note { timecode: key.clone(), timestamp_seconds: secs, frame: frame as i64, image: format!("images/{}", io::image_filename(&key)), ..Default::default() };
+        self.put(n.clone()); self.push_step(Step { key: key.clone(), before: None, after: Some(n) }); self.save();
+        Some(Committed { key, new_note: true })
+    }
+    /// A note's text / addressed flag (saved; QCView keeps these out of the drawing history).
+    pub fn set_text(&mut self, key: &str, text: &str) { if let Some(n) = self.notes.iter_mut().find(|n| n.timecode == key) { if n.text != text { n.text = text.to_string(); self.save(); } } }
+    pub fn set_addressed(&mut self, key: &str, on: bool) { if let Some(n) = self.notes.iter_mut().find(|n| n.timecode == key) { if n.addressed != on { n.addressed = on; self.save(); } } }
+    /// QCView's "Delete note": the note and both its images (a user delete is the one thing that removes the PNGs).
+    pub fn delete_note(&mut self, key: &str) {
+        self.notes.retain(|n| n.timecode != key); self.undo.retain(|s| s.key != key); self.redo.retain(|s| s.key != key); self.save();
+        if let Some(m) = &self.media { let dir = io::images_dir(&io::notes_dir(m)); let _ = std::fs::remove_file(dir.join(io::image_filename(key))); let _ = std::fs::remove_file(dir.join(io::annotated_filename(key))); }
     }
     /// QCView: Escape cancels the stroke in progress, else clears the selection. True when it did something.
     pub fn escape(&mut self) -> bool { if self.live.take().is_some() { return true } self.selected.take().is_some() }

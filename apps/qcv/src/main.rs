@@ -53,6 +53,7 @@ mod dual_bars;
 mod guides;
 mod guides_panel;
 mod annotate;
+mod notes_drawer;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -64,7 +65,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     drawer: color_drawer::ColorDrawer, /// dual view's controls on the status strip + the Save dialog + the seam's grab (row 173)
     dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// the annotation tool's button is down
     annot_down: bool, /// dual's A / B lanes (row 212) + the side the precision popover edits
-    dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the Inspector's subject last synced (slot, item): the Transfer chips refresh on a change
+    dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the Notes drawer (row 215; the colour drawer's slot)
+    notes: notes_drawer::NotesDrawer, notes_current: Option<String>, /// the Inspector's subject last synced (slot, item): the Transfer chips refresh on a change
     insp_seen: (usize, String), /// the pointer's last movement (the floating tabs fade when it parks over the picture)
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
@@ -352,7 +354,7 @@ impl App {
                     self.dual_editor = Some(ed);
                     if let Some(g) = self.gpu.as_mut() { g.dual_bars.selected = None; g.dual_bars.target = qcv_player::Side::B; if self.mincolor[1].is_none() && self.mincolor_ready[1].is_none() && !color::harness_active() { self.mincolor_ready[1] = Some(color::mincolor_ahead(&g.presenter.engine.device, &g.presenter.engine.queue)); } }
                     self.color_bound = [None, None]; self.ocio_rx = [None, None];
-                    self.dual = Some(d); self.annot.active = false; self.annot.load(None);   // annotations: single view only (row 215)
+                    self.dual = Some(d); self.close_notes(); self.annot.load(None);   // annotations: single view only (row 215)
                     if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(true); }
                 }
                 Err(e) => { println!("dual: {e}"); self.toast(&fill(trw("Couldn’t open: %1"), &[&e]), min_ui::ToastKind::Negative); return }
@@ -437,11 +439,39 @@ impl App {
         let maps = |tr: &str| self.dual_editor.as_ref().and_then(|ed| ed.timeline.track(tr).map(|t| t.clips.iter().filter(|c| !c.is_gap).map(|c| clip_to_qcview(c, ed.timeline.rate)).collect())).unwrap_or_default();
         Some(qcv_project::DualPairData { media_id_a: self.loaded_item.clone(), media_id_b: self.project.b_source_media_id().to_string(), master_fps: fps, master_duration: d.frame_count() as f64 / fps.max(1e-9), clips_a: maps(qcv_timeline::TRACK_A), clips_b: maps(qcv_timeline::TRACK_B), in_point: d.in_point(), out_point: d.out_point() })
     }
-    /// Ctrl+4 (QCView's Notes panel key; the drawer arrives with piece 4): annotating on / off — single view, a loaded clip.
-    fn toggle_annotating(&mut self) {
-        if self.dual.is_some() || self.pl_editor.is_some() || self.player.is_none() || self.annot.media.is_none() { self.annot.active = false; return }
-        self.annot.active = !self.annot.active; if !self.annot.active { self.annot.escape(); self.annot.selected = None; }
-        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; if !self.annot.active && g.cursor == winit::cursor::CursorIcon::Crosshair { g.cursor = winit::cursor::CursorIcon::Default; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); } }
+    /// Ctrl+4 / the transport's note button (QCView's Notes panel): the drawer opens in the colour drawer's slot (closing Color),
+    /// arming Freehand; closing it leaves annotation mode. Single view on a loaded clip only (row 215).
+    fn toggle_notes(&mut self) {
+        let open = self.gpu.as_ref().is_some_and(|g| g.notes.open);
+        if open { self.close_notes(); return }
+        if self.dual.is_some() || self.pl_editor.is_some() || self.player.is_none() || self.annot.media.is_none() { return }
+        let now = Instant::now();
+        if self.gpu.as_ref().is_some_and(|g| g.drawer.open) { self.color_cmd(color_drawer::Cmd::Toggle); }
+        self.annot.active = true; self.annot.tool = annotate::Tool::Freehand;
+        if let Some(c) = qcv_notes_color(&self.settings.string(settings::k::ANNOTATION_COLOR)) { self.annot.color = c; }
+        if let Some(g) = self.gpu.as_mut() { g.notes.set_open(true, now); g.ui_dirty = true; }
+    }
+    pub(crate) fn close_notes(&mut self) {
+        self.annot.active = false; self.annot.escape(); self.annot.selected = None;
+        let pending: Vec<notes_drawer::Cmd> = self.gpu.as_mut().map(|g| g.notes.blur()).unwrap_or_default();   // a note being typed commits first
+        for c in pending { if let notes_drawer::Cmd::Text(k, t) = c { self.annot.set_text(&k, &t); } }
+        if let Some(g) = self.gpu.as_mut() { if g.notes.open { g.notes.set_open(false, Instant::now()); } g.ui_dirty = true; if g.cursor == winit::cursor::CursorIcon::Crosshair { g.cursor = winit::cursor::CursorIcon::Default; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); } }
+    }
+    fn notes_cmd(&mut self, c: notes_drawer::Cmd) {
+        use notes_drawer::Cmd as N;
+        let (frame, fps) = self.player.as_ref().map(|p| (p.current_frame(), p.rate().as_f64())).unwrap_or((0, 24.0));
+        match c {
+            N::AddNote => { if let Some(c) = self.annot.add_note(frame, fps) { self.after_annotation(c); } }
+            N::Seek(f) => { if let Some(p) = self.player.as_mut() { p.seek_to_frame(f as i32); } }
+            N::Text(k, t) => self.annot.set_text(&k, &t),
+            N::Addressed(k, on) => self.annot.set_addressed(&k, on),
+            N::Delete(k) => self.annot.delete_note(&k),
+            // QCView: clicking the armed tool again disarms it (annotation mode off, the panel stays)
+            N::Tool(t) => { match t { Some(t) => { self.annot.tool = t; self.annot.active = true; } None => { self.annot.active = false; self.annot.escape(); } } self.annot.selected = None; }
+            N::Color(h) => { if let Some(c) = qcv_notes_color(&h) { self.annot.color = c; self.settings.set_str(settings::k::ANNOTATION_COLOR, &h); } }
+            N::Width(w) => self.annot.width = w,
+        }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
     /// After a committed edit: a new note's CLEAN frame (once — the picture alone, so no stroke in it), then the annotated
     /// thumbnail redrawn through the SAME geometry as the screen (vello, offscreen) — both QCView needs to show the note.
@@ -748,7 +778,9 @@ impl App {
             let rails_bottom = if g.compact { scrub_y } else { scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale - strip_h };
             let chromeless = g.fullscreen || g.compact;   // QCView: fullscreen or compact hides every rail and band
             // the Color drawer (row 199) sits on the bands and pushes the rails' bottom (and the picture) up
-            let drawer_h = if chromeless { 0.0 } else { g.drawer.visible_height(now, scale) };
+            let notes_h = if chromeless { 0.0 } else { g.notes.visible_height(now, scale) };
+            let drawer_h = if chromeless { 0.0 } else { g.drawer.visible_height(now, scale) } + notes_h;
+            if g.notes.animating(now) || g.notes.tick(now) { g.ui_dirty = true; }
             let rails_bottom = rails_bottom - drawer_h;
             if g.drawer.animating(now) || g.drawer.tick(now) { g.ui_dirty = true; }
             // QCView's in-window menu bar across the top (Windows); chromeless collapses it to zero, as QCView's `menuBar.height` did
@@ -765,6 +797,19 @@ impl App {
                 if g.drawer.sync(color_view, now) { g.ui_dirty = true; }
                 let cr = kurbo::Rect::new(content.0 as f64, content.1 as f64, (content.0 + content.2) as f64, (content.1 + content.3) as f64);
                 g.drawer.layout(&mut g.fonts, cr, 0.0, rails_bottom, w as f64, scale, now);
+                // the Notes drawer: its cards from the clip's notes (the annotated thumbnail when there is one), the current note, the tools
+                if g.notes.open || g.notes.visible_height(now, scale) > 0.0 {
+                    let dir = self.annot.media.as_ref().map(|m| qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(m)));
+                    let cards: Vec<notes_drawer::Card> = self.annot.notes.iter().map(|n| { let thumb = dir.as_ref().and_then(|d| { let a = d.join(qcv_notes::io::annotated_filename(&n.timecode)); let c = d.join(qcv_notes::io::image_filename(&n.timecode)); if a.exists() { Some(a) } else if c.exists() { Some(c) } else { None } }); notes_drawer::Card { key: n.timecode.clone(), frame: n.frame, text: n.text.clone(), addressed: n.addressed, thumb, viewer: !n.viewer.is_empty(), ocio: !n.ocio.is_empty() } }).collect();
+                    let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1);
+                    let current = self.annot.note_at_frame(frame).map(|n| n.timecode.clone());
+                    let clip = self.annot.media.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let moved = current != g.notes_current; g.notes_current = current.clone();
+                    if g.notes.sync(&clip, cards, current, self.annot.active.then_some(self.annot.tool), &self.settings.string(settings::k::ANNOTATION_COLOR), self.annot.width) { g.ui_dirty = true; }
+                    if moved { g.notes.reveal_current(); }
+                    let notes_y = rails_bottom + g.drawer.visible_height(now, scale);
+                    g.notes.layout(&mut g.fonts, 0.0, notes_y, w as f64, scale, now);
+                }
             }
             // the waveform (row 203): the presenter draws its trace into the drawer's card while it shows
             g.presenter.engine.set_scope(if chromeless || g.fullscreen { None } else { g.drawer.scope() });
@@ -892,7 +937,7 @@ impl App {
                     if g.presenter.engine.picture_placement().is_none() && g.presenter.engine.dual().is_none() { if let Some((cx, cy, cw, ch)) = content { let r = [cx as f64, cy as f64, cw as f64, ch as f64]; guides::paint(scene, gd, guides::transform(gd.view, gd.view, r, 0), w_ * scale, col); } }   // no media: the whole viewport (QCView)
                 }
                 if let (Some((sx, hot)), Some((_, cy, _, ch))) = (seam_line, g.presenter.engine.content_rect()) { let lw = (2.0 * scale).round().max(1.0); let c = if hot { min_theme::Color::rgba(1.0, 1.0, 1.0, 1.0) } else { min_theme::Color::rgba(0.4, 0.4, 0.4, 1.0) }; min_ui::paint::rect(scene, kurbo::Rect::new(sx - lw / 2.0, cy as f64, sx + lw / 2.0, (cy + ch) as f64), c); }
-                if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
+                if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.notes.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
                 if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
                 if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now); }
                 g.bar.paint(scene, &mut g.fonts, scale, now);
@@ -909,7 +954,7 @@ impl App {
                 if !g.fullscreen { g.guides_panel.paint_menu(scene, &mut g.fonts, scale); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
-                if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
+                if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.notes.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.toast.paint(scene, &mut g.fonts, content, scale, now);
                 if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint_menus(scene, &mut g.fonts, scale); }
                 if g.about.open { let b = kurbo::Rect::new(0.0, 0.0, w as f64, h as f64); g.about.layout(&mut g.fonts, b, scale); g.about.paint(scene, &mut g.fonts, scale, b, now); }
@@ -998,6 +1043,15 @@ impl App {
         }
         let Some(g) = self.gpu.as_mut() else { return };
         let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag || g.dual_bars.is_pressed());
+        // the Notes drawer (row 215): its own presses (and its slider / picker drags)
+        if !g.fullscreen && !g.compact && !grabbed && g.notes.rect.height() > 1.0 {
+            let had = g.notes.has_focus();
+            let (cmds, d, consumed) = g.notes.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
+            if g.notes.has_focus() != had { set_ime(&**g.window, g.notes.has_focus()); }
+            let _ = g; for c in cmds { self.notes_cmd(c); }
+            if consumed { return }
+        }
+        let g = self.gpu.as_mut().unwrap();
         // the Color drawer (row 199): its menu / naming popover take everything; its tab over the picture; its own presses
         if !g.fullscreen && !g.compact && !grabbed {
             let mut cmds = vec![];
@@ -1168,6 +1222,7 @@ impl App {
                 transport_bar::Cmd::RevealBackground => self.reveal(Reveal::Background),
                 transport_bar::Cmd::RevealGuides => self.reveal(Reveal::Guides),
                 transport_bar::Cmd::ToggleColor => self.color_cmd(color_drawer::Cmd::Toggle),
+                transport_bar::Cmd::ToggleNotes => self.toggle_notes(),
                 transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
             }
         }
@@ -1631,6 +1686,8 @@ fn transfer_choice(t: qcv_project::TransferOverride) -> min_present::engine::Tra
 fn srgb_oetf(x: f32) -> f32 { let x = x.clamp(0.0, 1.0); if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 } }
 /// The display snapshot as the panel would show it: a linear-light surface is encoded with the sRGB curve (what the OS does), an
 /// encoded surface is written as is.
+/// "#rrggbb" → an opaque sRGB colour.
+fn qcv_notes_color(h: &str) -> Option<[f32; 4]> { min_ui::color_picker::parse_hex(h).map(|c| [c[0], c[1], c[2], 1.0]) }
 /// Where the single view's picture is, for the annotation tools: its displayed rect and window px per source px.
 fn annot_geo(e: &min_present::engine::Engine) -> Option<annotate::Geo> {
     let (rect, _, _) = e.picture_placement()?; let (dw, _) = e.display_dims();
@@ -1734,7 +1791,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: notes_drawer::NotesDrawer::new(), notes_current: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
@@ -1749,6 +1806,7 @@ impl ApplicationHandler for App {
         self.t0 = Some(Instant::now()); self.last_report = Instant::now();
         if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { let paths = if self.o.files.is_empty() { vec![f.clone()] } else { self.o.files.clone() }; let mut first = true; for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } } } }
         if let Some(b) = self.o.dual.clone() { self.enter_dual(&b); }
+        if std::env::var_os("QCV_OPEN_NOTES").is_some() { self.toggle_notes(); }   // harness: the Notes drawer at launch
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); return } }
@@ -1797,7 +1855,7 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.notes.has_focus() { g.notes.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -1849,6 +1907,14 @@ impl ApplicationHandler for App {
                     let cmds = g.inspector.key(&k, &mut g.fonts); g.ui_dirty = true;
                     if !g.inspector.has_focus() { set_ime(&**g.window, false); }
                     for c in cmds { if let inspector_panel::Cmd::Par(par) = c { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; } }
+                    return
+                } } }
+                // the Notes drawer's text / hex fields
+                if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.notes.has_focus() {
+                    let k = to_key_event(&event, self.mods);
+                    let cmds = g.notes.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.notes.has_focus() { set_ime(&**g.window, false); }
+                    for c in cmds { self.notes_cmd(c); }
                     return
                 } } }
                 // the Safety Guides' Hex field
@@ -1921,7 +1987,7 @@ impl ApplicationHandler for App {
                     if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && self.annot.escape() { if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return }
                     if self.annot.tool == annotate::Tool::Select && matches!(event.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) { if let Some(c) = self.annot.delete_selected(frame) { self.after_annotation(c); } return }
                 }
-                if pressed && !event.repeat && self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "4") { self.toggle_annotating(); return }
+                if pressed && !event.repeat && self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "4") { self.toggle_notes(); return }
                 if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { if self.gpu.as_ref().is_some_and(|g| g.compact) { self.toggle_compact(); return } if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); return } self.finish(); el.exit(); return }
                 let key = match &event.logical_key {
                     Key::Character(c) if c == " " => Some(qcv_player::Key::Space),
@@ -1965,6 +2031,7 @@ impl ApplicationHandler for App {
                     let (hx, vy) = if self.mods.shift && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
                     if !chromeless && hx.abs() > vy.abs() && g.drawer.hwheel(x, y, -hx / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
                     if !chromeless && g.drawer.wheel(x, y, -vy / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
+                    if !chromeless && g.notes.wheel(x, y, -(if hx.abs() > vy.abs() { hx } else { vy }) / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
                     if !chromeless && g.left.hit(x, y) {
                         if let Some(cmds) = g.settings_panel.wheel(x, y, dy, &mut self.settings) { g.ui_dirty = true; for c in cmds { self.apply_setting(c); } return }
                         if g.left.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return

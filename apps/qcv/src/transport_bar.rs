@@ -15,14 +15,15 @@ use vello::Scene;
 pub enum Cmd { Open, Act(Action), Pin, Volume(f32), /// QCView's Tools ▸ Background: open the left rail on the Background section
     RevealBackground, /// the Safety Guides section (row 215)
     RevealGuides, ToggleCompact, /// the Color drawer (row 199)
-    ToggleColor }
+    ToggleColor, /// the Notes drawer (row 215)
+    ToggleNotes }
 
 /// QCView's review-speed chip: "1×" at rest, cycles the ring on click (R), snaps to 1× on Shift-click (⇧R).
 struct SpeedChip { rect: Rect, text: String, off_unity: bool, hovered: bool, hover: Ramp, enabled: bool }
 
 /// Which button does what; `None` = not backed yet (drawn disabled).
 #[derive(Clone, Copy)]
-enum Bind { Open, Act(Action), Hold(i32), RevealBackground, RevealGuides, ToggleCompact, ToggleColor, Later }
+enum Bind { Open, Act(Action), Hold(i32), RevealBackground, RevealGuides, ToggleCompact, ToggleColor, ToggleNotes, Later }
 
 /// The window scale the bar was laid out at (its height is 32 logical px).
 fn scale_of(bar: &Rect, _: Rect) -> f64 { (bar.height() / t::TRANSPORT_BAR_HEIGHT as f64).max(0.5) }
@@ -76,7 +77,7 @@ impl TransportBar {
                 (b("checkerboard", "Background"), Bind::RevealBackground),
                 (b("image-square", "Timeline hover thumbnails"), Bind::Later),
                 (b("palette", "Color panel (⌃3)"), Bind::ToggleColor),
-                (b("note-pencil", "Notes panel (⌃4)"), Bind::Later),
+                (b("note-pencil", "Notes panel (⌃4)"), Bind::ToggleNotes),
             ]),
             // mute alone for now; the volume slider joins this group when audio lands (step 2b)
             (true, vec![(b("speaker-high", "Mute (M)"), Bind::Act(Action::ToggleMute))]),
@@ -122,7 +123,7 @@ impl TransportBar {
         let has = p.is_some();
         for (g, binds) in self.groups.iter_mut().zip(&self.binds) {
             for (b, bind) in g.buttons.iter_mut().zip(binds) {
-                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::RevealGuides | Bind::ToggleCompact | Bind::ToggleColor => true, Bind::Later => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
+                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::RevealGuides | Bind::ToggleNotes | Bind::ToggleCompact | Bind::ToggleColor => true, Bind::Later => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
                 if b.enabled != enabled { b.enabled = enabled; if !enabled { b.reset(now); } }
                 if let (Some(p), Bind::Act(a)) = (p, bind) {
                     match a {
@@ -159,6 +160,7 @@ impl TransportBar {
                     (Bind::RevealBackground, Response::Clicked) => cmds.push(Cmd::RevealBackground),
                     (Bind::RevealGuides, Response::Clicked) => cmds.push(Cmd::RevealGuides),
                     (Bind::ToggleColor, Response::Clicked) => cmds.push(Cmd::ToggleColor),
+                    (Bind::ToggleNotes, Response::Clicked) => cmds.push(Cmd::ToggleNotes),
                     (Bind::ToggleCompact, Response::Clicked) => cmds.push(Cmd::ToggleCompact),
                     _ => {}
                 }

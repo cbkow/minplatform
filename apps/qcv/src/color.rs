@@ -288,7 +288,7 @@ impl crate::App {
             DCmd::Waveform(hdr, peak, open) => { self.settings.set_int(k::WAVEFORM_SCALE, match hdr { None => -1, Some(false) => 0, Some(true) => 1 }); self.settings.set_int(k::WAVEFORM_PEAK, peak as i64); self.settings.set_bool(k::WAVEFORM_OPEN, open); }
             DCmd::Height(h) => { self.settings.set_int(k::COLOR_DRAWER_HEIGHT, h.round() as i64); }
             DCmd::Aids(a) => { if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_viewer_aids(a); } }
-            DCmd::Toggle => { if let Some(g) = self.gpu.as_mut() { g.drawer.toggle(now); self.settings.set_bool(k::COLOR_DRAWER_OPEN, g.drawer.open); g.ui_dirty = true; } }
+            DCmd::Toggle => { let opening = self.gpu.as_ref().is_some_and(|g| !g.drawer.open); if opening { self.close_notes(); } if let Some(g) = self.gpu.as_mut() { g.drawer.toggle(now); self.settings.set_bool(k::COLOR_DRAWER_OPEN, g.drawer.open); g.ui_dirty = true; } }   // one drawer at a time (row 215)
         }
         self.apply_color();
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
