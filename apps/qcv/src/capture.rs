@@ -1,5 +1,5 @@
 //! Captures (canon row 216, ruled 2026-11-08): T = the review picture to the Desktop as
-//! `qcview-screenshot-yyyy-MM-dd_HH-mm-ss.(png|jpg|tif)` per `export/screenshotFormat` (PNG 8-bit · JPEG q95 · TIFF 16-bit —
+//! `<media name>-yyyy-MM-dd_HH-mm-ss.(png|jpg|tif)` (the user 2026-11-08; QCView wrote `qcview-screenshot-…`) per `export/screenshotFormat` (PNG 8-bit · JPEG q95 · TIFF 16-bit —
 //! the user 2026-11-08: "give them 16 bit tiffs"); Ctrl/Cmd+T = to the clipboard (8-bit). The picture is the screen's: the
 //! clip's tags + overrides, its chain RE-TARGETED to SDR when the view targets HDR (QCView's `setSdrCapture`: minColor at
 //! peak 100, OCIO the nearest SDR view), the viewer aids, pixel aspect + rotation applied; an HDR source in bypass is
@@ -78,7 +78,7 @@ impl crate::App {
                 let Some(desk) = desktop_dir() else { log::warn!("screenshot: no Desktop folder"); self.toast(trw("Couldn't resolve the Desktop folder"), min_ui::ToastKind::Negative); return };
                 let (token, ext, name) = format(&self.settings.string(k::SCREENSHOT_FORMAT));
                 let stamp = jiff::Zoned::now().strftime("%Y-%m-%d_%H-%M-%S").to_string();
-                let path = desk.join(format!("qcview-screenshot-{stamp}.{ext}")).to_string_lossy().into_owned();
+                let path = desk.join(format!("{}-{stamp}.{ext}", self.capture_name())).to_string_lossy().into_owned();
                 let (tx, rx) = mpsc::channel();
                 std::thread::Builder::new().name("screenshot".into()).spawn(move || {
                     let r = match token {
@@ -92,6 +92,15 @@ impl crate::App {
                 self.capture_rx.push(rx);
             }
         }
+    }
+    /// The file's name stem: the shown media's (the user 2026-11-08: "media_name-datetime" instead of QCView's
+    /// `qcview-screenshot-`): the clip's file stem, else the playlist / item's name, made safe for a file name.
+    fn capture_name(&self) -> String {
+        let p = std::path::Path::new(&self.source_path);
+        let raw = if self.source_path.is_empty() { self.source_label.clone() } else { p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() };
+        let safe: String = raw.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
+        let safe = safe.trim().trim_matches('.').to_string();
+        if safe.is_empty() { "qcview-screenshot".into() } else { safe }
     }
     /// The workers' results landing (every tick): QCView's short toast, the format confirming the writer.
     pub(crate) fn poll_capture(&mut self) {
