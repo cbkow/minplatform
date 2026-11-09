@@ -872,10 +872,10 @@ mod tests {
     fn an_output_frame_goes_out_letterboxed_in_both_wire_formats() {
         let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
         e.show(&ramp_frame(256, 16)).unwrap();
-        let canvas = e.render_output(128, 32, OutMode::SdrEncode, 100.0).unwrap();
+        let canvas = e.render_output(128, 32, OutMode::Linear, 100.0).unwrap();
         let mut w = crate::wire::WireEncoder::new(&e.device);
         for (fmt, tag) in [(crate::wire::WireFormat::Bgra8, 1u64), (crate::wire::WireFormat::Rgb10, 2)] {
-            assert!(w.submit(&e.device, &e.queue, &canvas, fmt, tag));
+            assert!(w.submit(&e.device, &e.queue, &canvas, fmt, crate::wire::WireEncoding::Sdr, tag));
             let mut got = None;
             for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, ww, hh, bpr, t| got = Some((b.to_vec(), ww, hh, bpr, t))) { break } }
             let (b, ww, hh, bpr, t) = got.expect("a frame came back");
@@ -888,6 +888,17 @@ mod tests {
                 crate::wire::WireFormat::Bgra8 => { let (bb, g, r) = (mid & 0xff, (mid >> 8) & 0xff, (mid >> 16) & 0xff); assert!(r > 240 && r == g && g == bb, "white at the ramp's right end, grey: {r} {g} {bb}"); assert_eq!(mid >> 24, 255); }
                 crate::wire::WireFormat::Rgb10 => { let (r, g, bb) = (mid & 0x3ff, (mid >> 10) & 0x3ff, (mid >> 20) & 0x3ff); assert!(r > 960 && r == g && g == bb, "10-bit white, grey: {r} {g} {bb}"); }
             }
+        }
+        // HDR wires: reference white (100 nits) in 10 bits — PQ ≈ 520 (ST 2084 of 100 nits = 0.508), HLG ≈ 645 (BT.2100 on a
+        // 1000-nit reference: display 0.1 → scene 0.147 by the inverse OOTF → 0.630); grey stays grey through the primaries
+        for (enc, want, tol, tag) in [(crate::wire::WireEncoding::Pq { p3: false, white: 100.0 }, 520i32, 6, 3u64), (crate::wire::WireEncoding::Hlg { white: 100.0 }, 645, 8, 4)] {
+            assert!(w.submit(&e.device, &e.queue, &canvas, crate::wire::WireFormat::Rgb10, enc, tag));
+            let mut got = None;
+            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _| got = Some((b.to_vec(), bpr))) { break } }
+            let (b, bpr) = got.expect("a frame");
+            let v = u32::from_le_bytes(b[(16 * bpr + 127 * 4) as usize..(16 * bpr + 127 * 4 + 4) as usize].try_into().unwrap());
+            let (r, g, bb) = ((v & 0x3ff) as i32, ((v >> 10) & 0x3ff) as i32, ((v >> 20) & 0x3ff) as i32);
+            assert!((r - want).abs() <= tol && (g - r).abs() <= 1 && (bb - r).abs() <= 1, "{enc:?}: {r} {g} {bb} (want {want})");
         }
     }
     #[test]

@@ -47,7 +47,7 @@ impl OutputPanel {
         self.mute.selected = feed_muted; self.mute.icon = if feed_muted { "speaker-x" } else { "speaker-high" };
         if self.cards.len() != views.len() || self.cards.iter().zip(&views).any(|(c, v)| c.v.id != v.id) {
             self.cards = views.iter().map(|v| Card { v: v.clone(), on: Switch::new(v.enabled),
-                transfer: Picker::new(vec![tr("SDR Rec.709").into(), tr("PQ Rec.2100").into()], 0), raster: Picker::new(vec![tr("Auto").into(), tr("1080p").into(), tr("UHD").into()], 0), primaries: Picker::new(vec![tr("Rec.2020").into(), tr("P3-D65").into()], 0),
+                transfer: Picker::new(vec![tr("SDR Rec.709").into(), tr("PQ Rec.2100").into(), tr("HLG Rec.2100").into()], 0), raster: Picker::new(vec![tr("Auto").into(), tr("1080p").into(), tr("UHD").into()], 0), primaries: Picker::new(vec![tr("Rec.2020").into(), tr("P3-D65").into()], 0),
                 nits: [NumberField::new(v.peak, 100, 10000, 100), NumberField::new(v.cll, 0, 10000, 100), NumberField::new(v.fall, 0, 10000, 50)],
                 tile: Rect::ZERO, dot: Rect::ZERO, header: Rect::ZERO, lines: vec![], rows: vec![] }).map(|mut c| {
                     // the card is the picker token's own grey: its controls sit one step darker, recessed (the walk 2026-11-09)

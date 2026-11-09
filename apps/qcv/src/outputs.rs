@@ -67,7 +67,8 @@ pub fn scan() -> Vec<Manifest> {
 
 /// What an accepted request asked for (QCView `OutputSpec`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Spec { pub w: u32, pub h: u32, pub fmt: min_present::wire::WireFormat, pub transfer: u32, pub content: u32 }
+pub struct Spec { pub w: u32, pub h: u32, pub fmt: min_present::wire::WireFormat, pub transfer: u32, pub content: u32, /// PQ's primaries: 1 Rec.2020 · 2 P3-D65
+    pub primaries: u32 }
 
 pub struct Output {
     pub m: Manifest, pub enabled: bool,
@@ -241,13 +242,13 @@ pub(crate) fn views(bus: &OutputBus, st: &min_settings::Settings) -> Vec<crate::
             if o.m.installed { (0, String::new(), String::new(), String::new()) } else { (0, tr("not installed"), tr("not installed"), String::new()) }
         } else if o.present && let Some(sp) = o.spec {
             let f = if sp.fmt == min_present::wire::WireFormat::Rgb10 { "RGB10" } else { "BGRA8" };
-            let tn = if sp.transfer == v::TRANSFER_PQ { "PQ Rec.2100" } else { "SDR Rec.709" };
+            let tn = match sp.transfer { v::TRANSFER_PQ => "PQ Rec.2100", v::TRANSFER_HLG => "HLG Rec.2100", _ => "SDR Rec.709" };
             (1, tr("live"), format!("{}×{}  ·  {f}  ·  {tn}", sp.w, sp.h), o.status.clone())
         } else if o.present && o.req.is_some() { (3, format!("{}: {}", tr("refused"), o.shape), o.shape.clone(), o.status.clone()) }
         else if failed { (3, o.plugin.clone(), o.plugin.clone(), String::new()) }
         else { let w = if o.plugin.starts_with("restarting") { o.plugin.clone() } else { tr("waiting for the sink") }; (2, w.clone(), w, String::new()) };
         crate::output_panel::CardView { id: o.m.id.clone(), label: o.m.label.clone(), product: o.m.product.clone(), dot, reason, shape, status, enabled: o.enabled, installed: o.m.installed,
-            transfer: transfer.saturating_sub(1).min(1), raster: raster.min(2), primaries: primaries.saturating_sub(1).min(1),
+            transfer: transfer.saturating_sub(1).min(2), raster: raster.min(2), primaries: primaries.saturating_sub(1).min(1),
             peak: g("peakNits", 1000.0).round() as i64, cll: g("maxCll", 1000.0) as i64, fall: g("maxFall", 400.0) as i64,
             show_transfer: !o.pinned_transfer, show_raster: o.m.raster_settable }
     }).collect()
@@ -282,6 +283,7 @@ impl crate::App {
     fn outputs_publish(&mut self) {
         let stamp = self.output_stamp();
         let (playing, frame, fps, tc) = self.output_transport();
+        let dual_b = self.dual.as_ref().is_some_and(|d| d.side(qcv_player::Side::B).is_some());
         let Some(g) = self.gpu.as_mut() else { return };
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
         let enc = self.outputs.enc.get_or_insert_with(|| min_present::wire::WireEncoder::new(&dev));
@@ -295,7 +297,7 @@ impl crate::App {
             let Some(dst) = ring.begin_write(bpr as u64 * hh as u64) else { return };
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, (bpr * hh) as usize); }
             let (fn_, fd) = fps_rational(fps);
-            let mut flags = v::FRAME_HAS_A | if playing { 0 } else { v::FRAME_PAUSED };
+            let mut flags = (if spec.content == v::CONTENT_SIDE_B { 0 } else { v::FRAME_HAS_A }) | (if dual_b && spec.content != v::CONTENT_SIDE_A { v::FRAME_HAS_B } else { 0 }) | if playing { 0 } else { v::FRAME_PAUSED };
             let tcp = tc.as_deref().and_then(pack_tc);
             if let Some((_, drop)) = tcp { flags |= v::FRAME_TIMECODE_VALID | if drop { v::FRAME_DROP_FRAME } else { 0 }; }
             ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: 0, flags, presentation_ns: qcvo::now_ns(), source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
@@ -305,10 +307,18 @@ impl crate::App {
             let o = &mut self.outputs.outputs[i];
             let (true, true, Some(spec)) = (o.enabled, o.present, o.spec) else { continue };
             if o.published == Some(stamp) { continue }
-            let (mode, white) = if spec.transfer == v::TRANSFER_PQ { (min_present::engine::OutMode::Pq, 100.0) } else { (min_present::engine::OutMode::SdrEncode, 100.0) };
-            let Ok(canvas) = g.presenter.engine.render_output(spec.w, spec.h, mode, white) else { continue };
+            // the canvas in linear light; the wire encoder encodes it: SDR · PQ in the output's primaries · HLG (1.0 = 100 nits)
+            let encoding = match spec.transfer { v::TRANSFER_PQ => min_present::wire::WireEncoding::Pq { p3: spec.primaries == 2, white: 100.0 }, v::TRANSFER_HLG => min_present::wire::WireEncoding::Hlg { white: 100.0 }, _ => min_present::wire::WireEncoding::Sdr };
+            let lin = min_present::engine::OutMode::Linear;
+            // content: dual's composite, or one side alone (QCView `OutputContent::SideA / SideB`); single view: the picture
+            let canvas = match (spec.content, g.presenter.engine.dual_mut()) {
+                (v::CONTENT_SIDE_A, Some(d)) => d.a.render_output(spec.w, spec.h, lin, 100.0),
+                (v::CONTENT_SIDE_B, Some(d)) => d.b.render_output(spec.w, spec.h, lin, 100.0),
+                _ => g.presenter.engine.render_output(spec.w, spec.h, lin, 100.0),
+            };
+            let Ok(canvas) = canvas else { continue };
             o.pub_tag += 1;
-            if enc.submit(&dev, &q, &canvas, spec.fmt, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); }
+            if enc.submit(&dev, &q, &canvas, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); }
         }
     }
     /// The frame's transport facts: playing, the source frame, its fps, the timecode (QCView fills none of these — fix 7).
@@ -358,18 +368,16 @@ fn answer_request(r: &OutputRequest, cfg: (u32, u32, u32, f32, f32, u32, u32), s
     if w == 0 || h == 0 || w > qcvo::OUTPUT_MAX_WIDTH || h > qcvo::OUTPUT_MAX_HEIGHT { return refuse(reply, v::REFUSE_TOO_LARGE, "above the 3840x2160 canvas cap") }
     let Some(fmt) = fmt else { return refuse(reply, v::REFUSE_FORMAT, "BGRA8 or RGB10; RGBA16F comes with the HDR transfers") };
     if transfer > v::TRANSFER_HLG { return refuse(reply, v::REFUSE_TRANSFER, "unknown transfer") }
-    if transfer == v::TRANSFER_HLG { return refuse(reply, v::REFUSE_TRANSFER, "HLG output is not available yet; SDR or PQ") }
     if r.fit != 0 && r.fit != v::FIT_LETTERBOX { return refuse(reply, v::REFUSE_FORMAT, "letterbox fit only for now") }
     if r.content > v::CONTENT_SIDE_B { return refuse(reply, v::REFUSE_CONTENT, "content must be composite, A or B") }
     if r.content == v::CONTENT_SIDE_B && !(dual && has_b) { return refuse(reply, v::REFUSE_CONTENT, "no B side loaded") }   // fix 6
-    if dual && matches!(r.content, v::CONTENT_SIDE_A | v::CONTENT_SIDE_B) { return refuse(reply, v::REFUSE_CONTENT, "one side alone is not available yet; composite") }
     let content = if r.content == 0 { v::CONTENT_COMPOSITE } else { r.content };
     reply.accepted = 1; reply.width = w; reply.height = h; reply.pixel_format = r.pixel_format; reply.transfer = transfer; reply.content = content; reply.layers = 0;
     let fname = if fmt == min_present::wire::WireFormat::Rgb10 { "RGB10" } else { "BGRA8" };
-    let tname = if transfer == v::TRANSFER_PQ { "PQ Rec.2100" } else { "SDR Rec.709" };
+    let tname = match transfer { v::TRANSFER_PQ => "PQ Rec.2100", v::TRANSFER_HLG => "HLG Rec.2100", _ => "SDR Rec.709" };
     msg(&mut reply.message, &format!("{w}x{h} {fname} {tname} from QCView"));
     let hdr = if transfer == v::TRANSFER_SDR { OutputHdrInfo { transfer, ..Default::default() } } else { OutputHdrInfo { transfer, primaries, max_mastering_nits: peak, min_mastering_nits: min, max_cll: cll, max_fall: fall, _pad0: [0; 2] } };
-    (reply, Some(Spec { w, h, fmt, transfer, content }), Some(hdr))
+    (reply, Some(Spec { w, h, fmt, transfer, content, primaries: if transfer == v::TRANSFER_HLG { 1 } else { primaries } }), Some(hdr))
 }
 
 #[cfg(test)]

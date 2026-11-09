@@ -8,26 +8,53 @@
 pub enum WireFormat { Bgra8, Rgb10 }
 impl WireFormat { pub fn texture_format(self) -> wgpu::TextureFormat { match self { WireFormat::Bgra8 => wgpu::TextureFormat::Bgra8Unorm, WireFormat::Rgb10 => wgpu::TextureFormat::Rgb10a2Unorm } } }
 
+/// The wire's ENCODING of the output canvas (linear light in Rec.709 primaries, 1.0 = `white` nits — `Engine::render_output`
+/// with `OutMode::Linear`): SDR = the sRGB curve on [0, 1] (the as-stored round trip QCView's SDR capture gives); PQ = the
+/// output's primaries (Rec.2020 or P3-D65, QCVO's `OutputPrimaries`) then ST 2084 of nits; HLG = Rec.2020 then BT.2100 HLG
+/// (1000-nit reference display, system gamma 1.2, the inverse OOTF on the Rec.2020 luminance).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WireEncoding { Sdr, Pq { p3: bool, white: f32 }, Hlg { white: f32 } }
+
 const SHADER: &str = r#"
 @group(0) @binding(0) var src: texture_2d<f32>;
+struct P { m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, mode: f32, white: f32, pad: vec2<f32> };
+@group(0) @binding(1) var<uniform> p: P;
+fn pq_oetf(nits: vec3<f32>) -> vec3<f32> {
+    let m1 = 0.1593017578125; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.8515625; let c3 = 18.6875;
+    let y = pow(clamp(nits / 10000.0, vec3(0.0), vec3(1.0)), vec3(m1));
+    return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));
+}
+fn srgb_oetf(l: vec3<f32>) -> vec3<f32> { return select(1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055, l * 12.92, l <= vec3(0.0031308)); }
+fn hlg_oetf(e: vec3<f32>) -> vec3<f32> {
+    let a = 0.17883277; let b = 0.28466892; let c = 0.55991073;
+    return select(a * log(max(12.0 * e - b, vec3(1e-6))) + c, sqrt(3.0 * e), e <= vec3(1.0 / 12.0));
+}
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
 }
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(src, vec2<i32>(pos.xy), 0);
-    return vec4<f32>(clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);   // over black (the canvas was cleared black)
+    let lin = max(textureLoad(src, vec2<i32>(pos.xy), 0).rgb, vec3(0.0));   // over black (the canvas was cleared black)
+    if (p.mode < 0.5) { return vec4<f32>(srgb_oetf(clamp(lin, vec3(0.0), vec3(1.0))), 1.0); }
+    let w = max(vec3(dot(p.m0.xyz, lin), dot(p.m1.xyz, lin), dot(p.m2.xyz, lin)), vec3(0.0));   // Rec.709 → the output's primaries
+    if (p.mode < 1.5) { return vec4<f32>(pq_oetf(w * p.white), 1.0); }
+    // HLG: display light (1000-nit reference) → scene light by the inverse OOTF on Rec.2020 luminance, then the OETF
+    let fd = clamp(w * p.white / 1000.0, vec3(0.0), vec3(1.0));
+    let yd = dot(vec3(0.2627, 0.6780, 0.0593), fd);
+    let es = select(fd * pow(yd, (1.0 / 1.2) - 1.0), vec3(0.0), yd <= 0.0);
+    return vec4<f32>(hlg_oetf(clamp(es, vec3(0.0), vec3(1.0))), 1.0);
 }
 "#;
 
 struct Staging { buf: wgpu::Buffer, w: u32, h: u32, bpr: u32, state: std::sync::Arc<std::sync::atomic::AtomicU8>, tag: u64 }
 // state: 0 free · 1 copying / mapping · 2 mapped (ready) · 3 failed
 
-pub struct WireEncoder { layout: wgpu::BindGroupLayout, pipes: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>, staging: Vec<Staging> }
+pub struct WireEncoder { layout: wgpu::BindGroupLayout, pipes: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>, staging: Vec<Staging>, ubuf: wgpu::Buffer }
 
 impl WireEncoder {
     pub fn new(device: &wgpu::Device) -> WireEncoder {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("wire"), entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }] });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("wire"), entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None }] });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("wire"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("wire"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipes = [wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureFormat::Rgb10a2Unorm].into_iter().map(|f| (f, device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -36,11 +63,12 @@ impl WireEncoder {
             fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), targets: &[Some(wgpu::ColorTargetState { format: f, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
             primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None,
         }))).collect();
-        WireEncoder { layout, pipes, staging: vec![] }
+        let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("wire params"), size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        WireEncoder { layout, pipes, staging: vec![], ubuf }
     }
     /// Quantise `canvas` into `fmt` and start its copy-out; `tag` comes back with the bytes. False when every staging buffer
     /// is still busy (QCView: the frame is skipped — "lossy by design").
-    pub fn submit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: &wgpu::Texture, fmt: WireFormat, tag: u64) -> bool {
+    pub fn submit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, canvas: &wgpu::Texture, fmt: WireFormat, encoding: WireEncoding, tag: u64) -> bool {
         use std::sync::atomic::Ordering::*;
         let (w, h) = (canvas.width(), canvas.height());
         let bpr = (w * 4).div_ceil(256) * 256;
@@ -54,9 +82,15 @@ impl WireEncoder {
             }
         };
         let tf = fmt.texture_format();
+        // linear Rec.709 → Rec.2020 / P3-D65 (ITU-R BT.2087; SMPTE EG 432-1)
+        const TO_2020: [[f32; 3]; 3] = [[0.6274, 0.3293, 0.0433], [0.0691, 0.9195, 0.0114], [0.0164, 0.0880, 0.8956]];
+        const TO_P3: [[f32; 3]; 3] = [[0.8225, 0.1774, 0.0], [0.0332, 0.9669, 0.0], [0.0171, 0.0724, 0.9108]];
+        let (mode, m, white) = match encoding { WireEncoding::Sdr => (0.0, TO_2020, 100.0), WireEncoding::Pq { p3, white } => (1.0, if p3 { TO_P3 } else { TO_2020 }, white), WireEncoding::Hlg { white } => (2.0, TO_2020, white) };
+        let mut u = [0f32; 16]; for r in 0..3 { u[r * 4..r * 4 + 3].copy_from_slice(&m[r]); } u[12] = mode; u[13] = white;
+        queue.write_buffer(&self.ubuf, 0, bytemuck::cast_slice(&u));
         let out = device.create_texture(&wgpu::TextureDescriptor { label: Some("wire"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: tf, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = out.create_view(&Default::default());
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("wire"), layout: &self.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&canvas.create_view(&Default::default())) }] });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("wire"), layout: &self.layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&canvas.create_view(&Default::default())) }, wgpu::BindGroupEntry { binding: 1, resource: self.ubuf.as_entire_binding() }] });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wire") });
         {
             let mut p = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("wire"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
