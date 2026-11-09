@@ -4482,3 +4482,18 @@ msgstr "主机发送其工作色彩空间但未注明；请选择它使用的传
 msgctxt "qcv::WindowManager"
 msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
 msgstr "打开“文件 ▸ 连接到 Blender”以接收此 Blender 会话"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "host view %1: shown through the Blender config (OCIO)"
+msgstr "主机视图 %1：通过 Blender 配置（OCIO）显示"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "host display %1 not emulated"
+msgstr "未模拟主机显示器 %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "The host's view, reproduced here"
+msgstr "在此再现主机的视图"

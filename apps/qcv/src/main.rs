@@ -1068,6 +1068,8 @@ impl App {
                     let auto = { let v = item.map(|i| (i.video.color_transfer.clone(), i.video.color_primaries.clone())).unwrap_or_default(); live_strip::auto_label(l.feed.is_stream(), &v.0, &v.1) };
                     if g.live_strip.sync(facts, &name, app, transfer, secs, self.settings.bool(settings::k::LIVE_PLAYDOWN), review.as_deref(), &auto, now) { g.ui_dirty = true; }
                 }
+                let host = self.live.as_ref().filter(|l| self.blender.item.as_deref() == Some(l.item.as_str())).and(self.blender.chip.clone());
+                if g.live_strip.set_host(host) { g.ui_dirty = true; }
                 if g.live_strip.animating() || g.live_strip.tick(now) { g.ui_dirty = true; }
             }
             let dot = self.live.as_ref().and_then(|l| l.last_facts.as_ref()).map(|f| f.status == qcv_player::host_feed::Status::Live);
