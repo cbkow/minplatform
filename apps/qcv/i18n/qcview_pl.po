@@ -4523,3 +4523,43 @@ msgstr "Nity"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "Brak zainstalowanych wyjść. Wyjście rejestruje się w %1."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Encoder settings"
+msgstr "Ustawienia kodera"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "waiting for the first frame"
+msgstr "oczekiwanie na pierwszą klatkę"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "opening the encoder"
+msgstr "otwieranie kodera"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "attempt %1"
+msgstr "próba %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "reconnect %1"
+msgstr "ponowne połączenie %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "%1 — retrying in %2 s"
+msgstr "%1 — ponowna próba za %2 s"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Enter the server URL first."
+msgstr "Najpierw wpisz adres URL serwera."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "The URL must start with srt://, rtmp:// or rtmps://."
+msgstr "Adres URL musi zaczynać się od srt://, rtmp:// lub rtmps://."

@@ -4515,3 +4515,43 @@ msgstr "Nits"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "No hay salidas instaladas. Una salida se registra en %1."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Encoder settings"
+msgstr "Ajustes del codificador"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "waiting for the first frame"
+msgstr "esperando el primer fotograma"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "opening the encoder"
+msgstr "abriendo el codificador"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "attempt %1"
+msgstr "intento %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "reconnect %1"
+msgstr "reconexión %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "%1 — retrying in %2 s"
+msgstr "%1 — reintento en %2 s"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Enter the server URL first."
+msgstr "Introduce primero la URL del servidor."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "The URL must start with srt://, rtmp:// or rtmps://."
+msgstr "La URL debe empezar por srt://, rtmp:// o rtmps://."

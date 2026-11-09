@@ -4507,3 +4507,43 @@ msgstr "nit"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "出力はインストールされていません。出力は %1 に自身を登録します。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Encoder settings"
+msgstr "エンコーダー設定"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "waiting for the first frame"
+msgstr "最初のフレームを待機中"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "opening the encoder"
+msgstr "エンコーダーを開いています"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "attempt %1"
+msgstr "%1 回目の試行"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "reconnect %1"
+msgstr "再接続 %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "%1 — retrying in %2 s"
+msgstr "%1 — %2 秒後に再試行"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Enter the server URL first."
+msgstr "先にサーバーの URL を入力してください。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "The URL must start with srt://, rtmp:// or rtmps://."
+msgstr "URL は srt://、rtmp://、rtmps:// のいずれかで始まる必要があります。"

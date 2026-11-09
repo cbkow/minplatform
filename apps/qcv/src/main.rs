@@ -52,6 +52,7 @@ mod dual_controls;
 mod dual_bars;
 mod guides;
 mod stream;
+mod stream_card;
 mod guides_panel;
 mod annotate;
 mod notes_drawer;
@@ -1006,7 +1007,7 @@ impl App {
                 let gh = g.guides_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);   // QCView's order: Media, Safety Guides, Background, Settings
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh, scale);
                 // the Output section (QCView: after Background, before Settings)
-                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), self.settings.bool(settings::k::OUTPUT_GUIDES), self.settings.bool(settings::k::OUTPUT_NOTES), now) { g.ui_dirty = true; } }
+                { let views = outputs::views(&self.outputs, &self.settings); let sv = stream::view(&self.outputs, &self.settings); if g.output_panel.sync(views, sv, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), self.settings.bool(settings::k::OUTPUT_GUIDES), self.settings.bool(settings::k::OUTPUT_NOTES), now, &mut g.fonts) { g.ui_dirty = true; } }
                 let oh = g.output_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh + oh, scale); g.left.content_height = ph + gh + bh + oh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
@@ -2219,7 +2220,9 @@ impl ApplicationHandler for App {
                     return
                 } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if g.output_panel.has_focus() {
-                    let k = to_key_event(&event, self.mods);
+                    let mut k = to_key_event(&event, self.mods);
+                    // paste (⌘V / Ctrl+V) into the field in edit — the server URL and the key come from the service's page
+                    if k.cmd && matches!(&k.key, min_ui::Key::Char(c) if c.eq_ignore_ascii_case("v")) { let text = min_paths::clipboard::text::clipboard_text(); k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(text.trim().to_string()), shift: false, cmd: false }; }
                     let cmds = g.output_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
                     if !g.output_panel.has_focus() { set_ime(&**g.window, false); }
                     for c in cmds { self.output_cmd(c); }

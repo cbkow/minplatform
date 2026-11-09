@@ -4523,3 +4523,43 @@ msgstr "Ниты"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "Выходы не установлены. Выход регистрируется в %1."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Encoder settings"
+msgstr "Настройки кодировщика"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "waiting for the first frame"
+msgstr "ожидание первого кадра"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "opening the encoder"
+msgstr "открытие кодировщика"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "attempt %1"
+msgstr "попытка %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "reconnect %1"
+msgstr "переподключение %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "%1 — retrying in %2 s"
+msgstr "%1 — повтор через %2 с"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "Enter the server URL first."
+msgstr "Сначала введите URL сервера."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LeftRail"
+msgid "The URL must start with srt://, rtmp:// or rtmps://."
+msgstr "URL должен начинаться с srt://, rtmp:// или rtmps://."

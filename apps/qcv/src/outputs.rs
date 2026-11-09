@@ -231,6 +231,10 @@ impl crate::App {
             Cmd::Start(id) => self.output_start(&id),
             Cmd::Stop(id) => self.output_stop(&id),
             Cmd::FeedMute(on) => { self.settings.set_bool(k::OUTPUT_FEED_MUTED, on); }
+            Cmd::StreamStart => self.stream_start(),
+            Cmd::StreamStop => self.stream_stop(),
+            Cmd::StreamStr(key, v) => { self.settings.set_str(key, &v); }
+            Cmd::StreamInt(key, v) => { self.settings.set_int(key, v); }
             // QCView `layersChanged`: every standing request answered again with the new grant
             Cmd::Guides(on) | Cmd::Notes(on) => { self.settings.set_bool(if matches!(c, Cmd::Guides(_)) { k::OUTPUT_GUIDES } else { k::OUTPUT_NOTES }, on); for o in &mut self.outputs.outputs { o.reanswer = true; } self.outputs.last_poll = None; }
             Cmd::Transfer(id, v) => { set(&mut self.settings, &id, "transfer", v); self.output_reanswer(&id); }

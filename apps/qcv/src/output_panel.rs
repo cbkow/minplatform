@@ -20,12 +20,14 @@ pub struct CardView { pub id: String, pub label: String, pub product: String, //
     pub dot: u8, pub reason: String, pub shape: String, pub status: String, pub enabled: bool, pub installed: bool,
     pub transfer: usize, pub raster: usize, pub primaries: usize, pub peak: i64, pub cll: i64, pub fall: i64, pub show_transfer: bool, pub show_raster: bool }
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Start(String), Stop(String), FeedMute(bool), Guides(bool), Notes(bool), Transfer(String, i64), Raster(String, i64), Primaries(String, i64), Peak(String, i64), Cll(String, i64), Fall(String, i64) }
+pub enum Cmd { Start(String), Stop(String), FeedMute(bool), Guides(bool), Notes(bool), StreamStart, StreamStop, /// a stream setting (its key, the value)
+    StreamStr(&'static str, String), StreamInt(&'static str, i64), Transfer(String, i64), Raster(String, i64), Primaries(String, i64), Peak(String, i64), Cll(String, i64), Fall(String, i64) }
 
 struct Card { v: CardView, on: Switch, transfer: Picker, raster: Picker, primaries: Picker, nits: [NumberField; 3], tile: Rect, dot: Rect, header: Rect, lines: Vec<(Rect, String)>, rows: Vec<(Rect, &'static str)> }
 
 pub struct OutputPanel { pub section: Section, mute: ActionButton, /// QCView's Guides / Notes chips: the layers sent to the outputs
-    layers: [ActionButton; 2], cards: Vec<Card>, empty: Rect, height: f64, scale: f64, pub tooltips: min_ui::Tooltips }
+    layers: [ActionButton; 2], /// the Stream card (row 239), after the sinks' cards
+    pub stream: crate::stream_card::StreamCard, relabel_stream: bool, cards: Vec<Card>, empty: Rect, height: f64, scale: f64, pub tooltips: min_ui::Tooltips }
 
 const LABEL_W: f64 = 84.0;
 /// The controls' background on a card (layer 2 = GRAY_100): one step darker.
@@ -39,14 +41,19 @@ impl OutputPanel {
         mute.icon_size = Some(t::ICON_SIZE_SMALL); mute.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64);
         let chip = |icon: &'static str, tip: &str| { let mut b = ActionButton::new(icon, tip).size_s(); b.icon_size = Some(t::ICON_SIZE_SMALL); b.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64); b };
         let layers = [chip("rectangle-dashed", tr("Draw the safety guides into the outputs that ask for them.")), chip("note-pencil", tr("Draw note strokes into the outputs that ask for them."))];
-        OutputPanel { section, mute, layers, cards: vec![], empty: Rect::ZERO, height: 0.0, scale: 1.0, tooltips: Default::default() }
+        OutputPanel { section, mute, layers, stream: crate::stream_card::StreamCard::new(), relabel_stream: false, cards: vec![], empty: Rect::ZERO, height: 0.0, scale: 1.0, tooltips: Default::default() }
     }
-    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.mute.tooltip = f.mute.tooltip; for (b, n) in self.layers.iter_mut().zip(f.layers) { b.tooltip = n.tooltip; } let vs: Vec<CardView> = self.cards.iter().map(|c| c.v.clone()).collect(); let (m, gd, nt) = (self.mute.selected, self.layers[0].selected, self.layers[1].selected); self.cards.clear(); self.sync(vs, m, gd, nt, Instant::now()); }
-    pub fn menu_open(&self) -> bool { self.cards.iter().any(|c| c.transfer.is_open() || c.raster.is_open() || c.primaries.is_open()) }
+    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.mute.tooltip = f.mute.tooltip; for (b, n) in self.layers.iter_mut().zip(f.layers) { b.tooltip = n.tooltip; } let vs: Vec<CardView> = self.cards.iter().map(|c| c.v.clone()).collect(); let (m, gd, nt) = (self.mute.selected, self.layers[0].selected, self.layers[1].selected); self.cards.clear(); self.relabel_stream = true; self.sync_cards(vs, m, gd, nt, Instant::now()); }
+    pub fn menu_open(&self) -> bool { self.stream.menu_open() || self.cards.iter().any(|c| c.transfer.is_open() || c.raster.is_open() || c.primaries.is_open()) }
     /// A press on a nits field (it keeps its focus: no commit-and-refocus).
-    pub fn field_hit(&self, x: f64, y: f64) -> bool { self.cards.iter().any(|c| c.nits.iter().any(|n| n.hit(x, y))) }
-    pub fn has_focus(&self) -> bool { self.cards.iter().any(|c| c.nits.iter().any(|n| n.focused())) }
-    pub fn sync(&mut self, views: Vec<CardView>, feed_muted: bool, guides: bool, notes: bool, now: Instant) -> bool {
+    pub fn field_hit(&self, x: f64, y: f64) -> bool { self.stream.field_hit(x, y) || self.cards.iter().any(|c| c.nits.iter().any(|n| n.hit(x, y))) }
+    pub fn has_focus(&self) -> bool { self.stream.has_focus() || self.cards.iter().any(|c| c.nits.iter().any(|n| n.focused())) }
+    pub fn sync(&mut self, views: Vec<CardView>, stream: crate::stream_card::StreamView, feed_muted: bool, guides: bool, notes: bool, now: Instant, fonts: &mut Fonts) -> bool {
+        if std::mem::take(&mut self.relabel_stream) { self.stream.relabel(fonts); }
+        let s = self.stream.sync(stream, now, fonts);
+        self.sync_cards(views, feed_muted, guides, notes, now) || s
+    }
+    fn sync_cards(&mut self, views: Vec<CardView>, feed_muted: bool, guides: bool, notes: bool, now: Instant) -> bool {
         let mut changed = self.mute.selected != feed_muted || self.layers[0].selected != guides || self.layers[1].selected != notes;
         self.layers[0].selected = guides; self.layers[1].selected = notes;
         self.mute.selected = feed_muted; self.mute.icon = if feed_muted { "speaker-x" } else { "speaker-high" };
@@ -117,6 +124,7 @@ impl OutputPanel {
             cy += ins * 0.75;
             c.tile = Rect::new(x0, top, x1, cy); cy += gap * 2.0;
         }
+        cy = self.stream.layout(fonts, x0, x1, cy, scale);
         self.height = cy - y + t::RAIL_SECTION_GAP as f64 * scale - pad / 2.0;
         self.height
     }
@@ -124,10 +132,11 @@ impl OutputPanel {
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Vec<Cmd> {
         let mut cmds = vec![];
         for c in &mut self.cards { for (i, n) in c.nits.iter_mut().enumerate() { if n.focused() && let Some(v) = n.key(k, fonts) { cmds.push(nits_cmd(&c.v.id, i, v)); } } }
+        cmds.extend(self.stream.key(k, fonts));
         cmds
     }
-    pub fn blur(&mut self) -> Vec<Cmd> { let mut cmds = vec![]; for c in &mut self.cards { for (i, n) in c.nits.iter_mut().enumerate() { if let Some(v) = n.blur() { cmds.push(nits_cmd(&c.v.id, i, v)); } } } cmds }
-    pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) { for c in &mut self.cards { for n in c.nits.iter_mut() { if n.focused() { n.field.ime(e, fonts); } } } }
+    pub fn blur(&mut self) -> Vec<Cmd> { let mut cmds = self.stream.blur(); for c in &mut self.cards { for (i, n) in c.nits.iter_mut().enumerate() { if let Some(v) = n.blur() { cmds.push(nits_cmd(&c.v.id, i, v)); } } } cmds }
+    pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) { self.stream.ime(e, fonts); for c in &mut self.cards { for n in c.nits.iter_mut() { if n.focused() { n.field.ime(e, fonts); } } } }
     /// Returns (commands, redraw, consumed). An open picker takes every event first.
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts, bounds: Rect) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let s = self.scale;
@@ -136,6 +145,7 @@ impl OutputPanel {
             if let Some(i) = pick { cmds.push(match which { 0 => Cmd::Transfer(c.v.id.clone(), i as i64 + 1), 1 => Cmd::Raster(c.v.id.clone(), i as i64), _ => Cmd::Primaries(c.v.id.clone(), i as i64 + 1) }); }
             return (cmds, d || pick.is_some(), true)
         } } }
+        if let Some((c, d)) = self.stream.menu_event(e, now, fonts, bounds) { return (c, d, true) }
         // the header's Mute feed toggle before the section's own click (which collapses)
         let mut dirty = false;
         match self.mute.event(e, now) { Response::Clicked => { cmds.push(Cmd::FeedMute(!self.mute.selected)); return (cmds, true, true) } Response::None => {} _ => dirty = true }
@@ -149,15 +159,17 @@ impl OutputPanel {
                 for p in [&mut c.transfer, &mut c.raster, &mut c.primaries] { if p.rect.width() > 0.0 { let (_, d, _) = p.event(e, now, fonts, bounds, s); dirty |= d; } }
                 for (i, n) in c.nits.iter_mut().enumerate() { if n.rect.width() > 0.0 { let (v, d) = n.event(e, fonts); dirty |= d; if let Some(v) = v { cmds.push(nits_cmd(&c.v.id, i, v)); } } }
             }
+            dirty |= self.stream.event(e, now, fonts, bounds, &mut cmds);
         }
         let over = self.mute.hovered().then(|| (1u64, self.mute.rect, self.mute.tooltip.clone()))
             .or_else(|| self.layers.iter().enumerate().find(|(_, b)| b.hovered()).map(|(i, b)| (2 + i as u64, b.rect, b.tooltip.clone())))
             .or_else(|| self.cards.iter().enumerate().find(|(_, c)| e.pos().is_some_and(|(x, y)| c.dot.inflate(4.0, 4.0).contains(kurbo::Point::new(x, y)) || c.header.contains(kurbo::Point::new(x, y)))).map(|(i, c)| (10 + i as u64, c.dot.union(c.header), if c.v.reason.is_empty() { tr("Publish the viewport and the mixed audio to this output. The sink runs as its own application; QCView starts it with Start and stops it with Stop.").to_string() } else { c.v.reason.clone() })));
+        let over = over.or_else(|| if self.section.expanded { self.stream.tooltip(e) } else { None });
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         let inside = e.pos().is_some_and(|(x, y)| x >= self.section.rect.x0 && x <= self.section.rect.x1 && y >= self.section.rect.y0 && y <= self.section.rect.y0 + self.height);
         (cmds, dirty, inside && matches!(e, Event::Down { .. }))
     }
-    pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.mute.animating(now) || self.layers.iter().any(|b| b.animating(now)) || self.cards.iter().any(|c| c.on.animating(now)) }
+    pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.mute.animating(now) || self.layers.iter().any(|b| b.animating(now)) || self.stream.animating(now) || self.cards.iter().any(|c| c.on.animating(now)) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
         let gap = t::RAIL_SECTION_GAP as f64 * scale;
         min_ui::section::paint_tile(scene, Rect::new(self.section.rect.x0, self.section.rect.y0, self.section.rect.x1, self.section.rect.y0 + self.height - gap / 2.0), scale);
@@ -182,9 +194,11 @@ impl OutputPanel {
             for p in [&c.transfer, &c.raster, &c.primaries] { if p.rect.width() > 0.0 { p.paint(scene, fonts, scale, now); } }
             for n in c.nits.iter_mut() { if n.rect.width() > 0.0 { n.paint(scene, fonts, scale); } }
         }
+        self.stream.paint(scene, fonts, scale, now);
     }
     pub fn paint_overlays(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) {
         for c in &self.cards { for p in [&c.transfer, &c.raster, &c.primaries] { if p.is_open() { p.paint_menu(scene, fonts, scale); } } }
+        self.stream.paint_menus(scene, fonts, scale);
         self.tooltips.paint(scene, fonts, scale, bounds, now);
     }
 }
