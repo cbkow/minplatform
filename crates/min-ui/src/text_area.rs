@@ -12,10 +12,10 @@ use std::borrow::Cow;
 use vello::Scene;
 
 /// (the vertical scroll lives in `bar.offset` — the rails' overlay scrollbar, draggable)
-pub struct TextArea { editor: PlainEditor<Brush>, pub placeholder: String, pub rect: Rect, pub focused: bool, hovered: bool, family: Family, size: f32, scale: f32, bar: ScrollBar, styled: bool }
+pub struct TextArea { editor: PlainEditor<Brush>, pub placeholder: String, pub rect: Rect, pub focused: bool, hovered: bool, family: Family, size: f32, scale: f32, bar: ScrollBar, styled: bool, drag: bool, clicks: Clicks }
 
 impl TextArea {
-    pub fn new(family: Family, size: f32) -> TextArea { TextArea { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, hovered: false, family, size, scale: 1.0, bar: ScrollBar::default(), styled: false } }
+    pub fn new(family: Family, size: f32) -> TextArea { TextArea { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, hovered: false, family, size, scale: 1.0, bar: ScrollBar::default(), styled: false, drag: false, clicks: Clicks::default() } }
     pub fn text(&self) -> &str { self.editor.raw_text() }
     pub fn set_text(&mut self, s: &str) { if self.editor.raw_text() != s { self.editor.set_text(s); } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
@@ -45,6 +45,8 @@ impl TextArea {
             if top < self.bar.offset { self.bar.offset = top; } else if bot > self.bar.offset + view { self.bar.offset = bot - view; } }
         self.clamp_scroll(fonts);
     }
+    /// A drag-select is in progress (the owner keeps feeding Move / Up wherever the pointer goes).
+    pub fn dragging(&self) -> bool { self.drag }
     fn origin(&self) -> (f64, f64) { (self.rect.x0 + self.pad(), self.rect.y0 + self.pad() - self.bar.offset) }
     pub fn animating(&self, now: std::time::Instant) -> bool { self.bar.animating(now) }
     pub fn wheel(&mut self, x: f64, y: f64, dy: f64, fonts: &mut Fonts) -> bool { if !self.hit(x, y) { return false } let _ = fonts; self.bar.wheel(dy, std::time::Instant::now()) }
@@ -57,12 +59,25 @@ impl TextArea {
         let _ = bd;
         let was = (self.hovered, self.focused);
         match *e {
-            Event::Move { .. } => self.hovered = inside,
+            Event::Move { x, y } => {
+                self.hovered = inside;
+                if self.drag {
+                    let (ox, oy) = self.origin();
+                    { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.extend_selection_to_point((x - ox) as f32, (y - oy) as f32); }
+                    self.follow_caret(fonts);
+                    return true;
+                }
+            }
             Event::Down { x, y, button: Button::Primary } if inside => {
                 if !self.focused { self.focused = true; }
+                self.drag = true;
+                let n = self.clicks.down(x, y);
                 let (ox, oy) = self.origin();
-                let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_point((x - ox) as f32, (y - oy) as f32);
+                let (px, py) = ((x - ox) as f32, (y - oy) as f32);
+                let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
+                match n { 1 => d.move_to_point(px, py), 2 => d.select_word_at_point(px, py), _ => d.select_line_at_point(px, py) }
             }
+            Event::Up { button: Button::Primary, .. } => { if self.drag { self.drag = false; return true } }
             Event::Leave => self.hovered = false,
             _ => {}
         }
@@ -120,5 +135,18 @@ impl TextArea {
         crate::fonts::draw_layout(scene, layout, tr);
         scene.pop_layer();
         self.bar.paint(scene, std::time::Instant::now());
+    }
+}
+
+/// Click counting for the text nodes: a press within 400 ms and 4 px of the last one counts up (1 caret, 2 word, 3 all / line).
+#[derive(Default, Clone, Copy, Debug)]
+pub struct Clicks { last: Option<(std::time::Instant, f64, f64)>, n: u8 }
+impl Clicks {
+    pub fn down(&mut self, x: f64, y: f64) -> u8 {
+        let now = std::time::Instant::now();
+        let again = self.last.is_some_and(|(t, lx, ly)| now.duration_since(t).as_millis() < 400 && (x - lx).abs() < 4.0 && (y - ly).abs() < 4.0);
+        self.n = if again { (self.n % 3) + 1 } else { 1 };
+        self.last = Some((now, x, y));
+        self.n
     }
 }

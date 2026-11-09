@@ -30,12 +30,15 @@ pub struct TextField {
     /// One line never wraps: a longer text scrolls sideways with the caret kept in view (the walk 2026-11-08: a long dual
     /// view name wrapped inside the Save dialog's field).
     scroll_x: f64,
+    /// A primary press began here: Move extends the selection until Up (drag-select, the walk 2026-11-08).
+    drag: bool,
+    clicks: crate::text_area::Clicks,
 }
 
 impl TextField {
     /// `size` in logical px (the editor scales it by the window's factor at layout).
     pub fn new(family: Family, size: f32) -> TextField {
-        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false, scroll_x: 0.0 }
+        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false, scroll_x: 0.0, drag: false, clicks: Default::default() }
     }
     pub fn text(&self) -> &str { self.editor.raw_text() }
     pub fn set_text(&mut self, s: &str) { self.editor.set_text(s); }
@@ -44,6 +47,8 @@ impl TextField {
     pub fn clear(&mut self) { self.editor.set_text(""); }
     pub fn select_all(&mut self, fonts: &mut Fonts) { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.select_all(); }
     pub fn hovered(&self) -> bool { self.hovered }
+    /// A drag-select is in progress (the owner keeps feeding Move / Up wherever the pointer goes).
+    pub fn dragging(&self) -> bool { self.drag }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     fn style(&mut self, fonts: &mut Fonts, color: peniko::Color) {
         let name = fonts.family_name(self.family).to_string();
@@ -89,15 +94,28 @@ impl TextField {
         let inside = e.pos().is_some_and(|(x, y)| self.hit(x, y));
         let was = (self.hovered, self.focused);
         match *e {
-            Event::Move { .. } => self.hovered = inside,
+            Event::Move { x, y } => {
+                self.hovered = inside;
+                if self.drag {
+                    let (ox, oy) = self.text_origin();
+                    let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
+                    d.extend_selection_to_point((x - ox) as f32, (y - oy) as f32);
+                    drop(d);
+                    self.follow_caret(fonts);
+                    return true;
+                }
+            }
             Event::Down { x, y, button: Button::Primary } if inside => {
-                self.focused = true;
+                self.focused = true; self.drag = true;
+                let n = self.clicks.down(x, y);
                 let (ox, oy) = self.text_origin();
+                let (px, py) = ((x - ox) as f32, (y - oy) as f32);
                 let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
-                d.move_to_point((x - ox) as f32, (y - oy) as f32);
+                match n { 1 => d.move_to_point(px, py), 2 => d.select_word_at_point(px, py), _ => d.select_all() }
                 drop(d);
                 self.follow_caret(fonts);
             }
+            Event::Up { button: Button::Primary, .. } => { if self.drag { self.drag = false; return true } }
             Event::Leave => self.hovered = false,
             _ => {}
         }

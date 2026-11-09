@@ -230,7 +230,7 @@ impl ProjectPanel {
         if let Event::Down { x, y, .. } = *e {
             if self.editing.as_ref().is_some_and(|(_, f)| !f.hit(x, y)) { if let Some(c) = self.commit_rename() { cmds.push(c); } }
         }
-        if let Some((_, f)) = self.editing.as_mut() { if e.pos().is_some_and(|(x, y)| f.hit(x, y)) || matches!(e, Event::Up { .. }) { let d = f.pointer(e, fonts); return (cmds, d) } }
+        if let Some((_, f)) = self.editing.as_mut() { if e.pos().is_some_and(|(x, y)| f.hit(x, y)) || f.dragging() || matches!(e, Event::Up { .. }) { let d = f.pointer(e, fonts); return (cmds, d) } }
         let (toggled, mut dirty) = self.section.event(e, now); if toggled { dirty = true; }
         if !self.section.expanded { return (cmds, dirty) }
         if self.new_playlist.event(e, now) == min_ui::Response::Clicked { cmds.push(Cmd::NewPlaylist); dirty = true; }
