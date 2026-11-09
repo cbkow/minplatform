@@ -1485,6 +1485,7 @@ impl App {
             M::StatusBar => self.toggle_status_bar(),
             M::Background => self.reveal(Reveal::Background),
             M::Shortcuts => self.reveal_shortcuts(),
+            M::Notes => self.toggle_notes(),
             M::SafetyGuides => self.reveal(Reveal::Guides),
             M::ColorPanel => { if self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.compact) { self.color_cmd(color_drawer::Cmd::Toggle); } }
             M::Settings => self.reveal(Reveal::Settings),

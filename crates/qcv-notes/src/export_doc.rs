@@ -1,6 +1,8 @@
 //! The simple exports (canon row 217: "for PDFs and Word, we can stick to notes per page and keep it simple"): QCView's
 //! layout — a cover (the brand mark, the media name, Exported / Source, the count), then ONE NOTE PER PAGE: the timecode
-//! heading (frame, Addressed), the picture (annotated, else clean), the OCIO / viewer records, the text. Letter, Geist.
+//! heading (frame, Addressed), the picture (annotated, else clean), the OCIO / viewer records, the text. Letter; the DOCX
+//! names Arial / Courier New (on every Mac and Windows box — Word doesn't embed fonts we could rely on; the user
+//! 2026-11-09: "we should just use arial or something both systems will have"), the PDF embeds Geist.
 //! DOCX = a zip of OOXML written by hand (QCView's route) with a real styles.xml (QCView named Title / Heading2 without one)
 //! and image relationships numbered by the images that exist (QCView's drifted when a note had none). PDF = krilla, Geist
 //! embedded, the text wrapped by measured width and carried onto a continuation page when a note runs long.
@@ -35,13 +37,13 @@ fn drawing(rel: &str, cx: i64, cy: i64, id: usize) -> String {
 
 const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Geist" w:hAnsi="Geist" w:cs="Geist" w:eastAsia="Geist"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:color w:val="222222"/></w:rPr></w:rPrDefault>
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="Arial"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:color w:val="222222"/></w:rPr></w:rPrDefault>
 <w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
 <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:sz w:val="44"/><w:szCs w:val="44"/><w:color w:val="111111"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="0" w:after="200"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:rFonts w:ascii="Geist Mono" w:hAnsi="Geist Mono" w:cs="Geist Mono"/><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="111111"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="0" w:after="200"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/><w:color w:val="111111"/></w:rPr></w:style>
 <w:style w:type="paragraph" w:customStyle="1" w:styleId="Meta"><w:name w:val="Meta"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="40"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/><w:color w:val="6D6D6D"/></w:rPr></w:style>
-<w:style w:type="paragraph" w:customStyle="1" w:styleId="Record"><w:name w:val="Record"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="40"/></w:pPr><w:rPr><w:rFonts w:ascii="Geist Mono" w:hAnsi="Geist Mono" w:cs="Geist Mono"/><w:sz w:val="18"/><w:szCs w:val="18"/><w:color w:val="6D6D6D"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:customStyle="1" w:styleId="Record"><w:name w:val="Record"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="40"/></w:pPr><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:cs="Courier New"/><w:sz w:val="18"/><w:szCs w:val="18"/><w:color w:val="6D6D6D"/></w:rPr></w:style>
 </w:styles>"#;
 
 /// The .docx bytes.

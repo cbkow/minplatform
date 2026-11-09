@@ -15,7 +15,7 @@
 pub enum Cmd {
     OpenMedia, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
-    Background, SafetyGuides, Shortcuts, Settings, Docs, CopyProjectLink, About, ColorPanel,
+    Background, SafetyGuides, Shortcuts, Settings, Notes, Docs, CopyProjectLink, About, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
@@ -69,7 +69,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         item("Default Size && Position", None, Cmd::DefaultFrame),
         Node::Sep,
         item("Left Rail", sc(K::D1), Cmd::LeftRail), item("Right Rail", sc(K::D2), Cmd::RightRail),
-        item("Color Panel", sc(K::D3), Cmd::ColorPanel), off("Timeline", None), off("Notes", sc(K::D4)),
+        item("Color Panel", sc(K::D3), Cmd::ColorPanel), item("Notes", sc(K::D4), Cmd::Notes),   // QCView's View ▸ Timeline is gone: Compact Mode replaces it (the user 2026-11-09)
         item("Status Bar", sc(K::D5), Cmd::StatusBar),
     ];
     let tools = vec![item("Background", None, Cmd::Background), item("Safety Guides", None, Cmd::SafetyGuides), item("Keyboard Shortcuts", sc(K::Slash), Cmd::Shortcuts), item("Settings…", sc(K::Comma), Cmd::Settings)];
