@@ -205,10 +205,14 @@ impl crate::App {
         let Some(l) = self.live.as_ref() else { return };
         let Some(item) = self.project.item(&l.item).cloned() else { return };
         let project = self.project.file_path().to_string();
-        if project.is_empty() { self.annot.load(None); return }
+        if project.is_empty() { self.annot.load(None); self.annot.active = false; return }
         let dir = qcv_notes::io::stream_dir(std::path::Path::new(&project), &item.name, &item.id);
         let header = qcv_notes::io::stream_header(&dir, &item.name, &item.id, &item.path);
         self.annot.load_stream(dir, header);
+        // the panel already open (on an unsaved project, a reopened one): drawing — and the notes' strokes on the picture — follow
+        // the new target (they stayed off until the next tool click)
+        if self.gpu.as_ref().is_some_and(|g| g.notes.open) { self.annot.active = self.annot.has_target(); }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
     /// QCView `stopLiveStream`: the feed closes and no stale frame survives.
     pub(crate) fn stop_live(&mut self) {
