@@ -79,7 +79,7 @@ static KEYS: &[Key] = &[
     Key::int(k::BACKGROUND_MODE, 0, 0, 3),
     Key::float(k::BRIGHTNESS, 1.0, 0.0, 4.0),
     Key::str(k::SCREENSHOT_FORMAT, "png"),
-    Key::str(k::SAFETY_COLOR, "#ffff00"), Key::str(k::ANNOTATION_COLOR, "#ff0000"), Key::float(k::NOTES_DRAWER_HEIGHT, 320.0, 300.0, 720.0), Key::str(k::SAFETY_GUIDE, ""), Key::float(k::SAFETY_OPACITY, 0.7, 0.0, 1.0), Key::float(k::SAFETY_WIDTH, 2.0, 1.0, 8.0),
+    Key::str(k::SAFETY_COLOR, "#ffff00"), Key::str(k::ANNOTATION_COLOR, "#ff0000"), Key::float(k::NOTES_DRAWER_HEIGHT, 340.0, 320.0, 720.0), Key::str(k::SAFETY_GUIDE, ""), Key::float(k::SAFETY_OPACITY, 0.7, 0.0, 1.0), Key::float(k::SAFETY_WIDTH, 2.0, 1.0, 8.0),
     Key::bool(k::LOOP_ENABLED, true),
     Key::bool(k::ALWAYS_ON_TOP, false),
     Key::bool(k::ALWAYS_OPEN_MINIMAL, false),

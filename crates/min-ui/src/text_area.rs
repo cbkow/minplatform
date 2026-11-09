@@ -3,7 +3,7 @@
 //! recessed-slot styling — the base fill at rest, lifting on hover, a step up with an accent rule along the bottom while
 //! focused, no border. Enter inserts a newline, ⌘Enter accepts, Escape cancels (the owner restores); focus loss is the
 //! owner's commit. Unfocused it paints the whole wrapped text, so a long note reads in place.
-use crate::{input::{Button, Event, ImeEvent, Key, KeyEvent, Named}, paint, text_field::FieldResponse, Family, Fonts};
+use crate::{input::{Button, Event, ImeEvent, Key, KeyEvent, Named}, paint, scrollbar::ScrollBar, text_field::FieldResponse, Family, Fonts};
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
 use parley::{FontFamily, FontFamilyName, PlainEditor, StyleProperty};
@@ -11,10 +11,11 @@ use peniko::Brush;
 use std::borrow::Cow;
 use vello::Scene;
 
-pub struct TextArea { editor: PlainEditor<Brush>, pub placeholder: String, pub rect: Rect, pub focused: bool, hovered: bool, family: Family, size: f32, scale: f32, scroll: f64, styled: bool }
+/// (the vertical scroll lives in `bar.offset` — the rails' overlay scrollbar, draggable)
+pub struct TextArea { editor: PlainEditor<Brush>, pub placeholder: String, pub rect: Rect, pub focused: bool, hovered: bool, family: Family, size: f32, scale: f32, bar: ScrollBar, styled: bool }
 
 impl TextArea {
-    pub fn new(family: Family, size: f32) -> TextArea { TextArea { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, hovered: false, family, size, scale: 1.0, scroll: 0.0, styled: false } }
+    pub fn new(family: Family, size: f32) -> TextArea { TextArea { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, hovered: false, family, size, scale: 1.0, bar: ScrollBar::default(), styled: false } }
     pub fn text(&self) -> &str { self.editor.raw_text() }
     pub fn set_text(&mut self, s: &str) { if self.editor.raw_text() != s { self.editor.set_text(s); } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
@@ -36,20 +37,24 @@ impl TextArea {
         self.clamp_scroll(fonts);
     }
     fn content_h(&mut self, fonts: &mut Fonts) -> f64 { self.editor.layout(&mut fonts.font_cx, &mut fonts.layout_cx).height() as f64 }
-    fn clamp_scroll(&mut self, fonts: &mut Fonts) { let max = (self.content_h(fonts) + 2.0 * self.pad() - self.rect.height()).max(0.0); self.scroll = self.scroll.clamp(0.0, max); }
+    fn clamp_scroll(&mut self, fonts: &mut Fonts) { let c = self.content_h(fonts) + 2.0 * self.pad(); self.bar.set(self.rect, c, self.scale as f64); }
     /// Keep the caret in view (after an edit or a caret move).
     fn follow_caret(&mut self, fonts: &mut Fonts) {
         let _ = self.content_h(fonts);
         if let Some(cb) = self.editor.cursor_geometry(1.0) { let (top, bot) = (cb.y0 as f64, cb.y1 as f64); let view = self.rect.height() - 2.0 * self.pad();
-            if top < self.scroll { self.scroll = top; } else if bot > self.scroll + view { self.scroll = bot - view; } }
+            if top < self.bar.offset { self.bar.offset = top; } else if bot > self.bar.offset + view { self.bar.offset = bot - view; } }
         self.clamp_scroll(fonts);
     }
-    fn origin(&self) -> (f64, f64) { (self.rect.x0 + self.pad(), self.rect.y0 + self.pad() - self.scroll) }
-    pub fn wheel(&mut self, x: f64, y: f64, dy: f64, fonts: &mut Fonts) -> bool { if !self.hit(x, y) { return false } let before = self.scroll; self.scroll += dy; self.clamp_scroll(fonts); self.scroll != before }
+    fn origin(&self) -> (f64, f64) { (self.rect.x0 + self.pad(), self.rect.y0 + self.pad() - self.bar.offset) }
+    pub fn animating(&self, now: std::time::Instant) -> bool { self.bar.animating(now) }
+    pub fn wheel(&mut self, x: f64, y: f64, dy: f64, fonts: &mut Fonts) -> bool { if !self.hit(x, y) { return false } let _ = fonts; self.bar.wheel(dy, std::time::Instant::now()) }
     /// The text overflows the box (the owner may show a fade / a hint).
     pub fn overflows(&mut self, fonts: &mut Fonts) -> bool { self.content_h(fonts) + 2.0 * self.pad() > self.rect.height() + 0.5 }
     pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> bool {
+        // the scrollbar first: a drag on its thumb is never a caret move
+        let (bd, mine) = self.bar.event(e, std::time::Instant::now()); if mine { return true }
         let inside = e.pos().is_some_and(|(x, y)| self.hit(x, y));
+        let _ = bd;
         let was = (self.hovered, self.focused);
         match *e {
             Event::Move { .. } => self.hovered = inside,
@@ -96,7 +101,8 @@ impl TextArea {
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64) {
         let s = scale; let r = t::FIELD_CORNER_RADIUS_S as f64 * s;
         // QCView's recessed slot: the base fill, the hover lift, a step up + an accent rule while focused
-        let bg = if self.focused { t::GRAY_100 } else if self.hovered { t::GRAY_75 } else { t::FIELD_BACKGROUND_COLOR };
+        // active = gray-200: a clear step up from a gray-100 card (the walk 2026-11-08: the focused box blended into its tile)
+        let bg = if self.focused { t::GRAY_200 } else if self.hovered { t::GRAY_75 } else { t::FIELD_BACKGROUND_COLOR };
         paint::rounded(scene, self.rect, r, bg);
         if self.focused { paint::rect(scene, Rect::new(self.rect.x0 + r, self.rect.y1 - s.max(1.0), self.rect.x1 - r, self.rect.y1), t::FIELD_BORDER_COLOR_FOCUS); }
         if !self.styled { self.style(fonts); }
@@ -113,5 +119,6 @@ impl TextArea {
         let layout = self.editor.layout(&mut fonts.font_cx, &mut fonts.layout_cx);
         crate::fonts::draw_layout(scene, layout, tr);
         scene.pop_layer();
+        self.bar.paint(scene, std::time::Instant::now());
     }
 }

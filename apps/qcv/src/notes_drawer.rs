@@ -6,7 +6,7 @@
 use crate::annotate::Tool;
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
-use min_ui::{anim::Ramp, paint, ActionButton, ColorPicker, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Slider, TextArea, Tooltips};
+use min_ui::{anim::Ramp, paint, scrollbar::ScrollBar, action_button::Corners, ActionButton, ColorPicker, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Slider, TextArea, Tooltips};
 use std::{collections::HashMap, path::PathBuf, time::{Instant, SystemTime}};
 use vello::Scene;
 
@@ -14,10 +14,10 @@ fn tr(s: &str) -> &str { min_i18n::trc("NotesPanel", s) }
 
 /// The drawer's height (logical px): resizable from its top edge within its own range (taller = more lines of note text; the
 /// colour drawer keeps 200–600). QCView's band was a fixed 270.
-pub const HEIGHT_DEFAULT: f64 = 320.0; pub const HEIGHT_MIN: f64 = 300.0; pub const HEIGHT_MAX: f64 = 720.0;
+pub const HEIGHT_DEFAULT: f64 = 340.0; pub const HEIGHT_MIN: f64 = 320.0; pub const HEIGHT_MAX: f64 = 720.0;
 const CARD_W: f64 = 240.0; const THUMB_H: f64 = 135.0; const ADD_W: f64 = 120.0; const PICK_W: f64 = 240.0;
-/// the tools: Spectrum 2's M action buttons (32) in two columns
-const TOOL_B: f64 = 32.0; const TOOL_GAP: f64 = 4.0; const TOOLS_W: f64 = 2.0 * TOOL_B + TOOL_GAP;
+/// the tools: Spectrum 2's M action buttons (32) in one column, rounded like the panels (the walk)
+const TOOL_B: f64 = 32.0; const TOOL_GAP: f64 = 4.0; const TOOLS_W: f64 = TOOL_B;
 pub const TOOLS: [(Tool, &str, &str); 7] = [
     (Tool::Select, "cursor", "Select (drag to move, corners to scale, Del to remove; click again to exit)"), (Tool::Freehand, "pencil-simple", "Freehand"),
     (Tool::Rectangle, "rectangle", "Rectangle"), (Tool::Oval, "circle", "Oval"), (Tool::Arrow, "arrow-right", "Arrow"), (Tool::Line, "line-segment", "Line"),
@@ -33,7 +33,8 @@ struct CardRects { thumb: Rect, text: Rect, addressed: Rect, delete: Rect }
 
 pub struct NotesDrawer {
     pub open: bool, open_ramp: Ramp, pub rect: Rect, scale: f64, pub height: f64, split_hover: bool, split_drag: Option<(f64, f64)>,
-    header: Rect, add: Rect, cards_area: Rect, scroll: f64, max_scroll: f64, /// the layer-2 panels behind the columns (the colour drawer's treatment)
+    header: Rect, add: Rect, cards_area: Rect, scroll: f64, max_scroll: f64, /// the cards row's sideways scrollbar (offset mirrors `scroll`)
+    hbar: ScrollBar, /// the layer-2 panels behind the columns (the colour drawer's treatment)
     panels: [Rect; 4],
     cards: Vec<Card>, rects: Vec<CardRects>, current: Option<String>, clip: String,
     tools: Vec<ActionButton>, tool: Option<Tool>, picker: ColorPicker, width: Slider, width_v: f32, width_label: Rect,
@@ -44,7 +45,7 @@ pub struct NotesDrawer {
 
 impl NotesDrawer {
     pub fn new() -> NotesDrawer {
-        NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, panels: [Rect::ZERO; 4],
+        NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, hbar: ScrollBar::horizontal(), panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
             tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
             areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, tips: Tooltips::default() }
@@ -53,7 +54,7 @@ impl NotesDrawer {
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
     pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
     fn unfocus(&mut self) { if let Some(k) = self.editing.take() { if let Some(a) = self.areas.get_mut(&k) { a.focused = false; } } }
-    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tools.iter().any(|b| b.animating(now)) || self.width.animating(now) }
+    pub fn animating(&self, now: Instant) -> bool { self.hbar.animating(now) || self.areas.values().any(|a| a.animating(now)) || self.open_ramp.animating(now) || self.tools.iter().any(|b| b.animating(now)) || self.width.animating(now) }
     pub fn tick(&mut self, now: Instant) -> bool { self.tips.tick(now) }
     pub fn has_focus(&self) -> bool { self.editing.is_some() || self.picker.focused() }
     /// The state to show; true when it changed.
@@ -89,13 +90,14 @@ impl NotesDrawer {
         let wy = pc.y0 + ph + t::SPACING_100 as f64 * s; let fh = t::FIELD_HEIGHT_S as f64 * s;
         self.width_label = Rect::new(pc.x0, wy, pc.x0 + 48.0 * s, wy + fh); self.width.rect = Rect::new(pc.x0 + 48.0 * s, wy, pc.x1 - 28.0 * s, wy + fh);
         let (tb, tg) = (TOOL_B * s, TOOL_GAP * s);
-        for (i, b) in self.tools.iter_mut().enumerate() { let (col, row) = ((i % 2) as f64, (i / 2) as f64); let x = tools_panel.x0 + ins + col * (tb + tg); let y = tools_panel.y0 + ins + row * (tb + tg); b.rect = Rect::new(x, y, x + tb, y + tb); }
+        for (i, b) in self.tools.iter_mut().enumerate() { let x = tools_panel.x0 + ins; let y = tools_panel.y0 + ins + i as f64 * (tb + tg); b.rect = Rect::new(x, y, x + tb, y + tb); b.corners = Corners::all(t::CORNER_RADIUS_500 as f64 * s); }
         // the add tile, then the cards
         self.add = add_panel;
         self.cards_area = cards_panel.inset(-ins);
         let cw = CARD_W * s; let cg = t::SPACING_200 as f64 * s;
         self.max_scroll = ((self.cards.len() as f64) * (cw + cg) - cg - self.cards_area.width()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+        self.hbar.offset = self.scroll; self.hbar.set(cards_panel, (self.cards.len() as f64) * (cw + cg) - cg + 2.0 * ins, s); self.scroll = self.hbar.offset;
         self.rects = (0..self.cards.len()).map(|i| {
             let ci = 6.0 * s;   // the thumbnail's inset inside its tile
             let x = self.cards_area.x0 + i as f64 * (cw + cg) - self.scroll + ci; let y = self.cards_area.y0 + ci; let cw = cw - 2.0 * ci;
@@ -116,7 +118,7 @@ impl NotesDrawer {
     /// A text box under the pointer scrolls its text (vertical wheel); else the row scrolls sideways.
     pub fn wheel(&mut self, x: f64, y: f64, d: f64, vertical: bool, fonts: &mut Fonts) -> bool {
         if vertical { for a in self.areas.values_mut() { if a.wheel(x, y, d, fonts) { return true } } }
-        if !self.cards_area.contains(kurbo::Point::new(x, y)) || self.max_scroll <= 0.0 { return false } self.scroll = (self.scroll + d).clamp(0.0, self.max_scroll); true }
+        if !self.cards_area.contains(kurbo::Point::new(x, y)) || self.max_scroll <= 0.0 { return false } self.hbar.offset = self.scroll; let ch = self.hbar.wheel(d, Instant::now()); self.scroll = self.hbar.offset; ch }
     fn commit_edit(&mut self) -> Option<Cmd> { let k = self.editing.take()?; let a = self.areas.get_mut(&k)?; a.focused = false; Some(Cmd::Text(k, a.text().to_string())) }
     /// Returns (commands, redraw, consumed).
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts) -> (Vec<Cmd>, bool, bool) {
@@ -133,6 +135,9 @@ impl NotesDrawer {
             _ => {}
         }
         if near_top != self.split_hover { self.split_hover = near_top; dirty = true; }
+        // the cards row's scrollbar (its drag owns the pointer)
+        self.hbar.offset = self.scroll; let (hd, hmine) = self.hbar.event(e, now); self.scroll = self.hbar.offset;
+        if hmine { return (cmds, true, true) } if hd { dirty = true; }
         // the text boxes: a press in one focuses it (a press elsewhere commits the one being typed)
         if let Event::Down { x, y, .. } = *e { if let Some(k) = self.editing.clone() { if !self.areas.get(&k).is_some_and(|a| a.hit(x, y)) { if let Some(c) = self.commit_edit() { cmds.push(c); } dirty = true; } } }
         for (k, a) in self.areas.iter_mut() { if a.pointer(e, fonts) { dirty = true; } if a.focused && self.editing.as_deref() != Some(k) { self.editing = Some(k.clone()); } }
@@ -237,6 +242,7 @@ impl NotesDrawer {
             }
         }
         scene.pop_layer();
+        self.hbar.paint(scene, now);
         for b in &self.tools { b.paint(scene, fonts, s, now); }
         self.picker.paint(scene, fonts, s);
         let wl = fonts.layout(tr("Width:"), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
