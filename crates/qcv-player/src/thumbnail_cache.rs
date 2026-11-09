@@ -294,6 +294,16 @@ impl VideoThumbLoaderSws {
             if !self.sws.is_null() { ff::sws_freeContext(self.sws); }
             self.sws = ff::sws_getContext(w, h, std::mem::transmute::<i32, ff::AVPixelFormat>((*fr).format), ow, oh, ff::AVPixelFormat::AV_PIX_FMT_RGBA, SWS_POINT, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
             if self.sws.is_null() { return None }
+            // the screen's matrix + range rules (yuv_planar: tagged, else BT.709 at every size; the range tag, untagged →
+            // limited) — swscale's own default was BT.601 with the range taken from the pixel format (canon row 216)
+            let desc = ff::av_pix_fmt_desc_get(std::mem::transmute::<i32, ff::AVPixelFormat>((*fr).format));
+            let is_rgb = !desc.is_null() && ((*desc).flags & ff::AV_PIX_FMT_FLAG_RGB as u64) != 0;
+            if !is_rgb {
+                use crate::yuv_planar::{effective_matrix, effective_source_range};
+                let cs = match effective_matrix((*fr).colorspace) { min_present::Matrix::Bt601 => ff::SWS_CS_ITU601, min_present::Matrix::Smpte240m => ff::SWS_CS_SMPTE240M, min_present::Matrix::Fcc => ff::SWS_CS_FCC, min_present::Matrix::Bt2020 => ff::SWS_CS_BT2020, _ => ff::SWS_CS_ITU709 };
+                let full = effective_source_range((*fr).color_range, false, crate::rgb_range::RangeOverride::Auto) == min_present::Range::Full;
+                ff::sws_setColorspaceDetails(self.sws, ff::sws_getCoefficients(cs), full as i32, ff::sws_getCoefficients(ff::SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+            }
             self.sws_key = key;
         }
         let mut rgba = vec![0u8; (ow * oh * 4) as usize];
@@ -388,4 +398,30 @@ mod tests {
         assert_eq!(c.stats().total_cached, 3); assert!(!evicted.lock().unwrap().is_empty());   // the budget evicted
         c.clear(); assert_eq!(c.stats().total_cached, 0);
     }
+}
+
+#[cfg(test)]
+mod colour_tests {
+    use ffmpeg_sys_next as ff;
+    /// A 16×16 yuv420p frame of one code value, tagged.
+    unsafe fn frame(y: u8, cb: u8, cr: u8, cs: ff::AVColorSpace, range: ff::AVColorRange) -> *mut ff::AVFrame { unsafe {
+        let f = ff::av_frame_alloc(); (*f).width = 16; (*f).height = 16; (*f).format = ff::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
+        assert!(ff::av_frame_get_buffer(f, 0) >= 0);
+        for (p, v, h) in [(0usize, y, 16), (1, cb, 8), (2, cr, 8)] { for row in 0..h { std::ptr::write_bytes((*f).data[p].add(row * (*f).linesize[p] as usize), v, if p == 0 { 16 } else { 8 }); } }
+        (*f).colorspace = cs; (*f).color_range = range; f
+    } }
+    #[test]
+    fn thumbnails_use_the_frames_matrix_and_range() { unsafe {
+        // BT.709 limited red: Y 63, Cb 102, Cr 240 → (255, 0, 0); BT.601's table would give a pink-orange
+        let mut f = frame(63, 102, 240, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_MPEG);
+        let t = super::rgba_thumb_from_avframe(f, 0).unwrap();
+        let (r, g, b) = (t.rgba[0] as i32, t.rgba[1] as i32, t.rgba[2] as i32);
+        assert!(r > 245 && g < 12 && b < 12, "709 red → ({r}, {g}, {b})");
+        ff::av_frame_free(&mut f);
+        // full range grey 128 stays 128 (limited would stretch it)
+        let mut f = frame(128, 128, 128, ff::AVColorSpace::AVCOL_SPC_BT709, ff::AVColorRange::AVCOL_RANGE_JPEG);
+        let t = super::rgba_thumb_from_avframe(f, 0).unwrap();
+        assert!((t.rgba[0] as i32 - 128).abs() <= 2, "full-range grey → {}", t.rgba[0]);
+        ff::av_frame_free(&mut f);
+    } }
 }

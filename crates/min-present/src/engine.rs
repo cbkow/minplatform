@@ -698,6 +698,8 @@ impl Engine {
     }
     /// The picture is HDR on screen without a chain (a PQ / HLG source in bypass): its peak in nits (a capture tone-maps it,
     /// row 216); None when a chain renders it or it is SDR.
+    /// The shown frame's colour tags after the clip's Transfer choice (what stage 1 decodes with) — a thumbnail is tagged the same.
+    pub fn shown_meta(&self) -> Option<ColorMeta> { self.base.map(|b| self.effective_meta(b.meta)) }
     pub fn bypass_hdr_peak(&self) -> Option<f32> {
         if self.color_pass.is_some() { return None }
         let m = self.effective_meta(self.base?.meta);
