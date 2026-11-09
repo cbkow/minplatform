@@ -1801,6 +1801,7 @@ impl App {
     fn finish(&mut self) {
         i18n::write_misses();
         { let ids: Vec<String> = self.outputs.outputs.iter().filter(|o| o.enabled).map(|o| o.m.id.clone()).collect(); for id in ids { self.output_stop_quitting(&id); } }
+        if let Some(mut s) = self.outputs.stream.sink.take() { s.stop_wait(std::time::Duration::from_secs(3)); }   // the stream's threads end before the process does
         if let Some(g) = self.gpu.as_mut() {
             g.thumbs.shutdown(); g.thumbs_b.shutdown();
             if !g.fullscreen {

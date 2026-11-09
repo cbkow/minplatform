@@ -164,7 +164,7 @@ impl StreamSink {
         let sh = self.sh.clone();
         sh.stop.store(true, Release); sh.latest_cv.notify_all(); sh.queue_cv.notify_all();
         let (threads, pool) = (std::mem::take(&mut self.threads), self.pool.clone());
-        if threads.is_empty() { return }
+        if threads.is_empty() { return }   // already stopping
         let _ = std::thread::Builder::new().name("stream stop".into()).spawn(move || {
             for t in threads { let _ = t.join(); }
             *sh.latest.lock().unwrap() = None; sh.queue.lock().unwrap().clear();
@@ -172,6 +172,14 @@ impl StreamSink {
             sh.done.store(true, Release);
             drop(pool);
         });
+    }
+    /// Quitting: stop and wait (bounded) until the session's threads are gone — the process must not tear the network
+    /// library down under a thread still inside it.
+    pub fn stop_wait(&mut self, limit: Duration) {
+        let sh = self.sh.clone(); self.stop();
+        let end = Instant::now() + limit;
+        while !sh.done.load(Acquire) && Instant::now() < end { std::thread::sleep(Duration::from_millis(5)); }
+        if !sh.done.load(Acquire) { log::warn!("stream: the session did not end within {limit:?}"); }
     }
 }
 impl Drop for StreamSink { fn drop(&mut self) { self.stop(); } }

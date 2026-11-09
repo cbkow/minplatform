@@ -107,7 +107,7 @@ decoded back matches the capture within 1 code value on flat regions; constant p
 
 ## Order (the original's A0–A3)
 
-1. **4a** macOS, headless: the VideoToolbox session + the NV12 pass + mpegts over SRT into a local listener (the A0 bar).
-2. **4b** audio, the session's lifecycle in the app, the card.
+1. **4a** macOS, headless: the VideoToolbox session + the NV12 pass + mpegts over SRT into a local listener (the A0 bar). — **DONE 2026-11-09**: `crates/qcv-stream` (`vt.rs`, `nv12.rs`, `mux.rs`, example `stream_out`); 1080p25 Baseline: pts delta 3600, GOP 25, no B-frames, VUI bt709 tv, every flat patch within 1 code value; 23.976 Main: pts average exactly 3753.75.
+2. **4b** audio, the session's lifecycle in the app, the card. — **BUILT 2026-11-09** (macOS; the user's walk owed): `aac.rs`, `sink.rs` (the session), the outputs' publish pass feeds the encoder's surface (`apps/qcv/src/outputs.rs`, `stream.rs`), `stream_card.rs`. From the app to a local SRT listener: H.264 Baseline + AAC, pts exact, 6043 kbps under motion against 6000, audio continuous, the guide in the picture; quitting waits for the session's threads (a quit during a connect crashed in the network library's teardown otherwise). `QCV_STREAM_SPIKE=<url>` starts a session at launch (QCView's dev aid). SRT only until 4c.
 3. **4c** RTMP / FLV, reconnect, counters; the walk; the Louper room is the user's test.
 4. **4d** the Windows spike, then Windows (in the one Windows walk).
