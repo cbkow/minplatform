@@ -688,6 +688,35 @@ impl Engine {
         self.queue.submit([enc.finish()]);
         Ok((readback::read_rgba16f(&self.device, &self.queue, &tex, w, h), w, h))
     }
+    /// The picture is HDR on screen without a chain (a PQ / HLG source in bypass): its peak in nits (a capture tone-maps it,
+    /// row 216); None when a chain renders it or it is SDR.
+    pub fn bypass_hdr_peak(&self) -> Option<f32> {
+        if self.color_pass.is_some() { return None }
+        let m = self.effective_meta(self.base?.meta);
+        matches!(m.transfer, Transfer::Pq | Transfer::Hlg).then_some(1000.0)
+    }
+    /// A CAPTURE (canon row 216): the shown frame at its display size (pixel aspect + rotation applied) through the same
+    /// passes as the screen — stage 1 with the clip's overrides, the colour chain, and (when `aids`) the viewer aids — but no
+    /// output gain (Windows' SDR white is the screen's business), no background, no UI, no waveform; over black. Returns
+    /// linear-light RGB f32 (1.0 = SDR white; values above 1 = HDR the caller maps for its SDR file), w, h.
+    pub fn capture(&mut self, aids: bool) -> Result<(Vec<f32>, u32, u32), Error> {
+        if self.shown.is_none() { return Err(Error::NoFrame) }
+        let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
+        let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
+        self.viewport = (w, h); self.content = None; self.out_gain = 1.0; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
+        self.write_uniforms();
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+        let view = tex.create_view(&Default::default());
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        { let _ = pass(&mut enc, "capture clear", &view); }
+        self.encode_picture(&mut enc, &view, None);
+        self.queue.submit([enc.finish()]);
+        let px = if self.target_format == wgpu::TextureFormat::Rgba16Float { readback::read_rgba16f(&self.device, &self.queue, &tex, w, h) } else { vec![] };
+        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.write_uniforms();
+        if px.is_empty() { return Err(Error::NoFormat) }
+        // over black (premultiplied output): drop alpha
+        Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), w, h))
+    }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32
     /// (`Rgba16Float` targets) — the headless route for tests.
     pub fn render_offscreen(&mut self, w: u32, h: u32) -> Result<Vec<f32>, Error> {
@@ -964,6 +993,18 @@ mod tests {
     fn flat_frame(w: u32, h: u32, y: u8) -> Frame {
         let plane = |pw: u32, ph: u32, v: u8| { let pitch = pw.div_ceil(256) * 256; Plane::owned(vec![v; (pitch * ph) as usize], pw, ph, pitch) };
         Frame { width: w, height: h, pixels: Pixels::Planar { planes: vec![plane(w, h, y), plane(w / 2, h, 128), plane(w / 2, h, 128)], layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+    }
+    #[test]
+    fn a_capture_is_the_display_size_with_the_pixel_aspect() {
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        e.show(&ramp_frame(64, 16)).unwrap();
+        e.set_geometry(Geometry { par: Par::Custom(2, 1), rotation: None });
+        let (px, w, h) = e.capture(false).unwrap();
+        assert_eq!((w, h), (128, 16), "2:1 pixels: twice as wide"); assert_eq!(px.len(), (w * h * 3) as usize);
+        assert!(px[(8 * 128 + 4) * 3] < px[(8 * 128 + 120) * 3], "the ramp runs left → right");
+        e.set_geometry(Geometry { par: Par::Square, rotation: Some(90) });
+        let (_, w, h) = e.capture(false).unwrap(); assert_eq!((w, h), (16, 64), "rotated 90°: swapped");
     }
     #[test]
     fn dual_view_composes_the_four_modes() {

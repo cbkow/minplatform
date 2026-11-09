@@ -1,0 +1,50 @@
+//! Writers for captures (canon row 216): sRGB-encoded files — PNG 8-bit (with an sRGB chunk), JPEG 8-bit at QCView's quality 95
+//! through TurboJPEG (4:4:4: review stills keep their chroma), TIFF 16-bit RGB (the format people pick for quality — the user
+//! 2026-11-08: "give them 16 bit tiffs").
+use crate::{sys::tj::*, Error};
+use std::io::BufWriter;
+
+pub fn png8(path: &str, rgb: &[u8], w: u32, h: u32) -> Result<(), Error> {
+    let f = std::fs::File::create(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let mut enc = png::Encoder::new(BufWriter::new(f), w, h);
+    enc.set_color(png::ColorType::Rgb); enc.set_depth(png::BitDepth::Eight); enc.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    let mut wr = enc.write_header().map_err(|e| Error::Decode(path.into(), e.to_string()))?;
+    wr.write_image_data(rgb).map_err(|e| Error::Decode(path.into(), e.to_string()))
+}
+
+pub fn jpeg8(path: &str, rgb: &[u8], w: u32, h: u32, quality: i32) -> Result<(), Error> {
+    struct Handle(tjhandle);
+    impl Drop for Handle { fn drop(&mut self) { unsafe { tj3Destroy(self.0) } } }
+    #[cfg(tj_init_version)] let hd = Handle(unsafe { tj3InitVersion(TJINIT_COMPRESS as _, TURBOJPEG_VERSION_NUMBER as _) });
+    #[cfg(not(tj_init_version))] let hd = Handle(unsafe { tj3Init(TJINIT_COMPRESS as _) });
+    if hd.0.is_null() { return Err(Error::Decode(path.into(), "tj3Init failed".into())) }
+    unsafe { tj3Set(hd.0, TJPARAM_QUALITY as _, quality); tj3Set(hd.0, TJPARAM_SUBSAMP as _, TJSAMP_444 as _); }
+    let mut buf: *mut u8 = std::ptr::null_mut(); let mut size: usize = 0;
+    let r = unsafe { tj3Compress8(hd.0, rgb.as_ptr(), w as _, 0, h as _, TJPF_RGB as _, &mut buf, &mut size) };
+    if r != 0 { return Err(Error::Decode(path.into(), unsafe { std::ffi::CStr::from_ptr(tj3GetErrorStr(hd.0)) }.to_string_lossy().into_owned())) }
+    let bytes = unsafe { std::slice::from_raw_parts(buf, size) }.to_vec();
+    unsafe { tj3Free(buf as *mut _) };
+    std::fs::write(path, bytes).map_err(|e| Error::Open(format!("{path}: {e}")))
+}
+
+pub fn tiff16(path: &str, rgb: &[u16], w: u32, h: u32) -> Result<(), Error> {
+    let f = std::fs::File::create(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let mut enc = tiff::encoder::TiffEncoder::new(BufWriter::new(f)).map_err(|e| Error::Decode(path.into(), e.to_string()))?;
+    enc.write_image::<tiff::encoder::colortype::RGB16>(w, h, rgb).map_err(|e| Error::Decode(path.into(), e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_three_writers_round_trip_through_our_readers() {
+        let dir = std::env::temp_dir(); let (w, h) = (16u32, 8u32);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| (i * 7 % 256) as u8).collect();
+        let p = dir.join(format!("mi-w-{}.png", std::process::id())).to_string_lossy().into_owned(); super::png8(&p, &rgb, w, h).unwrap();
+        let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+        let p = dir.join(format!("mi-w-{}.jpg", std::process::id())).to_string_lossy().into_owned(); super::jpeg8(&p, &rgb, w, h, 95).unwrap();
+        let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+        let rgb16: Vec<u16> = rgb.iter().map(|v| *v as u16 * 257).collect();
+        let p = dir.join(format!("mi-w-{}.tif", std::process::id())).to_string_lossy().into_owned(); super::tiff16(&p, &rgb16, w, h).unwrap();
+        let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+    }
+}

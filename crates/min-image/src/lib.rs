@@ -15,6 +15,7 @@ pub mod jpeg;
 pub mod tga_bmp;
 pub mod png;
 pub mod tiff;
+pub mod write;
 mod sys;
 
 #[derive(thiserror::Error, Debug)]

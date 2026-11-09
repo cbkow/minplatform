@@ -14,6 +14,7 @@ pub mod engine;
 pub mod dual;
 pub mod presenter;
 pub mod readback;
+pub mod capture;
 pub mod import;
 pub use frame::*;
 pub use engine::{ColorPass, Engine, IdentityColorPass, ScopeView, Space, Snapshot, ViewerAids};
