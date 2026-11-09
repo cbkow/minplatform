@@ -167,7 +167,18 @@ FFmpeg as the listener; the recordings were analysed on the Mac. Synthetic pictu
 | W6 | three minutes | 4498 of 4500 frames encoded, 0 dropped, working set flat at 225 MB; lip-sync +16 ms on all 44 markers — no drift |
 | W7 | SRT encrypted + a stream id; a wrong passphrase | streams; the wrong passphrase never connects (0 bytes received) |
 
-**Not tested on Windows yet:** the app's own window on the box (a swap chain needs the desktop session — the Windows walk);
-the bitrate on a busy picture through the session (the spike's noise picture ran 5–9 % over the target); AMD / Intel encoders
-(the box has NVIDIA's only); RTMPS; a lossy network. Note: while a connection is down the queue keeps filling and overflowing,
+**The app itself on the box** (2026-11-09, the user: "sure, go for it" — isolated instances on the desktop session by a one-shot
+task, synthetic clips, no input sent; `QCV_STREAM_SPIKE=<url>` starts the session):
+
+| # | Scenario | Result |
+|---|---|---|
+| D1 | SRT, the moving clip, the 16x9 guide on | 1080p25 Constrained Baseline + AAC, a keyframe a second, **6097 kbps against 6000** (per second 5744–6326); the guide is in the received picture |
+| D2 | RTMP, the key in the stream name | starts on a keyframe, 5680 kbps, AAC; the key appears in no log |
+| D3 | the flash + beep clip, 40 s | lip-sync: audio 39 ms EARLY on eight of nine markers (the first +10 ms) — steady |
+| D4 | the 23.976 clip, frame rate Auto | 24000/1001, GOP 24, frame gaps 41.70 / 41.71 ms, 6120 kbps |
+| D5 | the UHD clip into 2160p30 at 16000 | level 5.1, 15174 kbps (per second 14155–16209); playback dropped 4 of 355 frames meanwhile |
+| D7 | quit while connecting (no listener) | a clean exit |
+
+**Not tested on Windows:** the card by hand (typing, paste, the switch — the Windows walk); AMD / Intel encoders (the box has
+NVIDIA's only); RTMPS; a lossy network. Note: while a connection is down the queue keeps filling and overflowing,
 so `dropped` climbs through a reconnect (591 in W3's ten seconds) — QCView's accounting.
