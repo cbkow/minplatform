@@ -4483,3 +4483,13 @@ msgstr "Ekran SDR — światła są obcinane"
 msgctxt "ColorPanel"
 msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
 msgstr "Ten ekran nie ma zapasu HDR: światła powyżej bieli SDR są obcinane. Włącz Highlight Knee, aby je zmieścić."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "Auto · working space, untagged"
+msgstr "Auto · przestrzeń robocza, bez znacznika"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
+msgstr "Host wysyła swoją roboczą przestrzeń barw bez nazwy; wybierz używaną krzywą przenoszenia (wymuszenie krzywej)"

@@ -17,6 +17,11 @@ fn tr(s: &str) -> &str { min_i18n::trc("LiveStrip", s) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cmd { Transfer(TransferOverride), Color, Notes, Shot(crate::capture::Dest) }
 
+/// The Auto label for a QCBridge host feed (the user 2026-11-09, diverging from QCView's "Auto · SDR, untagged"): the Transmit
+/// device asks the host for its WORKING colour space and never names it (the ring's ICC region stays empty), so "SDR"
+/// was a guess — a 32-bpc linear comp is not SDR. QCView's tag rule (LiveStrip.qml autoLabel) returns with SRT (step 2).
+const AUTO: &str = "Auto · working space, untagged";
+const AUTO_TIP: &str = "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)";
 const TRANSFERS: [(TransferOverride, &str); 6] = [(TransferOverride::Auto, "Auto"), (TransferOverride::SdrRec709, "SDR 709"), (TransferOverride::Pq2020, "PQ 2020"), (TransferOverride::PqP3D65, "PQ P3"), (TransferOverride::Hlg, "HLG"), (TransferOverride::Linear, "Linear")];
 
 pub struct LiveStrip {
@@ -42,7 +47,7 @@ impl LiveStrip {
     /// Per tick: the feed's facts, the item's name and Transfer choice. True when what is shown changed.
     pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, now: Instant) -> bool {
         if now.duration_since(self.fps.1).as_secs_f64() >= 1.0 { let dt = now.duration_since(self.fps.1).as_secs_f64(); self.fps = (facts.frames, now, (facts.frames.saturating_sub(self.fps.0)) as f64 / dt); }
-        let label = if transfer == TransferOverride::Auto { tr("Auto · SDR, untagged").to_string() } else { tr(TRANSFERS.iter().find(|(o, _)| *o == transfer).map(|(_, l)| *l).unwrap_or("Auto")).to_string() };
+        let label = if transfer == TransferOverride::Auto { tr(AUTO).to_string() } else { tr(TRANSFERS.iter().find(|(o, _)| *o == transfer).map(|(_, l)| *l).unwrap_or("Auto")).to_string() };
         let changed = self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
         self.app = app.to_string(); self.transfer.label = label; self.override_ = transfer; self.name = name.to_string(); self.live_seconds = live_seconds;
         let shots = facts.has_frame;
@@ -72,7 +77,7 @@ impl LiveStrip {
         }
         let (clicked, d) = self.transfer.event(e, now); dirty |= d;
         if clicked {
-            let items: Vec<MenuItem> = TRANSFERS.iter().map(|(o, l)| { let label = if *o == TransferOverride::Auto { tr("Auto · SDR, untagged").to_string() } else { tr(l).to_string() }; MenuItem::Action { label, enabled: true, shortcut: String::new() } }).collect();
+            let items: Vec<MenuItem> = TRANSFERS.iter().map(|(o, l)| { let label = if *o == TransferOverride::Auto { tr(AUTO).to_string() } else { tr(l).to_string() }; MenuItem::Action { label, enabled: true, shortcut: String::new() } }).collect();
             let r = self.transfer.rect; self.menu.open_at(items, fonts, r.x0, r.y0, bounds, self.scale); dirty = true;
         }
         for (i, resp) in self.buttons.event(e, now) {
@@ -80,7 +85,7 @@ impl LiveStrip {
             if resp == Response::Clicked { cmds.push(match i { 0 => Cmd::Color, 1 => Cmd::Notes, 2 => Cmd::Shot(crate::capture::Dest::Clipboard), _ => Cmd::Shot(crate::capture::Dest::File) }); }
         }
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); }
-        let over = if self.transfer.rect.contains(e.pos().map(|(x, y)| kurbo::Point::new(x, y)).unwrap_or_default()) && !matches!(e, Event::Leave) { Some((99u64, self.transfer.rect, tr("How the scopes read this feed (Transfer override)").to_string())) }
+        let over = if self.transfer.rect.contains(e.pos().map(|(x, y)| kurbo::Point::new(x, y)).unwrap_or_default()) && !matches!(e, Event::Leave) { Some((99u64, self.transfer.rect, tr(AUTO_TIP).to_string())) }
             else { self.buttons.hovered().map(|i| (i as u64, self.buttons.buttons[i].rect, self.buttons.buttons[i].tooltip.clone())) };
         if self.tips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y)));

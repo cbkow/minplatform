@@ -4475,3 +4475,13 @@ msgstr "Écran SDR — les hautes lumières sont écrêtées"
 msgctxt "ColorPanel"
 msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
 msgstr "Cet écran n'a pas de marge HDR : les hautes lumières au-dessus du blanc SDR sont écrêtées. Activez le Highlight Knee pour les faire tenir."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "Auto · working space, untagged"
+msgstr "Auto · espace de travail, non balisé"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
+msgstr "L'hôte envoie son espace colorimétrique de travail sans le nommer ; choisissez la courbe de transfert qu'il utilise (forçage du transfert)"

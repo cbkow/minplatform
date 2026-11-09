@@ -4483,3 +4483,13 @@ msgstr "SDR-дисплей — світла обрізаються"
 msgctxt "ColorPanel"
 msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
 msgstr "Цей дисплей не має запасу HDR: світла вище білого SDR обрізаються. Увімкніть Highlight Knee, щоб умістити їх."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "Auto · working space, untagged"
+msgstr "Авто · робочий простір, без тегу"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
+msgstr "Хост надсилає робочий колірний простір без назви; виберіть передавальну функцію, яку він використовує (перевизначення)"

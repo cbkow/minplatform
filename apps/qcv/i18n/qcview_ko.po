@@ -4467,3 +4467,13 @@ msgstr "SDR 디스플레이 — 하이라이트 클리핑"
 msgctxt "ColorPanel"
 msgid "This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them."
 msgstr "이 디스플레이에는 HDR 여유가 없습니다. SDR 화이트를 넘는 하이라이트는 클리핑됩니다. Highlight Knee를 켜서 맞추십시오."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "Auto · working space, untagged"
+msgstr "자동 · 작업 색 공간, 태그 없음"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "LiveStrip"
+msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
+msgstr "호스트가 작업 색 공간을 이름 없이 보냅니다. 사용하는 전달 함수를 선택하세요 (전달 함수 재정의)"
