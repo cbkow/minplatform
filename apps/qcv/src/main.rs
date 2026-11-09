@@ -2400,6 +2400,10 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     bar.sync(player.as_ref().map(|p| p as &dyn Playback), shown_at); bar.tick(shown_at);
     strip.sync(player.as_ref().map(|p| p as &dyn Playback));
     strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
+    // `QCV_UI_SNAP_DUAL=1`: dual view's controls in the strip (side by side, A and B named) — the row's weight against the transport
+    let mut dualc = std::env::var_os("QCV_UI_SNAP_DUAL").map(|_| { let mut d = dual_controls::DualControls::new(); d.sync(true, true, CompareMode::SideBySide, Some("review_v003.mov".into()), Some("review_v004.mov".into()), 0.5, 1.0, false);
+        let sr = strip.rect; let fw = strip.fps_width(&mut fonts, scale); let gap = t::SPACING_300 as f64 * scale; let ew = strip.extra_width(&mut fonts, scale);
+        d.layout(&mut fonts, strip.wells_right() + ew + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale); d });
     strip.stage(status_strip::Mode::Timecode, "1000", &mut fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
     let mut scrubber = min_ui::Scrubber::new();
     let mut thumbs = hover_thumbs::HoverThumbs::new();
@@ -2430,6 +2434,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         for (rail, is_left) in [(&left, true), (&right, false)] { rail.paint_background(scene, shown_at); rail.push_clip(scene); if is_left { pp.paint(scene, &mut fonts, scale, shown_at, true); bgp.paint(scene, &mut fonts, scale, shown_at, false); panel.paint(scene, &mut fonts, scale, shown_at, false); } else { inspector.paint(scene, &mut fonts, scale, shown_at); if let Some(sp) = sc_panel.as_mut() { sp.paint(scene, &mut fonts, scale, shown_at, false); } } rail.pop_clip(scene); rail.paint_foreground(scene, &mut fonts, scale, shown_at); }
         pp.paint_menu(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);   // the drag ghost / insertion line / menu, over the rails
         strip.paint(scene, &mut fonts, scale, shown_at);
+        if let Some(d) = dualc.as_mut() { d.paint(scene, &mut fonts, scale, shown_at); }
         bar.paint(scene, &mut fonts, scale, shown_at);
         scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });
         thumbs.paint(scene, content, scale, Some(w as f64 * 0.62));

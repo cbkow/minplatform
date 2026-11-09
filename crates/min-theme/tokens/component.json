@@ -190,7 +190,8 @@
   "icon-rail-active-corner-radius":    { "value": "{corner-radius-medium-default}" },
   "icon-rail-active-dot-color": { "value": "{accent-visual-color}" },
 
-  "status-strip-height":  { "value": "{component-height-75}" },
+  "$status-strip": "The strip under the picture is the transport row's height (the user 2026-11-09: with the dual controls in it, a shorter row read as less important); its wells stay the review-speed chip's 20 px, as in the transport row.",
+  "status-strip-height":  { "value": "{transport-bar-height}" },
   "$fullscreen": "Fullscreen = the picture alone (QCView's chromeless rule); the three bands POP in while the pointer rests at the bottom edge and pop away after it leaves (the slide was retired on the walk, 2026-11-07) (the user 2026-11-07: \"correct on assumptions for fullscreen\").",
   "bands-reveal-zone":    { "value": "{spacing-400}" },
   "bands-hide-delay":     { "value": "800ms" },

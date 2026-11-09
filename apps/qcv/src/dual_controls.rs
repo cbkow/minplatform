@@ -43,11 +43,11 @@ impl DualControls {
     pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.modes.buttons.iter_mut().zip(f.modes.buttons) { b.tooltip = n.tooltip; b.label = n.label; } self.close_b.tooltip = f.close_b.tooltip; self.update.tooltip = f.update.tooltip; self.save.tooltip = f.save.tooltip; }
     pub fn new() -> DualControls {
         let modes = ActionGroup::new(vec![
-            ActionButton::new("rectangle", tr("Single view")).size_s(), ActionButton::new("square-split-horizontal", tr("Side-by-side")).size_s(),
-            ActionButton::new("arrows-out-line-horizontal", tr("Split wipe")).size_s(), ActionButton::new("intersect-square", tr("Difference")).size_s()]).compact();
+            ActionButton::new("rectangle", tr("Single view")), ActionButton::new("square-split-horizontal", tr("Side-by-side")),
+            ActionButton::new("arrows-out-line-horizontal", tr("Split wipe")), ActionButton::new("intersect-square", tr("Difference"))]).compact();
         DualControls { rect: Rect::ZERO, active: false, available: true, saved: false, mode: CompareMode::Single, seam: 0.5, gain: 1.0,
             a: Chip::new(), b: Chip::new(), close_b: ActionButton::new("x", tr("Close source B")).size_s(), modes, slider: Slider::new(0.5), readout: String::new(), readout_rect: Rect::ZERO,
-            update: ActionButton::new("floppy-disk", tr("Update this saved dual view")).size_s(), save: ActionButton::new("floppy-disk", tr("Save dual view")).size_s(),
+            update: ActionButton::new("floppy-disk", tr("Update this saved dual view")), save: ActionButton::new("floppy-disk", tr("Save dual view")),
             drop_side: None, target: Side::B, audio: [None, None], pill: [Rect::ZERO; 2], pill_hover: [false; 2], tooltips: Tooltips::default() }
     }
     /// The state to show; returns true when something visible changed.
@@ -69,7 +69,8 @@ impl DualControls {
     /// Right-aligned, ending at `right`, centred in the band [y, y + h]; never left of `min_x` (the chips shrink first).
     pub fn layout(&mut self, fonts: &mut Fonts, min_x: f64, right: f64, y: f64, h: f64, scale: f64) {
         let gap = t::SPACING_100 as f64 * scale; let cluster = t::SPACING_300 as f64 * scale;
-        let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * scale; let by = y + (h - bh) / 2.0;
+        // the transport row's buttons (size M, compact group): the same weight as the transport (the user 2026-11-09)
+        let bh = t::ACTION_BUTTON_HEIGHT_M as f64 * scale; let by = y + (h - bh) / 2.0;
         let mut x = right;
         let mut place = |b: &mut ActionButton, x: &mut f64| { let (w, _) = b.measure(fonts, scale); b.rect = Rect::new(*x - w, by, *x, by + bh); *x -= w; };
         if self.shows_b() {
