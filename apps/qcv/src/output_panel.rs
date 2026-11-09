@@ -88,7 +88,7 @@ impl OutputPanel {
         // the layer toggles to its left: Notes, then Guides (reading order: Guides · Notes · speaker)
         let mut bx = mx - 2.0 * scale;
         for b in self.layers.iter_mut().rev() { let (bw, bh) = b.measure(fonts, scale); b.rect = Rect::new(bx - bw, y + (hh - bh) / 2.0, bx, y + (hh + bh) / 2.0); b.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64 * scale); bx -= bw + 2.0 * scale; }
-        if !self.section.expanded { self.height = hh; return hh }
+        if !self.section.expanded { self.height = hh + t::RAIL_SECTION_GAP as f64 * scale / 2.0; return self.height }   // closed: the tile (height − gap / 2) is the header exactly, so its hover sits centred
         let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale; let row = t::RAIL_ROW_HEIGHT as f64 * scale; let ins = t::SPACING_200 as f64 * scale;
         let (x0, x1) = (x0 + pad, x1 - pad);
         let mut cy = y + hh + pad / 2.0;

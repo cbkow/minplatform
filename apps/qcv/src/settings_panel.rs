@@ -116,7 +116,7 @@ impl SettingsPanel {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
         let mut cy = y + hh;
-        if !self.section.expanded { self.height = hh; return hh }
+        if !self.section.expanded { self.height = hh + t::RAIL_SECTION_GAP as f64 * scale / 2.0; return self.height }   // closed: the tile (height − gap / 2) is the header exactly, so its hover sits centred
         let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale;
         let cw = CONTROL_W * scale; let row_h = t::RAIL_ROW_HEIGHT as f64 * scale;
         let label_w = (x1 - x0 - 2.0 * pad - cw - pad).max(40.0);

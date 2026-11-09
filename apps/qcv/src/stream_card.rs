@@ -254,6 +254,9 @@ mod tests {
         let c = &panel.stream;
         assert!(open > closed && c.rows.len() == 6);
         for r in c.pickers.iter().map(|p| p.rect).chain([c.bitrate.rect, c.latency.rect]) { assert!(r.width() > 100.0 && c.tile.contains(r.center()), "{r:?}"); }
+        // closed, the section's tile (its height less half the gap) is the header exactly: the hover row sits centred in it
+        // (the walk 2026-11-09: the tile ended half a gap short, so the hover touched its bottom edge)
+        { let mut p = crate::output_panel::OutputPanel::new(); p.section.expanded = false; let hgt = p.layout(&mut fonts, 0.0, 560.0, 0.0, 2.0); assert_eq!(hgt - t::RAIL_SECTION_GAP as f64 * 2.0 / 2.0, min_ui::Section::height(2.0)); }
         let Ok(path) = std::env::var("QCV_CARD_SNAP") else { return };
         let Ok(e) = min_present::engine::Engine::headless(wgpu::TextureFormat::Rgba16Float) else { return };
         let (w, h) = (560u32, open.ceil() as u32 + 8);
@@ -262,6 +265,19 @@ mod tests {
         layer.render(&e.device, &e.queue);
         let px = min_present::readback::read_rgba8(&e.device, &e.queue, layer.texture(), w, h);
         let file = std::fs::File::create(&path).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h); enc.set_color(png::ColorType::Rgba); enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&px).unwrap();
+        // the section closed, its header hovered (the tile and the hover row must share a centre)
+        panel.section.expanded = false;
+        let hh = panel.layout(&mut fonts, 0.0, 560.0, 8.0, 2.0);
+        let _ = panel.event(&Event::Move { x: 200.0, y: 8.0 + min_ui::Section::height(2.0) / 2.0 }, now, &mut fonts, Rect::new(0.0, 0.0, 560.0, 200.0));
+        let later = now + std::time::Duration::from_secs(1);
+        let (w, h) = (560u32, hh.ceil() as u32 + 16);
+        layer.resize(&e.device, w, h);
+        { let scene = layer.scene_mut(); scene.reset(); paint::rect(scene, Rect::new(0.0, 0.0, w as f64, h as f64), t::GRAY_50); panel.paint(scene, &mut fonts, 2.0, later, true); }
+        layer.render(&e.device, &e.queue);
+        let px = min_present::readback::read_rgba8(&e.device, &e.queue, layer.texture(), w, h);
+        let file = std::fs::File::create(format!("{path}.closed.png")).unwrap();
         let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h); enc.set_color(png::ColorType::Rgba); enc.set_depth(png::BitDepth::Eight);
         enc.write_header().unwrap().write_image_data(&px).unwrap();
     }

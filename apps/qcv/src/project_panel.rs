@@ -163,7 +163,7 @@ impl ProjectPanel {
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
-        if !self.section.expanded { self.height = hh; return hh }
+        if !self.section.expanded { self.height = hh + t::RAIL_SECTION_GAP as f64 * scale / 2.0; return self.height }   // closed: the tile (height − gap / 2) is the header exactly, so its hover sits centred
         let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale; let row_h = t::COMPONENT_HEIGHT_75 as f64 * scale;
         let mut cy = y + hh;
         // the header line: the project's name (subdued) with the Add Media pill at the right

@@ -127,7 +127,7 @@ impl ShortcutsPanel {
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale);
         self.section.rect = Rect::new(x0, y, x1, y + hh);
-        if !self.section.expanded { self.height = hh; self.shown.clear(); return hh }
+        if !self.section.expanded { self.height = hh + t::RAIL_SECTION_GAP as f64 * scale / 2.0; self.shown.clear(); return self.height }   // closed: the tile is the header exactly
         let pad = t::SPACING_100 as f64 * scale; let (x0, x1) = (x0 + pad, x1 - pad);
         let mut cy = y + hh + pad / 2.0;
         let fh = t::FIELD_HEIGHT_S as f64 * scale;
