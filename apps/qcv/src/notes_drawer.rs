@@ -6,7 +6,7 @@
 use crate::annotate::Tool;
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
-use min_ui::{anim::Ramp, paint, scrollbar::ScrollBar, action_button::Corners, ActionButton, ColorPicker, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Slider, TextArea, Tooltips};
+use min_ui::{Menu, MenuItem, anim::Ramp, paint, scrollbar::ScrollBar, action_button::Corners, ActionButton, ColorPicker, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Slider, TextArea, Tooltips};
 use std::{collections::HashMap, path::PathBuf, time::{Instant, SystemTime}};
 use vello::Scene;
 
@@ -25,8 +25,11 @@ pub const TOOLS: [(Tool, &str, &str); 7] = [
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card { pub key: String, pub frame: i64, pub text: String, pub addressed: bool, pub thumb: Option<PathBuf>, pub viewer: bool, pub ocio: bool }
+/// The export formats (row 217); PDF and DOCX join when built (the menu hides what is not there).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportFormat { Markdown, Html }
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { AddNote, Seek(i64), Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
+pub enum Cmd { AddNote, Export(ExportFormat), Seek(i64), Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
     Height(f64) }
 
 struct CardRects { thumb: Rect, text: Rect, addressed: Rect, delete: Rect }
@@ -41,6 +44,8 @@ pub struct NotesDrawer {
     /// each card's text box (keyed by note); `editing` = the focused one
     areas: HashMap<String, TextArea>, editing: Option<String>, thumbs: HashMap<PathBuf, (SystemTime, peniko::ImageBrush)>,
     hover: Option<(usize, u8)>, add_hover: bool, pub tips: Tooltips,
+    /// QCView's Export notes tile under Add note here, and its format menu
+    export: Rect, export_hover: bool, menu: Menu,
 }
 
 impl NotesDrawer {
@@ -48,7 +53,7 @@ impl NotesDrawer {
         NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, hbar: ScrollBar::horizontal(), panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
             tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
-            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, tips: Tooltips::default() }
+            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, export: Rect::ZERO, export_hover: false, menu: Menu::new(), tips: Tooltips::default() }
     }
     pub fn set_open(&mut self, on: bool, now: Instant) { if on != self.open { self.open = on; self.open_ramp.set_target(if on { 1.0 } else { 0.0 }, now); if !on { self.unfocus(); } } }
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
@@ -92,7 +97,10 @@ impl NotesDrawer {
         let (tb, tg) = (TOOL_B * s, TOOL_GAP * s);
         for (i, b) in self.tools.iter_mut().enumerate() { let x = tools_panel.x0 + ins; let y = tools_panel.y0 + ins + i as f64 * (tb + tg); b.rect = Rect::new(x, y, x + tb, y + tb); b.corners = Corners::all(t::CORNER_RADIUS_500 as f64 * s); }
         // the add tile, then the cards
-        self.add = add_panel;
+        // QCView's two tiles stacked: Add note here over Export notes
+        let split = add_panel.y0 + (add_panel.height() - gap_p) * 0.6;
+        self.add = Rect::new(add_panel.x0, add_panel.y0, add_panel.x1, split); self.export = Rect::new(add_panel.x0, split + gap_p, add_panel.x1, add_panel.y1);
+        self.panels[0] = self.add;
         self.cards_area = cards_panel.inset(-ins);
         let cw = CARD_W * s; let cg = t::SPACING_200 as f64 * s;
         self.max_scroll = ((self.cards.len() as f64) * (cw + cg) - cg - self.cards_area.width()).max(0.0);
@@ -124,6 +132,13 @@ impl NotesDrawer {
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let mut dirty = false;
         if self.rect.height() <= 1.0 { return (cmds, false, false) }
+        // the export menu owns the pointer while open
+        if self.menu.is_open() {
+            let (pick, d, _) = self.menu.event(e);
+            if let Some(i) = pick { self.menu.close(); cmds.push(Cmd::Export([ExportFormat::Markdown, ExportFormat::Html][i.min(1)])); }
+            let _ = d;
+            return (cmds, true, true)
+        }
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave);
         // the resize grip along the top edge (the colour drawer's), the drawer's own range
         let s = self.scale;
@@ -150,8 +165,15 @@ impl NotesDrawer {
         let hover = pt.filter(|_| inside && over_cards).and_then(|p| self.rects.iter().enumerate().find_map(|(i, r)| if r.addressed.contains(p) { Some((i, 1)) } else if r.delete.contains(p) { Some((i, 2)) } else if r.thumb.contains(p) { Some((i, 0)) } else if r.text.contains(p) { Some((i, 3)) } else { None }));
         if hover != self.hover { self.hover = hover; dirty = true; }
         let add_h = inside && pt.is_some_and(|p| self.add.contains(p)); if add_h != self.add_hover { self.add_hover = add_h; dirty = true; }
+        let ex_h = inside && pt.is_some_and(|p| self.export.contains(p)); if ex_h != self.export_hover { self.export_hover = ex_h; dirty = true; }
         if let Event::Down { button: min_ui::Button::Primary, .. } = *e {
             if add_h { cmds.push(Cmd::AddNote); dirty = true; }
+            if ex_h {
+                let any = !self.cards.is_empty();
+                let bounds = Rect::new(self.rect.x0, 0.0, self.rect.x1, self.rect.y1);
+                self.menu.open_at(vec![MenuItem::action(tr("Markdown folder…"), any), MenuItem::action(tr("HTML (single file)…"), any)], fonts, self.export.x0, self.export.y0, bounds, self.scale);
+                dirty = true;
+            }
             if let Some((i, part)) = hover { let c = &self.cards[i]; match part {
                 0 => cmds.push(Cmd::Seek(c.frame)),
                 1 => cmds.push(Cmd::Addressed(c.key.clone(), !c.addressed)),
@@ -162,6 +184,7 @@ impl NotesDrawer {
         // tooltips: the tools, the card buttons
         let tip = pt.filter(|_| inside).and_then(|p| {
             for (i, b) in self.tools.iter().enumerate() { if b.rect.contains(p) { return Some((100 + i as u64, b.rect, tr(TOOLS[i].2).to_string())) } }
+            if self.export.contains(p) && !self.menu.is_open() { return Some((300, self.export, if self.cards.is_empty() { tr("No notes to export yet.").to_string() } else { tr("%1 notes will be exported.").replace("%1", &self.cards.len().to_string()) })) }
             match hover { Some((i, 1)) => Some((200 + i as u64 * 2, self.rects[i].addressed, tr("Mark addressed").to_string())), Some((i, 2)) => Some((201 + i as u64 * 2, self.rects[i].delete, tr("Delete note").to_string())), _ => None }
         });
         if self.tips.hover(tip.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
@@ -207,6 +230,12 @@ impl NotesDrawer {
             let l = fonts.layout_width(txt, Family::Sans, (if i == 0 { t::RAIL_LABEL_SIZE } else { t::DETAIL_SIZE_S }) * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if i == 0 { t::RAIL_LABEL_COLOR } else { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT }), Some((self.add.width() - 12.0 * s) as f32));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((self.add.x0 + (self.add.width() - l.width() as f64) / 2.0, self.add.y0 + self.add.height() * 0.55 + i as f64 * 20.0 * s)));
         }
+        // the Export notes tile (QCView's, under Add)
+        paint::rounded(scene, self.export, r, if self.export_hover || self.menu.is_open() { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR });
+        { let ex = self.export; let ic = fonts.icon("export", 18.0 * s as f32, paint::color(t::RAIL_LABEL_COLOR)); let l = fonts.layout_width(tr("Export notes"), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR), Some((ex.width() - 12.0 * s) as f32));
+          let ih = ic.as_ref().map(|g| g.height() as f64).unwrap_or(0.0); let y0 = ex.y0 + (ex.height() - ih - 4.0 * s - l.height() as f64) / 2.0;
+          if let Some(g) = ic { min_ui::fonts::draw_layout(scene, &g, Affine::translate((ex.x0 + (ex.width() - g.width() as f64) / 2.0, y0))); }
+          min_ui::fonts::draw_layout(scene, &l, Affine::translate((ex.x0 + (ex.width() - l.width() as f64) / 2.0, y0 + ih + 4.0 * s))); }
         // the cards
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.cards_area);
         let cards = self.cards.clone();
@@ -252,5 +281,5 @@ impl NotesDrawer {
         min_ui::fonts::draw_layout(scene, &wv, Affine::translate((self.width.rect.x1 + 6.0 * s, mid(&wv, self.width.rect))));
         scene.pop_layer();
     }
-    pub fn paint_overlays(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { self.tips.paint(scene, fonts, self.scale, bounds, now); }
+    pub fn paint_overlays(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { if self.menu.is_open() { self.menu.paint(scene, fonts, self.scale); } self.tips.paint(scene, fonts, self.scale, bounds, now); }
 }

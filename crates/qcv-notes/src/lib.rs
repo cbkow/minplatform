@@ -8,6 +8,7 @@ pub mod note;
 pub mod strokes;
 pub mod io;
 pub mod ink;
+pub mod export;
 pub use note::Note;
 pub use strokes::{Stroke, Tool};
 

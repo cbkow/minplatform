@@ -13,18 +13,30 @@ pub fn png8(path: &str, rgb: &[u8], w: u32, h: u32) -> Result<(), Error> {
 }
 
 pub fn jpeg8(path: &str, rgb: &[u8], w: u32, h: u32, quality: i32) -> Result<(), Error> {
+    let bytes = jpeg8_bytes(rgb, w, h, quality).map_err(|e| Error::Decode(path.into(), e))?;
+    std::fs::write(path, bytes).map_err(|e| Error::Open(format!("{path}: {e}")))
+}
+/// The JPEG in memory (an export embeds it).
+pub fn jpeg8_bytes(rgb: &[u8], w: u32, h: u32, quality: i32) -> Result<Vec<u8>, String> {
     struct Handle(tjhandle);
     impl Drop for Handle { fn drop(&mut self) { unsafe { tj3Destroy(self.0) } } }
     #[cfg(tj_init_version)] let hd = Handle(unsafe { tj3InitVersion(TJINIT_COMPRESS as _, TURBOJPEG_VERSION_NUMBER as _) });
     #[cfg(not(tj_init_version))] let hd = Handle(unsafe { tj3Init(TJINIT_COMPRESS as _) });
-    if hd.0.is_null() { return Err(Error::Decode(path.into(), "tj3Init failed".into())) }
+    if hd.0.is_null() { return Err("tj3Init failed".into()) }
     unsafe { tj3Set(hd.0, TJPARAM_QUALITY as _, quality); tj3Set(hd.0, TJPARAM_SUBSAMP as _, TJSAMP_444 as _); }
     let mut buf: *mut u8 = std::ptr::null_mut(); let mut size: usize = 0;
     let r = unsafe { tj3Compress8(hd.0, rgb.as_ptr(), w as _, 0, h as _, TJPF_RGB as _, &mut buf, &mut size) };
-    if r != 0 { return Err(Error::Decode(path.into(), unsafe { std::ffi::CStr::from_ptr(tj3GetErrorStr(hd.0)) }.to_string_lossy().into_owned())) }
+    if r != 0 { return Err(unsafe { std::ffi::CStr::from_ptr(tj3GetErrorStr(hd.0)) }.to_string_lossy().into_owned()) }
     let bytes = unsafe { std::slice::from_raw_parts(buf, size) }.to_vec();
     unsafe { tj3Free(buf as *mut _) };
-    std::fs::write(path, bytes).map_err(|e| Error::Open(format!("{path}: {e}")))
+    Ok(bytes)
+}
+/// An RGBA PNG in memory (an export's transparent ink layer).
+pub fn png_rgba8_bytes(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let mut out = vec![];
+    { let mut enc = png::Encoder::new(&mut out, w, h); enc.set_color(png::ColorType::Rgba); enc.set_depth(png::BitDepth::Eight); enc.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+      let mut wr = enc.write_header().map_err(|e| e.to_string())?; wr.write_image_data(rgba).map_err(|e| e.to_string())?; }
+    Ok(out)
 }
 
 pub fn tiff16(path: &str, rgb: &[u16], w: u32, h: u32) -> Result<(), Error> {

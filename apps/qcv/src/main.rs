@@ -55,6 +55,7 @@ mod guides_panel;
 mod annotate;
 mod notes_drawer;
 mod capture;
+mod notes_export;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -124,6 +125,8 @@ struct App {
     colors: color_model::Library, /// per colour SLOT (0 = the single view / dual A, 1 = dual B): the minColor pass, its build in flight
     /// screenshots being encoded on workers (row 216): the format's name on success
     capture_rx: Vec<std::sync::mpsc::Receiver<Option<&'static str>>>,
+    /// notes exports on workers (row 217): the written path, or the error
+    export_rx: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     mincolor: [Option<std::rc::Rc<std::cell::RefCell<qcv_color::MinColorPass>>>; 2], mincolor_ready: [Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>; 2],
     /// the OCIO configs the drawer has opened, by key
     ocio_configs: HashMap<String, std::sync::Arc<qcv_color::ocio::Config>>,
@@ -464,6 +467,7 @@ impl App {
         use notes_drawer::Cmd as N;
         let (frame, fps) = self.player.as_ref().map(|p| (p.current_frame(), p.rate().as_f64())).unwrap_or((0, 24.0));
         match c {
+            N::Export(f) => self.export_notes(f),
             N::AddNote => { if let Some(c) = self.annot.add_note(frame, fps) { self.after_annotation(c); } }
             N::Seek(f) => { if let Some(p) = self.player.as_mut() { p.seek_to_frame(f as i32); } }
             N::Text(k, t) => self.annot.set_text(&k, &t),
@@ -696,6 +700,7 @@ impl App {
     fn tick(&mut self) {
         self.poll_color();
         self.poll_capture();
+        self.poll_export();
         self.ensure_color_config();
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
@@ -1710,7 +1715,7 @@ fn annot_geo(e: &min_present::engine::Engine) -> Option<annotate::Geo> {
     Some(annotate::Geo { rect, px_per_src: rect[2] / dw.max(1) as f64 })
 }
 /// A PNG as RGBA8 (the clean thumbnail, read back for the annotated one).
-fn image_rgba8(path: &std::path::Path) -> Result<(Vec<u8>, (u32, u32)), String> {
+pub(crate) fn image_rgba8(path: &std::path::Path) -> Result<(Vec<u8>, (u32, u32)), String> {
     let d = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?));
     let mut r = d.read_info().map_err(|e| e.to_string())?;
     let mut buf = vec![0; r.output_buffer_size()]; let info = r.next_frame(&mut buf).map_err(|e| e.to_string())?;
@@ -2130,7 +2135,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { capture_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
