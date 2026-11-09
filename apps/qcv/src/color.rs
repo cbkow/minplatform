@@ -123,6 +123,22 @@ pub fn mincolor_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> mpsc::Recei
     rx
 }
 
+/// The nudge (the user 2026-11-09: "it will make it easier for the user if we nudge them toward that pq 2020 input for these types
+/// of streams"): a LIVE stream tagged PQ with no chain of its own starts minColor from the project default with the input set to
+/// what its pixels are — Rec.2020 (P3-D65 when tagged so) / PQ (100 nits = 1.0: QCBridge's Blender wire, and minColor's only PQ).
+/// Nothing is stored until the user edits (the edit keeps it); the project default and an own chain are untouched; OCIO left
+/// alone (a PQ input's name is the config's).
+fn stream_nudge(item: &qcv_project::MediaItem, mut d: Stored) -> Stored {
+    if item.media_type != qcv_project::MediaType::LiveStream || item.video.color_transfer != "smpte2084" { return d }
+    if let ClipChain::MinColor(c) = &mut d.chain {
+        let p = item.video.color_primaries.to_lowercase();
+        c.in_gamut = if p.contains("431") || p.contains("432") || p.contains("p3") { 3 /* P3-D65 */ } else { qcv_color::ids::IN_REC2020 };
+        c.in_transfer = 14;   // DRT_OETF_PQ_100
+        c.in_limited = 0;
+    }
+    d
+}
+
 impl crate::App {
     /// Colour starts OFF at every launch (the user 2026-11-08: "ensure color is OFF when the app opens fresh unless a project has a
     /// specific media-item with assigned color"); opening a project that has a clip with its own chain turns it on.
@@ -139,7 +155,7 @@ impl crate::App {
     pub(crate) fn chain_of(&self, id: &str) -> (Option<String>, Stored, bool) {
         let d = self.color_default();
         let Some(item) = self.project.item(id) else { return (None, d, false) };
-        match Stored::from_clip_maps(&item.ocio_clip, &item.min_color_clip, &d) { Some(s) => (Some(item.id.clone()), s, true), None => (Some(item.id.clone()), d, false) }
+        match Stored::from_clip_maps(&item.ocio_clip, &item.min_color_clip, &d) { Some(s) => (Some(item.id.clone()), s, true), None => (Some(item.id.clone()), stream_nudge(item, d), false) }
     }
     /// The edited clip's chain and whether it is its own (else the project default's).
     pub(crate) fn color_target(&self) -> (Option<String>, Stored, bool) { self.chain_of(&self.slot_item(self.edit_slot())) }
