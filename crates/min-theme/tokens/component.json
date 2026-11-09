@@ -162,6 +162,7 @@
   "picker-content-color-hover": { "value": "{neutral-content-color-hover}" },
   "picker-edge-to-text":       { "value": "{component-edge-to-text-75}" },
   "picker-corner-radius":      { "value": "{corner-radius-small-default}" },
+  "picker-background-color":   { "value": "{gray-100}" },
   "menu-item-hover-color":     { "value": "{hover-background-color}" },
   "menu-item-down-color":      { "value": "{down-background-color}" },
   "menu-item-content-color":   { "value": "{neutral-content-color-default}" },

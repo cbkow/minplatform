@@ -70,7 +70,9 @@ impl Picker {
     pub fn animating(&self, now: Instant) -> bool { self.hover.animating(now) }
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant) {
         let hv = self.hover.value(now);
-        if self.enabled && (hv > 0.0 || self.menu.open) { paint::rounded(scene, self.rect, t::PICKER_CORNER_RADIUS as f64 * scale, if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, hv) }); }
+        // a resting fill a step lighter than the rail's tiles (the walk 2026-11-08: dropdowns read as controls), the hover grey over it
+        let bg = if !self.enabled { t::PICKER_BACKGROUND_COLOR.with_alpha(0.5) } else if self.menu.open { t::DOWN_BACKGROUND_COLOR } else { mix(t::PICKER_BACKGROUND_COLOR, t::HOVER_BACKGROUND_COLOR, hv) };
+        paint::rounded(scene, self.rect, t::PICKER_CORNER_RADIUS as f64 * scale, bg);
         let c = if !self.enabled { t::DISABLED_CONTENT_COLOR } else if self.hovered || self.menu.open { t::PICKER_CONTENT_COLOR_HOVER } else { t::PICKER_CONTENT_COLOR };
         let l = fonts.layout(self.value(), Family::Sans, t::BODY_SIZE_M * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
         let edge = t::PICKER_EDGE_TO_TEXT as f64 * scale;
