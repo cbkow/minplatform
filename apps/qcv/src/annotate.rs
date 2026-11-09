@@ -30,16 +30,52 @@ pub struct Annotations {
     pub active: bool, pub tool: Tool, pub color: [f32; 4], pub width: f32,
     pub media: Option<PathBuf>, pub notes: Vec<Note>, pub selected: Option<String>,
     live: Option<Live>, drag: Option<Drag>, undo: Vec<Step>, redo: Vec<Step>, t0: std::time::Instant,
+    /// minNotes' `VideoNotesModel` rules (canon §4.5): keys deleted here since the last save (a merge never brings them
+    /// back), the sidecar's signature after our own write (its echo is no reload), the last poll
+    tombstones: std::collections::HashSet<String>, disk_sig: Option<(std::time::SystemTime, u64)>, last_poll: std::time::Instant,
 }
 
 impl Annotations {
-    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, notes: vec![], selected: None, live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now() } }
+    pub fn new() -> Annotations { Annotations { active: false, tool: Tool::Freehand, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, media: None, notes: vec![], selected: None, live: None, drag: None, undo: vec![], redo: vec![], t0: std::time::Instant::now(), tombstones: Default::default(), disk_sig: None, last_poll: std::time::Instant::now() } }
     /// A media file loaded (or none): its notes from the sidecar; the history starts over (per clip).
     pub fn load(&mut self, media: Option<&Path>) {
         self.media = media.map(Path::to_path_buf); self.live = None; self.drag = None; self.selected = None; self.undo.clear(); self.redo.clear();
         self.notes = match media { Some(m) => io::load(m).unwrap_or_else(|e| { log::warn!("notes: {e}"); vec![] }), None => vec![] };
+        self.tombstones.clear(); self.disk_sig = self.sidecar_sig();
     }
-    pub fn save(&self) { if let Some(m) = &self.media { if let Err(e) = io::save(m, &self.notes) { log::warn!("notes save: {e}"); } } }
+    /// Merge-on-save (minNotes): notes another app wrote that we haven't seen join ours — for a key both hold, ours wins —
+    /// unless we deleted that key since the last save. Then the deletes are durable and the write's signature is ours.
+    pub fn save(&mut self) {
+        let Some(m) = self.media.clone() else { return };
+        if let Ok(disk) = io::load(&m) {
+            for d in disk { if !self.notes.iter().any(|n| n.timecode == d.timecode) && !self.tombstones.contains(&d.timecode) { self.notes.push(d); } }
+            self.notes.sort_by(|a, b| a.timecode.cmp(&b.timecode));
+        }
+        if let Err(e) = io::save(&m, &self.notes) { log::warn!("notes save: {e}"); return }
+        self.tombstones.clear(); self.disk_sig = self.sidecar_sig();
+    }
+    fn sidecar_sig(&self) -> Option<(std::time::SystemTime, u64)> {
+        let md = std::fs::metadata(io::notes_json(&io::notes_dir(self.media.as_ref()?))).ok()?;
+        Some((md.modified().ok()?, md.len()))
+    }
+    /// minNotes' watcher reload: another app (minNotes, a second QCView) rewrote the sidecar → its notes, less our tombstones.
+    /// A stat twice a second, not an OS watcher: review media lives on SMB / NFS mounts where those don't fire (canon §19).
+    /// Never mid-gesture. True when the notes changed.
+    pub fn poll_disk(&mut self, now: std::time::Instant) -> bool {
+        if self.media.is_none() || self.drawing() || now.duration_since(self.last_poll) < std::time::Duration::from_millis(500) { return false }
+        self.last_poll = now;
+        let sig = self.sidecar_sig();
+        if sig == self.disk_sig { return false }
+        self.disk_sig = sig;
+        let Some(m) = self.media.clone() else { return false };
+        let Ok(mut loaded) = io::load(&m) else { return false };
+        loaded.retain(|n| !self.tombstones.contains(&n.timecode));
+        if loaded == self.notes { return false }
+        log::info!("notes: {} reloaded from disk (changed by another app)", loaded.len());
+        self.notes = loaded;
+        if let Some(id) = &self.selected && !self.notes.iter().any(|n| strokes::parse(n.annotation.as_ref()).iter().any(|s| &s.id == id)) { self.selected = None; }
+        true
+    }
     pub fn note_at_frame(&self, frame: i32) -> Option<&Note> { self.notes.iter().find(|n| n.frame == frame as i64) }
     pub fn strokes_at(&self, frame: i32) -> Vec<Stroke> { self.note_at_frame(frame).map(|n| strokes::parse(n.annotation.as_ref())).unwrap_or_default() }
     pub fn drawing(&self) -> bool { self.live.is_some() || self.drag.is_some() }
@@ -140,8 +176,8 @@ impl Annotations {
         self.push_step(Step { key: key.clone(), before, after: Some(n) }); self.save();
         Committed { key, new_note }
     }
-    fn put(&mut self, n: Note) { match self.notes.iter_mut().find(|x| x.timecode == n.timecode) { Some(x) => *x = n, None => { self.notes.push(n); self.notes.sort_by(|a, b| a.timecode.cmp(&b.timecode)); } } }
-    fn remove_note(&mut self, key: &str) { self.notes.retain(|n| n.timecode != key); }
+    fn put(&mut self, n: Note) { self.tombstones.remove(&n.timecode); match self.notes.iter_mut().find(|x| x.timecode == n.timecode) { Some(x) => *x = n, None => { self.notes.push(n); self.notes.sort_by(|a, b| a.timecode.cmp(&b.timecode)); } } }
+    fn remove_note(&mut self, key: &str) { self.notes.retain(|n| n.timecode != key); self.tombstones.insert(key.to_string()); }
     fn push_step(&mut self, s: Step) { self.undo.push(s); self.redo.clear(); }
     fn erase(&mut self, p: [f64; 2], frame: i32, _fps: f64, geo: &Geo) -> Option<Committed> {
         let id = self.hit(p, frame, geo)?;
@@ -175,7 +211,7 @@ impl Annotations {
     pub fn set_addressed(&mut self, key: &str, on: bool) { if let Some(n) = self.notes.iter_mut().find(|n| n.timecode == key) { if n.addressed != on { n.addressed = on; self.save(); } } }
     /// QCView's "Delete note": the note and both its images (a user delete is the one thing that removes the PNGs).
     pub fn delete_note(&mut self, key: &str) {
-        self.notes.retain(|n| n.timecode != key); self.undo.retain(|s| s.key != key); self.redo.retain(|s| s.key != key); self.save();
+        self.notes.retain(|n| n.timecode != key); self.tombstones.insert(key.to_string()); self.undo.retain(|s| s.key != key); self.redo.retain(|s| s.key != key); self.save();
         if let Some(m) = &self.media { let dir = io::images_dir(&io::notes_dir(m)); let _ = std::fs::remove_file(dir.join(io::image_filename(key))); let _ = std::fs::remove_file(dir.join(io::annotated_filename(key))); }
     }
     /// QCView: Escape cancels the stroke in progress, else clears the selection. True when it did something.
@@ -257,6 +293,38 @@ fn scale_points(tool: STool, orig: &[[f64; 2]], b: [f64; 4], corner: usize, p: [
     let at = |q: [f64; 2]| [pivot[0] + (q[0] - pivot[0]) * k, pivot[1] + (q[1] - pivot[1]) * k];
     Some(if tool == STool::Oval && orig.len() >= 2 { let mut v = orig.to_vec(); v[0] = at(orig[0]); v[1] = [orig[1][0] * k, orig[1][1] * k]; v } else { orig.iter().map(|q| at(*q)).collect() })
 }
+#[cfg(test)]
+mod sidecar_tests {
+    use super::*;
+    /// minNotes' rules: another app's new note is picked up by the poll and survives our save; ours wins a shared key;
+    /// a note we deleted is not merged back; our own save is no reload.
+    #[test] fn reload_merge_and_tombstones() {
+        let dir = std::env::temp_dir().join(format!("qcv-sidecar-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let media = dir.join("clip.mov"); std::fs::write(&media, b"").unwrap();
+        let note = |tc: &str, text: &str, f: i64| Note { timecode: tc.into(), text: text.into(), frame: f, ..Default::default() };
+        io::save(&media, &[note("00:00:00:01", "a", 1), note("00:00:00:02", "b", 2)]).unwrap();
+        let mut a = Annotations::new(); a.load(Some(&media));
+        let later = |a: &mut Annotations| { a.last_poll -= std::time::Duration::from_secs(1); };
+        // our own save: no reload
+        a.set_text("00:00:00:01", "a2"); later(&mut a); assert!(!a.poll_disk(std::time::Instant::now()));
+        // another app adds a note and edits ours (bumping mtime / length)
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        io::save(&media, &[note("00:00:00:01", "theirs", 1), note("00:00:00:02", "b", 2), note("00:00:00:03", "c", 3)]).unwrap();
+        later(&mut a); assert!(a.poll_disk(std::time::Instant::now()), "their write reloads");
+        assert_eq!(a.notes.len(), 3);
+        // we delete 2 while they (unseen) still hold it: the merge does not bring it back
+        a.delete_note("00:00:00:02");
+        let disk = io::load(&media).unwrap(); assert!(disk.iter().all(|n| n.timecode != "00:00:00:02"), "the delete is durable");
+        // they add 4 we haven't polled; our next save merges it in, our text wins for 1
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut theirs = io::load(&media).unwrap(); theirs.push(note("00:00:00:04", "d", 4)); io::save(&media, &theirs).unwrap();
+        a.set_text("00:00:00:01", "ours");
+        let disk = io::load(&media).unwrap();
+        assert!(disk.iter().any(|n| n.timecode == "00:00:00:04") && disk.iter().find(|n| n.timecode == "00:00:00:01").unwrap().text == "ours", "{disk:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[cfg(test)]
 mod scale_tests {
     use super::*;
