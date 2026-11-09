@@ -39,6 +39,8 @@ pub struct DualTransport {
     /// a seek while playing: (master frame, issued) — the clock holds until both sides land
     gate: Option<(i32, Instant)>,
     scrubbing: Option<bool>, shuttle: Option<Shuttle>,
+    /// a trim / slip drag previewing on a side (QCView `requestScrubFrameForSide`): (the side, playing before it)
+    edit_scrub: Option<(usize, bool)>,
     /// what each side showed last (a Blank is reported once)
     blank: [bool; 2],
 }
@@ -47,7 +49,7 @@ impl DualTransport {
     /// A and / or B (either may be empty: that side is a drop target). Opens PAUSED at frame 0, like QCView's entry.
     pub fn open(a: Option<MediaInfo>, b: Option<MediaInfo>, opts: TransportOptions) -> Result<DualTransport, Error> {
         let mut timer = PlaybackTimer::new(); timer.set_looping(opts.loop_enabled);
-        let mut d = DualTransport { timer, sides: [None, None], media: [None, None], loop_enabled: opts.loop_enabled, opts, rate: Rate::new(24, 1), fps: 24.0, frames: 0, in_point: -1, out_point: -1, review_speed: 1.0, user_wants_playback: false, gate: None, scrubbing: None, shuttle: None, blank: [false; 2] };
+        let mut d = DualTransport { timer, sides: [None, None], media: [None, None], loop_enabled: opts.loop_enabled, opts, rate: Rate::new(24, 1), fps: 24.0, frames: 0, in_point: -1, out_point: -1, review_speed: 1.0, user_wants_playback: false, gate: None, scrubbing: None, shuttle: None, edit_scrub: None, blank: [false; 2] };
         if let Some(m) = a { d.set_side(Side::A, Some(m))?; }
         if let Some(m) = b { d.set_side(Side::B, Some(m))?; }
         Ok(d)
@@ -205,6 +207,23 @@ impl DualTransport {
         if was { self.play(); self.gate = Some((f, Instant::now())); }
     }
 
+    // ---- the edit preview (QCView `requestScrubFrameForSide` / `endEditScrub`) ---------------------------------------------
+    /// While a trim / slip drags on `side`: show SOURCE frame `src` of `clip` there (the playhead stays; playback pauses for the
+    /// gesture). False when that side cannot serve it (another file).
+    pub fn edit_preview(&mut self, side: Side, clip: &str, src: i64) -> bool {
+        let i = side as usize;
+        if self.edit_scrub.is_none() { let was = self.is_playing(); if was { self.pause(); } self.edit_scrub = Some((i, was)); }
+        self.sides[i].as_mut().is_some_and(|t| t.edit_preview(clip, src))
+    }
+    /// The gesture ended: both sides back on the playhead's frame; playback resumes if the drag interrupted it.
+    pub fn end_edit_preview(&mut self) {
+        let Some((i, was)) = self.edit_scrub.take() else { return };
+        if let Some(t) = self.sides[i].as_mut() { t.end_edit_preview(); }
+        let f = self.current_frame(); self.seek_to_frame(f);
+        if was { self.play(); }
+    }
+    pub fn edit_previewing(&self) -> bool { self.edit_scrub.is_some() }
+
     // ---- review speed, loop, in / out -----------------------------------------------------------------------------------
     pub fn set_review_speed(&mut self, speed: f64) {
         let speed = speed.clamp(0.25, 4.0);
@@ -309,6 +328,8 @@ impl DualTransport {
             let sf = side_frame(f, fps, t.rate().as_f64());
             t.follow(sf);
             let new = t.tick(now).is_some();
+            // a side previewing an edit shows its preview frames wherever the playhead is
+            if self.edit_scrub.is_some_and(|(e, _)| e == i) { if new { self.blank[i] = false; out[i] = SideUpdate::New; } continue }
             if !t.has_picture_at(sf) { if !self.blank[i] { self.blank[i] = true; out[i] = SideUpdate::Blank; } continue }
             if new || (self.blank[i] && t.current().is_some()) { self.blank[i] = false; out[i] = SideUpdate::New; }
         }
@@ -376,6 +397,20 @@ mod tests {
         // in the 6-frame hole B blanks
         d.seek_to_frame(15); let mut blank = false; for _ in 0..100 { if d.tick(Instant::now())[1] == SideUpdate::Blank { blank = true; } std::thread::sleep(Duration::from_millis(3)); }
         assert!(blank, "B is in its gap at master 15");
+        for p in [a, b] { let _ = std::fs::remove_file(p); }
+    }
+    #[test]
+    fn a_trim_drag_previews_on_its_side_and_the_playhead_stays() {
+        let (Some(a), Some(b)) = (clip("pa", "24", 2.0), clip("pb", "24", 2.0)) else { eprintln!("ffmpeg missing: skipped"); return };
+        let mut d = DualTransport::open(Some(media_info(&a).unwrap()), Some(media_info(&b).unwrap()), TransportOptions::default()).unwrap();
+        d.seek_to_frame(10); settle(&mut d);
+        let id = d.side(Side::B).unwrap().timeline.tracks[0].clips[0].id.clone();
+        assert!(d.edit_preview(Side::B, &id, 30), "B's scrub decoder serves its own file");
+        let mut previewed = false; for _ in 0..200 { let u = d.tick(Instant::now()); if u[1] == SideUpdate::New && d.side(Side::B).unwrap().current().is_some_and(|h| h.frame_no < 0) { previewed = true; break } std::thread::sleep(Duration::from_millis(3)); }
+        assert!(previewed, "a scrub preview frame reached B");
+        assert_eq!(d.current_frame(), 10, "the playhead never moved");
+        d.end_edit_preview(); settle(&mut d);
+        assert_eq!(d.side(Side::B).unwrap().current().unwrap().frame_no, 10, "B is back on the playhead's frame");
         for p in [a, b] { let _ = std::fs::remove_file(p); }
     }
     #[test]

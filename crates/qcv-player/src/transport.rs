@@ -526,8 +526,10 @@ impl Transport {
     /// that clip is the active one (the shared scrub decoder is open on it; another clip shows nothing, as in QCView). The first
     /// call pauses like a scrub press (`beginEditScrub`); the clock never moves.
     pub fn edit_preview(&mut self, clip_id: &str, src: i64) -> bool {
+        // the active clip — or any clip on the same file (a dual side cut in two: one file, one scrub decoder serves both)
         let active_id = self.timeline.tracks.first().and_then(|t| t.clips.get(self.slots[self.active].clip)).map(|c| c.id.clone());
-        if active_id.as_deref() != Some(clip_id) { return false }
+        let same_file = self.timeline.tracks.first().and_then(|t| t.clips.iter().find(|c| c.id == clip_id)).is_some_and(|c| c.media_path == self.slots[self.active].path);
+        if active_id.as_deref() != Some(clip_id) && !same_file { return false }
         if self.scrubbing.is_none() { self.begin_scrub(); self.edit_scrub = true; }
         let s = &mut self.slots[self.active];
         if let Some(sd) = &mut s.scrub { sd.request_frame(src.max(0) as i32); } else { s.decoder.seek_to_frame(src.max(0) as i32); }

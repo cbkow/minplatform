@@ -1010,9 +1010,12 @@ impl App {
         let mut lcmds = vec![];
         if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { if g.dual_bars.is_pressed() || e.pos().is_some_and(|(x, y)| g.dual_bars.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
             let (c, d) = g.dual_bars.event(&e, now, self.mods.ctrl, self.mods.shift, &ed.timeline, &g.scrubber, &st, scale); if d { g.ui_dirty = true; } lcmds = c;
+            // the edit scrub: the frame at the trim edge / the slipped content on that side while the gesture drags
+            if let (Some((side, clip, src)), Some(d)) = (g.dual_bars.edit_preview(&ed.timeline, &g.scrubber, &st, scale), self.dual.as_mut()) { if matches!(e, min_ui::Event::Move { .. }) { d.edit_preview(side, &clip, src); } }
             let want = match g.dual_bars.hover_zone() { Some(dual_bars::Zone::Head) | Some(dual_bars::Zone::Tail) => winit::cursor::CursorIcon::ColResize, Some(dual_bars::Zone::Body) => winit::cursor::CursorIcon::Grab, None => winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
         } }
+        if matches!(e, min_ui::Event::Up { .. }) { if let Some(d) = self.dual.as_mut() { if d.edit_previewing() { d.end_edit_preview(); } } }
         if !lcmds.is_empty() || g.dual_bars.is_pressed() { for c in lcmds { self.dual_lane_cmd(c); } return }
         let g = self.gpu.as_mut().unwrap();
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);

@@ -98,6 +98,19 @@ impl DualBars {
         };
         (cmd, snap)
     }
+    /// QCView `previewEditScrubFrame` for dual (`requestScrubFrameForSide`): while a trim / slip drags, the side and the SOURCE frame
+    /// it should show — the new in (head), the new last frame (tail), the content under the playhead (slip; None off the clip).
+    pub fn edit_preview(&self, tl: &Timeline, sc: &Scrubber, st: &ScrubState, scale: f64) -> Option<(Side, String, i64)> {
+        let g = self.press.as_ref().filter(|g| g.active && g.op != Op::Slide)?;
+        let c = &g.clip; let last = if c.source_duration > 0 { c.source_duration - 1 } else { i64::MAX };
+        let src = match self.result(g, tl, sc, st, scale).0 {
+            Some(LaneCmd::TrimHead { new_source_in, .. }) => new_source_in,
+            Some(LaneCmd::TrimTail { new_source_out, .. }) => (new_source_out - 1).min(last),
+            Some(LaneCmd::Slip { new_in, .. }) => { let ph = st.current as i64; if !c.contains(ph) { return None } (new_in + rescale(ph - c.start, tl.rate, c.source_rate)).min(last) }
+            _ => match g.op { Op::TrimHead => c.source_in, Op::TrimTail => (c.source_out - 1).min(last), _ => return None },
+        };
+        Some((g.side, c.id.clone(), src))
+    }
     /// Returns (commands, redraw). `ctrl` = Ctrl / Cmd (slip), `shift` = move alone.
     pub fn event(&mut self, e: &Event, now: Instant, ctrl: bool, shift: bool, tl: &Timeline, sc: &Scrubber, st: &ScrubState, scale: f64) -> (Vec<LaneCmd>, bool) {
         let mut cmds = vec![]; let mut dirty = false;
