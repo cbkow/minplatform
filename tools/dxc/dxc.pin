@@ -1,0 +1,7 @@
+# The DirectX Shader Compiler qcv ships on Windows (canon row 226). wgpu compiles every WGSL pipeline to DXIL at run time; without
+# dxcompiler.dll it falls back to FXC, which took 71-78 s for the minColor kernel on rhombus (DXC: 4.8 s). Only dxcompiler.dll is
+# bundled: University of Illinois/NCSA + MIT licensed (LICENSE-LLVM.txt, LICENCE-MIT.txt ship beside it). dxil.dll (closed, the
+# Microsoft licence's EULA + indemnity terms) is NOT needed - DXC validates internally (proven on rhombus, whose only DXC had none).
+DXC_VERSION=v1.9.2609
+DXC_URL=https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip
+DXC_SHA256=AD31B1FC8443175D204F77A611FDB3EF2EC42759BDC2F1167368DE24A4A7E7F1

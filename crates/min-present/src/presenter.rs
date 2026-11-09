@@ -55,13 +55,28 @@ impl Sdr10 {
     }
 }
 
+/// The bundled DXC (canon row 226): beside the executable (the package), else the repo's `external/dxc/win64` (development:
+/// `target/<profile>/qcv.exe` → two folders up).
+fn bundled_dxc() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?; let dir = exe.parent()?;
+    [dir.join("dxcompiler.dll"), dir.join("../../external/dxc/win64/dxcompiler.dll")].into_iter().find(|p| p.is_file())
+}
+
 impl Presenter {
     /// The instance the app creates its surface from: DX12 on Windows (row 45; wgpu's default picks Vulkan on NVIDIA, whose
     /// swapchain is 8-bit there), the platform default elsewhere.
     pub fn instance() -> wgpu::Instance {
         let mut d = wgpu::InstanceDescriptor::new_without_display_handle();
         if cfg!(windows) { d.backends = wgpu::Backends::DX12; }
-        // wgpu's own switches (WGPU_DX12_COMPILER = fxc | dxc …) apply — the shader-compiler measurement on rhombus, 2026-11-09
+        // canon row 226: the bundled DXC, by explicit path — never whatever happens to be on PATH (rhombus had one only from
+        // the Vulkan SDK); without it wgpu falls back to FXC and the minColor kernel took 71–78 s instead of 4.8 s
+        if cfg!(windows) && let Some(dxc) = bundled_dxc() {
+            log::info!("DX12 shader compiler: {}", dxc.display());
+            d.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::DynamicDxc { dxc_path: dxc.to_string_lossy().into_owned() };
+        } else if cfg!(windows) {
+            log::warn!("no bundled dxcompiler.dll beside qcv.exe or in external/dxc/win64 — wgpu falls back to DXC on PATH or FXC (slow first colour)");
+        }
+        // wgpu's own switches (WGPU_DX12_COMPILER = fxc | dxc …) still win — the measurements
         d.backend_options = d.backend_options.with_env();
         wgpu::Instance::new(d)
     }
