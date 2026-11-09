@@ -40,6 +40,10 @@ pub const LOOKAHEAD: usize = 3;
 /// The audio player's call sites, in QCView's shape; step 2b implements them. `NoAudio` is silence.
 pub trait AudioHooks {
     fn has_audio(&self) -> bool { false }
+    /// The OUTPUT tap (canon row 227 step 3; QCView's output-bus tap): the device thread's mix, BEFORE Listen / mute / volume, copied
+    /// while on; `drain_tap` takes what arrived (interleaved stereo at 48 kHz).
+    fn set_output_tap(&mut self, _on: bool) {}
+    fn drain_tap(&mut self, _out: &mut Vec<f32>) {}
     fn play(&mut self) {}
     fn pause(&mut self) {}
     fn seek(&mut self, _source_sec: f64) {}

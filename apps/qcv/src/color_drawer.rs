@@ -91,7 +91,7 @@ pub struct ColorDrawer {
     /// the readout's band under the card (QCView's readout sits below its waveform; the caption row had no room)
     wf_readout: Rect, /// the readout's tooltip (QCView: the brightest channel lives there, not inline)
     tips: min_ui::Tooltips,
-    exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
+    exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, pub(crate) aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
     menu: Menu, menu_for: Option<String>,

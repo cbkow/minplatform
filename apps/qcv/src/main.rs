@@ -61,6 +61,8 @@ mod shortcuts;
 mod live;
 mod live_strip;
 mod blender;
+mod outputs;
+mod output_panel;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -94,7 +96,7 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     strip_hidden: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
-    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
+    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, output_panel: output_panel::OutputPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
     guide: Option<(String, guides::Guide)>, /// the annotated thumbnail's offscreen vello layer (built on first use)
     thumb_layer: Option<min_ui::UiLayer>, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, /// the Keyboard Shortcuts card under it (row 218) and a pending Ctrl+/ scroll
     shortcuts: shortcuts::ShortcutsPanel, shortcuts_reveal: bool, /// the language generation the labels were built in (row 197's live switching)
@@ -116,7 +118,8 @@ struct App {
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
     drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// a QCBridge host feed in the single view (rows 227–228)
     live: Option<live::Live>, /// the Blender input (row 227 2b): the card watcher, this session's item
-    blender: blender::BlenderInput, /// note images off the UI thread (QCView writes them on a worker): the newest clean frame in memory (key, RGBA8, size — the
+    blender: blender::BlenderInput, /// the outputs (row 227 step 3): the registered sinks, their rings, the publisher
+    outputs: outputs::OutputBus, /// note images off the UI thread (QCView writes them on a worker): the newest clean frame in memory (key, RGBA8, size — the
     /// annotated composite and Review read it, not the disk), the workers' results, the annotated redraw due 400 ms after the last stroke
     note_img: Option<(String, std::sync::Arc<Vec<u8>>, (u32, u32))>, note_img_rx: Vec<std::sync::mpsc::Receiver<(String, std::sync::Arc<Vec<u8>>, (u32, u32))>>, annot_due: Option<(String, Instant)>, /// the window's screen shows HDR (None = unknown) — the Color drawer's "highlights clip" pill (row 222)
     pub(crate) screen_hdr: Option<bool>, snapped: bool, verified: bool,
@@ -804,6 +807,7 @@ impl App {
         self.live_tick(Instant::now());   // a QCBridge host feed's newest frame (row 228)
         self.notes_tick(Instant::now());
         self.blender_tick(Instant::now());
+        self.outputs_tick(Instant::now());
         { let lines = self.blender_status(); if let Some(g) = self.gpu.as_mut() && g.settings_panel.set_blender_lines(lines) { g.ui_dirty = true; } }
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
@@ -979,7 +983,7 @@ impl App {
             // the window title: QCView's "clip — project" with a dot while unsaved
             { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("QCView — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("QCView — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
             g.settings_panel.sync(&self.settings, now);
-            if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.shortcuts.animating(now) || g.background_panel.animating(now) || g.background_panel.tooltips.tick(now) || g.guides_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
+            if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.shortcuts.animating(now) || g.background_panel.animating(now) || g.output_panel.animating(now) || g.background_panel.tooltips.tick(now) || g.guides_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {
                 let lc = g.left.content_rect();
                 if g.project_panel.sync(&self.project, &self.loaded_item) { g.ui_dirty = true; }
@@ -1000,7 +1004,10 @@ impl App {
                 { let st = &self.settings; g.guides_panel.sync(&st.string(settings::k::SAFETY_GUIDE), st.float(settings::k::SAFETY_OPACITY) as f32, st.float(settings::k::SAFETY_WIDTH) as f32, &st.string(settings::k::SAFETY_COLOR)); }
                 let gh = g.guides_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);   // QCView's order: Media, Safety Guides, Background, Settings
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh, scale);
-                let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale); g.left.content_height = ph + gh + bh + lh;
+                // the Output section (QCView: after Background, before Settings)
+                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED)) { g.ui_dirty = true; } }
+                let oh = g.output_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale);
+                let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh + oh, scale); g.left.content_height = ph + gh + bh + oh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
                 { let en: &min_present::engine::Engine = match g.presenter.engine.dual() { Some(d) if self.dual.is_some() => if islot == 1 { &d.b } else { &d.a }, _ => &g.presenter.engine }; let (geo, dims) = (en.geometry(), en.display_dims()); g.inspector.set_geometry(geo, dims); }
                 if g.inspector.set_side(self.dual.is_some().then(|| if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A })) { g.ui_dirty = true; }
@@ -1099,7 +1106,7 @@ impl App {
                         rail.paint_background(scene, now);
                         if rail.rect.width() > 0.0 {
                             rail.push_clip(scene);
-                            if is_left { g.project_panel.paint(scene, &mut g.fonts, scale, now, true); g.guides_panel.paint(scene, &mut g.fonts, scale, now, false); g.background_panel.paint(scene, &mut g.fonts, scale, now, false); g.settings_panel.paint(scene, &mut g.fonts, scale, now, false); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); g.shortcuts.paint(scene, &mut g.fonts, scale, now, false); }
+                            if is_left { g.project_panel.paint(scene, &mut g.fonts, scale, now, true); g.guides_panel.paint(scene, &mut g.fonts, scale, now, false); g.background_panel.paint(scene, &mut g.fonts, scale, now, false); g.output_panel.paint(scene, &mut g.fonts, scale, now, false); g.settings_panel.paint(scene, &mut g.fonts, scale, now, false); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); g.shortcuts.paint(scene, &mut g.fonts, scale, now, false); }
                             rail.pop_clip(scene);
                         }
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
@@ -1136,7 +1143,7 @@ impl App {
                 if !g.strip_hidden { g.dualc.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.background_panel.tooltips.paint(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
-                if !g.fullscreen { g.guides_panel.paint_menu(scene, &mut g.fonts, scale); }
+                if !g.fullscreen { g.guides_panel.paint_menu(scene, &mut g.fonts, scale); g.output_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
                 if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.notes.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
@@ -1264,13 +1271,13 @@ impl App {
             // ONE OWNER while a rail popup is open (the walk 2026-11-08: the Guide menu clicked through to the Background tiles): a
             // settings picker / dialog, the Guide picker, the Media context menu — only that panel sees the pointer, wherever it is
             let settings_pop = g.settings_panel.is_modal() || g.settings_panel.menu_open(); let guides_pop = g.guides_panel.menu_open(); let project_pop = g.project_panel.menu_open();
-            let modal = settings_pop || guides_pop;
+            let modal = settings_pop || guides_pop || g.output_panel.menu_open();
             let lr = g.left.event(&e, now); let rr = g.right.event(&e, now);
             if lr.dirty || rr.dirty { g.ui_dirty = true; }
             let over_left = e.pos().is_some_and(|(x, y)| g.left.hit(x, y)); let over_right = e.pos().is_some_and(|(x, y)| g.right.hit(x, y));
             let want = if g.drawer.splitter_hovered() { winit::cursor::CursorIcon::RowResize } else if g.left.splitter_hovered() || g.right.splitter_hovered() { winit::cursor::CursorIcon::ColResize } else if st_hit(self.player.as_ref(), &g.scrubber, e.pos()) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default };
             if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
-            let mut cmds = vec![]; let mut pcmds: Vec<project_panel::Cmd> = vec![]; let mods = self.mods;
+            let mut cmds = vec![]; let mut pcmds: Vec<project_panel::Cmd> = vec![]; let mut ocmds: Vec<output_panel::Cmd> = vec![]; let mods = self.mods;
             // a press on a rail's own control (the collapse arrow, the scrollbar) is the rail's, not the panel's
             let rail_ctl = matches!(e, min_ui::Event::Down { .. }) && e.pos().is_some_and(|(x, y)| g.left.over_control(x, y, now) || g.right.over_control(x, y, now));
             if matches!(e, min_ui::Event::Down { .. }) && !over_right && g.shortcuts.has_focus() { g.shortcuts.blur(); set_ime(&**g.window, false); g.ui_dirty = true; }
@@ -1287,7 +1294,8 @@ impl App {
                     for c in gc { guide_setting(&mut self.settings, c, &mut cmds); }
                     if g.guides_panel.has_focus() != had { set_ime(&**g.window, g.guides_panel.has_focus()); }
                 }
-                if !settings_pop && !guides_pop && !project_pop && !g.guides_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
+                if !settings_pop && !guides_pop && !project_pop { let (oc, d, _) = g.output_panel.event(&e, now, &mut g.fonts, bounds); if d { g.ui_dirty = true; } ocmds = oc; }
+                if !settings_pop && !guides_pop && !project_pop && !g.guides_panel.menu_open() && !g.output_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
                 if !settings_pop && !guides_pop && !g.guides_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; } if g.project_panel.is_editing() != pp_modal_editing { set_ime(&**g.window, g.project_panel.is_editing()); } pcmds.extend(p); }
             }
             if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
@@ -1319,7 +1327,7 @@ impl App {
                 } }
             }
             let dragging = g.project_panel.is_dragging(); let ptr = e.pos();
-            let _ = g; for c in cmds { self.apply_setting(c); } for c in pcmds { self.project_cmd(c); }
+            let _ = g; for c in cmds { self.apply_setting(c); } for c in pcmds { self.project_cmd(c); } for c in ocmds { self.output_cmd(c); }
             if self.pl_editor.is_some() { let hint = match (dragging, ptr) { (true, Some((x, y))) => match self.drop_target(x, y) { Some(DropTarget::Playlist(_)) => self.playlist_drop_index(x), _ => None }, _ => None }; if let Some(g) = self.gpu.as_mut() { if g.clip_bar.set_drop_hint(hint) { g.ui_dirty = true; } } }
             let g = self.gpu.as_mut().unwrap();
             if modal || pp_modal || g.project_panel.menu_open() || lr.consumed || rr.consumed || over_left || over_right { if !matches!(e, min_ui::Event::Leave) { return } }
@@ -1785,6 +1793,7 @@ impl App {
     }
     fn finish(&mut self) {
         i18n::write_misses();
+        { let ids: Vec<String> = self.outputs.outputs.iter().filter(|o| o.enabled).map(|o| o.m.id.clone()).collect(); for id in ids { self.output_stop_quitting(&id); } }
         if let Some(g) = self.gpu.as_mut() {
             g.thumbs.shutdown(); g.thumbs_b.shutdown();
             if !g.fullscreen {
@@ -1845,7 +1854,7 @@ fn about_dialog() -> min_ui::Dialog { min_ui::Dialog::new("QCView", &format!("{}
 /// A language switch (canon row 197, QCView's `retranslate`): every panel's construction-time labels in the new language;
 /// what they show each frame (values, rows built at sync) follows on its own. An open dialog keeps its words until it closes.
 fn relabel(g: &mut Gpu) {
-    g.settings_panel.relabel(); g.background_panel.relabel(); g.guides_panel.relabel(); g.project_panel.relabel();
+    g.settings_panel.relabel(); g.background_panel.relabel(); g.output_panel.relabel(); g.guides_panel.relabel(); g.project_panel.relabel();
     g.inspector.relabel(); g.shortcuts.relabel(); g.bar.relabel(); g.strip.relabel(); g.live_strip.relabel(); g.compact_strip.relabel();
     g.dualc.relabel(); g.clip_popover.relabel(); g.drawer.relabel(); g.notes.relabel();
     if !g.about.open { g.about = about_dialog(); }
@@ -2060,7 +2069,7 @@ impl ApplicationHandler for App {
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
         self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), output_panel: output_panel::OutputPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
         // the scrubber's camera insets 16 px at both ends (the walk, 2026-11-08): past macOS's rounded bottom corners, so the
@@ -2404,7 +2413,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

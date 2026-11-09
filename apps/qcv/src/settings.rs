@@ -22,6 +22,18 @@ pub mod k {
     pub fn live_sync_key(host: &str) -> &'static str { match host { "ae" => LIVE_SYNC_OFFSET_MS_AE, "probe" => LIVE_SYNC_OFFSET_MS_PROBE, _ => LIVE_SYNC_OFFSET_MS } }
     pub const LIVE_BUFFER_MS: &str = "audio/liveBufferMs";
     pub const BLENDER_SESSIONS: &str = "bridge/blenderSessions";
+    /// QCView's Output section (row 227 step 3): the feed mute, and per shipped sink (ndi, aja) the enabled flag + its settings
+    pub const OUTPUT_FEED_MUTED: &str = "output/feedMuted";
+    /// `output/enabled/<id>` and `output/<id>/<field>` for the two shipped sinks (the schema is static; another id keeps its
+    /// settings in memory only)
+    pub fn output_key(id: &str, field: &str) -> Option<&'static str> {
+        Some(match (id, field) {
+            ("ndi", "enabled") => "output/enabled/ndi", ("aja", "enabled") => "output/enabled/aja",
+            ("ndi", "raster") => "output/ndi/raster", ("ndi", "transfer") => "output/ndi/transfer", ("ndi", "primaries") => "output/ndi/primaries", ("ndi", "peakNits") => "output/ndi/peakNits", ("ndi", "minNits") => "output/ndi/minNits", ("ndi", "maxCll") => "output/ndi/maxCll", ("ndi", "maxFall") => "output/ndi/maxFall",
+            ("aja", "raster") => "output/aja/raster", ("aja", "transfer") => "output/aja/transfer", ("aja", "primaries") => "output/aja/primaries", ("aja", "peakNits") => "output/aja/peakNits", ("aja", "minNits") => "output/aja/minNits", ("aja", "maxCll") => "output/aja/maxCll", ("aja", "maxFall") => "output/aja/maxFall",
+            _ => return None,
+        })
+    }
     pub const BACKGROUND_MODE: &str = "display/backgroundMode";
     /// QCView `safety/colorHex`; the guide, opacity and width persist too (row 215)
     pub const SAFETY_COLOR: &str = "safety/colorHex";
@@ -82,6 +94,9 @@ static KEYS: &[Key] = &[
     Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_AE, 0, -200, 200), Key::int(k::LIVE_SYNC_OFFSET_MS_PROBE, 0, -200, 200),
     Key::int(k::LIVE_BUFFER_MS, 60, 20, 200),
     Key::bool(k::BLENDER_SESSIONS, false),
+    Key::bool(k::OUTPUT_FEED_MUTED, false),
+    Key::bool("output/enabled/ndi", false), Key::int("output/ndi/raster", 0, 0, 2), Key::int("output/ndi/transfer", 1, 1, 3), Key::int("output/ndi/primaries", 1, 1, 2), Key::float("output/ndi/peakNits", 1000.0, 1.0, 10000.0), Key::float("output/ndi/minNits", 0.005, 0.0, 1000.0), Key::int("output/ndi/maxCll", 1000, 0, 10000), Key::int("output/ndi/maxFall", 400, 0, 10000),
+    Key::bool("output/enabled/aja", false), Key::int("output/aja/raster", 0, 0, 2), Key::int("output/aja/transfer", 1, 1, 3), Key::int("output/aja/primaries", 1, 1, 2), Key::float("output/aja/peakNits", 1000.0, 1.0, 10000.0), Key::float("output/aja/minNits", 0.005, 0.0, 1000.0), Key::int("output/aja/maxCll", 1000, 0, 10000), Key::int("output/aja/maxFall", 400, 0, 10000),
     Key::int(k::BACKGROUND_MODE, 0, 0, 3),
     Key::float(k::BRIGHTNESS, 1.0, 0.0, 4.0),
     Key::str(k::SCREENSHOT_FORMAT, "png"), Key::bool(k::SCREENSHOT_GUIDES, false),

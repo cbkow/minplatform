@@ -41,7 +41,8 @@ struct CbShared {
     shuttle: ShuttleAudioEngine,
     /// a live source (row 228): it plays as it arrives; `playdown` = QCView's Listen (`audio/livePlaydown`, default off) —
     /// off, the drain still runs (meters, taps) and the output is zeroed
-    live: AtomicBool, playdown: AtomicBool,
+    live: AtomicBool, playdown: AtomicBool, /// the outputs' tap (row 227 step 3): the mix before mute / volume / Listen, ~1 s of stereo
+    tap_on: AtomicBool, tap: super::ring::AudioRing,
     callbacks: AtomicU64, contended: AtomicU64,
     /// Callbacks whose output block had signal (peak > −60 dBFS) — the bench's proof that audio actually flowed.
     audible: AtomicU64,
@@ -79,7 +80,7 @@ impl AudioPlayer {
     /// A silent, wall-paced device (headless benches).
     pub fn headless() -> Result<AudioPlayer, crate::Error> { Self::with_device(|r| Ok(Box::new(NullDevice::new(r, 48000, 10)) as Box<dyn AudioDevice>)) }
     fn with_device(make: impl FnOnce(RenderFn) -> Result<Box<dyn AudioDevice>, crate::Error>) -> Result<AudioPlayer, crate::Error> {
-        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), side_gain: AtomicU32::new(1.0f32.to_bits()), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), live: AtomicBool::new(false), playdown: AtomicBool::new(false), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
+        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), side_gain: AtomicU32::new(1.0f32.to_bits()), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), live: AtomicBool::new(false), playdown: AtomicBool::new(false), tap_on: AtomicBool::new(false), tap: super::ring::AudioRing::new(48000 * 2), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
         let c = cb.clone();
         let render: RenderFn = Box::new(move |out: &mut [f32]| Self::process_audio(&c, out));
         let device = make(render)?;
@@ -95,6 +96,7 @@ impl AudioPlayer {
         if c.shuttle.active() {
             // the grain ring INSTEAD of the main decoder (whose decode thread idles on back-pressure, ready for the commit seek)
             c.shuttle.read(out);
+            if c.tap_on.load(Relaxed) { c.tap.write(out); }
             if c.muted.load(Relaxed) { out.fill(0.0); return }
             let vol = f32::from_bits(c.volume.load(Relaxed)) * f32::from_bits(c.side_gain.load(Relaxed)); for v in out.iter_mut() { *v *= vol; }
             return
@@ -106,6 +108,7 @@ impl AudioPlayer {
         let ratio = f32::from_bits(c.servo_ratio.load(Relaxed)) as f64;
         let extra_hold = !c.playing.load(Acquire);
         drain.process(&**dec, out, frames, ratio, scratch, &c.consumed, &c.req, extra_hold);
+        if c.tap_on.load(Relaxed) { c.tap.write(out); }   // QCView: the outputs hear the mix before Listen, mute and volume
         if c.muted.load(Relaxed) || (c.live.load(Relaxed) && !c.playdown.load(Relaxed)) { out.fill(0.0); return }
         let vol = f32::from_bits(c.volume.load(Relaxed)) * f32::from_bits(c.side_gain.load(Relaxed));
         let mut peak = 0.0f32;
@@ -132,6 +135,10 @@ impl AudioPlayer {
         log::info!("AudioPlayer: live source playing, device buffer latency {:.1} ms", self.device.buffer_latency_seconds() * 1000.0);
         live
     }
+    /// The outputs' tap on / off (off empties it).
+    pub fn set_output_tap(&mut self, on: bool) { if !on { self.cb.tap.discard_all(); } self.cb.tap_on.store(on, Release); }
+    /// What the tap gathered since the last call, appended to `out`.
+    pub fn drain_tap(&mut self, out: &mut Vec<f32>) { let n = self.cb.tap.available_read(); if n == 0 { return } let o = out.len(); out.resize(o + n, 0.0); let got = self.cb.tap.read(&mut out[o..]); out.truncate(o + got); }
     /// QCView's Listen toggle for a live source (`setLivePlaydown`).
     pub fn set_live_playdown(&mut self, on: bool) { self.cb.playdown.store(on, Release); }
     pub fn live_playdown(&self) -> bool { self.cb.playdown.load(Acquire) }
@@ -250,6 +257,8 @@ impl AudioHooks for AudioPlayer {
         if let Some(d) = &self.decoder { d.set_tempo(t); }
     }
     fn set_muted(&mut self, m: bool) { self.cb.muted.store(m, Relaxed); }
+    fn set_output_tap(&mut self, on: bool) { AudioPlayer::set_output_tap(self, on) }
+    fn drain_tap(&mut self, out: &mut Vec<f32>) { AudioPlayer::drain_tap(self, out) }
     fn set_routing_mode(&mut self, m: RoutingMode) { AudioPlayer::set_routing_mode(self, m); }
     fn routing_mode(&self) -> RoutingMode { self.routing }
     fn peak_levels(&self) -> [f32; 16] { AudioPlayer::peak_levels(self) }
