@@ -111,6 +111,19 @@ impl DualBars {
         };
         Some((g.side, c.id.clone(), src))
     }
+    /// The sync readout for the status strip (the walk 2026-11-08: the hover badge sat over the scrubber): the hovered clip's
+    /// offset against the other side's clip at the same spot (its first one otherwise) — else the selected clip's, else the
+    /// target side's clip under the playhead. "B −14 f vs A".
+    pub fn offset_text(&self, tl: &Timeline, playhead: i64) -> Option<String> {
+        let (side, clip) = if let Some((s, id, _)) = &self.hover { (*s, clips(tl, *s).into_iter().find(|c| c.id == *id)?) }
+            else if let Some((s, id)) = &self.selected { (*s, clips(tl, *s).into_iter().find(|c| c.id == *id)?) }
+            else { (self.target, clips(tl, self.target).into_iter().find(|c| c.contains(playhead))?) };
+        let other = if side == Side::A { Side::B } else { Side::A };
+        let name = |x: Side| if x == Side::A { "A" } else { "B" };
+        let oc = clips(tl, other); let base = oc.iter().find(|k| k.contains(clip.start)).or(oc.first()).map(|k| offset(k, tl.rate))?;
+        let o = offset(clip, tl.rate) - base;
+        Some(format!("{} {}{} f vs {}", name(side), if o > 0 { "+" } else if o < 0 { "−" } else { "" }, o.abs(), name(other)))
+    }
     /// Returns (commands, redraw). `ctrl` = Ctrl / Cmd (slip), `shift` = move alone.
     pub fn event(&mut self, e: &Event, now: Instant, ctrl: bool, shift: bool, tl: &Timeline, sc: &Scrubber, st: &ScrubState, scale: f64) -> (Vec<LaneCmd>, bool) {
         let mut cmds = vec![]; let mut dirty = false;
@@ -200,14 +213,6 @@ impl DualBars {
                 _ => (0, 0),
             };
             Some(format!("{}{n} f  →  {at}", if n > 0 { "+" } else { "" }))
-        } else if let Some((s, id, _)) = &self.hover {
-            // the clip's offset against the other side's clip at the same spot (its first one otherwise): "B −14 f vs A"
-            let other = if *s == Side::A { Side::B } else { Side::A };
-            clips(tl, *s).into_iter().find(|c| c.id == *id).map(|c| {
-                let oc = clips(tl, other); let base = oc.iter().find(|k| k.contains(c.start)).or(oc.first()).map(|k| offset(k, tl.rate));
-                let name = |x: Side| if x == Side::A { "A" } else { "B" };
-                match base { Some(b) => { let o = offset(c, tl.rate) - b; format!("{} {}{o} f vs {}", name(*s), if o > 0 { "+" } else { "" }, name(other)) } None => { let o = offset(c, tl.rate); format!("{} {}{o} f", name(*s), if o > 0 { "+" } else { "" }) } }
-            })
         } else { None };
         if let Some(txt) = text {
             let l = fonts.layout(&txt, Family::Mono, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::PLAYLIST_BAR_LABEL_COLOR));

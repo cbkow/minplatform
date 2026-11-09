@@ -29,6 +29,8 @@ pub struct StatusStrip {
     pub tooltips: Tooltips, fps_rect: Rect,
     /// `Some("")` = from start; `Some(tc)` = that timecode as frame 0's label; `None` = the file's embedded timecode
     pub origin: Option<String>,
+    /// dual view's sync readout (row 212), quiet text right of the timecode
+    pub extra: String,
     pub rect: Rect,
     popover: Popover, field: TextField, mode: Mode, error: bool,
     fmt: Option<TimecodeFormatter>, start: i32, frame_count: i32, duration_s: f64, drop_frame: bool,
@@ -43,7 +45,7 @@ impl StatusStrip {
     pub fn new() -> StatusStrip {
         let mut field = TextField::new(Family::Mono, t::CODE_SIZE_S);
         field.placeholder = tr("frame number").into();
-        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, origin: None, rect: Rect::ZERO, popover: Popover::new(tr("GO TO FRAME")), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
+        StatusStrip { frame: Well::new(), tc: Well::new(), fps: String::new(), tooltips: Tooltips::default(), fps_rect: Rect::ZERO, origin: None, extra: String::new(), rect: Rect::ZERO, popover: Popover::new(tr("GO TO FRAME")), field, mode: Mode::Frame, error: false, fmt: None, start: 0, frame_count: 0, duration_s: 0.0, drop_frame: false }
     }
     pub fn is_open(&self) -> bool { self.popover.open }
     /// The SMPTE readout's text (compact mode shows it in its own band).
@@ -66,6 +68,8 @@ impl StatusStrip {
     }
     /// The right edge of the frame / timecode wells (dual view's controls start beyond it).
     pub fn wells_right(&self) -> f64 { self.tc.rect.x1 }
+    /// The extra readout's width (0 when there is none).
+    pub fn extra_width(&self, fonts: &mut Fonts, scale: f64) -> f64 { if self.extra.is_empty() { 0.0 } else { fonts.layout(&self.extra, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)).width() as f64 + t::SPACING_300 as f64 * scale } }
     /// The fps readout's width (it ends the strip on the right).
     pub fn fps_width(&self, fonts: &mut Fonts, scale: f64) -> f64 { if self.fps.is_empty() { 0.0 } else { fonts.layout(&self.fps, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)).width() as f64 } }
     pub fn layout(&mut self, w: f64, y: f64, scale: f64) {
@@ -179,6 +183,11 @@ impl StatusStrip {
             let color = if i == 1 && drop { t::TIMECODE_DROP_FRAME_COLOR } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
             let l = fonts.layout(&w.text, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(color));
             min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((w.rect.x0 + pad, w.rect.y0 + (w.rect.height() - l.height() as f64) / 2.0)));
+        }
+        if !self.extra.is_empty() {
+            let l = fonts.layout(&self.extra, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
+            let x = self.tc.rect.x1 + t::SPACING_300 as f64 * scale; let y = self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0;
+            min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((x, y)));
         }
         if !self.fps.is_empty() {
             let l = fonts.layout(&self.fps, Family::Mono, t::CODE_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));

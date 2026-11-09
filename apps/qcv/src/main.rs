@@ -665,6 +665,8 @@ impl App {
                 let (mode, seam, gain) = g.presenter.engine.dual().map(|d| (d.mode, d.seam, d.gain)).unwrap_or((CompareMode::Single, 0.5, 1.0));
                 if g.dualc.sync(self.dual.is_some(), self.pl_editor.is_none(), mode, a, b, seam, gain, !self.active_dual_view.is_empty()) { g.ui_dirty = true; }
                 if g.dualc.set_target(g.dual_bars.target) { g.ui_dirty = true; }
+                let extra = match (self.dual.as_ref(), self.dual_editor.as_ref()) { (Some(d), Some(ed)) => g.dual_bars.offset_text(&ed.timeline, d.current_frame() as i64).unwrap_or_default(), _ => String::new() };
+                if extra != g.strip.extra { g.strip.extra = extra; g.ui_dirty = true; }
                 let aud = |s: qcv_player::Side| self.dual.as_ref().filter(|d| d.side_has_audio(s)).map(|d| d.side_muted(s));
                 if g.dualc.set_audio(aud(qcv_player::Side::A), aud(qcv_player::Side::B)) { g.ui_dirty = true; }
                 if g.dualc.tick(now) || g.dualc.animating(now) { g.ui_dirty = true; }
@@ -794,7 +796,8 @@ impl App {
                 g.strip.sync(pb(&self.dual, &self.player));
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
                 { let sr = g.strip.rect; let fw = g.strip.fps_width(&mut g.fonts, scale); let gap = t::SPACING_300 as f64 * scale;
-                  g.dualc.layout(&mut g.fonts, g.strip.wells_right() + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale); }
+                  let ew = g.strip.extra_width(&mut g.fonts, scale);
+                  g.dualc.layout(&mut g.fonts, g.strip.wells_right() + ew + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale); }
                 // the seam (Split wipe: grey, white under the pointer / while dragged) and side-by-side's fixed grey centre line (QCView's compositor)
                 let seam_line = g.presenter.engine.dual().and_then(|d| match d.mode { CompareMode::Split => Some((d.seam_x(), g.seam_hot || g.seam_drag)), CompareMode::SideBySide => g.presenter.engine.content_rect().map(|(cx, _, cw, _)| (cx as f64 + (cw / 2) as f64, false)), _ => None });
                 let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
