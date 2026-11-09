@@ -8,6 +8,7 @@ pub mod ringslot;
 pub mod mapping;
 pub mod qcae;
 pub mod audio;
+pub mod qcvo;
 pub mod url;
 #[cfg(target_os = "macos")] pub mod mtl;
 

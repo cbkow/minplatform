@@ -20,4 +20,4 @@ objc2 = { workspace = true }
 objc2-metal = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_SystemInformation"] }
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_SystemInformation", "Win32_System_Performance"] }

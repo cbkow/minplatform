@@ -79,3 +79,33 @@ fn audio_arrives_in_order_and_a_lapped_reader_resyncs() {
     assert!(cons.read_session(&mut known).is_none(), "unchanged generation");
     assert_eq!(cons.state(), audio::State::Pushing);
 }
+
+/// QCVO (step 3): the sink attaches and asks; QCView answers and publishes; the sink takes the frame and its desc.
+#[test]
+fn an_output_ring_round_trip() {
+    use qcv_ring::qcvo::{self, v, OutputRing};
+    assert!(qcvo::name_for("Bad_Id").is_none() && qcvo::name_for("abcdefghijklmn").is_none(), "the id rule");
+    assert_eq!(qcvo::audio_name_for("ndi").as_deref(), Some("/qcview-out-ndi-audio"));
+    let id = format!("t{}", std::process::id() % 100000);
+    let name = qcvo::name_for(&id).unwrap(); let _ = qcv_ring::mapping::unlink(&name);
+    let mut prod = OutputRing::create(&name, qcvo::frame_bytes(64, 32, OutputPixelFormat::Bgra8), 3, OUTPUT_LAUNCHED_BY_PRODUCER).unwrap();
+    let mut sink = OutputRing::open(&name).unwrap();
+    let now = qcvo::now_ns();
+    sink.attach(now);
+    sink.write_request(OutputRequest { protocol_version: 1, width: 64, height: 32, pixel_format: OutputPixelFormat::Bgra8 as u32, transfer: v::TRANSFER_SDR, fit: v::FIT_LETTERBOX, content: v::CONTENT_COMPOSITE, ..Default::default() });
+    assert!(prod.consumer_present(qcvo::now_ns()) && prod.consumer_pid() != 0);
+    let req = prod.read_request().expect("the request"); assert_eq!((req.width, req.height), (64, 32));
+    let mut msg = [0u8; OUTPUT_MESSAGE_BYTES]; msg[..2].copy_from_slice(b"ok");
+    prod.write_reply(OutputReply { accepted: 1, refusal: 0, width: 64, height: 32, pixel_format: OutputPixelFormat::Bgra8 as u32, transfer: v::TRANSFER_SDR, content: v::CONTENT_COMPOSITE, layers: 0, message: msg }, prod.request_generation());
+    let (rep, _) = sink.read_reply().expect("the reply"); assert_eq!(rep.accepted, 1);
+    let bpr = aligned_bytes_per_row(64, 4);
+    let dst = prod.begin_write(bpr as u64 * 32).unwrap(); unsafe { std::ptr::write_bytes(dst, 0x7f, (bpr * 32) as usize) };
+    prod.commit(OutputFrameDesc { width: 64, height: 32, bytes_per_row: bpr, pixel_format: OutputPixelFormat::Bgra8 as u32, transfer: v::TRANSFER_SDR, flags: v::FRAME_HAS_A | v::FRAME_PAUSED, presentation_ns: qcvo::now_ns(), source_frame_index: 42, source_fps_num: 24000, source_fps_den: 1001, ..Default::default() });
+    let (d, px) = sink.acquire_latest().expect("the frame");
+    assert_eq!((d.source_frame_index, d.flags & v::FRAME_PAUSED != 0, unsafe { *px }), (42, true, 0x7f));
+    sink.release(); sink.report_seen(prod.newest_seq());
+    assert_eq!(prod.last_seen(), prod.newest_seq());
+    prod.set_state(OutputState::Retired);
+    assert_eq!(sink.header().state.load(std::sync::atomic::Ordering::Acquire), OutputState::Retired as u32);
+    drop(sink); drop(prod); let _ = qcv_ring::mapping::unlink(&name);
+}
