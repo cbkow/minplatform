@@ -1,7 +1,7 @@
 //! S4 — the shared mapping (vendor/qcbae `ring_mapping`): POSIX `shm_open` (`O_CREAT|O_EXCL`, 0600, unlink-first, names ≤ 31 bytes)
 //! + `mmap`; Windows `CreateFileMappingW` on the pagefile as `Local\`+name + `MapViewOfFile`. Open = map the header page, check
 //! magic + EXACT version, read `total_size`, verify the object's size, then map all.
-use std::ffi::CString;
+#[cfg(unix)] use std::ffi::CString;
 
 pub struct Mapping { pub base: *mut u8, pub size: usize, pub name: String, pub owner: bool, #[cfg(unix)] fd: i32, #[cfg(windows)] handle: isize }
 unsafe impl Send for Mapping {}

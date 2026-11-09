@@ -128,6 +128,7 @@ impl HostFeed {
         let (w, h, bpr) = (d.width, d.height, d.bytes_per_row);
         let premultiplied = d.flags & FLAG_PREMULTIPLIED != 0;
         let meta = ColorMeta { transfer: Transfer::Srgb, range: Range::Full, bit_depth: 16, ..Default::default() };   // untagged: as stored (QCView)
+        #[allow(unused_labels)]   // the label is the macOS zero-copy path's
         let pixels = 'px: {
             #[cfg(target_os = "macos")]
             if let Some(dev) = device {
