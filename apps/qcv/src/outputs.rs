@@ -404,7 +404,9 @@ impl crate::App {
                 let pass = self.outputs.stream.nv12.get_or_insert_with(|| qcv_stream::nv12::Nv12Pass::new(&dev));
                 let mut ce = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("stream nv12") });
                 pass.encode(&dev, &mut ce, &wire.create_view(&Default::default()), &surface.y, &surface.cbcr);
+                surface.before_submit(&mut ce);
                 q.submit([ce.finish()]);
+                surface.after_submit(&dev, &q);   // Windows: the planes into the encoder's texture, on the GPU (spike S7)
                 let sub = sink.submitter();
                 q.on_submitted_work_done(move || sub.submit(surface));   // the surface is the encoder's once the GPU is done
                 self.outputs.stream.published = Some(stamp);

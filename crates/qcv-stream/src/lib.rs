@@ -1,7 +1,7 @@
 //! QCView's STREAM output (canon row 239, `docs/phase2/step4-stream-card.md`; QCView `src/output/`): the viewport's SDR
 //! picture and the mixed audio to a streaming server — built for Louper — as H.264 + AAC, MPEG-TS over SRT or FLV over
-//! RTMP. The original's design, for its reasons: a NATIVE hardware session per OS ([`vt`] VideoToolbox; Media Foundation
-//! follows the Windows spike) that owns the NV12 surfaces, our own GPU conversion writing them in place ([`nv12`]: BT.709,
+//! RTMP. The original's design, for its reasons: a NATIVE hardware session per OS (`vt` VideoToolbox; `mf` Media Foundation,
+//! by spike S7's route) that owns the NV12 surfaces, our own GPU conversion writing them in place ([`nv12`]: BT.709,
 //! limited range, QCView's maths — no CPU copy, never an encoder's default matrix), FFmpeg only for AAC, the muxers and the
 //! protocols ([`mux`]).
 pub mod aac;
@@ -10,6 +10,8 @@ pub mod nv12;
 pub mod sink;
 #[cfg(target_os = "macos")]
 pub mod vt;
+#[cfg(windows)]
+pub mod mf;
 
 /// QCView `H264Profile`: Baseline is what Louper's recipe asks for; Main where the service takes it. Never B-frames.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

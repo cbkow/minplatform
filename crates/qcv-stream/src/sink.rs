@@ -17,26 +17,28 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
-pub use crate::vt::{Surface, SurfacePool};
-#[cfg(target_os = "macos")]
-use crate::vt::VtSession as Session;
-#[cfg(not(target_os = "macos"))]
+pub use crate::vt::{Surface, SurfacePool, VtSession as Session};
+#[cfg(windows)]
+pub use crate::mf::{MfSession as Session, Surface, SurfacePool};
+#[cfg(not(any(target_os = "macos", windows)))]
 mod none {
-    //! No hardware session yet on this OS (Windows: Media Foundation after the step 4d spike).
+    //! No hardware session on this OS.
     pub struct Surface { pub y: wgpu::TextureView, pub cbcr: wgpu::TextureView }
+    impl Surface { pub fn before_submit(&self, _: &mut wgpu::CommandEncoder) {} pub fn after_submit(&self, _: &wgpu::Device, _: &wgpu::Queue) {} }
     pub struct SurfacePool;
     impl SurfacePool { pub fn new(_: u32, _: u32) -> Result<SurfacePool, String> { Err("no hardware encoder on this platform yet".into()) } pub fn acquire(&self, _: &wgpu::Device) -> Option<Surface> { None } }
     pub struct Session;
-    impl Session { pub const NAME: &'static str = ""; pub fn open(_: &crate::EncoderSpec, _: Box<dyn Fn(crate::EncodedUnit) + Send + Sync>) -> Result<Session, String> { Err("no hardware encoder on this platform yet".into()) } pub fn encode(&self, _: &Surface, _: i64, _: i64, _: bool) -> bool { false } }
+    impl Session { pub fn open(_: &crate::EncoderSpec, _: &SurfacePool, _: Box<dyn Fn(crate::EncodedUnit) + Send + Sync>) -> Result<Session, String> { Err("no hardware encoder on this platform yet".into()) } pub fn encode(&self, _: &Surface, _: i64, _: i64, _: bool) -> bool { false } }
 }
-#[cfg(not(target_os = "macos"))]
-pub use none::{Surface, SurfacePool};
-#[cfg(not(target_os = "macos"))]
-use none::Session;
+#[cfg(not(any(target_os = "macos", windows)))]
+pub use none::{Session, Surface, SurfacePool};
 
-/// Does this OS have the hardware session (QCView `available`)?
-pub fn available() -> bool { cfg!(target_os = "macos") }
-pub fn encoder_name() -> &'static str { Session::NAME }
+/// Does this machine have the hardware session (QCView `available`)? macOS: VideoToolbox; Windows: a hardware H.264 MFT.
+pub fn available() -> bool {
+    #[cfg(target_os = "macos")] { true }
+    #[cfg(windows)] { crate::mf::available() }
+    #[cfg(not(any(target_os = "macos", windows)))] { false }
+}
 
 /// QCView `StreamConfig`. `fps_num` 0 = auto: the source's rate when the session starts (30 when it has none).
 #[derive(Clone, Debug, PartialEq)]
@@ -135,7 +137,7 @@ impl StreamSink {
         let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| std::thread::Builder::new().name(name.into()).spawn(f).map_err(|e| e.to_string());
         { let s = sh.clone(); threads.push(spawn("stream mux", Box::new(move || mux_thread(s)))?); }
         if let Some(aac) = aac { let s = sh.clone(); threads.push(spawn("stream audio", Box::new(move || audio_thread(s, aac)))?); }
-        { let s = sh.clone(); threads.push(spawn("stream clock", Box::new(move || paced_thread(s)))?); }
+        { let (s, p) = (sh.clone(), pool.clone()); threads.push(spawn("stream clock", Box::new(move || paced_thread(s, p)))?); }
         Ok(StreamSink { sh, pool, threads })
     }
     pub fn config(&self) -> &StreamConfig { &self.sh.cfg }
@@ -196,7 +198,7 @@ impl Submitter {
     }
 }
 
-fn paced_thread(sh: Arc<Shared>) {
+fn paced_thread(sh: Arc<Shared>, pool: Arc<SurfacePool>) {
     // the first picture
     { let mut l = sh.latest.lock().unwrap(); while l.is_none() && !sh.stopping() { l = sh.latest_cv.wait_timeout(l, Duration::from_millis(50)).unwrap().0; } }
     if sh.stopping() { return }
@@ -205,7 +207,7 @@ fn paced_thread(sh: Arc<Shared>) {
     *sh.fps.lock().unwrap() = (n, d);
     sh.set_state(State::OpeningEncoder);
     let spec = EncoderSpec { width: sh.cfg.width, height: sh.cfg.height, fps_num: n, fps_den: d, bitrate_kbps: sh.cfg.bitrate_kbps, gop_frames: (n as f64 / d as f64).round().max(1.0) as u32, profile: sh.cfg.profile };
-    let session = { let s = sh.clone(); match Session::open(&spec, Box::new(move |u| { s.encoded.fetch_add(1, Relaxed); s.enqueue(u); })) { Ok(s) => s, Err(e) => { sh.fail(e); return } } };
+    let session = { let s = sh.clone(); match Session::open(&spec, &pool, Box::new(move |u| { s.encoded.fetch_add(1, Relaxed); s.enqueue(u); })) { Ok(s) => s, Err(e) => { sh.fail(e); return } } };
     sh.encoder_open.store(true, Release);
     while !sh.mux_ready.load(Acquire) && !sh.stopping() { std::thread::sleep(Duration::from_millis(5)); }
     if sh.stopping() { return }

@@ -94,6 +94,12 @@ fn dict(pairs: &[(Ref, Ref)]) -> Cf {
 /// the buffer back to the pool once VideoToolbox has let go of it too.
 pub struct Surface { pb: Cf, pub y: wgpu::TextureView, pub cbcr: wgpu::TextureView }
 unsafe impl Send for Surface {}
+impl Surface {
+    /// The Windows surface needs work around the queue's submit (its planes are copied on the GPU); here the pass wrote the
+    /// encoder's own memory.
+    pub fn before_submit(&self, _enc: &mut wgpu::CommandEncoder) {}
+    pub fn after_submit(&self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
+}
 
 /// The encoder's surfaces (QCView `prepareSurfaces` / `acquireSurface`): at least 4 buffers, never more than 8 alive — a
 /// stalled encoder cannot grow the pool; the renderer skips the frame instead ("≤ 3 in flight, skip rather than queue").
@@ -160,7 +166,8 @@ unsafe impl Send for VtSession {}
 
 impl VtSession {
     pub const NAME: &'static str = "VideoToolbox H.264";
-    pub fn open(spec: &EncoderSpec, out: Box<dyn Fn(EncodedUnit) + Send + Sync>) -> Result<VtSession, String> {
+    pub fn available() -> bool { true }
+    pub fn open(spec: &EncoderSpec, _pool: &SurfacePool, out: Box<dyn Fn(EncodedUnit) + Send + Sync>) -> Result<VtSession, String> {
         let cb = Box::new(Callback { out, encoded: AtomicU64::new(0), errors: AtomicU64::new(0) });
         let (fmt, w, h) = (int(NV12_VIDEO_RANGE), int(spec.width as i32), int(spec.height as i32));
         let mut session: Ref = std::ptr::null();

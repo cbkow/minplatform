@@ -5,9 +5,9 @@
 //!
 //! It prints `expect x y Y Cb Cr` for the centre of every flat patch (QCView's BT.709 limited maths): decode the received
 //! stream to yuv420p and compare.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn main() {
-    use qcv_stream::{mux, nv12::Nv12Pass, pts90k, vt, EncodedUnit, EncoderSpec, Profile};
+    use qcv_stream::{mux, nv12::Nv12Pass, pts90k, sink, EncodedUnit, EncoderSpec, Profile};
     use std::sync::{atomic::AtomicBool, mpsc, Arc};
     use std::time::{Duration, Instant};
     let a: Vec<String> = std::env::args().skip(1).collect();
@@ -20,7 +20,7 @@ fn main() {
 
     let e = min_present::engine::Engine::headless(wgpu::TextureFormat::Rgba16Float).expect("a GPU");
     let (dev, q) = (e.device.clone(), e.queue.clone());
-    let pool = vt::SurfacePool::new(w, h).expect("the surface pool");
+    let pool = sink::SurfacePool::new(w, h).expect("the surface pool");
     let pass = Nv12Pass::new(&dev);
 
     // the picture: 8 bars over the top two thirds, 8 grey steps below — encoded sRGB, as the wire texture is
@@ -45,7 +45,9 @@ fn main() {
 
     let (tx, rx) = mpsc::channel::<EncodedUnit>();
     let spec = EncoderSpec { width: w, height: h, fps_num: fn_, fps_den: fd, bitrate_kbps: kbps, gop_frames: (fn_ as f64 / fd as f64).round() as u32, profile };
-    let session = vt::VtSession::open(&spec, Box::new(move |u| { let _ = tx.send(u); })).expect("the encoder");
+    // the encoder opens once a surface exists (Windows makes its devices on the first acquire)
+    let mut session: Option<sink::Session> = None;
+    let mut held = std::collections::VecDeque::new();
     let stop = Arc::new(AtomicBool::new(false));
     let mut m = mux::Muxer::new(stop.clone());
     let cfg = mux::MuxConfig { url: url.clone(), width: w, height: h, fps_num: fn_, fps_den: fd, video_kbps: kbps, srt_latency_ms: 120, ..Default::default() };
@@ -66,9 +68,13 @@ fn main() {
             Some(surface) => {
                 let mut enc = dev.create_command_encoder(&Default::default());
                 pass.encode(&dev, &mut enc, &view, &surface.y, &surface.cbcr);
+                surface.before_submit(&mut enc);
                 q.submit([enc.finish()]);
+                surface.after_submit(&dev, &q);
                 let _ = dev.poll(wgpu::PollType::wait_indefinitely());   // the GPU is done: the surface is the encoder's
-                session.encode(&surface, pts90k(k, fn_, fd), pts90k(k + 1, fn_, fd) - pts90k(k, fn_, fd), k == 0);
+                if session.is_none() { let tx = tx.clone(); session = Some(sink::Session::open(&spec, &pool, Box::new(move |u| { let _ = tx.send(u); })).expect("the encoder")); }
+                session.as_ref().unwrap().encode(&surface, pts90k(k, fn_, fd), pts90k(k + 1, fn_, fd) - pts90k(k, fn_, fd), k == 0);
+                held.push_back(surface); if held.len() > 2 { held.pop_front(); }   // as the clock keeps the last one
             }
             None => skipped += 1,
         }
@@ -76,12 +82,13 @@ fn main() {
         let due = t0 + period * (k as u32 + 1);
         if let Some(d) = due.checked_duration_since(Instant::now()) { std::thread::sleep(d); }
     }
-    let (encoded, errors) = (session.encoded(), session.errors());
-    drop(session);   // completes the frames in flight
+    std::thread::sleep(Duration::from_millis(200));   // the last frames out of the encoder
+    let (encoded, errors) = session.as_ref().map(|s| (s.encoded(), s.errors())).unwrap_or((0, 0));
+    drop(held); drop(session);
     while let Ok(u) = rx.try_recv() { if u.keyframe { keys += 1; } if m.write(&u).is_ok() { written += 1; } }
     let dt = t0.elapsed().as_secs_f64();
     println!("done: {ticks} ticks, {encoded} encoded (+ the tail), {written} written, {keys} keyframes, {skipped} skipped, {errors} encoder errors, {:.0} kbps over {dt:.1} s", m.bytes as f64 * 8.0 / 1000.0 / dt);
     m.close();
 }
-#[cfg(not(target_os = "macos"))]
-fn main() { eprintln!("stream_out: the Windows session arrives with step 4d"); }
+#[cfg(not(any(target_os = "macos", windows)))]
+fn main() { eprintln!("stream_out: no hardware session on this OS"); }
