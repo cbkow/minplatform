@@ -820,6 +820,29 @@ impl Engine {
         self.relayout_dual();   // the screen's layout back
         r
     }
+    /// An OUTPUT frame (canon row 227 step 3; QCView's output pass): the picture re-rendered at the sink's raster `w × h`,
+    /// letterboxed (the viewport's zoom never applies), over black, no background / UI / waveform, the viewer aids kept — single
+    /// view or dual's composite (split / wipe / difference / side by side, as the screen). `out` = the wire's encoding
+    /// (`SdrEncode` = sRGB-encoded SDR, `Pq` = PQ of `white`-relative linear in Rec.2020), into a `target_format` texture the
+    /// [`crate::wire::WireEncoder`] quantises. None when nothing is shown.
+    pub fn render_output(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<wgpu::Texture, Error> {
+        if self.shown.is_none() && self.dual.as_ref().is_none_or(|d| !d.a.has_frame() && !d.b.has_frame()) { return Err(Error::NoFrame) }
+        let saved = (self.viewport, self.content, self.out_gain, self.display, self.scope_view);
+        self.viewport = (w, h); self.content = None; self.out_gain = 1.0; self.display = DisplayMode { out, white }; self.scope_view = None;
+        self.write_uniforms();
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("output canvas"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+        let view = tex.create_view(&Default::default());
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("output") });
+        { let _ = pass_clear_clear(&mut enc, "output clear", &view); }
+        if let Some(mut d) = self.dual.take() {
+            d.layout((w, h), None, self.display, self.aids, 1.0, None);
+            d.encode(&mut enc, &view);
+            self.dual = Some(d);
+        } else { self.encode_picture(&mut enc, &view, None); }
+        self.queue.submit([enc.finish()]);
+        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.write_uniforms(); self.relayout_dual();
+        Ok(tex)
+    }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32
     /// (`Rgba16Float` targets) — the headless route for tests.
     pub fn render_offscreen(&mut self, w: u32, h: u32) -> Result<Vec<f32>, Error> {
@@ -842,6 +865,30 @@ mod tests {
         let plane = |pw: u32, ph: u32, f: &dyn Fn(u32, u32) -> u8| { let pitch = pw.div_ceil(256) * 256; let mut data = vec![0u8; (pitch * ph) as usize]; for y in 0..ph { for x in 0..pw { data[(y * pitch + x) as usize] = f(x, y); } } Plane::owned(data, pw, ph, pitch) };
         let planes = vec![plane(w, h, &|x, _| (16 + (x * 219) / (w - 1)) as u8), plane(w / 2, h, &|_, _| 128), plane(w / 2, h, &|_, _| 128)];
         Frame { width: w, height: h, pixels: Pixels::Planar { planes, layout: PlanarLayout::Ycc { bytes_per_sample: 1, code_bits: 8, interleaved_chroma: false, alpha: false } }, meta: ColorMeta { bit_depth: 8, ..Default::default() } }
+    }
+    /// Step 3's output pass: a 256×16 ramp out at 128×32 — letterboxed (bars above and below), sRGB-encoded SDR in BGRA8
+    /// (B, G, R, A in memory; grey = equal channels), and the same in RGB10 (R in bits 0-9).
+    #[test]
+    fn an_output_frame_goes_out_letterboxed_in_both_wire_formats() {
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.show(&ramp_frame(256, 16)).unwrap();
+        let canvas = e.render_output(128, 32, OutMode::SdrEncode, 100.0).unwrap();
+        let mut w = crate::wire::WireEncoder::new(&e.device);
+        for (fmt, tag) in [(crate::wire::WireFormat::Bgra8, 1u64), (crate::wire::WireFormat::Rgb10, 2)] {
+            assert!(w.submit(&e.device, &e.queue, &canvas, fmt, tag));
+            let mut got = None;
+            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, ww, hh, bpr, t| got = Some((b.to_vec(), ww, hh, bpr, t))) { break } }
+            let (b, ww, hh, bpr, t) = got.expect("a frame came back");
+            assert_eq!((ww, hh, bpr, t), (128, 32, 512, tag));
+            let px = |x: u32, y: u32| u32::from_le_bytes(b[(y * bpr + x * 4) as usize..(y * bpr + x * 4 + 4) as usize].try_into().unwrap());
+            // the 16:1 ramp letterboxed into 4:1 → the picture is 8 rows tall, centred: rows 12..20
+            assert_eq!(px(64, 2) & 0x00ff_ffff, 0, "a bar is black");
+            let mid = px(127, 16);
+            match fmt {
+                crate::wire::WireFormat::Bgra8 => { let (bb, g, r) = (mid & 0xff, (mid >> 8) & 0xff, (mid >> 16) & 0xff); assert!(r > 240 && r == g && g == bb, "white at the ramp's right end, grey: {r} {g} {bb}"); assert_eq!(mid >> 24, 255); }
+                crate::wire::WireFormat::Rgb10 => { let (r, g, bb) = (mid & 0x3ff, (mid >> 10) & 0x3ff, (mid >> 20) & 0x3ff); assert!(r > 960 && r == g && g == bb, "10-bit white, grey: {r} {g} {bb}"); }
+            }
+        }
     }
     #[test]
     fn the_waveform_reads_the_source_through_the_input() {
