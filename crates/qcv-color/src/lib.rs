@@ -120,6 +120,7 @@ impl MinColorPass {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, chain: Chain) -> MinColorPass {
         let t0 = std::time::Instant::now();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("minColor"), source: wgpu::ShaderSource::Wgsl(KERNEL_WGSL.into()) });
+        let t_module = t0.elapsed();
         let u = |b: u32, size: usize| wgpu::BindGroupLayoutEntry { binding: b, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(size as u64) }, count: None };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("minColor"), entries: &[
             u(0, PARAMS), u(1, PARAMS), u(2, AGX), u(3, FLAGS),
@@ -132,7 +133,8 @@ impl MinColorPass {
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("minColor"), layout: Some(&pl), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("minColor blocks"), size: 3 * SLOT + FLAGS as u64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("minColor"), ..Default::default() });
-        log::info!("minColor kernel ready ({:.0} ms)", t0.elapsed().as_secs_f64() * 1000.0);
+        // the split says where a slow start goes: the module (WGSL parse + validate) or the pipeline (the backend's compile)
+        log::info!("minColor kernel ready ({:.0} ms: module {:.0}, pipeline {:.0})", t0.elapsed().as_secs_f64() * 1000.0, t_module.as_secs_f64() * 1000.0, (t0.elapsed() - t_module).as_secs_f64() * 1000.0);
         MinColorPass { device: device.clone(), queue: queue.clone(), pipeline, layout, ubuf, sampler, chain, blocks: None, scope_on: false, scope: scope_texture(device, 1, 1) }
     }
     pub fn chain(&self) -> &Chain { &self.chain }

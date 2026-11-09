@@ -61,6 +61,8 @@ impl Presenter {
     pub fn instance() -> wgpu::Instance {
         let mut d = wgpu::InstanceDescriptor::new_without_display_handle();
         if cfg!(windows) { d.backends = wgpu::Backends::DX12; }
+        // wgpu's own switches (WGPU_DX12_COMPILER = fxc | dxc …) apply — the shader-compiler measurement on rhombus, 2026-11-09
+        d.backend_options = d.backend_options.with_env();
         wgpu::Instance::new(d)
     }
     /// `ns_view`: the window's NSView on macOS (for the PQ layer workaround and the layer report); None elsewhere.
