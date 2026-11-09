@@ -27,17 +27,20 @@ pub struct TextField {
     size: f32,
     scale: f32,
     styled: bool,
+    /// One line never wraps: a longer text scrolls sideways with the caret kept in view (the walk 2026-11-08: a long dual
+    /// view name wrapped inside the Save dialog's field).
+    scroll_x: f64,
 }
 
 impl TextField {
     /// `size` in logical px (the editor scales it by the window's factor at layout).
     pub fn new(family: Family, size: f32) -> TextField {
-        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false }
+        TextField { editor: PlainEditor::new(size), placeholder: String::new(), rect: Rect::ZERO, focused: false, error: false, bare: false, hovered: false, family, size, scale: 1.0, styled: false, scroll_x: 0.0 }
     }
     pub fn text(&self) -> &str { self.editor.raw_text() }
     pub fn set_text(&mut self, s: &str) { self.editor.set_text(s); }
     /// Set the text with the caret at its end (a staged or restored entry).
-    pub fn set_text_end(&mut self, s: &str, fonts: &mut Fonts) { self.editor.set_text(s); let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_text_end(); }
+    pub fn set_text_end(&mut self, s: &str, fonts: &mut Fonts) { self.editor.set_text(s); let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_text_end(); drop(d); self.follow_caret(fonts); }
     pub fn clear(&mut self) { self.editor.set_text(""); }
     pub fn select_all(&mut self, fonts: &mut Fonts) { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.select_all(); }
     pub fn hovered(&self) -> bool { self.hovered }
@@ -57,7 +60,18 @@ impl TextField {
         let color = paint::color(if self.error { t::FIELD_ERROR_CONTENT_COLOR } else { t::FIELD_CONTENT_COLOR });
         self.style(fonts, color);
         self.editor.set_scale(self.scale);
-        self.editor.set_width(Some((rect.width() - 2.0 * t::FIELD_EDGE_TO_TEXT as f64 * scale) as f32));
+        self.editor.set_width(None);
+        self.follow_caret(fonts);
+    }
+    /// Keep the caret inside the visible width, never scrolling past the text's end.
+    fn follow_caret(&mut self, fonts: &mut Fonts) {
+        let tw = self.editor.layout(&mut fonts.font_cx, &mut fonts.layout_cx).width() as f64;
+        let view = (self.rect.width() - 2.0 * t::FIELD_EDGE_TO_TEXT as f64 * self.scale as f64).max(1.0);
+        if let Some(cb) = self.editor.cursor_geometry(1.0) {
+            let (x0, x1) = (cb.x0 as f64, cb.x1 as f64);
+            if x0 < self.scroll_x { self.scroll_x = x0; } else if x1 > self.scroll_x + view { self.scroll_x = x1 - view; }
+        }
+        self.scroll_x = self.scroll_x.clamp(0.0, (tw + 2.0 - view).max(0.0));
     }
     /// The caret's rect in window px (for the IME candidate window).
     pub fn caret_rect(&self, fonts: &mut Fonts) -> Option<Rect> {
@@ -69,7 +83,7 @@ impl TextField {
     }
     fn text_origin(&self) -> (f64, f64) {
         let lh = self.editor.try_layout().map(|l| l.height() as f64).unwrap_or(self.size as f64 * self.scale as f64 * t::UI_LINE_HEIGHT);
-        (self.rect.x0 + t::FIELD_EDGE_TO_TEXT as f64 * self.scale as f64, self.rect.y0 + (self.rect.height() - lh) / 2.0)
+        (self.rect.x0 + t::FIELD_EDGE_TO_TEXT as f64 * self.scale as f64 - self.scroll_x, self.rect.y0 + (self.rect.height() - lh) / 2.0)
     }
     pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> bool {
         let inside = e.pos().is_some_and(|(x, y)| self.hit(x, y));
@@ -81,6 +95,8 @@ impl TextField {
                 let (ox, oy) = self.text_origin();
                 let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
                 d.move_to_point((x - ox) as f32, (y - oy) as f32);
+                drop(d);
+                self.follow_caret(fonts);
             }
             Event::Leave => self.hovered = false,
             _ => {}
@@ -90,6 +106,8 @@ impl TextField {
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) {
         let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx);
         match e { ImeEvent::Preedit(text, cursor) => if text.is_empty() { d.clear_compose() } else { d.set_compose(text, *cursor) }, ImeEvent::Commit(text) => d.insert_or_replace_selection(&text.replace(['\n', '\r'], "")) }
+        drop(d);
+        self.follow_caret(fonts);
     }
     /// S3's key table for one line: arrows / Home / End with Shift selection, Backspace / Delete, ⌘A, typed text; Enter and
     /// Escape are reported, not consumed by the text.
@@ -110,6 +128,8 @@ impl TextField {
             Key::Char(c) if k.cmd => match c.as_str() { "a" => d.select_all(), _ => {} },
             _ => if let Some(txt) = &k.text { let clean: String = txt.chars().filter(|ch| !ch.is_control()).collect(); if !clean.is_empty() { d.insert_or_replace_selection(&clean); } },
         }
+        drop(d);
+        self.follow_caret(fonts);
         if self.editor.raw_text() != before { FieldResponse::Changed } else { FieldResponse::None }
     }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64) {
@@ -125,6 +145,7 @@ impl TextField {
         if !self.styled { let c = paint::color(t::FIELD_CONTENT_COLOR); self.style(fonts, c); }
         let (ox, oy) = self.text_origin();
         let tr = Affine::translate((ox, oy));
+        scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.rect.inset(-t::BORDER_WIDTH_100 as f64 * s));
         if self.editor.raw_text().is_empty() && !self.editor.is_composing() {
             let l = fonts.layout(&self.placeholder, self.family, self.size * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::FIELD_PLACEHOLDER_COLOR));
             crate::fonts::draw_layout(scene, &l, Affine::translate((ox, self.rect.y0 + (self.rect.height() - l.height() as f64) / 2.0)));
@@ -135,6 +156,7 @@ impl TextField {
         }
         let layout = self.editor.layout(&mut fonts.font_cx, &mut fonts.layout_cx);
         crate::fonts::draw_layout(scene, layout, tr);
+        scene.pop_layer();
     }
 }
 
