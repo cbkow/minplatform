@@ -170,7 +170,7 @@ impl ProjectManager {
         if !trimmed.contains("://") { log::warn!("ProjectManager::addLiveStream: not a URL: '{trimmed}'"); return None }
         self.note_recent(trimmed);
         if let Some(e) = self.pool.iter().find(|e| e.media_type == MediaType::LiveStream && e.path == trimmed) { return Some(e.id.clone()) }
-        let display = if !name.trim().is_empty() { name.trim().to_string() } else { let rest = &trimmed[trimmed.find("://").unwrap() + 3..]; let authority = rest.split('/').next().unwrap_or(""); if authority.is_empty() { trimmed.to_string() } else { authority.to_string() } };
+        let display = if !name.trim().is_empty() { name.trim().to_string() } else { let rest = &trimmed[trimmed.find("://").unwrap() + 3..]; let authority = rest.split(['/', '?', '#']).next().unwrap_or(""); /* host:port — never the query (it can carry a passphrase) */ if authority.is_empty() { trimmed.to_string() } else { authority.to_string() } };
         let item = MediaItem { id: new_uuid(), name: display, path: trimmed.to_string(), media_type: MediaType::LiveStream, ..Default::default() };
         let id = item.id.clone();
         self.pool.push(item); self.route(&id, MediaType::LiveStream); self.mark_dirty();
@@ -315,5 +315,15 @@ impl ProjectManager {
         if probe.container_bitrate > 0 && m.video.container_bitrate != probe.container_bitrate { m.video.container_bitrate = probe.container_bitrate; changed = true; }
         if probe.video_bitrate > 0 && m.video.video_bitrate != probe.video_bitrate { m.video.video_bitrate = probe.video_bitrate; changed = true; }
         if changed { self.bump(); }
+    }
+}
+
+#[cfg(test)]
+mod live_name_tests {
+    #[test]
+    fn a_stream_is_named_host_port_never_its_query() {
+        let mut m = super::ProjectManager::new();
+        let id = m.add_live_stream("srt://0.0.0.0:9998?mode=listener&passphrase=secret", "").unwrap();
+        assert_eq!(m.item(&id).unwrap().name, "0.0.0.0:9998");
     }
 }
