@@ -7,8 +7,14 @@
 //!
 //! Fixes over QCView (row 227 step 3, the user's go): Start does not launch a second sink when one is already attached; a sink
 //! that fails to start or keeps crashing says so (QCView showed "starting" forever); a B side that isn't there is refused (QCView
-//! accepted it and sent nothing); frames carry the timecode and the Paused flag (AJA's RP188, canon row 107); no guide / stroke
-//! layers (row 225).
+//! accepted it and sent nothing); frames carry the timecode and the Paused flag (AJA's RP188, canon row 107).
+//!
+//! The LAYERS (canon row 238, reversing row 225; QCView's Guides / Notes chips): a sink gets the layers it asks for ∧ the two
+//! toggles — the safety guide fitted to the picture (side by side: both halves; a wipe / difference: A's frame), the note's
+//! strokes clipped to it, drawn only while the viewport draws them (the Notes panel open, single view). A vello overlay at
+//! the raster, laid over the picture by the wire encoder: SDR as drawn, 203 nits on PQ = 75 % on HLG (QCView). The port's
+//! rule for the guide's LINE WIDTH (the user 2026-11-09): the screen's width scaled by the output picture over the screen's
+//! picture, so the wire shows the proportion the viewport shows (QCView: the same pixel count on every target).
 use crate::settings::k;
 use qcv_ring::layout::*;
 use qcv_ring::qcvo::{self, v, OutputRing};
@@ -68,7 +74,8 @@ pub fn scan() -> Vec<Manifest> {
 /// What an accepted request asked for (QCView `OutputSpec`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spec { pub w: u32, pub h: u32, pub fmt: min_present::wire::WireFormat, pub transfer: u32, pub content: u32, /// PQ's primaries: 1 Rec.2020 · 2 P3-D65
-    pub primaries: u32 }
+    pub primaries: u32, /// the granted `OutputLayers`
+    pub layers: u32 }
 
 pub struct Output {
     pub m: Manifest, pub enabled: bool,
@@ -77,16 +84,18 @@ pub struct Output {
     /// the sink process's state (fix 2): "", "running", "failed to start: …", "restarting (n)", "exited; not restarting …", "attached"
     pub plugin: String,
     pub spec: Option<Spec>, pub spec_gen: u64, pub present: bool, pub status: String, pub shape: String,
-    req: Option<OutputRequest>, req_gen: u64, auto_class: Option<bool>, published: Option<u64>, pub_tag: u64,
+    req: Option<OutputRequest>, req_gen: u64, auto_class: Option<bool>, published: Option<u64>, pub_tag: u64, /// the layers drawn into the frame last submitted (stamped on its descriptor)
+    drawn: u32,
     pub pinned_transfer: bool, /// a setting changed: answer the standing request again (QCView `setOutputSetting`)
     pub reanswer: bool,
 }
 
 #[derive(Default)]
-pub struct OutputBus { pub outputs: Vec<Output>, last_poll: Option<Instant>, restored: bool, enc: Option<min_present::wire::WireEncoder>, tap: Vec<f32>, audio_t: i64 }
+pub struct OutputBus { pub outputs: Vec<Output>, last_poll: Option<Instant>, restored: bool, enc: Option<min_present::wire::WireEncoder>, tap: Vec<f32>, audio_t: i64, /// the overlay (guides / strokes): its vello layer and what it holds (size + the overlay's signature)
+    layer: Option<min_ui::UiLayer>, layer_key: Option<u64> }
 
 impl OutputBus {
-    pub fn new() -> OutputBus { OutputBus { outputs: scan().into_iter().map(|m| Output { m, enabled: false, ring: None, audio: None, child: None, launched: false, launch_due: None, restarts: vec![], dying: None, plugin: String::new(), spec: None, spec_gen: 0, present: false, status: String::new(), shape: String::new(), req: None, req_gen: 0, auto_class: None, published: None, pub_tag: 0, pinned_transfer: false, reanswer: false }).collect(), ..Default::default() } }
+    pub fn new() -> OutputBus { OutputBus { outputs: scan().into_iter().map(|m| Output { m, enabled: false, ring: None, audio: None, child: None, launched: false, launch_due: None, restarts: vec![], dying: None, plugin: String::new(), spec: None, spec_gen: 0, present: false, status: String::new(), shape: String::new(), req: None, req_gen: 0, auto_class: None, published: None, pub_tag: 0, drawn: 0, pinned_transfer: false, reanswer: false }).collect(), ..Default::default() } }
     pub fn any_enabled(&self) -> bool { self.outputs.iter().any(|o| o.enabled) }
 }
 
@@ -169,6 +178,7 @@ impl crate::App {
         let src = self.output_source_size();
         let wide = src.0 > 1920 || src.1 > 1080;
         let (dual, has_b) = (self.dual.is_some(), self.dual.as_ref().is_some_and(|d| d.side(qcv_player::Side::B).is_some()));
+        let layers_on = (if self.settings.bool(k::OUTPUT_GUIDES) { v::LAYER_GUIDES } else { 0 }) | (if self.settings.bool(k::OUTPUT_NOTES) { v::LAYER_ANNOTATIONS } else { 0 });
         let ids: Vec<String> = self.outputs.outputs.iter().filter(|o| o.enabled).map(|o| o.m.id.clone()).collect();
         let mut changed = false;
         for id in ids {
@@ -191,11 +201,11 @@ impl crate::App {
             if std::mem::take(&mut o.reanswer) && o.req.is_some() { answer = true; }
             if answer && let Some(r) = o.req {
                 o.auto_class = Some(wide);
-                let (reply, spec, hdr) = answer_request(&r, cfg, src, dual, has_b);
+                let (reply, spec, hdr) = answer_request(&r, cfg, src, dual, has_b, layers_on);
                 ring.write_reply(reply, o.req_gen);
                 o.pinned_transfer = r.transfer != 0;
                 let msg = String::from_utf8_lossy(&reply.message[..reply.message.iter().position(|&c| c == 0).unwrap_or(reply.message.len())]).into_owned();
-                log::info!("OutputBus: {id}: request {} ({}x{} fmt {} transfer {} content {}) -> {} \"{msg}\"", o.req_gen, r.width, r.height, r.pixel_format, r.transfer, r.content, if spec.is_some() { "accepted" } else { "refused" });
+                log::info!("OutputBus: {id}: request {} ({}x{} fmt {} transfer {} content {} layers {:#x}) -> {} \"{msg}\" (layers {:#x})", o.req_gen, r.width, r.height, r.pixel_format, r.transfer, r.content, r.layers, if spec.is_some() { "accepted" } else { "refused" }, reply.layers);
                 if let Some(h) = hdr { ring.write_hdr_info(h); }
                 o.shape = msg; o.spec = spec; o.spec_gen += 1; o.published = None; changed = true;
             }
@@ -215,10 +225,12 @@ impl crate::App {
     pub(crate) fn output_cmd(&mut self, c: crate::output_panel::Cmd) {
         use crate::output_panel::Cmd;
         let set = |s: &mut min_settings::Settings, id: &str, f: &str, v: i64| if let Some(key) = k::output_key(id, f) { s.set_int(key, v); };
-        match c {
+        match c.clone() {
             Cmd::Start(id) => self.output_start(&id),
             Cmd::Stop(id) => self.output_stop(&id),
             Cmd::FeedMute(on) => { self.settings.set_bool(k::OUTPUT_FEED_MUTED, on); }
+            // QCView `layersChanged`: every standing request answered again with the new grant
+            Cmd::Guides(on) | Cmd::Notes(on) => { self.settings.set_bool(if matches!(c, Cmd::Guides(_)) { k::OUTPUT_GUIDES } else { k::OUTPUT_NOTES }, on); for o in &mut self.outputs.outputs { o.reanswer = true; } self.outputs.last_poll = None; }
             Cmd::Transfer(id, v) => { set(&mut self.settings, &id, "transfer", v); self.output_reanswer(&id); }
             Cmd::Raster(id, v) => { set(&mut self.settings, &id, "raster", v); self.output_reanswer(&id); }
             Cmd::Primaries(id, v) => { set(&mut self.settings, &id, "primaries", v); self.output_reanswer(&id); }
@@ -276,12 +288,34 @@ impl crate::App {
         format!("{:?}", self.chain_of(&self.slot_item(0)).1.chain).hash(&mut h);
         if self.dual.is_some() { format!("{:?}", self.chain_of(&self.slot_item(1)).1.chain).hash(&mut h); }
         self.live.as_ref().and_then(|l| l.review.as_ref()).map(|r| (&r.label, &r.note, r.stored)).hash(&mut h);
+        self.overlay_sig().hash(&mut h);
+        h.finish()
+    }
+    /// The note whose strokes the viewport is drawing now (the Notes panel open, single view) — what an output may carry.
+    fn overlay_note(&self) -> Option<crate::annotate::Cur> {
+        if !self.annot.active || self.dual.is_some() { return None }
+        self.current_note()
+    }
+    /// What the outputs' overlay depends on (row 238): the guide and its look, the screen's pictures (the line width's
+    /// reference), the ink the viewport shows. Granted layers are per output (the spec).
+    fn overlay_sig(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let st = &self.settings;
+        st.string(k::SAFETY_GUIDE).hash(&mut h); st.string(k::SAFETY_COLOR).hash(&mut h); st.float(k::SAFETY_WIDTH).to_bits().hash(&mut h); st.float(k::SAFETY_OPACITY).to_bits().hash(&mut h);
+        if let Some(g) = self.gpu.as_ref() {
+            g.guide.is_some().hash(&mut h); g.window.scale_factor().to_bits().hash(&mut h);
+            for c in [v::CONTENT_COMPOSITE, v::CONTENT_SIDE_B] { for p in screen_places(&g.presenter.engine, c) { for x in p.0 { x.to_bits().hash(&mut h); } } }
+        }
+        if let Some(cur) = self.overlay_note() { self.annot.ink_sig(&cur).hash(&mut h); }
         h.finish()
     }
     /// Publish-on-change (QCView: no clock of its own): every accepted, present output whose stamp moved gets a frame; finished
     /// read-backs land in their rings.
     fn outputs_publish(&mut self) {
         let stamp = self.output_stamp();
+        let (ov_sig, note) = (self.overlay_sig(), self.overlay_note().filter(|c| self.annot.has_ink(c)));
+        let (gw, gcol) = { let st = &self.settings; let c = min_ui::color_picker::parse_hex(&st.string(k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0]); (st.float(k::SAFETY_WIDTH), peniko::Color::new([c[0], c[1], c[2], (st.float(k::SAFETY_OPACITY) as f32).clamp(0.0, 1.0)])) };
         let (playing, frame, fps, tc) = self.output_transport();
         let dual_b = self.dual.as_ref().is_some_and(|d| d.side(qcv_player::Side::B).is_some());
         let Some(g) = self.gpu.as_mut() else { return };
@@ -300,7 +334,7 @@ impl crate::App {
             let mut flags = (if spec.content == v::CONTENT_SIDE_B { 0 } else { v::FRAME_HAS_A }) | (if dual_b && spec.content != v::CONTENT_SIDE_A { v::FRAME_HAS_B } else { 0 }) | if playing { 0 } else { v::FRAME_PAUSED };
             let tcp = tc.as_deref().and_then(pack_tc);
             if let Some((_, drop)) = tcp { flags |= v::FRAME_TIMECODE_VALID | if drop { v::FRAME_DROP_FRAME } else { 0 }; }
-            ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: 0, flags, presentation_ns: qcvo::now_ns(), source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
+            ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: o.drawn, flags, presentation_ns: qcvo::now_ns(), source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
         });
         // the new frames
         for i in 0..self.outputs.outputs.len() {
@@ -311,14 +345,42 @@ impl crate::App {
             let encoding = match spec.transfer { v::TRANSFER_PQ => min_present::wire::WireEncoding::Pq { p3: spec.primaries == 2, white: 100.0 }, v::TRANSFER_HLG => min_present::wire::WireEncoding::Hlg { white: 100.0 }, _ => min_present::wire::WireEncoding::Sdr };
             let lin = min_present::engine::OutMode::Linear;
             // content: dual's composite, or one side alone (QCView `OutputContent::SideA / SideB`); single view: the picture
+            // the screen's pictures first (the overlay's reference), then the canvas and where its pictures landed
+            let screen = screen_places(&g.presenter.engine, spec.content);
+            let screen_geo = crate::annot_geo(&g.presenter.engine);
             let canvas = match (spec.content, g.presenter.engine.dual_mut()) {
-                (v::CONTENT_SIDE_A, Some(d)) => d.a.render_output(spec.w, spec.h, lin, 100.0),
-                (v::CONTENT_SIDE_B, Some(d)) => d.b.render_output(spec.w, spec.h, lin, 100.0),
-                _ => g.presenter.engine.render_output(spec.w, spec.h, lin, 100.0),
+                (v::CONTENT_SIDE_A, Some(d)) => d.a.render_output_placed(spec.w, spec.h, lin, 100.0),
+                (v::CONTENT_SIDE_B, Some(d)) => d.b.render_output_placed(spec.w, spec.h, lin, 100.0),
+                _ => g.presenter.engine.render_output_placed(spec.w, spec.h, lin, 100.0),
             };
-            let Ok(canvas) = canvas else { continue };
+            let Ok((canvas, places)) = canvas else { continue };
+            // the layers (row 238): the guide over each picture, the note's ink over the one picture
+            let guide = (spec.layers & v::LAYER_GUIDES != 0).then(|| g.guide.as_ref().map(|x| &x.1)).flatten().filter(|_| !places.is_empty());
+            let ink = (spec.layers & v::LAYER_ANNOTATIONS != 0).then_some(note.as_ref()).flatten().zip(screen_geo.as_ref()).filter(|_| places.len() == 1);
+            let drawn = (if guide.is_some() { v::LAYER_GUIDES } else { 0 }) | (if ink.is_some() { v::LAYER_ANNOTATIONS } else { 0 });
+            let mut overlay = None;
+            if drawn != 0 {
+                if self.outputs.layer.is_none() { self.outputs.layer = min_ui::UiLayer::new(&dev, spec.w, spec.h).ok(); self.outputs.layer_key = None; }
+                if let Some(layer) = self.outputs.layer.as_mut() {
+                    use std::hash::{Hash, Hasher};
+                    let mut hk = std::collections::hash_map::DefaultHasher::new();
+                    (ov_sig, spec.w, spec.h, drawn, spec.content).hash(&mut hk); for p in &places { for x in p.0 { x.to_bits().hash(&mut hk); } }
+                    let key = hk.finish();
+                    if self.outputs.layer_key != Some(key) {
+                        layer.resize(&dev, spec.w, spec.h);
+                        let scene = layer.scene_mut(); scene.reset();
+                        if let Some((cur, sg)) = ink { let r = places[0].0; self.annot.paint_ink(scene, cur, &crate::annotate::Geo { rect: r, px_per_src: sg.px_per_src * r[2] / sg.rect[2].max(1.0) }); }
+                        if let Some(gd) = guide { for (n, (rect, src, quarters)) in places.iter().enumerate() {
+                            crate::guides::paint(scene, gd, crate::guides::transform(gd.view, *src, *rect, *quarters), guide_width(gw, g.window.scale_factor(), rect, screen.get(n)), gcol);
+                        } }
+                        layer.render(&dev, &q); self.outputs.layer_key = Some(key);
+                    }
+                    overlay = Some(layer.view());
+                }
+            }
+            let o = &mut self.outputs.outputs[i];
             o.pub_tag += 1;
-            if enc.submit(&dev, &q, &canvas, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); }
+            if enc.submit(&dev, &q, &canvas, overlay, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); o.drawn = if overlay.is_some() { drawn } else { 0 }; }
         }
     }
     /// The frame's transport facts: playing, the source frame, its fps, the timecode (QCView fills none of these — fix 7).
@@ -354,9 +416,28 @@ impl crate::App {
     }
 }
 
+/// The screen's pictures an output's content shows, in the order the output pass places them (A, then B side by side; one
+/// side alone = that side) — the reference the overlay's line width scales from.
+fn screen_places(e: &min_present::engine::Engine, content: u32) -> Vec<min_present::engine::Placement> {
+    match e.dual() {
+        Some(d) => match content {
+            v::CONTENT_SIDE_A => d.a.picture_placement().into_iter().collect(),
+            v::CONTENT_SIDE_B => d.b.picture_placement().into_iter().collect(),
+            _ => { let mut p = vec![d.a.picture_placement()]; if d.mode == min_present::dual::CompareMode::SideBySide { p.push(d.b.picture_placement()); } p.into_iter().flatten().collect() }
+        },
+        None => e.picture_placement().into_iter().collect(),
+    }
+}
+/// The guide's line width on a target (an output's raster, a screenshot): the screen's width (`setting` × the window's
+/// scale) × the target picture's height over the screen picture's, so the line keeps the proportion the viewport shows
+/// (the user 2026-11-09). With no screen picture: the setting at a 1080-line picture, scaled with the target.
+pub(crate) fn guide_width(setting: f64, scale: f64, rect: &[f64; 4], screen: Option<&min_present::engine::Placement>) -> f64 {
+    match screen { Some(s) if s.0[3] >= 1.0 => setting * scale * rect[3] / s.0[3], _ => setting * (rect[3] / 1080.0).max(1.0) }
+}
+
 /// QCView `OutputBus::answer`'s rules and words (the protocol's English: the sink shows it). HLG and per-side content arrive with
 /// the AJA pass (the port's output pass encodes SDR and PQ today).
-fn answer_request(r: &OutputRequest, cfg: (u32, u32, u32, f32, f32, u32, u32), src: (u32, u32), dual: bool, has_b: bool) -> (OutputReply, Option<Spec>, Option<OutputHdrInfo>) {
+fn answer_request(r: &OutputRequest, cfg: (u32, u32, u32, f32, f32, u32, u32), src: (u32, u32), dual: bool, has_b: bool, layers_on: u32) -> (OutputReply, Option<Spec>, Option<OutputHdrInfo>) {
     let (raster, cfg_transfer, primaries, peak, min, cll, fall) = cfg;
     let mut reply = OutputReply { accepted: 0, refusal: 0, width: 0, height: 0, pixel_format: 0, transfer: 0, content: 0, layers: 0, message: [0; OUTPUT_MESSAGE_BYTES] };
     let msg = |m: &mut [u8; OUTPUT_MESSAGE_BYTES], s: &str| { let n = s.len().min(OUTPUT_MESSAGE_BYTES - 1); m[..n].copy_from_slice(&s.as_bytes()[..n]); };
@@ -372,12 +453,12 @@ fn answer_request(r: &OutputRequest, cfg: (u32, u32, u32, f32, f32, u32, u32), s
     if r.content > v::CONTENT_SIDE_B { return refuse(reply, v::REFUSE_CONTENT, "content must be composite, A or B") }
     if r.content == v::CONTENT_SIDE_B && !(dual && has_b) { return refuse(reply, v::REFUSE_CONTENT, "no B side loaded") }   // fix 6
     let content = if r.content == 0 { v::CONTENT_COMPOSITE } else { r.content };
-    reply.accepted = 1; reply.width = w; reply.height = h; reply.pixel_format = r.pixel_format; reply.transfer = transfer; reply.content = content; reply.layers = 0;
+    reply.accepted = 1; reply.width = w; reply.height = h; reply.pixel_format = r.pixel_format; reply.transfer = transfer; reply.content = content; reply.layers = r.layers & layers_on;   // QCView: the request ∧ the two chips
     let fname = if fmt == min_present::wire::WireFormat::Rgb10 { "RGB10" } else { "BGRA8" };
     let tname = match transfer { v::TRANSFER_PQ => "PQ Rec.2100", v::TRANSFER_HLG => "HLG Rec.2100", _ => "SDR Rec.709" };
     msg(&mut reply.message, &format!("{w}x{h} {fname} {tname} from QCView"));
     let hdr = if transfer == v::TRANSFER_SDR { OutputHdrInfo { transfer, ..Default::default() } } else { OutputHdrInfo { transfer, primaries, max_mastering_nits: peak, min_mastering_nits: min, max_cll: cll, max_fall: fall, _pad0: [0; 2] } };
-    (reply, Some(Spec { w, h, fmt, transfer, content, primaries: if transfer == v::TRANSFER_HLG { 1 } else { primaries } }), Some(hdr))
+    (reply, Some(Spec { w, h, fmt, transfer, content, primaries: if transfer == v::TRANSFER_HLG { 1 } else { primaries }, layers: reply.layers }), Some(hdr))
 }
 
 #[cfg(test)]
@@ -387,7 +468,10 @@ mod tests {
     const CFG: (u32, u32, u32, f32, f32, u32, u32) = (0, 1, 1, 1000.0, 0.005, 1000, 400);
     #[test]
     fn the_answers_are_qcviews() {
-        let ok = |r: OutputRequest, src| answer_request(&r, CFG, src, false, false);
+        let ok = |r: OutputRequest, src| answer_request(&r, CFG, src, false, false, 0);
+        // the layers: the request ∧ the toggles (QCView), never more than asked
+        let lay = |want: u32, on: u32| { let mut r = req(1920, 1080, 1, 1, 1); r.layers = want; let (rep, spec, _) = answer_request(&r, CFG, (0, 0), false, false, on); (rep.layers, spec.unwrap().layers) };
+        assert_eq!(lay(3, 3), (3, 3)); assert_eq!(lay(3, 1), (1, 1)); assert_eq!(lay(0, 3), (0, 0)); assert_eq!(lay(2, 1), (0, 0));
         let (rep, spec, _) = ok(req(1920, 1080, 1, 1, 1), (3840, 2160)); assert_eq!(rep.accepted, 1); assert_eq!(spec.unwrap().w, 1920);
         assert!(String::from_utf8_lossy(&rep.message).starts_with("1920x1080 BGRA8 SDR Rec.709 from QCView"));
         let (_, spec, _) = ok(req(0, 0, 3, 0, 0), (3840, 2160)); assert_eq!((spec.unwrap().w, spec.unwrap().transfer), (3840, 1), "auto raster: UHD for a UHD source; the setting's transfer");

@@ -163,6 +163,9 @@ impl ViewerAids {
     fn gpu(&self) -> [f32; 4] { [2f32.powf(self.exposure), 1.0 / self.gamma.clamp(0.1, 10.0), self.channel as f32, if self.is_identity() { 0.0 } else { 1.0 }] }
 }
 
+/// Where a picture is in a target: its rect (x, y, w, h in px, post-rotation), its source size (unrotated) and quarter turns.
+pub type Placement = ([f64; 4], (f64, f64), u8);
+
 pub struct Engine {
     /// No presenter will submit after `show` (a headless engine): flush + maintain per show.
     pub standalone: bool,
@@ -517,7 +520,7 @@ impl Engine {
     pub fn set_ui_scale(&mut self, scale: f32) { self.ui_scale = scale.max(0.5); self.write_bg_uniform(); }
     /// Where the picture is on screen (x, y, w, h in viewport px, post-rotation), with its source size (unrotated) and quarter
     /// turns — what picture-space overlays (safety guides, annotations: rows 210 / 215) fit to. None with no frame.
-    pub fn picture_placement(&self) -> Option<([f64; 4], (f64, f64), u8)> {
+    pub fn picture_placement(&self) -> Option<Placement> {
         self.base?;
         let r = self.media_rect_px();
         Some(([r[0] as f64, r[1] as f64, r[2] as f64, r[3] as f64], (self.video.0 as f64, self.video.1 as f64), self.rotation_quarters()))
@@ -825,7 +828,11 @@ impl Engine {
     /// view or dual's composite (split / wipe / difference / side by side, as the screen). `out` = the wire's encoding
     /// (`SdrEncode` = sRGB-encoded SDR, `Pq` = PQ of `white`-relative linear in Rec.2020), into a `target_format` texture the
     /// [`crate::wire::WireEncoder`] quantises. None when nothing is shown.
-    pub fn render_output(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<wgpu::Texture, Error> {
+    pub fn render_output(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<wgpu::Texture, Error> { self.render_output_placed(w, h, out, white).map(|r| r.0) }
+    /// [`render_output`] with where the picture(s) landed in the raster ([`picture_placement`]'s terms) — what the output's
+    /// overlays fit to (canon row 238; QCView's rule: side by side → A then B, each in its half; a wipe / difference / single
+    /// view → the one picture, A's).
+    pub fn render_output_placed(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<(wgpu::Texture, Vec<Placement>), Error> {
         if self.shown.is_none() && self.dual.as_ref().is_none_or(|d| !d.a.has_frame() && !d.b.has_frame()) { return Err(Error::NoFrame) }
         let saved = (self.viewport, self.content, self.out_gain, self.display, self.scope_view);
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; self.display = DisplayMode { out, white }; self.scope_view = None;
@@ -840,8 +847,12 @@ impl Engine {
             self.dual = Some(d);
         } else { self.encode_picture(&mut enc, &view, None); }
         self.queue.submit([enc.finish()]);
+        let places: Vec<Placement> = match self.dual.as_ref() {
+            Some(d) => { let mut v = vec![d.a.picture_placement()]; if d.mode == crate::dual::CompareMode::SideBySide { v.push(d.b.picture_placement()); } v.into_iter().flatten().collect() }
+            None => self.picture_placement().into_iter().collect(),
+        };
         (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.write_uniforms(); self.relayout_dual();
-        Ok(tex)
+        Ok((tex, places))
     }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32
     /// (`Rgba16Float` targets) — the headless route for tests.
@@ -872,10 +883,11 @@ mod tests {
     fn an_output_frame_goes_out_letterboxed_in_both_wire_formats() {
         let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
         e.show(&ramp_frame(256, 16)).unwrap();
-        let canvas = e.render_output(128, 32, OutMode::Linear, 100.0).unwrap();
+        let (canvas, places) = e.render_output_placed(128, 32, OutMode::Linear, 100.0).unwrap();
+        assert_eq!(places, vec![([0.0, 12.0, 128.0, 8.0], (256.0, 16.0), 0)], "where the picture landed in the raster");
         let mut w = crate::wire::WireEncoder::new(&e.device);
         for (fmt, tag) in [(crate::wire::WireFormat::Bgra8, 1u64), (crate::wire::WireFormat::Rgb10, 2)] {
-            assert!(w.submit(&e.device, &e.queue, &canvas, fmt, crate::wire::WireEncoding::Sdr, tag));
+            assert!(w.submit(&e.device, &e.queue, &canvas, None, fmt, crate::wire::WireEncoding::Sdr, tag));
             let mut got = None;
             for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, ww, hh, bpr, t| got = Some((b.to_vec(), ww, hh, bpr, t))) { break } }
             let (b, ww, hh, bpr, t) = got.expect("a frame came back");
@@ -892,13 +904,30 @@ mod tests {
         // HDR wires: reference white (100 nits) in 10 bits — PQ ≈ 520 (ST 2084 of 100 nits = 0.508), HLG ≈ 645 (BT.2100 on a
         // 1000-nit reference: display 0.1 → scene 0.147 by the inverse OOTF → 0.630); grey stays grey through the primaries
         for (enc, want, tol, tag) in [(crate::wire::WireEncoding::Pq { p3: false, white: 100.0 }, 520i32, 6, 3u64), (crate::wire::WireEncoding::Hlg { white: 100.0 }, 645, 8, 4)] {
-            assert!(w.submit(&e.device, &e.queue, &canvas, crate::wire::WireFormat::Rgb10, enc, tag));
+            assert!(w.submit(&e.device, &e.queue, &canvas, None, crate::wire::WireFormat::Rgb10, enc, tag));
             let mut got = None;
             for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _| got = Some((b.to_vec(), bpr))) { break } }
             let (b, bpr) = got.expect("a frame");
             let v = u32::from_le_bytes(b[(16 * bpr + 127 * 4) as usize..(16 * bpr + 127 * 4 + 4) as usize].try_into().unwrap());
             let (r, g, bb) = ((v & 0x3ff) as i32, ((v >> 10) & 0x3ff) as i32, ((v >> 20) & 0x3ff) as i32);
             assert!((r - want).abs() <= tol && (g - r).abs() <= 1 && (bb - r).abs() <= 1, "{enc:?}: {r} {g} {bb} (want {want})");
+        }
+        // the overlay (row 238): an opaque white texel over a bar and a half-covered one, a clear texel leaves the picture —
+        // SDR 1023; PQ = 203 nits (ST 2084 → 0.5806 → 594); HLG = 75 % (767). QCView's graphics white.
+        let ov = e.device.create_texture(&wgpu::TextureDescriptor { label: None, size: wgpu::Extent3d { width: 128, height: 32, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[] });
+        let mut texels = vec![0u8; 128 * 32 * 4]; texels[(2 * 128 + 10) * 4..(2 * 128 + 10) * 4 + 4].copy_from_slice(&[255; 4]); texels[(2 * 128 + 20) * 4..(2 * 128 + 20) * 4 + 4].copy_from_slice(&[255, 255, 255, 128]);
+        e.queue.write_texture(ov.as_image_copy(), &texels, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(128 * 4), rows_per_image: Some(32) }, wgpu::Extent3d { width: 128, height: 32, depth_or_array_layers: 1 });
+        let ovv = ov.create_view(&Default::default());
+        for (enc, want, tol, tag) in [(crate::wire::WireEncoding::Sdr, 1023i32, 0, 5u64), (crate::wire::WireEncoding::Pq { p3: false, white: 100.0 }, 594, 4, 6), (crate::wire::WireEncoding::Hlg { white: 100.0 }, 767, 5, 7)] {
+            assert!(w.submit(&e.device, &e.queue, &canvas, Some(&ovv), crate::wire::WireFormat::Rgb10, enc, tag));
+            let mut got = None;
+            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _| got = Some((b.to_vec(), bpr))) { break } }
+            let (b, bpr) = got.expect("a frame");
+            let r = |x: u32, y: u32| (u32::from_le_bytes(b[(y * bpr + x * 4) as usize..(y * bpr + x * 4 + 4) as usize].try_into().unwrap()) & 0x3ff) as i32;
+            assert!((r(10, 2) - want).abs() <= tol, "{enc:?}: the overlay's white = {} (want {want})", r(10, 2));
+            assert!(r(20, 2) > 0 && r(20, 2) < r(10, 2), "{enc:?}: half-covered sits between black and white: {}", r(20, 2));
+            assert_eq!(r(64, 2), 0, "a clear texel leaves the bar black");
+            assert!(r(127, 16) > 500, "and the picture as it was");
         }
     }
     #[test]

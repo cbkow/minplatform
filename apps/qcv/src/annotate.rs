@@ -269,8 +269,35 @@ impl Annotations {
         None
     }
 
+    /// Is there ink at `cur` — a stored stroke or one being drawn?
+    pub fn has_ink(&self, cur: &Cur) -> bool { self.live.is_some() || !self.strokes_at(cur).is_empty() }
+    /// A signature of the ink at `cur` (the outputs' change stamp: a new / moved / erased stroke, the live one growing).
+    pub fn ink_sig(&self, cur: &Cur) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        cur.key.hash(&mut h);
+        if let Some(a) = self.note_at(cur).and_then(|n| n.annotation.as_ref()) { a.to_string().hash(&mut h); }
+        match &self.live {
+            Some(Live::Ink(sm, _)) => { 1u8.hash(&mut h); let p = sm.points(); p.len().hash(&mut h); if let Some(l) = p.last() { format!("{l:?}").hash(&mut h); } }
+            Some(Live::Shape { a, b, .. }) => { 2u8.hash(&mut h); for v in a.iter().chain(b) { v.to_bits().hash(&mut h); } }
+            None => {}
+        }
+        self.color.map(f32::to_bits).hash(&mut h); self.width.to_bits().hash(&mut h);
+        h.finish()
+    }
     /// Draw the frame's strokes, the live one and the selection outline.
     pub fn paint(&self, scene: &mut Scene, cur: &Cur, geo: &Geo) {
+        self.paint_ink(scene, cur, geo);
+        // the selection: QCView's #0189f1 outline + corner handles, here on screen only
+        if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(cur).into_iter().find(|s| &s.id == id) {
+            let Some(bb) = self.sel_box(&s, geo) else { return };
+            let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
+            scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);
+            for c in [bb.origin(), Point::new(bb.x1, bb.y0), Point::new(bb.x1, bb.y1), Point::new(bb.x0, bb.y1)] { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, blue, None, &kurbo::Rect::from_center_size(c, (8.0, 8.0))); }
+        } }
+    }
+    /// The ink alone — the frame's strokes and the live one — what an output carries (row 238).
+    pub fn paint_ink(&self, scene: &mut Scene, cur: &Cur, geo: &Geo) {
         for s in self.strokes_at(cur) { draw(scene, &s, geo); }
         match &self.live {
             Some(Live::Ink(sm, _)) => { let s = Stroke { id: String::new(), tool: STool::Freehand, color: Stroke::qcolor(self.color), width: self.width as f64, filled: false, is_modeled: true, points: sm.points().to_vec() }; draw(scene, &s, geo); }
@@ -280,13 +307,6 @@ impl Annotations {
             }
             None => {}
         }
-        // the selection: QCView's #0189f1 outline + corner handles, here on screen only
-        if let Some(id) = &self.selected { if let Some(s) = self.strokes_at(cur).into_iter().find(|s| &s.id == id) {
-            let Some(bb) = self.sel_box(&s, geo) else { return };
-            let blue = peniko::Color::from_rgba8(0x01, 0x89, 0xf1, 0xff);
-            scene.stroke(&KStroke::new(1.5), Affine::IDENTITY, blue, None, &bb);
-            for c in [bb.origin(), Point::new(bb.x1, bb.y0), Point::new(bb.x1, bb.y1), Point::new(bb.x0, bb.y1)] { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, blue, None, &kurbo::Rect::from_center_size(c, (8.0, 8.0))); }
-        } }
     }
 }
 

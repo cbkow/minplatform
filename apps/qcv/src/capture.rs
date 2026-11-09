@@ -174,6 +174,8 @@ impl crate::App {
             else { regions.first().map(|r| ([0.0, 0.0, w as f64, h as f64], r.src, r.quarters)).into_iter().collect() };
         let (gw, gop, gcol) = { let st = &self.settings; (st.float(k::SAFETY_WIDTH), st.float(k::SAFETY_OPACITY) as f32, min_ui::color_picker::parse_hex(&st.string(k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0])) };
         let g = self.gpu.as_mut()?;
+        // the screen's pictures and scale: the guide keeps the proportion the viewport shows (row 238)
+        let (screen, sc): (Vec<min_present::engine::Placement>, f64) = { let e = &g.presenter.engine; (match e.dual() { Some(d) => { let mut p = vec![d.a.picture_placement()]; if side_by_side { p.push(d.b.picture_placement()); } p.into_iter().flatten().collect() } None => e.picture_placement().into_iter().collect() }, g.window.scale_factor()) };
         let (dev, q) = (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone());
         if g.thumb_layer.is_none() { g.thumb_layer = min_ui::UiLayer::new(&dev, w, h).ok(); }
         let layer = g.thumb_layer.as_mut()?;
@@ -182,10 +184,9 @@ impl crate::App {
         let geo = annotate::Geo { rect: [0.0, 0.0, w as f64, h as f64], px_per_src: 1.0 };
         for s in &strokes { annotate::draw(scene, s, &geo); }
         if let Some(gd) = &guide {
-            for (rect, src, quarters) in &places {
-                // the screen's line width at a 1080-line picture, scaled with the picture
-                let k_ = (rect[3] / 1080.0).max(1.0);
-                guides::paint(scene, gd, guides::transform(gd.view, *src, *rect, *quarters), gw * k_, peniko::Color::new([gcol[0], gcol[1], gcol[2], gop.clamp(0.0, 1.0)]));
+            for (n, (rect, src, quarters)) in places.iter().enumerate() {
+                // the screen's line width, scaled by this picture over the screen's
+                guides::paint(scene, gd, guides::transform(gd.view, *src, *rect, *quarters), crate::outputs::guide_width(gw, sc, rect, screen.get(n)), peniko::Color::new([gcol[0], gcol[1], gcol[2], gop.clamp(0.0, 1.0)]));
             }
         }
         layer.render(&dev, &q);

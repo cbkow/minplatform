@@ -4,7 +4,8 @@
 //! the product, an on / off SWITCH (QCView's Start / Stop buttons: on launches the sink, off retires it), the shape and the
 //! sink's own report as two quiet lines, then only the settings the sink lets QCView choose — Transfer (none for NDI: it names
 //! SDR itself), Raster (a sink that asks for "auto"), Primaries + Peak / MaxCLL / MaxFALL for PQ — a label column and
-//! full-width controls. QCView's Guides / Notes chips are not carried (row 225).
+//! full-width controls. QCView's Guides / Notes chips (row 238, reversing row 225) are two more header toggles beside the
+//! speaker — the Safety Guides' and the Notes panel's glyphs, lit while the layer is sent, QCView's tooltips.
 use kurbo::Rect;
 use min_theme::tokens as t;
 use min_ui::{paint, ActionButton, Event, Family, Fonts, KeyEvent, NumberField, Picker, Response, Section, Switch};
@@ -19,11 +20,12 @@ pub struct CardView { pub id: String, pub label: String, pub product: String, //
     pub dot: u8, pub reason: String, pub shape: String, pub status: String, pub enabled: bool, pub installed: bool,
     pub transfer: usize, pub raster: usize, pub primaries: usize, pub peak: i64, pub cll: i64, pub fall: i64, pub show_transfer: bool, pub show_raster: bool }
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Start(String), Stop(String), FeedMute(bool), Transfer(String, i64), Raster(String, i64), Primaries(String, i64), Peak(String, i64), Cll(String, i64), Fall(String, i64) }
+pub enum Cmd { Start(String), Stop(String), FeedMute(bool), Guides(bool), Notes(bool), Transfer(String, i64), Raster(String, i64), Primaries(String, i64), Peak(String, i64), Cll(String, i64), Fall(String, i64) }
 
 struct Card { v: CardView, on: Switch, transfer: Picker, raster: Picker, primaries: Picker, nits: [NumberField; 3], tile: Rect, dot: Rect, header: Rect, lines: Vec<(Rect, String)>, rows: Vec<(Rect, &'static str)> }
 
-pub struct OutputPanel { pub section: Section, mute: ActionButton, cards: Vec<Card>, empty: Rect, height: f64, scale: f64, pub tooltips: min_ui::Tooltips }
+pub struct OutputPanel { pub section: Section, mute: ActionButton, /// QCView's Guides / Notes chips: the layers sent to the outputs
+    layers: [ActionButton; 2], cards: Vec<Card>, empty: Rect, height: f64, scale: f64, pub tooltips: min_ui::Tooltips }
 
 const LABEL_W: f64 = 84.0;
 /// The controls' background on a card (layer 2 = GRAY_100): one step darker.
@@ -35,15 +37,18 @@ impl OutputPanel {
         // the speaker: the chip's size kept, a smaller glyph, the Notes tools' rounding (the walk 2026-11-09)
         let mut mute = ActionButton::new("speaker-high", tr("Silence the audio sent to outputs while you keep listening. The master mute (M) silences both.")).size_s();
         mute.icon_size = Some(t::ICON_SIZE_SMALL); mute.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64);
-        OutputPanel { section, mute, cards: vec![], empty: Rect::ZERO, height: 0.0, scale: 1.0, tooltips: Default::default() }
+        let chip = |icon: &'static str, tip: &str| { let mut b = ActionButton::new(icon, tip).size_s(); b.icon_size = Some(t::ICON_SIZE_SMALL); b.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64); b };
+        let layers = [chip("rectangle-dashed", tr("Draw the safety guides into the outputs that ask for them.")), chip("note-pencil", tr("Draw note strokes into the outputs that ask for them."))];
+        OutputPanel { section, mute, layers, cards: vec![], empty: Rect::ZERO, height: 0.0, scale: 1.0, tooltips: Default::default() }
     }
-    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.mute.tooltip = f.mute.tooltip; let vs: Vec<CardView> = self.cards.iter().map(|c| c.v.clone()).collect(); let m = self.mute.selected; self.cards.clear(); self.sync(vs, m, Instant::now()); }
+    pub fn relabel(&mut self) { let f = Self::new(); self.section.title = f.section.title; self.mute.tooltip = f.mute.tooltip; for (b, n) in self.layers.iter_mut().zip(f.layers) { b.tooltip = n.tooltip; } let vs: Vec<CardView> = self.cards.iter().map(|c| c.v.clone()).collect(); let (m, gd, nt) = (self.mute.selected, self.layers[0].selected, self.layers[1].selected); self.cards.clear(); self.sync(vs, m, gd, nt, Instant::now()); }
     pub fn menu_open(&self) -> bool { self.cards.iter().any(|c| c.transfer.is_open() || c.raster.is_open() || c.primaries.is_open()) }
     /// A press on a nits field (it keeps its focus: no commit-and-refocus).
     pub fn field_hit(&self, x: f64, y: f64) -> bool { self.cards.iter().any(|c| c.nits.iter().any(|n| n.hit(x, y))) }
     pub fn has_focus(&self) -> bool { self.cards.iter().any(|c| c.nits.iter().any(|n| n.focused())) }
-    pub fn sync(&mut self, views: Vec<CardView>, feed_muted: bool, now: Instant) -> bool {
-        let mut changed = self.mute.selected != feed_muted;
+    pub fn sync(&mut self, views: Vec<CardView>, feed_muted: bool, guides: bool, notes: bool, now: Instant) -> bool {
+        let mut changed = self.mute.selected != feed_muted || self.layers[0].selected != guides || self.layers[1].selected != notes;
+        self.layers[0].selected = guides; self.layers[1].selected = notes;
         self.mute.selected = feed_muted; self.mute.icon = if feed_muted { "speaker-x" } else { "speaker-high" };
         if self.cards.len() != views.len() || self.cards.iter().zip(&views).any(|(c, v)| c.v.id != v.id) {
             self.cards = views.iter().map(|v| Card { v: v.clone(), on: Switch::new(v.enabled),
@@ -73,6 +78,9 @@ impl OutputPanel {
         // the Mute feed toggle sits in the header, left of the collapse arrow
         let (mw, mh) = self.mute.measure(fonts, scale); let mx = x1 - t::SPACING_100 as f64 * scale - mw;   // flush right: the section's caret is on the left
         self.mute.rect = Rect::new(mx, y + (hh - mh) / 2.0, mx + mw, y + (hh + mh) / 2.0); self.mute.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64 * scale);
+        // the layer toggles to its left: Notes, then Guides (reading order: Guides · Notes · speaker)
+        let mut bx = mx - 2.0 * scale;
+        for b in self.layers.iter_mut().rev() { let (bw, bh) = b.measure(fonts, scale); b.rect = Rect::new(bx - bw, y + (hh - bh) / 2.0, bx, y + (hh + bh) / 2.0); b.corners = min_ui::action_button::Corners::all(t::CORNER_RADIUS_500 as f64 * scale); bx -= bw + 2.0 * scale; }
         if !self.section.expanded { self.height = hh; return hh }
         let pad = t::SPACING_100 as f64 * scale; let gap = t::RAIL_ROW_GAP as f64 * scale; let row = t::RAIL_ROW_HEIGHT as f64 * scale; let ins = t::SPACING_200 as f64 * scale;
         let (x0, x1) = (x0 + pad, x1 - pad);
@@ -131,7 +139,8 @@ impl OutputPanel {
         // the header's Mute feed toggle before the section's own click (which collapses)
         let mut dirty = false;
         match self.mute.event(e, now) { Response::Clicked => { cmds.push(Cmd::FeedMute(!self.mute.selected)); return (cmds, true, true) } Response::None => {} _ => dirty = true }
-        if !self.mute.hovered() { let (toggled, d) = self.section.event(e, now); dirty |= d || toggled; }
+        for (i, b) in self.layers.iter_mut().enumerate() { match b.event(e, now) { Response::Clicked => { cmds.push(if i == 0 { Cmd::Guides(!b.selected) } else { Cmd::Notes(!b.selected) }); return (cmds, true, true) } Response::None => {} _ => dirty = true } }
+        if !self.mute.hovered() && !self.layers.iter().any(|b| b.hovered()) { let (toggled, d) = self.section.event(e, now); dirty |= d || toggled; }
         if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
         if self.section.expanded {
             for c in &mut self.cards {
@@ -142,17 +151,19 @@ impl OutputPanel {
             }
         }
         let over = self.mute.hovered().then(|| (1u64, self.mute.rect, self.mute.tooltip.clone()))
+            .or_else(|| self.layers.iter().enumerate().find(|(_, b)| b.hovered()).map(|(i, b)| (2 + i as u64, b.rect, b.tooltip.clone())))
             .or_else(|| self.cards.iter().enumerate().find(|(_, c)| e.pos().is_some_and(|(x, y)| c.dot.inflate(4.0, 4.0).contains(kurbo::Point::new(x, y)) || c.header.contains(kurbo::Point::new(x, y)))).map(|(i, c)| (10 + i as u64, c.dot.union(c.header), if c.v.reason.is_empty() { tr("Publish the viewport and the mixed audio to this output. The sink runs as its own application; QCView starts it with Start and stops it with Stop.").to_string() } else { c.v.reason.clone() })));
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
         let inside = e.pos().is_some_and(|(x, y)| x >= self.section.rect.x0 && x <= self.section.rect.x1 && y >= self.section.rect.y0 && y <= self.section.rect.y0 + self.height);
         (cmds, dirty, inside && matches!(e, Event::Down { .. }))
     }
-    pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.mute.animating(now) || self.cards.iter().any(|c| c.on.animating(now)) }
+    pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.mute.animating(now) || self.layers.iter().any(|b| b.animating(now)) || self.cards.iter().any(|c| c.on.animating(now)) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
         let gap = t::RAIL_SECTION_GAP as f64 * scale;
         min_ui::section::paint_tile(scene, Rect::new(self.section.rect.x0, self.section.rect.y0, self.section.rect.x1, self.section.rect.y0 + self.height - gap / 2.0), scale);
         self.section.paint(scene, fonts, scale, now, first);
         self.mute.paint(scene, fonts, scale, now);
+        for b in &mut self.layers { b.paint(scene, fonts, scale, now); }
         if !self.section.expanded { return }
         let small = t::DETAIL_SIZE_S * scale as f32; let lab = t::RAIL_LABEL_SIZE * scale as f32;
         let mid = |r: Rect, hgt: f64| r.y0 + (r.height() - hgt) / 2.0;

@@ -38,6 +38,8 @@ pub mod v {
     pub const PRIMARIES_REC2020: u32 = 1; pub const PRIMARIES_P3D65: u32 = 2;
     pub const FIT_LETTERBOX: u32 = 1;
     pub const CONTENT_COMPOSITE: u32 = 1; pub const CONTENT_SIDE_A: u32 = 2; pub const CONTENT_SIDE_B: u32 = 3;
+    /// `OutputLayers` (output_desc.h): what a sink wants drawn in — the producer may include fewer, never more
+    pub const LAYER_GUIDES: u32 = 1 << 0; pub const LAYER_ANNOTATIONS: u32 = 1 << 1;
     pub const REFUSE_VERSION: u32 = 1; pub const REFUSE_TOO_LARGE: u32 = 2; pub const REFUSE_FORMAT: u32 = 3; pub const REFUSE_TRANSFER: u32 = 4; pub const REFUSE_CONTENT: u32 = 5; pub const REFUSE_NO_SOURCE: u32 = 6;
     pub const FRAME_HAS_A: u32 = 1; pub const FRAME_HAS_B: u32 = 2; pub const FRAME_TIMECODE_VALID: u32 = 16; pub const FRAME_DROP_FRAME: u32 = 32; pub const FRAME_PAUSED: u32 = 64;
 }

@@ -1005,7 +1005,7 @@ impl App {
                 let gh = g.guides_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);   // QCView's order: Media, Safety Guides, Background, Settings
                 let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh, scale);
                 // the Output section (QCView: after Background, before Settings)
-                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), now) { g.ui_dirty = true; } }
+                { let views = outputs::views(&self.outputs, &self.settings); if g.output_panel.sync(views, self.settings.bool(settings::k::OUTPUT_FEED_MUTED), self.settings.bool(settings::k::OUTPUT_GUIDES), self.settings.bool(settings::k::OUTPUT_NOTES), now) { g.ui_dirty = true; } }
                 let oh = g.output_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale);
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh + oh, scale); g.left.content_height = ph + gh + bh + oh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
@@ -1971,7 +1971,7 @@ fn srgb_oetf(x: f32) -> f32 { let x = x.clamp(0.0, 1.0); if x <= 0.003_130_8 { 1
 /// "#rrggbb" → an opaque sRGB colour.
 fn qcv_notes_color(h: &str) -> Option<[f32; 4]> { min_ui::color_picker::parse_hex(h).map(|c| [c[0], c[1], c[2], 1.0]) }
 /// Where the single view's picture is, for the annotation tools: its displayed rect and window px per source px.
-fn annot_geo(e: &min_present::engine::Engine) -> Option<annotate::Geo> {
+pub(crate) fn annot_geo(e: &min_present::engine::Engine) -> Option<annotate::Geo> {
     let (rect, _, _) = e.picture_placement()?; let (dw, _) = e.display_dims();
     Some(annotate::Geo { rect, px_per_src: rect[2] / dw.max(1) as f64 })
 }
