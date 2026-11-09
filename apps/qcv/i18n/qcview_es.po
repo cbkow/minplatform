@@ -4466,17 +4466,5 @@ msgctxt "RightRail"
 msgid "View"
 msgstr "Ver"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: showing %1"
-msgstr "Pantalla SDR: se muestra %1"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: rendering for 100 nits"
-msgstr "Pantalla SDR: renderizado para 100 nits"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: HDR rolled off to SDR white"
-msgstr "Pantalla SDR: HDR comprimido hasta el blanco SDR"

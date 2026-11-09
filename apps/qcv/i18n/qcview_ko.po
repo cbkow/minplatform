@@ -4458,17 +4458,5 @@ msgctxt "RightRail"
 msgid "View"
 msgstr "보기"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: showing %1"
-msgstr "SDR 디스플레이: %1 표시 중"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: rendering for 100 nits"
-msgstr "SDR 디스플레이: 100 nits로 렌더링"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: HDR rolled off to SDR white"
-msgstr "SDR 디스플레이: HDR을 SDR 화이트까지 압축"

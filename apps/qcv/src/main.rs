@@ -109,8 +109,7 @@ struct App {
     last_tick: Instant,
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
-    drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// the window's screen shows no HDR (canon row 220): the chain ends in SDR there
-    pub(crate) screen_sdr: bool, screen_sdr_dirty: bool, snapped: bool, verified: bool,
+    drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, snapped: bool, verified: bool,
     settings: min_settings::Settings,
     /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
     meta: qcv_meta::MetadataService,
@@ -711,7 +710,6 @@ impl App {
         let thumb_gen = [self.thumb_color_tick(0), if self.dual.is_some() { self.thumb_color_tick(1) } else { 0 }];
         self.poll_export();
         self.ensure_color_config();
-        if std::mem::take(&mut self.screen_sdr_dirty) { self.apply_color(); }   // the screen changed: the chain's end follows (row 220)
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
@@ -721,20 +719,18 @@ impl App {
         let now = Instant::now();
         tab_presence(g, now);   // a parked pointer fades the tabs with no event to say so
         // the window's screen, every 2 s (canon rows 184 + 220, Windows): HDR on → the fp16 scRGB surface with SDR white lifted to the
-        // user's SDR brightness; HDR off → the 10-bit sRGB surface (gain 1) and the chain ending in SDR. macOS: EDR as ever — the
-        // screen-following chain end was tried and declined there (the user's A/B, 2026-11-09).
-        let mut screen_sdr = self.screen_sdr;
+        // user's SDR brightness; HDR off → the 10-bit sRGB surface (gain 1). The chain renders as chosen on both — above SDR white
+        // clips on an SDR monitor and the user dials it in with the Highlight Knee (the user 2026-11-09: no auto tone mapping).
         if g.presenter.info().output == Output::Edr && g.sdr_checked.is_none_or(|t| now.duration_since(t).as_secs_f32() >= 2.0) {
             g.sdr_checked = Some(now);
             if cfg!(windows) {
                 let name = g.window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())).unwrap_or_default();
                 let (gain, hdr) = sdr_white::screen_for(&name);
-                if let Some(hdr) = hdr { screen_sdr = !hdr; if g.presenter.set_sdr_surface(!hdr) { g.ui_dirty = true; } }
+                if let Some(hdr) = hdr && g.presenter.set_sdr_surface(!hdr) { g.ui_dirty = true; }
                 let gain = if g.presenter.sdr_surface() { 1.0 } else { gain };
                 if (gain - g.presenter.engine.output_gain()).abs() > 1e-3 { log::info!("SDR white on {name}: {:.0} nits (gain {gain:.2})", gain * 80.0); g.presenter.engine.set_output_gain(gain); }
             }
         }
-        if screen_sdr != self.screen_sdr { log::info!("screen: {} — the chain ends {}", if screen_sdr { "no HDR" } else { "HDR" }, if screen_sdr { "in the SDR view" } else { "as chosen" }); self.screen_sdr = screen_sdr; self.screen_sdr_dirty = true; g.ui_dirty = true; }
         let mut shown_new = false; let mut reopen = false;
         if let Some(p) = self.player.as_mut() {
             if *TRACE_SCRUB { if let Some(sd) = p.scrub() { if let Some(rx) = sd.served.clone() { while let Ok(sv) = rx.try_recv() { println!("scrub: served {} at {:.1} ms — request → ready {:.1} ms, decoded {}, hit {}, seeked {}", sv.target, trace_ms(), (sv.done - sv.issued).as_secs_f32() * 1000.0, sv.decoded, sv.hit, sv.seeked); } } } }
@@ -2214,7 +2210,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, screen_sdr: false, screen_sdr_dirty: false, snapped: false, verified: false };
+    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -2468,7 +2464,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
                 let o = color_model::OcioChain { config: "ACES_2.0".into(), input: cfg.inputs().into_iter().find(|i| i.contains("ACEScg")).unwrap_or_default(), look: String::new(), view: cfg.views().into_iter().find(|v| v.contains("SDR")).unwrap_or_default(), scene_lut: String::new(), knee: qcv_color::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } };
                 (color_model::Stored { chain: color_model::ClipChain::Ocio(o), preset: String::new() }, Some(color_drawer::OcioLists { configs: color::BUNDLED.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(), inputs: cfg.inputs(), looks: cfg.looks(), views: cfg.views() }))
             } else { (edited, None) };
-            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true, screen_note: std::env::var_os("QCV_UI_SNAP_SDR").map(|_| min_i18n::fill(min_i18n::trc("ColorPanel", "SDR display: showing %1"), &[&"ACES 2.0 - SDR 100 nits (Rec.709)"])) }, t0);
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
             engine.set_scope(d.scope());
             d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts, kurbo::Rect::new(0.0, 0.0, 1e5, 1e5), shown_at);

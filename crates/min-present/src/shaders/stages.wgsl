@@ -17,8 +17,7 @@ struct U {
   rgb_expand: f32,       // legal-range RGB → full (rgb_range.h's rule)
   rot: f32,              // display rotation, quarter turns CW; the sampler inverse-rotates (QCView's rotatedSrcUv)
   off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
-  pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y = an HDR
-                         //   source's peak in nits to roll off to SDR white (BT.2390; bypass on an SDR screen, canon row 220; 0 = none)
+  pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y —
   bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
   media: vec4<f32>,      // the media rect in viewport px (x, y, w, h; y down)
   vp: vec4<f32>,         // the viewport size in px
@@ -92,27 +91,9 @@ fn viewer_aids(lin: vec3<f32>) -> vec3<f32> {
   return c;
 }
 fn alpha_view() -> bool { return u.aids.w > 0.5 && u.aids.z > 3.5 && u.aids.z < 4.5; }
-// BT.2390-04 EETF (capture.rs's, on the GPU): nits in [0, src] onto [0, dst] in PQ space, the knee at 1.5·dst − 0.5.
-fn pq_enc(n: f32) -> f32 { let y = clamp(n / 10000.0, 0.0, 1.0); let p = pow(y, 0.1593017578125); return pow((0.8359375 + 18.8515625 * p) / (1.0 + 18.6875 * p), 78.84375); }
-fn pq_dec(e: f32) -> f32 { let p = pow(max(e, 0.0), 1.0 / 78.84375); return 10000.0 * pow(max(p - 0.8359375, 0.0) / (18.8515625 - 18.6875 * p), 1.0 / 0.1593017578125); }
-fn bt2390(nits: f32, src: f32, dst: f32) -> f32 {
-  if (nits <= 0.0) { return 0.0; }
-  if (src <= dst) { return min(nits, dst); }
-  // above the source's peak: its peak (the curve overshoots past 1)
-  let sp = pq_enc(src); let e1 = pq_enc(min(nits, src)) / sp; let max_l = pq_enc(dst) / sp; let ks = 1.5 * max_l - 0.5;
-  var e2 = e1;
-  if (e1 >= ks) { let t = (e1 - ks) / (1.0 - ks); let t2 = t * t; let t3 = t2 * t; e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * max_l; }
-  return pq_dec(e2 * sp);
-}
-// An HDR source with no chain on an SDR screen: the brightest channel rolled off from its peak to SDR white, hue kept.
-fn to_sdr(lin: vec3<f32>, white: f32) -> vec3<f32> {
-  if (u.pad1.y <= 0.0) { return lin; }
-  let m = max(lin.r, max(lin.g, lin.b)); if (m <= 0.0) { return lin; }
-  return lin * (bt2390(m * white, u.pad1.y, white) / white / m);
-}
 // Stage 3 — the display transform. 0 EDR linear · 2 PQ encode · 3 SDR linear clipped (sRGB surface) · 4 SDR sRGB-encoded.
 fn stage3(lin_in: vec3<f32>, mode: f32, white: f32) -> vec4<f32> {
-  let lin = viewer_aids(to_sdr(lin_in, white));
+  let lin = viewer_aids(lin_in);
   // the extended-linear surface: on Windows scRGB 1.0 is 80 nits, so SDR white (1.0 here) is lifted to the user's SDR brightness
   if (mode < 0.5) { return vec4(max(lin, vec3(0.0)) * select(1.0, u.pad1.x, u.pad1.x > 0.0), 1.0); }
   if (mode < 2.5) { return vec4(pq_oetf(max(lin, vec3(0.0)) * white), 1.0); }

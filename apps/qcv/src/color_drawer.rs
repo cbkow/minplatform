@@ -49,8 +49,6 @@ pub struct View {
     pub ocio: Option<OcioLists>,
     /// the source is HDR (PQ / HLG): the waveform opens on its HDR scale
     pub hdr_source: bool,
-    /// canon row 220: the window's screen shows no HDR and the chain's end is substituted — said in the header, no control
-    pub screen_note: Option<String>,
 }
 
 /// What an OCIO chain's columns offer (from the loaded config; the configs are the bundled three + a user's file).
@@ -529,7 +527,6 @@ impl ColorDrawer {
         let status = if !v.has_clip { tr("Clips without their own chain follow this one") } else if v.own { tr("Own chain") } else { tr("Following the project default") };
         let sl = fonts.layout(status, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
         min_ui::fonts::draw_layout(scene, &sl, Affine::translate((x, mid(&sl, self.header)))); x += sl.width() as f64 + t::SPACING_200 as f64 * s;
-        if let Some(note) = &v.screen_note { let nl = fonts.layout(note, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR)); min_ui::fonts::draw_layout(scene, &nl, Affine::translate((x, mid(&nl, self.header)))); x += nl.width() as f64 + t::SPACING_200 as f64 * s; }
         // QCView's amber KNEE pill: the picture is not 1:1 while the knee compresses
         let kneeing = match &v.stored.chain { ClipChain::MinColor(c) => c.knee_on != 0 && c.knee_src > c.knee_tgt, ClipChain::Ocio(o) => o.knee.enabled && o.knee.source_nits > if qcv_color::ocio::view_is_sdr(&o.view) { 100.0 } else { o.knee.target_nits } };
         { if v.on && kneeing {

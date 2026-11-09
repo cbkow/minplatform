@@ -4458,17 +4458,5 @@ msgctxt "RightRail"
 msgid "View"
 msgstr "视图"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: showing %1"
-msgstr "SDR 显示器：正在显示 %1"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: rendering for 100 nits"
-msgstr "SDR 显示器：按 100 nits 渲染"
 
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
-msgid "SDR display: HDR rolled off to SDR white"
-msgstr "SDR 显示器：HDR 已压缩至 SDR 白"

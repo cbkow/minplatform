@@ -158,13 +158,7 @@ impl crate::App {
         let on = self.settings.bool(crate::settings::k::COLOR_ENABLED);
         let hdr_source = match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => c.in_transfer == 14 || c.in_transfer == 15, ClipChain::Ocio(o) => { let n = o.input.to_uppercase(); n.contains("PQ") || n.contains("2084") || n.contains("HLG") } };
         let side = self.dual.is_some().then(|| if self.edit_slot() == 1 { qcv_player::Side::B } else { qcv_player::Side::A });
-        // canon row 220: what the screen shows instead, when the window's screen has no HDR and the chain's end is substituted
-        let screen_note = if !self.screen_sdr { None } else { let tr = |s| min_i18n::trc("ColorPanel", s); match &stored.chain {
-            _ if !on => hdr_source.then(|| tr("SDR display: HDR rolled off to SDR white").to_string()),
-            ClipChain::MinColor(c) => (c.peak_nits > 100.0 || c.agx_peak > 100.0).then(|| tr("SDR display: rendering for 100 nits").to_string()),
-            ClipChain::Ocio(o) => ocio.as_ref().and_then(|l| crate::capture::sdr_view(&l.views, &o.view)).map(|v| min_i18n::fill(tr("SDR display: showing %1"), &[&v])),
-        } };
-        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, screen_note }
+        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source }
     }
     /// Bind each visible picture's chain to its engine: the single view's (slot 0), or dual's A (slot 0) and B (slot 1), each
     /// from its own clip (row 205); off = bypass. minColor = the slot's pass (a uniform update); OCIO = a pass built on a
@@ -179,32 +173,27 @@ impl crate::App {
             let dual = self.dual.is_some();
             let Some(g) = self.gpu.as_mut() else { return };
             let Some(engine) = slot_engine(g, slot, dual) else { self.color_bound[slot] = None; self.ocio_rx[slot] = None; continue };
-            // canon row 220: on a screen with no HDR the chain ends in SDR — an HDR file with no chain rolls off (BT.2390), minColor
-            // targets 100 nits, OCIO shows its SDR view; a display-time substitution, the clip's chain is never rewritten
-            let sdr = self.screen_sdr;
-            engine.set_sdr_target(sdr);
             if !on || !shown {
                 if self.color_bound[slot].is_some() { engine.set_color_pass(None); self.color_bound[slot] = None; }
                 self.ocio_rx[slot] = None;
                 continue
             }
             match stored.chain {
-                ClipChain::MinColor(mut c) => {
+                ClipChain::MinColor(c) => {
                     let Some(rc) = self.mincolor[slot].clone() else { continue };   // binds when the build lands
-                    if sdr { c.peak_nits = 100.0; c.agx_peak = 100.0; }
                     rc.borrow_mut().set_chain(c);
                     if self.color_bound[slot].as_deref() != Some("minColor") { engine.set_color_pass(Some(Box::new(SharedPass(rc)))); self.color_bound[slot] = Some("minColor".into()); }
                     self.ocio_rx[slot] = None;
                 }
                 ClipChain::Ocio(o) => {
-                    let key = format!("{}|{}|{}|{}|{:?}|{sdr}", o.config, o.input, o.look, o.view, o.knee);
+                    let key = format!("{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.knee);
                     if self.color_bound[slot].as_deref() == Some(key.as_str()) || self.ocio_rx[slot].as_ref().is_some_and(|(k, _)| *k == key) { continue }
                     let cfg = ocio_config_path(&o.config);
                     let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut };
                     let (d, q, knee) = (engine.device.clone(), engine.queue.clone(), o.knee);
                     let (tx, rx) = mpsc::channel();
                     std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
-                        match qcv_color::ocio::Config::open(&cfg).and_then(|c| { let mut spec = spec; if sdr && let Some(v) = crate::capture::sdr_view(&c.views(), &spec.view) { log::info!("SDR screen: OCIO view '{}' → '{v}'", spec.view); spec.view = v; } qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee) }) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); } Err(e) => log::error!("OCIO: {e}") }
+                        match qcv_color::ocio::Config::open(&cfg).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee)) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); } Err(e) => log::error!("OCIO: {e}") }
                     }).ok();
                     self.ocio_rx[slot] = Some((key, rx));
                 }
