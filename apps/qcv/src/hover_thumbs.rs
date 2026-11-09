@@ -13,7 +13,8 @@ use qcv_player::{thumbnail_cache::HOVER_REQUEST_THROTTLE_MS, ThumbConfig, ThumbK
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::{Duration, Instant}};
 use vello::Scene;
 
-type Images = Rc<RefCell<HashMap<u64, peniko::ImageBrush>>>;
+/// each handle's R'G'B' pixels (the loader's) and its picture in the current look (its generation) — row 216
+type Images = Rc<RefCell<HashMap<u64, (ThumbPixels, Option<(u64, peniko::ImageBrush)>)>>>;
 
 pub struct HoverThumbs {
     cache: TimelineThumbnailCache,
@@ -38,12 +39,13 @@ impl HoverThumbs {
     #[allow(dead_code)]
     pub fn clear(&mut self) { self.pending_frame = None; if self.shown.is_some() { self.shown = None; } }
     /// Per frame: the hovered timeline frame (or none), the uploads to adopt; true when what is shown changed.
-    pub fn tick(&mut self, p: Option<&mut Transport>, hover: Option<i32>, now: Instant) -> bool {
+    /// `look` = the thumbnail look's generation and its converter (the clip's chain on the GPU); a stale shown picture is redone.
+    pub fn tick(&mut self, p: Option<&mut Transport>, hover: Option<i32>, now: Instant, look: (u64, &mut dyn FnMut(&ThumbPixels) -> Option<peniko::ImageBrush>)) -> bool {
         let mut changed = false;
         let playing = p.as_ref().is_some_and(|p| p.is_playing());
         if playing != self.playing { self.playing = playing; self.cache.notify_playback_state(playing); }
         let (images, next) = (self.images.clone(), &mut self.next);
-        let n = self.cache.process_pending_uploads(|_: &ThumbKey, px: &ThumbPixels| { *next += 1; images.borrow_mut().insert(*next, paint::image_rgba8(px.width, px.height, px.rgba.clone())); *next });
+        let n = self.cache.process_pending_uploads(|_: &ThumbKey, px: &ThumbPixels| { *next += 1; images.borrow_mut().insert(*next, (ThumbPixels { width: px.width, height: px.height, rgba: px.rgba.clone() }, None)); *next });
         if n > 0 { changed = true; }
         match (hover.filter(|_| self.enabled), p) {
             (Some(f), Some(p)) => {
@@ -58,12 +60,21 @@ impl HoverThumbs {
             }
             _ => { if self.shown.is_some() { self.shown = None; changed = true; } self.pending_frame = None; }
         }
+        // the shown thumbnail in the current look (only it: the strip's others convert when they are shown)
+        if let Some((h, _, _)) = self.shown {
+            let mut imgs = self.images.borrow_mut();
+            if let Some((raw, img)) = imgs.get_mut(&h) && img.as_ref().map(|x| x.0) != Some(look.0) {
+                let pic = (look.1)(raw).unwrap_or_else(|| paint::image_rgba8(raw.width, raw.height, raw.rgba.clone()));
+                *img = Some((look.0, pic)); changed = true;
+            }
+        }
         changed
     }
     /// `anchor_x` = the pointer's x to centre on (solo); `None` parks bottom-left (dual's A side).
     pub fn paint(&self, scene: &mut Scene, content: Rect, scale: f64, anchor_x: Option<f64>) {
-        let Some((h, w, hh)) = self.shown else { return };
-        let imgs = self.images.borrow(); let Some(img) = imgs.get(&h) else { return };
+        let Some((h, _, _)) = self.shown else { return };
+        let imgs = self.images.borrow(); let Some((_, Some((_, img)))) = imgs.get(&h) else { return };
+        let (w, hh) = (img.image.width, img.image.height);
         let dw = content.width() * t::HOVER_THUMBNAIL_FRAME_RATIO; let dh = dw * hh as f64 / w.max(1) as f64;
         let pad = t::SPACING_100 as f64 * scale; let bw = t::BORDER_WIDTH_100 as f64 * scale;
         let x0 = match anchor_x { Some(ax) => (ax - dw / 2.0).clamp(content.x0 + pad, (content.x1 - pad - dw).max(content.x0 + pad)), None => content.x0 + pad };
