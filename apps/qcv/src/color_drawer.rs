@@ -21,7 +21,8 @@ use vello::Scene;
 fn tr(s: &'static str) -> &'static str { min_i18n::trc("ColorPanel", s) }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
+pub enum Cmd { /// the caret below the picture: closes the open bottom panel (Color or Notes), else opens Color
+    Tab, Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
     NewOcio, OpenConfig, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
     Aids(ViewerAids), /// the drawer's height after a drag of its top edge (logical px)
     Height(f64), /// the waveform's state as the user set it (kept across launches): scale override, HDR top, open
@@ -67,7 +68,8 @@ pub struct ColorDrawer {
     pub rect: Rect,
     /// the top edge's resize grip (the rails' splitter, turned): hovered, and the drag's (pointer y, height) at the press
     split_hover: bool, split_drag: Option<(f64, f64)>,
-    tab: Rect, tab_hover: bool, tab_ramp: Ramp, present: Ramp,
+    tab: Rect, tab_hover: bool, tab_ramp: Ramp, present: Ramp, /// the Notes panel is open: the caret points down and closes IT (the user 2026-11-09)
+    pub notes_open: bool,
     presets: ListColumn, gamut: ListColumn, transfer: ListColumn, render: ListColumn,
     /// OCIO's columns (QCView: Config · Input · Look · View)
     ocfg: ListColumn, oinput: ListColumn, olook: ListColumn, oview: ListColumn, ocfg_keys: Vec<String>,
@@ -119,7 +121,7 @@ impl ColorDrawer {
         let transfer_names = qcv_color::input_transfer_names();
         ColorDrawer {
             open, open_ramp: Ramp::new(if open { 1.0 } else { 0.0 }, t::RAIL_COLLAPSE_DURATION), height, rect: Rect::ZERO, split_hover: false, split_drag: None,
-            tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE),
+            tab: Rect::ZERO, tab_hover: false, tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), notes_open: false,
             presets: ListColumn::new(tr("Presets")), gamut: ListColumn::new(tr("Input gamut")), transfer: ListColumn::new(tr("Input transfer")), render: ListColumn::new(tr("Rendering")),
             ocfg: ListColumn::new(tr("Config")), oinput: ListColumn::new(tr("Input")).with_filter(), olook: ListColumn::new(tr("Look")), oview: ListColumn::new(tr("View")), ocfg_keys: vec![],
             preset_rows: vec![],
@@ -346,6 +348,12 @@ impl ColorDrawer {
         let mut cmds = vec![]; let mut dirty = false;
         // the readout's tooltip: QCView `ScopeController` — the brightest channel, this frame and the clip's max, for the row under the pointer
         let tip = e.pos().filter(|_| !matches!(e, Event::Leave) && self.naming.is_none() && !self.menu.is_open()).and_then(|(x, y)| {
+            // the caret: QCView's rail words with the panel's key — it collapses whichever bottom panel is open, else opens Color
+            if self.tab.contains(kurbo::Point::new(x, y)) && self.present.value(now) > 0.5 {
+                let mac = cfg!(target_os = "macos");
+                let (word, key) = if self.notes_open { ("Collapse panel", if mac { "⌘4" } else { "Ctrl+4" }) } else if self.open { ("Collapse panel", if mac { "⌘3" } else { "Ctrl+3" }) } else { ("Expand panel", if mac { "⌘3" } else { "Ctrl+3" }) };
+                return Some((6999, self.tab, format!("{} ({key})", min_i18n::trc("LeftRail", word))))
+            }
             if !self.wf_readout.contains(kurbo::Point::new(x, y)) { return None }
             let hdr = self.scope_hdr();
             let row = ((y - self.wf_readout.y0 - t::SPACING_100 as f64 * self.scale) / (16.0 * self.scale)).floor().max(0.0) as usize;
@@ -375,7 +383,7 @@ impl ColorDrawer {
         // the tab
         let over_tab = e.pos().is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
         if over_tab != self.tab_hover { self.tab_hover = over_tab; self.tab_ramp.set_target(if over_tab { 1.0 } else { 0.0 }, now); dirty = true; }
-        if let Event::Down { button: Button::Primary, .. } = e { if over_tab && self.present.value(now) > 0.5 { cmds.push(Cmd::Toggle); return (cmds, true, true) } }
+        if let Event::Down { button: Button::Primary, .. } = e { if over_tab && self.present.value(now) > 0.5 { self.tips.pressed(now); cmds.push(Cmd::Tab); return (cmds, true, true) } }
         if self.rect.height() <= 1.0 { return (cmds, dirty, false) }
         // the top edge: drag to resize (200…600 px, kept in the store on release)
         if let Some((y0, h0)) = self.split_drag {
@@ -498,7 +506,7 @@ impl ColorDrawer {
         let bg = mix(t::HOVER_BACKGROUND_COLOR_IDLE, t::HOVER_BACKGROUND_COLOR, a); let bg = bg.with_alpha(bg.a * p);
         if bg.a > 0.0 { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, bg); }
         let c = mix(t::RAIL_OPEN_TAB_COLOR, t::NEUTRAL_CONTENT_COLOR_HOVER, a); let c = c.with_alpha(c.a * p);
-        if let Some(g) = fonts.icon(if self.open { "caret-down" } else { "caret-up" }, t::ICON_SIZE_SMALL * s as f32, paint::color(c)) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.tab.x0 + (self.tab.width() - g.width() as f64) / 2.0, self.tab.y0 + (self.tab.height() - g.height() as f64) / 2.0))); }
+        if let Some(g) = fonts.icon(if self.open || self.notes_open { "caret-down" } else { "caret-up" }, t::ICON_SIZE_SMALL * s as f32, paint::color(c)) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.tab.x0 + (self.tab.width() - g.width() as f64) / 2.0, self.tab.y0 + (self.tab.height() - g.height() as f64) / 2.0))); }
     }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
         if self.rect.height() <= 1.0 { return }

@@ -828,6 +828,7 @@ impl App {
             if chromeless { g.drawer.rect = kurbo::Rect::ZERO; } else {
                 if g.drawer.sync(color_view, now) { g.ui_dirty = true; }
                 let cr = kurbo::Rect::new(content.0 as f64, content.1 as f64, (content.0 + content.2) as f64, (content.1 + content.3) as f64);
+                g.drawer.notes_open = g.notes.open;
                 g.drawer.layout(&mut g.fonts, cr, 0.0, rails_bottom, w as f64, scale, now);
                 // the Notes drawer: its cards from the clip's notes (the annotated thumbnail when there is one), the current note, the tools
                 if g.notes.open || g.notes.visible_height(now, scale) > 0.0 {
