@@ -50,6 +50,8 @@ mod color_columns;
 mod sdr_white;
 mod dual_controls;
 mod dual_bars;
+mod guides;
+mod guides_panel;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -78,7 +80,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     strip_hidden: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
-    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
+    left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
+    guide: Option<(String, guides::Guide)>, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
     /// QCView's in-window menu bar (Windows; row 194) + its About modal
     menu_bar: Option<menu::InWindowMenu>, about: min_ui::Dialog }
 
@@ -660,6 +663,8 @@ impl App {
             let frame = match &self.dual { Some(d) => Some((d.current_frame(), d.frame_count(), d.rate().as_f64())), None => self.player.as_ref().and_then(|p| p.current().map(|_| (p.current_frame(), p.frame_count(), p.rate().as_f64()))) };
             let key = frame.map(|(c, n, _)| (c, n));
             g.bar.sync(pb(&self.dual, &self.player), now);
+            // the chosen safety guide, parsed once per choice (row 215)
+            { let want = self.settings.string(settings::k::SAFETY_GUIDE); if g.guide.as_ref().map(|x| x.0.as_str()) != Some(want.as_str()) { g.guide = (!want.is_empty()).then(|| crate::guides::GUIDES.iter().find(|x| x.0 == want).map(|x| (want.clone(), crate::guides::parse(x.1)))).flatten(); g.ui_dirty = true; } }
             { // dual view's controls (row 173): the loaded clip as A, the project's B source while dual is on
                 let name = |id: &str| (!id.is_empty()).then(|| self.project.item(id).map(|m| m.name.clone())).flatten();
                 let a = name(&self.loaded_item);
@@ -743,7 +748,7 @@ impl App {
             // the window title: QCView's "clip — project" with a dot while unsaved
             { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("qcv — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("qcv — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
             g.settings_panel.sync(&self.settings, now);
-            if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
+            if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.background_panel.animating(now) || g.guides_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {
                 let lc = g.left.content_rect();
                 if g.project_panel.sync(&self.project, &self.loaded_item) { g.ui_dirty = true; }
@@ -761,8 +766,10 @@ impl App {
                 if let Some(id) = g.project_panel.pending_rename.take() { if g.project_panel.begin_rename(&id, &mut g.fonts) { set_ime(&**g.window, true); g.ui_dirty = true; } }
                 let ph = g.project_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0, scale);
                 g.background_panel.sync(self.settings.int(settings::k::BACKGROUND_MODE) as u8);
-                let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);
-                let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + bh, scale); g.left.content_height = ph + bh + lh;
+                { let st = &self.settings; g.guides_panel.sync(&st.string(settings::k::SAFETY_GUIDE), st.float(settings::k::SAFETY_OPACITY) as f32, st.float(settings::k::SAFETY_WIDTH) as f32, &st.string(settings::k::SAFETY_COLOR)); }
+                let gh = g.guides_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph, scale);   // QCView's order: Media, Safety Guides, Background, Settings
+                let bh = g.background_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh, scale);
+                let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + gh + bh, scale); g.left.content_height = ph + gh + bh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
                 { let en: &min_present::engine::Engine = match g.presenter.engine.dual() { Some(d) if self.dual.is_some() => if islot == 1 { &d.b } else { &d.a }, _ => &g.presenter.engine }; let (geo, dims) = (en.geometry(), en.display_dims()); g.inspector.set_geometry(geo, dims); }
                 if g.inspector.set_side(self.dual.is_some().then(|| if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A })) { g.ui_dirty = true; }
@@ -823,11 +830,22 @@ impl App {
                         rail.paint_background(scene, now);
                         if rail.rect.width() > 0.0 {
                             rail.push_clip(scene);
-                            if is_left { g.project_panel.paint(scene, &mut g.fonts, scale, now, true); g.background_panel.paint(scene, &mut g.fonts, scale, now, false); g.settings_panel.paint(scene, &mut g.fonts, scale, now, false); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); }
+                            if is_left { g.project_panel.paint(scene, &mut g.fonts, scale, now, true); g.guides_panel.paint(scene, &mut g.fonts, scale, now, false); g.background_panel.paint(scene, &mut g.fonts, scale, now, false); g.settings_panel.paint(scene, &mut g.fonts, scale, now, false); } else { g.inspector.paint(scene, &mut g.fonts, scale, now); }
                             rail.pop_clip(scene);
                         }
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
                     }
+                }
+                // the safety guide over each picture (row 215): side by side → both sides; wipe / difference / single → A (QCView)
+                if let Some((_, gd)) = g.guide.as_ref() {
+                    let st = &self.settings;
+                    let (w_, op) = (st.float(settings::k::SAFETY_WIDTH), st.float(settings::k::SAFETY_OPACITY) as f32);
+                    let c = min_ui::color_picker::parse_hex(&st.string(settings::k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0]);
+                    let col = peniko::Color::new([c[0], c[1], c[2], op.clamp(0.0, 1.0)]);
+                    let places: Vec<_> = match g.presenter.engine.dual() { Some(d) => { let mut v = vec![d.a.picture_placement()]; if d.mode == CompareMode::SideBySide { v.push(d.b.picture_placement()); } v } None => vec![g.presenter.engine.picture_placement()] };
+                    let content = g.presenter.engine.content_rect();
+                    for pl in places.into_iter().flatten() { guides::paint(scene, gd, guides::transform(gd.view, pl.1, pl.0, pl.2), w_ * scale, col); }
+                    if g.presenter.engine.picture_placement().is_none() && g.presenter.engine.dual().is_none() { if let Some((cx, cy, cw, ch)) = content { let r = [cx as f64, cy as f64, cw as f64, ch as f64]; guides::paint(scene, gd, guides::transform(gd.view, gd.view, r, 0), w_ * scale, col); } }   // no media: the whole viewport (QCView)
                 }
                 if let (Some((sx, hot)), Some((_, cy, _, ch))) = (seam_line, g.presenter.engine.content_rect()) { let lw = (2.0 * scale).round().max(1.0); let c = if hot { min_theme::Color::rgba(1.0, 1.0, 1.0, 1.0) } else { min_theme::Color::rgba(0.4, 0.4, 0.4, 1.0) }; min_ui::paint::rect(scene, kurbo::Rect::new(sx - lw / 2.0, cy as f64, sx + lw / 2.0, (cy + ch) as f64), c); }
                 if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
@@ -844,6 +862,7 @@ impl App {
                 if !g.strip_hidden { g.dualc.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
+                if !g.fullscreen { g.guides_panel.paint_menu(scene, &mut g.fonts, scale); }
                 if !g.fullscreen { g.project_panel.paint_menu(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.clip_popover.paint(scene, &mut g.fonts, scale);
                 if !g.fullscreen { g.drawer.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
@@ -966,6 +985,13 @@ impl App {
                 // a press outside the settings' fields commits a typed number
                 if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
                 let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more);
+                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() {
+                    let had = g.guides_panel.has_focus();
+                    if matches!(e, min_ui::Event::Down { .. }) && had && !over_left { for c in g.guides_panel.blur() { guide_setting(&mut self.settings, c, &mut cmds); } }
+                    let (gc, d) = g.guides_panel.event(&e, now, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; }
+                    for c in gc { guide_setting(&mut self.settings, c, &mut cmds); }
+                    if g.guides_panel.has_focus() != had { set_ime(&**g.window, g.guides_panel.has_focus()); }
+                }
                 if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
                 if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; } if g.project_panel.is_editing() != pp_modal_editing { set_ime(&**g.window, g.project_panel.is_editing()); } pcmds.extend(p); }
             }
@@ -1073,6 +1099,7 @@ impl App {
                 transport_bar::Cmd::Pin => self.toggle_pin(),
                 transport_bar::Cmd::ToggleCompact => { self.toggle_compact(); return }
                 transport_bar::Cmd::RevealBackground => self.reveal(Reveal::Background),
+                transport_bar::Cmd::RevealGuides => self.reveal(Reveal::Guides),
                 transport_bar::Cmd::ToggleColor => self.color_cmd(color_drawer::Cmd::Toggle),
                 transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
             }
@@ -1098,6 +1125,7 @@ impl App {
                 k::RIGHT_RAIL_WIDTH => { g.right.width = self.settings.int(key) as f64; g.ui_dirty = true; }
                 k::LEFT_RAIL_COLLAPSED => { g.left.set_collapsed(self.settings.bool(key), now); g.ui_dirty = true; }
                 k::RIGHT_RAIL_COLLAPSED => { g.right.set_collapsed(self.settings.bool(key), now); g.ui_dirty = true; }
+                k::SAFETY_COLOR | k::SAFETY_OPACITY | k::SAFETY_WIDTH | k::SAFETY_GUIDE => { g.ui_dirty = true; }
                 k::BACKGROUND_MODE => { g.presenter.engine.set_background(self.settings.int(key) as u8); g.ui_dirty = true; }
                 k::ALWAYS_ON_TOP => { let _ = g; self.apply_pin(); }
                 _ => {}   // applies at the next open (performance/*) or has no consumer yet
@@ -1283,6 +1311,7 @@ impl App {
             M::LeftRail | M::RightRail => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen { if c == M::LeftRail { g.left.toggle(now); } else { g.right.toggle(now); } g.ui_dirty = true; } } }
             M::StatusBar => self.toggle_status_bar(),
             M::Background => self.reveal(Reveal::Background),
+            M::SafetyGuides => self.reveal(Reveal::Guides),
             M::ColorPanel => { if self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.compact) { self.color_cmd(color_drawer::Cmd::Toggle); } }
             M::Settings => self.reveal(Reveal::Settings),
             M::CopyProjectLink => self.copy_project_link(),
@@ -1362,6 +1391,7 @@ impl App {
         let now = Instant::now();
         g.left.set_collapsed(false, now);
         g.background_panel.section.expanded = which == Reveal::Background;
+        g.guides_panel.section.expanded = which == Reveal::Guides;
         g.settings_panel.section.expanded = which == Reveal::Settings;
         g.left.scroll = 0.0;   // Background sits first; with Settings alone expanded its header is at the top too
         g.ui_dirty = true;
@@ -1442,7 +1472,7 @@ impl App {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Reveal { Background, Settings }
+enum Reveal { Background, Guides, Settings }
 
 fn describe(p: &Transport) -> String {
     let i = p.info();
@@ -1520,6 +1550,12 @@ fn range_of(m: &qcv_project::MediaItem) -> qcv_player::RangeOverride { match m.v
 fn routing_of(m: &qcv_project::MediaItem) -> qcv_player::RoutingMode { match m.audio_routing_mode { qcv_project::AudioRoutingMode::Downmix5_1 => qcv_player::RoutingMode::Downmix5_1, qcv_project::AudioRoutingMode::Stereo7_8 => qcv_player::RoutingMode::Stereo7_8, _ => qcv_player::RoutingMode::Auto } }
 fn par_of(m: &qcv_project::MediaItem) -> min_present::engine::Par { match m.pixel_aspect_mode { qcv_project::PixelAspectMode::Square => min_present::engine::Par::Square, qcv_project::PixelAspectMode::Detected => min_present::engine::Par::Detected, qcv_project::PixelAspectMode::Custom => min_present::engine::Par::Custom(m.custom_par_num.max(1) as u32, m.custom_par_den.max(1) as u32) } }
 fn rotation_of(m: &qcv_project::MediaItem) -> Option<u16> { if m.rotation_override >= 0 { Some(m.rotation_override as u16) } else { None } }
+/// A Safety Guides change into the store (the Changed command repaints / reparses).
+fn guide_setting(st: &mut min_settings::Settings, c: guides_panel::Cmd, cmds: &mut Vec<settings_panel::Cmd>) {
+    use guides_panel::Cmd as G;
+    let (key, ch) = match c { G::Guide(n) => (settings::k::SAFETY_GUIDE, st.set_str(settings::k::SAFETY_GUIDE, &n)), G::Opacity(v) => (settings::k::SAFETY_OPACITY, st.set_float(settings::k::SAFETY_OPACITY, v as f64)), G::Width(v) => (settings::k::SAFETY_WIDTH, st.set_float(settings::k::SAFETY_WIDTH, v as f64)), G::Color(h) => (settings::k::SAFETY_COLOR, st.set_str(settings::k::SAFETY_COLOR, &h)) };
+    if ch { cmds.push(settings_panel::Cmd::Changed(key)); }
+}
 /// QCView's `TransferOverride` → the engine's choice.
 fn transfer_choice(t: qcv_project::TransferOverride) -> min_present::engine::TransferChoice {
     use min_present::engine::TransferChoice as C; use qcv_project::TransferOverride as T;
@@ -1612,7 +1648,7 @@ impl ApplicationHandler for App {
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
         self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
         // the scrubber's camera insets 16 px at both ends (the walk, 2026-11-08): past macOS's rounded bottom corners, so the
@@ -1674,7 +1710,7 @@ impl ApplicationHandler for App {
                 }
                 for c in pending { self.apply_setting(c); } for c in pending_pp { self.project_cmd(c); }
             }
-            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
+            WindowEvent::Ime(ime) => { if let Some(g) = self.gpu.as_mut() { let e = match ime { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t, c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t)), _ => None }; if let Some(e) = e { if g.dual_dialog.open { g.dual_dialog.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.guides_panel.has_focus() { g.guides_panel.ime(&e, &mut g.fonts); g.ui_dirty = true; } else if g.clip_popover.is_open() { g.clip_popover.ime(&e, &mut g.fonts); } else if g.drawer.is_typing() { g.drawer.ime(&e, &mut g.fonts); } else if g.project_panel.is_editing() { g.project_panel.ime(&e, &mut g.fonts); } else if g.settings_panel.has_focus() { g.settings_panel.ime(&e, &mut g.fonts); } else if g.inspector.has_focus() { g.inspector.ime(&e, &mut g.fonts); } else { g.strip.ime(&e, &mut g.fonts); } g.ui_dirty = true; } } }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() { g.presenter.resize(s.width, s.height); let sc = g.window.scale_factor(); g.presenter.engine.set_ui_scale(sc as f32); g.content_set = None; g.presenter.engine.set_content_rect(Some(if g.fullscreen { (0, 0, s.width, s.height) } else { content_rect(s.width, s.height, sc) })); if let Some(u) = g.ui.as_mut() { u.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(u.view())); } g.window.request_redraw(); },
             WindowEvent::RedrawRequested => { self.tick(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -1726,6 +1762,14 @@ impl ApplicationHandler for App {
                     let cmds = g.inspector.key(&k, &mut g.fonts); g.ui_dirty = true;
                     if !g.inspector.has_focus() { set_ime(&**g.window, false); }
                     for c in cmds { if let inspector_panel::Cmd::Par(par) = c { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; } }
+                    return
+                } } }
+                // the Safety Guides' Hex field
+                if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && g.guides_panel.has_focus() {
+                    let k = to_key_event(&event, self.mods);
+                    let gc = g.guides_panel.key(&k, &mut g.fonts); g.ui_dirty = true;
+                    if !g.guides_panel.has_focus() { set_ime(&**g.window, false); }
+                    let mut cmds = vec![]; for c in gc { guide_setting(&mut self.settings, c, &mut cmds); } for c in cmds { self.apply_setting(c); }
                     return
                 } } }
                 if pressed { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact && (g.settings_panel.has_focus() || g.settings_panel.is_modal() || g.settings_panel.menu_open()) {

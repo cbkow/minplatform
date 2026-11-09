@@ -19,6 +19,11 @@ pub mod k {
     pub const LIVE_BUFFER_MS: &str = "audio/liveBufferMs";
     pub const BLENDER_SESSIONS: &str = "bridge/blenderSessions";
     pub const BACKGROUND_MODE: &str = "display/backgroundMode";
+    /// QCView `safety/colorHex`; the guide, opacity and width persist too (row 215)
+    pub const SAFETY_COLOR: &str = "safety/colorHex";
+    pub const SAFETY_GUIDE: &str = "safety/guide";
+    pub const SAFETY_OPACITY: &str = "safety/opacity";
+    pub const SAFETY_WIDTH: &str = "safety/width";
     pub const BRIGHTNESS: &str = "display/brightness";
     pub const SCREENSHOT_FORMAT: &str = "export/screenshotFormat";
     pub const LOOP_ENABLED: &str = "playback/loopEnabled";
@@ -70,6 +75,7 @@ static KEYS: &[Key] = &[
     Key::int(k::BACKGROUND_MODE, 0, 0, 3),
     Key::float(k::BRIGHTNESS, 1.0, 0.0, 4.0),
     Key::str(k::SCREENSHOT_FORMAT, "png"),
+    Key::str(k::SAFETY_COLOR, "#ffff00"), Key::str(k::SAFETY_GUIDE, ""), Key::float(k::SAFETY_OPACITY, 0.7, 0.0, 1.0), Key::float(k::SAFETY_WIDTH, 2.0, 1.0, 8.0),
     Key::bool(k::LOOP_ENABLED, true),
     Key::bool(k::ALWAYS_ON_TOP, false),
     Key::bool(k::ALWAYS_OPEN_MINIMAL, false),

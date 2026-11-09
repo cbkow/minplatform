@@ -472,6 +472,13 @@ impl Engine {
     pub fn background(&self) -> u8 { self.bg_mode }
     /// The window's scale factor: the checker tile is 32 DEVICE pixels (QCView's Metal path passes the contentsScale-aware size).
     pub fn set_ui_scale(&mut self, scale: f32) { self.ui_scale = scale.max(0.5); self.write_bg_uniform(); }
+    /// Where the picture is on screen (x, y, w, h in viewport px, post-rotation), with its source size (unrotated) and quarter
+    /// turns — what picture-space overlays (safety guides, annotations: rows 210 / 215) fit to. None with no frame.
+    pub fn picture_placement(&self) -> Option<([f64; 4], (f64, f64), u8)> {
+        self.base?;
+        let r = self.media_rect_px();
+        Some(([r[0] as f64, r[1] as f64, r[2] as f64, r[3] as f64], (self.video.0 as f64, self.video.1 as f64), self.rotation_quarters()))
+    }
     /// The media rect in viewport px (x, y, w, h; y down) from the fit; the whole viewport when nothing is shown (QCView: no layout → everything "inside").
     fn media_rect_px(&self) -> [f32; 4] {
         let (vw, vh) = (self.viewport.0 as f32, self.viewport.1 as f32);

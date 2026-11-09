@@ -15,7 +15,7 @@
 pub enum Cmd {
     OpenMedia, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
-    Background, Settings, Docs, CopyProjectLink, About, ColorPanel,
+    Background, SafetyGuides, Settings, Docs, CopyProjectLink, About, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
@@ -72,7 +72,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         item("Color Panel", sc(K::D3), Cmd::ColorPanel), off("Timeline", None), off("Notes", sc(K::D4)),
         item("Status Bar", sc(K::D5), Cmd::StatusBar),
     ];
-    let tools = vec![item("Background", None, Cmd::Background), off("Safety Guides", None), off("Keyboard Shortcuts", sc(K::Slash)), item("Settings…", sc(K::Comma), Cmd::Settings)];
+    let tools = vec![item("Background", None, Cmd::Background), item("Safety Guides", None, Cmd::SafetyGuides), off("Keyboard Shortcuts", sc(K::Slash)), item("Settings…", sc(K::Comma), Cmd::Settings)];
     // Check for Updates waits for an updater: hidden, as QCView hides it off macOS; on macOS About lives in the app menu
     let mut about = vec![];
     if !mac { about.extend([item("About QCView…", None, Cmd::About), Node::Sep]); }
