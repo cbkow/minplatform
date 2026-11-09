@@ -1104,8 +1104,12 @@ impl App {
         }
         let Some(g) = self.gpu.as_mut() else { return };
         let grabbed = matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag || g.dual_bars.is_pressed());
+        // an open rail popup (a Settings picker such as Language, the Guide picker, the Media context menu, a settings dialog) owns
+        // the pointer ahead of the drawers: its menu can hang over the Notes / Color drawer, which took the clicks and hovers
+        // underneath it (the Windows walk 2026-11-09, window-geometry dependent)
+        let rail_pop = !g.fullscreen && (g.settings_panel.is_modal() || g.settings_panel.menu_open() || g.guides_panel.menu_open() || g.project_panel.menu_open());
         // the Notes drawer (row 215): its own presses (and its slider / picker drags)
-        if !g.fullscreen && !g.compact && !grabbed && g.notes.rect.height() > 1.0 {
+        if !g.fullscreen && !g.compact && !grabbed && !rail_pop && g.notes.rect.height() > 1.0 {
             let had = g.notes.has_focus();
             let (cmds, d, consumed) = g.notes.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
             let want = if g.notes.splitter_hovered() { winit::cursor::CursorIcon::RowResize } else { winit::cursor::CursorIcon::Default };
@@ -1116,7 +1120,7 @@ impl App {
         }
         let g = self.gpu.as_mut().unwrap();
         // the Color drawer (row 199): its menu / naming popover take everything; its tab over the picture; its own presses
-        if !g.fullscreen && !g.compact && !grabbed {
+        if !g.fullscreen && !g.compact && !grabbed && !rail_pop {
             let mut cmds = vec![];
             if matches!(e, min_ui::Event::Down { .. }) && g.drawer.has_focus() && !e.pos().is_some_and(|(x, y)| g.drawer.rect.contains(kurbo::Point::new(x, y))) { cmds.extend(g.drawer.blur()); }
             let modal = g.drawer.is_modal(); let was_typing = g.drawer.is_typing();
