@@ -66,6 +66,7 @@ impl GuidesPanel {
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Vec<Cmd> { self.color.key(k, fonts).map(Cmd::Color).into_iter().collect() }
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { self.color.ime(e, fonts); }
     pub fn blur(&mut self) -> Vec<Cmd> { self.color.blur().map(Cmd::Color).into_iter().collect() }
+    pub fn menu_open(&self) -> bool { self.guide.is_open() }
     pub fn animating(&self, now: Instant) -> bool { self.section.animating(now) || self.guide.animating(now) || self.opacity.animating(now) || self.width.animating(now) }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, now: Instant, first: bool) {
         let gap = t::RAIL_SECTION_GAP as f64 * scale;

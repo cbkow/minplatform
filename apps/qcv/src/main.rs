@@ -970,7 +970,10 @@ impl App {
         // the rails first (a modal dialog or an open menu in the settings panel takes everything)
         if !g.fullscreen && !grabbed {
             let had_focus = g.settings_panel.has_focus();
-            let modal = g.settings_panel.is_modal() || g.settings_panel.menu_open();
+            // ONE OWNER while a rail popup is open (the walk 2026-11-08: the Guide menu clicked through to the Background tiles): a
+            // settings picker / dialog, the Guide picker, the Media context menu — only that panel sees the pointer, wherever it is
+            let settings_pop = g.settings_panel.is_modal() || g.settings_panel.menu_open(); let guides_pop = g.guides_panel.menu_open(); let project_pop = g.project_panel.menu_open();
+            let modal = settings_pop || guides_pop;
             let lr = g.left.event(&e, now); let rr = g.right.event(&e, now);
             if lr.dirty || rr.dirty { g.ui_dirty = true; }
             let over_left = e.pos().is_some_and(|(x, y)| g.left.hit(x, y)); let over_right = e.pos().is_some_and(|(x, y)| g.right.hit(x, y));
@@ -984,16 +987,16 @@ impl App {
             if !rail_ctl && (modal || pp_modal || over_left || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. }) || g.settings_panel.has_focus()) {
                 // a press outside the settings' fields commits a typed number
                 if matches!(e, min_ui::Event::Down { .. }) && !over_left && had_focus { cmds.extend(g.settings_panel.blur(&mut self.settings)); }
-                let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more);
-                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() {
+                if !guides_pop && !project_pop { let (d, _c, more) = g.settings_panel.event(&e, now, &mut g.fonts, &mut self.settings, bounds, scale); if d { g.ui_dirty = true; } cmds.extend(more); }
+                if !settings_pop && !project_pop {
                     let had = g.guides_panel.has_focus();
                     if matches!(e, min_ui::Event::Down { .. }) && had && !over_left { for c in g.guides_panel.blur() { guide_setting(&mut self.settings, c, &mut cmds); } }
                     let (gc, d) = g.guides_panel.event(&e, now, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; }
                     for c in gc { guide_setting(&mut self.settings, c, &mut cmds); }
                     if g.guides_panel.has_focus() != had { set_ime(&**g.window, g.guides_panel.has_focus()); }
                 }
-                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
-                if !g.settings_panel.is_modal() && !g.settings_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; } if g.project_panel.is_editing() != pp_modal_editing { set_ime(&**g.window, g.project_panel.is_editing()); } pcmds.extend(p); }
+                if !settings_pop && !guides_pop && !project_pop && !g.guides_panel.menu_open() { let (chosen, d) = g.background_panel.event(&e, now); if d { g.ui_dirty = true; } if let Some(m) = chosen { if self.settings.set_int(settings::k::BACKGROUND_MODE, m as i64) { cmds.push(settings_panel::Cmd::Changed(settings::k::BACKGROUND_MODE)); } } }
+                if !settings_pop && !guides_pop && !g.guides_panel.menu_open() { let (p, d) = g.project_panel.event(&e, now, mods.ctrl, mods.shift, &mut g.fonts, bounds, scale); if d { g.ui_dirty = true; } if g.project_panel.is_editing() != pp_modal_editing { set_ime(&**g.window, g.project_panel.is_editing()); } pcmds.extend(p); }
             }
             if g.settings_panel.has_focus() != had_focus { set_ime(&**g.window, g.settings_panel.has_focus()); }
             if !rail_ctl && (over_right || matches!(e, min_ui::Event::Leave | min_ui::Event::Up { .. })) {
