@@ -57,23 +57,25 @@ pub struct NotesDrawer {
     /// QCView's Export notes tile under Add note here, and its format menu
     export: Rect, export_hover: bool, menu: Menu,
     stream: Option<StreamMode>, pill: Rect, pill_hover: bool,
+    thumb_tx: std::sync::mpsc::Sender<(PathBuf, SystemTime, u32, u32, Vec<u8>)>, thumb_rx: std::sync::mpsc::Receiver<(PathBuf, SystemTime, u32, u32, Vec<u8>)>, thumb_pending: std::collections::HashSet<(PathBuf, SystemTime)>,
 }
 
 impl NotesDrawer {
     /// A language switch (canon row 197): the labels built at construction, rebuilt; the state stays.
     pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.tools.iter_mut().zip(f.tools) { b.tooltip = n.tooltip; b.label = n.label; } }
     pub fn new() -> NotesDrawer {
+        let (thumb_tx, thumb_rx) = std::sync::mpsc::channel();
         NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, hbar: ScrollBar::horizontal(), panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
             tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
-            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, export: Rect::ZERO, export_hover: false, menu: Menu::new(), tips: Tooltips::default(), stream: None, pill: Rect::ZERO, pill_hover: false }
+            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, export: Rect::ZERO, export_hover: false, menu: Menu::new(), tips: Tooltips::default(), stream: None, pill: Rect::ZERO, pill_hover: false, thumb_tx, thumb_rx, thumb_pending: Default::default() }
     }
     pub fn set_open(&mut self, on: bool, now: Instant) { if on != self.open { self.open = on; self.open_ramp.set_target(if on { 1.0 } else { 0.0 }, now); if !on { self.unfocus(); } } }
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
     pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
     fn unfocus(&mut self) { if let Some(k) = self.editing.take() { if let Some(a) = self.areas.get_mut(&k) { a.focused = false; } } }
     pub fn animating(&self, now: Instant) -> bool { self.hbar.animating(now) || self.areas.values().any(|a| a.animating(now)) || self.open_ramp.animating(now) || self.tools.iter().any(|b| b.animating(now)) || self.width.animating(now) }
-    pub fn tick(&mut self, now: Instant) -> bool { self.tips.tick(now) }
+    pub fn tick(&mut self, now: Instant) -> bool { self.poll_thumbs() | self.tips.tick(now) }
     pub fn has_focus(&self) -> bool { self.editing.is_some() || self.picker.focused() }
     /// The state to show; true when it changed.
     /// A live item's mode (None = a file). The tools are off until the project is saved (QCView froze the feed and then dropped
@@ -228,11 +230,24 @@ impl NotesDrawer {
     }
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { match self.editing.clone().and_then(|k| self.areas.get_mut(&k)) { Some(a) => a.ime(e, fonts), None => self.picker.ime(e, fonts) } }
     pub fn blur(&mut self) -> Vec<Cmd> { let mut v: Vec<Cmd> = self.commit_edit().into_iter().collect(); if let Some(c) = self.picker.blur() { v.push(Cmd::Color(c)); } v }
+    /// A card's picture: decoded + shrunk to card size on a worker (QCView's thumbnails load async at a source size); the
+    /// previous picture stays until the new one lands.
     fn thumb(&mut self, p: &PathBuf) -> Option<peniko::ImageBrush> {
         let stamp = std::fs::metadata(p).and_then(|m| m.modified()).ok()?;
-        if let Some((s, img)) = self.thumbs.get(p) { if *s == stamp { return Some(img.clone()) } }
-        let (px, (w, h)) = crate::image_rgba8(p).ok()?;
-        let img = paint::image_rgba8(w, h, px); self.thumbs.insert(p.clone(), (stamp, img.clone())); Some(img)
+        let have = self.thumbs.get(p).cloned();
+        if have.as_ref().is_none_or(|(s, _)| *s != stamp) && self.thumb_pending.insert((p.clone(), stamp)) {
+            let (tx, path) = (self.thumb_tx.clone(), p.clone());
+            std::thread::Builder::new().name("note-card".into()).spawn(move || {
+                if let Ok((px, (w, h))) = crate::image_rgba8(&path) { let (px, w, h) = shrink(&px, w, h, THUMB_PX); let _ = tx.send((path, stamp, w, h, px)); }
+            }).ok();
+        }
+        have.map(|(_, i)| i)
+    }
+    /// The workers' thumbnails landing; true when one did.
+    pub fn poll_thumbs(&mut self) -> bool {
+        let mut any = false;
+        while let Ok((p, stamp, w, h, px)) = self.thumb_rx.try_recv() { self.thumb_pending.remove(&(p.clone(), stamp)); self.thumbs.insert(p, (stamp, paint::image_rgba8(w, h, px))); any = true; }
+        any
     }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
         if self.rect.height() <= 1.0 { return }
@@ -325,4 +340,18 @@ impl NotesDrawer {
         scene.pop_layer();
     }
     pub fn paint_overlays(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { if self.menu.is_open() { self.menu.paint(scene, fonts, self.scale); } self.tips.paint(scene, fonts, self.scale, bounds, now); }
+}
+
+/// A card's picture size: the longer side in px (cards are ~200 logical px wide; 2× for a Retina screen).
+const THUMB_PX: u32 = 480;
+/// Box-filtered down to `max` on the longer side (never up).
+fn shrink(px: &[u8], w: u32, h: u32, max: u32) -> (Vec<u8>, u32, u32) {
+    let k = (w.max(h) as f64 / max as f64).ceil().max(1.0) as u32;
+    if k <= 1 { return (px.to_vec(), w, h) }
+    let (nw, nh) = (w / k, h / k);
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh { for x in 0..nw { let mut acc = [0u32; 4];
+        for dy in 0..k { let row = ((y * k + dy) * w) as usize; for dx in 0..k { let o = (row + (x * k + dx) as usize) * 4; for c in 0..4 { acc[c] += px[o + c] as u32; } } }
+        let o = ((y * nw + x) * 4) as usize; for c in 0..4 { out[o + c] = (acc[c] / (k * k)) as u8; } } }
+    (out, nw, nh)
 }

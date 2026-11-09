@@ -113,7 +113,9 @@ struct App {
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
     drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// a QCBridge host feed in the single view (rows 227–228)
-    live: Option<live::Live>, /// the window's screen shows HDR (None = unknown) — the Color drawer's "highlights clip" pill (row 222)
+    live: Option<live::Live>, /// note images off the UI thread (QCView writes them on a worker): the newest clean frame in memory (key, RGBA8, size — the
+    /// annotated composite and Review read it, not the disk), the workers' results, the annotated redraw due 400 ms after the last stroke
+    note_img: Option<(String, std::sync::Arc<Vec<u8>>, (u32, u32))>, note_img_rx: Vec<std::sync::mpsc::Receiver<(String, std::sync::Arc<Vec<u8>>, (u32, u32))>>, annot_due: Option<(String, Instant)>, /// the window's screen shows HDR (None = unknown) — the Color drawer's "highlights clip" pill (row 222)
     pub(crate) screen_hdr: Option<bool>, snapped: bool, verified: bool,
     settings: min_settings::Settings,
     /// qcv-meta's service: the extractor + the XMP reader run off-thread when a file opens; the Inspector drains the results.
@@ -533,21 +535,50 @@ impl App {
         let Some(ndir) = self.annot.dir() else { return };
         self.adopt_review_note(&c.key);   // a live freeze's first note takes it
         let dir = qcv_notes::io::images_dir(&ndir); let _ = std::fs::create_dir_all(&dir);
-        let clean = dir.join(qcv_notes::io::image_filename(&c.key)); let annotated = dir.join(qcv_notes::io::annotated_filename(&c.key));
+        let clean = dir.join(qcv_notes::io::image_filename(&c.key));
         // the clean frame: a CAPTURE (row 216 — the clip's chain SDR-retargeted, the viewer aids, pixel aspect + rotation, no
         // strokes, no guide), captured once and never overwritten (QCView); the aids and the chain recorded on the note with it
         let current = self.current_note().is_some_and(|cur| cur.key == c.key || self.annot.note_at(&cur).is_some_and(|n| n.timecode == c.key));
         if c.new_note && current && !clean.exists() {
             if let Some((px, w, h, _)) = self.capture_picture(false) {   // a note's clean frame: over black, as QCView
-                if let Err(e) = min_image::write::png8(&clean.to_string_lossy(), &min_present::capture::srgb8(&px), w, h) { log::warn!("note thumbnail: {e}"); }
+                // the GPU capture here; the 8-bit conversion + PNG on a worker, the pixels back in memory (QCView `m_lastCleanThumbImage`)
+                let (tx, rx) = std::sync::mpsc::channel(); let (key, path) = (c.key.clone(), clean.clone());
+                std::thread::Builder::new().name("note-clean".into()).spawn(move || {
+                    let rgb = min_present::capture::srgb8(&px);
+                    if let Err(e) = min_image::write::png8(&path.to_string_lossy(), &rgb, w, h) { log::warn!("note thumbnail: {e}"); }
+                    let rgba: Vec<u8> = rgb.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+                    let _ = tx.send((key, std::sync::Arc::new(rgba), (w, h)));
+                }).ok();
+                self.note_img_rx.push(rx);
                 let (viewer, ocio) = self.note_tags(); self.annot.set_tags(&c.key, &viewer, &ocio);
             }
         }
+        // the annotated one: QCView's 400-ms debounce after the last stroke (the composite + PNG are not per stroke)
+        self.annot_due = Some((c.key.clone(), Instant::now() + std::time::Duration::from_millis(400)));
+    }
+    /// The note images' background work landing, and the debounced annotated redraw.
+    fn notes_tick(&mut self, now: Instant) {
+        let mut landed = vec![];
+        self.note_img_rx.retain(|rx| match rx.try_recv() { Ok(r) => { landed.push(r); false } Err(std::sync::mpsc::TryRecvError::Empty) => true, Err(_) => false });
+        for r in landed { self.note_img = Some(r); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+        self.review_poll();
+        let Some((key, due)) = self.annot_due.clone() else { return };
+        if now < due || self.annot.drawing() || !self.note_img_rx.is_empty() { return }   // the clean frame first
+        self.annot_due = None;
+        self.compose_annotated(&key);
+    }
+    /// The annotated thumbnail redrawn through the SAME geometry as the screen (vello, offscreen): the clean frame (in memory,
+    /// else its PNG) at the display aspect + the strokes; none left → the file goes (QCView's fallback is the clean one).
+    fn compose_annotated(&mut self, key: &str) {
+        let Some(ndir) = self.annot.dir() else { return };
+        let dir = qcv_notes::io::images_dir(&ndir);
+        let (clean, annotated) = (dir.join(qcv_notes::io::image_filename(key)), dir.join(qcv_notes::io::annotated_filename(key)));
+        let c = annotate::Committed { key: key.to_string(), new_note: false };
         // the annotated one: the clean PNG at the display aspect + the strokes (none left → the file goes, QCView's fallback is the clean one)
         let Some(note) = self.annot.notes.iter().find(|n| n.timecode == c.key).cloned() else { let _ = std::fs::remove_file(&annotated); return };
         let ss = qcv_notes::strokes::parse(note.annotation.as_ref());
         if ss.is_empty() { let _ = std::fs::remove_file(&annotated); return }
-        let Ok(img) = image_rgba8(&clean) else { return };
+        let img = match self.note_img.as_ref().filter(|(k, _, _)| k == &c.key) { Some((_, px, wh)) => ((**px).clone(), *wh), None => match image_rgba8(&clean) { Ok(i) => { self.note_img = Some((c.key.clone(), std::sync::Arc::new(i.0.clone()), i.1)); i } Err(_) => return } };
         let Some(g) = self.gpu.as_mut() else { return };
         let (vw, vh) = img.1;
         // the display aspect: a capture is already at it; an older clean frame (QCView's, at the source size) is widened to it
@@ -564,7 +595,9 @@ impl App {
         for s in &ss { annotate::draw(scene, s, &geo); }
         layer.render(&dev, &q);
         let px = min_present::readback::read_rgba8(&dev, &q, layer.texture(), w, h);
-        write_png_rgba8(&annotated.to_string_lossy(), &px, w, h);
+        let path = annotated.to_string_lossy().into_owned();
+        std::thread::Builder::new().name("note-annotated".into()).spawn(move || write_png_rgba8(&path, &px, w, h)).ok();
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
     /// A side's clip's own choices (QCView applies them per load): Range → its decoders, Aspect / Rotation / Transfer → its
     /// engine, Mix → its audio; and its metadata requested (the Inspector shows the target side's).
@@ -750,6 +783,7 @@ impl App {
         self.poll_export();
         self.ensure_color_config();
         self.live_tick(Instant::now());   // a QCBridge host feed's newest frame (row 228)
+        self.notes_tick(Instant::now());
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
@@ -2320,7 +2354,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

@@ -33,7 +33,8 @@ pub(crate) fn review_label(captured_at: &str, key: &str) -> String {
 /// The card's capture label (QCView `captureLabel`: "HH:mm:ss.zzz").
 pub(crate) fn capture_label(captured_at: &str, key: &str) -> String { if captured_at.len() >= 23 { captured_at[11..23].to_string() } else { review_label(captured_at, key) } }
 
-pub struct Live { pub review: Option<Review>, pub feed: HostFeed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts>,
+pub struct Live { pub review: Option<Review>, /// a saved note's frame being decoded off the UI thread (its key)
+    pub review_rx: Option<(String, std::sync::mpsc::Receiver<Option<min_present::Frame>>)>, pub feed: HostFeed, pub item: String, pub last_facts: Option<qcv_player::host_feed::Facts>,
     /// the QCAA segment's player (QCView: the live AudioPlayer): it plays as packets arrive; Listen decides if it is heard
     pub audio: Option<qcv_player::audio::AudioPlayer>, /// its reader (the Inspector's Audio facts)
     pub audio_src: Option<std::sync::Arc<qcv_player::audio::LiveAudioSource>> }
@@ -67,7 +68,7 @@ impl crate::App {
             Err(e) => { log::warn!("live audio: {e}"); None }
         };
         let mut feed = HostFeed::new(host); feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms());
-        self.live = Some(Live { review: None, feed, item: id.to_string(), last_facts: None, audio, audio_src });
+        self.live = Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio, audio_src });
         self.loaded_item = id.to_string();
         self.source_path.clear(); self.source_label = item.name.clone();   // the screenshot's name (QCView: the stream's name)
         if let Some(g) = self.gpu.as_mut() {
@@ -142,14 +143,34 @@ impl crate::App {
     /// QCView `enterReview(timecode)`: a stream note's saved frame on the viewport — its clean PNG (display-referred, so the
     /// chain is off for it: QCView's bypass); the note's strokes overlay it. No PNG: QCView's toast.
     pub(crate) fn enter_review(&mut self, key: &str) {
-        let Some(note) = self.annot.notes.iter().find(|n| n.timecode == key).cloned() else { return };
+        if !self.annot.notes.iter().any(|n| n.timecode == key) { return }
         if self.live.is_none() { return }
+        // the decode + conversion on a worker (the newest note's pixels from memory); the frame shows when it lands (`review_poll`)
         let png = self.annot.dir().map(|d| qcv_notes::io::images_dir(&d).join(qcv_notes::io::image_filename(key)));
-        let Some((px, (w, h))) = png.and_then(|p| crate::image_rgba8(&p).ok()) else { self.toast(trw("This note has no captured frame"), min_ui::ToastKind::Notice); return };
-        // 8-bit sRGB → the packed half-float layout the feed uses (as stored: Transfer sRGB, straight alpha)
-        let half: Vec<u8> = px.iter().flat_map(|v| half::f16::from_f32(*v as f32 / 255.0).to_le_bytes()).collect();
-        let frame = min_present::Frame { width: w, height: h, pixels: min_present::Pixels::Planar { planes: vec![min_present::Plane::owned(half, w, h, w * 8)], layout: min_present::PlanarLayout::RgbaF16 { premultiplied: false } }, meta: min_present::ColorMeta { transfer: min_present::Transfer::Srgb, range: min_present::Range::Full, bit_depth: 8, ..Default::default() } };
+        let mem = self.note_img.as_ref().filter(|(k, _, _)| k == key).map(|(_, px, wh)| (px.clone(), *wh));
+        if mem.is_none() && !png.as_ref().is_some_and(|p| p.exists()) { self.toast(trw("This note has no captured frame"), min_ui::ToastKind::Notice); return }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new().name("review-frame".into()).spawn(move || {
+            let src = match mem { Some((px, wh)) => Some((px, wh)), None => png.and_then(|p| crate::image_rgba8(&p).ok()).map(|(px, wh)| (std::sync::Arc::new(px), wh)) };
+            let _ = tx.send(src.map(|(px, (w, h))| {
+                // 8-bit sRGB → the packed half-float layout the feed uses (as stored: Transfer sRGB, straight alpha)
+                let mut half = Vec::with_capacity(px.len() * 2);
+                for v in px.iter() { half.extend_from_slice(&half::f16::from_f32(*v as f32 / 255.0).to_le_bytes()); }
+                min_present::Frame { width: w, height: h, pixels: min_present::Pixels::Planar { planes: vec![min_present::Plane::owned(half, w, h, w * 8)], layout: min_present::PlanarLayout::RgbaF16 { premultiplied: false } }, meta: min_present::ColorMeta { transfer: min_present::Transfer::Srgb, range: min_present::Range::Full, bit_depth: 8, ..Default::default() } }
+            }));
+        }).ok();
+        if let Some(l) = self.live.as_mut() { l.review_rx = Some((key.to_string(), rx)); }
+    }
+    /// A saved note's frame landed: on the viewport, Review on that note (QCView `enterReview`'s second half).
+    pub(crate) fn review_poll(&mut self) {
+        let Some(l) = self.live.as_mut() else { return };
+        let Some((key, rx)) = l.review_rx.as_ref() else { return };
+        let r = match rx.try_recv() { Ok(r) => r, Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => None };
+        let key = key.clone(); l.review_rx = None;
+        let Some(frame) = r else { self.toast(trw("This note has no captured frame"), min_ui::ToastKind::Notice); return };
+        let Some(note) = self.annot.notes.iter().find(|n| n.timecode == key).cloned() else { return };
         if let Some(g) = self.gpu.as_mut() { if let Err(e) = g.presenter.engine.show(&frame) { log::warn!("review: {e}"); return } g.ui_dirty = true; }
+        let key = key.as_str();
         let label = review_label(&note.captured_at, key);
         if let Some(l) = self.live.as_mut() {
             let stamp = l.review.as_ref().map(|r| r.stamp.clone()).unwrap_or_default();
