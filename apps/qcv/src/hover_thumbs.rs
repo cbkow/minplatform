@@ -2,8 +2,8 @@
 //! (`qcv-player`'s `TimelineThumbnailCache`, the GOP-cache peek first) feeding a vello image at 0.18 of the content
 //! rect's width — display-referred, no longer composited into the frame before the colour chain. In a solo view it
 //! FOLLOWS the pointer horizontally, sitting just above the bands and clamped to the content rect (the user 2026-11-07:
-//! QCView parked it bottom-left only because of the Qt render-thread split; "this might be more ergonomic"); dual keeps
-//! QCView's parking, A bottom-left and B bottom-right.
+//! QCView parked it bottom-left only because of the Qt render-thread split; "this might be more ergonomic"); dual: the
+//! two track the pointer as a pair, A above B (row 170, the user 2026-11-07: "two that track the playhead instead of parking").
 //! Requests are throttled at QCView's 16 ms; playback drops the loader to one worker; the strip precaches on open (video
 //! only — a sequence's thumbnails come from its cache or its frame files on hover, QCView never precached).
 use kurbo::Rect;
@@ -74,15 +74,22 @@ impl HoverThumbs {
         }
         changed
     }
-    /// `anchor_x` = the pointer's x to centre on (solo); `None` parks bottom-left (dual's A side).
-    pub fn paint(&self, scene: &mut Scene, content: Rect, scale: f64, anchor_x: Option<f64>) {
+    /// The shown thumbnail's drawn height (0 when none): dual stacks A above B by it.
+    pub fn shown_height(&self, content: Rect) -> f64 {
+        let Some((h, _, _)) = self.shown else { return 0.0 };
+        let imgs = self.images.borrow(); let Some((_, Some((_, img)))) = imgs.get(&h) else { return 0.0 };
+        content.width() * t::HOVER_THUMBNAIL_FRAME_RATIO * img.image.height as f64 / img.image.width.max(1) as f64
+    }
+    pub fn paint(&self, scene: &mut Scene, content: Rect, scale: f64, anchor_x: Option<f64>) { self.paint_lifted(scene, content, scale, anchor_x, 0.0) }
+    /// `lift` raises it (dual's A over B: the pair tracks the pointer together, canon row 170).
+    pub fn paint_lifted(&self, scene: &mut Scene, content: Rect, scale: f64, anchor_x: Option<f64>, lift: f64) {
         let Some((h, _, _)) = self.shown else { return };
         let imgs = self.images.borrow(); let Some((_, Some((_, img)))) = imgs.get(&h) else { return };
         let (w, hh) = (img.image.width, img.image.height);
         let dw = content.width() * t::HOVER_THUMBNAIL_FRAME_RATIO; let dh = dw * hh as f64 / w.max(1) as f64;
         let pad = t::SPACING_100 as f64 * scale; let bw = t::BORDER_WIDTH_100 as f64 * scale;
         let x0 = match anchor_x { Some(ax) => (ax - dw / 2.0).clamp(content.x0 + pad, (content.x1 - pad - dw).max(content.x0 + pad)), None => content.x0 + pad };
-        let r = Rect::new(x0, content.y1 - pad - dh, x0 + dw, content.y1 - pad);
+        let r = Rect::new(x0, content.y1 - pad - dh - lift, x0 + dw, content.y1 - pad - lift);
         paint::rounded(scene, r.inflate(bw, bw), t::HOVER_THUMBNAIL_CORNER_RADIUS as f64 * scale + bw, t::HOVER_THUMBNAIL_BORDER_COLOR);
         paint::image(scene, img, r);
     }

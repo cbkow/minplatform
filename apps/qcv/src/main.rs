@@ -915,7 +915,7 @@ impl App {
             } }
             let [tc0, tc1] = &mut self.thumb_color;
             if let Some(d) = self.dual.as_mut() {
-                // dual (QCView's parking, A bottom-left, B bottom-right): each side's frame under the master hover through its
+                // dual (row 170: a pair tracking the pointer, A above B): each side's frame under the master hover through its
                 // own edits; nothing requested while both sides are busy playing / scrubbing, and no strip precache
                 let hv = g.scrubber.hover_frame.filter(|_| !d.is_playing() && !d.is_scrubbing());
                 for (side, th, tc, look_gen) in [(qcv_player::Side::A, &mut g.thumbs, &mut *tc0, thumb_gen[0]), (qcv_player::Side::B, &mut g.thumbs_b, &mut *tc1, thumb_gen[1])] {
@@ -944,7 +944,7 @@ impl App {
                     scene.reset();
                     g.scrubber.paint(scene, &mut g.fonts, scale, &st, None);
                     g.compact_strip.paint(scene, &mut g.fonts, scale, now);
-                    if self.dual.is_some() { g.thumbs.paint(scene, content, scale, None); g.thumbs_b.paint(scene, content, scale, Some(content.x1)); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
+                    if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint(scene, content, scale, Some(g.pointer.0)); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), gap); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
                     g.compact_strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                     g.ui_shown_frame = key; g.ui_dirty = false;
                 } else {
@@ -981,7 +981,7 @@ impl App {
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
-                if self.dual.is_some() { g.thumbs.paint(scene, content, scale, None); g.thumbs_b.paint(scene, content, scale, Some(content.x1)); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
+                if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint(scene, content, scale, Some(g.pointer.0)); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), gap); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
