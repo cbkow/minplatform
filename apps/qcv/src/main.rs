@@ -1455,6 +1455,7 @@ impl App {
     }
     /// A menu command (QCView's `onTriggered`s); the keys that share them call the same functions.
     fn menu_cmd(&mut self, c: menu::Cmd, el: &dyn ActiveEventLoop) {
+        log::info!("menu: {c:?}");
         use menu::Cmd as M;
         let now = Instant::now();
         match c {
@@ -1543,7 +1544,7 @@ impl App {
     /// QCView `viewAllPanels` → `viewDefault`: the rails open, the strip back.
     fn view_all_panels(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { let now = Instant::now(); g.left.set_collapsed(false, now); g.right.set_collapsed(false, now); g.strip_hidden = false; g.ui_dirty = true; } } }
     /// View ▸ Status Bar (Ctrl+5).
-    fn toggle_status_bar(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.strip_hidden = !g.strip_hidden; g.content_set = None; g.ui_dirty = true; } } }
+    fn toggle_status_bar(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.strip_hidden = !g.strip_hidden; log::info!("status bar {}", if g.strip_hidden { "hidden" } else { "shown" }); g.content_set = None; g.ui_dirty = true; } } }
     fn toggle_compact(&mut self) {
         if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); }
         let Some(g) = self.gpu.as_mut() else { return };
