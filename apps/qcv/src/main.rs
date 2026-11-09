@@ -470,6 +470,7 @@ impl App {
             N::Tool(t) => { match t { Some(t) => { self.annot.tool = t; self.annot.active = true; } None => { self.annot.active = false; self.annot.escape(); } } self.annot.selected = None; }
             N::Color(h) => { if let Some(c) = qcv_notes_color(&h) { self.annot.color = c; self.settings.set_str(settings::k::ANNOTATION_COLOR, &h); } }
             N::Width(w) => self.annot.width = w,
+            N::Height(h) => { self.settings.set_float(settings::k::NOTES_DRAWER_HEIGHT, h); }
         }
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
@@ -1047,6 +1048,8 @@ impl App {
         if !g.fullscreen && !g.compact && !grabbed && g.notes.rect.height() > 1.0 {
             let had = g.notes.has_focus();
             let (cmds, d, consumed) = g.notes.event(&e, now, &mut g.fonts); if d { g.ui_dirty = true; }
+            let want = if g.notes.splitter_hovered() { winit::cursor::CursorIcon::RowResize } else { winit::cursor::CursorIcon::Default };
+            if (g.notes.splitter_hovered() || g.cursor == winit::cursor::CursorIcon::RowResize) && want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
             if g.notes.has_focus() != had { set_ime(&**g.window, g.notes.has_focus()); }
             let _ = g; for c in cmds { self.notes_cmd(c); }
             if consumed { return }
@@ -1791,7 +1794,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: notes_drawer::NotesDrawer::new(), notes_current: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
@@ -2031,7 +2034,7 @@ impl ApplicationHandler for App {
                     let (hx, vy) = if self.mods.shift && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
                     if !chromeless && hx.abs() > vy.abs() && g.drawer.hwheel(x, y, -hx / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
                     if !chromeless && g.drawer.wheel(x, y, -vy / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
-                    if !chromeless && g.notes.wheel(x, y, -(if hx.abs() > vy.abs() { hx } else { vy }) / 120.0 * 48.0 * scale) { g.ui_dirty = true; return }
+                    if !chromeless && g.notes.wheel(x, y, -(if hx.abs() > vy.abs() { hx } else { vy }) / 120.0 * 48.0 * scale, vy.abs() >= hx.abs(), &mut g.fonts) { g.ui_dirty = true; return }
                     if !chromeless && g.left.hit(x, y) {
                         if let Some(cmds) = g.settings_panel.wheel(x, y, dy, &mut self.settings) { g.ui_dirty = true; for c in cmds { self.apply_setting(c); } return }
                         if g.left.wheel(-dy / 120.0 * 48.0 * scale, now) { g.ui_dirty = true; } return

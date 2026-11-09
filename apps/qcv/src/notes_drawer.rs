@@ -6,15 +6,18 @@
 use crate::annotate::Tool;
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
-use min_ui::{anim::Ramp, paint, ActionButton, ColorPicker, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Slider, TextField, Tooltips};
+use min_ui::{anim::Ramp, paint, ActionButton, ColorPicker, Event, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, Response, Slider, TextArea, Tooltips};
 use std::{collections::HashMap, path::PathBuf, time::{Instant, SystemTime}};
 use vello::Scene;
 
 fn tr(s: &str) -> &str { min_i18n::trc("NotesPanel", s) }
 
-/// The drawer's height (logical px): QCView's band was 270; ours carries the header row.
-pub const HEIGHT: f64 = 300.0;
-const CARD_W: f64 = 240.0; const THUMB_H: f64 = 135.0; const ADD_W: f64 = 120.0; const TOOLS_W: f64 = 32.0; const PICK_W: f64 = 186.0;
+/// The drawer's height (logical px): resizable from its top edge within its own range (taller = more lines of note text; the
+/// colour drawer keeps 200–600). QCView's band was a fixed 270.
+pub const HEIGHT_DEFAULT: f64 = 320.0; pub const HEIGHT_MIN: f64 = 300.0; pub const HEIGHT_MAX: f64 = 720.0;
+const CARD_W: f64 = 240.0; const THUMB_H: f64 = 135.0; const ADD_W: f64 = 120.0; const PICK_W: f64 = 240.0;
+/// the tools: Spectrum 2's M action buttons (32) in two columns
+const TOOL_B: f64 = 32.0; const TOOL_GAP: f64 = 4.0; const TOOLS_W: f64 = 2.0 * TOOL_B + TOOL_GAP;
 pub const TOOLS: [(Tool, &str, &str); 7] = [
     (Tool::Select, "cursor", "Select (drag to move, corners to scale, Del to remove; click again to exit)"), (Tool::Freehand, "pencil-simple", "Freehand"),
     (Tool::Rectangle, "rectangle", "Rectangle"), (Tool::Oval, "circle", "Oval"), (Tool::Arrow, "arrow-right", "Arrow"), (Tool::Line, "line-segment", "Line"),
@@ -23,32 +26,36 @@ pub const TOOLS: [(Tool, &str, &str); 7] = [
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card { pub key: String, pub frame: i64, pub text: String, pub addressed: bool, pub thumb: Option<PathBuf>, pub viewer: bool, pub ocio: bool }
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { AddNote, Seek(i64), Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32) }
+pub enum Cmd { AddNote, Seek(i64), Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
+    Height(f64) }
 
 struct CardRects { thumb: Rect, text: Rect, addressed: Rect, delete: Rect }
 
 pub struct NotesDrawer {
-    pub open: bool, open_ramp: Ramp, pub rect: Rect, scale: f64,
+    pub open: bool, open_ramp: Ramp, pub rect: Rect, scale: f64, pub height: f64, split_hover: bool, split_drag: Option<(f64, f64)>,
     header: Rect, add: Rect, cards_area: Rect, scroll: f64, max_scroll: f64, /// the layer-2 panels behind the columns (the colour drawer's treatment)
     panels: [Rect; 4],
     cards: Vec<Card>, rects: Vec<CardRects>, current: Option<String>, clip: String,
     tools: Vec<ActionButton>, tool: Option<Tool>, picker: ColorPicker, width: Slider, width_v: f32, width_label: Rect,
-    edit: Option<(String, TextField)>, thumbs: HashMap<PathBuf, (SystemTime, peniko::ImageBrush)>,
+    /// each card's text box (keyed by note); `editing` = the focused one
+    areas: HashMap<String, TextArea>, editing: Option<String>, thumbs: HashMap<PathBuf, (SystemTime, peniko::ImageBrush)>,
     hover: Option<(usize, u8)>, add_hover: bool, pub tips: Tooltips,
 }
 
 impl NotesDrawer {
     pub fn new() -> NotesDrawer {
-        NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, panels: [Rect::ZERO; 4],
+        NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, height: HEIGHT_DEFAULT, split_hover: false, split_drag: None, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
-            tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip)).size_s()).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
-            edit: None, thumbs: HashMap::new(), hover: None, add_hover: false, tips: Tooltips::default() }
+            tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip))).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
+            areas: HashMap::new(), editing: None, thumbs: HashMap::new(), hover: None, add_hover: false, tips: Tooltips::default() }
     }
-    pub fn set_open(&mut self, on: bool, now: Instant) { if on != self.open { self.open = on; self.open_ramp.set_target(if on { 1.0 } else { 0.0 }, now); if !on { self.edit = None; } } }
-    pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (HEIGHT * scale * self.open_ramp.value(now) as f64).round() }
+    pub fn set_open(&mut self, on: bool, now: Instant) { if on != self.open { self.open = on; self.open_ramp.set_target(if on { 1.0 } else { 0.0 }, now); if !on { self.unfocus(); } } }
+    pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
+    pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
+    fn unfocus(&mut self) { if let Some(k) = self.editing.take() { if let Some(a) = self.areas.get_mut(&k) { a.focused = false; } } }
     pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tools.iter().any(|b| b.animating(now)) || self.width.animating(now) }
     pub fn tick(&mut self, now: Instant) -> bool { self.tips.tick(now) }
-    pub fn has_focus(&self) -> bool { self.edit.is_some() || self.picker.focused() }
+    pub fn has_focus(&self) -> bool { self.editing.is_some() || self.picker.focused() }
     /// The state to show; true when it changed.
     pub fn sync(&mut self, clip: &str, cards: Vec<Card>, current: Option<String>, tool: Option<Tool>, color: &str, width: f32) -> bool {
         let changed = self.cards != cards || self.current != current || self.tool != tool || self.clip != clip || (self.width_v - width).abs() > 1e-3;
@@ -56,7 +63,10 @@ impl NotesDrawer {
         for (i, b) in self.tools.iter_mut().enumerate() { b.selected = Some(TOOLS[i].0) == tool; }
         if !self.width.dragging() { self.width.value = ((width - 1.0) / 23.0).clamp(0.0, 1.0); }
         if !self.picker.dragging() { self.picker.set_hex(color); }
-        if let Some((k, _)) = &self.edit { if !self.cards.iter().any(|c| &c.key == k) { self.edit = None; } }
+        // the text boxes follow the notes (the focused one keeps what is being typed)
+        self.areas.retain(|k, _| self.cards.iter().any(|c| &c.key == k));
+        if self.editing.as_ref().is_some_and(|k| !self.areas.contains_key(k)) { self.editing = None; }
+        for c in &self.cards { let a = self.areas.entry(c.key.clone()).or_insert_with(|| { let mut a = TextArea::new(Family::Sans, t::RAIL_LABEL_SIZE); a.placeholder = tr("Note…").to_string(); a }); if self.editing.as_deref() != Some(&c.key) { a.set_text(&c.text); } }
         changed
     }
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, y0: f64, x1: f64, scale: f64, now: Instant) {
@@ -64,7 +74,7 @@ impl NotesDrawer {
         let h = self.visible_height(now, scale); self.rect = Rect::new(x0, y0, x1, y0 + h);
         if h <= 1.0 { return }
         let pad = t::SPACING_200 as f64 * s; let row = t::COMPONENT_HEIGHT_100 as f64 * s;
-        let full = Rect::new(x0, y0, x1, y0 + HEIGHT * s);
+        let full = Rect::new(x0, y0, x1, y0 + self.height * s);
         self.header = Rect::new(full.x0 + pad, full.y0, full.x1 - pad, full.y0 + row);
         let body = Rect::new(full.x0 + pad, self.header.y1, full.x1 - pad, full.y1 - pad);
         let ins = t::SPACING_100 as f64 * s; let gap_p = t::SPACING_100 as f64 * s;   // inside a panel; between panels
@@ -78,8 +88,8 @@ impl NotesDrawer {
         let ph = self.picker.layout(fonts, pc.x0, pc.x1, pc.y0, s);
         let wy = pc.y0 + ph + t::SPACING_100 as f64 * s; let fh = t::FIELD_HEIGHT_S as f64 * s;
         self.width_label = Rect::new(pc.x0, wy, pc.x0 + 48.0 * s, wy + fh); self.width.rect = Rect::new(pc.x0 + 48.0 * s, wy, pc.x1 - 28.0 * s, wy + fh);
-        let tx = tools_panel.x0 + ins; let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let gap = 4.0 * s;
-        for (i, b) in self.tools.iter_mut().enumerate() { let y = tools_panel.y0 + ins + i as f64 * (bh + gap); b.rect = Rect::new(tx, y, tx + TOOLS_W * s, y + bh); }
+        let (tb, tg) = (TOOL_B * s, TOOL_GAP * s);
+        for (i, b) in self.tools.iter_mut().enumerate() { let (col, row) = ((i % 2) as f64, (i / 2) as f64); let x = tools_panel.x0 + ins + col * (tb + tg); let y = tools_panel.y0 + ins + row * (tb + tg); b.rect = Rect::new(x, y, x + tb, y + tb); }
         // the add tile, then the cards
         self.add = add_panel;
         self.cards_area = cards_panel.inset(-ins);
@@ -90,11 +100,12 @@ impl NotesDrawer {
             let ci = 6.0 * s;   // the thumbnail's inset inside its tile
             let x = self.cards_area.x0 + i as f64 * (cw + cg) - self.scroll + ci; let y = self.cards_area.y0 + ci; let cw = cw - 2.0 * ci;
             let thumb = Rect::new(x, y, x + cw, y + (THUMB_H - 12.0) * s);
-            let text = Rect::new(x, thumb.y1 + 22.0 * s, x + cw, thumb.y1 + 22.0 * s + fh);
-            let by = text.y1 + 4.0 * s; let ib = 24.0 * s;
+            let ib = 24.0 * s; let by = self.cards_area.y1 - ci - ib;
+            let text = Rect::new(x, thumb.y1 + 22.0 * s, x + cw, (by - 4.0 * s).max(thumb.y1 + 22.0 * s + fh));
             CardRects { thumb, text, addressed: Rect::new(x, by, x + ib, by + ib), delete: Rect::new(x + cw - ib, by, x + cw, by + ib) }
         }).collect();
-        if let Some((k, f)) = &mut self.edit { if let Some(i) = self.cards.iter().position(|c| &c.key == k) { f.layout(fonts, self.rects[i].text, s); } }
+        for (i, c) in self.cards.iter().enumerate() { if let Some(a) = self.areas.get_mut(&c.key) { a.layout(fonts, self.rects[i].text, s); } }
+        let _ = fh;
     }
     /// The current note's card scrolled into view (the playhead moved onto it).
     pub fn reveal_current(&mut self) {
@@ -102,16 +113,29 @@ impl NotesDrawer {
         let s = self.scale; let x = i as f64 * (CARD_W * s + t::SPACING_200 as f64 * s);
         if x < self.scroll { self.scroll = x; } else if x + CARD_W * s > self.scroll + self.cards_area.width() { self.scroll = x + CARD_W * s - self.cards_area.width(); }
     }
-    pub fn wheel(&mut self, x: f64, y: f64, d: f64) -> bool { if !self.cards_area.contains(kurbo::Point::new(x, y)) || self.max_scroll <= 0.0 { return false } self.scroll = (self.scroll + d).clamp(0.0, self.max_scroll); true }
-    fn commit_edit(&mut self) -> Option<Cmd> { let (k, f) = self.edit.take()?; Some(Cmd::Text(k, f.text().to_string())) }
+    /// A text box under the pointer scrolls its text (vertical wheel); else the row scrolls sideways.
+    pub fn wheel(&mut self, x: f64, y: f64, d: f64, vertical: bool, fonts: &mut Fonts) -> bool {
+        if vertical { for a in self.areas.values_mut() { if a.wheel(x, y, d, fonts) { return true } } }
+        if !self.cards_area.contains(kurbo::Point::new(x, y)) || self.max_scroll <= 0.0 { return false } self.scroll = (self.scroll + d).clamp(0.0, self.max_scroll); true }
+    fn commit_edit(&mut self) -> Option<Cmd> { let k = self.editing.take()?; let a = self.areas.get_mut(&k)?; a.focused = false; Some(Cmd::Text(k, a.text().to_string())) }
     /// Returns (commands, redraw, consumed).
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let mut dirty = false;
         if self.rect.height() <= 1.0 { return (cmds, false, false) }
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave);
-        if let Some((_, f)) = &mut self.edit { if f.pointer(e, fonts) { dirty = true; } }
-        // a press outside the text being edited commits it
-        if let Event::Down { x, y, .. } = *e { if let Some((_, f)) = &self.edit { if !f.hit(x, y) { if let Some(c) = self.commit_edit() { cmds.push(c); } dirty = true; } } }
+        // the resize grip along the top edge (the colour drawer's), the drawer's own range
+        let s = self.scale;
+        let near_top = e.pos().is_some_and(|(x, y)| x >= self.rect.x0 && x <= self.rect.x1 && (y - self.rect.y0).abs() <= 4.0 * s) && !matches!(e, Event::Leave);
+        match *e {
+            Event::Down { y, button: min_ui::Button::Primary, .. } if near_top => { self.split_drag = Some((y, self.height)); return (cmds, true, true) }
+            Event::Move { y, .. } if self.split_drag.is_some() => { let (y0, h0) = self.split_drag.unwrap(); let h = (h0 + (y0 - y) / s).clamp(HEIGHT_MIN, HEIGHT_MAX).round(); if h != self.height { self.height = h; } return (cmds, true, true) }
+            Event::Up { .. } if self.split_drag.is_some() => { self.split_drag = None; cmds.push(Cmd::Height(self.height)); return (cmds, true, true) }
+            _ => {}
+        }
+        if near_top != self.split_hover { self.split_hover = near_top; dirty = true; }
+        // the text boxes: a press in one focuses it (a press elsewhere commits the one being typed)
+        if let Event::Down { x, y, .. } = *e { if let Some(k) = self.editing.clone() { if !self.areas.get(&k).is_some_and(|a| a.hit(x, y)) { if let Some(c) = self.commit_edit() { cmds.push(c); } dirty = true; } } }
+        for (k, a) in self.areas.iter_mut() { if a.pointer(e, fonts) { dirty = true; } if a.focused && self.editing.as_deref() != Some(k) { self.editing = Some(k.clone()); } }
         for (i, b) in self.tools.iter_mut().enumerate() { if let Response::Clicked = b.event(e, now) { let tl = TOOLS[i].0; cmds.push(Cmd::Tool(if self.tool == Some(tl) { None } else { Some(tl) })); dirty = true; } }
         let (c, d) = self.picker.event(e, fonts); dirty |= d; if let Some(c) = c { cmds.push(Cmd::Color(c)); }
         let (v, d) = self.width.event(e, now, self.scale); dirty |= d; if let Some(v) = v { cmds.push(Cmd::Width((1.0 + v * 23.0).round())); }
@@ -127,7 +151,7 @@ impl NotesDrawer {
                 0 => cmds.push(Cmd::Seek(c.frame)),
                 1 => cmds.push(Cmd::Addressed(c.key.clone(), !c.addressed)),
                 2 => cmds.push(Cmd::Delete(c.key.clone())),
-                _ => { if self.edit.as_ref().map(|x| &x.0) != Some(&c.key) { let mut f = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); f.placeholder = tr("Note…").to_string(); f.set_text_end(&c.text, fonts); f.focused = true; f.layout(fonts, self.rects[i].text, self.scale); self.edit = Some((c.key.clone(), f)); } }
+                _ => {}   // the text box took it
             } dirty = true; }
         }
         // tooltips: the tools, the card buttons
@@ -141,10 +165,16 @@ impl NotesDrawer {
     }
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Vec<Cmd> {
         if self.picker.focused() { return self.picker.key(k, fonts).map(Cmd::Color).into_iter().collect() }
-        let Some((_, f)) = &mut self.edit else { return vec![] };
-        match f.key(k, fonts) { FieldResponse::Accepted => self.commit_edit().into_iter().collect(), FieldResponse::Cancelled => { self.edit = None; vec![] } _ => vec![] }
+        let Some(key) = self.editing.clone() else { return vec![] };
+        let Some(a) = self.areas.get_mut(&key) else { return vec![] };
+        match a.key(k, fonts) {
+            FieldResponse::Accepted => self.commit_edit().into_iter().collect(),
+            // Escape: the note's saved text back
+            FieldResponse::Cancelled => { let saved = self.cards.iter().find(|c| c.key == key).map(|c| c.text.clone()).unwrap_or_default(); a.set_text(&saved); a.focused = false; self.editing = None; vec![] }
+            _ => vec![],
+        }
     }
-    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if let Some((_, f)) = &mut self.edit { f.ime(e, fonts); } else { self.picker.ime(e, fonts); } }
+    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { match self.editing.clone().and_then(|k| self.areas.get_mut(&k)) { Some(a) => a.ime(e, fonts), None => self.picker.ime(e, fonts) } }
     pub fn blur(&mut self) -> Vec<Cmd> { let mut v: Vec<Cmd> = self.commit_edit().into_iter().collect(); if let Some(c) = self.picker.blur() { v.push(Cmd::Color(c)); } v }
     fn thumb(&mut self, p: &PathBuf) -> Option<peniko::ImageBrush> {
         let stamp = std::fs::metadata(p).and_then(|m| m.modified()).ok()?;
@@ -156,7 +186,8 @@ impl NotesDrawer {
         if self.rect.height() <= 1.0 { return }
         let s = self.scale;
         paint::rect(scene, self.rect, t::RAIL_BACKGROUND_COLOR);
-        paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + s.max(1.0)), t::DIVIDER_COLOR);
+        let grip = self.splitter_hovered();
+        paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + if grip { 2.0 * s } else { s.max(1.0) }), if grip { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR });
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.rect);
         fn mid<B: parley::Brush>(l: &parley::Layout<B>, r: Rect) -> f64 { r.y0 + (r.height() - l.height() as f64) / 2.0 }
         let h = fonts.detail(min_i18n::trc("Main", "Notes"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
@@ -196,14 +227,9 @@ impl NotesDrawer {
             let ly = thumb.y1 + 3.0 * s; min_ui::fonts::draw_layout(scene, &tl, Affine::translate((thumb.x0, ly)));
             let mut bx = thumb.x0 + tl.width() as f64 + 8.0 * s;
             for (on, b) in [(c.viewer, tr("VIEWER")), (c.ocio, tr("OCIO"))] { if on { let bl = fonts.detail(b, t::DETAIL_SIZE_S * s as f32, paint::color(t::GRAY_50)); let br = Rect::new(bx, ly + 1.0 * s, bx + bl.width() as f64 + 8.0 * s, ly + 15.0 * s); paint::rounded(scene, br, 3.0 * s, t::GRAY_600); min_ui::fonts::draw_layout(scene, &bl, Affine::translate((bx + 4.0 * s, mid(&bl, br)))); bx = br.x1 + 4.0 * s; } }
-            // the text (the field while editing)
-            match &mut self.edit { Some((k, f)) if *k == c.key => { paint::rounded(scene, text, 4.0 * s, t::FIELD_BACKGROUND_COLOR); f.paint(scene, fonts, s); }
-                _ => {
-                    if self.hover.is_some_and(|h| h.0 == i && h.1 == 3) { paint::rounded(scene, text, 4.0 * s, t::HOVER_BACKGROUND_COLOR); }
-                    let (txt, col) = if c.text.is_empty() { (tr("Note…").to_string(), t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) } else { (c.text.lines().next().unwrap_or("").to_string(), t::NEUTRAL_CONTENT_COLOR_DEFAULT) };
-                    let l = crate::project_panel::elided(fonts, &txt, t::FONT_WEIGHT_REGULAR as f32, col, text.width() - 12.0 * s, s);
-                    min_ui::fonts::draw_layout(scene, &l, Affine::translate((text.x0 + 6.0 * s, mid(&l, text))));
-                } }
+            // the text box (QCView's recessed TextArea: the whole note, wrapped, scrolling inside)
+            if let Some(a) = self.areas.get_mut(&c.key) { a.paint(scene, fonts, s); }
+            let _ = text;
             // Mark addressed · Delete note
             for (k, (rr, icon, col)) in [(addr, if c.addressed { "check-circle" } else { "circle" }, if c.addressed { t::POSITIVE_VISUAL_COLOR } else { t::RAIL_LABEL_COLOR }), (del, "trash", t::RAIL_LABEL_COLOR)].into_iter().enumerate() {
                 if self.hover.is_some_and(|h| h.0 == i && h.1 == k as u8 + 1) { paint::rounded(scene, rr, 4.0 * s, t::HOVER_BACKGROUND_COLOR); }
