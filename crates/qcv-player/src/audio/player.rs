@@ -33,7 +33,8 @@ const STOP_DEVICE_WHEN_IDLE: bool = false;
 
 /// What the device callback reads (lock-free) and the UI thread writes.
 struct CbShared {
-    playing: AtomicBool, volume: AtomicU32, muted: AtomicBool,
+    playing: AtomicBool, volume: AtomicU32, muted: AtomicBool, /// dual view's side gain (row 211: a side's mute, or its gap) — under the master volume / mute
+    side_gain: AtomicU32,
     servo_ratio: AtomicU32, consumed: AtomicU64, req: Request,
     source: Mutex<Option<Arc<dyn AudioSourceCtl>>>,
     drain: Mutex<(AudioDrainStage, Vec<f32>)>,
@@ -75,7 +76,7 @@ impl AudioPlayer {
     /// A silent, wall-paced device (headless benches).
     pub fn headless() -> Result<AudioPlayer, crate::Error> { Self::with_device(|r| Ok(Box::new(NullDevice::new(r, 48000, 10)) as Box<dyn AudioDevice>)) }
     fn with_device(make: impl FnOnce(RenderFn) -> Result<Box<dyn AudioDevice>, crate::Error>) -> Result<AudioPlayer, crate::Error> {
-        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
+        let cb = Arc::new(CbShared { playing: AtomicBool::new(false), volume: AtomicU32::new(1.0f32.to_bits()), muted: AtomicBool::new(false), side_gain: AtomicU32::new(1.0f32.to_bits()), servo_ratio: AtomicU32::new(1.0f32.to_bits()), consumed: AtomicU64::new(0), req: Request::default(), source: Mutex::new(None), drain: Mutex::new((AudioDrainStage::new(), vec![])), shuttle: ShuttleAudioEngine::new(), callbacks: AtomicU64::new(0), contended: AtomicU64::new(0), audible: AtomicU64::new(0) });
         let c = cb.clone();
         let render: RenderFn = Box::new(move |out: &mut [f32]| Self::process_audio(&c, out));
         let device = make(render)?;
@@ -92,7 +93,7 @@ impl AudioPlayer {
             // the grain ring INSTEAD of the main decoder (whose decode thread idles on back-pressure, ready for the commit seek)
             c.shuttle.read(out);
             if c.muted.load(Relaxed) { out.fill(0.0); return }
-            let vol = f32::from_bits(c.volume.load(Relaxed)); for v in out.iter_mut() { *v *= vol; }
+            let vol = f32::from_bits(c.volume.load(Relaxed)) * f32::from_bits(c.side_gain.load(Relaxed)); for v in out.iter_mut() { *v *= vol; }
             return
         }
         let Ok(src) = c.source.try_lock() else { c.contended.fetch_add(1, Relaxed); out.fill(0.0); return };
@@ -103,7 +104,7 @@ impl AudioPlayer {
         let extra_hold = !c.playing.load(Acquire);
         drain.process(&**dec, out, frames, ratio, scratch, &c.consumed, &c.req, extra_hold);
         if c.muted.load(Relaxed) { out.fill(0.0); return }
-        let vol = f32::from_bits(c.volume.load(Relaxed));
+        let vol = f32::from_bits(c.volume.load(Relaxed)) * f32::from_bits(c.side_gain.load(Relaxed));
         let mut peak = 0.0f32;
         for v in out.iter_mut() { *v = soft_limit(*v * vol); peak = peak.max(v.abs()); }
         if peak > 0.001 { c.audible.fetch_add(1, Relaxed); }
@@ -245,6 +246,7 @@ impl AudioHooks for AudioPlayer {
     }
     fn shuttle_active(&self) -> bool { self.cb.shuttle.active() }
     fn set_volume(&mut self, v: f32) { self.cb.volume.store(v.clamp(0.0, 1.0).to_bits(), Relaxed); }
+    fn set_side_gain(&mut self, g: f32) { self.cb.side_gain.store(g.clamp(0.0, 1.0).to_bits(), Relaxed); }
     fn toggle_mute(&mut self) { let m = !self.cb.muted.load(Relaxed); self.cb.muted.store(m, Relaxed); }
     fn volume_step(&mut self, delta: f32) { let v = (f32::from_bits(self.cb.volume.load(Relaxed)) + delta).clamp(0.0, 1.0); self.cb.volume.store(v.to_bits(), Relaxed); }
     fn is_muted(&self) -> bool { self.cb.muted.load(Relaxed) }

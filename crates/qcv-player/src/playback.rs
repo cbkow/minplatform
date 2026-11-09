@@ -65,9 +65,9 @@ impl Playback for DualTransport {
     fn in_point(&self) -> i32 { DualTransport::in_point(self) }
     fn out_point(&self) -> i32 { DualTransport::out_point(self) }
     fn review_speed(&self) -> f64 { DualTransport::review_speed(self) }
-    fn has_audio(&self) -> bool { self.side(crate::dual::Side::A).is_some_and(|t| t.audio.has_audio()) }
-    fn is_muted(&self) -> bool { self.side(crate::dual::Side::A).is_some_and(|t| t.audio.is_muted()) }
-    fn volume(&self) -> f32 { self.side(crate::dual::Side::A).map(|t| t.audio.volume()).unwrap_or(1.0) }
+    fn has_audio(&self) -> bool { self.side_has_audio(crate::dual::Side::A) || self.side_has_audio(crate::dual::Side::B) }
+    fn is_muted(&self) -> bool { [crate::dual::Side::A, crate::dual::Side::B].iter().filter_map(|&s| self.side(s)).filter(|t| t.audio.has_audio()).all(|t| t.audio.is_muted()) && self.has_audio() }
+    fn volume(&self) -> f32 { [crate::dual::Side::A, crate::dual::Side::B].iter().filter_map(|&s| self.side(s)).find(|t| t.audio.has_audio()).map(|t| t.audio.volume()).unwrap_or(1.0) }
     /// QCView's dual timecode: the master rate, non-drop, from zero
     fn timecode_info(&self) -> TimecodeInfo { let r = DualTransport::rate(self); TimecodeInfo { frame_rate: (r.num as i32, r.den as i32), drop_frame: false, source_timecode: None, duration_secs: self.frame_count() as f64 / r.as_f64().max(1e-9) } }
     fn apply(&mut self, a: Action, now: Instant) -> bool { DualTransport::apply(self, a, now) }

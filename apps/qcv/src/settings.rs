@@ -62,7 +62,7 @@ static KEYS: &[Key] = &[
     Key::bool(k::MUTED, false),
     Key::bool(k::SCRUB_MUTED, false),
     Key::int(k::SYNC_OFFSET_MS, 0, -100, 100),
-    Key::int(k::DUAL_SYNC_OFFSET_MS, 0, -100, 100),
+    Key::int(k::DUAL_SYNC_OFFSET_MS, if cfg!(target_os = "macos") { 17 } else { 15 }, -100, 100),   // QCView `dualAudioSyncOffsetMsDefault`
     Key::bool(k::LIVE_PLAYDOWN, false),
     Key::int(k::LIVE_SYNC_OFFSET_MS, 0, -200, 200),
     Key::int(k::LIVE_BUFFER_MS, 60, 20, 200),

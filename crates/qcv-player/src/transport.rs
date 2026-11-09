@@ -56,6 +56,8 @@ pub trait AudioHooks {
     fn toggle_mute(&mut self) {}
     fn volume_step(&mut self, _delta: f32) {}
     fn set_volume(&mut self, _v: f32) {}
+    /// Dual view (row 211): a side's own gain under the master volume / mute (its mute; silence in a gap). 1 = as is.
+    fn set_side_gain(&mut self, _g: f32) {}
     /// The shell's persisted mute (QCView `audio/muted`), as against the M key's toggle.
     fn set_muted(&mut self, _m: bool) {}
     /// QCView `audio/syncOffsetMs`: positive delays the audio.

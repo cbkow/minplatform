@@ -332,7 +332,10 @@ impl App {
             match qcv_player::DualTransport::open(a, b, self.transport_options()) {
                 Ok(mut d) => {
                     if let Some(p) = self.player.take() { p.retire(); }
-                    if std::env::var_os("QCV_NO_AUDIO").is_none() && let Ok(au) = qcv_player::AudioPlayer::new() { d.set_audio(Box::new(au)); }
+                    // each side its own audio player (row 211 step 5): A heard, B muted by default (QCView's DualAudioMixer)
+                    if std::env::var_os("QCV_NO_AUDIO").is_none() { for side in [qcv_player::Side::A, qcv_player::Side::B] { if let Ok(au) = qcv_player::AudioPlayer::new() { d.set_side_audio(side, Box::new(au)); } } }
+                    let st = &self.settings; let (vol, mute, sync, scrub) = (st.float(settings::k::VOLUME) as f32, st.bool(settings::k::MUTED), st.int(settings::k::DUAL_SYNC_OFFSET_MS) as i32, st.bool(settings::k::SCRUB_MUTED));
+                    d.for_each_audio(|au| { au.set_volume(vol); au.set_muted(mute); au.set_sync_offset_ms(sync); au.set_scrub_muted(scrub); });
                     let f = (sec * d.rate().as_f64()).round() as i32; d.seek_to_frame(f);   // the single view's time carries into A
                     println!("dual: master {:.3} fps, {} frames", d.rate().as_f64(), d.frame_count());
                     let mut ed = qcv_timeline::Editor::default(); ed.load_dual(d.media(qcv_player::Side::A), d.media(qcv_player::Side::B), d.rate());
@@ -513,6 +516,7 @@ impl App {
             Cmd::Mode(m) => self.set_compare_mode(m),
             Cmd::ClearB => self.clear_b_source(),
             Cmd::Target(sd) => if let Some(g) = self.gpu.as_mut() { g.dual_bars.target = sd; g.ui_dirty = true; },
+            Cmd::ToggleSideMute(sd) => { if let Some(d) = self.dual.as_mut() { let m = !d.side_muted(sd); d.set_side_muted(sd, m); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Cmd::Seam(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.seam = v.clamp(0.0, 1.0); } g.ui_dirty = true; },
             Cmd::Gain(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.gain = v.clamp(1.0, dual_controls::GAIN_MAX); } g.ui_dirty = true; },
             Cmd::Save => {
@@ -645,6 +649,8 @@ impl App {
                 let (mode, seam, gain) = g.presenter.engine.dual().map(|d| (d.mode, d.seam, d.gain)).unwrap_or((CompareMode::Single, 0.5, 1.0));
                 if g.dualc.sync(self.dual.is_some(), self.pl_editor.is_none(), mode, a, b, seam, gain, !self.active_dual_view.is_empty()) { g.ui_dirty = true; }
                 if g.dualc.set_target(g.dual_bars.target) { g.ui_dirty = true; }
+                let aud = |s: qcv_player::Side| self.dual.as_ref().filter(|d| d.side_has_audio(s)).map(|d| d.side_muted(s));
+                if g.dualc.set_audio(aud(qcv_player::Side::A), aud(qcv_player::Side::B)) { g.ui_dirty = true; }
                 if g.dualc.tick(now) || g.dualc.animating(now) { g.ui_dirty = true; }
             }
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
@@ -741,7 +747,8 @@ impl App {
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
             // the bar's volume / mute / loop and the keys write the store back (QCView persists them on change)
-            if let Some(p) = self.player.as_ref() { if p.audio.has_audio() { self.settings.set_float(settings::k::VOLUME, p.audio.volume() as f64); self.settings.set_bool(settings::k::MUTED, p.audio.is_muted()); } self.settings.set_bool(settings::k::LOOP_ENABLED, p.loop_enabled()); }
+            if let Some(p) = pb(&self.dual, &self.player) { if p.has_audio() { self.settings.set_float(settings::k::VOLUME, p.volume() as f64); self.settings.set_bool(settings::k::MUTED, p.is_muted()); } }
+            if let Some(p) = self.player.as_ref() { self.settings.set_bool(settings::k::LOOP_ENABLED, p.loop_enabled()); }
             if !chromeless { self.settings.set_int(settings::k::LEFT_RAIL_WIDTH, g.left.width.round() as i64); self.settings.set_int(settings::k::RIGHT_RAIL_WIDTH, g.right.width.round() as i64); self.settings.set_bool(settings::k::LEFT_RAIL_COLLAPSED, g.left.collapsed); self.settings.set_bool(settings::k::RIGHT_RAIL_COLLAPSED, g.right.collapsed); }
             if let Err(e) = self.settings.save_if_dirty() { log::warn!("settings: {e}"); }
             g.scrubber.compact = g.compact;
@@ -1035,7 +1042,7 @@ impl App {
                 transport_bar::Cmd::ToggleCompact => { self.toggle_compact(); return }
                 transport_bar::Cmd::RevealBackground => self.reveal(Reveal::Background),
                 transport_bar::Cmd::ToggleColor => self.color_cmd(color_drawer::Cmd::Toggle),
-                transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } }
+                transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
             }
         }
     }
@@ -1049,10 +1056,11 @@ impl App {
             match key {
                 k::TIMELINE_HOVER_THUMBS => { g.thumbs.enabled = self.settings.bool(key); g.ui_dirty = true; }
                 k::TIMELINE_WAVEFORMS => { g.waveform_enabled = self.settings.bool(key); if !g.waveform_enabled { g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); } g.ui_dirty = true; }
-                k::VOLUME => if let Some(p) = self.player.as_mut() { p.audio.set_volume(self.settings.float(key) as f32); },
-                k::MUTED => if let Some(p) = self.player.as_mut() { p.audio.set_muted(self.settings.bool(key)); },
+                k::VOLUME => { let v = self.settings.float(key) as f32; if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
+                k::MUTED => { let m = self.settings.bool(key); if let Some(p) = self.player.as_mut() { p.audio.set_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_muted(m)); } }
+                k::DUAL_SYNC_OFFSET_MS => if let Some(d) = self.dual.as_mut() { let ms = self.settings.int(key) as i32; d.for_each_audio(|au| au.set_sync_offset_ms(ms)); },
                 k::SYNC_OFFSET_MS => if let Some(p) = self.player.as_mut() { p.audio.set_sync_offset_ms(self.settings.int(key) as i32); },
-                k::SCRUB_MUTED => if let Some(p) = self.player.as_mut() { p.audio.set_scrub_muted(self.settings.bool(key)); },
+                k::SCRUB_MUTED => { let m = self.settings.bool(key); if let Some(p) = self.player.as_mut() { p.audio.set_scrub_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_scrub_muted(m)); } }
                 k::LOOP_ENABLED => if let Some(p) = self.player.as_mut() { p.set_loop_enabled(self.settings.bool(key)); },
                 k::LEFT_RAIL_WIDTH => { g.left.width = self.settings.int(key) as f64; g.ui_dirty = true; }
                 k::RIGHT_RAIL_WIDTH => { g.right.width = self.settings.int(key) as f64; g.ui_dirty = true; }

@@ -16,7 +16,8 @@ fn tr(s: &str) -> &str { min_i18n::trc("ViewportOverlay", s) }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { Mode(CompareMode), ClearB, Seam(f32), Gain(f32), Save, Update, /// a chip clicked: its side takes ⌘K and the edit keys (row 212)
-    Target(Side) }
+    Target(Side), /// a chip's speaker pill (QCView `audio.mutedA` / `mutedB`)
+    ToggleSideMute(Side) }
 
 /// QCView's gain range (`diffGain` 1..16).
 pub const GAIN_MAX: f32 = 16.0;
@@ -32,6 +33,8 @@ pub struct DualControls {
     a: Chip, b: Chip, close_b: ActionButton, modes: ActionGroup, slider: Slider, readout: String, readout_rect: Rect,
     update: ActionButton, save: ActionButton,
     drop_side: Option<Side>, target: Side,
+    /// each side's audio: None = no audio (no pill), Some(muted); the pills' rects + hover
+    audio: [Option<bool>; 2], pill: [Rect; 2], pill_hover: [bool; 2],
     pub tooltips: Tooltips,
 }
 
@@ -43,7 +46,7 @@ impl DualControls {
         DualControls { rect: Rect::ZERO, active: false, available: true, saved: false, mode: CompareMode::Single, seam: 0.5, gain: 1.0,
             a: Chip::new(), b: Chip::new(), close_b: ActionButton::new("x", tr("Close source B")).size_s(), modes, slider: Slider::new(0.5), readout: String::new(), readout_rect: Rect::ZERO,
             update: ActionButton::new("floppy-disk", tr("Update this saved dual view")).size_s(), save: ActionButton::new("floppy-disk", tr("Save dual view")).size_s(),
-            drop_side: None, target: Side::B, tooltips: Tooltips::default() }
+            drop_side: None, target: Side::B, audio: [None, None], pill: [Rect::ZERO; 2], pill_hover: [false; 2], tooltips: Tooltips::default() }
     }
     /// The state to show; returns true when something visible changed.
     #[allow(clippy::too_many_arguments)]
@@ -90,6 +93,12 @@ impl DualControls {
             let cs = 16.0 * scale; self.close_b.rect = if self.b.name.is_some() { Rect::new(self.b.rect.x1 - cs - 4.0 * scale, cy + (ch - cs) / 2.0, self.b.rect.x1 - 4.0 * scale, cy + (ch + cs) / 2.0) } else { Rect::ZERO };
         } else { self.b.rect = Rect::ZERO; self.close_b.rect = Rect::ZERO; }
         self.a.rect = if cw >= 48.0 * scale { Rect::new(x - cw, cy, x, cy + ch) } else { Rect::ZERO };
+        // the speaker pills (24 × 16), at each chip's right end (B's left of its ×) — dual only, sides with audio only
+        let (pw, ph) = (24.0 * scale, 16.0 * scale);
+        for (i, c) in [&self.a, &self.b].into_iter().enumerate() {
+            let right = if i == 1 && self.close_b.rect.area() > 0.0 { self.close_b.rect.x0 - 2.0 * scale } else { c.rect.x1 - 4.0 * scale };
+            self.pill[i] = if self.shows_b() && self.audio[i].is_some() && c.rect.width() > 96.0 * scale { Rect::new(right - pw, c.rect.y0 + (c.rect.height() - ph) / 2.0, right, c.rect.y0 + (c.rect.height() + ph) / 2.0) } else { Rect::ZERO };
+        }
         self.rect = Rect::new(self.a.rect.x0.min(x), y, right, y + h);
     }
     /// The chip under the pointer (a drop's side).
@@ -100,13 +109,20 @@ impl DualControls {
     /// A drag hovering a chip (the accent outline); returns true when it changed.
     /// The edit target (row 212): its chip carries a hairline in the side colour while dual is on.
     pub fn set_target(&mut self, s: Side) -> bool { if self.target == s { return false } self.target = s; true }
+    /// The sides' audio (QCView shows a side's pill in dual when that side has audio).
+    pub fn set_audio(&mut self, a: Option<bool>, b: Option<bool>) -> bool { if self.audio == [a, b] { return false } self.audio = [a, b]; true }
     pub fn set_drop_side(&mut self, s: Option<Side>) -> bool { if self.drop_side == s { return false } self.drop_side = s; true }
     /// Returns (commands, redraw needed, consumed).
     pub fn event(&mut self, e: &Event, now: Instant, scale: f64) -> (Vec<Cmd>, bool, bool) {
         let mut cmds = vec![]; let mut dirty = false;
         let inside = e.pos().is_some_and(|(x, y)| self.rect.contains(kurbo::Point::new(x, y))) && !matches!(e, Event::Leave);
         for c in [&mut self.a, &mut self.b] { let h = inside && e.pos().is_some_and(|(x, y)| c.rect.contains(kurbo::Point::new(x, y))); if h != c.hovered { c.hovered = h; c.hover.set_target(if h { 1.0 } else { 0.0 }, now); dirty = true; } }
-        if let Event::Down { x, y, button: min_ui::Button::Primary } = *e { if !self.close_b.hit(x, y) && self.shows_b() { if let Some(s) = self.chip_at(x, y) { cmds.push(Cmd::Target(s)); dirty = true; } } }
+        for i in 0..2 { let h = inside && e.pos().is_some_and(|(x, y)| self.pill[i].contains(kurbo::Point::new(x, y))); if h != self.pill_hover[i] { self.pill_hover[i] = h; dirty = true; } }
+        let on_pill = |x: f64, y: f64| (0..2).find(|&i| self.pill[i].contains(kurbo::Point::new(x, y)));
+        if let Event::Down { x, y, button: min_ui::Button::Primary } = *e {
+            if let Some(i) = on_pill(x, y) { cmds.push(Cmd::ToggleSideMute(if i == 0 { Side::A } else { Side::B })); dirty = true; }
+            else if !self.close_b.hit(x, y) && self.shows_b() { if let Some(s) = self.chip_at(x, y) { cmds.push(Cmd::Target(s)); dirty = true; } }
+        }
         if self.close_b.rect.area() > 0.0 { match self.close_b.event(e, now) { min_ui::Response::Clicked => { cmds.push(Cmd::ClearB); dirty = true; } min_ui::Response::None => {} _ => dirty = true } }
         for (i, r) in self.modes.event(e, now) { dirty = true; if r == min_ui::Response::Clicked { cmds.push(Cmd::Mode(MODES[i])); } }
         if self.slider.rect.area() > 0.0 {
@@ -119,6 +135,7 @@ impl DualControls {
             let p = kurbo::Point::new(x, y);
             let btns = self.modes.buttons.iter().chain([&self.close_b, &self.update, &self.save]);
             for (i, b) in btns.enumerate() { if b.rect.contains(p) { return Some((100 + i as u64, b.rect, b.tooltip.clone())) } }
+            for i in 0..2 { if self.pill[i].contains(p) { let m = self.audio[i] == Some(true); let s = match (i, m) { (0, true) => "A audio muted — click to unmute", (0, false) => "A audio on — click to mute", (_, true) => "B audio muted — click to unmute", _ => "B audio on — click to mute" }; return Some((10 + i as u64 * 2 + m as u64, self.pill[i], tr(s).to_string())) } }
             if self.a.rect.contains(p) { if let Some(n) = &self.a.name { return Some((1, self.a.rect, n.clone())) } }
             if self.b.rect.contains(p) { if let Some(n) = &self.b.name { return Some((2, self.b.rect, n.clone())) } }
             None
@@ -144,7 +161,8 @@ impl DualControls {
             let ly = c.rect.y0 + (c.rect.height() - l.height() as f64) / 2.0;
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((c.rect.x0 + pad, ly)));
             let nx = c.rect.x0 + pad + l.width() as f64 + t::SPACING_100 as f64 * scale;
-            let right = if side == Side::B && self.close_b.rect.area() > 0.0 { self.close_b.rect.x0 - 4.0 * scale } else { c.rect.x1 - pad };
+            let pr = self.pill[side as usize];
+            let right = if pr.area() > 0.0 { pr.x0 - 4.0 * scale } else if side == Side::B && self.close_b.rect.area() > 0.0 { self.close_b.rect.x0 - 4.0 * scale } else { c.rect.x1 - pad };
             let (text, color, weight) = match &c.name {
                 Some(n) => (n.clone(), t::NEUTRAL_CONTENT_COLOR_DEFAULT, t::FONT_WEIGHT_REGULAR as f32),
                 None => (tr(if side == Side::A { "(drop a file…)" } else { "(drop a video, sequence or stream…)" }).to_string(), t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT, t::FONT_WEIGHT_REGULAR as f32),
@@ -155,6 +173,15 @@ impl DualControls {
                 let bw = 2.0 * scale;
                 scene.stroke(&Stroke::new(bw), Affine::IDENTITY, paint::color(t::FOCUS_INDICATOR_COLOR), None, &RoundedRect::from_rect(c.rect.inset(-bw / 2.0), r));
             }
+        }
+        // the speaker pills: the side colour while heard, a grey speaker-slash while muted; the hover grey under the pointer
+        for i in 0..2 {
+            let pr = self.pill[i]; if pr.area() <= 0.0 { continue }
+            let muted = self.audio[i] == Some(true);
+            if self.pill_hover[i] { paint::rounded(scene, pr, 4.0 * scale, t::GRAY_400); }
+            let col = if muted { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT } else if i == 0 { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR };
+            let px = 14.0 * scale as f32;
+            if let Some(l) = fonts.icon(if muted { "speaker-slash" } else { "speaker-high" }, px, paint::color(col)) { min_ui::fonts::draw_layout(scene, &l, Affine::translate((pr.x0 + (pr.width() - px as f64) / 2.0, pr.y0 + (pr.height() - px as f64) / 2.0))); }
         }
         if self.close_b.rect.area() > 0.0 { self.close_b.paint(scene, fonts, scale, now); }
         if self.modes.rect.area() > 0.0 { self.modes.paint(scene, fonts, scale, now); }

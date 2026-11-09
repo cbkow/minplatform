@@ -43,13 +43,17 @@ pub struct DualTransport {
     edit_scrub: Option<(usize, bool)>,
     /// what each side showed last (a Blank is reported once)
     blank: [bool; 2],
+    /// QCView's per-side mutes (`DualAudioMixer`: A heard, B muted by default) and the gains last pushed (a gap silences its side)
+    muted: [bool; 2], gains: [f32; 2],
+    /// an empty side's audio player, waiting for its file
+    spare_audio: [Option<Box<dyn AudioHooks>>; 2],
 }
 
 impl DualTransport {
     /// A and / or B (either may be empty: that side is a drop target). Opens PAUSED at frame 0, like QCView's entry.
     pub fn open(a: Option<MediaInfo>, b: Option<MediaInfo>, opts: TransportOptions) -> Result<DualTransport, Error> {
         let mut timer = PlaybackTimer::new(); timer.set_looping(opts.loop_enabled);
-        let mut d = DualTransport { timer, sides: [None, None], media: [None, None], loop_enabled: opts.loop_enabled, opts, rate: Rate::new(24, 1), fps: 24.0, frames: 0, in_point: -1, out_point: -1, review_speed: 1.0, user_wants_playback: false, gate: None, scrubbing: None, shuttle: None, edit_scrub: None, blank: [false; 2] };
+        let mut d = DualTransport { timer, sides: [None, None], media: [None, None], loop_enabled: opts.loop_enabled, opts, rate: Rate::new(24, 1), fps: 24.0, frames: 0, in_point: -1, out_point: -1, review_speed: 1.0, user_wants_playback: false, gate: None, scrubbing: None, shuttle: None, edit_scrub: None, blank: [false; 2], muted: [false, true], gains: [-1.0; 2], spare_audio: [None, None] };
         if let Some(m) = a { d.set_side(Side::A, Some(m))?; }
         if let Some(m) = b { d.set_side(Side::B, Some(m))?; }
         Ok(d)
@@ -68,13 +72,11 @@ impl DualTransport {
         };
         let sec = self.timer.position();
         let mut t = t;
-        if let Some(mut old) = std::mem::replace(&mut self.sides[i], None) {
-            // A's audio player moves to the new A (it reopens on the new file)
-            if i == 0 { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); if let Some(t) = t.as_mut() { t.set_audio(au); } }
-            drop_off_thread(old);
-        }
+        // the side's audio player moves to the new file (it reopens there); an emptied side keeps it for the next one
+        let au = match std::mem::replace(&mut self.sides[i], None) { Some(mut old) => { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); drop_off_thread(old); Some(au) } None => self.spare_audio[i].take() };
+        if let Some(au) = au { match t.as_mut() { Some(t) => t.set_audio(au), None => self.spare_audio[i] = Some(au) } }
         self.sides[i] = t;
-        self.media[i] = m; self.blank[i] = false;
+        self.media[i] = m; self.blank[i] = false; self.gains[i] = -1.0;
         self.retime(sec);
         let f = self.current_frame();
         if let Some(t) = self.sides[i].as_mut() { let sf = side_frame(f, self.fps, t.rate().as_f64()); t.follow(sf); if t.has_picture_at(sf) { t.seek_to_frame(sf as i32); } if self.user_wants_playback { t.play(); } }
@@ -94,7 +96,7 @@ impl DualTransport {
                 Ok(mut n) => {
                     n.set_follower(true); n.set_loop_enabled(self.loop_enabled); n.set_review_speed(self.review_speed);
                     let mut old = self.sides[i].take().unwrap();
-                    if i == 0 { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); n.set_audio(au); }
+                    let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); n.set_audio(au); self.gains[i] = -1.0;
                     if self.user_wants_playback { n.play(); }
                     drop_off_thread(old); self.sides[i] = Some(n);
                 }
@@ -299,13 +301,23 @@ impl DualTransport {
             Action::SetInPoint => self.set_in_point_at_current(), Action::SetOutPoint => self.set_out_point_at_current(), Action::ClearInOut => self.clear_in_out_points(),
             Action::ToggleLoop => { let on = !self.loop_enabled; self.set_loop_enabled(on) }
             Action::CycleReviewSpeed => self.cycle_review_speed(), Action::ResetReviewSpeed => self.set_review_speed(1.0),
-            Action::ToggleMute | Action::VolumeUp | Action::VolumeDown => { if let Some(t) = self.sides[0].as_mut() { return t.apply(a, now) } }
+            Action::ToggleMute => { let m = !self.sides.iter().flatten().any(|t| t.audio.is_muted()); self.for_each_audio(|au| au.set_muted(m)); }
+            Action::VolumeUp | Action::VolumeDown => { let d = if a == Action::VolumeUp { 0.05 } else { -0.05 }; self.for_each_audio(|au| au.volume_step(d)); }
             _ => return false,
         }
         true
     }
-    /// A's audio (step 5 brings the mixer; B is muted by default, as in QCView).
-    pub fn set_audio(&mut self, audio: Box<dyn AudioHooks>) { if let Some(t) = self.sides[0].as_mut() { t.set_audio(audio); } }
+    /// A's audio player.
+    pub fn set_audio(&mut self, audio: Box<dyn AudioHooks>) { self.set_side_audio(Side::A, audio) }
+    /// A side's audio player (QCView's `DualAudioMixer` decodes both; here each side's Transport drives its own, both following
+    /// the master clock through their drift loops, the OS mixing the two streams at unity).
+    pub fn set_side_audio(&mut self, side: Side, audio: Box<dyn AudioHooks>) { let i = side as usize; match self.sides[i].as_mut() { Some(t) => { t.set_audio(audio); self.gains[i] = -1.0; } None => self.spare_audio[i] = Some(audio) } }
+    /// QCView `audio.mutedA` / `mutedB` (the chips' speaker pills).
+    pub fn set_side_muted(&mut self, side: Side, m: bool) { self.muted[side as usize] = m; self.gains[side as usize] = -1.0; }
+    pub fn side_muted(&self, side: Side) -> bool { self.muted[side as usize] }
+    pub fn side_has_audio(&self, side: Side) -> bool { self.sides[side as usize].as_ref().is_some_and(|t| t.audio.has_audio()) }
+    /// The master volume / mute and the dual A/V offset reach both sides (QCView mirrors the single view's into the mixer).
+    pub fn for_each_audio(&mut self, mut f: impl FnMut(&mut dyn AudioHooks)) { for t in self.sides.iter_mut().flatten() { f(&mut *t.audio); } for a in self.spare_audio.iter_mut().flatten() { f(&mut **a); } }
 
     // ---- the refresh ----------------------------------------------------------------------------------------------------
     /// One refresh: the shuttle tick, the master clock (held while a seek lands; the wrap re-seats both sides; loop off stops at
@@ -329,6 +341,9 @@ impl DualTransport {
             t.follow(sf);
             let new = t.tick(now).is_some();
             // a side previewing an edit shows its preview frames wherever the playhead is
+            // the side's audio: its mute, or silence where it has no picture (a gap, past its end — QCView mutes a side in a gap)
+            let g = if self.muted[i] || !t.has_picture_at(sf) { 0.0 } else { 1.0 };
+            if g != self.gains[i] { t.audio.set_side_gain(g); self.gains[i] = g; }
             if self.edit_scrub.is_some_and(|(e, _)| e == i) { if new { self.blank[i] = false; out[i] = SideUpdate::New; } continue }
             if !t.has_picture_at(sf) { if !self.blank[i] { self.blank[i] = true; out[i] = SideUpdate::Blank; } continue }
             if new || (self.blank[i] && t.current().is_some()) { self.blank[i] = false; out[i] = SideUpdate::New; }
@@ -411,6 +426,23 @@ mod tests {
         assert_eq!(d.current_frame(), 10, "the playhead never moved");
         d.end_edit_preview(); settle(&mut d);
         assert_eq!(d.side(Side::B).unwrap().current().unwrap().frame_no, 10, "B is back on the playhead's frame");
+        for p in [a, b] { let _ = std::fs::remove_file(p); }
+    }
+    #[test]
+    fn b_starts_muted_and_a_side_is_silent_in_its_gap() {
+        use std::sync::{Arc, Mutex};
+        struct Rec(Arc<Mutex<Vec<f32>>>);
+        impl AudioHooks for Rec { fn has_audio(&self) -> bool { true } fn open(&mut self, _p: &str) -> bool { true } fn set_side_gain(&mut self, g: f32) { self.0.lock().unwrap().push(g); } }
+        let (Some(a), Some(b)) = (clip("ga", "24", 2.0), clip("gb", "24", 1.0)) else { eprintln!("ffmpeg missing: skipped"); return };
+        let mut d = DualTransport::open(Some(media_info(&a).unwrap()), Some(media_info(&b).unwrap()), TransportOptions { scrub: None, ..Default::default() }).unwrap();
+        let (ga, gb) = (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])));
+        d.set_side_audio(Side::A, Box::new(Rec(ga.clone()))); d.set_side_audio(Side::B, Box::new(Rec(gb.clone())));
+        settle(&mut d);
+        assert_eq!(ga.lock().unwrap().last(), Some(&1.0), "A heard"); assert_eq!(gb.lock().unwrap().last(), Some(&0.0), "B muted by default (QCView)");
+        d.set_side_muted(Side::B, false); d.tick(Instant::now());
+        assert_eq!(gb.lock().unwrap().last(), Some(&1.0));
+        d.seek_to_frame(36); settle(&mut d);   // past B's 1 s
+        assert_eq!(gb.lock().unwrap().last(), Some(&0.0), "B silent past its end"); assert_eq!(ga.lock().unwrap().last(), Some(&1.0));
         for p in [a, b] { let _ = std::fs::remove_file(p); }
     }
     #[test]

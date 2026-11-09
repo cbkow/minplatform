@@ -65,7 +65,7 @@ impl SettingsPanel {
             ] },
             Group { title: tr("Audio"), header: Rect::ZERO, rows: vec![
                 num(k::SYNC_OFFSET_MS, "A/V sync (Single)", "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
-                num(k::DUAL_SYNC_OFFSET_MS, "A/V sync (Dual)", "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play.", false, -100, 100, 1),
+                num(k::DUAL_SYNC_OFFSET_MS, "A/V sync (Dual)", "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
                 sw(k::SCRUB_MUTED, "Mute scrub audio", "Silence the audio feedback while scrubbing and shuttling.", true),
                 sw(k::LIVE_PLAYDOWN, "Listen to live audio", "Play audio pushed by Premiere Pro over the bridge.", false),
                 sw(k::BLENDER_SESSIONS, "Blender sessions", "Off at every launch. On: listen for a Blender bridge session.", false),
