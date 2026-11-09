@@ -173,6 +173,8 @@ pub struct Engine {
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
     bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
     out_gain: f32,
+    /// the window's screen shows no HDR (canon row 220): an HDR source with no chain rolls off to SDR white (BT.2390)
+    sdr_target: bool,
     scope: Option<Scope>, scope_view: Option<ScopeView>, /// dual view's waveform tints, A / B (linear RGB; QCView's cyan / orange until the shell sets the theme's)
     side_tints: ([f32; 3], [f32; 3]),
     /// dual view: the two side engines + the compare state (None = single view)
@@ -291,7 +293,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, sdr_target: false, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -476,6 +478,10 @@ impl Engine {
     /// The screen pass only — snapshots and the waveform never see it.
     pub fn set_output_gain(&mut self, g: f32) { let g = if g.is_finite() && g > 0.0 { g } else { 1.0 }; if (g - self.out_gain).abs() > 1e-4 { self.out_gain = g; self.write_uniforms(); self.relayout_dual(); } }
     pub fn output_gain(&self) -> f32 { self.out_gain }
+    /// The window's screen has no HDR (canon row 220): an HDR source shown with no chain rolls off to SDR white (BT.2390,
+    /// as captures do) instead of clipping. A chain re-targets itself (the shell's business).
+    pub fn set_sdr_target(&mut self, on: bool) { if on != self.sdr_target { self.sdr_target = on; self.write_uniforms(); } }
+    pub fn sdr_target(&self) -> bool { self.sdr_target }
     pub fn set_background(&mut self, mode: u8) { self.bg_mode = mode.min(3); self.write_bg_uniform(); }
     pub fn background(&self) -> u8 { self.bg_mode }
     /// The window's scale factor: the checker tile is 32 DEVICE pixels (QCView's Metal path passes the contentsScale-aware size).
@@ -587,7 +593,8 @@ impl Engine {
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
         let rot = self.rotation_quarters() as f32;
         let mut sets = [u(self.fit(), self.offset(), display_out), u([1.0, 1.0], [0.0, 0.0], chain_in), u([1.0, 1.0], [0.0, 0.0], OutMode::Encoded), u([1.0, 1.0], [0.0, 0.0], OutMode::Linear), u([1.0, 1.0], [0.0, 0.0], display_out)];
-        sets[0].rot = rot; sets[0].aids = self.aids.gpu(); sets[0].pad1 = [self.out_gain, 0.0];
+        let roll = if self.sdr_target { self.bypass_hdr_peak().unwrap_or(0.0) } else { 0.0 };
+        sets[0].rot = rot; sets[0].aids = self.aids.gpu(); sets[0].pad1 = [self.out_gain, roll]; sets[4].pad1[1] = roll;
         // BYPASS = AS STORED (canon row 180, QCView's rule): with no chain engaged, display-referred SDR (sRGB / BT.1886 tags) is
         // linearised with the sRGB EOTF so the surface's encode is a no-op and the screen shows the stored values — on the EDR
         // layer as on an 8-bit sRGB surface. NOT a transfer opinion: the 2.2-vs-2.4 question is the chain's Input, which still
@@ -710,6 +717,13 @@ impl Engine {
     /// output gain (Windows' SDR white is the screen's business), no background, no UI, no waveform; over black. Returns
     /// linear-light RGB f32 (1.0 = SDR white; values above 1 = HDR the caller maps for its SDR file), w, h.
     pub fn capture(&mut self, aids: bool) -> Result<(Vec<f32>, u32, u32), Error> {
+        // the screen's SDR roll-off is the screen's: a capture maps an HDR bypass itself (capture::to_sdr), never twice
+        let held = self.sdr_target; if held { self.set_sdr_target(false); }
+        let r = self.capture_inner(aids);
+        if held { self.set_sdr_target(true); }
+        r
+    }
+    fn capture_inner(&mut self, aids: bool) -> Result<(Vec<f32>, u32, u32), Error> {
         if self.shown.is_none() { return Err(Error::NoFrame) }
         let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
         let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
@@ -732,6 +746,13 @@ impl Engine {
     /// size through the screen's own compositor (B fitted, the same seam / gain). Each region says whose picture it is (its
     /// HDR peak in bypass, its geometry for a guide).
     pub fn capture_dual(&mut self, aids: bool) -> Result<DualCapture, Error> {
+        let held = self.dual.as_ref().map(|d| (d.a.sdr_target(), d.b.sdr_target())).unwrap_or((false, false));
+        if let Some(d) = self.dual.as_mut() { d.a.set_sdr_target(false); d.b.set_sdr_target(false); }
+        let r = self.capture_dual_inner(aids);
+        if let Some(d) = self.dual.as_mut() { d.a.set_sdr_target(held.0); d.b.set_sdr_target(held.1); }
+        r
+    }
+    fn capture_dual_inner(&mut self, aids: bool) -> Result<DualCapture, Error> {
         let Some(mut d) = self.dual.take() else { return Err(Error::NoFrame) };
         let r = (|| {
             if !d.a.has_frame() && !d.b.has_frame() { return Err(Error::NoFrame) }
@@ -1048,6 +1069,32 @@ mod tests {
         e.set_transfer_override(TransferChoice::Linear); let (linr, _, _) = e.snapshot(Snapshot::Display).unwrap();
         for x in (0..256).step_by(17) { assert!((linr[x * 4] - enc[x * 4]).abs() < 2e-3, "linear override at {x}: {} vs {}", linr[x * 4], enc[x * 4]); }
         e.set_transfer_override(TransferChoice::Auto); assert_eq!(e.transfer_override(), TransferChoice::Auto);
+    }
+
+    /// Canon row 220: an HDR source with no chain on an SDR screen rolls off with BT.2390 — on the GPU as captures do on the
+    /// CPU (to within half an 8-bit step), the shadows untouched; captures never apply it twice.
+    #[test]
+    fn an_sdr_screen_rolls_hdr_bypass_off_like_captures() {
+        let mut e = Engine::headless(wgpu::TextureFormat::Rgba16Float).unwrap();
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 }); e.show(&ramp_frame(256, 1)).unwrap();
+        e.set_transfer_override(TransferChoice::PqP3);
+        let (raw, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        e.set_sdr_target(true);
+        let (sdr, _, _) = e.snapshot(Snapshot::Display).unwrap();
+        let peak = e.bypass_hdr_peak().unwrap();
+        let mut worst = 0f32;
+        for x in (0..256).step_by(5) {
+            let r = raw[x * 4]; let want = crate::capture::bt2390(r * 100.0, peak, 100.0) / 100.0;
+            worst = worst.max((sdr[x * 4] - want).abs());
+            assert!(sdr[x * 4] <= 1.0 + 2e-3, "rolled off to SDR white at {x}: {}", sdr[x * 4]);
+        }
+        assert!(worst < 2e-3, "GPU vs CPU BT.2390, worst {worst}");
+        assert!((sdr[8 * 4] - raw[8 * 4]).abs() < 1e-3, "shadows untouched");
+        assert!(raw[255 * 4] > 5.0, "the raw bypass decodes the top to nits / 100: {}", raw[255 * 4]);
+        // a capture maps it itself: the screen's roll-off stays out of it
+        let (cap, _, _) = e.capture(false).unwrap();
+        assert!(cap.iter().step_by(3).fold(0f32, |m, v| m.max(*v)) > 5.0, "the capture got the unmapped picture");
+        assert!(e.sdr_target(), "restored after the capture");
     }
 
     /// A flat grey frame (8-bit limited Y′ = `y`, neutral chroma).

@@ -10,7 +10,8 @@ pub fn bt2390(nits: f32, src_peak: f32, dst_peak: f32) -> f32 {
     let ipq = |e: f32| { let (m1, m2, c1, c2, c3) = (0.1593017578125f32, 78.84375f32, 0.8359375f32, 18.8515625f32, 18.6875f32); let p = e.max(0.0).powf(1.0 / m2); 10000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1) };
     let (sp, dp) = (pq(src_peak), pq(dst_peak));
     if src_peak <= dst_peak { return nits.min(dst_peak) }
-    let e1 = pq(nits) / sp; let max_l = dp / sp;
+    // above the source's peak: its peak (the curve overshoots past 1)
+    let e1 = pq(nits.min(src_peak)) / sp; let max_l = dp / sp;
     let ks = 1.5 * max_l - 0.5;
     let e2 = if e1 < ks { e1 } else { let t = (e1 - ks) / (1.0 - ks); let (t2, t3) = (t * t, t * t * t); (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * max_l };
     ipq(e2 * sp)

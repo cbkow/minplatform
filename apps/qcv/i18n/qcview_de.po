@@ -4465,3 +4465,18 @@ msgstr "Dieses Projekt ist nicht mehr vorhanden"
 msgctxt "RightRail"
 msgid "View"
 msgstr "Ansicht"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: showing %1"
+msgstr "SDR-Display: zeigt %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: rendering for 100 nits"
+msgstr "SDR-Display: Rendering für 100 Nits"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: HDR rolled off to SDR white"
+msgstr "SDR-Display: HDR auf SDR-Weiß abgerollt"

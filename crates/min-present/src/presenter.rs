@@ -18,6 +18,41 @@ pub struct Presenter {
     config: wgpu::SurfaceConfiguration,
     info: OutputInfo,
     #[allow(dead_code)] ns_view: Option<*mut c_void>,
+    /// the surface offers Rgb10a2Unorm in sRGB (the SDR-monitor surface, canon row 220)
+    rgb10_ok: bool,
+    /// an SDR monitor (Windows): the engine draws into this fp16 buffer as ever, one pass encodes it to the 10-bit sRGB surface
+    sdr10: Option<Sdr10>,
+}
+
+/// Canon row 220's final stage: the engine's linear fp16 picture (1.0 = SDR white) → sRGB-encoded 10-bit, clamped to SDR —
+/// DWM gets finished code values, so Windows' undithered float → 8-bit conversion (the banding) never runs.
+struct Sdr10 { view: wgpu::TextureView, pipeline: wgpu::RenderPipeline, bind: wgpu::BindGroup }
+const SDR10_WGSL: &str = r#"
+@group(0) @binding(0) var src: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+  let p = array<vec2<f32>, 3>(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+  return vec4(p[i], 0.0, 1.0);
+}
+fn oetf(c: vec3<f32>) -> vec3<f32> { let x = clamp(c, vec3(0.0), vec3(1.0)); return select(1.055 * pow(x, vec3(1.0 / 2.4)) - 0.055, 12.92 * x, x <= vec3(0.0031308)); }
+@fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+  let c = textureLoad(src, vec2<i32>(pos.xy), 0);
+  return vec4(oetf(c.rgb), 1.0);
+}
+"#;
+impl Sdr10 {
+    fn new(device: &wgpu::Device, w: u32, h: u32, out: wgpu::TextureFormat) -> Sdr10 {
+        let tex = device.create_texture(&wgpu::TextureDescriptor { label: Some("sdr10 source"), size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
+        let view = tex.create_view(&Default::default());
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("sdr10"), entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None }] });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("sdr10"), layout: &layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }] });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("sdr10"), source: wgpu::ShaderSource::Wgsl(SDR10_WGSL.into()) });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("sdr10"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { label: Some("sdr10 encode"), layout: Some(&pl),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format: out, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview_mask: None, cache: None });
+        Sdr10 { view, pipeline, bind }
+    }
 }
 
 impl Presenter {
@@ -58,15 +93,33 @@ impl Presenter {
         let mut engine = Engine::new(device, queue, format);
         engine.set_viewport(config.width, config.height);
         engine.set_display(DisplayMode { out, white: 100.0 });
-        Ok(Presenter { engine, surface, config, info, ns_view })
+        let rgb10_ok = offers(wgpu::TextureFormat::Rgb10a2Unorm, wgpu::SurfaceColorSpaces::SRGB) && format == wgpu::TextureFormat::Rgba16Float;
+        Ok(Presenter { engine, surface, config, info, ns_view, rgb10_ok, sdr10: None })
     }
     pub fn info(&self) -> &OutputInfo { &self.info }
+    /// Canon row 220 (Windows): the window's monitor shows no HDR → a 10-bit sRGB surface fed by one encode pass; HDR → the
+    /// fp16 scRGB surface as built. The engine keeps drawing linear fp16 either way. False when nothing changed (or the
+    /// surface can't: then the fp16 surface stays).
+    pub fn set_sdr_surface(&mut self, on: bool) -> bool {
+        if on == self.sdr10.is_some() || (on && !self.rgb10_ok) { return false }
+        if on {
+            self.config.format = wgpu::TextureFormat::Rgb10a2Unorm; self.config.color_space = wgpu::SurfaceColorSpace::Srgb;
+            self.sdr10 = Some(Sdr10::new(&self.engine.device, self.config.width, self.config.height, self.config.format));
+        } else {
+            self.config.format = self.info.format; self.config.color_space = self.info.color_space; self.sdr10 = None;
+        }
+        self.surface.configure(&self.engine.device, &self.config);
+        log::info!("surface: {} ({:?}, {:?})", if on { "10-bit sRGB for an SDR monitor" } else { "fp16 scRGB for an HDR monitor" }, self.config.format, self.config.color_space);
+        true
+    }
+    pub fn sdr_surface(&self) -> bool { self.sdr10.is_some() }
     pub fn size(&self) -> (u32, u32) { (self.config.width, self.config.height) }
     pub fn resize(&mut self, w: u32, h: u32) {
         self.config.width = w.max(1); self.config.height = h.max(1);
         self.surface.configure(&self.engine.device, &self.config);
         #[cfg(target_os = "macos")]
         if self.info.layer_workaround { if let Some(v) = self.ns_view { mac::set_layer_colorspace(v, "kCGColorSpaceITUR_2100_PQ"); } }
+        if self.sdr10.is_some() { self.sdr10 = Some(Sdr10::new(&self.engine.device, self.config.width, self.config.height, self.config.format)); }
         self.engine.set_viewport(self.config.width, self.config.height);
     }
     /// One present. `before_present` runs between the submit and the present (winit's `pre_present_notify`).
@@ -79,11 +132,22 @@ impl Presenter {
         };
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.engine.device.create_command_encoder(&Default::default());
-        self.engine.encode(&mut enc, &view);
+        if let Some(s) = &self.sdr10 {
+            self.engine.encode(&mut enc, &s.view);
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some("sdr10 encode"), color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+            rp.set_pipeline(&s.pipeline); rp.set_bind_group(0, &s.bind, &[]); rp.draw(0..3, 0..1);
+        } else {
+            self.engine.encode(&mut enc, &view);
+        }
         self.engine.queue.submit([enc.finish()]);
         before_present();
         self.engine.queue.present(frame);
         true
+    }
+    /// macOS: the potential EDR headroom of the screen holding the window (≤ 1 = no HDR there; canon row 220). None elsewhere.
+    pub fn window_screen_headroom(&self) -> Option<f64> {
+        #[cfg(target_os = "macos")] { if let Some(v) = self.ns_view { return mac::window_screen_headroom(v) } }
+        None
     }
     /// What the Metal layer ended up with (format, colour space, EDR flag) and every screen's EDR headroom (current, potential).
     pub fn layer_report(&self) -> String {
@@ -121,6 +185,13 @@ mod mac {
     pub fn edr_now() -> Vec<f64> {
         let mtm = objc2::MainThreadMarker::new().expect("main thread");
         NSScreen::screens(mtm).iter().map(|s| s.maximumExtendedDynamicRangeColorComponentValue()).collect()
+    }
+    /// The potential EDR headroom of the screen the view's window is on (1.0 = an SDR screen, or HDR switched off).
+    pub fn window_screen_headroom(ns_view: *mut c_void) -> Option<f64> {
+        // SAFETY: as metal_layer — the window's own NSView, on the main thread
+        let view: &NSView = unsafe { &*(ns_view as *const NSView) };
+        let screen = view.window()?.screen()?;
+        Some(screen.maximumPotentialExtendedDynamicRangeColorComponentValue())
     }
     pub fn report_layer(ns_view: *mut c_void) -> String {
         let Some(metal) = metal_layer(ns_view) else { return "layer: no CAMetalLayer".into() };

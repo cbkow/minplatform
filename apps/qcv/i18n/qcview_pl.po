@@ -4473,3 +4473,18 @@ msgstr "Tego projektu już nie ma"
 msgctxt "RightRail"
 msgid "View"
 msgstr "Widok"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: showing %1"
+msgstr "Ekran SDR: wyświetlane jest %1"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: rendering for 100 nits"
+msgstr "Ekran SDR: renderowanie dla 100 nits"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: HDR rolled off to SDR white"
+msgstr "Ekran SDR: HDR skompresowane do bieli SDR"

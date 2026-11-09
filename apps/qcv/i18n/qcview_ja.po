@@ -4457,3 +4457,18 @@ msgstr "そのプロジェクトはもう存在しません"
 msgctxt "RightRail"
 msgid "View"
 msgstr "表示"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: showing %1"
+msgstr "SDRディスプレイ: %1 を表示中"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: rendering for 100 nits"
+msgstr "SDRディスプレイ: 100 nits 向けにレンダリング"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "SDR display: HDR rolled off to SDR white"
+msgstr "SDRディスプレイ: HDRをSDRホワイトまで圧縮"
