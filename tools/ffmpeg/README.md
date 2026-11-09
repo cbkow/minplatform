@@ -34,7 +34,7 @@ build — a stock build loses them:
 | 0002 MXF RGBA ComponentMin/MaxRef | RGB essence in MXF probes range "unknown" |
 | 0003 ProRes RAW Bayer patterns | iPhone 17 Pro ProRes RAW (pattern 3) is refused |
 
-**macOS:** `zsh tools/ffmpeg/build-macos.sh` (n9.0.2 + the patches, shared, VideoToolbox + AudioToolbox + dav1d →
+**macOS:** `zsh tools/ffmpeg/build-macos.sh` (n9.0.2 + the patches, shared, VideoToolbox + AudioToolbox + dav1d + libsrt (static libsrt + mbedTLS, built first into `external/ffmpeg/deps-macos-arm64`, versions in the pin; added 2026-11-09 for the live `srt://` input) →
 `external/ffmpeg/macos-arm64`, ~3 min). Check: an Avid DNxHR 444 file probes `gbrp12le,tv` with
 `external/ffmpeg/macos-arm64/bin/ffprobe` (stock: `yuv444p12le,unknown`).
 

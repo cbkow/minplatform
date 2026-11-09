@@ -6,6 +6,11 @@ FFMPEG_VERSION=9.0.2
 # ahead of Homebrew's (2026-11-08: Homebrew's stock build decoded Avid DNxHR 444 as yuv444p12le — the speckle). Homebrew's
 # `ffmpeg` CLI stays for the tests' fixture generation.
 MACOS_SOURCE=source-patched
+# macOS SRT (the live srt:// input, canon row 227 2a — QCView-Player dependencies.md: libsrt + mbedTLS vendored static): built by
+# build-macos.sh into external/ffmpeg/deps-macos-arm64 and linked into libavformat. mbedTLS = the release TARBALL (git needs a
+# submodule + Python codegen). Windows' BtbN recipe already enables libsrt.
+SRT_VERSION=1.5.6
+MBEDTLS_VERSION=3.6.7
 # Windows: BtbN's gpl-shared RECIPE built with the three patches (tools/ffmpeg/build-win64-wsl.sh, 2026-11-08) — same source as
 # the stock asset below (n9.0.2-48-gd4070a14ce), patched; the zip is self-built, not downloadable: it lives on rhombus
 # (C:\qcb-lab\…-patched.zip) and its hash is PATCHED_SHA256. fetch-win64.ps1 fetches the STOCK zip (no patches) — a fallback only. (Vulkan + libplacebo on, so the ProRes Vulkan hwaccel is present; d3d12va too).
