@@ -29,7 +29,8 @@ struct CardRects { thumb: Rect, text: Rect, addressed: Rect, delete: Rect }
 
 pub struct NotesDrawer {
     pub open: bool, open_ramp: Ramp, pub rect: Rect, scale: f64,
-    header: Rect, add: Rect, cards_area: Rect, scroll: f64, max_scroll: f64,
+    header: Rect, add: Rect, cards_area: Rect, scroll: f64, max_scroll: f64, /// the layer-2 panels behind the columns (the colour drawer's treatment)
+    panels: [Rect; 4],
     cards: Vec<Card>, rects: Vec<CardRects>, current: Option<String>, clip: String,
     tools: Vec<ActionButton>, tool: Option<Tool>, picker: ColorPicker, width: Slider, width_v: f32, width_label: Rect,
     edit: Option<(String, TextField)>, thumbs: HashMap<PathBuf, (SystemTime, peniko::ImageBrush)>,
@@ -38,7 +39,7 @@ pub struct NotesDrawer {
 
 impl NotesDrawer {
     pub fn new() -> NotesDrawer {
-        NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0,
+        NotesDrawer { open: false, open_ramp: Ramp::new(0.0, t::RAIL_COLLAPSE_DURATION), rect: Rect::ZERO, scale: 1.0, header: Rect::ZERO, add: Rect::ZERO, cards_area: Rect::ZERO, scroll: 0.0, max_scroll: 0.0, panels: [Rect::ZERO; 4],
             cards: vec![], rects: vec![], current: None, clip: String::new(),
             tools: TOOLS.iter().map(|(_, icon, tip)| ActionButton::new(icon, tr(tip)).size_s()).collect(), tool: Some(Tool::Freehand), picker: ColorPicker::new("#ff0000"), width: Slider::new(5.0 / 23.0), width_v: 6.0, width_label: Rect::ZERO,
             edit: None, thumbs: HashMap::new(), hover: None, add_hover: false, tips: Tooltips::default() }
@@ -66,22 +67,29 @@ impl NotesDrawer {
         let full = Rect::new(x0, y0, x1, y0 + HEIGHT * s);
         self.header = Rect::new(full.x0 + pad, full.y0, full.x1 - pad, full.y0 + row);
         let body = Rect::new(full.x0 + pad, self.header.y1, full.x1 - pad, full.y1 - pad);
-        // right to left: the colour + width column, the tools column
-        let pc = Rect::new(body.x1 - PICK_W * s, body.y0, body.x1, body.y1);
+        let ins = t::SPACING_100 as f64 * s; let gap_p = t::SPACING_100 as f64 * s;   // inside a panel; between panels
+        // right to left: the colour + width panel, the tools panel, then the add tile and the cards panel
+        let pick_panel = Rect::new(body.x1 - PICK_W * s - 2.0 * ins, body.y0, body.x1, body.y1);
+        let tools_panel = Rect::new(pick_panel.x0 - gap_p - TOOLS_W * s - 2.0 * ins, body.y0, pick_panel.x0 - gap_p, body.y1);
+        let add_panel = Rect::new(body.x0, body.y0, body.x0 + ADD_W * s, body.y1);
+        let cards_panel = Rect::new(add_panel.x1 + gap_p, body.y0, tools_panel.x0 - gap_p, body.y1);
+        self.panels = [add_panel, cards_panel, tools_panel, pick_panel];
+        let pc = pick_panel.inset(-ins);
         let ph = self.picker.layout(fonts, pc.x0, pc.x1, pc.y0, s);
         let wy = pc.y0 + ph + t::SPACING_100 as f64 * s; let fh = t::FIELD_HEIGHT_S as f64 * s;
         self.width_label = Rect::new(pc.x0, wy, pc.x0 + 48.0 * s, wy + fh); self.width.rect = Rect::new(pc.x0 + 48.0 * s, wy, pc.x1 - 28.0 * s, wy + fh);
-        let tx = pc.x0 - t::SPACING_300 as f64 * s - TOOLS_W * s; let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let gap = 4.0 * s;
-        for (i, b) in self.tools.iter_mut().enumerate() { let y = body.y0 + i as f64 * (bh + gap); b.rect = Rect::new(tx, y, tx + TOOLS_W * s, y + bh); }
+        let tx = tools_panel.x0 + ins; let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let gap = 4.0 * s;
+        for (i, b) in self.tools.iter_mut().enumerate() { let y = tools_panel.y0 + ins + i as f64 * (bh + gap); b.rect = Rect::new(tx, y, tx + TOOLS_W * s, y + bh); }
         // the add tile, then the cards
-        self.add = Rect::new(body.x0, body.y0, body.x0 + ADD_W * s, body.y1);
-        self.cards_area = Rect::new(self.add.x1 + t::SPACING_200 as f64 * s, body.y0, tx - t::SPACING_300 as f64 * s, body.y1);
+        self.add = add_panel;
+        self.cards_area = cards_panel.inset(-ins);
         let cw = CARD_W * s; let cg = t::SPACING_200 as f64 * s;
         self.max_scroll = ((self.cards.len() as f64) * (cw + cg) - cg - self.cards_area.width()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
         self.rects = (0..self.cards.len()).map(|i| {
-            let x = self.cards_area.x0 + i as f64 * (cw + cg) - self.scroll; let y = body.y0;
-            let thumb = Rect::new(x, y, x + cw, y + THUMB_H * s);
+            let ci = 6.0 * s;   // the thumbnail's inset inside its tile
+            let x = self.cards_area.x0 + i as f64 * (cw + cg) - self.scroll + ci; let y = self.cards_area.y0 + ci; let cw = cw - 2.0 * ci;
+            let thumb = Rect::new(x, y, x + cw, y + (THUMB_H - 12.0) * s);
             let text = Rect::new(x, thumb.y1 + 22.0 * s, x + cw, thumb.y1 + 22.0 * s + fh);
             let by = text.y1 + 4.0 * s; let ib = 24.0 * s;
             CardRects { thumb, text, addressed: Rect::new(x, by, x + ib, by + ib), delete: Rect::new(x + cw - ib, by, x + cw, by + ib) }
@@ -155,9 +163,9 @@ impl NotesDrawer {
         let mut x = self.header.x0; min_ui::fonts::draw_layout(scene, &h, Affine::translate((x, mid(&h, self.header)))); x += h.width() as f64 + t::SPACING_200 as f64 * s;
         let cl = fonts.layout(&format!("{}  ·  {}", self.clip, self.cards.len()), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_LABEL_COLOR));
         min_ui::fonts::draw_layout(scene, &cl, Affine::translate((x, mid(&cl, self.header))));
-        // the add tile
+        // the layer-2 panels (the colour drawer's treatment), the add tile one of them, rising on hover
         let r = t::CORNER_RADIUS_500 as f64 * s;
-        paint::rounded(scene, self.add, r, if self.add_hover { t::HOVER_BACKGROUND_COLOR } else { min_ui::section::card_color() });
+        for (i, p) in self.panels.iter().enumerate() { paint::rounded(scene, *p, r, if i == 0 && self.add_hover { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR }); }
         if let Some(g) = fonts.icon("plus", 22.0 * s as f32, paint::color(t::RAIL_LABEL_COLOR)) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.add.x0 + (self.add.width() - g.width() as f64) / 2.0, self.add.y0 + self.add.height() * 0.32))); }
         for (i, txt) in [tr("Add note here"), tr("captures current frame")].iter().enumerate() {
             let l = fonts.layout_width(txt, Family::Sans, (if i == 0 { t::RAIL_LABEL_SIZE } else { t::DETAIL_SIZE_S }) * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if i == 0 { t::RAIL_LABEL_COLOR } else { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT }), Some((self.add.width() - 12.0 * s) as f32));
@@ -170,6 +178,9 @@ impl NotesDrawer {
             let Some(rc) = self.rects.get(i) else { break }; let (thumb, text, addr, del) = (rc.thumb, rc.text, rc.addressed, rc.delete);
             if thumb.x1 < self.cards_area.x0 || thumb.x0 > self.cards_area.x1 { continue }
             let current = self.current.as_deref() == Some(&c.key);
+            // the card's tile: one step up from its panel, so each note reads as a unit
+            let tile = Rect::new(thumb.x0 - 6.0 * s, thumb.y0 - 6.0 * s, thumb.x1 + 6.0 * s, del.y1 + 6.0 * s);
+            paint::rounded(scene, tile, 6.0 * s, min_ui::section::card_color());
             paint::rounded(scene, thumb, 4.0 * s, t::GRAY_25);
             match c.thumb.as_ref().and_then(|p| self.thumb(p)) {
                 Some(img) => {
