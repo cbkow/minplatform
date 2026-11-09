@@ -81,6 +81,8 @@ pub struct ColorDrawer {
     hscroll: f64, content_w: f64, body: Rect,
     /// QCView's peak readout: the newest frame's (level, brightest channel) and the clip's peak since it loaded
     peaks: Option<([f32; 2], [f32; 2])>,
+    /// dual view: each side's (now, clip max) — QCView's A / B lines (WaveformPanel.qml), here one caption segment per side
+    peaks_dual: Option<[Option<([f32; 2], [f32; 2])>; 2]>,
     exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
@@ -111,7 +113,7 @@ impl ColorDrawer {
             on: Switch::new(false), on_rect: Rect::ZERO,
             wf_scale: ActionGroup::new(["SDR", "HDR"].iter().map(|l| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect()).compact(),
             wf_peak: TextButton::new("1000 nits", Variant::Secondary).size_s(),
-            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None,
+            wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None, peaks_dual: None,
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
@@ -288,6 +290,7 @@ impl ColorDrawer {
     }
     /// The readout's numbers (now, the clip's peak); None clears it.
     pub fn set_peaks(&mut self, p: Option<([f32; 2], [f32; 2])>) -> bool { if self.peaks == p { false } else { self.peaks = p; true } }
+    pub fn set_peaks_dual(&mut self, p: Option<[Option<([f32; 2], [f32; 2])>; 2]>) -> bool { if self.peaks_dual == p { false } else { self.peaks_dual = p; true } }
     fn wf_cmd(&self) -> Cmd { Cmd::Waveform(self.wf_hdr, self.wf_peak_nits, self.wf_expanded) }
     fn scope_hdr(&self) -> bool { self.wf_hdr.unwrap_or(self.wf_src_hdr) }
     fn sync_wf_chips(&mut self) {
@@ -525,7 +528,25 @@ impl ColorDrawer {
             let l = fonts.detail(tr("Waveform"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((capr.x0 + t::SPACING_50 as f64 * s, mid(&l, capr))));
             // QCView's readout: now · the clip's peak · the brightest channel (nits on HDR, % of Y′ on SDR)
-            if let Some((now_v, peak)) = self.peaks {
+            if let Some(sides) = self.peaks_dual {
+                // dual: "A now · max  B now · max nits", the letters in the side colours
+                let hdr = self.scope_hdr();
+                let f = |v: f32| if hdr { format!("{}", v.round() as i64) } else { format!("{}", (v * 100.0).round() as i64) };
+                let mut segs: Vec<(String, min_theme::Color)> = vec![];
+                for (i, sp) in sides.iter().enumerate() { if let Some((now_v, peak)) = sp {
+                    if !segs.is_empty() { segs.push(("   ".into(), t::RAIL_LABEL_COLOR)); }
+                    segs.push((if i == 0 { "A ".into() } else { "B ".into() }, if i == 0 { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
+                    let over = if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 };
+                    segs.push((format!("{} · {} {}", f(now_v[0]), tr("peak"), f(peak[0])), if over { t::NOTICE_VISUAL_COLOR } else { t::RAIL_LABEL_COLOR }));
+                } }
+                if !segs.is_empty() {
+                    segs.push((if hdr { " nits".into() } else { " %".into() }, t::RAIL_LABEL_COLOR));
+                    let ls: Vec<_> = segs.iter().map(|(txt, c)| fonts.layout(txt, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(*c))).collect();
+                    let w: f64 = ls.iter().map(|l| l.width() as f64).sum();
+                    let mut rx = capr.x0 + t::SPACING_50 as f64 * s + l.width() as f64 + t::SPACING_200 as f64 * s;
+                    if rx + w <= self.wf_scale.rect.x0 - t::SPACING_100 as f64 * s { for l in &ls { min_ui::fonts::draw_layout(scene, l, Affine::translate((rx, mid(l, capr)))); rx += l.width() as f64; } }
+                }
+            } else if let Some((now_v, peak)) = self.peaks {
                 let hdr = self.scope_hdr();
                 let f = |v: f32| if hdr { format!("{}", v.round() as i64) } else { format!("{}", (v * 100.0).round() as i64) };
                 let txt = format!("{} · {} {} · {} {}{}", f(now_v[0]), tr("peak"), f(peak[0]), tr("ch"), f(peak[1]), if hdr { " nits" } else { " %" });

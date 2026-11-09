@@ -64,7 +64,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     insp_seen: (usize, String), /// the pointer's last movement (the floating tabs fade when it parks over the picture)
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
-    clip_peak: Option<[f32; 2]>, ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
+    /// each picture's peak since its clip loaded (0 = the single view / dual A, 1 = dual B)
+    clip_peak: [Option<[f32; 2]>; 2], ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
@@ -208,7 +209,7 @@ impl App {
             g.presenter.engine.set_geometry(min_present::engine::Geometry { par, rotation }); g.content_set = None; g.ui_dirty = true;
         }
         self.apply_color();   // the clip's chain (or the project default) into the slot (row 205)
-        if let Some(g) = self.gpu.as_mut() { g.clip_peak = None; g.presenter.engine.reset_scope_peaks(); }   // QCView: the peak readout resets per load
+        if let Some(g) = self.gpu.as_mut() { g.clip_peak = [None, None]; g.presenter.engine.reset_scope_peaks(); }   // QCView: the peak readout resets per load
     }
     fn note_recent_media(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_MEDIA).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_MEDIA, &list.join("\n")); }
     fn note_recent_project(&mut self, path: &str) { let mut list: Vec<String> = self.settings.string(settings::k::RECENT_PROJECTS).lines().filter(|l| !l.is_empty()).map(str::to_string).collect(); list.retain(|p| p != path); list.insert(0, path.to_string()); list.truncate(10); self.settings.set_str(settings::k::RECENT_PROJECTS, &list.join("\n")); }
@@ -446,6 +447,7 @@ impl App {
         d.set_timeline(&ed.timeline, false);
         if let Some(g) = self.gpu.as_mut() { if g.dual_bars.selected.as_ref().is_some_and(|(s, _)| *s == side) { g.dual_bars.selected = None; } g.ui_dirty = true; }
         self.apply_item_to_side(side);
+        if let Some(g) = self.gpu.as_mut() { g.clip_peak[side as usize] = None; if let Some(d) = g.presenter.engine.dual_mut() { if side == qcv_player::Side::A { d.a.reset_scope_peaks(); } else { d.b.reset_scope_peaks(); } } }   // a side's readout resets with its clip
         self.apply_color();
     }
     /// An edit landed in the dual editor: the transport follows (a split / delete reopens the sides).
@@ -720,9 +722,13 @@ impl App {
             // the waveform (row 203): the presenter draws its trace into the drawer's card while it shows
             g.presenter.engine.set_scope(if chromeless || g.fullscreen { None } else { g.drawer.scope() });
             // the readout: the newest frame's peaks and the clip's maximum since it loaded
-            let p = if g.drawer.scope().is_some() { g.presenter.engine.scope_peaks() } else { None };
-            if let Some(p) = p { let m = g.clip_peak.get_or_insert([0.0, 0.0]); m[0] = m[0].max(p[0]); m[1] = m[1].max(p[1]); }
-            if g.drawer.set_peaks(p.zip(g.clip_peak)) { g.ui_dirty = true; }
+            // dual: each side's own (its engine taps its own waveform), QCView's A / B readout lines
+            let scope_on = g.drawer.scope().is_some();
+            let side_peaks = if scope_on { g.presenter.engine.dual_mut().map(|d| [d.a.scope_peaks(), d.b.scope_peaks()]) } else { None };
+            let p = if scope_on && side_peaks.is_none() { g.presenter.engine.scope_peaks() } else { None };
+            let mut fold = |i: usize, p: Option<[f32; 2]>| { if let Some(p) = p { let m = g.clip_peak[i].get_or_insert([0.0, 0.0]); m[0] = m[0].max(p[0]); m[1] = m[1].max(p[1]); } p.zip(g.clip_peak[i]) };
+            let (single, dual) = match side_peaks { Some([a, b]) => (None, Some([fold(0, a), fold(1, b)])), None => (fold(0, p), None) };
+            if g.drawer.set_peaks(single) | g.drawer.set_peaks_dual(dual) { g.ui_dirty = true; }
             // the panels: the settings mirror the store; the inspector mirrors the Transport (+ the metadata service's results, drained every tick)
             while let Some(ev) = self.meta.try_recv() {
                 let path_of = |id: &str, project: &qcv_project::ProjectManager| project.item(id).map(|m| m.path.clone()).unwrap_or_else(|| id.to_string());
@@ -1605,7 +1611,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
