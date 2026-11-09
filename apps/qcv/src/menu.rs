@@ -14,13 +14,13 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
     OpenMedia, OpenStream, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
-    Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
+    Compact, Pin, Fullscreen, DefaultFrame, LeftRail, RightRail,
     Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, ConnectBlender, Docs, CopyProjectLink, About, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum K { O, S, Q, C, T, D0, D1, D2, D3, D4, D5, D9, Equal, Minus, Slash, Comma }
+pub enum K { O, S, Q, C, T, D1, D2, D3, D4, Slash, Comma }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sc { pub shift: bool, pub alt: bool, pub k: K }
 const fn sc(k: K) -> Option<Sc> { Some(Sc { shift: false, alt: false, k }) }
@@ -29,7 +29,7 @@ const fn sc_alt(k: K) -> Option<Sc> { Some(Sc { shift: false, alt: true, k }) }
 impl Sc {
     /// Windows' spelling: "Ctrl+Shift+O".
     pub fn label(&self) -> String {
-        let k = match self.k { K::O => "O", K::S => "S", K::Q => "Q", K::C => "C", K::T => "T", K::D0 => "0", K::D1 => "1", K::D2 => "2", K::D3 => "3", K::D4 => "4", K::D5 => "5", K::D9 => "9", K::Equal => "=", K::Minus => "-", K::Slash => "/", K::Comma => "," };
+        let k = match self.k { K::O => "O", K::S => "S", K::Q => "Q", K::C => "C", K::T => "T", K::D1 => "1", K::D2 => "2", K::D3 => "3", K::D4 => "4", K::Slash => "/", K::Comma => "," };
         format!("Ctrl+{}{}{k}", if self.shift { "Shift+" } else { "" }, if self.alt { "Alt+" } else { "" })
     }
 }
@@ -61,17 +61,15 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     ];
     if !mac { file.extend([Node::Sep, item("E&xit", sc(K::Q), Cmd::Quit)]); }
     let view = vec![
-        item("Minimal Mode", sc(K::D0), Cmd::Minimal),
+        // QCView's Minimal Mode, Show All Panels, Zoom In / Out Timeline and Status Bar are not in this menu (canon row 245, the
+        // user 2026-11-09): the timeline zoom keeps its keys (Ctrl / Cmd + = and −) and its wheel; the other three are gone
         Node::Check { label: tr("Compact Mode"), sc: sc_shift(K::C), cmd: Cmd::Compact },
         Node::Check { label: tr("Always on Top"), sc: sc_alt(K::T), cmd: Cmd::Pin },
-        item("Show All Panels", sc(K::D9), Cmd::AllPanels),
-        item("Zoom In Timeline", sc(K::Equal), Cmd::ZoomIn), item("Zoom Out Timeline", sc(K::Minus), Cmd::ZoomOut),
         item("Fullscreen", None, Cmd::Fullscreen),   // QCView: no menu shortcut (F belongs to the viewport)
         item("Default Size && Position", None, Cmd::DefaultFrame),
         Node::Sep,
         item("Left Rail", sc(K::D1), Cmd::LeftRail), item("Right Rail", sc(K::D2), Cmd::RightRail),
         item("Color Panel", sc(K::D3), Cmd::ColorPanel), item("Notes", sc(K::D4), Cmd::Notes),   // QCView's View ▸ Timeline is gone: Compact Mode replaces it (the user 2026-11-09)
-        item("Status Bar", sc(K::D5), Cmd::StatusBar),
     ];
     let tools = vec![item("Background", None, Cmd::Background), item("Safety Guides", None, Cmd::SafetyGuides), item("Keyboard Shortcuts", sc(K::Slash), Cmd::Shortcuts), item("Settings…", sc(K::Comma), Cmd::Settings)];
     // Check for Updates waits for an updater: hidden, as QCView hides it off macOS; on macOS About lives in the app menu
@@ -142,7 +140,7 @@ mod native {
     }
 
     fn accel(s: Sc) -> Accelerator {
-        let code = match s.k { K::O => Code::KeyO, K::S => Code::KeyS, K::Q => Code::KeyQ, K::C => Code::KeyC, K::T => Code::KeyT, K::D0 => Code::Digit0, K::D1 => Code::Digit1, K::D2 => Code::Digit2, K::D3 => Code::Digit3, K::D4 => Code::Digit4, K::D5 => Code::Digit5, K::D9 => Code::Digit9, K::Equal => Code::Equal, K::Minus => Code::Minus, K::Slash => Code::Slash, K::Comma => Code::Comma };
+        let code = match s.k { K::O => Code::KeyO, K::S => Code::KeyS, K::Q => Code::KeyQ, K::C => Code::KeyC, K::T => Code::KeyT, K::D1 => Code::Digit1, K::D2 => Code::Digit2, K::D3 => Code::Digit3, K::D4 => Code::Digit4, K::Slash => Code::Slash, K::Comma => Code::Comma };
         let mut m = Modifiers::META; if s.shift { m |= Modifiers::SHIFT; } if s.alt { m |= Modifiers::ALT; }
         Accelerator::new(m, code)
     }
@@ -216,9 +214,9 @@ mod tests {
         let min_ui::BarItem::Action { id, label, .. } = &items[0] else { panic!() };
         assert_eq!(label, "clip&&1.mov", "a file name's & is literal");
         assert_eq!(m.cmd(*id), Some(Cmd::RecentMedia("/a/b/clip&1.mov".into())));
-        let min_ui::BarItem::Action { checked, shortcut, .. } = &m.bar.menus[1].items[1] else { panic!() };
+        let min_ui::BarItem::Action { checked, shortcut, .. } = &m.bar.menus[1].items[0] else { panic!() };   // View: Compact Mode leads since Minimal Mode left (row 245)
         assert_eq!((*checked, shortcut.as_str()), (Some(true), "Ctrl+Shift+C"));
-        let min_ui::BarItem::Action { shortcut, .. } = &m.bar.menus[1].items[2] else { panic!() };
+        let min_ui::BarItem::Action { shortcut, .. } = &m.bar.menus[1].items[2 - 1] else { panic!() };
         assert_eq!(shortcut, "Ctrl+Alt+T");
     }
 }

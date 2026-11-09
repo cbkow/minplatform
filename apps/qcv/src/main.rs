@@ -93,7 +93,6 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     toast: min_ui::Toast,
     /// Compact mode (canon row 172; QCView's chromeless + CompactStrip): the picture and one 32-px band, no title bar.
     compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool, /// View ▸ Status Bar (Ctrl+5) / Minimal Mode hid the strip
-    strip_hidden: bool,
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
     left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, output_panel: output_panel::OutputPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
@@ -906,7 +905,7 @@ impl App {
             let bar_h = if g.compact { 0.0 } else if self.pl_editor.is_some() { clip_bar::ClipBar::height(scale) } else if self.dual.is_some() { dual_bars::DualBars::height(scale) } else { 0.0 };   // +28 a playlist, +24 dual (row 169)   // +20 for a playlist (row 169)
             // a live feed (row 228): ONE row, QCView's LiveStrip, in place of the strip, the transport and the scrubber
             let live_on = self.live.is_some() && !g.compact;
-            let strip_h = if g.strip_hidden || live_on { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
+            let strip_h = if live_on { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
             let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else if live_on { t::TRANSPORT_BAR_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
                 // the pointer at the bottom edge (or on the shown bands) reveals; leaving starts the hide delay
@@ -1131,7 +1130,7 @@ impl App {
                 if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.notes.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
                 if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
                 if live_on { g.live_strip.paint(scene, &mut g.fonts, now); } else {
-                if !g.strip_hidden { g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now); }
+                g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 }
@@ -1142,7 +1141,7 @@ impl App {
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
-                if !g.strip_hidden { g.dualc.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
+                g.dualc.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.settings_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.inspector.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.background_panel.tooltips.paint(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 if !g.fullscreen { g.guides_panel.paint_menu(scene, &mut g.fonts, scale); g.output_panel.paint_overlays(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
@@ -1351,7 +1350,7 @@ impl App {
         }
         let g = self.gpu.as_mut().unwrap();
         // dual view's controls (row 173) — they own the pointer while their slider drags
-        if !g.strip_hidden && !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
+        if !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
             let (dc, dd, consumed) = g.dualc.event(&e, now, scale);
             if dd { g.ui_dirty = true; }
             if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
@@ -1397,7 +1396,7 @@ impl App {
             if used || (hot && !matches!(e, min_ui::Event::Leave)) { return }
         } else if g.seam_hot || g.seam_drag { g.seam_hot = false; g.seam_drag = false; g.ui_dirty = true; }
         let was_open = g.strip.is_open();
-        let (sd, consumed) = if grabbed || g.strip_hidden { (false, false) } else { g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale) };
+        let (sd, consumed) = if grabbed { (false, false) } else { g.strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale) };
         if sd { g.ui_dirty = true; }
         if g.strip.is_open() != was_open { set_ime(&**g.window, g.strip.is_open()); }
         if consumed { return }
@@ -1648,11 +1647,8 @@ impl App {
             M::ClearRecentMedia => { self.settings.set_str(settings::k::RECENT_MEDIA, ""); }
             M::ClearRecentProjects => { self.settings.set_str(settings::k::RECENT_PROJECTS, ""); }
             M::Quit => { self.finish(); el.exit(); }
-            M::Minimal => self.view_minimal(),
-            M::AllPanels => self.view_all_panels(),
             M::Compact => self.toggle_compact(),
             M::Pin => self.toggle_pin(),
-            M::ZoomIn | M::ZoomOut => { if let Some(g) = self.gpu.as_mut() { let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref()); let scale = g.window.scale_factor(); let x = g.scrubber.playhead_x(&st, scale); if g.scrubber.wheel(x, if c == M::ZoomOut { -600.0 } else { 600.0 }, false, &st, scale) { g.ui_dirty = true; } } }
             M::Fullscreen => self.toggle_fullscreen(),
             M::DefaultFrame => {
                 // QCView `resetWindowFrame`: fullscreen left first, then the first-run size centred on this screen
@@ -1667,7 +1663,6 @@ impl App {
                 }
             }
             M::LeftRail | M::RightRail => { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen { if c == M::LeftRail { g.left.toggle(now); } else { g.right.toggle(now); } g.ui_dirty = true; } } }
-            M::StatusBar => self.toggle_status_bar(),
             M::Background => self.reveal(Reveal::Background),
             M::Shortcuts => self.reveal_shortcuts(),
             M::Notes => self.toggle_notes(),
@@ -1719,12 +1714,6 @@ impl App {
             None => self.toast(trw("Load an item to copy its link"), min_ui::ToastKind::Notice),
         }
     }
-    /// QCView `viewMinimal`: both rails collapsed (their reopen tabs stay), the status strip hidden.
-    fn view_minimal(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { let now = Instant::now(); g.left.set_collapsed(true, now); g.right.set_collapsed(true, now); g.strip_hidden = true; g.ui_dirty = true; } } }
-    /// QCView `viewAllPanels` → `viewDefault`: the rails open, the strip back.
-    fn view_all_panels(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { let now = Instant::now(); g.left.set_collapsed(false, now); g.right.set_collapsed(false, now); g.strip_hidden = false; g.ui_dirty = true; } } }
-    /// View ▸ Status Bar (Ctrl+5).
-    fn toggle_status_bar(&mut self) { if let Some(g) = self.gpu.as_mut() { if !g.fullscreen && !g.compact { g.strip_hidden = !g.strip_hidden; log::info!("status bar {}", if g.strip_hidden { "hidden" } else { "shown" }); g.content_set = None; g.ui_dirty = true; } } }
     fn toggle_compact(&mut self) {
         if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); }
         let Some(g) = self.gpu.as_mut() else { return };
@@ -2079,7 +2068,7 @@ impl ApplicationHandler for App {
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
         self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), output_panel: output_panel::OutputPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), output_panel: output_panel::OutputPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
         // the scrubber's camera insets 16 px at both ends (the walk, 2026-11-08): past macOS's rounded bottom corners, so the
@@ -2243,9 +2232,6 @@ impl ApplicationHandler for App {
                 if pressed && self.mods.ctrl && !self.mods.shift && !self.mods.alt && !event.repeat { if let Key::Character(c) = &event.logical_key {
                     let now = Instant::now();
                     match c.as_str() {
-                        "0" => { self.view_minimal(); return }   // Minimal Mode
-                        "9" => { self.view_all_panels(); return }  // Show All Panels
-                        "5" => { self.toggle_status_bar(); return }   // View ▸ Status Bar
                         "3" => { if self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.compact) { self.color_cmd(color_drawer::Cmd::Toggle); } return }   // View ▸ Color Panel (row 199)
                         "l" | "L" => { if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { p.apply(Action::ToggleLoop, now); } return }
                         "q" | "Q" => { self.finish(); el.exit(); return }

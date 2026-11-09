@@ -48,8 +48,8 @@ pub const GROUPS: &[Group] = &[
         e("Save Project", &[c("S")]), e("Save Project As…", &[cs("S")]), e("Quit", &[c("Q")]),
     ] },
     Group { heading: "View", entries: &[
-        e("Minimal Mode", &[c("0")]), e("Compact Mode", &[cs("C")]), e("Always on Top", &[ca("T")]), e("Show All Panels", &[c("9")]),
-        e("Left Rail", &[c("1")]), e("Right Rail", &[c("2")]), e("Color Panel", &[c("3")]), e("Notes Panel", &[c("4")]), e("Status Bar", &[c("5")]),
+        e("Compact Mode", &[cs("C")]), e("Always on Top", &[ca("T")]),
+        e("Left Rail", &[c("1")]), e("Right Rail", &[c("2")]), e("Color Panel", &[c("3")]), e("Notes Panel", &[c("4")]),
         e("Keyboard Shortcuts", &[c("/")]), e("Settings", &[c(",")]),
         p("Fullscreen", &[k("F")], Action::ToggleFullscreen), e("Exit Fullscreen / Compact", &[k("Esc")]),
     ] },
@@ -238,7 +238,7 @@ mod tests {
             let sc = match it { crate::menu::Node::Item { sc: Some(sc), .. } | crate::menu::Node::Check { sc: Some(sc), .. } => sc, _ => continue };
             assert!(all.contains(&sc.label()), "the menu's {} is not on the card", sc.label()); n += 1;
         } }
-        assert!(n >= 15, "{n}");
+        assert!(n >= 12, "{n}");   // 17 before the View menu lost five (row 245)
     }
     /// Every heading and label on the card reads in every carried language (a new shortcut arrives translated).
     #[test] fn every_label_is_translated() {
@@ -258,7 +258,7 @@ mod tests {
         let mut fonts = Fonts::new();
         let mut sp = ShortcutsPanel::new(); sp.section.expanded = true; sp.mac = false;
         sp.layout(&mut fonts, 0.0, 300.0, 0.0, 1.0);
-        let all = sp.shown_labels().len(); assert!(all > 60, "{all}");
+        let all = sp.shown_labels().len(); assert!(all > 55, "{all}");   // three fewer since Minimal Mode, Show All Panels and Status Bar left (row 245)
         sp.set_filter("loop"); sp.layout(&mut fonts, 0.0, 300.0, 0.0, 1.0);
         assert_eq!(sp.shown_labels(), vec!["Toggle Loop".to_string()]);
         assert_eq!(sp.shown[0].rows[0].caps, vec!["V", "Ctrl+L"], "same-label rows merge");
