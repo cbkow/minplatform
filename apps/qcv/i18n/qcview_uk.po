@@ -4493,3 +4493,8 @@ msgstr "Авто · робочий простір, без тегу"
 msgctxt "LiveStrip"
 msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
 msgstr "Хост надсилає робочий колірний простір без назви; виберіть передавальну функцію, яку він використовує (перевизначення)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
+msgstr "Увімкніть Файл ▸ Підключитися до Blender, щоб приймати цей сеанс Blender"

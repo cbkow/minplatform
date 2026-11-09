@@ -26,7 +26,8 @@ pub struct SettingsPanel {
     reset: TextButton,
     dialog: Dialog,
     pub tooltips: Tooltips,
-    seen: u64,
+    seen: u64, /// the Blender switch's status lines (QCView LeftRail: the state, green when live; the card's error rows in red) + their rects
+    blender_lines: Vec<(String, u8)>, blender_rects: Vec<Rect>,
     height: f64,
     scale: f64,
 }
@@ -42,6 +43,8 @@ const LANG_CODES: &[&str] = &["", "en", "de", "es", "fr", "it", "ja", "ko", "pl"
 const LANG_NAMES: &[&str] = &["System default", "English", "Deutsch", "Español", "Français", "Italiano", "日本語", "한국어", "Polski", "Português (Brasil)", "Русский", "Українська", "简体中文 (中国)"];
 
 impl SettingsPanel {
+    /// The Blender input's status lines (0 muted, 1 live green, 2 error red); true when they changed.
+    pub fn set_blender_lines(&mut self, v: Vec<(String, u8)>) -> bool { if v == self.blender_lines { return false } self.blender_lines = v; true }
     /// The A/V sync (Live) row edits the connected host's own offset (QCView: the live decoder's host, premiere when none).
     pub fn set_live_sync_key(&mut self, key: &'static str) {
         for r in self.groups.iter_mut().flat_map(|g| g.rows.iter_mut()) { if r.key.starts_with("audio/liveSyncOffsetMs/") && r.key != key { r.key = key; self.seen = u64::MAX; } }
@@ -79,7 +82,7 @@ impl SettingsPanel {
                 num(k::SYNC_OFFSET_MS, "A/V sync (Single)", "Positive values delay audio to offset pipeline/display lag. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
                 num(k::DUAL_SYNC_OFFSET_MS, "A/V sync (Dual)", "Positive values delay audio to offset pipeline/display lag. Dual's latency runs deeper than single. Tune by ear; applies on the next seek or play.", true, -100, 100, 1),
                 sw(k::SCRUB_MUTED, "Mute scrub audio", "Silence the audio feedback while scrubbing and shuttling.", true),
-                sw(k::BLENDER_SESSIONS, "Blender sessions", "Off at every launch. On: listen for a Blender bridge session.", false),
+                sw(k::BLENDER_SESSIONS, "Blender sessions", "Off at every launch. On (also File ▸ Connect to Blender): QCView watches for the card the QCBridge host add-on on this machine writes when a session starts, listens on its port and shows the replica's stream. Off again stops listening.", true),
                 num(k::LIVE_SYNC_OFFSET_MS, "A/V sync (Live)", "Positive values delay the bridge audio; negative values hold the picture. Kept per host application. Tune by ear.", true, -200, 200, 1),
                 num(k::LIVE_BUFFER_MS, "Live audio buffer", "How much bridge audio is queued before it plays; in milliseconds.", true, 20, 200, 10),
             ] },
@@ -87,7 +90,7 @@ impl SettingsPanel {
         SettingsPanel {
             section: Section::new(tr("Settings"), true), groups, reset: TextButton::new(tr("Reset all preferences…"), Variant::Secondary).size_s(),
             dialog: Dialog::new(tr("Reset all preferences?"), tr("Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open."), vec![(tr("Cancel"), Variant::Secondary), (tr("Reset"), Variant::Negative)]),
-            tooltips: Tooltips::default(), seen: u64::MAX, height: 0.0, scale: 1.0,
+            tooltips: Tooltips::default(), seen: u64::MAX, blender_lines: vec![], blender_rects: vec![], height: 0.0, scale: 1.0,
         }
     }
     fn rows_mut(&mut self) -> impl Iterator<Item = &mut Row> { self.groups.iter_mut().flat_map(|g| g.rows.iter_mut()).filter(|r| !r.windows_only || cfg!(windows)) }
@@ -136,6 +139,13 @@ impl SettingsPanel {
                     Ctl::Picker(p, _) => { let (pw, ph) = p.measure(fonts, scale); let pw = pw.min(cw); p.rect = Rect::new(right - pw, cy + (h - ph) / 2.0, right, cy + (h + ph) / 2.0); }
                 }
                 cy += h + gap;
+                if r.key == k::BLENDER_SESSIONS {
+                    self.blender_rects.clear();
+                    for (txt, _) in &self.blender_lines {
+                        let l = fonts.layout_width(txt, Family::Sans, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some((x1 - x0 - 3.0 * pad) as f32));
+                        let lh = l.height() as f64; self.blender_rects.push(Rect::new(x0 + 2.0 * pad, cy, x1 - pad, cy + lh)); cy += lh + gap;
+                    }
+                }
             }
         }
         cy += group_top;
@@ -228,6 +238,11 @@ impl SettingsPanel {
                 let l = fonts.layout_width(r.label, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c), Some(r.label_rect.width() as f32));
                 min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((r.label_rect.x0, r.rect.y0 + (r.rect.height() - l.height() as f64) / 2.0)));
                 match &mut r.ctl { Ctl::Switch(sw) => sw.paint(scene, scale, now), Ctl::Number(n) => n.paint(scene, fonts, scale), Ctl::Picker(p, _) => p.paint(scene, fonts, scale, now) }
+                if r.key == k::BLENDER_SESSIONS { for ((txt, kind), rr) in self.blender_lines.iter().zip(&self.blender_rects) {
+                    let c = match kind { 1 => t::POSITIVE_VISUAL_COLOR, 2 => t::NEGATIVE_VISUAL_COLOR, _ => t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT };
+                    let l = fonts.layout_width(txt, Family::Sans, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c), Some(rr.width() as f32));
+                    min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((rr.x0, rr.y0)));
+                } }
             }
         }
         self.reset.paint(scene, fonts, scale, now);

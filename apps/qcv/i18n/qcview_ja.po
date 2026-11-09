@@ -4477,3 +4477,8 @@ msgstr "自動 · 作業用カラースペース、タグなし"
 msgctxt "LiveStrip"
 msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
 msgstr "ホストは作業用カラースペースを名前なしで送信します。使用している伝達特性を選んでください（伝達特性の上書き）"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
+msgstr "このBlenderセッションを受信するには、ファイル ▸ Blenderに接続 をオンにしてください"

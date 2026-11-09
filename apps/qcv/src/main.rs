@@ -60,6 +60,7 @@ mod notes_export;
 mod shortcuts;
 mod live;
 mod live_strip;
+mod blender;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -114,7 +115,8 @@ struct App {
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
     drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// a QCBridge host feed in the single view (rows 227–228)
-    live: Option<live::Live>, /// note images off the UI thread (QCView writes them on a worker): the newest clean frame in memory (key, RGBA8, size — the
+    live: Option<live::Live>, /// the Blender input (row 227 2b): the card watcher, this session's item
+    blender: blender::BlenderInput, /// note images off the UI thread (QCView writes them on a worker): the newest clean frame in memory (key, RGBA8, size — the
     /// annotated composite and Review read it, not the disk), the workers' results, the annotated redraw due 400 ms after the last stroke
     note_img: Option<(String, std::sync::Arc<Vec<u8>>, (u32, u32))>, note_img_rx: Vec<std::sync::mpsc::Receiver<(String, std::sync::Arc<Vec<u8>>, (u32, u32))>>, annot_due: Option<(String, Instant)>, /// the window's screen shows HDR (None = unknown) — the Color drawer's "highlights clip" pill (row 222)
     pub(crate) screen_hdr: Option<bool>, snapped: bool, verified: bool,
@@ -305,7 +307,7 @@ impl App {
     fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title(trm("Open Project")).add_filter(trm("QCView Project"), &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
     fn open_project(&mut self, path: &str) {
         match self.project.open_project(path) {
-            Ok(probes) => { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.schedule_probes(probes); self.note_recent_project(path); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            Ok(probes) => { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.schedule_probes(probes); self.note_recent_project(path); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Err(e) => log::warn!("{e}"),
         }
     }
@@ -334,7 +336,7 @@ impl App {
             self.after_project_save(&old);
         }
     }
-    fn new_project(&mut self) { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.project.new_project(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
+    fn new_project(&mut self) { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.project.new_project(); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
     /// Open the file in the Transport (the raw open; the project paths above call it). True when it opened.
     /// The transport options every open uses — QCView's performance settings apply at open: threads, hardware decode (its
     /// row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate.
@@ -801,6 +803,8 @@ impl App {
         self.ensure_color_config();
         self.live_tick(Instant::now());   // a QCBridge host feed's newest frame (row 228)
         self.notes_tick(Instant::now());
+        self.blender_tick(Instant::now());
+        { let lines = self.blender_status(); if let Some(g) = self.gpu.as_mut() && g.settings_panel.set_blender_lines(lines) { g.ui_dirty = true; } }
         let color_view = self.color_view();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
@@ -1456,6 +1460,8 @@ impl App {
                 k::SAFETY_COLOR | k::SAFETY_OPACITY | k::SAFETY_WIDTH | k::SAFETY_GUIDE => { g.ui_dirty = true; }
                 k::BACKGROUND_MODE => { g.presenter.engine.set_background(self.settings.int(key) as u8); g.ui_dirty = true; }
                 k::ALWAYS_ON_TOP => { let _ = g; self.apply_pin(); }
+                // the Settings switch = File ▸ Connect to Blender (QCView `setBlenderInputEnabled`: toggles when it differs)
+                k::BLENDER_SESSIONS => { let want = self.settings.bool(key); if want != self.blender.enabled { self.connect_blender(); } let on = self.blender.enabled; if on != want { self.settings.set_bool(key, on); } }
                 k::LIVE_PLAYDOWN => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(self.settings.bool(key)); } }
                 k::LIVE_BUFFER_MS => qcv_player::audio::live::set_global_buffer_ms(self.settings.int(key) as i32),
                 k::LIVE_SYNC_OFFSET_MS | k::LIVE_SYNC_OFFSET_MS_AE | k::LIVE_SYNC_OFFSET_MS_PROBE => if self.live.as_ref().is_none_or(|l| k::live_sync_key(l.feed.key()) == key) { qcv_player::audio::live::set_global_sync_offset_ms(self.settings.int(key) as i32); if let Some(l) = self.live.as_mut() { l.feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms()); } }
@@ -1614,6 +1620,7 @@ impl App {
         match c {
             M::OpenMedia => self.open_media_dialog(),
             M::OpenStream => self.open_stream_dialog(),
+            M::ConnectBlender => { self.connect_blender(); let on = self.blender.enabled; self.settings.set_bool(settings::k::BLENDER_SESSIONS, on); }
             M::NewProject => self.new_project(),
             M::OpenProject => self.open_project_dialog(),
             M::SaveProject => self.save_project(),
@@ -2084,9 +2091,9 @@ impl ApplicationHandler for App {
         let (rm, rp) = (list(settings::k::RECENT_MEDIA), list(settings::k::RECENT_PROJECTS));
         #[cfg(target_os = "macos")] {
             while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c, el); } }
-            if let Some(m) = self.menu.as_mut() { m.set_recents(&rm, &rp); if let Some(g) = self.gpu.as_ref() { m.set_checks(g.compact, g.pinned); } }
+            if let Some(m) = self.menu.as_mut() { m.set_recents(&rm, &rp); if let Some(g) = self.gpu.as_ref() { m.set_checks(g.compact, g.pinned, self.blender.enabled); } }
         }
-        if let Some(g) = self.gpu.as_mut() { let (c, p) = (g.compact, g.pinned); if let Some(mb) = g.menu_bar.as_mut() { mb.update(&rm, &rp, c, p, &mut g.fonts); g.ui_dirty = true; } }
+        if let Some(g) = self.gpu.as_mut() { let (c, p, b) = (g.compact, g.pinned, self.blender.enabled); if let Some(mb) = g.menu_bar.as_mut() { mb.update(&rm, &rp, c, p, b, &mut g.fonts); g.ui_dirty = true; } }
         let now = Instant::now();
         if let Some(g) = self.gpu.as_ref() { if now.duration_since(self.last_tick) >= std::time::Duration::from_millis(16) { g.window.request_redraw(); } }
         el.set_control_flow(ControlFlow::WaitUntil(now + std::time::Duration::from_millis(16)));
@@ -2391,12 +2398,13 @@ fn main() {
     let _ = logging::install();
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
-    let settings = settings::open();
+    let mut settings = settings::open();
+    settings.set_bool(settings::k::BLENDER_SESSIONS, false);   // QCView: the Blender input is OFF at every launch, never restored
     i18n::apply(&settings.string(settings::k::LANGUAGE));   // row 197: the picker's language (QCV_LANG wins), before the window builds its panels
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -2511,7 +2519,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     left.layout(0.0, menu_h, rails_bottom, scale, t0); right.layout(w as f64, menu_h, rails_bottom, scale, t0);
     engine.set_content_rect(Some((left.visible_width(t0, scale) as u32, menu_h as u32, (w as f64 - left.visible_width(t0, scale) - right.visible_width(t0, scale)) as u32, (rails_bottom - menu_h) as u32)));
     if let Some(mb) = menu_bar.as_mut() {
-        mb.update(&["/media/review_v003.mov".into(), "/media/plate_0001.exr".into()], &["/projects/review.qcvproj".into()], false, true, &mut fonts);
+        mb.update(&["/media/review_v003.mov".into(), "/media/plate_0001.exr".into()], &["/projects/review.qcvproj".into()], false, true, false, &mut fonts);
         mb.bar.layout(&mut fonts, 0.0, 0.0, w as f64, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
         let r = mb.bar.rect; let x = r.x0 + 30.0 * scale;   // the File title
         mb.bar.event(&min_ui::Event::Down { x, y: r.center().y, button: min_ui::Button::Primary }, &mut fonts);

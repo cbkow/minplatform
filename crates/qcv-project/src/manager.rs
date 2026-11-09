@@ -178,6 +178,11 @@ impl ProjectManager {
     }
     /// QCView `setLiveVideoTags`: a live stream's colour tags as SESSION facts (no dirty flag) — `item.video.colorTransfer /
     /// colorPrimaries / colorspace`, which the live row's Auto transfer label reads.
+    /// The Blender item's URL follows its card (a new port / passphrase updates the one item — QCView added a second).
+    pub fn set_live_stream_url(&mut self, id: &str, url: &str) -> bool {
+        let Some(m) = self.pool.iter_mut().find(|m| m.id == id && m.media_type == MediaType::LiveStream) else { return false };
+        if m.path == url { return false } m.path = url.to_string(); self.mark_dirty(); true
+    }
     pub fn set_live_video_tags(&mut self, id: &str, transfer: &str, primaries: &str, matrix: &str) -> bool {
         let Some(m) = self.pool.iter_mut().find(|m| m.id == id) else { return false };
         if m.video.color_transfer == transfer && m.video.color_primaries == primaries && m.video.colorspace == matrix { return false }

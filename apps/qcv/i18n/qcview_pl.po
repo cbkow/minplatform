@@ -4493,3 +4493,8 @@ msgstr "Auto · przestrzeń robocza, bez znacznika"
 msgctxt "LiveStrip"
 msgid "The host sends its working color space without naming it; choose the transfer it uses (Transfer override)"
 msgstr "Host wysyła swoją roboczą przestrzeń barw bez nazwy; wybierz używaną krzywą przenoszenia (wymuszenie krzywej)"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "qcv::WindowManager"
+msgid "Turn on File ▸ Connect to Blender to listen for this Blender session"
+msgstr "Włącz Plik ▸ Połącz z Blenderem, aby nasłuchiwać tej sesji Blendera"

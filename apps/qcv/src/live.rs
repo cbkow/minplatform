@@ -122,6 +122,10 @@ impl crate::App {
     /// QCView `startLiveStream` for a network URL (`LiveStreamDecoder`): the decoder on its own thread, no audio (QCView
     /// discards a stream's audio), the hardware decoder when the setting allows it (QCView's macOS ignored the setting).
     fn start_stream(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
+        // a LISTENER is a Blender clip: it listens only while the Blender input is on (QCView's gate — which failed silently)
+        if item.path.contains("mode=listener") && !self.blender.enabled {
+            self.toast(trw("Turn on File ▸ Connect to Blender to listen for this Blender session"), min_ui::ToastKind::Notice); return false
+        }
         self.player = None;
         let hw = if self.settings.bool(crate::settings::k::HW_DECODE) { self.hw.clone() } else { None };
         let feed = Feed::Stream(StreamFeed::open(&item.path, hw));

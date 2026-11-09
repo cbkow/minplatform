@@ -15,7 +15,7 @@
 pub enum Cmd {
     OpenMedia, OpenStream, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Minimal, Compact, Pin, AllPanels, ZoomIn, ZoomOut, Fullscreen, DefaultFrame, LeftRail, RightRail, StatusBar,
-    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, Docs, CopyProjectLink, About, ColorPanel,
+    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, ConnectBlender, Docs, CopyProjectLink, About, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
@@ -45,6 +45,7 @@ pub enum Node {
 /// QCView's catalog context for its menus (Main.qml; canon row 195).
 pub fn tr(s: &'static str) -> &'static str { min_i18n::trc("Main", s) }
 fn item(label: &'static str, sc: Option<Sc>, cmd: Cmd) -> Node { Node::Item { label: tr(label), enabled: true, sc, cmd: Some(cmd) } }
+#[allow(dead_code)]   // a greyed item (none left today)
 fn off(label: &'static str, sc: Option<Sc>) -> Node { Node::Item { label: tr(label), enabled: false, sc, cmd: None } }
 
 /// The menus, left to right — the one definition both front ends build from.
@@ -52,7 +53,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     let mac = cfg!(target_os = "macos");
     let mut file = vec![
         item("Open Media…", sc(K::O), Cmd::OpenMedia), item("Open Stream…", None, Cmd::OpenStream),
-        item("Connect to After Effects", None, Cmd::ConnectAe), item("Connect to Premiere Pro", None, Cmd::ConnectPremiere), off("Connect to Blender", None),
+        item("Connect to After Effects", None, Cmd::ConnectAe), item("Connect to Premiere Pro", None, Cmd::ConnectPremiere), Node::Check { label: "Connect to Blender", sc: None, cmd: Cmd::ConnectBlender },
         Node::Recent { projects: false }, Node::Sep,
         item("New Project", None, Cmd::NewProject), item("Open Project…", sc_shift(K::O), Cmd::OpenProject), Node::Recent { projects: true },
         item("Save Project", sc(K::S), Cmd::SaveProject), item("Save Project As…", sc_shift(K::S), Cmd::SaveProjectAs),
@@ -87,19 +88,19 @@ fn recent_rows(list: &[String]) -> Vec<(String, String)> { list.iter().map(|p| (
 // ---------------------------------------------------------------------------------------------------------------- Windows
 
 /// QCView's in-window bar: `spec` → `min_ui::MenuBar`, rebuilt when a Recent list or a checkmark changes.
-pub struct InWindowMenu { pub bar: min_ui::MenuBar, cmds: Vec<Cmd>, state: (Vec<String>, Vec<String>, bool, bool) }
+pub struct InWindowMenu { pub bar: min_ui::MenuBar, cmds: Vec<Cmd>, state: (Vec<String>, Vec<String>, bool, bool, bool) }
 
 impl InWindowMenu {
     /// Windows always; macOS with `QCV_MENU_BAR=1` (a look at the bar without a Windows box).
     pub fn wanted() -> bool { cfg!(not(target_os = "macos")) || std::env::var_os("QCV_MENU_BAR").is_some() }
     pub fn new(fonts: &mut min_ui::Fonts) -> InWindowMenu {
-        let mut m = InWindowMenu { bar: min_ui::MenuBar::new(vec![]), cmds: vec![], state: (vec![String::new()], vec![], false, false) };
-        m.update(&[], &[], false, false, fonts); m
+        let mut m = InWindowMenu { bar: min_ui::MenuBar::new(vec![]), cmds: vec![], state: (vec![String::new()], vec![], false, false, false) };
+        m.update(&[], &[], false, false, false, fonts); m
     }
     pub fn cmd(&self, id: u32) -> Option<Cmd> { self.cmds.get(id as usize).cloned() }
     /// The live parts: the two Recent submenus and the two checkmarks (QCView binds `checked`).
-    pub fn update(&mut self, media: &[String], projects: &[String], compact: bool, pin: bool, fonts: &mut min_ui::Fonts) {
-        let st = (media.to_vec(), projects.to_vec(), compact, pin);
+    pub fn update(&mut self, media: &[String], projects: &[String], compact: bool, pin: bool, blender: bool, fonts: &mut min_ui::Fonts) {
+        let st = (media.to_vec(), projects.to_vec(), compact, pin, blender);
         if st == self.state { return }
         self.state = st;
         use min_ui::{BarItem, BarMenu};
@@ -107,7 +108,7 @@ impl InWindowMenu {
         let mut id = |c: Cmd| { cmds.push(c); (cmds.len() - 1) as u32 };
         let menus = spec().into_iter().map(|(title, nodes)| BarMenu { title: title.into(), items: nodes.into_iter().map(|n| match n {
             Node::Item { label, enabled, sc, cmd } => BarItem::Action { id: cmd.map(&mut id).unwrap_or(u32::MAX), label: label.into(), enabled, shortcut: sc.map(|s| s.label()).unwrap_or_default(), checked: None },
-            Node::Check { label, sc, cmd } => { let on = match cmd { Cmd::Compact => compact, Cmd::Pin => pin, _ => false }; BarItem::Action { id: id(cmd), label: label.into(), enabled: true, shortcut: sc.map(|s| s.label()).unwrap_or_default(), checked: Some(on) } }
+            Node::Check { label, sc, cmd } => { let on = match cmd { Cmd::Compact => compact, Cmd::Pin => pin, Cmd::ConnectBlender => blender, _ => false }; BarItem::Action { id: id(cmd), label: label.into(), enabled: true, shortcut: sc.map(|s| s.label()).unwrap_or_default(), checked: Some(on) } }
             Node::Recent { projects: pj } => {
                 let list = if pj { projects } else { media };
                 let mut items: Vec<BarItem> = recent_rows(list).into_iter().map(|(name, path)| BarItem::Action { id: id(if pj { Cmd::RecentProject(path) } else { Cmd::RecentMedia(path) }), label: name.replace('&', "&&"), enabled: true, shortcut: String::new(), checked: None }).collect();
@@ -136,7 +137,7 @@ mod native {
         pub menu: Menu,
         ids: HashMap<MenuId, Cmd>,
         recent_media: Submenu, recent_projects: Submenu,
-        compact: CheckMenuItem, pin: CheckMenuItem,
+        compact: CheckMenuItem, pin: CheckMenuItem, blender: CheckMenuItem,
         recents_seen: (Vec<String>, Vec<String>),
     }
 
@@ -155,18 +156,18 @@ mod native {
             ids.insert(quit.id().clone(), Cmd::Quit);
             let _ = app.append_items(&[&PredefinedMenuItem::about(Some(tr("About QCView…")), Some(about())), &PredefinedMenuItem::separator(), &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
             let _ = menu.append(&app);
-            let (mut recent_media, mut recent_projects, mut compact, mut pin) = (None, None, None, None);
+            let (mut recent_media, mut recent_projects, mut compact, mut pin, mut blender) = (None, None, None, None, None);
             for (title, nodes) in spec() {
                 let sub = Submenu::new(title, true);
                 for n in nodes { match n {
                     Node::Item { label, enabled, sc, cmd } => { let i = MenuItem::new(label, enabled, sc.map(accel)); if let Some(c) = cmd { ids.insert(i.id().clone(), c); } let _ = sub.append(&i); }
-                    Node::Check { label, sc, cmd } => { let i = CheckMenuItem::new(label, true, false, sc.map(accel)); ids.insert(i.id().clone(), cmd.clone()); let _ = sub.append(&i); if cmd == Cmd::Compact { compact = Some(i) } else { pin = Some(i) } }
+                    Node::Check { label, sc, cmd } => { let i = CheckMenuItem::new(label, true, false, sc.map(accel)); ids.insert(i.id().clone(), cmd.clone()); let _ = sub.append(&i); match cmd { Cmd::Compact => compact = Some(i), Cmd::ConnectBlender => blender = Some(i), _ => pin = Some(i) } }
                     Node::Recent { projects } => { let s = Submenu::new(tr(if projects { "Open Recent Project" } else { "Open Recent Media" }), true); let _ = sub.append(&s); if projects { recent_projects = Some(s) } else { recent_media = Some(s) } }
                     Node::Sep => { let _ = sub.append(&PredefinedMenuItem::separator()); }
                 } }
                 let _ = menu.append(&sub);
             }
-            let mut m = AppMenu { menu, ids, recent_media: recent_media.unwrap(), recent_projects: recent_projects.unwrap(), compact: compact.unwrap(), pin: pin.unwrap(), recents_seen: (vec![String::new()], vec![]) };
+            let mut m = AppMenu { menu, ids, recent_media: recent_media.unwrap(), recent_projects: recent_projects.unwrap(), compact: compact.unwrap(), pin: pin.unwrap(), blender: blender.unwrap(), recents_seen: (vec![String::new()], vec![]) };
             m.set_recents(&[], &[]);
             m
         }
@@ -193,7 +194,7 @@ mod native {
             }
         }
         /// The checkable items follow the state (QCView binds `checked`).
-        pub fn set_checks(&self, compact: bool, pin: bool) { self.compact.set_checked(compact); self.pin.set_checked(pin); }
+        pub fn set_checks(&self, compact: bool, pin: bool, blender: bool) { self.compact.set_checked(compact); self.pin.set_checked(pin); self.blender.set_checked(blender); }
     }
 
     fn about() -> AboutMetadata {
@@ -209,7 +210,7 @@ mod tests {
         let mut f = min_ui::Fonts::new();
         let mut m = InWindowMenu::new(&mut f);
         assert_eq!(m.bar.menus.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), ["&File", "&View", "&Tools", "&About"]);
-        m.update(&["/a/b/clip&1.mov".into()], &[], true, false, &mut f);
+        m.update(&["/a/b/clip&1.mov".into()], &[], true, false, false, &mut f);
         let file = &m.bar.menus[0].items;
         let min_ui::BarItem::Sub { items, .. } = &file[5] else { panic!("Open Recent Media") };
         let min_ui::BarItem::Action { id, label, .. } = &items[0] else { panic!() };
