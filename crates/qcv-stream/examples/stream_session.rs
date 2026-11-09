@@ -55,6 +55,7 @@ fn main() {
             let at = |x: u32| wgpu::TexelCopyTextureInfo { texture: &bars_tex, mip_level: 0, origin: wgpu::Origin3d { x, y: 0, z: 0 }, aspect: wgpu::TextureAspect::All };
             let small = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(64 * 4), rows_per_image: Some(64) }; let e64 = wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 };
             q.write_texture(at(px0), &black, small, e64); q.write_texture(at(x), &block, small, e64);
+            if flash && std::env::var_os("STREAM_FLASH_CLOCK").is_some() { println!("flash published at {} ms", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()); }   // an end-to-end latency probe: the receiver stamps its arrival
             if let Some(surface) = pool.acquire(&dev) {
                 let mut enc = dev.create_command_encoder(&Default::default());
                 pass.encode(&dev, &mut enc, if flash { &white_view } else { &bars_view }, &surface.y, &surface.cbcr);

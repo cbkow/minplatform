@@ -136,6 +136,8 @@ holds the target (6043 kbps average against 6000; per second 5134–6468).
 | 9 | A UHD source into 2160p30, 16000 kbps | level 5.1, 16110 kbps average, playback dropped 0 frames meanwhile |
 | 10 | Quit while connecting / while streaming | clean exits (a quit during a connect crashed before the session's threads were waited for) |
 
+**End-to-end latency** (the user's walk 2026-11-09: "just testing srt locally here is like a 15 second lag" — with a stock `ffplay`): measured with `stream_session` stamping each flash as it is published (`STREAM_FLASH_CLOCK`) and a NO-BUFFER receiver stamping its decode: **about 390 ms** on loopback (381–394 over six flashes, SRT latency 120 ms included). The 15 s is the player: a stock `ffplay` gathers its probe data first (up to 5 MB or 5 s — far longer on a quiet picture) and then plays from the first packet at 1×, so its start-up delay stays as lag. A receiver for a walk: `ffplay -fflags nobuffer -flags low_delay -framedrop -analyzeduration 200000 -probesize 500000 -sync ext "srt://127.0.0.1:9000?mode=listener"`.
+
 **Found and fixed by the matrix:** RTMP's `timeout` option turned the sender into a listener (now `rw_timeout`); a quit during a
 connect crashed; audio stamped late after a start-up burst — the tap's first second arrives late, after silence was already
 filled in, and QCView's rule (drop only above 8 buffered frames) left the rest of the session ~67 ms late: now what waits
