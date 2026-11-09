@@ -3028,6 +3028,7 @@ dependencies = [
 name = "qcv-notes"
 version = "0.1.0"
 dependencies = [
+ "kurbo",
  "log",
  "qcv-meta",
  "serde_json",

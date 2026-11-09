@@ -13,3 +13,4 @@ description = "QCView's annotation notes as a FROZEN contract (canon row 215): t
 serde_json = { workspace = true, features = ["float_roundtrip"] }   # exact parsing: the sidecar round-trips byte for byte
 log = { workspace = true }
 qcv-meta = { path = "../qcv-meta" }
+kurbo = { workspace = true }

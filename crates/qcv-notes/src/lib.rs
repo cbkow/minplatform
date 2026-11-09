@@ -7,6 +7,7 @@ pub mod qt_json;
 pub mod note;
 pub mod strokes;
 pub mod io;
+pub mod ink;
 pub use note::Note;
 pub use strokes::{Stroke, Tool};
 
