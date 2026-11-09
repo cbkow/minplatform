@@ -260,3 +260,21 @@ mod tests {
         assert_eq!(heading(&d.items[0].note), ("00:00:00:12".to_string(), "frame 12".to_string()));
     }
 }
+
+#[cfg(test)]
+mod sample {
+    /// `QCV_EXPORT_SAMPLE=<out.html> cargo test -p qcv-notes sample_html -- --ignored`: a synthetic export (SVG frames, no
+    /// client footage) for a look in a browser.
+    #[test]
+    #[ignore]
+    fn sample_html() {
+        use super::*;
+        let Some(out) = std::env::var_os("QCV_EXPORT_SAMPLE") else { return };
+        let svg = |h: u32| format!("<svg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'><defs><linearGradient id='g' x2='1' y2='1'><stop offset='0' stop-color='hsl({h},45%,30%)'/><stop offset='1' stop-color='hsl({},40%,12%)'/></linearGradient></defs><rect width='1920' height='1080' fill='url(#g)'/><circle cx='1300' cy='420' r='220' fill='hsl({h},30%,55%)'/></svg>", h + 60).into_bytes();
+        let texts = ["Flicker on the left edge — check the comp's matte, it pops for two frames.", "", "Logo too close to title safe.\nMove 40 px in and re-render.", "Colour shift after the cut: the grade on shot 12 doesn't match 11."];
+        let items = (0..8).map(|i| Item { note: Note { timecode: format!("00:00:{:02}:{:02}", i * 3, (i * 7) % 24), frame: (i * 79) as i64, text: texts[i % 4].into(), addressed: i % 3 == 1, viewer: if i == 2 { "Viewer: +1.0 stops · luma".into() } else { String::new() }, ocio: if i % 4 == 3 { "OCIO: ACEScg → ACES 2.0 - SDR 100 nits (Rec.709)".into() } else { String::new() }, ..Default::default() }, frame: Some((svg(i as u32 * 40), "image/svg+xml")), ink: None, flat: None }).collect();
+        let fonts = vec![("Geist", 400, "normal", &include_bytes!("../../min-theme/assets/fonts/Geist-Regular.ttf")[..]), ("Geist", 700, "normal", &include_bytes!("../../min-theme/assets/fonts/Geist-Bold.ttf")[..]), ("Geist Mono", 400, "normal", &include_bytes!("../../min-theme/assets/fonts/GeistMono-Regular.ttf")[..])];
+        let d = Doc { media_name: "sample_shot_v003".into(), media_path: "/Volumes/projects/sample/renders/sample_shot_v003.mov".into(), exported: "2026-11-08 21:30".into(), items, brand_png: include_bytes!("../../../apps/qcv/assets/icons/qcview_export.png"), fonts };
+        std::fs::write(out, html(&d)).unwrap();
+    }
+}
