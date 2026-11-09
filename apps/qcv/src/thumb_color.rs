@@ -49,14 +49,14 @@ impl ThumbColor {
 impl crate::App {
     /// Per tick: keep the thumbnail look in step with slot 0's (colour on/off, its chain, the clip's tags). Returns the
     /// generation the hover cache should be at.
-    pub(crate) fn thumb_color_tick(&mut self) -> u64 {
-        let on = self.settings.bool(crate::settings::k::COLOR_ENABLED) && self.color_bound[0].is_some();
-        let (_, stored, _) = self.chain_of(&self.slot_item(0));
-        let meta = self.gpu.as_ref().and_then(|g| if self.dual.is_some() { g.presenter.engine.dual().and_then(|d| d.a.shown_meta()) } else { g.presenter.engine.shown_meta() });
+    pub(crate) fn thumb_color_tick(&mut self, slot: usize) -> u64 {
+        let on = self.settings.bool(crate::settings::k::COLOR_ENABLED) && self.color_bound[slot].is_some();
+        let (_, stored, _) = self.chain_of(&self.slot_item(slot));
+        let meta = self.gpu.as_ref().and_then(|g| if self.dual.is_some() { g.presenter.engine.dual().and_then(|d| if slot == 1 { d.b.shown_meta() } else { d.a.shown_meta() }) } else if slot == 0 { g.presenter.engine.shown_meta() } else { None });
         let chain_key = if !on { "bypass".to_string() } else { match &stored.chain { ClipChain::MinColor(c) => format!("mc|{c:?}"), ClipChain::Ocio(o) => format!("ocio|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.knee) } };
         let key = format!("{chain_key}|{:?}", meta.map(|m| (m.transfer, m.primaries)));
-        let Some(g) = self.gpu.as_mut() else { return self.thumb_color.generation };
-        let tc = &mut self.thumb_color;
+        let Some(g) = self.gpu.as_mut() else { return self.thumb_color[slot].generation };
+        let tc = &mut self.thumb_color[slot];
         if tc.engine.is_none() { tc.engine = Some(Engine::new(g.presenter.engine.device.clone(), g.presenter.engine.queue.clone(), wgpu::TextureFormat::Rgba16Float)); }
         // a pass landing
         if let Some((k, rx)) = &tc.pending && let Ok(p) = rx.try_recv() {
@@ -99,6 +99,12 @@ mod tests {
         let mut tc = ThumbColor { engine: Some(en), meta: Some(min_present::ColorMeta { transfer: min_present::Transfer::Bt1886, ..Default::default() }), ..Default::default() };
         let rgba: Vec<u8> = (0..32 * 18).flat_map(|i| { let v = (i % 32 * 8) as u8; [v, 255 - v, 128, 255] }).collect();
         let img = tc.convert(&ThumbPixels::from_rgba8(32, 18, &rgba)).unwrap();
+        if std::env::var_os("QCV_THUMB_TIMING").is_some() {
+            let big: Vec<u8> = (0..320 * 180).flat_map(|i| [(i % 251) as u8, (i % 199) as u8, 128, 255]).collect();
+            let px = ThumbPixels::from_rgba8(320, 180, &big); let _ = tc.convert(&px);
+            let t = std::time::Instant::now(); for _ in 0..20 { let _ = tc.convert(&px); }
+            eprintln!("look stage, 320×180: {:.2} ms per thumbnail", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+        }
         let out = img.image.data.data();
         let worst = rgba.iter().zip(out.iter()).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| (*a as i32 - *b as i32).abs()).max().unwrap();
         assert!(worst <= 2, "code values round-trip within 2: worst {worst}");

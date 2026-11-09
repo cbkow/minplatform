@@ -24,6 +24,8 @@ pub struct HoverThumbs {
     pending_frame: Option<i32>,
     shown: Option<(u64, u32, u32)>,
     playing: bool,
+    /// the media the cache holds (dual follows each side's without precaching)
+    path: String,
     /// QCView `ui/timelineHoverThumbs`
     pub enabled: bool,
 }
@@ -33,9 +35,11 @@ impl HoverThumbs {
         let images: Images = Default::default();
         let ev = images.clone();
         let cache = TimelineThumbnailCache::new(ThumbConfig::default(), VideoThumbLoader::any_factory(), Box::new(move |h| { ev.borrow_mut().remove(&h); }));
-        HoverThumbs { cache, images, next: 0, last_request: None, pending_frame: None, shown: None, playing: false, enabled: true }
+        HoverThumbs { cache, images, next: 0, last_request: None, pending_frame: None, shown: None, playing: false, path: String::new(), enabled: true }
     }
-    pub fn on_open(&mut self, p: &Transport) { self.cache.clear(); self.images.borrow_mut().clear(); self.shown = None; let path = p.path().to_string(); if !path.is_empty() && p.decoder().as_sequence().is_none() { self.cache.precache_strip(&path, p.frame_count(), p.current_frame()); } }
+    /// Dual view: hold this side's media (on hover only — no strip precache beside two playing decoders).
+    pub fn follow(&mut self, path: &str) { if path != self.path { self.cache.clear(); self.images.borrow_mut().clear(); self.shown = None; self.path = path.to_string(); } }
+    pub fn on_open(&mut self, p: &Transport) { self.cache.clear(); self.images.borrow_mut().clear(); self.shown = None; let path = p.path().to_string(); self.path = path.clone(); if !path.is_empty() && p.decoder().as_sequence().is_none() { self.cache.precache_strip(&path, p.frame_count(), p.current_frame()); } }
     #[allow(dead_code)]
     pub fn clear(&mut self) { self.pending_frame = None; if self.shown.is_some() { self.shown = None; } }
     /// Per frame: the hovered timeline frame (or none), the uploads to adopt; true when what is shown changed.

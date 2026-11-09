@@ -74,7 +74,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
     /// each picture's peak since its clip loaded (0 = the single view / dual A, 1 = dual B)
-    clip_peak: [Option<[f32; 2]>; 2], ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
+    clip_peak: [Option<[f32; 2]>; 2], ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, /// dual's B side (A uses `thumbs`)
+    thumbs_b: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
     fullscreen: bool, bands: min_ui::anim::Ramp, bands_leave: Option<Instant>,
@@ -127,7 +128,7 @@ struct App {
     /// screenshots being encoded on workers (row 216): the format's name on success
     capture_rx: Vec<std::sync::mpsc::Receiver<Option<&'static str>>>,
     /// the thumbnails' look: the clip's chain on our own small engine (row 216)
-    thumb_color: thumb_color::ThumbColor,
+    thumb_color: [thumb_color::ThumbColor; 2],
     /// notes exports on workers (row 217): the written path, or the error
     export_rx: Vec<std::sync::mpsc::Receiver<Result<String, String>>>,
     mincolor: [Option<std::rc::Rc<std::cell::RefCell<qcv_color::MinColorPass>>>; 2], mincolor_ready: [Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>; 2],
@@ -703,7 +704,7 @@ impl App {
     fn tick(&mut self) {
         self.poll_color();
         self.poll_capture();
-        let thumb_gen = self.thumb_color_tick();
+        let thumb_gen = [self.thumb_color_tick(0), if self.dual.is_some() { self.thumb_color_tick(1) } else { 0 }];
         self.poll_export();
         self.ensure_color_config();
         let color_view = self.color_view();
@@ -888,7 +889,7 @@ impl App {
                 let (ls, cur, first) = self.project.item(&self.loaded_item).filter(|m| m.media_type == qcv_project::MediaType::ImageSequence && self.player.as_ref().is_some_and(|p| p.decoder().as_sequence().is_some())).map(|m| (m.image_seq.available_layers.clone(), m.image_seq.layer.clone(), m.path.clone())).unwrap_or_default();
                 g.inspector.set_seq_layers(ls, &cur, &first);
                 if g.inspector.sync(match self.dual.as_ref() { Some(d) => d.side(if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A }), None => self.player.as_ref() }) { g.ui_dirty = true; }
-                if islot == 0 { let tc = &mut self.thumb_color; if g.inspector.apply_look(thumb_gen, &mut |px| tc.convert(px)) { g.ui_dirty = true; } }
+                { let tc = &mut self.thumb_color[islot.min(1)]; if g.inspector.apply_look(thumb_gen[islot.min(1)], &mut |px| tc.convert(px)) { g.ui_dirty = true; } }
                 let rc = g.right.content_rect(); let rh = g.inspector.layout(&mut g.fonts, rc.x0, rc.x1, rc.y0, scale); g.right.content_height = rh;
             }
             // the bar's volume / mute / loop and the keys write the store back (QCView persists them on change)
@@ -912,8 +913,20 @@ impl App {
                 // a clip without audio (or the probe switched off): QCView's waveform loader goes inactive and draws nothing — never the previous clip's peaks
                 g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); g.ui_dirty = true;
             } }
-            let tc = &mut self.thumb_color;
-            if g.thumbs.tick(self.player.as_mut(), g.scrubber.hover_frame, now, (thumb_gen, &mut |px| tc.convert(px))) { g.ui_dirty = true; }
+            let [tc0, tc1] = &mut self.thumb_color;
+            if let Some(d) = self.dual.as_mut() {
+                // dual (QCView's parking, A bottom-left, B bottom-right): each side's frame under the master hover through its
+                // own edits; nothing requested while both sides are busy playing / scrubbing, and no strip precache
+                let hv = g.scrubber.hover_frame.filter(|_| !d.is_playing() && !d.is_scrubbing());
+                for (side, th, tc, look_gen) in [(qcv_player::Side::A, &mut g.thumbs, &mut *tc0, thumb_gen[0]), (qcv_player::Side::B, &mut g.thumbs_b, &mut *tc1, thumb_gen[1])] {
+                    let f = hv.and_then(|m| d.side_frame_of(side, m)).map(|x| x as i32);
+                    if let Some(t) = d.side(side) { th.follow(t.path()); }
+                    if th.tick(d.side_mut(side), f, now, (look_gen, &mut |px| tc.convert(px))) { g.ui_dirty = true; }
+                }
+            } else {
+                if g.thumbs.tick(self.player.as_mut(), g.scrubber.hover_frame, now, (thumb_gen[0], &mut |px| tc0.convert(px))) { g.ui_dirty = true; }
+                if g.thumbs_b.is_shown() { g.thumbs_b.tick(None, None, now, (0, &mut |_| None)); g.ui_dirty = true; }
+            }
             let _ = frame;
             if u.is_dirty() || g.ui_dirty || key != g.ui_shown_frame {
                 let bands_y = scrub_y - t::TRANSPORT_BAR_HEIGHT as f64 * scale;
@@ -931,7 +944,7 @@ impl App {
                     scene.reset();
                     g.scrubber.paint(scene, &mut g.fonts, scale, &st, None);
                     g.compact_strip.paint(scene, &mut g.fonts, scale, now);
-                    g.thumbs.paint(scene, content, scale, Some(g.pointer.0));
+                    if self.dual.is_some() { g.thumbs.paint(scene, content, scale, None); g.thumbs_b.paint(scene, content, scale, Some(content.x1)); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
                     g.compact_strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                     g.ui_shown_frame = key; g.ui_dirty = false;
                 } else {
@@ -968,7 +981,7 @@ impl App {
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
-                g.thumbs.paint(scene, content, scale, Some(g.pointer.0));
+                if self.dual.is_some() { g.thumbs.paint(scene, content, scale, None); g.thumbs_b.paint(scene, content, scale, Some(content.x1)); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
@@ -1582,7 +1595,7 @@ impl App {
     }
     fn finish(&mut self) {
         if let Some(g) = self.gpu.as_mut() {
-            g.thumbs.shutdown();
+            g.thumbs.shutdown(); g.thumbs_b.shutdown();
             if !g.fullscreen {
                 let maximized = g.window.is_maximized();
                 self.settings.set_bool(settings::k::WINDOW_MAXIMIZED, maximized);
@@ -1818,7 +1831,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
