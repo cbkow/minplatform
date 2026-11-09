@@ -74,11 +74,15 @@ impl crate::App {
     /// T / Ctrl+T and the bar's two buttons.
     pub(crate) fn screenshot(&mut self, dest: Dest) {
         let Some(img) = self.capture_picture(true) else { return };
-        let (px, w, h) = img;
+        let (px, w, h, alpha) = img;
+        // row 223: with alpha, straight (unassociated) colour — PNG requires it, compositing apps expect it from TIFF
+        let straight = |px: &[f32], al: &[f32]| -> Vec<f32> { px.chunks(3).zip(al).flat_map(|(c, a)| { let k = if *a > 1e-4 { 1.0 / a } else { 0.0 }; [(c[0] * k).min(1.0), (c[1] * k).min(1.0), (c[2] * k).min(1.0)] }).collect() };
         match dest {
             Dest::Clipboard => {
-                let rgb = min_present::capture::srgb8(&px);
-                let rgba: Vec<u8> = rgb.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect();
+                let rgba: Vec<u8> = match &alpha {
+                    Some(al) => min_present::capture::srgb8(&straight(&px, al)).chunks(3).zip(al).flat_map(|(c, a)| [c[0], c[1], c[2], (a * 255.0 + 0.5) as u8]).collect(),
+                    None => min_present::capture::srgb8(&px).chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+                };
                 let ok = arboard::Clipboard::new().and_then(|mut c| c.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: rgba.into() }));
                 match ok {
                     Ok(()) => { log::info!("screenshot {w}x{h} copied to clipboard"); self.toast(trw("Screenshot copied to clipboard"), min_ui::ToastKind::Positive) }
@@ -93,9 +97,11 @@ impl crate::App {
                 let (tx, rx) = mpsc::channel();
                 std::thread::Builder::new().name("screenshot".into()).spawn(move || {
                     let r = match token {
-                        "jpeg" => min_image::write::jpeg8(&path, &min_present::capture::srgb8(&px), w, h, 95),
-                        "tiff" => min_image::write::tiff16(&path, &min_present::capture::srgb16(&px), w, h),
-                        _ => min_image::write::png8(&path, &min_present::capture::srgb8(&px), w, h),
+                        "jpeg" => min_image::write::jpeg8(&path, &min_present::capture::srgb8(&px), w, h, 95),   // no alpha in JPEG: over black
+                        "tiff" => match &alpha { Some(al) => { let rgb = min_present::capture::srgb16(&straight(&px, al)); min_image::write::tiff16_rgba(&path, &rgb.chunks(3).zip(al).flat_map(|(c, a)| [c[0], c[1], c[2], (a * 65535.0 + 0.5) as u16]).collect::<Vec<_>>(), w, h) }
+                                             None => min_image::write::tiff16(&path, &min_present::capture::srgb16(&px), w, h) },
+                        _ => match &alpha { Some(al) => { let rgb = min_present::capture::srgb8(&straight(&px, al)); min_image::write::png_rgba8(&path, &rgb.chunks(3).zip(al).flat_map(|(c, a)| [c[0], c[1], c[2], (a * 255.0 + 0.5) as u8]).collect::<Vec<_>>(), w, h) }
+                                       None => min_image::write::png8(&path, &min_present::capture::srgb8(&px), w, h) },
                     };
                     match &r { Ok(()) => log::info!("screenshot saved to {path}"), Err(e) => log::warn!("screenshot save failed: {path}: {e}") }
                     let _ = tx.send(r.is_ok().then_some(name));
@@ -129,33 +135,38 @@ impl crate::App {
     }
     /// The review picture as SDR-ready linear RGB (1.0 = SDR white); `overlay` = with the frame's strokes (and the guide, when
     /// asked) on it — a note's clean frame is the capture without them.
-    pub(crate) fn capture_picture(&mut self, overlay: bool) -> Option<(Vec<f32>, u32, u32)> {
+    /// The capture (linear, premultiplied = over black) and — row 223 — its alpha when a picture in it has any (ProRes 4444,
+    /// EXR, PNG / TIFF sequences); None for opaque media, so those screenshots are exactly what they were.
+    pub(crate) fn capture_picture(&mut self, overlay: bool) -> Option<(Vec<f32>, u32, u32, Option<Vec<f32>>)> {
         let dual = self.dual.is_some();
         let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1);
         use min_present::engine::CaptureRegion;
         // single: the picture; dual: both sides at their source resolution (row 216), each side's chain re-targeted
-        let got: Option<(Vec<f32>, u32, u32, Vec<CaptureRegion>)> = if dual {
+        let got: Option<(Vec<f32>, Vec<f32>, u32, u32, Vec<CaptureRegion>)> = if dual {
             let (r0, r1) = (self.sdr_retarget(0), self.sdr_retarget(1));
             let c = self.gpu.as_mut().map(|g| g.presenter.engine.capture_dual(true));
             self.sdr_restore(1, r1); self.sdr_restore(0, r0);
-            c.and_then(|c| c.ok()).map(|c| (c.px, c.w, c.h, c.regions))
+            c.and_then(|c| c.ok()).map(|c| (c.px, c.alpha, c.w, c.h, c.regions))
         } else {
             let restore = self.sdr_retarget(0);
-            let c = self.gpu.as_mut().and_then(|g| color::slot_engine(g, 0, false).map(|en| (en.bypass_hdr_peak(), en.picture_placement(), en.capture(true))));
+            let c = self.gpu.as_mut().and_then(|g| color::slot_engine(g, 0, false).map(|en| (en.bypass_hdr_peak(), en.picture_placement(), en.capture_with_alpha(true))));
             self.sdr_restore(0, restore);
-            match c { Some((peak, place, Ok((px, w, h)))) => { let (src, quarters) = place.map(|p| (p.1, p.2)).unwrap_or(((w as f64, h as f64), 0)); Some((px, w, h, vec![CaptureRegion { rect: [0, 0, w, h], peak, src, quarters }])) } _ => None }
+            match c { Some((peak, place, Ok((px, a, w, h)))) => { let (src, quarters) = place.map(|p| (p.1, p.2)).unwrap_or(((w as f64, h as f64), 0)); Some((px, a, w, h, vec![CaptureRegion { rect: [0, 0, w, h], peak, src, quarters }])) } _ => None }
         };
-        let Some((mut px, w, h, regions)) = got else {
+        let Some((mut px, alpha, w, h, regions)) = got else {
             log::warn!("screenshot capture returned empty"); if overlay { self.toast(trw("Nothing to capture — load media first"), min_ui::ToastKind::Notice); } return None
         };
         // an HDR side in bypass: BT.2390 over its own region
         for r in &regions { if r.peak.is_some() { for y in r.rect[1]..r.rect[1] + r.rect[3] { let o = ((y * w + r.rect[0]) * 3) as usize; min_present::capture::to_sdr(&mut px[o..o + (r.rect[2] * 3) as usize], r.peak); } } }
         for v in px.iter_mut() { *v = v.clamp(0.0, 1.0); }
+        // row 223: alpha only when a PICTURE region has transparency (a side-by-side gap is transparent but says nothing)
+        let has_alpha = regions.iter().any(|r| (r.rect[1]..r.rect[1] + r.rect[3]).any(|y| { let o = (y * w + r.rect[0]) as usize; alpha[o..o + r.rect[2] as usize].iter().any(|a| *a < 0.999) }));
+        let mut alpha = has_alpha.then_some(alpha);
         // the overlay: the note's strokes at this frame (single view, QCView), the guide when the setting asks — over each side
         // side by side, over the whole picture (A's geometry) for a wipe / difference
         let strokes = if dual { vec![] } else { self.annot.strokes_at(frame) };
         let guide = self.settings.bool(k::SCREENSHOT_GUIDES).then(|| self.gpu.as_ref().and_then(|g| g.guide.as_ref().map(|(_, gd)| gd.clone()))).flatten();
-        if !overlay || (strokes.is_empty() && guide.is_none()) { return Some((px, w, h)) }
+        if !overlay || (strokes.is_empty() && guide.is_none()) { return Some((px, w, h, alpha)) }
         let side_by_side = self.gpu.as_ref().and_then(|g| g.presenter.engine.dual().map(|d| d.mode == CompareMode::SideBySide)).unwrap_or(false);
         let places: Vec<([f64; 4], (f64, f64), u8)> = if side_by_side || !dual { regions.iter().map(|r| ([r.rect[0] as f64, r.rect[1] as f64, r.rect[2] as f64, r.rect[3] as f64], r.src, r.quarters)).collect() }
             else { regions.first().map(|r| ([0.0, 0.0, w as f64, h as f64], r.src, r.quarters)).into_iter().collect() };
@@ -178,12 +189,13 @@ impl crate::App {
         layer.render(&dev, &q);
         let ov = min_present::readback::read_rgba8(&dev, &q, layer.texture(), w, h);
         // vello writes sRGB-encoded straight alpha: over the picture in linear light
-        for (c, o) in px.chunks_mut(3).zip(ov.chunks(4)) {
+        for (k, (c, o)) in px.chunks_mut(3).zip(ov.chunks(4)).enumerate() {
             if o[3] == 0 { continue }
             let a = o[3] as f32 / 255.0;
-            for i in 0..3 { c[i] = c[i] * (1.0 - a) + lin(o[i]) * a; }
+            for i in 0..3 { c[i] = c[i] * (1.0 - a) + lin(o[i]) * a; }   // premultiplied "over"
+            if let Some(al) = alpha.as_mut() { al[k] = a + al[k] * (1.0 - a); }   // strokes / the guide are opaque where they're drawn
         }
-        Some((px, w, h))
+        Some((px, w, h, alpha))
     }
     /// A note's two records, taken with its clean frame (QCView `viewerAidsTag` / `ocioChainTag`): the viewer aids (+ the
     /// Knee) and the colour chain, exact names — a note is a record. minColor is named by its preset (QCView named OCIO only).

@@ -146,7 +146,8 @@ impl Uploader {
 /// caller's BT.2390), its source size + rotation (a guide's placement).
 #[derive(Clone, Copy, Debug)]
 pub struct CaptureRegion { pub rect: [u32; 4], pub peak: Option<f32>, pub src: (f64, f64), pub quarters: u8 }
-pub struct DualCapture { pub px: Vec<f32>, pub w: u32, pub h: u32, pub regions: Vec<CaptureRegion> }
+pub struct DualCapture { pub px: Vec<f32>, /// one per pixel (row 223): the pictures' own alpha, 0 in a side-by-side gap
+    pub alpha: Vec<f32>, pub w: u32, pub h: u32, pub regions: Vec<CaptureRegion> }
 
 /// QCView's viewer aids (linear_stage.h `ViewerAids` + the stage's gain): inspection only — on the screen pass alone, never in
 /// the chain-in, the snapshots or the scopes. Exposure in stops (a gain on the linear output), gamma (> 1 lifts: c^(1/γ)),
@@ -224,6 +225,12 @@ fn pass_load<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &
     enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some(label), color_attachments: &[Some(att)], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None })
 }
 fn attach(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> { wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } } }
+/// A capture's clear: TRANSPARENT black, so the picture's own alpha survives the premultiplied blend (screenshots keep it,
+/// row 223); the colour is the same as over black.
+fn pass_clear_clear<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &'a wgpu::TextureView) -> wgpu::RenderPass<'a> {
+    let att = wgpu::RenderPassColorAttachment { view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } };
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some(label), color_attachments: &[Some(att)], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None })
+}
 fn pass<'a>(enc: &'a mut wgpu::CommandEncoder, label: &'static str, view: &'a wgpu::TextureView) -> wgpu::RenderPass<'a> {
     enc.begin_render_pass(&wgpu::RenderPassDescriptor { label: Some(label), color_attachments: &[Some(attach(view))], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None })
 }
@@ -710,7 +717,10 @@ impl Engine {
     /// passes as the screen — stage 1 with the clip's overrides, the colour chain, and (when `aids`) the viewer aids — but no
     /// output gain (Windows' SDR white is the screen's business), no background, no UI, no waveform; over black. Returns
     /// linear-light RGB f32 (1.0 = SDR white; values above 1 = HDR the caller maps for its SDR file), w, h.
-    pub fn capture(&mut self, aids: bool) -> Result<(Vec<f32>, u32, u32), Error> {
+    pub fn capture(&mut self, aids: bool) -> Result<(Vec<f32>, u32, u32), Error> { self.capture_with_alpha(aids).map(|(px, _, w, h)| (px, w, h)) }
+    /// [`capture`] with the picture's own alpha beside it (one value per pixel; the RGB is premultiplied = over black, as
+    /// `capture` returns it). Row 223: screenshots keep alpha when the media has it.
+    pub fn capture_with_alpha(&mut self, aids: bool) -> Result<(Vec<f32>, Vec<f32>, u32, u32), Error> {
         if self.shown.is_none() { return Err(Error::NoFrame) }
         let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
         let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
@@ -719,14 +729,14 @@ impl Engine {
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = tex.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
-        { let _ = pass(&mut enc, "capture clear", &view); }
+        { let _ = pass_clear_clear(&mut enc, "capture clear", &view); }
         self.encode_picture(&mut enc, &view, None);
         self.queue.submit([enc.finish()]);
         let px = if self.target_format == wgpu::TextureFormat::Rgba16Float { readback::read_rgba16f(&self.device, &self.queue, &tex, w, h) } else { vec![] };
         (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.write_uniforms();
         if px.is_empty() { return Err(Error::NoFormat) }
-        // over black (premultiplied output): drop alpha
-        Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), w, h))
+        // the RGB is premultiplied (= over black); the alpha beside it
+        Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), px.chunks(4).map(|c| c[3].clamp(0.0, 1.0)).collect(), w, h))
     }
     /// A DUAL capture (canon row 216: "dual captures at source resolution"): Single = A's capture; side by side = both native
     /// pictures next to each other (each centred vertically on black); split wipe / difference = ONE picture at A's display
@@ -739,20 +749,23 @@ impl Engine {
             let region = |e: &Engine, rect: [u32; 4]| CaptureRegion { rect, peak: e.bypass_hdr_peak(), src: (e.video.0 as f64, e.video.1 as f64), quarters: e.rotation_quarters() };
             use crate::dual::CompareMode;
             match d.mode {
-                CompareMode::Single => { let (px, w, h) = d.a.capture(aids)?; Ok(DualCapture { regions: vec![region(&d.a, [0, 0, w, h])], px, w, h }) }
+                CompareMode::Single => { let (px, alpha, w, h) = d.a.capture_with_alpha(aids)?; Ok(DualCapture { regions: vec![region(&d.a, [0, 0, w, h])], px, alpha, w, h }) }
                 CompareMode::SideBySide => {
-                    let ca = if d.a.has_frame() { Some(d.a.capture(aids)?) } else { None };
-                    let cb = if d.b.has_frame() { Some(d.b.capture(aids)?) } else { None };
-                    let (wa, ha) = ca.as_ref().map(|c| (c.1, c.2)).unwrap_or((0, 0)); let (wb, hb) = cb.as_ref().map(|c| (c.1, c.2)).unwrap_or((0, 0));
+                    let ca = if d.a.has_frame() { Some(d.a.capture_with_alpha(aids)?) } else { None };
+                    let cb = if d.b.has_frame() { Some(d.b.capture_with_alpha(aids)?) } else { None };
+                    let (wa, ha) = ca.as_ref().map(|c| (c.2, c.3)).unwrap_or((0, 0)); let (wb, hb) = cb.as_ref().map(|c| (c.2, c.3)).unwrap_or((0, 0));
                     let (w, h) = ((wa + wb).max(1), ha.max(hb).max(1));
-                    let mut px = vec![0f32; (w * h * 3) as usize]; let mut regions = vec![];
+                    let mut px = vec![0f32; (w * h * 3) as usize]; let mut alpha = vec![0f32; (w * h) as usize]; let mut regions = vec![];
                     for (c, x0, e) in [(ca, 0u32, &d.a), (cb, wa, &d.b)] {
-                        let Some((src, cw, ch)) = c else { continue };
+                        let Some((src, sa, cw, ch)) = c else { continue };
                         let y0 = (h - ch) / 2;
-                        for y in 0..ch { let o = (((y0 + y) * w + x0) * 3) as usize; let i = (y * cw * 3) as usize; px[o..o + (cw * 3) as usize].copy_from_slice(&src[i..i + (cw * 3) as usize]); }
+                        for y in 0..ch {
+                            let o = (((y0 + y) * w + x0) * 3) as usize; let i = (y * cw * 3) as usize; px[o..o + (cw * 3) as usize].copy_from_slice(&src[i..i + (cw * 3) as usize]);
+                            let oa = ((y0 + y) * w + x0) as usize; let ia = (y * cw) as usize; alpha[oa..oa + cw as usize].copy_from_slice(&sa[ia..ia + cw as usize]);
+                        }
                         regions.push(region(e, [x0, y0, cw, ch]));
                     }
-                    Ok(DualCapture { px, w, h, regions })
+                    Ok(DualCapture { px, alpha, w, h, regions })
                 }
                 CompareMode::Split | CompareMode::Difference => {
                     if self.target_format != wgpu::TextureFormat::Rgba16Float { return Err(Error::NoFormat) }
@@ -763,15 +776,16 @@ impl Engine {
                     let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("dual capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
                     let view = tex.create_view(&Default::default());
                     let mut enc = self.device.create_command_encoder(&Default::default());
-                    { let _ = pass(&mut enc, "dual capture clear", &view); }
+                    { let _ = pass_clear_clear(&mut enc, "dual capture clear", &view); }
                     d.encode(&mut enc, &view);
                     self.queue.submit([enc.finish()]);
-                    let px: Vec<f32> = readback::read_rgba16f(&self.device, &self.queue, &tex, w, h).chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
+                    let rgba = readback::read_rgba16f(&self.device, &self.queue, &tex, w, h);
+                    let px: Vec<f32> = rgba.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(); let alpha: Vec<f32> = rgba.chunks(4).map(|c| c[3].clamp(0.0, 1.0)).collect();
                     let regions = if d.mode == CompareMode::Split {
                         let sx = ((d.seam.clamp(0.0, 1.0) * w as f32).round() as u32).min(w);
                         vec![region(&d.a, [0, 0, sx, h]), region(&d.b, [sx, 0, w - sx, h])]
                     } else { vec![CaptureRegion { rect: [0, 0, w, h], peak: None, ..lead_region }] };
-                    Ok(DualCapture { px, w, h, regions })
+                    Ok(DualCapture { px, alpha, w, h, regions })
                 }
             }
         })();
@@ -1049,6 +1063,22 @@ mod tests {
         e.set_transfer_override(TransferChoice::Linear); let (linr, _, _) = e.snapshot(Snapshot::Display).unwrap();
         for x in (0..256).step_by(17) { assert!((linr[x * 4] - enc[x * 4]).abs() < 2e-3, "linear override at {x}: {} vs {}", linr[x * 4], enc[x * 4]); }
         e.set_transfer_override(TransferChoice::Auto); assert_eq!(e.transfer_override(), TransferChoice::Auto);
+    }
+
+    /// Row 223: a capture keeps the picture's own alpha (the transparent clear) — the opaque half 1, the transparent half 0 — and
+    /// its RGB is unchanged (premultiplied = over black, as before); an opaque frame captures all-opaque.
+    #[test]
+    fn captures_keep_the_pictures_alpha() {
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        e.show(&alpha_frame(16, 16)).unwrap();   // opaque columns 0..8, transparent 8..16
+        let (px, a, w, _) = e.capture_with_alpha(false).unwrap();
+        let at = |x: usize| a[8 * w as usize + x];
+        assert!(at(2) > 0.99 && at(12) < 0.01, "alpha {} / {}", at(2), at(12));
+        assert!(px[(8 * w as usize + 12) * 3] < 1e-3, "transparent = black in the premultiplied RGB");
+        let (rgb, _, _) = e.capture(false).unwrap(); assert_eq!(rgb, px, "capture() is the same RGB");
+        e.show(&ramp_frame(16, 4)).unwrap();
+        let (_, a, _, _) = e.capture_with_alpha(false).unwrap(); assert!(a.iter().all(|v| *v > 0.999), "opaque media: alpha 1");
     }
 
     /// A flat grey frame (8-bit limited Y′ = `y`, neutral chroma).

@@ -39,6 +39,18 @@ pub fn png_rgba8_bytes(rgba: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// PNG 8-bit with straight alpha (a screenshot of media with alpha, row 223).
+pub fn png_rgba8(path: &str, rgba: &[u8], w: u32, h: u32) -> Result<(), Error> {
+    let bytes = png_rgba8_bytes(rgba, w, h).map_err(|e| Error::Decode(path.into(), e))?;
+    std::fs::write(path, bytes).map_err(|e| Error::Open(format!("{path}: {e}")))
+}
+/// TIFF 16-bit RGBA, straight (unassociated) alpha — what compositing apps read without darkening the edges (row 223).
+pub fn tiff16_rgba(path: &str, rgba: &[u16], w: u32, h: u32) -> Result<(), Error> {
+    let f = std::fs::File::create(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
+    let mut enc = tiff::encoder::TiffEncoder::new(BufWriter::new(f)).map_err(|e| Error::Decode(path.into(), e.to_string()))?;
+    enc.write_image::<tiff::encoder::colortype::RGBA16>(w, h, rgba).map_err(|e| Error::Decode(path.into(), e.to_string()))
+}
+
 pub fn tiff16(path: &str, rgb: &[u16], w: u32, h: u32) -> Result<(), Error> {
     let f = std::fs::File::create(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
     let mut enc = tiff::encoder::TiffEncoder::new(BufWriter::new(f)).map_err(|e| Error::Decode(path.into(), e.to_string()))?;
@@ -57,6 +69,13 @@ mod tests {
         let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
         let rgb16: Vec<u16> = rgb.iter().map(|v| *v as u16 * 257).collect();
         let p = dir.join(format!("mi-w-{}.tif", std::process::id())).to_string_lossy().into_owned(); super::tiff16(&p, &rgb16, w, h).unwrap();
+        let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+        // the alpha writers (row 223)
+        let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i * 5 % 256) as u8).collect();
+        let p = dir.join(format!("mi-wa-{}.png", std::process::id())).to_string_lossy().into_owned(); super::png_rgba8(&p, &rgba, w, h).unwrap();
+        let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
+        let rgba16: Vec<u16> = rgba.iter().map(|v| *v as u16 * 257).collect();
+        let p = dir.join(format!("mi-wa-{}.tif", std::process::id())).to_string_lossy().into_owned(); super::tiff16_rgba(&p, &rgba16, w, h).unwrap();
         let img = crate::load(&p, "", 1).unwrap(); assert_eq!((img.width, img.height), (w, h)); let _ = std::fs::remove_file(&p);
     }
 }

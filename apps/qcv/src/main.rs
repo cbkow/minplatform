@@ -500,7 +500,7 @@ impl App {
         // strokes, no guide), captured once and never overwritten (QCView); the aids and the chain recorded on the note with it
         let current = self.annot.note_at_frame(self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1)).is_some_and(|n| n.timecode == c.key);
         if c.new_note && current && !clean.exists() {
-            if let Some((px, w, h)) = self.capture_picture(false) {
+            if let Some((px, w, h, _)) = self.capture_picture(false) {   // a note's clean frame: over black, as QCView
                 if let Err(e) = min_image::write::png8(&clean.to_string_lossy(), &min_present::capture::srgb8(&px), w, h) { log::warn!("note thumbnail: {e}"); }
                 let (viewer, ocio) = self.note_tags(); self.annot.set_tags(&c.key, &viewer, &ocio);
             }
