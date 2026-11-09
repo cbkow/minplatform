@@ -110,7 +110,7 @@ decoded back matches the capture within 1 code value on flat regions; constant p
 1. **4a** macOS, headless: the VideoToolbox session + the NV12 pass + mpegts over SRT into a local listener (the A0 bar). — **DONE 2026-11-09**: `crates/qcv-stream` (`vt.rs`, `nv12.rs`, `mux.rs`, example `stream_out`); 1080p25 Baseline: pts delta 3600, GOP 25, no B-frames, VUI bt709 tv, every flat patch within 1 code value; 23.976 Main: pts average exactly 3753.75.
 2. **4b** audio, the session's lifecycle in the app, the card. — **BUILT 2026-11-09** (macOS; the user's walk owed): `aac.rs`, `sink.rs` (the session), the outputs' publish pass feeds the encoder's surface (`apps/qcv/src/outputs.rs`, `stream.rs`), `stream_card.rs`. From the app to a local SRT listener: H.264 Baseline + AAC, pts exact, 6043 kbps under motion against 6000, audio continuous, the guide in the picture; quitting waits for the session's threads (a quit during a connect crashed in the network library's teardown otherwise). `QCV_STREAM_SPIKE=<url>` starts a session at launch (QCView's dev aid). SRT only until 4c.
 3. **4c** RTMP / FLV, reconnect, counters; the walk; the Louper room is the user's test. — **BUILT 2026-11-09** (macOS): FLV over rtmp(s) with the header deferred to the first keyframe's SPS / PPS (cached for a reconnect), a 5 s socket timeout (`rw_timeout` — RTMP's own `timeout` option means LISTEN), and the test matrix below.
-4. **4d** the Windows spike, then Windows (in the one Windows walk).
+4. **4d** the Windows spike, then Windows (in the one Windows walk). — **Spike S7: GO** (row 241, `docs/spikes/S7-winstream.md`); **the session BUILT 2026-11-09** (`mf.rs`), tested headless on the box — see "Windows, tested in a vacuum" below; the app's window on the box is the Windows walk.
 
 ## Tested in a vacuum (2026-11-09, macOS)
 
@@ -147,3 +147,27 @@ the source's rate equals the clock's (12 of 180 one-frame flashes in 3 minutes) 
 **Not testable here:** the Louper room itself (its ingest's handshake, its stream-key form, its player's tolerance); RTMPS end
 to end; a lossy or slow network (everything above is loopback); Windows (4d). Dev aids: `QCV_STREAM_SPIKE=<url | empty = the
 saved settings>` starts a session at launch, `QCV_STREAM_SPIKE_DELAY=<s>` starts it later, `QCV_STREAM_SPIKE_PASSPHRASE`.
+
+## Windows, tested in a vacuum (2026-11-09, the box: RTX 4090, Windows 11 26200)
+
+The Windows session is `crates/qcv-stream/src/mf.rs`: QCView's Media Foundation session on a D3D11 device, its NV12 surfaces
+shared from wgpu's DX12 device (spike S7's route). Everything below ran over SSH — no window, nothing on the desktop — through
+two harnesses: `stream_out` (the encoder + the muxer) and `stream_session` (the REAL session as the app drives it: the
+work-done hand-over, real-time audio, a paused stretch; its source carries a flash + a beep every 4 s), into the box's own
+FFmpeg as the listener; the recordings were analysed on the Mac. Synthetic pictures only.
+
+| # | Scenario | Result |
+|---|---|---|
+| W0 | `stream_out`, 1080p25 Baseline over SRT | 200 / 200 frames, pts delta a constant 3600, a keyframe every 25, Constrained Baseline level 4.0, bt709 / tv; **all 16 patches decode back exact** |
+| W1 | the session, SRT, 1080p25 + AAC, the picture paused 4 s | continuous 40 ms frame gaps through the pause (100 repeated), AAC continuous; lip-sync +35 ms |
+| W2 | RTMP (FLV), the key as the stream name | first frame a keyframe, AAC; lip-sync +13 ms |
+| W3 | SRT reconnect — the listener ends at 6 s, a new one at 16 s | reconnecting → a failed attempt → streaming; the new listener starts on a keyframe |
+| W4 | 23.976 (24000/1001), 720p, Main, no audio | Main level 3.1, frame gaps 41.70 / 41.71 ms, a keyframe every 1.001 s |
+| W5 | 2160p30, 16000 kbps | level 5.1, every frame, AAC; lip-sync +36 ms |
+| W6 | three minutes | 4498 of 4500 frames encoded, 0 dropped, working set flat at 225 MB; lip-sync +16 ms on all 44 markers — no drift |
+| W7 | SRT encrypted + a stream id; a wrong passphrase | streams; the wrong passphrase never connects (0 bytes received) |
+
+**Not tested on Windows yet:** the app's own window on the box (a swap chain needs the desktop session — the Windows walk);
+the bitrate on a busy picture through the session (the spike's noise picture ran 5–9 % over the target); AMD / Intel encoders
+(the box has NVIDIA's only); RTMPS; a lossy network. Note: while a connection is down the queue keeps filling and overflowing,
+so `dropped` climbs through a reconnect (591 in W3's ten seconds) — QCView's accounting.
