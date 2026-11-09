@@ -484,18 +484,26 @@ impl App {
         let Some(media) = self.annot.media.clone() else { return };
         let dir = qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(&media)); let _ = std::fs::create_dir_all(&dir);
         let clean = dir.join(qcv_notes::io::image_filename(&c.key)); let annotated = dir.join(qcv_notes::io::annotated_filename(&c.key));
-        let Some(g) = self.gpu.as_mut() else { return };
-        // the clean frame: the display path 1:1 at the source size (QCView: captured once, never overwritten)
+        // the clean frame: a CAPTURE (row 216 — the clip's chain SDR-retargeted, the viewer aids, pixel aspect + rotation, no
+        // strokes, no guide), captured once and never overwritten (QCView); the aids and the chain recorded on the note with it
         let current = self.annot.note_at_frame(self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1)).is_some_and(|n| n.timecode == c.key);
-        if c.new_note && current && !clean.exists() { if let Ok((px, w, h)) = g.presenter.engine.snapshot(min_present::engine::Snapshot::Display) { write_png_display(&clean.to_string_lossy(), &px, w, h, true); } }
+        if c.new_note && current && !clean.exists() {
+            if let Some((px, w, h)) = self.capture_picture(false) {
+                if let Err(e) = min_image::write::png8(&clean.to_string_lossy(), &min_present::capture::srgb8(&px), w, h) { log::warn!("note thumbnail: {e}"); }
+                let (viewer, ocio) = self.note_tags(); self.annot.set_tags(&c.key, &viewer, &ocio);
+            }
+        }
         // the annotated one: the clean PNG at the display aspect + the strokes (none left → the file goes, QCView's fallback is the clean one)
         let Some(note) = self.annot.notes.iter().find(|n| n.timecode == c.key).cloned() else { let _ = std::fs::remove_file(&annotated); return };
         let ss = qcv_notes::strokes::parse(note.annotation.as_ref());
         if ss.is_empty() { let _ = std::fs::remove_file(&annotated); return }
         let Ok(img) = image_rgba8(&clean) else { return };
-        let (dw, _) = g.presenter.engine.display_dims(); let (vw, vh) = img.1;
-        let par = if vw > 0 { g.presenter.engine.display_dims().0 as f64 / g.presenter.engine.video_size().0.max(1) as f64 } else { 1.0 };
-        let (w, h) = (((vw as f64) * par).round().max(1.0) as u32, vh.max(1));
+        let Some(g) = self.gpu.as_mut() else { return };
+        let (vw, vh) = img.1;
+        // the display aspect: a capture is already at it; an older clean frame (QCView's, at the source size) is widened to it
+        let (dw, dh) = g.presenter.engine.display_dims();
+        let w = if dw > 0 && dh > 0 { ((vh as f64) * dw as f64 / dh as f64).round().max(1.0) as u32 } else { vw.max(1) };
+        let h = vh.max(1);
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
         if g.thumb_layer.is_none() { g.thumb_layer = min_ui::UiLayer::new(&dev, w, h).ok(); }
         let Some(layer) = g.thumb_layer.as_mut() else { return };

@@ -154,6 +154,8 @@ impl Annotations {
     }
     /// A note's text / addressed flag (saved; QCView keeps these out of the drawing history).
     pub fn set_text(&mut self, key: &str, text: &str) { if let Some(n) = self.notes.iter_mut().find(|n| n.timecode == key) { if n.text != text { n.text = text.to_string(); self.save(); } } }
+    /// The clean frame's records (QCView updateNoteViewerTag / updateNoteOcioChain).
+    pub fn set_tags(&mut self, key: &str, viewer: &str, ocio: &str) { if let Some(n) = self.notes.iter_mut().find(|n| n.timecode == key) { if n.viewer != viewer || n.ocio != ocio { n.viewer = viewer.to_string(); n.ocio = ocio.to_string(); self.save(); } } }
     pub fn set_addressed(&mut self, key: &str, on: bool) { if let Some(n) = self.notes.iter_mut().find(|n| n.timecode == key) { if n.addressed != on { n.addressed = on; self.save(); } } }
     /// QCView's "Delete note": the note and both its images (a user delete is the one thing that removes the PNGs).
     pub fn delete_note(&mut self, key: &str) {

@@ -57,12 +57,22 @@ pub fn sdr_view(views: &[String], src: &str) -> Option<String> {
     sdr.first().map(|v| (*v).clone()).or_else(|| views.first().cloned())
 }
 
+/// QCView's `viewerAidsTag`: what the capture's viewer aids (and an OCIO Knee) did, recorded on the note with its frame.
+pub fn viewer_tag(a: min_present::engine::ViewerAids, knee: Option<(f32, f32)>) -> String {
+    let mut parts = vec![];
+    if a.exposure.abs() > 0.005 { parts.push(format!("{}{:.1} stops", if a.exposure > 0.0 { "+" } else { "\u{2212}" }, a.exposure.abs())); }
+    if (a.gamma - 1.0).abs() > 0.005 { parts.push(format!("\u{3b3} {:.2}", a.gamma)); }
+    let ch = ["", "red", "green", "blue", "alpha", "luma"]; if a.channel > 0 { parts.push(ch[(a.channel as usize).min(5)].to_string()); }
+    if let Some((s, t)) = knee { parts.push(format!("Knee {}\u{2192}{}", s.round() as i32, t.round() as i32)); }
+    if parts.is_empty() { String::new() } else { format!("Viewer: {}", parts.join(" \u{b7} ")) }
+}
+
 fn lin(c: u8) -> f32 { let v = c as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } }
 
 impl crate::App {
     /// T / Ctrl+T and the bar's two buttons.
     pub(crate) fn screenshot(&mut self, dest: Dest) {
-        let Some(img) = self.capture_picture() else { return };
+        let Some(img) = self.capture_picture(true) else { return };
         let (px, w, h) = img;
         match dest {
             Dest::Clipboard => {
@@ -108,22 +118,23 @@ impl crate::App {
         self.capture_rx.retain(|rx| match rx.try_recv() { Ok(r) => { done.push(r); false } Err(mpsc::TryRecvError::Empty) => true, Err(_) => false });
         for r in done { match r { Some(name) => { let t = trw("Screenshot saved (%1)").replace("%1", name); self.toast(&t, min_ui::ToastKind::Positive) } None => self.toast(trw("Screenshot export failed"), min_ui::ToastKind::Negative) } }
     }
-    /// The review picture as SDR-ready linear RGB (1.0 = SDR white) with the strokes (and the guide, when asked) on it.
-    pub(crate) fn capture_picture(&mut self) -> Option<(Vec<f32>, u32, u32)> {
+    /// The review picture as SDR-ready linear RGB (1.0 = SDR white); `overlay` = with the frame's strokes (and the guide, when
+    /// asked) on it — a note's clean frame is the capture without them.
+    pub(crate) fn capture_picture(&mut self, overlay: bool) -> Option<(Vec<f32>, u32, u32)> {
         let dual = self.dual.is_some();
         let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1);
         let restore = self.sdr_retarget(0);
         let got = { let g = self.gpu.as_mut()?; color::slot_engine(g, 0, dual).map(|en| (en.bypass_hdr_peak(), en.picture_placement(), en.capture(true))) };
         self.sdr_restore(0, restore);
         let Some((peak, place, Ok((mut px, w, h)))) = got else {
-            log::warn!("screenshot capture returned empty"); self.toast(trw("Nothing to capture — load media first"), min_ui::ToastKind::Notice); return None
+            log::warn!("screenshot capture returned empty"); if overlay { self.toast(trw("Nothing to capture — load media first"), min_ui::ToastKind::Notice); } return None
         };
         min_present::capture::to_sdr(&mut px, peak);
         for v in px.iter_mut() { *v = v.clamp(0.0, 1.0); }
         // the overlay: the note's strokes at this frame (single view, QCView), the guide when the setting asks
         let strokes = if dual { vec![] } else { self.annot.strokes_at(frame) };
         let guide = self.settings.bool(k::SCREENSHOT_GUIDES).then(|| self.gpu.as_ref().and_then(|g| g.guide.as_ref().map(|(_, gd)| gd.clone()))).flatten();
-        if strokes.is_empty() && guide.is_none() { return Some((px, w, h)) }
+        if !overlay || (strokes.is_empty() && guide.is_none()) { return Some((px, w, h)) }
         let (gw, gop, gcol) = { let st = &self.settings; (st.float(k::SAFETY_WIDTH), st.float(k::SAFETY_OPACITY) as f32, min_ui::color_picker::parse_hex(&st.string(k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0])) };
         let g = self.gpu.as_mut()?;
         let (dev, q) = (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone());
@@ -148,6 +159,27 @@ impl crate::App {
             for i in 0..3 { c[i] = c[i] * (1.0 - a) + lin(o[i]) * a; }
         }
         Some((px, w, h))
+    }
+    /// A note's two records, taken with its clean frame (QCView `viewerAidsTag` / `ocioChainTag`): the viewer aids (+ the
+    /// Knee) and the colour chain, exact names — a note is a record. minColor is named by its preset (QCView named OCIO only).
+    pub(crate) fn note_tags(&mut self) -> (String, String) {
+        let dual = self.dual.is_some();
+        let aids = self.gpu.as_mut().and_then(|g| color::slot_engine(g, 0, dual).map(|e| e.viewer_aids())).unwrap_or_default();
+        if !self.settings.bool(k::COLOR_ENABLED) || self.color_bound[0].is_none() { return (viewer_tag(aids, None), String::new()) }
+        let (_, stored, _) = self.chain_of(&self.slot_item(0));
+        match stored.chain {
+            crate::color_model::ClipChain::Ocio(o) => {
+                let mut clip = vec![o.input.clone()];
+                if !o.look.is_empty() { clip.push(o.look.clone()); }
+                if !o.scene_lut.is_empty() { clip.push(std::path::Path::new(&o.scene_lut).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); }
+                let knee = o.knee.enabled.then(|| (o.knee.source_nits, if view_is_sdr(&o.view) { 100.0 } else { o.knee.target_nits }));
+                (viewer_tag(aids, knee), format!("OCIO: {} \u{2192} {}", clip.join(" + "), o.view))
+            }
+            crate::color_model::ClipChain::MinColor(c) => {
+                let knee = (c.knee_on != 0).then_some((c.knee_src, c.knee_tgt));
+                (viewer_tag(aids, knee), if stored.preset.is_empty() { "minColor".into() } else { format!("minColor: {}", stored.preset) })
+            }
+        }
     }
     /// Re-target the slot's chain to SDR for the capture (QCView's `setSdrCapture`).
     fn sdr_retarget(&mut self, slot: usize) -> Restore {
