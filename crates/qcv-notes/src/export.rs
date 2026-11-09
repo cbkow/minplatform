@@ -139,7 +139,7 @@ body{margin:0;color:var(--g800);font:400 14px/20px var(--sans);-webkit-font-smoo
 ::selection{background:var(--sel);color:var(--g900)}
 main{padding:40px 48px 96px;max-width:1600px;margin:0 auto}
 header.doc{display:flex;align-items:center;gap:16px;padding-bottom:20px;margin-bottom:24px;border-bottom:1px solid var(--g300)}
-header.doc .brand{width:40px;height:40px;flex:none}
+header.doc .brand{width:40px;height:40px;flex:none;filter:invert(1)}   /* the black mark, inverted for the dark page (the user 2026-11-08) */
 header.doc .titles{min-width:0;flex:1}
 h1{margin:0;font-size:24px;line-height:32px;font-weight:400;color:var(--g900);overflow-wrap:anywhere}
 .meta{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:2px;font:12px/18px var(--mono);color:var(--g600)}
@@ -203,7 +203,7 @@ tr.hide{display:none}
 @media (max-width:900px){main{padding:24px 16px 64px}header.doc{flex-wrap:wrap}col.c-f{width:140px}.thumb,.nothumb{width:128px}col.c-t{width:110px}}
 @media print{
 :root{--base:#fff;--l1:#fff;--l2:#f4f4f4;--g200:#e6e6e6;--g300:#dadada;--g400:#c6c6c6;--g500:#8f8f8f;--g600:#6d6d6d;--g700:#464646;--g800:#222;--g900:#000}
-#lb,.filters{display:none!important}main{padding:0;max-width:none}tr{break-inside:avoid}tr.hide{display:table-row}tbody tr:hover{background:none}}
+#lb,.filters{display:none!important}header.doc .brand{filter:none}main{padding:0;max-width:none}tr{break-inside:avoid}tr.hide{display:table-row}tbody tr:hover{background:none}}
 "#;
 
 const LIGHTBOX: &str = r#"<div id="lb" aria-hidden="true"><span class="cnt"></span>
