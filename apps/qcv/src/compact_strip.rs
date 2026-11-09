@@ -21,6 +21,8 @@ pub struct CompactStrip {
     pub scrub_rect: Rect,
 }
 
+/// The live red (the LiveStrip's and the bin's dot, #e5484d): compact LIVE uses it too (the user 2026-11-09; QCView used the accent).
+const LIVE_RED: min_theme::Color = min_theme::Color::rgba(0xe5 as f32 / 255.0, 0x48 as f32 / 255.0, 0x4d as f32 / 255.0, 1.0);
 /// QCView's catalog context (canon row 195).
 fn tr(s: &str) -> String { min_i18n::trc_hint("CompactStrip", s) }
 
@@ -76,8 +78,8 @@ impl CompactStrip {
         paint::rect(scene, Rect::new(self.rect.x0, self.rect.y0 + t::HAIRLINE as f64 * scale, self.scrub_rect.x0, self.rect.y1), t::SCRUBBER_BACKGROUND_COLOR);
         paint::rect(scene, Rect::new(self.scrub_rect.x1, self.rect.y0 + t::HAIRLINE as f64 * scale, self.rect.x1, self.rect.y1), t::SCRUBBER_BACKGROUND_COLOR);
         self.play.paint(scene, fonts, scale, now); self.pin.paint(scene, fonts, scale, now); self.exit.paint(scene, fonts, scale, now);
-        if self.live { let d = 8.0 * scale; let y = self.scrub_rect.y0 + (self.scrub_rect.height() - d) / 2.0; paint::rounded(scene, Rect::new(self.scrub_rect.x0, y, self.scrub_rect.x0 + d, y + d), d / 2.0, t::ACCENT_VISUAL_COLOR); }
-        let c = if self.live { t::ACCENT_CONTENT_COLOR_DEFAULT } else if self.tc_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
+        if self.live { let d = 8.0 * scale; let y = self.scrub_rect.y0 + (self.scrub_rect.height() - d) / 2.0; paint::rounded(scene, Rect::new(self.scrub_rect.x0, y, self.scrub_rect.x0 + d, y + d), d / 2.0, LIVE_RED); }
+        let c = if self.live { LIVE_RED } else if self.tc_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT };
         let l = fonts.layout(&self.tc, Family::Mono, t::TIMECODE_WELL_FONT_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(c));
         min_ui::fonts::draw_layout(scene, &l, kurbo::Affine::translate((self.tc_rect.x0 + t::FIELD_EDGE_TO_TEXT as f64 * scale, self.tc_rect.y0 + (self.tc_rect.height() - l.height() as f64) / 2.0)));
     }

@@ -76,6 +76,7 @@ impl crate::App {
                 if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_transfer_override(transfer_choice(t)); g.inspector.set_transfer(t); g.content_set = None; g.ui_dirty = true; }
                 self.project.set_transfer_override(&id, t);
             }
+            Cmd::Listen => { use crate::settings::k; let on = !self.settings.bool(k::LIVE_PLAYDOWN); self.settings.set_bool(k::LIVE_PLAYDOWN, on); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(on); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Cmd::Color => self.color_cmd(crate::color_drawer::Cmd::Toggle),
             Cmd::Notes => {}   // step 1b (Review)
             Cmd::Shot(d) => self.screenshot(d),

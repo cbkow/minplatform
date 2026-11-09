@@ -15,7 +15,7 @@ use vello::Scene;
 fn tr(s: &str) -> &str { min_i18n::trc("LiveStrip", s) }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Cmd { Transfer(TransferOverride), Color, Notes, Shot(crate::capture::Dest) }
+pub enum Cmd { Transfer(TransferOverride), Listen, Color, Notes, Shot(crate::capture::Dest) }
 
 /// The Auto label for a QCBridge host feed (the user 2026-11-09, diverging from QCView's "Auto · SDR, untagged"): the Transmit
 /// device asks the host for its WORKING colour space and never names it (the ring's ICC region stays empty), so "SDR"
@@ -37,7 +37,9 @@ impl LiveStrip {
     pub fn new() -> LiveStrip {
         let b = |icon: &'static str, tip: &str| ActionButton::new(icon, tip);
         let mac = cfg!(target_os = "macos");
-        let buttons = ActionGroup::new(vec![b("palette", tr("Color panel (⌃3)")), b("note-pencil", tr("Notes panel (⌃4)")),
+        // Listen (the user 2026-11-09): the live row owns it — one place, shown only while a feed is live; off by default (the host
+        // already plays the audio); the Settings row and QCView's Inspector switch are retired
+        let buttons = ActionGroup::new(vec![b("speaker-x", min_i18n::trc("InspectorPanel", "Listen in QCView")), b("palette", tr("Color panel (⌃3)")), b("note-pencil", tr("Notes panel (⌃4)")),
             b("file-image", tr(if mac { "Screenshot to clipboard (⌘T)" } else { "Screenshot to clipboard (Ctrl+T)" })), b("file-arrow-down", tr("Screenshot to Desktop (T)"))]).compact();
         let now = Instant::now();
         LiveStrip { rect: Rect::ZERO, transfer: TextButton::new("", Variant::Secondary).size_s(), buttons, menu: Menu::new(), tips: Tooltips::default(), facts: None, name: String::new(), app: String::new(), override_: TransferOverride::Auto, live_seconds: 0.0, fps: (0, now, 0.0), t0: now, scale: 1.0 }
@@ -45,14 +47,17 @@ impl LiveStrip {
     /// A language switch: the buttons' words.
     pub fn relabel(&mut self) { let f = Self::new(); for (b, n) in self.buttons.buttons.iter_mut().zip(f.buttons.buttons) { b.tooltip = n.tooltip; } }
     /// Per tick: the feed's facts, the item's name and Transfer choice. True when what is shown changed.
-    pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, now: Instant) -> bool {
+    pub fn sync(&mut self, facts: Facts, name: &str, app: &str, transfer: TransferOverride, live_seconds: f64, listen: bool, now: Instant) -> bool {
+        let lb = &mut self.buttons.buttons[0];
+        let listen_changed = lb.selected != listen;
+        lb.selected = listen; lb.icon = if listen { "speaker-high" } else { "speaker-x" };
         if now.duration_since(self.fps.1).as_secs_f64() >= 1.0 { let dt = now.duration_since(self.fps.1).as_secs_f64(); self.fps = (facts.frames, now, (facts.frames.saturating_sub(self.fps.0)) as f64 / dt); }
         let label = if transfer == TransferOverride::Auto { tr(AUTO).to_string() } else { tr(TRANSFERS.iter().find(|(o, _)| *o == transfer).map(|(_, l)| *l).unwrap_or("Auto")).to_string() };
-        let changed = self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
+        let changed = listen_changed || self.facts.as_ref() != Some(&facts) || self.name != name || self.override_ != transfer || self.transfer.label != label || (self.live_seconds as u64) != (live_seconds as u64);
         self.app = app.to_string(); self.transfer.label = label; self.override_ = transfer; self.name = name.to_string(); self.live_seconds = live_seconds;
         let shots = facts.has_frame;
-        for i in [2, 3] { self.buttons.buttons[i].enabled = shots; }   // fix 5: nothing to capture before a frame
-        self.buttons.buttons[1].enabled = false;   // notes on a live feed arrive with Review (step 1b)
+        for i in [3, 4] { self.buttons.buttons[i].enabled = shots; }   // fix 5: nothing to capture before a frame
+        self.buttons.buttons[2].enabled = false;   // notes on a live feed arrive with Review (step 1b)
         self.facts = Some(facts);
         changed
     }
@@ -82,7 +87,7 @@ impl LiveStrip {
         }
         for (i, resp) in self.buttons.event(e, now) {
             dirty = true;
-            if resp == Response::Clicked { cmds.push(match i { 0 => Cmd::Color, 1 => Cmd::Notes, 2 => Cmd::Shot(crate::capture::Dest::Clipboard), _ => Cmd::Shot(crate::capture::Dest::File) }); }
+            if resp == Response::Clicked { cmds.push(match i { 0 => Cmd::Listen, 1 => Cmd::Color, 2 => Cmd::Notes, 3 => Cmd::Shot(crate::capture::Dest::Clipboard), _ => Cmd::Shot(crate::capture::Dest::File) }); }
         }
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); }
         let over = if self.transfer.rect.contains(e.pos().map(|(x, y)| kurbo::Point::new(x, y)).unwrap_or_default()) && !matches!(e, Event::Leave) { Some((99u64, self.transfer.rect, tr(AUTO_TIP).to_string())) }

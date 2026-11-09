@@ -974,7 +974,7 @@ impl App {
                     let item = self.project.item(&l.item);
                     let (name, transfer) = item.map(|i| (i.name.clone(), i.transfer_override)).unwrap_or_default();
                     let facts = l.feed.facts(); let secs = l.feed.live_seconds(); let app = l.feed.host().app();
-                    if g.live_strip.sync(facts, &name, app, transfer, secs, now) { g.ui_dirty = true; }
+                    if g.live_strip.sync(facts, &name, app, transfer, secs, self.settings.bool(settings::k::LIVE_PLAYDOWN), now) { g.ui_dirty = true; }
                 }
                 if g.live_strip.animating() || g.live_strip.tick(now) { g.ui_dirty = true; }
             }
