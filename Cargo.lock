@@ -2981,6 +2981,7 @@ dependencies = [
  "png 0.17.16",
  "qcv-color",
  "qcv-meta",
+ "qcv-notes",
  "qcv-player",
  "qcv-project",
  "qcv-timeline",

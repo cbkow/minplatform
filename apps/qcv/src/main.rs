@@ -52,6 +52,7 @@ mod dual_controls;
 mod dual_bars;
 mod guides;
 mod guides_panel;
+mod annotate;
 
 /// QCView's catalog contexts for the shell's words (canon row 195): its toasts (WindowManager) and its window (Main).
 fn trw(s: &'static str) -> &'static str { min_i18n::trc("qcv::WindowManager", s) }
@@ -61,7 +62,8 @@ use min_i18n::fill;
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColor pass building off-thread (canon row 204)
     mincolor_rx: Option<std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>>, /// the Color drawer (canon row 199)
     drawer: color_drawer::ColorDrawer, /// dual view's controls on the status strip + the Save dialog + the seam's grab (row 173)
-    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// dual's A / B lanes (row 212) + the side the precision popover edits
+    dualc: dual_controls::DualControls, dual_dialog: min_ui::Dialog, seam_hot: bool, seam_drag: bool, /// the annotation tool's button is down
+    annot_down: bool, /// dual's A / B lanes (row 212) + the side the precision popover edits
     dual_bars: dual_bars::DualBars, popover_side: Option<qcv_player::Side>, /// the Inspector's subject last synced (slot, item): the Transfer chips refresh on a change
     insp_seen: (usize, String), /// the pointer's last movement (the floating tabs fade when it parks over the picture)
     last_move: Instant, /// the SDR white gain's last check (row 184; re-read every 2 s: the window moves, the slider changes)
@@ -81,7 +83,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
     left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
-    guide: Option<(String, guides::Guide)>, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
+    guide: Option<(String, guides::Guide)>, /// the annotated thumbnail's offscreen vello layer (built on first use)
+    thumb_layer: Option<min_ui::UiLayer>, project_panel: project_panel::ProjectPanel, title_shown: String, inspector: inspector_panel::InspectorPanel, content_set: Option<(u32, u32, u32, u32)>, waveform_enabled: bool, cursor: winit::cursor::CursorIcon,
     /// QCView's in-window menu bar (Windows; row 194) + its About modal
     menu_bar: Option<menu::InWindowMenu>, about: min_ui::Dialog }
 
@@ -104,7 +107,8 @@ struct App {
     /// QCView's project (row 141): the media pool, the bins, the per-clip choices; `loaded_item` = the media id in the player.
     project: qcv_project::ProjectManager, loaded_item: String, /// the saved Dual View this session came from (QCView `activeDualViewId`: Update overwrites it)
     active_dual_view: String, /// dual view's edit model: tracks A / B at the master rate (row 212); None outside dual
-    dual_editor: Option<qcv_timeline::Editor>,
+    dual_editor: Option<qcv_timeline::Editor>, /// the loaded clip's notes + the drawing tools (row 215)
+    annot: annotate::Annotations,
     /// the native menu bar (row 143)
     #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>,
     /// Alt went down with nothing else since: its release alone focuses the in-window bar (Windows' Alt tap)
@@ -348,7 +352,7 @@ impl App {
                     self.dual_editor = Some(ed);
                     if let Some(g) = self.gpu.as_mut() { g.dual_bars.selected = None; g.dual_bars.target = qcv_player::Side::B; if self.mincolor[1].is_none() && self.mincolor_ready[1].is_none() && !color::harness_active() { self.mincolor_ready[1] = Some(color::mincolor_ahead(&g.presenter.engine.device, &g.presenter.engine.queue)); } }
                     self.color_bound = [None, None]; self.ocio_rx = [None, None];
-                    self.dual = Some(d);
+                    self.dual = Some(d); self.annot.active = false; self.annot.load(None);   // annotations: single view only (row 215)
                     if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(true); }
                 }
                 Err(e) => { println!("dual: {e}"); self.toast(&fill(trw("Couldn’t open: %1"), &[&e]), min_ui::ToastKind::Negative); return }
@@ -432,6 +436,43 @@ impl App {
         // QCView `saveCurrentDualView`: each track's clips as clip maps (seconds), so QCView opens the view with the same edits
         let maps = |tr: &str| self.dual_editor.as_ref().and_then(|ed| ed.timeline.track(tr).map(|t| t.clips.iter().filter(|c| !c.is_gap).map(|c| clip_to_qcview(c, ed.timeline.rate)).collect())).unwrap_or_default();
         Some(qcv_project::DualPairData { media_id_a: self.loaded_item.clone(), media_id_b: self.project.b_source_media_id().to_string(), master_fps: fps, master_duration: d.frame_count() as f64 / fps.max(1e-9), clips_a: maps(qcv_timeline::TRACK_A), clips_b: maps(qcv_timeline::TRACK_B), in_point: d.in_point(), out_point: d.out_point() })
+    }
+    /// Ctrl+4 (QCView's Notes panel key; the drawer arrives with piece 4): annotating on / off — single view, a loaded clip.
+    fn toggle_annotating(&mut self) {
+        if self.dual.is_some() || self.pl_editor.is_some() || self.player.is_none() || self.annot.media.is_none() { self.annot.active = false; return }
+        self.annot.active = !self.annot.active; if !self.annot.active { self.annot.escape(); self.annot.selected = None; }
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; if !self.annot.active && g.cursor == winit::cursor::CursorIcon::Crosshair { g.cursor = winit::cursor::CursorIcon::Default; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); } }
+    }
+    /// After a committed edit: a new note's CLEAN frame (once — the picture alone, so no stroke in it), then the annotated
+    /// thumbnail redrawn through the SAME geometry as the screen (vello, offscreen) — both QCView needs to show the note.
+    fn after_annotation(&mut self, c: annotate::Committed) {
+        if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
+        let Some(media) = self.annot.media.clone() else { return };
+        let dir = qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(&media)); let _ = std::fs::create_dir_all(&dir);
+        let clean = dir.join(qcv_notes::io::image_filename(&c.key)); let annotated = dir.join(qcv_notes::io::annotated_filename(&c.key));
+        let Some(g) = self.gpu.as_mut() else { return };
+        // the clean frame: the display path 1:1 at the source size (QCView: captured once, never overwritten)
+        let current = self.annot.note_at_frame(self.player.as_ref().map(|p| p.current_frame()).unwrap_or(-1)).is_some_and(|n| n.timecode == c.key);
+        if c.new_note && current && !clean.exists() { if let Ok((px, w, h)) = g.presenter.engine.snapshot(min_present::engine::Snapshot::Display) { write_png_display(&clean.to_string_lossy(), &px, w, h, true); } }
+        // the annotated one: the clean PNG at the display aspect + the strokes (none left → the file goes, QCView's fallback is the clean one)
+        let Some(note) = self.annot.notes.iter().find(|n| n.timecode == c.key).cloned() else { let _ = std::fs::remove_file(&annotated); return };
+        let ss = qcv_notes::strokes::parse(note.annotation.as_ref());
+        if ss.is_empty() { let _ = std::fs::remove_file(&annotated); return }
+        let Ok(img) = image_rgba8(&clean) else { return };
+        let (dw, _) = g.presenter.engine.display_dims(); let (vw, vh) = img.1;
+        let par = if vw > 0 { g.presenter.engine.display_dims().0 as f64 / g.presenter.engine.video_size().0.max(1) as f64 } else { 1.0 };
+        let (w, h) = (((vw as f64) * par).round().max(1.0) as u32, vh.max(1));
+        let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
+        if g.thumb_layer.is_none() { g.thumb_layer = min_ui::UiLayer::new(&dev, w, h).ok(); }
+        let Some(layer) = g.thumb_layer.as_mut() else { return };
+        if layer.size() != (w, h) { layer.resize(&dev, w, h); }
+        let scene = layer.scene_mut(); scene.reset();
+        min_ui::paint::image(scene, &min_ui::paint::image_rgba8(vw, vh, img.0), kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
+        let geo = annotate::Geo { rect: [0.0, 0.0, w as f64, h as f64], px_per_src: w as f64 / dw.max(1) as f64 };
+        for s in &ss { annotate::draw(scene, s, &geo); }
+        layer.render(&dev, &q);
+        let px = min_present::readback::read_rgba8(&dev, &q, layer.texture(), w, h);
+        write_png_rgba8(&annotated.to_string_lossy(), &px, w, h);
     }
     /// A side's clip's own choices (QCView applies them per load): Range → its decoders, Aspect / Rotation / Transfer → its
     /// engine, Mix → its audio; and its metadata requested (the Inspector shows the target side's).
@@ -589,6 +630,7 @@ impl App {
         let key = self.project.pool().iter().find(|m| m.path == path).map(|m| m.id.clone()).unwrap_or_else(|| path.to_string());
         if !path.is_empty() { self.meta.request_video_extraction(&key, path); self.meta.request_adobe_extraction(&key, path); }
         self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
+        self.annot.load(if path.is_empty() || path.contains("://") { None } else { Some(std::path::Path::new(path)) });   // the clip's notes; undo starts over (row 215)
         g.title_shown.clear();
     }
     /// QCView `startPlaylist`: the entries resolved against the pool into a timeline, opened paused on its first clip; an
@@ -836,6 +878,8 @@ impl App {
                         rail.paint_foreground(scene, &mut g.fonts, scale, now);
                     }
                 }
+                // the frame's annotations, the live stroke, the selection (row 215: while annotating, single view)
+                if self.annot.active && self.dual.is_none() { if let (Some(p), Some(geo)) = (self.player.as_ref(), annot_geo(&g.presenter.engine)) { self.annot.paint(scene, p.current_frame(), &geo); } }
                 // the safety guide over each picture (row 215): side by side → both sides; wipe / difference / single → A (QCView)
                 if let Some((_, gd)) = g.guide.as_ref() {
                     let st = &self.settings;
@@ -1039,6 +1083,26 @@ impl App {
             if dd { g.ui_dirty = true; }
             if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
         }
+        // annotating (row 215): the active tool owns presses on the picture (and the drag that follows, wherever it goes)
+        if self.annot.active && self.dual.is_none() && !grabbed {
+            if let (Some(p), Some(geo)) = (self.player.as_ref(), annot_geo(&g.presenter.engine)) {
+                let (frame, fps) = (p.current_frame(), p.rate().as_f64());
+                let content = g.presenter.engine.content_rect().map(|(x, y, w, h)| kurbo::Rect::new(x as f64, y as f64, (x + w) as f64, (y + h) as f64));
+                let in_view = e.pos().is_some_and(|(x, y)| content.is_some_and(|c| c.contains(kurbo::Point::new(x, y))));
+                let mut done = None;
+                let used = match e {
+                    min_ui::Event::Down { x, y, button: min_ui::Button::Primary } if in_view => { if p.is_playing() && self.annot.tool == annotate::Tool::Select { } self.annot.press(geo.to_norm(x, y), frame, &geo); true }
+                    min_ui::Event::Move { x, y } if self.annot.drawing() || (self.annot.tool == annotate::Tool::Eraser && g.annot_down) => { done = self.annot.motion(geo.to_norm(x, y), frame, fps, &geo, g.annot_down); true }
+                    min_ui::Event::Up { x, y, button: min_ui::Button::Primary } if self.annot.drawing() || g.annot_down => { done = self.annot.release(geo.to_norm(x, y), frame, fps, &geo); true }
+                    _ => false,
+                };
+                if let min_ui::Event::Down { button: min_ui::Button::Primary, .. } = e { if in_view { g.annot_down = true; } }
+                if let min_ui::Event::Up { .. } = e { g.annot_down = false; }
+                if in_view && g.cursor != winit::cursor::CursorIcon::Crosshair && self.annot.tool != annotate::Tool::Select { g.cursor = winit::cursor::CursorIcon::Crosshair; g.window.set_cursor(winit::cursor::Cursor::Icon(g.cursor)); }
+                if used { g.ui_dirty = true; let _ = g; if let Some(c) = done { self.after_annotation(c); } return }
+            }
+        }
+        let g = self.gpu.as_mut().unwrap();
         // the Split wipe's seam on the picture: a 14-px grab strip, the resize cursor, press snaps, drag follows (QCView kSeamGrabWidth)
         if let (Some(sx), Some((cx, cy, cw, ch))) = (g.presenter.engine.dual().filter(|d| d.mode == CompareMode::Split).map(|d| d.seam_x()), g.presenter.engine.content_rect()) {
             let in_pic = |x: f64, y: f64| x >= cx as f64 && x < (cx + cw) as f64 && y >= cy as f64 && y < (cy + ch) as f64;
@@ -1567,6 +1631,26 @@ fn transfer_choice(t: qcv_project::TransferOverride) -> min_present::engine::Tra
 fn srgb_oetf(x: f32) -> f32 { let x = x.clamp(0.0, 1.0); if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 } }
 /// The display snapshot as the panel would show it: a linear-light surface is encoded with the sRGB curve (what the OS does), an
 /// encoded surface is written as is.
+/// Where the single view's picture is, for the annotation tools: its displayed rect and window px per source px.
+fn annot_geo(e: &min_present::engine::Engine) -> Option<annotate::Geo> {
+    let (rect, _, _) = e.picture_placement()?; let (dw, _) = e.display_dims();
+    Some(annotate::Geo { rect, px_per_src: rect[2] / dw.max(1) as f64 })
+}
+/// A PNG as RGBA8 (the clean thumbnail, read back for the annotated one).
+fn image_rgba8(path: &std::path::Path) -> Result<(Vec<u8>, (u32, u32)), String> {
+    let d = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?));
+    let mut r = d.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0; r.output_buffer_size()]; let info = r.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let px: Vec<u8> = match info.color_type { png::ColorType::Rgb => buf[..info.buffer_size()].chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(), png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(), _ => return Err("png colour type".into()) };
+    Ok((px, (info.width, info.height)))
+}
+/// RGBA8 → an RGB PNG (QCView's thumbnails are opaque).
+fn write_png_rgba8(path: &str, px: &[u8], w: u32, h: u32) {
+    let rgb: Vec<u8> = px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
+    let Ok(file) = std::fs::File::create(path) else { log::warn!("cannot write {path}"); return };
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h); enc.set_color(png::ColorType::Rgb); enc.set_depth(png::BitDepth::Eight);
+    if let Ok(mut wr) = enc.write_header() { let _ = wr.write_image_data(&rgb); }
+}
 fn write_png_display(path: &str, px: &[f32], w: u32, h: u32, linear_surface: bool) {
     if !linear_surface { return write_png_rgb8(path, px, w, h) }
     let enc: Vec<f32> = px.iter().enumerate().map(|(i, v)| if i % 4 == 3 { *v } else { srgb_oetf(*v) }).collect();
@@ -1650,8 +1734,8 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
-            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, insp_seen: (0, String::new()), dual_dialog: min_ui::Dialog::new(trv("Save dual view"), "", vec![(trv("Cancel"), min_ui::Variant::Secondary), (trv("Save"), min_ui::Variant::Primary)]).with_field(trv("Name"), ""), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+            compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, strip_hidden: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: min_ui::Dialog::new("QCView", &format!("{}\n\n{}", fill(trm("Version %1"), &[&env!("CARGO_PKG_VERSION")]), trm("Color-accurate review player.")), vec![(trm("Docs"), min_ui::Variant::Secondary), (trm("Close"), min_ui::Variant::Primary)]) });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
         // the scrubber's camera insets 16 px at both ends (the walk, 2026-11-08): past macOS's rounded bottom corners, so the
@@ -1831,6 +1915,13 @@ impl ApplicationHandler for App {
                     }
                     return
                 } }
+                // annotating (row 215): Esc cancels the stroke (else clears the selection), Delete removes the selected stroke, Ctrl+4 the mode
+                if pressed && self.annot.active {
+                    let frame = self.player.as_ref().map(|p| p.current_frame()).unwrap_or(0);
+                    if matches!(event.logical_key, Key::Named(NamedKey::Escape)) && self.annot.escape() { if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } return }
+                    if self.annot.tool == annotate::Tool::Select && matches!(event.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace)) { if let Some(c) = self.annot.delete_selected(frame) { self.after_annotation(c); } return }
+                }
+                if pressed && !event.repeat && self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "4") { self.toggle_annotating(); return }
                 if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { if self.gpu.as_ref().is_some_and(|g| g.compact) { self.toggle_compact(); return } if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); return } self.finish(); el.exit(); return }
                 let key = match &event.logical_key {
                     Key::Character(c) if c == " " => Some(qcv_player::Key::Space),
@@ -1845,6 +1936,10 @@ impl ApplicationHandler for App {
                     if handled { if let Some(p) = &self.player { println!("{a:?} → {} at frame {}{}", if p.is_playing() { "playing" } else { "paused" }, p.current_frame(), if p.is_fast_seeking() { " (shuttle)" } else { "" }); } }
                     else if a == Action::ToggleFullscreen { self.toggle_fullscreen(); }
                     else if a == Action::CycleBackground { self.cycle_background(); }
+                    else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.annot.active && self.dual.is_none() {
+                        let c = if a == Action::AnnotationUndo { self.annot.undo() } else { self.annot.redo() };
+                        if let Some(c) = c { self.after_annotation(c); }
+                    }
                     else if (a == Action::AnnotationUndo || a == Action::AnnotationRedo) && self.dual_editor.is_some() && self.dual.is_some() {
                         let ed = self.dual_editor.as_mut().unwrap(); let ok = if a == Action::AnnotationUndo { ed.undo_edit() } else { ed.redo_edit() };
                         if ok { self.after_dual_edit(true); }
@@ -1951,7 +2046,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { dual: None, active_dual_view: String::new(), dual_editor: None, colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
+    let app = App { dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

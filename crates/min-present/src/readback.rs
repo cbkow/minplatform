@@ -27,6 +27,19 @@ pub fn read_rgba16f(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Text
     out
 }
 
+/// An `Rgba8Unorm` texture as RGBA bytes, row-major (the UI layer's renders — annotation thumbnails, goldens).
+pub fn read_rgba8(device: &wgpu::Device, queue: &wgpu::Queue, tex: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
+    let pitch = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tex-readback-8"), size: (pitch * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_texture_to_buffer(wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All }, wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pitch), rows_per_image: Some(h) } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+    queue.submit([enc.finish()]);
+    let data = read_buffer(device, queue, &buf, (pitch * h) as u64);
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h as usize { out.extend_from_slice(&data[y * pitch as usize..y * pitch as usize + (w * 4) as usize]); }
+    out
+}
+
 pub fn h2f(h: u16) -> f32 {
     let (s, e, m) = (((h >> 15) & 1) as u32, ((h >> 10) & 0x1f) as u32, (h & 0x3ff) as u32);
     let bits = if e == 0 { if m == 0 { s << 31 } else { let (mut e2, mut m2) = (113u32, m); while m2 & 0x400 == 0 { m2 <<= 1; e2 -= 1; } (s << 31) | (e2 << 23) | ((m2 & 0x3ff) << 13) } }
