@@ -167,7 +167,8 @@ pub fn resolve(want: &str) -> Option<&'static str> {
 /// Make `want` the active language (resolved as [`resolve`] does); "" or "en" = the English source. Returns the
 /// code now active.
 pub fn set_language(want: &str) -> &'static str {
-    let Some(code) = resolve(want) else { state().write().unwrap().active = None; return "en" };
+    // English clears the catalog — and counts as a switch too (the walk 2026-11-09: back to English needed a restart)
+    let Some(code) = resolve(want) else { let mut s = state().write().unwrap(); if s.active.take().is_some() { GENERATION.fetch_add(1, Ordering::Relaxed); } return "en" };
     let mut s = state().write().unwrap();
     let cat: &'static Catalog = match s.parsed.get(code) {
         Some(c) => c,
@@ -306,7 +307,9 @@ mod tests {
         assert_eq!(resolve("pt"), Some("pt_BR"));
         assert_eq!(resolve("en_GB"), None);
         assert_eq!(available()[0], "en");
-        set_language("en");
+        let g = generation(); set_language("de"); assert!(generation() > g, "a switch to a language bumps");
+        let g = generation(); set_language("en"); assert!(generation() > g, "back to English bumps too");
+        let g = generation(); set_language("en"); assert_eq!(generation(), g, "English again is no switch");
     }
 
     #[test]
