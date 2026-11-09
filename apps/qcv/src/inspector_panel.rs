@@ -488,6 +488,11 @@ impl InspectorPanel {
     /// The tooltip clock (true = redraw).
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) }
     /// Tooltips, over every panel.
+    /// Dual view: the side the Inspector shows (row 213) leads the File section's header in its colour; None outside dual.
+    pub fn set_side(&mut self, side: Option<qcv_player::Side>) -> bool {
+        let b = side.map(|s| if s == qcv_player::Side::A { ("A".to_string(), min_theme::tokens::SIDE_A_COLOR) } else { ("B".to_string(), min_theme::tokens::SIDE_B_COLOR) });
+        if self.groups[0].section.badge == b { return false } self.groups[0].section.badge = b; true
+    }
     pub fn paint_overlays(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, scale, bounds, now); }
     /// The harness: a chip's rect by its row label and index.
     pub fn chip_rect(&self, label: &str, i: usize) -> Option<Rect> { self.groups.iter().flat_map(|g| g.items.iter()).find_map(|it| match it { Item::Chips(c) if c.id == label => c.group.buttons.get(i).map(|b| b.rect), _ => None }) }

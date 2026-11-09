@@ -759,6 +759,7 @@ impl App {
                 let lh = g.settings_panel.layout(&mut g.fonts, lc.x0, lc.x1, lc.y0 + ph + bh, scale); g.left.content_height = ph + bh + lh;
                 let islot = if self.dual.is_some() && g.dual_bars.target == qcv_player::Side::B { 1 } else { 0 };
                 { let en: &min_present::engine::Engine = match g.presenter.engine.dual() { Some(d) if self.dual.is_some() => if islot == 1 { &d.b } else { &d.a }, _ => &g.presenter.engine }; let (geo, dims) = (en.geometry(), en.display_dims()); g.inspector.set_geometry(geo, dims); }
+                if g.inspector.set_side(self.dual.is_some().then(|| if islot == 1 { qcv_player::Side::B } else { qcv_player::Side::A })) { g.ui_dirty = true; }
                 let iid = if islot == 1 { self.project.b_source_media_id().to_string() } else { self.loaded_item.clone() };
                 if g.insp_seen != (islot, iid.clone()) { if let Some(m) = self.project.item(&iid) { g.inspector.set_transfer(m.transfer_override); } g.insp_seen = (islot, iid); }
                 // the EXR layer tiles: the loaded sequence item's layers (the project's), its current layer, its first frame

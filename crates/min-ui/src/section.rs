@@ -17,10 +17,11 @@ pub fn card_color() -> min_theme::Color { if layer2() { t::GRAY_100 } else { t::
 /// The tile behind a whole section (header + body) when the layer-2 option is on.
 pub fn paint_tile(scene: &mut Scene, r: Rect, scale: f64) { if layer2() && r.height() > 0.0 { paint::rounded(scene, r, t::CORNER_RADIUS_500 as f64 * scale, t::BACKGROUND_LAYER_2_COLOR); } }
 
-pub struct Section { pub title: String, pub expanded: bool, pub rect: Rect, hovered: bool, pressed: bool, hover: Ramp }
+pub struct Section { pub title: String, /// a short lead before the title in its own colour (dual view's side letter)
+    pub badge: Option<(String, min_theme::Color)>, pub expanded: bool, pub rect: Rect, hovered: bool, pressed: bool, hover: Ramp }
 
 impl Section {
-    pub fn new(title: &str, expanded: bool) -> Section { Section { title: title.to_string(), expanded, rect: Rect::ZERO, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } }
+    pub fn new(title: &str, expanded: bool) -> Section { Section { title: title.to_string(), badge: None, expanded, rect: Rect::ZERO, hovered: false, pressed: false, hover: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } }
     pub fn height(scale: f64) -> f64 { t::RAIL_SECTION_HEADER_HEIGHT as f64 * scale }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     /// Returns (toggled, redraw needed).
@@ -52,6 +53,7 @@ impl Section {
         let sz = t::RAIL_SECTION_CHEVRON_SIZE * scale as f32;
         let mut x = row.x0 + t::SPACING_100 as f64 * scale;
         if let Some(g) = fonts.icon(if self.expanded { "caret-down" } else { "caret-right" }, sz, c) { crate::fonts::draw_layout(scene, &g, Affine::translate((x, row.y0 + (row.height() - g.height() as f64) / 2.0))); x += sz as f64 + t::SPACING_100 as f64 * scale; }
+        if let Some((b, bc)) = &self.badge { let bl = fonts.layout(b, Family::Sans, t::RAIL_SECTION_HEADER_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(*bc)); crate::fonts::draw_layout(scene, &bl, Affine::translate((x, row.y0 + (row.height() - bl.height() as f64) / 2.0))); x += bl.width() as f64 + t::SPACING_100 as f64 * scale; }
         let l = fonts.layout(&self.title, Family::Sans, t::RAIL_SECTION_HEADER_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, c);
         crate::fonts::draw_layout(scene, &l, Affine::translate((x, row.y0 + (row.height() - l.height() as f64) / 2.0)));
     }
