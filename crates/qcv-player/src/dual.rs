@@ -47,13 +47,17 @@ pub struct DualTransport {
     muted: [bool; 2], gains: [f32; 2],
     /// an empty side's audio player, waiting for its file
     spare_audio: [Option<Box<dyn AudioHooks>>; 2],
+    /// A LIVE side (canon row 258; QCView `DualLiveSource`): present and unclocked — its `media` is the live item, it has no
+    /// `Transport`; the shell owns the feed and shows its newest frame whatever the master does. It takes no part in the
+    /// master's rate or length, is never Blank, and seek / scrub / play / step pass it by.
+    live: [bool; 2],
 }
 
 impl DualTransport {
     /// A and / or B (either may be empty: that side is a drop target). Opens PAUSED at frame 0, like QCView's entry.
     pub fn open(a: Option<MediaInfo>, b: Option<MediaInfo>, opts: TransportOptions) -> Result<DualTransport, Error> {
         let mut timer = PlaybackTimer::new(); timer.set_looping(opts.loop_enabled);
-        let mut d = DualTransport { timer, sides: [None, None], media: [None, None], loop_enabled: opts.loop_enabled, opts, rate: Rate::new(24, 1), fps: 24.0, frames: 0, in_point: -1, out_point: -1, review_speed: 1.0, user_wants_playback: false, gate: None, scrubbing: None, shuttle: None, edit_scrub: None, blank: [false; 2], muted: [false, true], gains: [-1.0; 2], spare_audio: [None, None] };
+        let mut d = DualTransport { timer, sides: [None, None], media: [None, None], loop_enabled: opts.loop_enabled, opts, rate: Rate::new(24, 1), fps: 24.0, frames: 0, in_point: -1, out_point: -1, review_speed: 1.0, user_wants_playback: false, gate: None, scrubbing: None, shuttle: None, edit_scrub: None, blank: [false; 2], muted: [false, true], live: [false; 2], gains: [-1.0; 2], spare_audio: [None, None] };
         if let Some(m) = a { d.set_side(Side::A, Some(m))?; }
         if let Some(m) = b { d.set_side(Side::B, Some(m))?; }
         Ok(d)
@@ -75,12 +79,21 @@ impl DualTransport {
         // the side's audio player moves to the new file (it reopens there); an emptied side keeps it for the next one
         let au = match std::mem::replace(&mut self.sides[i], None) { Some(mut old) => { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); drop_off_thread(old); Some(au) } None => self.spare_audio[i].take() };
         if let Some(au) = au { match t.as_mut() { Some(t) => t.set_audio(au), None => self.spare_audio[i] = Some(au) } }
-        self.sides[i] = t;
+        self.sides[i] = t; self.live[i] = false;
         self.media[i] = m; self.blank[i] = false; self.gains[i] = -1.0;
         self.retime(sec);
         let f = self.current_frame();
         if let Some(t) = self.sides[i].as_mut() { let sf = side_frame(f, self.fps, t.rate().as_f64()); t.follow(sf); if t.has_picture_at(sf) { t.seek_to_frame(sf as i32); } if self.user_wants_playback { t.play(); } }
         Ok(())
+    }
+    /// Make one side LIVE in place (row 258): the item's description, no transport. The playhead, in / out and the other
+    /// side stay; the master re-times on the clocked side alone (none → 24 fps, length 0, as QCView).
+    pub fn set_live_side(&mut self, side: Side, m: MediaInfo) {
+        let i = side as usize;
+        let sec = self.timer.position();
+        if let Some(mut old) = self.sides[i].take() { let au = std::mem::replace(&mut old.audio, Box::new(crate::transport::NoAudio)); drop_off_thread(old); self.spare_audio[i] = Some(au); }
+        self.media[i] = Some(m); self.live[i] = true; self.blank[i] = false; self.gains[i] = -1.0;
+        self.retime(sec);
     }
     /// Follow an edited dual timeline (row 212; tracks A / B at the master rate): each side takes its track at its own rate,
     /// the master re-times (the longer side), both sides re-seek to the playhead.
@@ -132,6 +145,12 @@ impl DualTransport {
     pub fn side(&self, s: Side) -> Option<&Transport> { self.sides[s as usize].as_ref() }
     pub fn side_mut(&mut self, s: Side) -> Option<&mut Transport> { self.sides[s as usize].as_mut() }
     pub fn media(&self, s: Side) -> Option<&MediaInfo> { self.media[s as usize].as_ref() }
+    /// The side is a live source (present, unclocked).
+    pub fn is_live(&self, s: Side) -> bool { self.live[s as usize] }
+    /// The side shows something: a clocked transport or a live source ("is there a B?" for the outputs, the chips, colour).
+    pub fn present(&self, s: Side) -> bool { self.sides[s as usize].is_some() || self.live[s as usize] }
+    /// A side with a clock (QCView `hasClockedSide`): without one there is nothing for the transport bar to drive.
+    pub fn has_clocked_side(&self) -> bool { self.sides.iter().any(|t| t.is_some()) }
     pub fn rate(&self) -> Rate { self.rate }
     pub fn frame_count(&self) -> i32 { self.frames }
     /// QCView `DualPlaybackTimer::currentFrame`: FLOOR of the position (the single timer rounds) — a frame shows for its whole
@@ -337,6 +356,7 @@ impl DualTransport {
         let f = self.current_frame(); let fps = self.fps;
         let mut out = [SideUpdate::Same; 2];
         for i in 0..2 {
+            if self.live[i] { continue }   // a live side is the shell's: never Blank, never clocked
             let Some(t) = self.sides[i].as_mut() else { if !self.blank[i] { self.blank[i] = true; out[i] = SideUpdate::Blank; } continue };
             let sf = side_frame(f, fps, t.rate().as_f64());
             t.follow(sf);
@@ -366,6 +386,30 @@ mod tests {
         ok.then(|| p.to_string_lossy().into_owned())
     }
     fn settle(d: &mut DualTransport) { for _ in 0..400 { d.tick(Instant::now()); if !d.seek_in_flight() { for _ in 0..5 { d.tick(Instant::now()); std::thread::sleep(Duration::from_millis(5)); } return } std::thread::sleep(Duration::from_millis(5)); } }
+    #[test]
+    fn a_live_side_is_present_unclocked_and_never_blank() {
+        // canon row 258 (QCView `DualLiveSource`): the master's rate and length come from the clocked side alone; a live side
+        // is never Blank and seeks pass it by; live + live (or live + empty) has no clock at all
+        let Some(a) = clip("live-a", "24", 1.0) else { eprintln!("ffmpeg missing: skipped"); return };
+        let live = |id: &str| MediaInfo { id: id.into(), name: id.into(), path: format!("qcbae://{id}"), kind: ClipMediaKind::Video, rate: Rate::new(0, 1), duration: 0, width: 1920, height: 1080, ..media_info(&a).unwrap() };
+        let opts = TransportOptions { scrub: None, ..Default::default() };
+        let mut d = DualTransport::open(Some(media_info(&a).unwrap()), None, opts.clone()).unwrap();
+        d.set_live_side(Side::B, live("ae"));
+        assert!(d.is_live(Side::B) && d.present(Side::B) && d.side(Side::B).is_none() && d.media(Side::B).unwrap().id == "ae");
+        assert!(d.has_clocked_side()); assert_eq!((d.rate().as_f64().round() as i32, d.frame_count()), (24, 24), "the file side is the clock");
+        settle(&mut d);
+        d.seek_to_frame(12); settle(&mut d); d.play();
+        for _ in 0..20 { let u = d.tick(Instant::now()); assert_eq!(u[1], SideUpdate::Same, "a live side reports nothing: the shell shows its feed"); std::thread::sleep(Duration::from_millis(5)); }
+        d.pause(); assert_eq!(d.side_frame_of(Side::B, 12), None);
+        // the file leaves: live + empty has no clock (24 fps, length 0) and play does nothing
+        d.set_side(Side::A, None).unwrap();
+        assert!(!d.has_clocked_side() && d.present(Side::B) && !d.present(Side::A)); assert_eq!(d.frame_count(), 0);
+        d.play(); assert!(!d.is_playing());
+        // a file put on the live side makes it an ordinary side again
+        d.set_side(Side::B, Some(media_info(&a).unwrap())).unwrap();
+        assert!(!d.is_live(Side::B) && d.side(Side::B).is_some() && d.frame_count() == 24);
+        let _ = std::fs::remove_file(a);
+    }
     #[test]
     fn two_rates_share_one_clock_and_the_shorter_side_blanks() {
         let (Some(a), Some(b)) = (clip("a", "24", 2.0), clip("b", "30", 1.0)) else { eprintln!("ffmpeg missing: skipped"); return };
