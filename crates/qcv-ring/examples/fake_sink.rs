@@ -3,6 +3,14 @@
 //! request, heartbeat, quit when a ring that launched it retires), AJA's request (RGB10, auto raster, transfer = QCView's
 //! setting, letterbox, composite), the HDR block, every frame's desc checked, a status line like the real sinks', a report
 //! every second (fps, the shape, the centre pixel's 10-bit code, timecode, Paused, audio packets).
+//! `--cadence`: the frame-rate check — the ring polled every millisecond; each new frame's arrival interval and its step in
+//! `source_frame_index` (+1 = the next frame, 0 = the same one again, > 1 = frames never seen, < 0 = an older frame after a
+//! newer one), and a stand-in CARD that takes the newest frame once per source-frame period, as QCBridgeA's does (+1 = a
+//! new picture, 0 = a repeat, > 1 = a skip). A line a second while playing, the totals when the ring retires. `--card-ppm N`
+//! runs that card's clock N parts per million slow (a real card's clock is not the computer's: the phase between the two
+//! slides, and the check should see every phase). `--card-queue N`: the card takes the OLDEST of up to N frames queued as they
+//! arrive (a sink that reads the ring as frames land, not once per card frame) — a repeat only when the queue is empty, a
+//! skip only when it overflows.
 //!   register it: a manifest {"id":"ajatest","name":"Fake AJA (test)","label":"AJA test","product":"fake_sink",
 //!   "exec":"<this binary>","args":["--id","ajatest"],"raster":"auto"} in $QCV_OUTPUT_MANIFEST_DIR
 use qcv_ring::layout::*;
@@ -13,6 +21,8 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let id = std::env::var("QCVO_ID").ok().or_else(|| a.iter().position(|x| x == "--id").and_then(|i| a.get(i + 1).cloned())).unwrap_or_else(|| "ajatest".into());
     let ndi = a.iter().any(|x| x == "--ndi");
+    let cadence = a.iter().any(|x| x == "--cadence");
+    let mut cad = Cadence { queue_cap: a.iter().position(|x| x == "--card-queue").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0), ppm: a.iter().position(|x| x == "--card-ppm").and_then(|i| a.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0.0), ..Default::default() };
     // the layers asked for: both, as the real sinks do by default (`--no-layers` = the clean picture)
     let layers = if a.iter().any(|x| x == "--no-layers") { 0 } else { v::LAYER_GUIDES | v::LAYER_ANNOTATIONS };
     let name = qcvo::name_for(&id).expect("a valid id"); let aname = qcvo::audio_name_for(&id).unwrap();
@@ -44,10 +54,13 @@ fn main() {
                 let c = unsafe { std::ptr::read_unaligned(px.add(((d.height / 2) * d.bytes_per_row + (d.width / 2) * 4) as usize) as *const u32) };
                 // where the 16x9 guide's title-safe line runs (5 % in, mid height): the layers' check
                 edge = unsafe { std::ptr::read_unaligned(px.add(((d.height / 2) * d.bytes_per_row + (d.width / 20) * 4) as usize) as *const u32) };
+                if cadence { cad.arrived(&d); }
                 frames += 1; last = Some((d, c)); r.report_seen(r.newest_seq()); r.release();
             }
             if let Some(au) = &audio { let mut desc = AudioPacketDesc::default(); let mut planes = vec![0f32; 2 * 1024]; let mut dropped = 0; while au.next_packet(&mut alast, &mut desc, &mut planes, &mut dropped) == qcv_ring::audio::Next::Packet { apk += 1; } }
+            if cadence { cad.card_tick(); }
             if report.elapsed() >= Duration::from_secs(1) {
+                if cadence { cad.report(&id, false); }
                 let dt = report.elapsed().as_secs_f64(); report = Instant::now();
                 match &last {
                     Some((d, c)) => {
@@ -62,8 +75,64 @@ fn main() {
                 r.write_status(&format!("fake {} {}  ·  {:.0} fps", if ndi { "NDI" } else { "AJA" }, shape.split(" from").next().unwrap_or(""), frames as f64 / dt));
                 frames = 0; apk = 0;
             }
-            std::thread::sleep(Duration::from_millis(4));
+            std::thread::sleep(Duration::from_millis(if cadence { 1 } else { 4 }));
         }
+        if cadence { cad.report(&id, true); }
         if launched { println!("fake_sink {id}: launched by QCView — quitting"); return }
+    }
+}
+
+/// `--cadence` (see the module's note). Steps are counted while the frames say Playing; a jump of more than a second of frames
+/// either way is a seek or a loop, counted apart.
+#[derive(Default)]
+struct Cadence { ppm: f64, queue_cap: usize, queue: std::collections::VecDeque<i64>, primed: bool, last: Option<(Instant, i64)>, period: Option<Duration>, next_card: Option<Instant>, card_last: Option<i64>, newest: Option<(i64, bool, i64)>, sec: Tally, all: Tally }
+#[derive(Default, Clone)]
+struct Tally { new: u32, next: u32, same: u32, skipped: u32, back: u32, jumps: u32, arrival_ms: Vec<f32>, card_new: u32, card_repeat: u32, card_skip: u32, card_back: u32 }
+impl Tally {
+    fn line(&mut self) -> String {
+        let v = &mut self.arrival_ms; v.sort_by(|a, b| a.total_cmp(b));
+        let p = |q: f32| if v.is_empty() { 0.0 } else { v[(((v.len() - 1) as f32) * q).round() as usize] };
+        format!("new {} · steps +1 {} / same {} / skipped {} / back {} / jumps {} · arrival ms p5 {:.1} p50 {:.1} p95 {:.1} max {:.1} · card: new {} repeat {} skip {} back {}", self.new, self.next, self.same, self.skipped, self.back, self.jumps, p(0.05), p(0.5), p(0.95), p(1.0), self.card_new, self.card_repeat, self.card_skip, self.card_back)
+    }
+}
+impl Cadence {
+    fn arrived(&mut self, d: &OutputFrameDesc) {
+        let (now, idx, playing) = (Instant::now(), d.source_frame_index, d.flags & v::FRAME_PAUSED == 0);
+        let sec_frames = if d.source_fps_den > 0 { (d.source_fps_num / d.source_fps_den).max(1) as i64 } else { 24 };
+        if d.source_fps_num > 0 && d.source_fps_den > 0 { self.period = Some(Duration::from_secs_f64(d.source_fps_den as f64 / d.source_fps_num as f64 * (1.0 + self.ppm * 1e-6))); }
+        self.newest = Some((idx, playing, sec_frames));
+        if self.queue_cap > 0 { if self.queue.len() >= self.queue_cap { self.queue.pop_front(); } self.queue.push_back(idx); }
+        if let Some((t, li)) = self.last && playing {
+            let step = idx - li;
+            for s in [&mut self.sec, &mut self.all] {
+                s.new += 1;
+                if step.abs() > sec_frames { s.jumps += 1; continue }
+                s.arrival_ms.push(now.duration_since(t).as_secs_f32() * 1000.0);
+                match step { 1 => s.next += 1, 0 => s.same += 1, x if x > 1 => s.skipped += (x - 1) as u32, _ => s.back += 1 }
+            }
+        }
+        self.last = Some((now, idx));
+    }
+    fn card_tick(&mut self) {
+        let (Some(period), Some((mut idx, playing, sec_frames))) = (self.period, self.newest) else { return };
+        let now = Instant::now();
+        let due = *self.next_card.get_or_insert(now + period);
+        if now < due { return }
+        self.next_card = Some(if now.duration_since(due) > period * 4 { now + period } else { due + period });
+        if self.queue_cap > 0 {
+            // primed with two (one frame of cushion against the arrival jitter); an empty queue = the last picture again
+            if !self.primed { if self.queue.len() < 2.min(self.queue_cap) { return } self.primed = true; }
+            idx = match self.queue.pop_front() { Some(i) => i, None => match self.card_last { Some(l) => l, None => return } };
+        }
+        if let Some(l) = self.card_last && playing {
+            let step = idx - l;
+            if step.abs() <= sec_frames { for s in [&mut self.sec, &mut self.all] { match step { 1 => s.card_new += 1, 0 => s.card_repeat += 1, x if x > 1 => s.card_skip += 1, _ => s.card_back += 1 } } }
+        }
+        self.card_last = Some(idx);
+    }
+    fn report(&mut self, id: &str, total: bool) {
+        if total { println!("fake_sink {id}: cadence TOTAL: {}", self.all.line()); }
+        else if self.sec.new > 0 { println!("fake_sink {id}: cadence: {}", self.sec.line()); }
+        self.sec = Tally::default();
     }
 }

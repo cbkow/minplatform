@@ -92,7 +92,13 @@ pub struct Output {
 
 #[derive(Default)]
 pub struct OutputBus { pub outputs: Vec<Output>, last_poll: Option<Instant>, restored: bool, enc: Option<min_present::wire::WireEncoder>, tap: Vec<f32>, audio_t: i64, /// the overlay (guides / strokes): its vello layer and what it holds (size + the overlay's signature)
-    layer: Option<min_ui::UiLayer>, layer_key: Option<u64> }
+    layer: Option<min_ui::UiLayer>, layer_key: Option<u64>, trace: OutTrace }
+
+/// `QCV_TRACE_OUTPUT`: the output path's timing, a line a second — the gap between publish calls (the app's tick), the time
+/// one call takes on the main thread (render + encode + the ring copies), and the wire encoder's counters.
+#[derive(Default)]
+struct OutTrace { since: Option<Instant>, last: Option<Instant>, gap_ms: Vec<f32>, publish_ms: Vec<f32> }
+fn pct(v: &mut [f32], p: f32) -> f32 { if v.is_empty() { return 0.0 } v.sort_by(|a, b| a.total_cmp(b)); v[(((v.len() - 1) as f32) * p).round() as usize] }
 
 impl OutputBus {
     pub fn new() -> OutputBus { OutputBus { outputs: scan().into_iter().map(|m| Output { m, enabled: false, ring: None, audio: None, child: None, launched: false, launch_due: None, restarts: vec![], dying: None, plugin: String::new(), spec: None, spec_gen: 0, present: false, status: String::new(), shape: String::new(), req: None, req_gen: 0, auto_class: None, published: None, pub_tag: 0, drawn: 0, pinned_transfer: false, reanswer: false }).collect(), ..Default::default() } }
@@ -315,6 +321,22 @@ impl crate::App {
     /// Publish-on-change (QCView: no clock of its own): every accepted, present output whose stamp moved gets a frame; finished
     /// read-backs land in their rings.
     fn outputs_publish(&mut self) {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| std::env::var_os("QCV_TRACE_OUTPUT").is_some()) { return self.outputs_publish_now() }
+        let t0 = Instant::now();
+        { let tr = &mut self.outputs.trace; if let Some(l) = tr.last { tr.gap_ms.push(t0.duration_since(l).as_secs_f32() * 1000.0); } tr.last = Some(t0); tr.since.get_or_insert(t0); }
+        if let Some(e) = self.outputs.enc.as_mut() { e.trace = true; }
+        self.outputs_publish_now();
+        let tr = &mut self.outputs.trace; tr.publish_ms.push(t0.elapsed().as_secs_f32() * 1000.0);
+        if tr.since.is_some_and(|s| s.elapsed() >= Duration::from_secs(1)) {
+            tr.since = Some(Instant::now());
+            let mut st = self.outputs.enc.as_mut().map(|e| std::mem::take(&mut e.stats)).unwrap_or_default();
+            let (mut g, mut p) = (std::mem::take(&mut tr.gap_ms), std::mem::take(&mut tr.publish_ms));
+            println!("output trace: submitted {} busy {} taken {} multi {} disorder {} · readback ms p50 {:.1} p95 {:.1} max {:.1} · publish ms p50 {:.2} p95 {:.2} max {:.2} · tick gap ms p50 {:.1} p95 {:.1} max {:.1} (n={})",
+                st.submitted, st.busy, st.taken, st.multi, st.disorder, pct(&mut st.latency_ms, 0.5), pct(&mut st.latency_ms, 0.95), pct(&mut st.latency_ms, 1.0), pct(&mut p, 0.5), pct(&mut p, 0.95), pct(&mut p, 1.0), pct(&mut g, 0.5), pct(&mut g, 0.95), pct(&mut g, 1.0), g.len());
+        }
+    }
+    fn outputs_publish_now(&mut self) {
         let stamp = self.output_stamp();
         let (ov_sig, note) = (self.overlay_sig(), self.overlay_note().filter(|c| self.annot.has_ink(c)));
         let (gw, gcol) = { let st = &self.settings; let c = min_ui::color_picker::parse_hex(&st.string(k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0]); (st.float(k::SAFETY_WIDTH), peniko::Color::new([c[0], c[1], c[2], (st.float(k::SAFETY_OPACITY) as f32).clamp(0.0, 1.0)])) };

@@ -54,11 +54,19 @@ fn hlg_oetf(e: vec3<f32>) -> vec3<f32> {
 }
 "#;
 
-struct Staging { buf: wgpu::Buffer, w: u32, h: u32, bpr: u32, state: std::sync::Arc<std::sync::atomic::AtomicU8>, tag: u64 }
+struct Staging { buf: wgpu::Buffer, w: u32, h: u32, bpr: u32, state: std::sync::Arc<std::sync::atomic::AtomicU8>, tag: u64, /// the submit order (`take` hands frames out oldest first) and when it was submitted
+    seq: u64, at: std::time::Instant }
+
+/// What the copy-out did since the counters were last taken (`QCV_TRACE_OUTPUT`): frames submitted, refused with every
+/// staging buffer busy, handed out; takes that handed out two or more at once; takes whose buffers finished in another order
+/// than they were submitted; each frame's submit → handed-out time.
+#[derive(Default, Debug)]
+pub struct WireStats { pub submitted: u32, pub busy: u32, pub taken: u32, pub multi: u32, pub disorder: u32, pub latency_ms: Vec<f32> }
 // state: 0 free · 1 copying / mapping · 2 mapped (ready) · 3 failed
 
 pub struct WireEncoder { layout: wgpu::BindGroupLayout, pipes: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>, staging: Vec<Staging>, ubuf: wgpu::Buffer, /// bound when a frame has no overlay
-    none: wgpu::TextureView }
+    none: wgpu::TextureView, seq: u64, /// keep `stats` (off: nothing is counted)
+    pub trace: bool, pub stats: WireStats }
 
 /// QCView's graphics white on an HDR wire: 203 nits (PQ) = 75 % HLG, as a gain on the canvas's 100-nit white.
 pub const OVERLAY_HDR_GAIN: f32 = 2.03;
@@ -78,7 +86,7 @@ impl WireEncoder {
         }))).collect();
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("wire params"), size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let none = device.create_texture(&wgpu::TextureDescriptor { label: Some("wire: no overlay"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] }).create_view(&Default::default());
-        WireEncoder { layout, pipes, staging: vec![], ubuf, none }
+        WireEncoder { layout, pipes, staging: vec![], ubuf, none, seq: 0, trace: false, stats: WireStats::default() }
     }
     /// Quantise `canvas` into `fmt` and start its copy-out; `tag` comes back with the bytes. False when every staging buffer
     /// is still busy (QCView: the frame is skipped — "lossy by design"). `overlay` = the guides / strokes texture at the
@@ -90,18 +98,19 @@ impl WireEncoder {
         let i = match self.staging.iter().position(|s| s.state.load(Acquire) == 0 && s.w == w && s.h == h) {
             Some(i) => i,
             None => {
-                if self.staging.len() >= 3 { if let Some(j) = self.staging.iter().position(|s| s.state.load(Acquire) == 0 || s.state.load(Acquire) == 3) { self.staging.remove(j); } else { return false } }
+                if self.staging.len() >= 3 { if let Some(j) = self.staging.iter().position(|s| s.state.load(Acquire) == 0 || s.state.load(Acquire) == 3) { self.staging.remove(j); } else { if self.trace { self.stats.busy += 1; } return false } }
                 let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("wire staging"), size: (bpr * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-                self.staging.push(Staging { buf, w, h, bpr, state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)), tag: 0 });
+                self.staging.push(Staging { buf, w, h, bpr, state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)), tag: 0, seq: 0, at: std::time::Instant::now() });
                 self.staging.len() - 1
             }
         };
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wire") });
         let out = self.draw(device, queue, canvas, overlay, fmt, encoding, &mut enc);
+        self.seq += 1; let seq = self.seq; if self.trace { self.stats.submitted += 1; }
         let s = &mut self.staging[i];
         enc.copy_texture_to_buffer(out.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &s.buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s.bpr), rows_per_image: Some(h) } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
         queue.submit([enc.finish()]);
-        s.state.store(1, Release); s.tag = tag;
+        s.state.store(1, Release); s.tag = tag; s.seq = seq; s.at = std::time::Instant::now();
         let st = s.state.clone();
         s.buf.slice(..).map_async(wgpu::MapMode::Read, move |r| st.store(if r.is_ok() { 2 } else { 3 }, Release));
         true
@@ -124,15 +133,19 @@ impl WireEncoder {
         }
         out
     }
-    /// The oldest finished frame, handed to `f` as (bytes with `bpr`-byte rows, w, h, bpr, tag); its buffer is free again after.
+    /// The finished frames in the order they were submitted, each handed to `f` as (bytes with `bpr`-byte rows, w, h, bpr,
+    /// tag); their buffers are free again after. (The order is the submit sequence, not the tag: one output's frames share a
+    /// tag, and two that finish on the same poll would otherwise go out in buffer order — an older frame after a newer one.)
     pub fn take(&mut self, device: &wgpu::Device, f: &mut dyn FnMut(&[u8], u32, u32, u32, u64)) -> bool {
         use std::sync::atomic::Ordering::*;
         let _ = device.poll(wgpu::PollType::Poll);
         let mut any = false;
         let mut ready: Vec<usize> = (0..self.staging.len()).filter(|&i| self.staging[i].state.load(Acquire) == 2).collect();
-        ready.sort_by_key(|&i| self.staging[i].tag);
+        if self.trace && ready.len() > 1 { self.stats.multi += 1; if ready.windows(2).any(|p| self.staging[p[0]].seq > self.staging[p[1]].seq) { self.stats.disorder += 1; } }
+        ready.sort_by_key(|&i| self.staging[i].seq);
         for i in ready {
             let s = &self.staging[i];
+            if self.trace { self.stats.taken += 1; self.stats.latency_ms.push(s.at.elapsed().as_secs_f32() * 1000.0); }
             if let Ok(data) = s.buf.slice(..).get_mapped_range() { f(&data, s.w, s.h, s.bpr, s.tag); }
             s.buf.unmap(); s.state.store(0, Release); any = true;
         }
