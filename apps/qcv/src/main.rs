@@ -1242,6 +1242,7 @@ impl App {
             let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let (scmds, sd) = g.scrubber.event(&e, now, &st, scale); if sd { g.ui_dirty = true; }
             if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
+            self.window_move_arm(&e);   // compact: the picture moves the window too (the strip's timecode handle stays)
             return
         }
         // THE POINTER GRAB: a press on a band node (the scrubber, a transport button, the volume slider) owns Move / Up until the
@@ -1474,14 +1475,19 @@ impl App {
                 transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
             }
         }
-        // QCView `startWindowMove` (canon row 251): a left press on the PICTURE that nothing above claimed — no panel, menu or
-        // dialog, no annotation tool, not the Split seam, not a lane or a bar (each returned before here) — arms a window
-        // move; 8 px of travel with the button held hands the press to the OS (a native move: snapping, other monitors).
-        // A click that does not travel stays a click. Refused: the setting off, fullscreen.
-        match e {
+        self.window_move_arm(&e);
+    }
+    /// QCView `startWindowMove` (canon row 251): a left press on the PICTURE that nothing claimed — no panel, menu or dialog,
+    /// no annotation tool, not the Split seam, not a lane, a bar or the scrubber (each returned before the caller got here) —
+    /// arms a window move; 8 px of travel with the button held hands the press to the OS (a native move: snapping, other
+    /// monitors). A click that does not travel stays a click. Refused: the setting off, fullscreen. Compact mode too (the
+    /// user 2026-11-09: "we need it for compact mode too") — there the window has no title bar and the picture is most of it.
+    fn window_move_arm(&mut self, e: &min_ui::Event) {
+        match *e {
             min_ui::Event::Down { x, y, button: min_ui::Button::Primary } => {
                 let ok = self.settings.bool(settings::k::DRAG_VIEWPORT_MOVES_WINDOW) && !self.annot.active
-                    && self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.seam_drag && g.presenter.engine.content_rect().is_some_and(|(cx, cy, cw, ch)| x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64));
+                    && self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.seam_drag && !g.scrubber.hit(x, y) && !g.scrubber.is_pressed()
+                        && g.presenter.engine.content_rect().is_some_and(|(cx, cy, cw, ch)| x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64));
                 self.move_arm = ok.then_some((x, y));
             }
             min_ui::Event::Move { x, y } => if let Some((px, py)) = self.move_arm {
