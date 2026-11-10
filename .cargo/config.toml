@@ -2,3 +2,5 @@
 # Homebrew's stock one on pkg-config's path; Windows keeps FFMPEG_DIR (a set environment variable is never overridden).
 [env]
 PKG_CONFIG_PATH = { value = "external/ffmpeg/macos-arm64/lib/pkgconfig", relative = true }
+# macOS: every Rust and C++ object is built for the release floor (canon row 248), in development too — one build cache.
+MACOSX_DEPLOYMENT_TARGET = "13.0"

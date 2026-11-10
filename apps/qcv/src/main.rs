@@ -1696,7 +1696,7 @@ impl App {
         for a in args {
             if a.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("qcview://")) { self.open_project_link(&a); }
             else if a.contains("://") { self.connect_url(&a, ""); }
-            else if a.to_lowercase().ends_with(".qcvproj") { self.open_project(&a); }
+            else if { let l = a.to_lowercase(); l.ends_with(".qcvproj") || l.ends_with(".qcv") } { self.open_project(&a); }   // QCView: both are projects
             else { files.push(a); }
         }
         let mut first = true;
