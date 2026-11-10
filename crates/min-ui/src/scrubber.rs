@@ -38,6 +38,8 @@ pub struct Scrubber {
     pps: Option<f64>,
     scroll_x: f64,
     track_w: f64,
+    /// A middle-button drag pans the camera (canon row 247): the press's x and the scroll it started from.
+    pan: Option<(f64, f64)>,
     pressed: bool,
     hover_x: Option<f64>,
     last_press: Option<(Instant, f64)>,
@@ -56,7 +58,7 @@ pub struct Scrubber {
 impl Default for Scrubber { fn default() -> Self { Scrubber::new() } }
 
 impl Scrubber {
-    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0 } }
+    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, pan: None, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0 } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn is_fit(&self) -> bool { self.pps.is_none() }
@@ -84,6 +86,12 @@ impl Scrubber {
     /// The visible time window (seconds) and the track's width in whole pixel columns — the waveform probe's request.
     pub fn visible_window(&self, s: &ScrubState) -> (f64, f64) { let p = self.pps(s); if p <= 0.0 { return (0.0, 0.0) } (self.scroll_x / p, (self.scroll_x + self.track_w) / p) }
     pub fn track_columns(&self) -> usize { self.track_w.max(1.0) as usize }
+    /// The middle-button pan (row 247; ours — QCView pans with Alt + wheel only): the timeline follows the pointer, as far as
+    /// the zoom leaves room. The owner decides where a press may start it (the scrubber and the lanes under it).
+    pub fn begin_pan(&mut self, x: f64) { self.pan = Some((x, self.scroll_x)); }
+    pub fn is_panning(&self) -> bool { self.pan.is_some() }
+    pub fn pan_to(&mut self, x: f64, s: &ScrubState) -> bool { let Some((x0, from)) = self.pan else { return false }; let n = (from - (x - x0)).clamp(0.0, self.max_scroll(s)); let c = n != self.scroll_x; self.scroll_x = n; c }
+    pub fn end_pan(&mut self) { self.pan = None; }
     /// QCView's `applyWheel`: `dy` in Qt angle units (120 per notch); `pan` = Alt held.
     pub fn wheel(&mut self, x: f64, dy: f64, pan: bool, s: &ScrubState, scale: f64) -> bool {
         if self.dur(s) <= 0.0 || dy == 0.0 { return false }
@@ -101,7 +109,7 @@ impl Scrubber {
     }
     /// The page-turn follow during playback (QCView's `maybeFollowPlayhead`): true when the view moved.
     pub fn follow(&mut self, s: &ScrubState, scale: f64) -> bool {
-        if !s.playing || self.pressed || self.pps.is_none() || s.fps <= 0.0 { return false }
+        if !s.playing || self.pressed || self.pan.is_some() || self.pps.is_none() || s.fps <= 0.0 { return false }
         let margin = t::SCRUBBER_FOLLOW_MARGIN as f64 * scale;
         let px = s.current as f64 / s.fps * self.pps(s) - self.scroll_x;
         if px < margin || px > self.track_w - margin { let n = (s.current as f64 / s.fps * self.pps(s) - margin).clamp(0.0, self.max_scroll(s)); let c = n != self.scroll_x; self.scroll_x = n; return c }
@@ -245,6 +253,20 @@ fn ruler_label(secs: f64) -> String { let m = (secs / 60.0).floor() as i64; let 
 mod tests {
     use super::*;
     fn st() -> ScrubState { ScrubState { frames: 240, fps: 24.0, current: 0, in_point: -1, out_point: -1, playing: false, scrubbing: false, cached: None } }
+    /// Row 247: a middle-button drag carries the timeline with the pointer, stops at its ends, and does nothing at fit.
+    #[test]
+    fn a_middle_drag_pans_the_zoomed_timeline() {
+        let mut sc = Scrubber::new(); let s = st();
+        sc.layout(Rect::new(0.0, 0.0, 1016.0, 32.0), 1.0);
+        sc.begin_pan(500.0); assert!(!sc.pan_to(300.0, &s), "nothing to pan at fit"); sc.end_pan();
+        assert!(sc.wheel(508.0, 480.0, false, &s, 1.0));   // zoomed in about frame 120
+        let under = sc.frame_at_x(600.0, &s, 1.0);
+        sc.begin_pan(600.0); assert!(sc.is_panning());
+        assert!(sc.pan_to(500.0, &s)); assert_eq!(sc.frame_at_x(500.0, &s, 1.0), under, "the frame that was under the pointer follows it");
+        assert!(sc.pan_to(600.0 + 100000.0, &s)); assert_eq!(sc.frame_at_x(8.0, &s, 1.0), 0, "dragged far right: the start, no further");
+        sc.pan_to(600.0 - 100000.0, &s); assert_eq!(sc.frame_at_x(8.0 + 1000.0, &s, 1.0), 239, "dragged far left: the end");
+        sc.end_pan(); assert!(!sc.is_panning() && !sc.pan_to(0.0, &s));
+    }
     #[test]
     fn camera_zooms_about_the_cursor_and_fits_back() {
         let mut sc = Scrubber::new(); let s = st();

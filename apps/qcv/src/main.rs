@@ -1194,6 +1194,17 @@ impl App {
         if g.dual_dialog.open { let d1 = g.dual_dialog.pointer(&e, &mut g.fonts); let (b, d2) = g.dual_dialog.event(&e, now); if d1 || d2 { g.ui_dirty = true; } if let Some(i) = b { self.dual_dialog_done(i); } return }
         if g.stream_dialog.open { let d1 = g.stream_dialog.pointer(&e, &mut g.fonts); let (b, d2) = g.stream_dialog.event(&e, now); if d1 || d2 { g.ui_dirty = true; } if let Some(i) = b { self.stream_dialog_done(i); } return }
         if g.about.open { let (b, _) = g.about.event(&e, now); match b { Some(0) => { let _ = os_actions::open("https://qcview.app/"); g.about.cancel(); } Some(_) => g.about.cancel(), None => {} } g.ui_dirty = true; return }
+        // MIDDLE-DRAG pans the timeline (canon row 247): pressed on the scrubber or the lanes under it, it holds the grab until
+        // the button comes up — wherever the pointer goes
+        {
+            let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
+            match e {
+                min_ui::Event::Down { x, y, button: min_ui::Button::Middle } if !g.fullscreen && (g.scrubber.hit(x, y) || g.clip_bar.hit(x, y) || g.dual_bars.hit(x, y)) => { g.scrubber.begin_pan(x); return }
+                min_ui::Event::Move { x, .. } if g.scrubber.is_panning() => { if g.scrubber.pan_to(x, &st) { g.ui_dirty = true; } return }
+                min_ui::Event::Up { button: min_ui::Button::Middle, .. } if g.scrubber.is_panning() => { g.scrubber.end_pan(); return }
+                _ => {}
+            }
+        }
         // QCView's in-window menu bar (row 194): an open menu takes everything (its click-eater), the strip its own presses;
         // a band node's grab (a scrub released over the bar) is never the bar's
         if !g.compact && !g.fullscreen && !(matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. }) && (g.scrubber.is_pressed() || g.bar.is_pressed() || g.clip_bar.is_pressed() || g.dualc.dragging() || g.seam_drag || g.dual_bars.is_pressed())) {

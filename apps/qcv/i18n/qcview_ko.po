@@ -4527,3 +4527,8 @@ msgstr "색상 관리가 없는 Rec.709 데스크톱처럼 화면을 표시합�
 msgctxt "ColorPanel"
 msgid "Video gamma"
 msgstr "비디오 감마"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Middle drag"
+msgstr "가운데 버튼 드래그"

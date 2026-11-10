@@ -28,7 +28,7 @@ const fn a(key: &'static str) -> Bind { Bind { cmd: false, shift: false, alt: tr
 impl Bind {
     /// QCView's spellings: "Ctrl+Shift+O" on Windows, "⇧⌘O" on macOS (Apple's modifier order ⌥⇧⌘).
     pub fn label(&self, mac: bool) -> String {
-        let key = match self.key { "Scroll" => tr("Scroll").to_string(), k => k.to_string() };
+        let key = match self.key { "Scroll" => tr("Scroll").to_string(), "Middle drag" => tr("Middle drag").to_string(), k => k.to_string() };
         if mac { format!("{}{}{}{key}", if self.alt { "⌥" } else { "" }, if self.shift { "⇧" } else { "" }, if self.cmd { "⌘" } else { "" }) }
         else { format!("{}{}{}{key}", if self.cmd { "Ctrl+" } else { "" }, if self.shift { "Shift+" } else { "" }, if self.alt { "Alt+" } else { "" }) }
     }
@@ -86,7 +86,7 @@ pub const GROUPS: &[Group] = &[
         e("Delete Clip (leave gap)", &[k("Delete")]), e("Delete Clip (close gap)", &[s("Delete")]),
     ] },
     Group { heading: "Timeline (zoom + pan)", entries: &[
-        e("Zoom In", &[c("=")]), e("Zoom Out", &[c("-")]), e("Zoom (cursor anchored)", &[k("Scroll")]), e("Pan horizontally", &[a("Scroll")]),
+        e("Zoom In", &[c("=")]), e("Zoom Out", &[c("-")]), e("Zoom (cursor anchored)", &[k("Scroll")]), e("Pan horizontally", &[a("Scroll"), k("Middle drag")]),
     ] },
 ];
 
@@ -246,7 +246,7 @@ mod tests {
         for (code, po) in crate::i18n::CATALOGS.iter().filter(|(c, _)| *c != "en") {
             let cat = min_i18n::Catalog::parse(code, po);
             for g in GROUPS { for text in std::iter::once(g.heading).chain(g.entries.iter().map(|e| e.label)) { if cat.text("RightRail", text).is_none() { gaps.push(format!("{code}: {text}")); } } }
-            for text in ["Keyboard Shortcuts", "Filter shortcuts", "No shortcut matches", "Scroll"] { if cat.text("RightRail", text).is_none() { gaps.push(format!("{code}: {text}")); } }
+            for text in ["Keyboard Shortcuts", "Filter shortcuts", "No shortcut matches", "Scroll", "Middle drag"] { if cat.text("RightRail", text).is_none() { gaps.push(format!("{code}: {text}")); } }
         }
         assert!(gaps.is_empty(), "untranslated: {gaps:?}");
     }

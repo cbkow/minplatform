@@ -4527,3 +4527,8 @@ msgstr "カラーマネジメントなしの Rec.709 デスクトップと同じ
 msgctxt "ColorPanel"
 msgid "Video gamma"
 msgstr "ビデオガンマ"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Middle drag"
+msgstr "中ボタンドラッグ"

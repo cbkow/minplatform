@@ -4527,3 +4527,8 @@ msgstr "按未做色彩管理的 Rec.709 桌面的方式显示画面：暗部和
 msgctxt "ColorPanel"
 msgid "Video gamma"
 msgstr "视频伽马"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Middle drag"
+msgstr "中键拖动"

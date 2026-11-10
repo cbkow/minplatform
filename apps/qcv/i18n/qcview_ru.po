@@ -4543,3 +4543,8 @@ msgstr "Показывает изображение так, как его пок
 msgctxt "ColorPanel"
 msgid "Video gamma"
 msgstr "Видеогамма"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Middle drag"
+msgstr "Средняя кнопка + перетаскивание"

@@ -4535,3 +4535,8 @@ msgstr "Zeigt das Bild so, wie es ein nicht farbverwalteter Rec.709-Desktop zeig
 msgctxt "ColorPanel"
 msgid "Video gamma"
 msgstr "Video-Gamma"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "RightRail"
+msgid "Middle drag"
+msgstr "Mittlere Taste ziehen"
