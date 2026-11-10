@@ -6,6 +6,8 @@ set -e
 cd "$(dirname "$0")/../.."
 M="${QCV_DEMO_MEDIA:-/Users/Shared/QCView Demo/Media}"; mkdir -p "$M" "$M/Render_v001"
 FF="ffmpeg -nostdin -hide_banner -loglevel error -y"
+# 10-bit HEVC: VideoToolbox on macOS, x265 elsewhere (the Windows box)
+if [ "$(uname)" = Darwin ]; then HEVC10="-c:v hevc_videotoolbox -profile:v main10 -b:v 30M -pix_fmt p010le"; else HEVC10="-c:v libx265 -preset fast -crf 16 -pix_fmt yuv420p10le -x265-params log-level=error"; fi
 TONE="-f lavfi -i sine=frequency=1000:sample_rate=48000"
 A="-c:a pcm_s16le -ac 2 -af volume=-18dB"
 [ -f "$M/Color Bars 1080p.mov" ]   || $FF -f lavfi -i "smptehdbars=size=1920x1080:rate=24000/1001" $TONE -t 20 -c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le -color_primaries bt709 -color_trc bt709 -colorspace bt709 -timecode 01:00:00:00 $A "$M/Color Bars 1080p.mov"
@@ -15,8 +17,12 @@ A="-c:a pcm_s16le -ac 2 -af volume=-18dB"
 [ -f "$M/Test Pattern A v2.mov" ]  || $FF -f lavfi -i "testsrc2=size=1920x1080:rate=24000/1001,drawbox=x=420:y=300:w=260:h=150:color=0x808080@0.35:t=fill,eq=gamma=1.02" $TONE -t 24 -c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le -color_primaries bt709 -color_trc bt709 -colorspace bt709 -timecode 01:00:00:00 $A "$M/Test Pattern A v2.mov"
 [ -f "$M/Color Bars UHD.mov" ]     || $FF -f lavfi -i "smptehdbars=size=3840x2160:rate=24000/1001" $TONE -t 10 -c:v prores_ks -profile:v 2 -pix_fmt yuv422p10le -color_primaries bt709 -color_trc bt709 -colorspace bt709 $A "$M/Color Bars UHD.mov"
 # a PQ-tagged ramp: grey and colour gradients written as 10-bit HEVC with the HDR10 tags (the code values are the ramp's)
-[ -f "$M/Gradient PQ UHD.mp4" ]    || $FF -f lavfi -i "gradients=size=3840x2160:rate=24000/1001:c0=black:c1=white:x0=0:y0=0:x1=3840:y1=0:nb_colors=2" -t 10 -an -c:v hevc_videotoolbox -profile:v main10 -b:v 30M -pix_fmt p010le -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -bsf:v hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9 -tag:v hvc1 "$M/Gradient PQ UHD.mp4"
+[ -f "$M/Gradient PQ UHD.mp4" ]    || $FF -f lavfi -i "gradients=size=3840x2160:rate=24000/1001:c0=black:c1=white:x0=0:y0=0:x1=3840:y1=0:nb_colors=2" -t 10 -an $HEVC10 -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc -bsf:v hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9 -tag:v hvc1 "$M/Gradient PQ UHD.mp4"
 # a multi-layer EXR sequence: four generated "passes" combined into one multi-part file per frame (the parts are the layers)
+if [ ! -f "$M/Render_v001/Render_v001.0001.exr" ] && ! command -v exrmultipart > /dev/null; then
+  # no OpenEXR tools here: a single-layer sequence
+  $FF -f lavfi -i "testsrc2=size=1920x1080:rate=24" -frames:v 48 -start_number 1 -c:v exr -pix_fmt gbrpf32le "$M/Render_v001/Render_v001.%04d.exr"
+fi
 if [ ! -f "$M/Render_v001/Render_v001.0001.exr" ]; then
   T="$(mktemp -d)"
   $FF -f lavfi -i "testsrc2=size=1920x1080:rate=24" -frames:v 48 -start_number 1 -c:v exr -pix_fmt gbrpf32le "$T/beauty.%04d.exr"

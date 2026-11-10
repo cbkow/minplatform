@@ -168,7 +168,8 @@ impl Presenter {
     /// RGBA f32). For the scripted docs screenshots (`apps/qcv` `shots.rs`): no OS screenshot is involved. Float surfaces only
     /// (the Mac's; Windows' HDR one) — the 10-bit SDR path encodes for the swapchain and is not what a picture file wants.
     pub fn capture_window(&mut self) -> Option<(Vec<f32>, u32, u32)> {
-        if self.sdr10.is_some() || self.config.format != wgpu::TextureFormat::Rgba16Float { return None }
+        // the engine draws linear fp16 on a float surface and into the 10-bit SDR stage's source alike (Windows, row 220)
+        if self.sdr10.is_none() && self.config.format != wgpu::TextureFormat::Rgba16Float { return None }
         let (w, h) = (self.config.width.max(1), self.config.height.max(1));
         let tex = self.engine.device.create_texture(&wgpu::TextureDescriptor { label: Some("window capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
         let view = tex.create_view(&Default::default());
