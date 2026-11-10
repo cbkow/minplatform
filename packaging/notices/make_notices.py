@@ -7,7 +7,7 @@
   - FFmpeg's linked-in libraries: its own --enable flags (the Mac's from the built ffmpeg, Windows' from
     ffmpeg-win64.enabled, captured on the box) through components.json's table — an unknown flag FAILS.
 Checks: with --stage, every shipped binary must be named by an entry (macOS). For Windows the file patterns and the
-Cargo.lock hash go into a sidecar (.check) that make-msix.ps1 verifies against what it staged — no Python on that box.
+Cargo.lock hash and the pinned vcpkg ports go into a sidecar (.check) that make-msix.ps1 verifies against what it staged — no Python on that box.
 
   python3 packaging/notices/make_notices.py macos   --out <file> [--stage <qcview.app>]
   python3 packaging/notices/make_notices.py windows --out <file>          (also writes <file>.check)
@@ -33,6 +33,11 @@ def main():
     cfg = json.loads(read(HERE, "components.json"))
     version = re.search(r'^version\s*=\s*"([^"]+)"', read(ROOT, "apps/qcv/Cargo.toml"), re.M).group(1)
     comps = [c for c in cfg["components"] if plat in c["platforms"]]
+    # Windows: the versions are vcpkg's (tools/deps/vcpkg-windows.pin), which the box's packaging checks against what is installed
+    ports = dict(l.strip().split("=", 1) for l in read(ROOT, "tools/deps/vcpkg-windows.pin").splitlines() if "=" in l and not l.startswith(("#", "BASELINE")))
+    if plat == "windows":
+        claimed = {c["vcpkg"] for c in comps if c.get("vcpkg")}
+        if claimed != set(ports): die("components.json and tools/deps/vcpkg-windows.pin name different vcpkg ports: " + ", ".join(sorted(claimed ^ set(ports))))
 
     # FFmpeg's linked-in libraries
     if plat == "macos":
@@ -65,7 +70,7 @@ def main():
 
     e = html.escape; parts = []
     for c in comps:
-        v = pin(c.get("version")); texts = "".join(f"<pre>{e(read(HERE, 'licenses', t))}</pre>" for t in c.get("text", []))
+        v = ports[c["vcpkg"]].split("#")[0] if plat == "windows" and c.get("vcpkg") else pin(c.get("version")); texts = "".join(f"<pre>{e(read(HERE, 'licenses', t))}</pre>" for t in c.get("text", []))
         extra = ""
         if c.get("ffmpeg"):
             extra = "<p>Libraries linked into this build of FFmpeg, each under its own licence:</p><ul>" + "".join(f'<li>{e(n)} — {e(l)} — <a href="{e(u)}">{e(u)}</a></li>' for n, l, u in ff_libs) + "</ul>"
@@ -101,7 +106,7 @@ summary {{ cursor: pointer; }} pre {{ white-space: pre-wrap; font: 12px/1.45 ui-
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     open(out, "w", encoding="utf-8", newline="\n").write(page)
     if plat == "windows":
-        open(out + ".check", "w", encoding="ascii", newline="\n").write("lock " + lock + "\nversion " + version + "\nffmpeg " + " ".join(flags) + "\n" + "".join("file " + p + "\n" for p in patterns))
+        open(out + ".check", "w", encoding="ascii", newline="\n").write("lock " + lock + "\nversion " + version + "\nffmpeg " + " ".join(flags) + "\n" + "".join(f"port {k} {v}\n" for k, v in sorted(ports.items())) + "".join("file " + p + "\n" for p in patterns))
     print(f"notices: {os_name}, {len(comps)} components, {len(ff_libs)} FFmpeg libraries, {n_crates} crates → {out} ({os.path.getsize(out) // 1024} KB)")
 
 main()

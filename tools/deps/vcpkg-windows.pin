@@ -1,0 +1,25 @@
+# The vcpkg libraries the Windows release links and ships (canon row 248: the same set as the Mac's tools/deps/deps.pin).
+# BASELINE is the commit of github.com/microsoft/vcpkg the box's C:\vcpkg was at when they were built (2026-11-05); the
+# ports below are what that commit installs for the x64-windows triplet. To reproduce on a fresh machine:
+#   git -C C:\vcpkg checkout <BASELINE>;  C:\vcpkg\vcpkg.exe install opencolorio openexr libjpeg-turbo tiff --triplet x64-windows
+# packaging\windows\make-msix.ps1 REFUSES to pack when an installed port differs from this file (through the notices'
+# .check sidecar, which carries these lines), and the Windows notices print these versions.
+# One known difference from the Mac: vcpkg's libjpeg-turbo is 3.2.0 (the Mac builds 3.2.1); `cargo test -p min-image`
+# passes the same pixel fixtures on both.
+BASELINE=29718cfec805208b4e2d80ed91e681143b488dd7
+opencolorio=2.6.0
+openexr=3.5.3
+imath=3.2.3
+libjpeg-turbo=3.2.0#1
+tiff=4.7.2
+yaml-cpp=0.9.0#1
+expat=2.9.0
+pystring=1.2.0
+minizip-ng=4.1.0
+zlib=1.3.2#3
+libdeflate=1.26
+openjph=0.32.0#1
+zstd=1.5.7
+liblzma=5.8.4
+bzip2=1.0.8#6
+libspng=0.7.4#1

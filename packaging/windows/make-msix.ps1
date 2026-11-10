@@ -126,8 +126,27 @@ Copy-Item (Join-Path $root "LICENSE") $stage
 # is being shipped, and every staged binary. A stale or incomplete notices file FAILS the package.
 $notices = Join-Path $root "packaging\notices\generated\THIRD-PARTY-NOTICES-windows.html"
 $check = Get-Content "$notices.check"
-$want = @{}; $filePats = @()
-foreach ($l in $check) { $k, $v = $l -split " ", 2; if ($k -eq "file") { $filePats += $v } else { $want[$k] = $v } }
+$want = @{}; $filePats = @(); $ports = @{}
+foreach ($l in $check) {
+    $k, $v = $l -split " ", 2
+    if ($k -eq "file") { $filePats += $v } elseif ($k -eq "port") { $pn, $pv = $v -split " ", 2; $ports[$pn] = $pv } else { $want[$k] = $v }
+}
+# the vcpkg libraries are the pinned ones (tools\deps\vcpkg-windows.pin, carried by the sidecar): read vcpkg's own record
+$statusFile = Join-Path (Split-Path $Vcpkg -Parent) "vcpkg\status"
+if (-not (Test-Path $statusFile)) { throw "No $statusFile - cannot check the installed vcpkg libraries against the pin." }
+$triplet = Split-Path $Vcpkg -Leaf; $have = @{}
+foreach ($block in ((Get-Content $statusFile -Raw) -split "(\r?\n){2,}")) {
+    if ($block -match "(?m)^Feature:" -or $block -notmatch "(?m)^Status: install ok installed" -or $block -notmatch "(?m)^Architecture: $([regex]::Escape($triplet))\s*$") { continue }
+    $n = [regex]::Match($block, "(?m)^Package: (\S+)").Groups[1].Value
+    $ver = [regex]::Match($block, "(?m)^Version: (\S+)").Groups[1].Value
+    $pv = [regex]::Match($block, "(?m)^Port-Version: (\d+)").Groups[1].Value
+    if ($pv -and $pv -ne "0") { $ver = "$ver#$pv" }
+    $have[$n] = $ver
+}
+$drift = $ports.Keys | Sort-Object | Where-Object { $have[$_] -ne $ports[$_] } | ForEach-Object { "$_ (pinned $($ports[$_]), installed $($have[$_]))" }
+if (-not $ports.Count) { throw "The notices' sidecar carries no vcpkg pins - regenerate it on the Mac." }
+if ($drift) { throw ("The installed vcpkg libraries differ from tools\deps\vcpkg-windows.pin: " + ($drift -join ", ")) }
+Write-Host "  vcpkg  : $($ports.Count) pinned libraries match"
 $lockNow = (& git -C $root rev-parse "HEAD:Cargo.lock").Trim()
 if ($want["lock"] -ne $lockNow) { throw "The notices were generated from another Cargo.lock - regenerate them on the Mac (make_notices.py windows) and commit." }
 if ($want["version"] -ne $version) { throw "The notices are for QCView $($want['version']), this is $version - regenerate them." }

@@ -101,6 +101,11 @@ upgrade test), then the notices, the privacy policy and the 3.0 docs, then QCVie
   tools and registers its 55 file types and the `qcview.exe` alias.
 - **Rows 249–251** the same day: the title bar / menu row / rails are one surface on Windows; no usable graphics device →
   a dark message and exit; dragging the picture moves the window (compact mode too).
-- **Open:** a walk of 3.0 on macOS 13 / 14 (the user's other Macs); the Windows libraries pinned to the Mac's set; the generated
-  third-party notices + the in-app Licences view; the privacy policy; the 3.0 docs; QCView-Player's clean `main`; the Store
-  submission; the Sparkle private key's backup (the user's).
+- **2026-11-10, notices (row 252):** `packaging/notices/make_notices.py` generates `THIRD-PARTY-NOTICES.html` per package
+  (cargo-about for the crates; `components.json` + each library's own licence text; FFmpeg's enabled libraries; the source
+  offer names this repo's tag). A crate with an unaccepted licence or a shipped binary without an entry fails the build. The
+  Windows page is generated on the Mac and committed with a `.check` sidecar that `make-msix.ps1` verifies (lock file,
+  version, FFmpeg's flags, staged files). About ▸ Licenses… opens it; walked by the user on both OSes.
+- **Open:** the Mac DMG re-signed and re-notarized (the notarized one predates rows 251–252); a walk of 3.0 on macOS 13 / 14
+  (the user's other Macs); the Windows libraries pinned to the Mac's set; the privacy policy; the 3.0 docs; QCView-Player's
+  clean `main`; the Store submission; the Sparkle private key's backup (the user's).
