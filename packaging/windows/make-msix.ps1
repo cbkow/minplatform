@@ -10,7 +10,7 @@
 #     crates\qcv-project\src\extensions.rs (one list for both OSes, only what the app opens)
 # The .msix is UNSIGNED - what Partner Center takes (Microsoft signs it). -Pfx signs a private sideload copy for testing
 # (QCV_SIGNING_PASSWORD in the environment if the PFX has one; from the desktop session).
-# Usage (from the repo root):  powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\make-msix.ps1 [-StageOnly] [-Pfx <file>]
+# Usage (from the repo root):  powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\make-msix.ps1 [-StageOnly] [-Pfx <file> | -SignThumbprint <hash>]
 [CmdletBinding()]
 param(
     [string] $Ffmpeg = "",
@@ -18,7 +18,8 @@ param(
     [string] $Dxc = "",
     [string] $Redist = "",
     [switch] $StageOnly,
-    [string] $Pfx = ""
+    [string] $Pfx = "",
+    [string] $SignThumbprint = ""
 )
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -172,14 +173,19 @@ if (Test-Path $out) { Remove-Item $out }
 & $makeAppx pack /d $stage /p $out /o | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "MakeAppx failed ($LASTEXITCODE)." }
 Write-Host ("  packed {0} ({1:N0} MB) - unsigned, for Partner Center" -f $out, ((Get-Item $out).Length / 1MB))
-if ($Pfx) {
+if ($Pfx -or $SignThumbprint) {
     $signTool = Find-SdkTool "signtool.exe"
     $side = Join-Path $dist "QCView-$version-win64-sideload.msix"
     Copy-Item $out $side -Force
     # the PFX's password comes from the environment (QCV_SIGNING_PASSWORD, QCView's variable) - never from a file in the repo.
     # signtool cannot open a PFX from an SSH session: run this from the logged-on desktop.
-    $signArgs = @("sign", "/fd", "SHA256", "/f", $Pfx)
-    if ($env:QCV_SIGNING_PASSWORD) { $signArgs += @("/p", $env:QCV_SIGNING_PASSWORD) }
+    # -SignThumbprint: a certificate in the user's own store (Cert:\CurrentUser\My) - no file, no password (the 2026-11-09 test
+    # certificate: same subject as the manifest's Publisher, so it upgrades any earlier sideload in place).
+    if ($SignThumbprint) { $signArgs = @("sign", "/fd", "SHA256", "/sha1", $SignThumbprint) }
+    else {
+        $signArgs = @("sign", "/fd", "SHA256", "/f", $Pfx)
+        if ($env:QCV_SIGNING_PASSWORD) { $signArgs += @("/p", $env:QCV_SIGNING_PASSWORD) }
+    }
     $signArgs += $side
     $signOut = & $signTool @signArgs 2>&1
     if ($LASTEXITCODE -ne 0) { throw ("signtool failed ($LASTEXITCODE): " + (($signOut | Select-Object -Last 3) -join " | ") + " (the certificate's subject must equal the manifest's Publisher)") }
