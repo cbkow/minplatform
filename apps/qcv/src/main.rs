@@ -392,6 +392,8 @@ impl App {
             _ => None,
         }
     }
+    /// The running feed of a live item, wherever it is shown: the single view, or a dual side (row 258).
+    pub(crate) fn live_feed_of(&self, id: &str) -> Option<&live::Live> { self.live.as_ref().filter(|l| l.item == id).or_else(|| self.side_live.iter().flatten().find(|l| l.item == id)) }
     /// A live item as a dual side's description (row 258): present and unclocked — no rate, no length, no clip.
     fn live_media(&self, id: &str) -> Option<qcv_timeline::MediaInfo> {
         let m = self.project.item(id)?;
@@ -525,10 +527,12 @@ impl App {
         let dp = item.dual_pair;
         self.project.set_b_source_media_id(&dp.media_id_b);
         if self.dual.is_some() {
-            let (a, b) = (self.dual_media(&dp.media_id_a), self.dual_media(&dp.media_id_b));
             self.loaded_item = dp.media_id_a.clone(); self.project.set_active_item(&dp.media_id_a);
-            if let Some(d) = self.dual.as_mut() { let _ = d.set_side(qcv_player::Side::A, a); let _ = d.set_side(qcv_player::Side::B, b); }
-            self.dual_side_changed(qcv_player::Side::A); self.dual_side_changed(qcv_player::Side::B);
+            // each side in place: a file through its transport, a live item through its feed (row 258); a missing item = empty.
+            // B first, emptied, so a live item moving from B to A is not refused as "already on the other side"
+            for (side, mid) in [(qcv_player::Side::B, String::new()), (qcv_player::Side::A, dp.media_id_a.clone()), (qcv_player::Side::B, dp.media_id_b.clone())] {
+                if mid.is_empty() || !self.set_dual_side(side, &mid) { if let Some(d) = self.dual.as_mut() { let _ = d.set_side(side, None); } self.side_live[side as usize] = None; self.dual_side_changed(side); }
+            }
             self.set_compare_mode(CompareMode::SideBySide);
         } else {
             if self.project.item(&dp.media_id_a).is_some() { self.loaded_item = dp.media_id_a.clone(); self.project.set_active_item(&dp.media_id_a); }
@@ -537,7 +541,8 @@ impl App {
         // QCView `loadDualView`: the saved clip maps replace each non-empty track (empty = the full clip, as QCView skips them)
         if let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_mut()) {
             let rate = ed.timeline.rate; let mut any = false;
-            for (tr, maps) in [(qcv_timeline::TRACK_A, &dp.clips_a), (qcv_timeline::TRACK_B, &dp.clips_b)] { if !maps.is_empty() { ed.set_track_clips(tr, maps.iter().filter_map(|v| clip_from_qcview(v, rate)).collect()); any = true; } }
+            // a LIVE side has no clip: whatever list a 2.x file carries for it is ignored (row 258, R11 — and ours is written empty)
+            for (tr, maps) in [(qcv_timeline::TRACK_A, &dp.clips_a), (qcv_timeline::TRACK_B, &dp.clips_b)] { if !maps.is_empty() && !d.is_live(if tr == qcv_timeline::TRACK_A { qcv_player::Side::A } else { qcv_player::Side::B }) { ed.set_track_clips(tr, maps.iter().filter_map(|v| clip_from_qcview(v, rate)).collect()); any = true; } }
             if any { d.set_timeline(&ed.timeline, true); }
             d.set_in_out(dp.in_point, dp.out_point);
         }

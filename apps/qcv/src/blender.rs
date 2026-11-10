@@ -140,8 +140,10 @@ impl crate::App {
         self.blender.card_name = Some(name);
         self.blender.item = Some(id.clone());
         let carry = std::mem::take(&mut self.blender.carry);
-        let streaming = self.live.as_ref().is_some_and(|l| l.item == id);
-        if self.loaded_item != id { if !carry { log::info!("blenderInput: listening for {} on port {} ({})", c.host, c.port, qcv_player::stream_feed::redact(&c.url)); self.load_item(&id); } }
+        // the session's feed, in the single view or on a dual side (row 258, R10): a side that is already listening stays put
+        let streaming = self.live_feed_of(&id).is_some();
+        if streaming && self.loaded_item != id { /* it is dual's B: nothing to load */ }
+        else if self.loaded_item != id { if !carry { log::info!("blenderInput: listening for {} on port {} ({})", c.host, c.port, qcv_player::stream_feed::redact(&c.url)); self.load_item(&id); } }
         else if !streaming { self.load_item(&id); }   // Stop → Start in Blender: listen again
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
     }
@@ -156,7 +158,7 @@ impl crate::App {
     pub(crate) fn blender_status(&self) -> Vec<(String, u8)> {
         if !self.blender.enabled { return vec![] }
         let tr = |s: &str| min_i18n::trc("LeftRail", s).to_string();
-        let live_here = self.blender.item.as_ref().and_then(|id| self.live.as_ref().filter(|l| &l.item == id));
+        let live_here = self.blender.item.as_ref().and_then(|id| self.live_feed_of(id));   // the single view's, or a dual side's
         let mut v = vec![match (&self.blender.card, live_here) {
             (Some(c), Some(l)) if l.feed.facts().status == qcv_player::host_feed::Status::Live => (min_i18n::fill(&tr("Live from %1 on port %2"), &[&c.host, &c.port]), 1),
             (Some(c), Some(_)) => (min_i18n::fill(&tr("Listening for %1 on port %2"), &[&c.host, &c.port]), 0),
