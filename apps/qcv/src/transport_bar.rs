@@ -23,7 +23,7 @@ struct SpeedChip { rect: Rect, text: String, off_unity: bool, hovered: bool, hov
 
 /// Which button does what; `None` = not backed yet (drawn disabled).
 #[derive(Clone, Copy)]
-enum Bind { Open, Act(Action), Hold(i32), RevealBackground, RevealGuides, ToggleCompact, ToggleColor, ToggleNotes, Later }
+enum Bind { Open, Act(Action), Hold(i32), RevealBackground, RevealGuides, ToggleCompact, ToggleColor, ToggleNotes }
 
 /// The window scale the bar was laid out at (its height is 32 logical px).
 fn scale_of(bar: &Rect, _: Rect) -> f64 { (bar.height() / t::TRANSPORT_BAR_HEIGHT as f64).max(0.5) }
@@ -50,7 +50,6 @@ impl TransportBar {
         let groups: Vec<(bool, Vec<(ActionButton, Bind)>)> = vec![
             (false, vec![(b("folder-simple", "Open media…"), Bind::Open)]),
             (true, vec![
-                (b("arrow-line-left", "Previous clip"), Bind::Later),
                 (b("skip-back", "Skip to start (Home)"), Bind::Act(Action::SeekToStart)),
                 (b("rewind", "Rewind (hold; J)").hold(), Bind::Hold(-1)),
                 (b("caret-left", "Step back 1 frame (←)"), Bind::Act(Action::Step(-1))),
@@ -58,7 +57,6 @@ impl TransportBar {
                 (b("caret-right", "Step forward 1 frame (→)"), Bind::Act(Action::Step(1))),
                 (b("fast-forward", "Fast-forward (hold; L)").hold(), Bind::Hold(1)),
                 (b("skip-forward", "Skip to end (End)"), Bind::Act(Action::SeekToEnd)),
-                (b("arrow-line-right", "Next clip"), Bind::Later),
             ]),
             (true, vec![
                 (b("sign-out", "Set in point (I)"), Bind::Act(Action::SetInPoint)),
@@ -77,7 +75,6 @@ impl TransportBar {
             (true, vec![
                 (b("rectangle-dashed", "Safety guides"), Bind::RevealGuides),
                 (b("checkerboard", "Background"), Bind::RevealBackground),
-                (b("image-square", "Timeline hover thumbnails"), Bind::Later),
                 (b("palette", "Color panel (⌃3)"), Bind::ToggleColor),
                 (b("note-pencil", "Notes panel (⌃4)"), Bind::ToggleNotes),
             ]),
@@ -125,7 +122,7 @@ impl TransportBar {
         let has = p.is_some();
         for (g, binds) in self.groups.iter_mut().zip(&self.binds) {
             for (b, bind) in g.buttons.iter_mut().zip(binds) {
-                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::RevealGuides | Bind::ToggleNotes | Bind::ToggleCompact | Bind::ToggleColor => true, Bind::Later => false, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
+                let enabled = match bind { Bind::Open | Bind::RevealBackground | Bind::RevealGuides | Bind::ToggleNotes | Bind::ToggleCompact | Bind::ToggleColor => true, Bind::Act(Action::ToggleFullscreen) => true, Bind::Act(Action::ToggleLoop) => true, Bind::Act(Action::ToggleMute) => p.is_some_and(|p| p.has_audio()), Bind::Act(_) | Bind::Hold(_) => has };
                 if b.enabled != enabled { b.enabled = enabled; if !enabled { b.reset(now); } }
                 if let (Some(p), Bind::Act(a)) = (p, bind) {
                     match a {
