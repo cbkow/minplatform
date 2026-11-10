@@ -1,0 +1,10 @@
+# qcv3_001 — index.md: the main window with a clip loaded
+size 1440 900
+open MEDIA/Color Bars 1080p.mov
+add MEDIA/Test Pattern A.mov
+add MEDIA/Test Pattern B.mov
+wait 1.5
+seek 120
+wait 0.8
+shot qcv3_001
+quit

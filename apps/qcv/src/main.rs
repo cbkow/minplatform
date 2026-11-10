@@ -38,6 +38,7 @@ mod settings_panel;
 mod inspector_panel;
 mod os_actions;
 mod menu;
+mod shots;
 #[cfg(target_os = "macos")] mod mac_open;
 #[cfg(target_os = "macos")] mod sparkle;
 mod fatal;
@@ -147,6 +148,8 @@ struct App {
     alt_clean: bool,
     /// the in-window bar's choices, run from `about_to_wait` (Quit needs the event loop)
     menu_queue: Vec<menu::Cmd>,
+    /// `--shots <script>`: the scripted docs screenshots (`shots.rs`)
+    shots: Option<shots::Shots>,
     /// single instance (row 143): what later launches forwarded
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// macOS: `mac_open`'s batches (the Finder's Open / Open With / a dropped Dock icon, `qcview://` links); None elsewhere.
@@ -879,6 +882,7 @@ impl App {
         true
     }
     fn tick(&mut self) {
+        self.shots_step(Instant::now());
         self.poll_color();
         self.poll_capture();
         let thumb_gen = [self.thumb_color_tick(0), if self.dual.is_some() { self.thumb_color_tick(1) } else { 0 }];
@@ -1294,6 +1298,7 @@ impl App {
             if let Some(ms) = u.render(&g.presenter.engine.device, &g.presenter.engine.queue) { g.ui_ms.push(ms); }
         }
         let presented = g.presenter.draw(|| g.window.pre_present_notify());
+        let _ = g; self.shots_capture(); let Some(g) = self.gpu.as_mut() else { return };
         if g.presenter.stalled() { fatal::no_graphics("the surface stopped handing over frames"); }
         if presented {
             self.frames_presented += 1;
@@ -2624,8 +2629,8 @@ fn main() {
     i18n::install();   // canon row 195: before any panel builds its labels
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
-    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--dual", "--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; if f.is_none() { f = Some(a.clone()); } } f };
-    let files: Vec<String> = { let mut v = vec![]; let mut skip = false; for a in args.iter() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--dual", "--out", "--white", "--seconds", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } v.push(a.clone()); } v };
+    let file = { let mut f = None; let mut skip = false; for (i, a) in args.iter().enumerate() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--dual", "--out", "--white", "--seconds", "--shots", "--shots-out", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } let _ = i; if f.is_none() { f = Some(a.clone()); } } f };
+    let files: Vec<String> = { let mut v = vec![]; let mut skip = false; for a in args.iter() { if skip { skip = false; continue } if a.starts_with("--") { skip = ["--dual", "--out", "--white", "--seconds", "--shots", "--shots-out", "--snap-out", "--snap-display", "--refresh", "--screen", "--threads", "--headless", "--seeks", "--scrub", "--seek-gap", "--hover", "--cut", "--ui-bench", "--ui-snap", "--ui-size", "--audio-bench"].contains(&a.as_str()); continue } v.push(a.clone()); } v };
     let out = match arg("--out").as_deref() { Some("sdr") => Output::Sdr, Some("edr") => Output::Edr, Some("pq") => Output::Pq, _ => Output::Auto };
     let snap_out = arg("--snap-out").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
     let snap_display = arg("--snap-display").map(|s| { let (p, n) = s.rsplit_once('@').unwrap_or((&s, "24")); (p.to_string(), n.parse().unwrap_or(24)) });
@@ -2650,7 +2655,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], ocio_error: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, side_live: [None, None], blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], ocio_error: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, side_live: [None, None], blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

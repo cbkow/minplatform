@@ -164,6 +164,19 @@ impl Presenter {
         self.engine.queue.present(frame);
         true
     }
+    /// The window as it is drawn — the picture and the interface — rendered once more into a texture and read back (linear,
+    /// RGBA f32). For the scripted docs screenshots (`apps/qcv` `shots.rs`): no OS screenshot is involved. Float surfaces only
+    /// (the Mac's; Windows' HDR one) — the 10-bit SDR path encodes for the swapchain and is not what a picture file wants.
+    pub fn capture_window(&mut self) -> Option<(Vec<f32>, u32, u32)> {
+        if self.sdr10.is_some() || self.config.format != wgpu::TextureFormat::Rgba16Float { return None }
+        let (w, h) = (self.config.width.max(1), self.config.height.max(1));
+        let tex = self.engine.device.create_texture(&wgpu::TextureDescriptor { label: Some("window capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
+        let view = tex.create_view(&Default::default());
+        let mut enc = self.engine.device.create_command_encoder(&Default::default());
+        self.engine.encode(&mut enc, &view);
+        self.engine.queue.submit([enc.finish()]);
+        Some((crate::readback::read_rgba16f(&self.engine.device, &self.engine.queue, &tex, w, h), w, h))
+    }
     /// The surface has refused a frame this many times in a row: the graphics device is gone or cannot present here (a machine
     /// with no usable GPU loses its device at the first present and every later frame fails; a resize costs one or two).
     pub fn stalled(&self) -> bool { self.fail_streak >= 120 }
