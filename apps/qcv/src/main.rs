@@ -37,6 +37,7 @@ mod menu;
 #[cfg(target_os = "macos")] mod mac_open;
 #[cfg(target_os = "macos")] mod sparkle;
 mod single_instance;
+mod toolbox;
 mod logging;
 mod background_panel;
 mod compact_strip;
@@ -2439,6 +2440,7 @@ fn main() {
     let fwd: Vec<String> = o.files.iter().map(|a| if a.contains("://") { a.clone() } else { std::fs::canonicalize(a).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| a.clone()) }).collect();
     if !multi && single_instance::forward(&fwd) { println!("qcv: handed {} argument(s) to the running window", fwd.len()); return }
     let _ = logging::install();
+    toolbox::publish();   // QCView: the suite's ffmpeg manifest for the QCBridge Blender add-on
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] let os_open_rx = Some(mac_open::install());

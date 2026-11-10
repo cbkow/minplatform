@@ -21,6 +21,7 @@ SPV="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 for nested in "$SPV/XPCServices/Downloader.xpc" "$SPV/XPCServices/Installer.xpc" "$SPV/Updater.app" "$SPV/Autoupdate"; do [ -e "$nested" ] && sign "$nested"; done
 sign "$APP/Contents/Frameworks/Sparkle.framework"
 for f in "$APP"/Contents/Frameworks/*.dylib; do sign "$f"; done
+for f in "$APP"/Contents/Helpers/*; do sign "$f"; done
 sign "$APP"
 codesign --verify --deep --strict "$APP"
 notarize() { xcrun notarytool submit "$1" --keychain-profile "$PROFILE" --wait 2>&1 | grep -E "^\s*(id|status):" | tail -2; }
