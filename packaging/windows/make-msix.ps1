@@ -43,6 +43,10 @@ $dist  = Join-Path $root "target\dist"
 $stage = Join-Path $dist "win64"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Path $stage | Out-Null
+# the exe must BE this version: a failed build leaves the previous exe in target\release, and a package named for the new
+# version would wrap it (2026-11-10: an Application Control block on the build script did exactly that)
+$built = (Get-Item $exe).VersionInfo.ProductVersion
+if ($built -ne $version) { throw "target\release\QCView.exe is version $built, apps\qcv\Cargo.toml says $version - the build did not run or failed. Build first." }
 Copy-Item $exe (Join-Path $stage "qcview.exe")
 foreach ($t in "ffmpeg.exe", "ffprobe.exe") {
     $p = Join-Path $Ffmpeg $t
