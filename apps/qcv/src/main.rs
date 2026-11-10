@@ -2040,6 +2040,11 @@ impl ApplicationHandler for App {
           if st.is_set(k::WINDOW_X) && st.is_set(k::WINDOW_Y) && self.o.screen.is_none() { attrs = attrs.with_position(PhysicalPosition::new(st.int(k::WINDOW_X) as i32, st.int(k::WINDOW_Y) as i32)); }
           if st.bool(k::WINDOW_MAXIMIZED) { attrs = attrs.with_maximized(true); } }
         if let Some(i) = self.o.screen { if let Some(m) = el.available_monitors().nth(i) { if let Some(p) = m.position() { attrs = attrs.with_position(PhysicalPosition::new(p.x + 100, p.y + 100)); } } }
+        // Windows paints a new window with its class brush — white — until the first frame is presented (the walk 2026-11-09:
+        // "the app opens white for a couple ms before the UI populates"): the window is created hidden there and shown at the
+        // end of this set-up, once a frame is on its swap chain. macOS shows nothing before the layer's first frame.
+        let show_after_first_frame = cfg!(windows);
+        if show_after_first_frame { attrs = attrs.with_visible(false); }
         let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(attrs).expect("window"));
         let instance = Presenter::instance();
         let surface = instance.create_surface(window.clone()).expect("surface");
@@ -2095,6 +2100,8 @@ impl ApplicationHandler for App {
         if let Some(f) = self.o.file.clone() { if f.to_lowercase().ends_with(".qcvproj") { self.open_project(&f); } else { let paths = if self.o.files.is_empty() { vec![f.clone()] } else { self.o.files.clone() }; let mut first = true; for p in self.admit_media_paths(&paths) { if self.add_and_load(&p, first).is_some() { first = false; } } } }
         if let Some(b) = self.o.dual.clone() { self.enter_dual(&b); }
         if std::env::var_os("QCV_OPEN_NOTES").is_some() { self.toggle_notes(); }   // harness: the Notes drawer at launch
+        // the first frame, then the window (see `show_after_first_frame`)
+        if show_after_first_frame { self.tick(); if let Some(g) = self.gpu.as_ref() { g.window.set_visible(true); g.window.request_redraw(); } }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); return } }
