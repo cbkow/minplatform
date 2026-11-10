@@ -1,12 +1,13 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-10, released on macOS):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.0 is
-  RELEASED on macOS** (tag `v3.0.0` here; the DMG, the site and the appcast live in QCView-Player, whose `main` is now the
-  home page and whose `2.x` branch holds QCView 2's source — read QCView's code from `2.x`). **Windows is next**: the MSIX
-  is built (`target/dist/release/`), the Store submission is the user's (new screenshots and copy first). The Stream card
-  was built and REMOVED (row 244) — do not re-propose it. **Read `docs/phase2/handoff-2026-11-10.md` first** (its LAST
-  sections are where things stand), then `handoff-2026-11-09.md` (how to run things) and the canon
-  `docs/rust-wgpu-port.md` (rows are the rulings, each dated; the newest are at the end of the last Decisions table).
+- **State (2026-11-10, end of day):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.0 is RELEASED
+  on macOS** (tag `v3.0.0`; the DMG, the site and the appcast live in QCView-Player, whose `main` is the home page and
+  whose `2.x` branch holds QCView 2's source — read QCView's code from `2.x`). **Windows 3.0.1 is SUBMITTED to the
+  Microsoft Store** (tag `v3.0.1`, a Windows-only path fix on top of 3.0.0); certification is pending. If it is rejected,
+  the handoff's last section says what was submitted, where it is kept and how to rebuild. The Stream card was built and
+  REMOVED (row 244) — do not re-propose it. **Read `docs/phase2/handoff-2026-11-10.md` first** (its LAST sections are
+  where things stand), then `handoff-2026-11-09.md` (how to run things) and the canon `docs/rust-wgpu-port.md` (rows are
+  the rulings, each dated; the newest are at the end of the last Decisions table).
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a
