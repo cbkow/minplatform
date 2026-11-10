@@ -1,6 +1,22 @@
 lock dbd98234f51a4e52ed8068cdeab73733b596f70b
 version 3.0.0
 ffmpeg amf avisynth chromaprint cuda-llvm ffnvcodec fontconfig frei0r gmp gpl iconv lcms2 libaom libaribb24 libaribcaption libass libbluray libdav1d libdavs2 libdvdnav libdvdread libfreetype libfribidi libgme libharfbuzz libjxl libkvazaar liblcevc-dec libmp3lame liboapv libopencore-amrnb libopencore-amrwb libopenh264 libopenjpeg libopenmpt libopus libplacebo librav1e librist librsvg librubberband libsnappy libsoxr libsrt libssh libsvtav1 libtheora libtwolame libuavs3d libvidstab libvmaf libvorbis libvpl libvpx libvvenc libwebp libx264 libx265 libxavs2 libxml2 libxvid libzimg libzmq lv2 lzma openal opencl pthreads schannel sdl2 shared vaapi vapoursynth version3 vulkan zlib
+port bzip2 1.0.8#6
+port expat 2.9.0
+port imath 3.2.3
+port libdeflate 1.26
+port libjpeg-turbo 3.2.0#1
+port liblzma 5.8.4
+port libspng 0.7.4#1
+port minizip-ng 4.1.0
+port opencolorio 2.6.0
+port openexr 3.5.3
+port openjph 0.32.0#1
+port pystring 1.2.0
+port tiff 4.7.2
+port yaml-cpp 0.9.0#1
+port zlib 1.3.2#3
+port zstd 1.5.7
 file Imath-*.dll
 file OpenColorIO_*.dll
 file OpenEXRCore-*.dll
