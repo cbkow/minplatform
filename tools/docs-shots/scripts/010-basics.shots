@@ -1,0 +1,47 @@
+# basics.md + timeline.md — the window, the rails, the bands
+size 1440 900
+open MEDIA/Color Bars 1080p.mov
+add MEDIA/Test Pattern A.mov
+add MEDIA/Test Pattern B.mov
+wait 1.5
+seek 120
+wait 0.5
+# the three bands and the transport row
+shot qcv3_011 0 800 1440 100
+shot qcv3_012 0 836 1440 34
+shot qcv3_017 770 836 150 34
+shot qcv3_018 430 836 120 34
+shot qcv3_013 550 836 80 34
+# in / out
+seek 96
+key i
+seek 300
+key o
+seek 200
+wait 0.4
+shot qcv3_019 0 800 1440 100
+click 412 852
+# the go-to box (the left rail closed, so the box stands over the picture)
+menu LeftRail
+wait 0.5
+click 224 820
+wait 0.4
+shot qcv3_014 0 745 620 90
+click 700 400
+menu LeftRail
+wait 0.5
+# the carets: the rails' tabs at the picture's top corners, the caret under the picture, the Color and Notes buttons
+menu RightRail
+wait 0.6
+move 700 780
+wait 0.5
+shot qcv3_005 282 0 848 870
+# both rails + the Color drawer
+menu ColorPanel
+wait 0.8
+color on
+wait 0.6
+shot qcv3_004
+menu ColorPanel
+wait 0.5
+quit

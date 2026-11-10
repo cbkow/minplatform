@@ -1,0 +1,13 @@
+# qcv3_010 (basics.md) and qcv3_040 (settings.md): the Settings section, expanded
+size 1440 1080
+open MEDIA/Color Bars 1080p.mov
+wait 1.2
+menu Settings
+wait 0.8
+click 65 32
+wait 0.5
+lscroll 600
+wait 0.6
+shot qcv3_040 0 72 276 908
+shot qcv3_010 0 72 276 908
+quit

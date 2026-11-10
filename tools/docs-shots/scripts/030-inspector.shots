@@ -1,0 +1,21 @@
+# inspector.md, image.md — the Inspector's groups
+size 1440 1080
+open MEDIA/Surround 5.1.mov
+add MEDIA/Render_v001/Render_v001.0001.exr
+wait 1.5
+menu RightRail
+wait 2.5
+seek 100
+play
+wait 1.2
+shot qcv3_025 1128 0 312 972
+rscroll 620
+wait 0.5
+shot qcv3_026 1128 80 312 496
+shot qcv3_027 1128 578 312 392
+pause
+load Render_v001. [0001-0048]
+wait 2.0
+shot qcv3_029 1128 228 312 692
+shot qcv3_039 1128 228 312 692
+quit

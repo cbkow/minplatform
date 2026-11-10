@@ -1,0 +1,37 @@
+# basics.md, thumbnails.md, timeline.md — the left rail's sections, Compact Mode, the hover thumbnail, zoom
+size 1440 900
+open MEDIA/Title Alpha.mov
+add MEDIA/Color Bars 1080p.mov
+add MEDIA/Test Pattern A.mov
+wait 1.5
+seek 48
+# qcv3_007: the background tiles over a clip with alpha
+click 66 370
+wait 0.5
+shot qcv3_007
+click 48 346
+load Color Bars 1080p.mov
+wait 1.0
+seek 120
+# qcv3_050: the hover thumbnail
+move 620 884
+wait 1.2
+shot qcv3_050 280 600 880 300
+leave
+# qcv3_016: the timeline zoomed in
+zoom 620 1200
+wait 0.5
+shot qcv3_016 0 800 1440 100
+zoom 620 -2400
+# qcv3_008: the safety guides
+menu SafetyGuides
+wait 0.6
+set safety/guide 16x9
+wait 0.6
+shot qcv3_008
+set safety/guide 
+# qcv3_006: compact mode
+menu Compact
+wait 1.2
+shot qcv3_006
+quit

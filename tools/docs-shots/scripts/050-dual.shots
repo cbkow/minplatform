@@ -1,0 +1,47 @@
+# dualview.md, timeline.md — the dual view: modes, the status strip, the lanes
+size 1440 900
+open MEDIA/Test Pattern A.mov
+bsource MEDIA/Test Pattern B.mov
+wait 1.5
+menu LeftRail
+dual sbs
+wait 1.0
+seek 200
+wait 0.6
+shot qcv3_041
+# qcv3_044: a lane's clip dragged (the snap line, the badge, the offset readout)
+down 700 892
+move 706 892
+move 760 892
+move 791 892
+wait 0.5
+shot qcv3_044 0 770 1440 130
+move 700 892
+up 700 892
+wait 0.4
+# qcv3_021: a lane's clip trimmed at its end
+down 1409 876
+move 1404 876
+move 1300 876
+move 1262 876
+wait 0.5
+shot qcv3_021 0 770 1440 130
+move 1409 876
+up 1409 876
+wait 0.4
+dual split
+wait 0.8
+shot qcv3_042
+# qcv3_043: Difference between two versions of the same pattern, the gain raised
+bsource MEDIA/Test Pattern A v2.mov
+wait 1.5
+dual diff
+wait 0.8
+seek 200
+down 1175 788
+move 1180 788
+move 1196 788
+up 1196 788
+wait 0.6
+shot qcv3_043
+quit

@@ -1,0 +1,28 @@
+# manager.md — the Media section of a saved project with every bin filled (needs the test producer: see run-live.sh)
+size 1440 900
+open MEDIA/Color Bars 1080p.mov
+add MEDIA/Test Pattern A.mov
+add MEDIA/Test Pattern B.mov
+add MEDIA/Render_v001/Render_v001.0001.exr
+wait 1.5
+playlist MEDIA/Color Bars 1080p.mov|MEDIA/Test Pattern A.mov|MEDIA/Test Pattern B.mov
+wait 1.0
+click 700 400
+wait 0.5
+live qcbae://probe
+wait 2.0
+load Test Pattern A.mov
+wait 1.0
+bsource MEDIA/Test Pattern B.mov
+wait 1.5
+dual sbs
+wait 1.0
+savedual Pattern A vs B
+dual single
+wait 0.5
+saveproject DEMO/Spring Campaign Review.qcvproj
+load Test Pattern A.mov
+wait 1.5
+leave
+shot qcv3_022 0 0 280 450
+quit

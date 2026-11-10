@@ -1,0 +1,53 @@
+# playlists.md, timeline.md, manager.md — a playlist, its clip bar, dragging and trimming
+size 1440 900
+open MEDIA/Color Bars 1080p.mov
+add MEDIA/Test Pattern A.mov
+add MEDIA/Test Pattern B.mov
+add MEDIA/Surround 5.1.mov
+add MEDIA/Render_v001/Render_v001.0001.exr
+wait 1.5
+playlist MEDIA/Color Bars 1080p.mov|MEDIA/Test Pattern A.mov|MEDIA/Test Pattern B.mov|MEDIA/Surround 5.1.mov
+wait 1.5
+click 700 400
+wait 0.6
+seek 300
+wait 0.5
+shot qcv3_048
+# qcv3_023: a media item dragged into the playlist's list
+down 70 142
+move 74 150
+move 90 300
+move 100 364
+wait 0.5
+shot qcv3_023 0 0 280 460
+move 74 150
+move 70 142
+up 70 142
+wait 0.3
+# qcv3_020: a clip dragged along the clip bar
+click 540 886
+wait 0.4
+down 900 886
+move 905 886
+move 600 884
+move 420 884
+wait 0.5
+shot qcv3_020 0 790 1440 110
+move 900 886
+up 900 886
+wait 0.4
+# qcv3_049: a clip's end being trimmed; qcv3_049b: the precision box (a double-click on a clip)
+down 717 886
+move 714 886
+move 690 886
+move 668 886
+wait 0.5
+shot qcv3_049 0 790 1440 110
+move 717 886
+up 717 886
+wait 0.4
+click 1250 886
+click 1250 886
+wait 0.6
+shot qcv3_049b 880 730 560 170
+quit

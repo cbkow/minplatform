@@ -1,0 +1,28 @@
+# qcbridge-adobe.md, dualview.md, annotations.md — a live feed (needs the test producer: see run-live.sh)
+size 1440 900
+open MEDIA/Color Bars 1080p.mov
+wait 1.0
+live qcbae://probe
+wait 3.0
+shot qcv3_051
+# a stream's notes live beside the project: save it first (an unsaved project turns the tile into Save project…, a native panel)
+saveproject DEMO/Live Review.qcvproj
+menu LeftRail
+menu Notes
+wait 1.2
+# qcv3_038: the Export notes menu on a stream item (it needs a note)
+click 72 644
+wait 3.5
+click 72 800
+wait 0.8
+shot qcv3_038 0 500 560 400
+click 700 200
+wait 0.3
+menu Notes
+bsource MEDIA/Test Pattern A.mov
+wait 1.5
+dual sbs
+wait 2.0
+shot qcv3_045
+shot qcv3_052
+quit

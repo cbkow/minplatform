@@ -36,7 +36,8 @@ pub struct ScopeView { pub rect: [f32; 4], pub hdr: bool, pub peak_nits: f32, pu
 const SCOPE_TAP_W: u32 = 960;
 /// The peaks' readback: two 8-byte staging buffers, copied one frame and mapped the next (never a stall). State per buffer:
 /// 0 idle · 1 copied (map at the next encode) · 2 mapping · 3 mapped (read it).
-struct PeakReader { bufs: [wgpu::Buffer; 2], state: [std::sync::Arc<std::sync::atomic::AtomicU8>; 2], latest: Option<[f32; 2]> }
+struct PeakReader { bufs: [wgpu::Buffer; 2], state: [std::sync::Arc<std::sync::atomic::AtomicU8>; 2], latest: Option<[f32; 2]>, /// a readback in flight when the peaks were reset: it measured the picture before the reset, so it is dropped
+    stale: [bool; 2] }
 struct Scope { peaks: wgpu::Buffer, reader: PeakReader, hist: wgpu::Buffer, su: wgpu::Buffer, du: wgpu::Buffer, acc: wgpu::ComputePipeline, acc_layout: wgpu::BindGroupLayout, draw: wgpu::RenderPipeline, draw_bind: wgpu::BindGroup, draw_layout: wgpu::BindGroupLayout, tap: Option<(wgpu::Texture, (u32, u32))>, samples: u32 }
 /// The identity chain: exercises the three-pass route (stage 1 → slot → blit) with no colour change.
 pub struct IdentityColorPass;
@@ -447,7 +448,7 @@ impl Engine {
         let draw_bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("scope draw"), layout: &draw_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: du.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: hist.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: hist.as_entire_binding() }] });
         let peaks = dev.create_buffer(&wgpu::BufferDescriptor { label: Some("scope peaks"), size: 8, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
         let stg = |l: &str| dev.create_buffer(&wgpu::BufferDescriptor { label: Some(l), size: 8, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let reader = PeakReader { bufs: [stg("scope peaks a"), stg("scope peaks b")], state: [Default::default(), Default::default()], latest: None };
+        let reader = PeakReader { bufs: [stg("scope peaks a"), stg("scope peaks b")], state: [Default::default(), Default::default()], latest: None, stale: [false; 2] };
         self.scope = Some(Scope { peaks, reader, hist, su, du, acc, acc_layout, draw, draw_bind, draw_layout, tap: None, samples: 1 });
     }
     /// The tap (a texture in linear light + its matrix to linear Rec.2020) → the histogram.
@@ -499,13 +500,13 @@ impl Engine {
         let _ = self.device.poll(wgpu::PollType::Poll);
         let s = self.scope.as_mut()?;
         for i in 0..2 { if s.reader.state[i].load(Ordering::Acquire) == 3 {
-            { let v = s.reader.bufs[i].slice(..).get_mapped_range(); if let Ok(v) = v { let u: &[u32] = bytemuck::cast_slice(&v); s.reader.latest = Some([f32::from_bits(u[0]), f32::from_bits(u[1])]); } }
-            s.reader.bufs[i].unmap(); s.reader.state[i].store(0, Ordering::Release);
+            { let v = s.reader.bufs[i].slice(..).get_mapped_range(); if let Ok(v) = v && !s.reader.stale[i] { let u: &[u32] = bytemuck::cast_slice(&v); s.reader.latest = Some([f32::from_bits(u[0]), f32::from_bits(u[1])]); } }
+            s.reader.bufs[i].unmap(); s.reader.stale[i] = false; s.reader.state[i].store(0, Ordering::Release);
         } }
         s.reader.latest
     }
     /// Forget the last peaks (a new clip: QCView resets the readout per load).
-    pub fn reset_scope_peaks(&mut self) { if let Some(s) = self.scope.as_mut() { s.reader.latest = None; } }
+    pub fn reset_scope_peaks(&mut self) { if let Some(s) = self.scope.as_mut() { s.reader.latest = None; for i in 0..2 { s.reader.stale[i] = s.reader.state[i].load(std::sync::atomic::Ordering::Acquire) != 0; } } }
     /// The waveform's last histogram (512 × 512, row 0 = the top of the scale) — tests and probes.
     #[doc(hidden)] pub fn scope_counts(&self) -> Option<Vec<u32>> { let s = self.scope.as_ref()?; let b = readback::read_buffer(&self.device, &self.queue, &s.hist, 512 * 512 * 4); Some(bytemuck::cast_slice(&b).to_vec()) }
     /// The viewer aids on the screen pass (a uniform write).

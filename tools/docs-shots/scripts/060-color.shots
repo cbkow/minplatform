@@ -1,0 +1,53 @@
+# color.md, mincolor.md, hdr.md — the Color drawer
+size 1440 900
+open MEDIA/Gradient PQ UHD.mp4
+add MEDIA/Render_v001/Render_v001.0001.exr
+add MEDIA/Color Bars 1080p.mov
+wait 1.5
+menu LeftRail
+menu ColorPanel
+color on
+# qcv3_030: an OCIO chain on a scene-linear sequence
+load Render_v001. [0001-0048]
+wait 1.5
+newocio
+wait 2.5
+shot qcv3_030
+# qcv3_034: the AgX card on a scene-linear clip
+preset Linear Rec.709 · AgX
+wait 1.0
+click 1040 560
+wait 0.8
+shot qcv3_034 0 484 1440 320
+click 1046 528
+wait 0.5
+# qcv3_035 / 032 / 033: a PQ clip on its minColor preset
+load Gradient PQ UHD.mp4
+wait 1.5
+seek 60
+preset P3-D65 PQ master
+wait 1.5
+shot qcv3_035 0 486 760 30
+shot qcv3_032 1060 516 380 256
+click 996 590
+wait 0.8
+click 823 563
+wait 0.8
+shot qcv3_033 0 484 1440 320
+# qcv3_031: dual view, a different chain on each side
+load Color Bars 1080p.mov
+wait 1.0
+bsource MEDIA/Gradient PQ UHD.mp4
+wait 1.5
+dual sbs
+wait 1.0
+seek 60
+click 20 892
+wait 0.5
+preset P3-D65 PQ master
+wait 1.0
+click 823 531
+leave
+wait 1.5
+shot qcv3_031
+quit

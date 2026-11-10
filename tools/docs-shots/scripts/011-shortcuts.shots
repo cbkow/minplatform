@@ -1,0 +1,13 @@
+# qcv3_009 — basics.md: the Keyboard Shortcuts card with its filter in use
+size 1440 900
+open MEDIA/Color Bars 1080p.mov
+wait 1.2
+menu RightRail
+wait 2.5
+menu Shortcuts
+wait 1.0
+click 1280 76
+type loop
+wait 0.5
+shot qcv3_009 1128 632 312 168
+quit

@@ -60,3 +60,21 @@ Use media that may be shown publicly: no client footage, no client or job names 
 | `qcv3_052` | qcbridge-adobe.md | QCView in dual view with an After Effects feed on one side and a Premiere Pro feed (or a file) on the other |
 | `qcv3_053` | qcbridge-aja.md | the AJA card switched on and live - green dot, the two status lines naming the raster / format / transfer and the device, with Transfer on PQ Rec.2100 and the Primaries and Peak / MaxCLL / MaxFALL fields |
 | `qcv3_054` | qcbridge-ndi.md | the NDI card switched on and live - green dot, the line with the raster, format and transfer, and the sink's line with the source's name and receiver count |
+
+## Status (2026-11-10)
+
+46 of the 54 are produced by script (`tools/docs-shots/`: `make-media.sh` once, then `run.sh scripts/<batch>.shots`, or
+`run-live.sh` for the two batches that need the synthetic QCBridge host) and placed on the docs branch. `qcv3_049` has a
+second image, `qcv3_049b` (the precision box: the app closes it on the press that starts a trim, so one picture cannot hold both).
+
+Not scriptable, still placeholders on the docs branch:
+
+| Shot | Why |
+|---|---|
+| `qcv3_002`, `qcv3_024` | the File menu is the OS's menu, outside the window's own picture |
+| `qcv3_003` | an OS drag from the file manager |
+| `qcv3_028` | Linked Projects needs a file rendered by After Effects / Premiere with its project link |
+| `qcv3_046`, `qcv3_047`, `qcv3_053`, `qcv3_054` | the Output cards need the real AJA card and an NDI receiver |
+
+`qcv3_013` shows the two screenshot buttons without the toast (the capture itself writes to the Desktop or the clipboard).
+The live shots show the test host's name, "QCBridge Test Signal", where the page speaks of After Effects / Premiere Pro.

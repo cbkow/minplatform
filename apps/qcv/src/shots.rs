@@ -16,6 +16,14 @@
 //!   move X Y            the pointer goes there (hover)                  leave         the pointer leaves the window
 //!   down X Y / up X Y   a primary press / release                       click X Y     both
 //!   rdown X Y / rup X Y the secondary button                            wheel X Y DY  a wheel step at a point
+//!   key CHAR            a transport key by its letter (i o v r b …: `key_map`), to the loaded clip or the dual master
+//!   type TEXT           characters into the field that has the focus (the shortcuts filter, the go-to box, a note)
+//!   enter               Enter in that field
+//!   playlist PATH…      a new playlist of these files (`|` between paths), loaded
+//!   load NAME           load the project item with this name
+//!   savedual NAME       save the current dual view as an item       saveproject PATH   save the project
+//!   lscroll PX / rscroll PX   scroll the left / right rail by logical pixels (down is positive)
+//!   zoom X UNITS [alt]  the wheel over the timeline at logical X (120 units = one notch; alt = pan)
 //!   shot NAME [X Y W H] save the window (or a logical-pixel crop of it) as <out>/NAME.png
 //!   quit
 use std::time::{Duration, Instant};
@@ -57,6 +65,9 @@ impl crate::App {
                 "project" => self.open_project(&tail),
                 "bsource" => { if let Some(id) = self.add_and_load(&tail, false) { self.set_b_source(&id); } }
                 "dual" => self.set_compare_mode(match rest.first().copied() { Some("sbs") => min_present::dual::CompareMode::SideBySide, Some("split") => min_present::dual::CompareMode::Split, Some("diff") => min_present::dual::CompareMode::Difference, _ => min_present::dual::CompareMode::Single }),
+                "preset" => { if let Some(st) = self.colors.all().into_iter().find(|p| p.name == tail).map(|p| p.stored) { self.color_cmd(crate::color_drawer::Cmd::Pick(st)); } else { eprintln!("shots: no preset named '{tail}' (have: {:?})", self.colors.all().iter().map(|p| p.name.clone()).collect::<Vec<_>>()); } }
+                "newocio" => self.color_cmd(crate::color_drawer::Cmd::NewOcio),
+                "live" => self.connect_url(&tail, ""),
                 "color" => self.color_cmd(crate::color_drawer::Cmd::SetOn(rest.first() == Some(&"on"))),
                 "set" => { if let (Some(k), Some(v)) = (rest.first(), rest.get(1)) { match *v { "true" | "false" => { self.settings.set_bool(k, *v == "true"); } n if n.parse::<i64>().is_ok() => { self.settings.set_int(k, n.parse().unwrap()); } s => { self.settings.set_str(k, s); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
                 "seek" => { let f = num(0) as i32; if let Some(d) = self.dual.as_mut() { d.seek_to_frame(f); } else if let Some(p) = self.player.as_mut() { p.seek_to_frame(f); } }
@@ -71,6 +82,23 @@ impl crate::App {
                 "rdown" => { let (x, y) = pt(0); self.pointer(Event::Move { x, y }); self.pointer(Event::Down { x, y, button: Button::Secondary }); }
                 "rup" => { let (x, y) = pt(0); self.pointer(Event::Up { x, y, button: Button::Secondary }); }
                 "shot" => { let crop = (rest.len() >= 5).then(|| [num(1), num(2), num(3), num(4)]); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } self.shots.as_mut().unwrap().pending = Some((rest.first().unwrap_or(&"shot").to_string(), crop, 0)); return }
+                "key" => { if let Some(ch) = rest.first().and_then(|c| c.chars().next()) { use qcv_player::key_map::{map_key, Key, Mods}; if let Some(a) = map_key(Key::Char(ch), Mods::default(), true, false) { if let Some(d) = self.dual.as_mut() { d.apply(a, now); } else if let Some(p) = self.player.as_mut() { p.apply(a, now); } } } }
+                "type" | "enter" => {
+                    let keys: Vec<min_ui::KeyEvent> = if cmd == "enter" { vec![min_ui::KeyEvent { key: min_ui::Key::Named(min_ui::Named::Enter), text: None, shift: false, cmd: false }] } else { tail.chars().map(|c| min_ui::KeyEvent { key: min_ui::Key::Char(c.to_string()), text: Some(c.to_string()), shift: c.is_uppercase(), cmd: false }).collect() };
+                    for k in keys {
+                        let Some(g) = self.gpu.as_mut() else { break };
+                        if g.shortcuts.has_focus() { g.shortcuts.key(&k, &mut g.fonts); }
+                        else if g.strip.is_open() { let commit = g.strip.key(&k, &mut g.fonts); match commit { Some(crate::status_strip::Commit::Frame(f)) => { if let Some(p) = self.player.as_mut() { p.seek_to_frame(f); } } Some(crate::status_strip::Commit::Time(sec)) => { if let Some(p) = self.player.as_mut() { let f = (sec * p.rate().as_f64()).round() as i32; p.seek_to_frame(f); } } _ => {} } }
+                        else if g.notes.has_focus() { let cmds = g.notes.key(&k, &mut g.fonts); for c in cmds { self.notes_cmd(c); } }
+                        else if g.drawer.has_focus() || g.drawer.is_modal() { let (cmds, _) = g.drawer.key(&k, &mut g.fonts); for c in cmds { self.color_cmd(c); } }
+                    }
+                }
+                "playlist" => { let paths: Vec<String> = tail.split('|').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect(); self.create_playlist(&paths); }
+                "load" => { if let Some(id) = self.project.pool().iter().find(|m| m.name == tail).map(|m| m.id.clone()) { self.load_item(&id); } else { eprintln!("shots: no item named '{tail}' (have: {:?})", self.project.pool().iter().map(|m| m.name.clone()).collect::<Vec<_>>()); } }
+                "savedual" => { if let Some(data) = self.dual_pair_data() { let id = self.project.add_dual_pair(&tail, data); self.active_dual_view = id; } }
+                "saveproject" => { if let Err(e) = self.project.save_project(&tail) { eprintln!("shots: save: {e}"); } }
+                "lscroll" | "rscroll" => { if let Some(g) = self.gpu.as_mut() { let px = num(0) * scale; if cmd == "lscroll" { g.left.wheel(px, now); } else { g.right.wheel(px, now); } } }
+                "zoom" => { let st = crate::scrub_state(crate::pb(&self.dual, &self.player), self.player.as_ref()); if let Some(g) = self.gpu.as_mut() { g.scrubber.wheel(num(0) * scale, num(1), rest.get(2) == Some(&"alt"), &st, scale); } }
                 "quit" => { self.shots.as_mut().unwrap().done = true; self.menu_queue.push(crate::menu::Cmd::Quit); return }
                 other => eprintln!("shots: unknown command '{other}'"),
             }
