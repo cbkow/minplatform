@@ -129,5 +129,26 @@ still took 9 s. The cost is one visit per flagged range, wherever it is.
 flagged ranges in the element it is attached to. The only lever on our side is HOW MUCH TEXT ONE ELEMENT HOLDS.
 Typing and corrections are unaffected at this size.
 
+### Step 3c, one text element per paragraph (`S9_MODE=blocks`; the reference window, 5,000 words, 96 elements; 2026-11-10)
+The user's instinct ("I do believe each block is its own run"), tested. From outside: the application's focused element
+is an `AXTextArea` "Block N" (one paragraph), its parent an `AXGroup` with 96 children. Grammarly followed the caret:
+on each change of paragraph it read that paragraph's value (200–330 characters) and asked geometry for it alone — 277
+`frameForRange` calls in a whole session, against 516,000 on the one-element 50,000-word run. Corrections landed on the
+right ranges (local offsets mapped back to the document).
+**The cost, which the user felt at once:** Grammarly checks only the paragraph the caret is in; the rest of the document
+shows nothing. The user: "so i understand the limitations here and maybe our block model is not helpful at all for what
+we want in this app. time to reassess?"
+**Answer given, and where the day ended:** the block model (storage, editing, merge) and the SHAPE SHOWN TO THE DESKTOP
+are independent — the same blocks can be described as one field, as several, or as one per paragraph. Per-paragraph is
+the most fragmented shape and the wrong trade for a writing tool. The whole-note shape was only ever tried on a
+worst case (50,000 words, a third of the sentences wrong).
+
+**NEXT, agreed with the user for the following session:** the whole-note shape on a REALISTIC text —
+`docs/spikes/s9/out/real-5k.txt` (5,016 words, 95 paragraphs, 15 flawed sentences; regenerate with the generator in
+this log's history if the ignored folder is gone): `open -n target/spikes/s9/S9Text.app --env S9_LOG=<file> --env
+S9_FILE=<that file>` (no `S9_MODE`). The user scrolls and says whether Grammarly keeps up; the log gives the call
+counts after each scroll. If it holds: one field for the whole note, split only when a note is enormous. Then the
+middle shape (one field per run of text between media blocks) if it does not.
+
 ## Verdict
 (pending)

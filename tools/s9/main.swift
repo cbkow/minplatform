@@ -6,6 +6,7 @@
 //                     selectedTextRange, setSelectedTextRange, visibleCharacterRange, numberOfCharacters, stringForRange,
 //                     attributedStringForRange, frameForRange, rangeForLine, lineForIndex, rangeForPosition,
 //                     rangeForIndex, styleRangeForIndex, insertionPointLineNumber, notifications)
+//   S9_MODE=blocks    every paragraph is its OWN text element (the view is a group; the element holding the caret is focused)
 //   S9_WORDS=N        a generated document of about N words instead of the sample;  S9_FILE=<path> a text file instead
 import Cocoa
 
@@ -14,6 +15,7 @@ final class Log {
     static let t0 = Date()
     static var counts: [String: Int] = [:]
     static var last: [String: String] = [:]
+    static var perBlock: [Int: Int] = [:]
     static let fh: FileHandle = {
         let p = ProcessInfo.processInfo.environment["S9_LOG"] ?? "s9-ax.log"
         FileManager.default.createFile(atPath: p, contents: nil)
@@ -31,12 +33,52 @@ final class Log {
     static func summary() {
         var s = "\n── call counts ──\n"
         for (k, v) in counts.sorted(by: { $0.value > $1.value }) { s += String(format: "%8d  %@\n", v, k as NSString) }
+        if !perBlock.isEmpty { s += "── frameForRange per block (\(perBlock.count) blocks asked) ──\n" + perBlock.sorted(by: { $0.key < $1.key }).map { "#\($0.key):\($0.value)" }.joined(separator: " ") + "\n" }
         fh.write(s.data(using: .utf8)!)
     }
 }
 let off: Set<String> = Set((ProcessInfo.processInfo.environment["S9_OFF"] ?? "").split(separator: ",").map(String.init))
+let blocksMode = ProcessInfo.processInfo.environment["S9_MODE"] == "blocks"
 let offscreenZero = ProcessInfo.processInfo.environment["S9_OFFSCREEN"] == "zero"
 func R(_ r: NSRange) -> String { r.location == NSNotFound ? "{NotFound,\(r.length)}" : "{\(r.location),\(r.length)}" }
+
+// ───────────────────────────── one paragraph as its own text element (S9_MODE=blocks)
+final class BlockElement: NSAccessibilityElement {
+    unowned let v: EditorView; let index: Int
+    init(view: EditorView, index: Int) { v = view; self.index = index; super.init() }
+    var range: NSRange { let p = v.paras(); return index < p.count ? p[index] : NSRange(location: v.length, length: 0) }
+    func g(_ r: NSRange) -> NSRange { let b = range; let loc = min(max(0, r.location), b.length); return NSRange(location: b.location + loc, length: min(r.length, b.length - loc)) }
+    func tag(_ s: String = "") -> String { "#\(index) \(s)" }
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    override func accessibilityLabel() -> String? { "Block \(index + 1)" }
+    override func accessibilityParent() -> Any? { v }
+    override func accessibilityWindow() -> Any? { v.window }
+    override func accessibilityTopLevelUIElement() -> Any? { v.window }
+    override func isAccessibilityEnabled() -> Bool { true }
+    override func isAccessibilityFocused() -> Bool { let f = v.window?.firstResponder === v && v.focusedPara == index; Log.w("blk.isFocused", tag("\(f)")); return f }
+    override func accessibilityFrame() -> NSRect { let f = v.screen(v.rect(for: range)); Log.w("blk.frame", tag("(\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))×\(Int(f.height)))")); return f }
+    override func accessibilityValue() -> Any? { Log.w("blk.value", tag("\(range.length) chars")); return v.text.substring(with: range) }
+    override func setAccessibilityValue(_ x: Any?) { let t = (x as? String) ?? ""; Log.w("blk.setValue", tag("\"\(Log.clip(t))\""), always: true); v.replace(range, with: t, why: "blk.setValue") }
+    override func accessibilityNumberOfCharacters() -> Int { Log.w("blk.numberOfCharacters", tag("\(range.length)")); return range.length }
+    func localSel() -> NSRange {
+        let b = range, s = v.sel
+        if s.location >= b.location && s.location <= NSMaxRange(b) { return NSRange(location: s.location - b.location, length: min(s.length, NSMaxRange(b) - s.location)) }
+        let i = NSIntersectionRange(s, b); return i.length > 0 ? NSRange(location: i.location - b.location, length: i.length) : NSRange(location: 0, length: 0)
+    }
+    override func accessibilitySelectedTextRange() -> NSRange { let r = localSel(); Log.w("blk.selectedTextRange", tag(R(r))); return r }
+    override func accessibilitySelectedText() -> String? { let t = v.text.substring(with: g(localSel())); Log.w("blk.selectedText", tag("\"\(Log.clip(t))\"")); return t }
+    override func setAccessibilitySelectedTextRange(_ r: NSRange) { Log.w("blk.setSelectedTextRange", tag(R(r)), always: true); let x = g(r); v.anchor = x.location; v.select(x, why: "ax#\(index)") }
+    override func setAccessibilitySelectedText(_ t: String?) { Log.w("blk.setSelectedText", tag("\"\(Log.clip(t ?? "nil"))\""), always: true); v.replace(g(localSel()), with: t ?? "", why: "blk.setSelectedText") }
+    override func accessibilityVisibleCharacterRange() -> NSRange { Log.w("blk.visibleCharacterRange", tag()); return NSRange(location: 0, length: range.length) }
+    override func accessibilityInsertionPointLineNumber() -> Int { 0 }
+    override func accessibilityString(for r: NSRange) -> String? { Log.w("blk.stringForRange", tag(R(r))); return v.text.substring(with: g(r)) }
+    override func accessibilityAttributedString(for r: NSRange) -> NSAttributedString? { Log.w("blk.attributedStringForRange", tag(R(r))); return v.storage.attributedSubstring(from: g(r)) }
+    override func accessibilityFrame(for r: NSRange) -> NSRect { let f = v.screen(v.rect(for: g(r))); Log.w("blk.frameForRange", tag("\(R(r)) → (\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))×\(Int(f.height)))")); Log.perBlock[index, default: 0] += 1; return f }
+    override func accessibilityRange(forLine line: Int) -> NSRange { NSRange(location: 0, length: range.length) }
+    override func accessibilityLine(for i: Int) -> Int { 0 }
+    override func accessibilityRange(for i: Int) -> NSRange { NSRange(location: min(i, range.length), length: i < range.length ? 1 : 0) }
+}
 
 // ───────────────────────────── the editor
 final class EditorView: NSView, NSTextInputClient {
@@ -72,9 +114,13 @@ final class EditorView: NSView, NSTextInputClient {
         layout.ensureLayout(for: container)
         let h = layout.usedRect(for: container).height + 2 * inset
         setFrameSize(NSSize(width: w, height: max(h, enclosingScrollView?.contentSize.height ?? h)))
-        lines = nil; visCache = nil; needsDisplay = true
+        lines = nil; visCache = nil; paraCache = nil; needsDisplay = true
     }
-    func note(_ n: NSAccessibility.Notification) { if !off.contains("notifications") { NSAccessibility.post(element: self, notification: n) } }
+    func note(_ n: NSAccessibility.Notification) {
+        if off.contains("notifications") { return }
+        if blocksMode, n != .layoutChanged { focusMaybeChanged(); if focusedPara >= 0, focusedPara < elements.count { NSAccessibility.post(element: elements[focusedPara], notification: n); return } }
+        NSAccessibility.post(element: self, notification: n)
+    }
 
     /// Every edit goes through here.
     func replace(_ range: NSRange, with s: String, why: String) {
@@ -121,6 +167,25 @@ final class EditorView: NSView, NSTextInputClient {
     /// The character range of every laid-out line (plus the empty last line after a trailing newline).
     var lines: [NSRange]? = nil
     var visCache: (NSRect, NSRange)? = nil
+    // S9_MODE=blocks: the paragraphs (without their line break), one element each, and the one holding the caret
+    var paraCache: [NSRange]? = nil
+    var elements: [BlockElement] = []
+    var focusedPara = -1
+    func paras() -> [NSRange] {
+        if let p = paraCache { return p }
+        var out: [NSRange] = []; var i = 0; let t = text
+        while i <= length { if i == length { out.append(NSRange(location: i, length: 0)); break }
+            let pr = t.paragraphRange(for: NSRange(location: i, length: 0)); var c = pr; if c.length > 0, t.character(at: NSMaxRange(c) - 1) == 10 { c.length -= 1 } else { out.append(c); break }
+            out.append(c); i = NSMaxRange(pr) }
+        paraCache = out; return out
+    }
+    func paraIndex(of loc: Int) -> Int { let p = paras(); var lo = 0, hi = p.count - 1; while lo < hi { let m = (lo + hi) / 2; if loc <= NSMaxRange(p[m]) { hi = m } else { lo = m + 1 } }; return lo }
+    func syncElements() { let n = paras().count; while elements.count < n { elements.append(BlockElement(view: self, index: elements.count)) }; if elements.count > n { elements.removeLast(elements.count - n) } }
+    func focusMaybeChanged() {
+        guard blocksMode else { return }
+        syncElements(); let i = paraIndex(of: sel.location)
+        if i != focusedPara { focusedPara = i; Log.w("FOCUS", "block #\(i)", always: true); if !off.contains("notifications") { NSAccessibility.post(element: elements[i], notification: .focusedUIElementChanged) } }
+    }
     func visibleChars() -> NSRange { let vr = visibleRect; if let c = visCache, c.0 == vr { return c.1 }; let g = layout.glyphRange(forBoundingRect: vr.offsetBy(dx: -inset, dy: -inset), in: container); let r = layout.characterRange(forGlyphRange: g, actualGlyphRange: nil); visCache = (vr, r); return r }
     func lineRanges() -> [NSRange] {
         if let l = lines { return l }
@@ -227,8 +292,11 @@ final class EditorView: NSView, NSTextInputClient {
 
     // ── the accessibility text protocol
     override func isAccessibilityElement() -> Bool { true }
-    override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    override func accessibilityRole() -> NSAccessibility.Role? { blocksMode ? .group : .textArea }
     override func accessibilityLabel() -> String? { "Editor" }
+    override func accessibilityChildren() -> [Any]? { if blocksMode { syncElements(); Log.w("ax.children", "\(elements.count)"); return elements }; return super.accessibilityChildren() }
+    override func accessibilityHitTest(_ point: NSPoint) -> Any? { guard blocksMode, let w = window else { return super.accessibilityHitTest(point) }; syncElements(); let i = paraIndex(of: index(at: convert(w.convertPoint(fromScreen: point), from: nil))); Log.w("ax.hitTest", "#\(i)"); return elements[i] }
+    override var accessibilityFocusedUIElement: Any? { if blocksMode { syncElements(); if focusedPara < 0 { focusedPara = paraIndex(of: sel.location) }; Log.w("ax.focusedUIElement", "#\(focusedPara)"); return elements[focusedPara] }; return self }
     override func isAccessibilityFocused() -> Bool { let f = window?.firstResponder === self; Log.w("ax.isFocused", "\(f)"); return f }
     override func isAccessibilityEnabled() -> Bool { true }
     override func accessibilityValue() -> Any? { if off.contains("value") { Log.w("ax.value", "WITHHELD"); return nil }; Log.w("ax.value", "\(length) chars"); return storage.string }
