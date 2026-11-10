@@ -8,7 +8,8 @@
 #   - dxcompiler.dll (the DX12 renderer's shader compiler), assets\OCIO, LICENSE
 #   - AppxManifest.xml generated here: the version from apps\qcv\Cargo.toml, the file types from
 #     crates\qcv-project\src\extensions.rs (one list for both OSes, only what the app opens)
-# The .msix is UNSIGNED - what Partner Center takes (Microsoft signs it). -Pfx signs a private sideload copy for testing.
+# The .msix is UNSIGNED - what Partner Center takes (Microsoft signs it). -Pfx signs a private sideload copy for testing
+# (QCV_SIGNING_PASSWORD in the environment if the PFX has one; from the desktop session).
 # Usage (from the repo root):  powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\make-msix.ps1 [-StageOnly] [-Pfx <file>]
 [CmdletBinding()]
 param(
@@ -175,7 +176,12 @@ if ($Pfx) {
     $signTool = Find-SdkTool "signtool.exe"
     $side = Join-Path $dist "QCView-$version-win64-sideload.msix"
     Copy-Item $out $side -Force
-    & $signTool sign /fd SHA256 /f $Pfx $side | Out-Null
+    # the PFX's password comes from the environment (QCV_SIGNING_PASSWORD, QCView's variable) - never from a file in the repo.
+    # signtool cannot open a PFX from an SSH session: run this from the logged-on desktop.
+    $signArgs = @("sign", "/fd", "SHA256", "/f", $Pfx)
+    if ($env:QCV_SIGNING_PASSWORD) { $signArgs += @("/p", $env:QCV_SIGNING_PASSWORD) }
+    $signArgs += $side
+    & $signTool @signArgs | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE) - the certificate's subject must equal the manifest's Publisher." }
     Write-Host "  signed $side (private testing only)"
 }
