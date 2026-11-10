@@ -4543,5 +4543,10 @@ msgstr "Arrastre central"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "Main"
-msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
-msgstr "QCView no puede dibujar con el dispositivo gráfico de este equipo. Necesita una tarjeta gráfica compatible con DirectX 12 y un controlador actualizado. No se admiten máquinas virtuales ni sesiones remotas sin GPU."
+msgid "No compatible graphics card"
+msgstr "No hay una tarjeta gráfica compatible"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView needs DirectX 12 and a current graphics driver."
+msgstr "QCView necesita DirectX 12 y un controlador gráfico actualizado."

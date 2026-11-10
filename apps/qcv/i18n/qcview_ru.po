@@ -4551,5 +4551,10 @@ msgstr "Тянуть средней кнопкой"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "Main"
-msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
-msgstr "QCView не может выполнять отрисовку на графическом устройстве этого компьютера. Требуется видеокарта с поддержкой DirectX 12 и актуальный драйвер. Виртуальные машины и удалённые сеансы без GPU не поддерживаются."
+msgid "No compatible graphics card"
+msgstr "Нет совместимой видеокарты"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView needs DirectX 12 and a current graphics driver."
+msgstr "QCView требуется DirectX 12 и актуальный графический драйвер."

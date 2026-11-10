@@ -4543,5 +4543,10 @@ msgstr "Trascinamento centrale"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "Main"
-msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
-msgstr "QCView non può disegnare con il dispositivo grafico di questo computer. Serve una scheda grafica compatibile con DirectX 12 e un driver aggiornato. Le macchine virtuali e le sessioni remote senza GPU non sono supportate."
+msgid "No compatible graphics card"
+msgstr "Nessuna scheda grafica compatibile"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView needs DirectX 12 and a current graphics driver."
+msgstr "QCView richiede DirectX 12 e un driver grafico aggiornato."

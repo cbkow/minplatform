@@ -37,6 +37,7 @@ mod menu;
 #[cfg(target_os = "macos")] mod mac_open;
 #[cfg(target_os = "macos")] mod sparkle;
 mod fatal;
+#[cfg(windows)] mod win_icon;
 mod single_instance;
 mod toolbox;
 mod logging;
@@ -2058,9 +2059,7 @@ impl ApplicationHandler for App {
         // the big one — the taskbar's and Alt+Tab's — is the regular Windows icon, the exe's own resource (build.rs, id 1).
         #[cfg(windows)] {
             use winit::platform::windows::{WinIcon, WindowAttributesWindows};
-            let small = { let mut r = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/icons/qcviewMac-64.png")[..])); r.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA | png::Transformations::STRIP_16);
-                r.read_info().ok().and_then(|mut rd| { let mut buf = vec![0u8; rd.output_buffer_size()]; let info = rd.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
-                    if info.color_type != png::ColorType::Rgba { return None } winit::icon::RgbaIcon::new(buf, info.width, info.height).ok().map(winit::icon::Icon::from) }) };
+            let small = win_icon::rgba().and_then(|(buf, w, h)| winit::icon::RgbaIcon::new(buf, w, h).ok().map(winit::icon::Icon::from));
             if small.is_none() { log::warn!("the title-bar icon did not decode"); }
             attrs = attrs.with_window_icon(small);
             let big = WinIcon::from_resource(1, None).map_err(|e| log::warn!("no icon resource in this exe: {e}")).ok().map(winit::icon::Icon::from);

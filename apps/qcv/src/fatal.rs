@@ -8,10 +8,12 @@ use min_i18n::trc;
 pub fn no_graphics(detail: &str) -> ! {
     log::error!("no usable graphics device: {detail}");
     eprintln!("QCView: no usable graphics device: {detail}");
-    let body = trc("Main", "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported.");
+    // the copy (the user 2026-11-09, "a bit verbose" → heading + one line)
+    let head = trc("Main", "No compatible graphics card");
+    let body = trc("Main", "QCView needs DirectX 12 and a current graphics driver.");
     let close = trc("Main", "Close");
-    #[cfg(windows)] { let _ = std::thread::spawn(move || win::show(body, close)).join(); }
-    #[cfg(not(windows))] { let _ = (body, close); }
+    #[cfg(windows)] { let _ = std::thread::spawn(move || win::show(head, body, close)).join(); }
+    #[cfg(not(windows))] { let _ = (head, body, close); }
     std::process::exit(1)
 }
 
@@ -27,16 +29,16 @@ mod win {
     use windows::Win32::UI::HiDpi::GetDpiForSystem;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
-    struct State { body: Vec<u16>, close: Vec<u16>, scale: f64, button: RECT }
+    struct State { head: Vec<u16>, body: Vec<u16>, close: Vec<u16>, scale: f64, button: RECT }
     static STATE: Mutex<Option<State>> = Mutex::new(None);
     fn rgb(c: min_theme::Color) -> COLORREF { COLORREF(((c.r * 255.0).round() as u32) | (((c.g * 255.0).round() as u32) << 8) | (((c.b * 255.0).round() as u32) << 16)) }
     fn px(v: f64, s: f64) -> i32 { (v * s).round() as i32 }
 
-    pub fn show(body: &str, close: &str) {
+    pub fn show(head: &str, body: &str, close: &str) {
         unsafe {
             let scale = GetDpiForSystem() as f64 / 96.0;
-            let (w_px, h_px) = (px(460.0, scale), px(190.0, scale));
-            *STATE.lock().unwrap() = Some(State { body: body.encode_utf16().collect(), close: close.encode_utf16().collect(), scale, button: RECT::default() });
+            let (w_px, h_px) = (px(440.0, scale), px(176.0, scale));
+            *STATE.lock().unwrap() = Some(State { head: head.encode_utf16().collect(), body: body.encode_utf16().collect(), close: close.encode_utf16().collect(), scale, button: RECT::default() });
             let inst = GetModuleHandleW(PCWSTR::null()).map(|h| windows::Win32::Foundation::HINSTANCE(h.0)).unwrap_or_default();
             let class = w!("QCViewFatal");
             let wc = WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: class, hbrBackground: CreateSolidBrush(rgb(t::RAIL_BACKGROUND_COLOR)), hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(), ..Default::default() };
@@ -48,6 +50,13 @@ mod win {
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &on as *const _ as *const _, std::mem::size_of_val(&on) as u32);
             let cap = rgb(t::RAIL_BACKGROUND_COLOR);
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &cap as *const _ as *const _, std::mem::size_of_val(&cap) as u32);
+            // the two icons, as the main window's: the title bar's is the macOS icon, the taskbar's the exe's own (resource 1)
+            if let Some((mut px_, w, h)) = crate::win_icon::rgba() {
+                for p in px_.chunks_exact_mut(4) { p.swap(0, 2); }   // RGBA → BGRA
+                let mask = vec![0u8; (w * h / 8) as usize];
+                if let Ok(ic) = CreateIcon(Some(inst), w as i32, h as i32, 1, 32, mask.as_ptr(), px_.as_ptr()) { SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(ic.0 as isize))); }
+            }
+            if let Ok(ic) = LoadIconW(Some(inst), PCWSTR(1 as *const u16)) { SendMessageW(hwnd, WM_SETICON, Some(WPARAM(ICON_BIG as usize)), Some(LPARAM(ic.0 as isize))); }
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
             let mut msg = MSG::default();
@@ -64,11 +73,16 @@ mod win {
                     let mut client = RECT::default(); let _ = GetClientRect(hwnd, &mut client);
                     if let Some(st) = STATE.lock().unwrap().as_mut() {
                         let s = st.scale; let pad = px(20.0, s);
-                        let font = CreateFontW(-px(14.0, s), 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, w!("Segoe UI"));
-                        let old = SelectObject(dc, HGDIOBJ(font.0));
+                        let mk = |size: f64, weight: i32| CreateFontW(-px(size, s), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, w!("Segoe UI"));
+                        let (hfont, font) = (mk(17.0, 600), mk(14.0, 400));
                         SetBkMode(dc, TRANSPARENT);
+                        let old = SelectObject(dc, HGDIOBJ(hfont.0));
+                        SetTextColor(dc, rgb(t::MENU_BAR_TITLE_COLOR_OPEN));
+                        let mut hr = RECT { left: pad, top: pad, right: client.right - pad, bottom: pad + px(26.0, s) };
+                        DrawTextW(dc, &mut st.head, &mut hr, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+                        SelectObject(dc, HGDIOBJ(font.0));
                         SetTextColor(dc, rgb(t::MENU_BAR_TITLE_COLOR));
-                        let mut text = RECT { left: pad, top: pad, right: client.right - pad, bottom: client.bottom - px(64.0, s) };
+                        let mut text = RECT { left: pad, top: pad + px(32.0, s), right: client.right - pad, bottom: client.bottom - px(60.0, s) };
                         DrawTextW(dc, &mut st.body, &mut text, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
                         // the Close button: a rounded grey block, bottom right
                         let (bw, bh) = (px(96.0, s), px(32.0, s));
@@ -80,7 +94,7 @@ mod win {
                         SetTextColor(dc, rgb(t::MENU_BAR_TITLE_COLOR_OPEN));
                         let mut b = st.button;
                         DrawTextW(dc, &mut st.close, &mut b, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-                        SelectObject(dc, old); let _ = DeleteObject(HGDIOBJ(font.0));
+                        SelectObject(dc, old); let _ = DeleteObject(HGDIOBJ(font.0)); let _ = DeleteObject(HGDIOBJ(hfont.0));
                     }
                     let _ = EndPaint(hwnd, &ps);
                     LRESULT(0)

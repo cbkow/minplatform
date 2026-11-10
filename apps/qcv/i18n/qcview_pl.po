@@ -4551,5 +4551,10 @@ msgstr "Przeciągnij środkowym"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "Main"
-msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
-msgstr "QCView nie może rysować przy użyciu urządzenia graficznego tego komputera. Wymagana jest karta graficzna obsługująca DirectX 12 z aktualnym sterownikiem. Maszyny wirtualne i sesje zdalne bez GPU nie są obsługiwane."
+msgid "No compatible graphics card"
+msgstr "Brak zgodnej karty graficznej"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView needs DirectX 12 and a current graphics driver."
+msgstr "QCView wymaga DirectX 12 i aktualnego sterownika graficznego."

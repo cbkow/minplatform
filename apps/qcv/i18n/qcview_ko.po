@@ -4535,5 +4535,10 @@ msgstr "가운데 버튼 드래그"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "Main"
-msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
-msgstr "이 컴퓨터의 그래픽 장치로는 QCView를 그릴 수 없습니다. DirectX 12를 지원하는 그래픽 카드와 최신 드라이버가 필요합니다. GPU가 없는 가상 머신과 원격 세션은 지원되지 않습니다."
+msgid "No compatible graphics card"
+msgstr "호환되는 그래픽 카드가 없습니다"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView needs DirectX 12 and a current graphics driver."
+msgstr "QCView에는 DirectX 12와 최신 그래픽 드라이버가 필요합니다."
