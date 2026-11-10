@@ -2062,7 +2062,14 @@ impl ApplicationHandler for App {
             if small.is_none() { log::warn!("the title-bar icon did not decode"); }
             attrs = attrs.with_window_icon(small);
             let big = WinIcon::from_resource(1, None).map_err(|e| log::warn!("no icon resource in this exe: {e}")).ok().map(winit::icon::Icon::from);
-            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big)));
+            // One surface from the title bar down (the user 2026-11-09: the menu row read as "an odd darker grey" between Windows'
+            // caption and the rails): the caption takes the menu row's colour — the rails' — on Windows 11 (Windows 10 cannot
+            // recolour a caption and keeps its own dark grey). The app is always dark, so the caption's glyphs are the dark theme's.
+            let c8 = |c: min_theme::Color| winit::platform::windows::Color::from_rgb((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
+            use min_theme::tokens as tk;
+            attrs = attrs.with_theme(Some(winit::window::Theme::Dark));
+            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big)
+                .with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
         }
         let show_after_first_frame = cfg!(windows);
         if show_after_first_frame { attrs = attrs.with_visible(false); }
