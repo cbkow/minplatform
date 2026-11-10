@@ -607,7 +607,7 @@ impl ColorDrawer {
             let f = |v: f32| format_peak(v, hdr);
             let unit = if hdr { " nits" } else { "" };
             let rows: Vec<(Option<(&str, min_theme::Color)>, String, bool)> = match (self.peaks_dual, self.peaks) {
-                (Some(sides), _) => sides.iter().enumerate().filter_map(|(i, sp)| sp.map(|(now_v, peak)| (Some(if i == 0 { ("A ", t::SIDE_A_COLOR) } else { ("B ", t::SIDE_B_COLOR) }), format!("{} · {} {}{unit}", f(now_v[0]), tr("peak"), f(peak[0])), if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 }))).collect(),
+                (Some(sides), _) => sides.iter().enumerate().filter_map(|(i, sp)| sp.map(|(now_v, peak)| (Some(if i == 0 { ("A ", t::SCOPE_SIDE_A_COLOR) } else { ("B ", t::SCOPE_SIDE_B_COLOR) }), format!("{} · {} {}{unit}", f(now_v[0]), tr("peak"), f(peak[0])), if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 }))).collect(),
                 (None, Some((now_v, peak))) => vec![(None, format!("{} · {} {}{unit}", f(now_v[0]), tr("peak"), f(peak[0])), if hdr { peak[0] > self.wf_peak_nits } else { peak[0] > 1.0 })],
                 _ => vec![],
             };
