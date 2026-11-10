@@ -1,0 +1,4 @@
+{{#each licenses}}
+<details class="lic"><summary><b>{{name}}</b> — {{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}</summary>
+<pre>{{text}}</pre></details>
+{{/each}}

@@ -4550,3 +4550,8 @@ msgstr "Nessuna scheda grafica compatibile"
 msgctxt "Main"
 msgid "QCView needs DirectX 12 and a current graphics driver."
 msgstr "QCView richiede DirectX 12 e un driver grafico aggiornato."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Licenses…"
+msgstr "Licenze…"

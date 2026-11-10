@@ -15,7 +15,7 @@
 pub enum Cmd {
     OpenMedia, OpenStream, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Compact, Pin, Fullscreen, DefaultFrame, LeftRail, RightRail,
-    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, ConnectBlender, Docs, CopyProjectLink, About, CheckForUpdates, ColorPanel,
+    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, ConnectBlender, Docs, CopyProjectLink, About, CheckForUpdates, Licenses, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
@@ -77,6 +77,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     if !mac { about.extend([item("About QCView…", None, Cmd::About), Node::Sep]); }
     if mac { about.push(item("Check for Updates…", None, Cmd::CheckForUpdates)); }
     about.push(item("Docs", None, Cmd::Docs));
+    about.push(item("Licenses…", None, Cmd::Licenses));   // NEW (canon row 252): the shipped third-party notices, in the browser
     vec![(tr("&File"), file), (tr("&View"), view), (tr("&Tools"), tools), (tr("&About"), about)]
 }
 

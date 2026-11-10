@@ -119,6 +119,24 @@ foreach ($d in "dxcompiler.dll", "LICENSE-LLVM.txt", "LICENCE-MIT.txt") {
 New-Item -ItemType Directory -Path (Join-Path $stage "assets") | Out-Null
 Copy-Item -Recurse (Join-Path $root "apps\qcv\assets\OCIO") (Join-Path $stage "assets\OCIO")
 Copy-Item (Join-Path $root "LICENSE") $stage
+
+# --- the third-party notices (canon row 252) ------------------------------------------------------------------------
+# Generated on the Mac (packaging\notices\make_notices.py windows - this box has no Python) and committed with a .check
+# sidecar; verified here against what this build really is: the committed Cargo.lock it was made from, the FFmpeg that
+# is being shipped, and every staged binary. A stale or incomplete notices file FAILS the package.
+$notices = Join-Path $root "packaging\notices\generated\THIRD-PARTY-NOTICES-windows.html"
+$check = Get-Content "$notices.check"
+$want = @{}; $filePats = @()
+foreach ($l in $check) { $k, $v = $l -split " ", 2; if ($k -eq "file") { $filePats += $v } else { $want[$k] = $v } }
+$lockNow = (& git -C $root rev-parse "HEAD:Cargo.lock").Trim()
+if ($want["lock"] -ne $lockNow) { throw "The notices were generated from another Cargo.lock - regenerate them on the Mac (make_notices.py windows) and commit." }
+if ($want["version"] -ne $version) { throw "The notices are for QCView $($want['version']), this is $version - regenerate them." }
+$conf = (& (Join-Path $Ffmpeg "ffmpeg.exe") -hide_banner -buildconf 2>&1 | Out-String)
+$flags = ([regex]::Matches($conf, "--enable-([a-z0-9_-]+)") | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique -CaseSensitive) -join " "
+if ((($want["ffmpeg"] -split " " | Sort-Object -Unique -CaseSensitive) -join " ") -ne $flags) { throw "The shipped FFmpeg's libraries differ from the notices' - capture ffmpeg -buildconf into packaging\notices\ffmpeg-win64.enabled and regenerate." }
+$orphans = Get-ChildItem $stage -File | Where-Object { $_.Extension -in ".dll", ".exe" } | Where-Object { $n = $_.Name; -not ($filePats | Where-Object { $n -like $_ }) } | ForEach-Object { $_.Name }
+if ($orphans) { throw ("Shipped without a notices entry: " + ($orphans -join ", ") + " - add them to packaging\notices\components.json and regenerate.") }
+Copy-Item $notices (Join-Path $stage "THIRD-PARTY-NOTICES.html")
 $bytes = (Get-ChildItem $stage -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("  staged {0} files, {1:N0} MB -> {2}" -f (Get-ChildItem $stage -Recurse -File).Count, ($bytes / 1MB), $stage)
 if ($StageOnly) { return }

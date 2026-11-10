@@ -4558,3 +4558,8 @@ msgstr "Нет совместимой видеокарты"
 msgctxt "Main"
 msgid "QCView needs DirectX 12 and a current graphics driver."
 msgstr "QCView требуется DirectX 12 и актуальный графический драйвер."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Licenses…"
+msgstr "Лицензии…"

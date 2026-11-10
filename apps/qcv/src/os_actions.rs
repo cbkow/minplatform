@@ -74,3 +74,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+/// The third-party notices shipped with this build (canon row 252), as a path the browser can open: the bundle's
+/// `Resources` on macOS; beside the exe on Windows — copied to `%LOCALAPPDATA%\QCView` first, because a packaged app's
+/// folder (WindowsApps) is not a place another program is sure to read from. A development run falls back to the file the
+/// packaging scripts last generated in this workspace; None when there is none.
+pub fn notices_file() -> Option<String> {
+    const NAME: &str = "THIRD-PARTY-NOTICES.html";
+    let exe = std::env::current_exe().ok()?; let dir = exe.parent()?;
+    let shipped = if cfg!(target_os = "macos") { dir.join("../Resources").join(NAME) } else { dir.join(NAME) };
+    let found = if shipped.is_file() { shipped } else {
+        let ws = exe.ancestors().nth(3)?;
+        [ws.join("target/dist/qcview.app/Contents/Resources").join(NAME), ws.join("packaging/notices/generated").join(if cfg!(windows) { "THIRD-PARTY-NOTICES-windows.html" } else { "THIRD-PARTY-NOTICES-macos.html" })].into_iter().find(|p| p.is_file())?
+    };
+    #[cfg(windows)] if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let out = std::path::PathBuf::from(local).join("QCView");
+        if std::fs::create_dir_all(&out).is_ok() && std::fs::copy(&found, out.join(NAME)).is_ok() { return Some(out.join(NAME).to_string_lossy().into_owned()) }
+    }
+    Some(std::fs::canonicalize(&found).unwrap_or(found).to_string_lossy().into_owned())
+}
+

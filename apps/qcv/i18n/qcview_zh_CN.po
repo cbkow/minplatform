@@ -4542,3 +4542,8 @@ msgstr "没有兼容的显卡"
 msgctxt "Main"
 msgid "QCView needs DirectX 12 and a current graphics driver."
 msgstr "QCView 需要 DirectX 12 和最新的显卡驱动程序。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Licenses…"
+msgstr "许可证…"

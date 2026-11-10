@@ -4542,3 +4542,8 @@ msgstr "호환되는 그래픽 카드가 없습니다"
 msgctxt "Main"
 msgid "QCView needs DirectX 12 and a current graphics driver."
 msgstr "QCView에는 DirectX 12와 최신 그래픽 드라이버가 필요합니다."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "Licenses…"
+msgstr "라이선스…"

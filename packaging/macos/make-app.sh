@@ -58,6 +58,9 @@ done
 # Sparkle (tools/sparkle/fetch.sh): the framework whole, symlinks kept; the app loads it at run time
 [ -d "$ROOT/external/sparkle/Sparkle.framework" ] || { echo "run tools/sparkle/fetch.sh first: the release carries its updater" >&2; exit 1; }
 ditto "$ROOT/external/sparkle/Sparkle.framework" "$FW/Sparkle.framework"
+# the third-party notices (canon row 252): generated for this bundle, and it FAILS if a shipped binary has no entry or a
+# crate's licence is not an accepted one. About ▸ Licenses… opens it.
+python3 "$ROOT/packaging/notices/make_notices.py" macos --out "$C/Resources/THIRD-PARTY-NOTICES.html" --stage "$APP"
 leaks=0
 for f in "$EXE" "$C/Helpers/ffmpeg" "$C/Helpers/ffprobe" "$FW"/*.dylib; do
   for dep in $(deps_of "$f"); do echo "LEAK ${f:t} -> $dep" >&2; leaks=1; done

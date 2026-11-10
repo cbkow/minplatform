@@ -1726,6 +1726,10 @@ impl App {
             M::Settings => self.reveal(Reveal::Settings),
             M::CopyProjectLink => self.copy_project_link(),
             M::Docs => { let _ = os_actions::open("https://qcview.app/"); }
+            M::Licenses => match os_actions::notices_file() {
+                Some(p) => { if let Err(e) = os_actions::open(&p) { log::warn!("Licenses: {e}"); } }
+                None => log::warn!("Licenses: no THIRD-PARTY-NOTICES.html with this build (a development run before packaging)"),
+            },
             M::CheckForUpdates => { #[cfg(target_os = "macos")] sparkle::check_now(); }
             // QCView's own About modal (Windows; macOS shows the platform panel from the app menu)
             M::About => { if let Some(g) = self.gpu.as_mut() { if let Some(mb) = g.menu_bar.as_mut() { mb.bar.cancel(); } g.about.show(); } }
