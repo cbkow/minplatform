@@ -35,7 +35,7 @@ pub use fonts::{Family, Fonts};
 pub use input::{Button, Event, ImeEvent, Key, KeyEvent, Named};
 pub use text_field::{FieldResponse, TextField};
 pub use popover::{Placement, Popover};
-pub use scrubber::{ScrubCmd, ScrubState, Scrubber};
+pub use scrubber::{NoteMark, ScrubCmd, ScrubState, Scrubber};
 pub use slider::Slider;
 pub use switch::Switch;
 pub use text_button::{TextButton, Variant};

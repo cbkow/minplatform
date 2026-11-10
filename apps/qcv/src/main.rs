@@ -91,7 +91,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     sdr_checked: Option<Instant>, /// the waveform's peak for the loaded clip (QCView: reset on every load)
     /// each picture's peak since its clip loaded (0 = the single view / dual A, 1 = dual B)
     clip_peak: [Option<[f32; 2]>; 2], ui: Option<min_ui::UiLayer>, fonts: min_ui::Fonts, ui_ms: Vec<f32>, ui_shown_frame: Option<(i32, i32)>, bar: transport_bar::TransportBar, strip: status_strip::StatusStrip, /// a live feed's one row (row 228): it stands in for the strip, the transport and the scrubber
-    live_strip: live_strip::LiveStrip, scrubber: min_ui::Scrubber, thumbs: hover_thumbs::HoverThumbs, /// dual's B side (A uses `thumbs`)
+    live_strip: live_strip::LiveStrip, scrubber: min_ui::Scrubber, /// the hovered note pennant's tooltip, and whether it has the hand cursor (rows 166 / 256)
+    note_tips: min_ui::Tooltips, note_cursor: bool, thumbs: hover_thumbs::HoverThumbs, /// dual's B side (A uses `thumbs`)
     thumbs_b: hover_thumbs::HoverThumbs, pointer: (f64, f64), ui_dirty: bool, /// the sequence cache's band status last painted (behind, ahead, failed, wraps)
     seq_status: Option<(i32, i32, usize, bool)>,
     /// Fullscreen: the picture alone; the bands slide in (1) from the bottom edge while the pointer rests there (canon §25 row 171).
@@ -908,6 +909,21 @@ impl App {
                 if g.dualc.set_audio(aud(qcv_player::Side::A), aud(qcv_player::Side::B)) { g.ui_dirty = true; }
                 if g.dualc.tick(now) || g.dualc.animating(now) { g.ui_dirty = true; }
             }
+            // the timeline's note pennants (rows 166 / 256; QCView's pins): the clip's notes in single view — none for a stream, in
+            // dual or in a playlist. The hovered pin's tooltip is "timecode  —  text"; it has the hand cursor.
+            {
+                let single = self.dual.is_none() && self.live.is_none() && self.player.as_ref().is_some_and(|p| !p.is_playlist());
+                let marks: Vec<min_ui::NoteMark> = if single { self.annot.notes.iter().map(|n| min_ui::NoteMark { frame: n.frame as i32, addressed: n.addressed }).collect() } else { vec![] };
+                if marks != g.scrubber.notes { g.scrubber.notes = marks; g.scrubber.hover_note = None; g.ui_dirty = true; }
+                let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
+                let sc = g.window.scale_factor();
+                // the pointer may have left through a widget that took the move: a pin is hovered only while the pointer is on it
+                if let Some(i) = g.scrubber.hover_note && !g.scrubber.note_rect(i, &st, sc).is_some_and(|r| r.contains(kurbo::Point::new(g.pointer.0, g.pointer.1))) { g.scrubber.hover_note = None; g.ui_dirty = true; }
+                let tip = g.scrubber.hover_note.and_then(|i| { let n = self.annot.notes.get(i)?; let r = g.scrubber.note_rect(i, &st, sc)?; let text = n.text.split_whitespace().collect::<Vec<_>>().join(" "); Some((i as u64, r, if text.is_empty() { n.timecode.clone() } else { format!("{}  \u{2014}  {}", n.timecode, text) })) });
+                if g.note_tips.hover(tip.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { g.ui_dirty = true; }
+                let on = g.scrubber.hover_note.is_some();
+                if on != g.note_cursor { g.note_cursor = on; let want = if on { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default }; if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); } }
+            }
             if g.bar.tick(now) || g.strip.animating(now) || g.strip.tick(now) || g.toast.tick(now) || g.project_panel.tick(now) { g.ui_dirty = true; }
             let (w, h) = u.size(); let scale = g.window.scale_factor();
             // the sequence cache's band + failed ticks: repaint when they change (QCView polls the cache at 33 ms, emits on change)
@@ -1156,6 +1172,7 @@ impl App {
                 if live_on { g.live_strip.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
                 g.bar.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
+                g.note_tips.paint(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 g.dualc.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
                 if !g.fullscreen { g.left.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); g.right.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
@@ -1245,7 +1262,7 @@ impl App {
             if consumed && !(g.scrubber.is_pressed() && matches!(e, min_ui::Event::Move { .. } | min_ui::Event::Up { .. })) { return }
             let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let (scmds, sd) = g.scrubber.event(&e, now, &st, scale); if sd { g.ui_dirty = true; }
-            if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
+            if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } min_ui::ScrubCmd::Note(f) => p.seek_to_frame(f) } } }
             self.window_move_arm(&e);   // compact: the picture moves the window too (the strip's timecode handle stays)
             return
         }
@@ -1458,7 +1475,7 @@ impl App {
         let g = self.gpu.as_mut().unwrap();
         let (scmds, sd) = g.scrubber.event(&e, now, &st, scale);
         if sd { g.ui_dirty = true; }
-        if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } } } }
+        if let Some(p) = pb_mut(&mut self.dual, &mut self.player) { for c in scmds { match c { min_ui::ScrubCmd::Begin => { if *TRACE_SCRUB { println!("scrub: begin at {:.1} ms", trace_ms()); } p.begin_scrub() } min_ui::ScrubCmd::To(f) => { if *TRACE_SCRUB { println!("scrub: request {f} at {:.1} ms", trace_ms()); self.scrub_last_req = Some((f, Instant::now())); } p.scrub_to_frame(f) } min_ui::ScrubCmd::End => { if *TRACE_SCRUB { println!("scrub: end at {:.1} ms", trace_ms()); } p.end_scrub() } min_ui::ScrubCmd::Note(f) => p.seek_to_frame(f) } } }
         if g.fullscreen { let want = if st.frames > 0 && e.pos().is_some_and(|(x, y)| g.scrubber.hit(x, y)) { winit::cursor::CursorIcon::Pointer } else { winit::cursor::CursorIcon::Default }; if want != g.cursor { g.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); } }
         for c in cmds {
             match c {
@@ -2149,7 +2166,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), note_tips: Default::default(), note_cursor: false, thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), output_panel: output_panel::OutputPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SIDE_A_COLOR), l(t::SIDE_B_COLOR)); }
@@ -2722,6 +2739,8 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         d.layout(&mut fonts, strip.wells_right() + ew + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale); d });
     strip.stage(status_strip::Mode::Timecode, "1000", &mut fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), scale);
     let mut scrubber = min_ui::Scrubber::new();
+    // `QCV_UI_SNAP_NOTES=1`: three note pennants on the scrubber (two open, one addressed) — rows 166 / 256
+    if std::env::var_os("QCV_UI_SNAP_NOTES").is_some() { scrubber.notes = vec![min_ui::NoteMark { frame: 240, addressed: false }, min_ui::NoteMark { frame: 288, addressed: true }, min_ui::NoteMark { frame: 300, addressed: false }]; }
     let mut thumbs = hover_thumbs::HoverThumbs::new();
     // an image sequence: let the cache fill so the band + failed ticks are in the snap
     if let Some(p) = player.as_ref() && p.decoder().as_sequence().is_some() { std::thread::sleep(std::time::Duration::from_millis(600)); scrubber.failed = sequence_failed_on_timeline(p); scrubber.cache_wraps = p.decoder().as_sequence().unwrap().cache().looping(); }

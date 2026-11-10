@@ -1,7 +1,7 @@
 //! The scrubber — the timeline surface as ONE node drawing from the model each frame (canon §17.5 item 4, §25 row 166):
 //! a 32-px band that IS the ruler. Ticks and labels along the top for the VISIBLE range only (QCView's rule: the largest
 //! of 1 / 5 / 10 / 30 / 60 / 300 / 600 s that keeps ≥ 80 px; frame ticks once a frame is ≥ 6 px, frame numbers at
-//! ≥ 24 px), the playhead through it, the in / out zone with its flags, the cache underline, the pennants (later: notes),
+//! ≥ 24 px), the playhead through it, the in / out zone with its flags, the cache underline, the note pennants (`notes`: QCView's pins — a press on one seeks to the note, it never scrubs),
 //! a 2-px extent marker when zoomed. The camera is QCView's (`pps` + `scrollX`: wheel zooms about the cursor by
 //! `1.0015^dy` between fit and max(200 px/s, fit × 50), Alt-wheel pans, a page-turn follow at a 20-px margin while
 //! playing); double-click fits (ours — QCView had the overview bar for that). The gesture is QCView's press / move /
@@ -24,7 +24,12 @@ pub struct ScrubState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrubCmd { Begin, To(i32), End }
+pub enum ScrubCmd { Begin, To(i32), End, /// a press on a note's pennant: seek to this timeline frame (QCView `seekToAnnotationNote`)
+    Note(i32) }
+
+/// A note on the timeline (canon rows 166 / 256; QCView's "annotation note pins").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoteMark { pub frame: i32, pub addressed: bool }
 
 const PPS_MAX: f64 = 200.0;           // QCView's kPpsMax (logical px/s)
 const DOUBLE_PRESS_MS: u64 = 350;
@@ -53,12 +58,17 @@ pub struct Scrubber {
     /// The track's minimum end inset in logical px (default: the row padding). macOS rounds the window's bottom corners: the
     /// shell raises it past the corner radius so the timeline's ends (and the lanes below that share this camera) stay reachable.
     pub end_inset: f64,
+    /// The clip's notes, as pennants on the bottom rail: filled for an open note, hollow for an addressed one. Not drawn in
+    /// compact mode (QCView's strip has none).
+    pub notes: Vec<NoteMark>,
+    /// The pennant under the resting pointer (an index into `notes`) — the owner shows its tooltip and the hand cursor.
+    pub hover_note: Option<usize>,
 }
 
 impl Default for Scrubber { fn default() -> Self { Scrubber::new() } }
 
 impl Scrubber {
-    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, pan: None, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0 } }
+    pub fn new() -> Scrubber { Scrubber { compact: false, rect: Rect::ZERO, pps: None, scroll_x: 0.0, pan: None, track_w: 1.0, pressed: false, hover_x: None, last_press: None, hover_frame: None, failed: vec![], cache_wraps: false, end_inset: 0.0, notes: vec![], hover_note: None } }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.pressed }
     pub fn is_fit(&self) -> bool { self.pps.is_none() }
@@ -115,6 +125,18 @@ impl Scrubber {
         if px < margin || px > self.track_w - margin { let n = (s.current as f64 / s.fps * self.pps(s) - margin).clamp(0.0, self.max_scroll(s)); let c = n != self.scroll_x; self.scroll_x = n; return c }
         false
     }
+    /// QCView's pin target: 13 × 14 logical px on the bottom rail, wider than the 9-px flag. The nearest pennant wins.
+    pub fn note_rect(&self, i: usize, s: &ScrubState, scale: f64) -> Option<Rect> {
+        let n = self.notes.get(i)?; if s.fps <= 0.0 { return None }
+        let x = self.x_of_time(n.frame as f64 / s.fps, s, scale);
+        Some(Rect::new(x - 6.0 * scale, self.rect.y1 - 14.0 * scale, x + 7.0 * scale, self.rect.y1))
+    }
+    fn note_at(&self, x: f64, y: f64, s: &ScrubState, scale: f64) -> Option<usize> {
+        if self.compact || self.notes.is_empty() || !self.hit(x, y) { return None }
+        let (tx0, tx1) = (self.rect.x0 + self.pad(scale), self.rect.x0 + self.pad(scale) + self.track_w);
+        (0..self.notes.len()).filter_map(|i| { let r = self.note_rect(i, s, scale)?; let c = r.x0 + 6.0 * scale; (c >= tx0 - 1.0 && c <= tx1 + 1.0 && r.contains(kurbo::Point::new(x, y))).then_some((i, (c - x).abs())) })
+            .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+    }
     /// Press scrubs (and pauses, through the Transport), move while pressed scrubs, release seeks; a resting pointer sets
     /// `hover_frame`. Returns the commands and whether the node needs a redraw.
     pub fn event(&mut self, e: &Event, now: Instant, s: &ScrubState, scale: f64) -> (Vec<ScrubCmd>, bool) {
@@ -124,11 +146,15 @@ impl Scrubber {
             Event::Move { x, y } => {
                 if self.pressed { cmds.push(ScrubCmd::To(self.frame_at_x(x, s, scale))); dirty = true; }
                 let inside = self.hit(x, y);
-                let hx = if inside && loaded && !self.pressed { Some(x) } else { None };
+                let note = if loaded && !self.pressed { self.note_at(x, y, s, scale) } else { None };
+                if note != self.hover_note { self.hover_note = note; dirty = true; }
+                // over a pennant the band's own hover (line, thumbnail) stands down: the pin is the target (QCView: its area sits above the scrub area)
+                let hx = if inside && loaded && !self.pressed && note.is_none() { Some(x) } else { None };
                 if hx != self.hover_x { self.hover_x = hx; dirty = true; }
                 self.hover_frame = hx.map(|x| self.frame_at_x(x, s, scale));
             }
             Event::Down { x, y, button: Button::Primary } if self.hit(x, y) && loaded => {
+                if let Some(i) = self.note_at(x, y, s, scale) { self.last_press = None; return (vec![ScrubCmd::Note(self.notes[i].frame)], true) }
                 if let Some((t0, px)) = self.last_press { if now.duration_since(t0) < Duration::from_millis(DOUBLE_PRESS_MS) && (px - x).abs() < 4.0 * scale { self.fit(); self.last_press = None; return (vec![], true) } }
                 self.last_press = Some((now, x));
                 self.pressed = true; self.hover_x = None; self.hover_frame = None;
@@ -139,7 +165,7 @@ impl Scrubber {
             Event::Up { .. } => {}
             // Leaving the window while pressed keeps the grab (Qt's MouseArea kept it for QCView): drags outside keep
             // arriving as moves, clamped to the track, and the release ends the scrub wherever it lands.
-            Event::Leave => { if self.hover_x.is_some() { dirty = true; } self.hover_x = None; self.hover_frame = None; }
+            Event::Leave => { if self.hover_x.is_some() || self.hover_note.is_some() { dirty = true; } self.hover_x = None; self.hover_frame = None; self.hover_note = None; }
         }
         (cmds, dirty)
     }
@@ -240,6 +266,16 @@ impl Scrubber {
             let (a, b) = (tx0 + self.track_w * (t_start / dur), tx0 + self.track_w * (t_end / dur).min(1.0));
             paint::rect(scene, Rect::new(a, r.y1 - th, b, r.y1), t::SCRUBBER_EXTENT_MARKER_COLOR);
         }
+        // the note pennants on the bottom rail (QCView's pins: a 1 × 7 stem and a 9 × 8 flag; filled = open, hollow = addressed)
+        for n in &self.notes {
+            let x = self.x_of_time(n.frame as f64 / s.fps, s, scale);
+            if x < tx0 - 1.0 || x > tx1 + 1.0 { continue }
+            let c = paint::color(t::SCRUBBER_NOTE_MARKER_COLOR);
+            paint::rect(scene, Rect::new(x, r.y1 - 7.0 * scale, x + scale, r.y1), min_theme::Color { a: if n.addressed { 0.25 } else { 0.55 }, ..t::SCRUBBER_NOTE_MARKER_COLOR });
+            let mut flag = BezPath::new(); flag.move_to((x - 4.0 * scale, r.y1)); flag.line_to((x + 5.0 * scale, r.y1)); flag.line_to((x + 0.5 * scale, r.y1 - 8.0 * scale)); flag.close_path();
+            if n.addressed { let inset = Affine::translate((0.0, -0.5 * scale)); scene.stroke(&kurbo::Stroke::new(scale), inset, paint::color(t::SCRUBBER_TICK_LABEL_COLOR), None, &flag); }
+            else { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, c, None, &flag); }
+        }
         // the hover line and the playhead
         if let Some(hx) = self.hover_x { let x = hx.clamp(tx0, tx1); paint::rect(scene, Rect::new(x, top, x + hair, r.y1), t::SCRUBBER_TICK_COLOR); }
         let px = self.x_of_time(s.current as f64 / s.fps, s, scale);
@@ -266,6 +302,27 @@ mod tests {
         assert!(sc.pan_to(600.0 + 100000.0, &s)); assert_eq!(sc.frame_at_x(8.0, &s, 1.0), 0, "dragged far right: the start, no further");
         sc.pan_to(600.0 - 100000.0, &s); assert_eq!(sc.frame_at_x(8.0 + 1000.0, &s, 1.0), 239, "dragged far left: the end");
         sc.end_pan(); assert!(!sc.is_panning() && !sc.pan_to(0.0, &s));
+    }
+    /// Rows 166 / 256: a press on a pennant seeks to its note and never scrubs; hovering one stands the band's hover down;
+    /// the compact strip has none.
+    #[test]
+    fn a_press_on_a_note_pennant_seeks_and_does_not_scrub() {
+        let mut sc = Scrubber::new(); let s = st(); let now = Instant::now();
+        sc.layout(Rect::new(0.0, 0.0, 1016.0, 32.0), 1.0);   // 100 px/s: frame 60 at x = 258
+        sc.notes = vec![NoteMark { frame: 60, addressed: false }, NoteMark { frame: 62, addressed: true }];
+        assert_eq!(sc.note_rect(0, &s, 1.0), Some(Rect::new(252.0, 18.0, 265.0, 32.0)));
+        let (c, d) = sc.event(&Event::Move { x: 258.0, y: 28.0 }, now, &s, 1.0);
+        assert!(c.is_empty() && d && sc.hover_note == Some(0) && sc.hover_frame.is_none());
+        let (c, _) = sc.event(&Event::Move { x: 265.0, y: 28.0 }, now, &s, 1.0);
+        assert!(c.is_empty() && sc.hover_note == Some(1), "the nearest pennant wins where two overlap");
+        let (c, _) = sc.event(&Event::Down { x: 258.0, y: 28.0, button: Button::Primary }, now, &s, 1.0);
+        assert_eq!(c, vec![ScrubCmd::Note(60)]); assert!(!sc.is_pressed());
+        let (c, _) = sc.event(&Event::Down { x: 258.0, y: 6.0, button: Button::Primary }, now, &s, 1.0);
+        assert_eq!(c, vec![ScrubCmd::Begin, ScrubCmd::To(60)], "above the pin the band scrubs as before");
+        sc.event(&Event::Up { x: 258.0, y: 6.0, button: Button::Primary }, now, &s, 1.0);
+        sc.compact = true;
+        let (c, _) = sc.event(&Event::Down { x: 258.0, y: 28.0, button: Button::Primary }, now + Duration::from_secs(2), &s, 1.0);
+        assert_eq!(c, vec![ScrubCmd::Begin, ScrubCmd::To(60)], "no pins on the compact strip");
     }
     #[test]
     fn camera_zooms_about_the_cursor_and_fits_back() {
