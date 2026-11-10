@@ -1,8 +1,10 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-09):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`), well past the reference slice; the current
-  round is the QCBridge companions (canon row 227). **Read `docs/phase2/handoff-2026-11-09.md` first**, then the canon
-  `docs/rust-wgpu-port.md` (rows are the rulings, each dated; the newest are at the end of the last Decisions table).
+- **State (2026-11-09, evening):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). The QCBridge round (canon row 227) is
+  built: Adobe in, SRT in, the Blender card, the NDI / AJA outputs. The Stream card (step 4) was built and then REMOVED (row 244) —
+  do not re-propose it. What remains is walks (AJA hardware, Premiere audio), translations and packaging. **Read
+  `docs/phase2/handoff-2026-11-09.md` first**, then the canon `docs/rust-wgpu-port.md` (rows are the rulings, each dated; the newest
+  are at the end of the last Decisions table).
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a
