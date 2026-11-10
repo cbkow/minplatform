@@ -106,6 +106,9 @@ upgrade test), then the notices, the privacy policy and the 3.0 docs, then QCVie
   offer names this repo's tag). A crate with an unaccepted licence or a shipped binary without an entry fails the build. The
   Windows page is generated on the Mac and committed with a `.check` sidecar that `make-msix.ps1` verifies (lock file,
   version, FFmpeg's flags, staged files). About ▸ Licenses… opens it; walked by the user on both OSes.
+- **2026-11-10, the Windows libraries pinned:** `tools/deps/vcpkg-windows.pin` (the vcpkg baseline commit + the 16 ports
+  the package links; the same versions as the Mac's except libjpeg-turbo 3.2.0 against 3.2.1). The notices print them and
+  `make-msix.ps1` refuses to pack when vcpkg's own record of what is installed differs. Repacked on the box: 16 match.
 - **Open:** the Mac DMG re-signed and re-notarized (the notarized one predates rows 251–252); a walk of 3.0 on macOS 13 / 14
-  (the user's other Macs); the Windows libraries pinned to the Mac's set; the privacy policy; the 3.0 docs; QCView-Player's
-  clean `main`; the Store submission; the Sparkle private key's backup (the user's).
+  (the user's other Macs); the privacy policy; the 3.0 docs; QCView-Player's clean `main`; the Store submission; the Sparkle
+  private key's backup (the user's).
