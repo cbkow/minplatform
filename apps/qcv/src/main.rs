@@ -1,6 +1,10 @@
 //! `qcv` — Phase 2 step 1: open a file (or an image-sequence frame) → the fused presenter at the display's cadence.
 //! `qcv <file> [--sw] [--out auto|sdr|edr|pq] [--white N] [--seconds N] [--stats] [--snap-out path@N] [--verify-pq]
 //!      [--identity-chain] [--refresh ms] [--screen i]`. Space = play / pause · F = fullscreen · Esc = quit · drop a file to open it.
+// Windows: a GUI program — no console window comes up with the app (the user 2026-11-09, on the installed package: "it
+// launches a cmd window with the app"). The harness modes still print: `main` attaches to the launching terminal's console
+// when there is one, and a redirected stdout / stderr is inherited as ever.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 use winit31 as winit;
 use min_present::{Output, Presenter, Snapshot};
 use min_theme::tokens as t;
@@ -2471,6 +2475,7 @@ static TRACE_SCRUB: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std:
 fn trace_ms() -> f64 { static T0: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now); T0.elapsed().as_secs_f64() * 1000.0 }
 
 fn main() {
+    #[cfg(windows)] unsafe { let _ = windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS); }   // a terminal launched us: its console takes the prints
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before NSApp launches: AppKit reads these at launch
     let args: Vec<String> = std::env::args().skip(1).collect();
     // the window logs to a file too (QCView's installFileLogger, after the single-instance handoff below); the harness modes stderr
