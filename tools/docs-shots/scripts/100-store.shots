@@ -1,0 +1,136 @@
+# Microsoft Store screenshots (1920x1080). Written for Windows at 100% scale: run on the Windows box, on its desktop, with clean settings.
+size 1920 1080
+open MEDIA/Color Bars 1080p.mov
+add MEDIA/Test Pattern A.mov
+add MEDIA/Test Pattern B.mov
+add MEDIA/Test Pattern A v2.mov
+add MEDIA/Surround 5.1.mov
+add MEDIA/Render_v001/Render_v001.0001.exr
+add MEDIA/Gradient PQ UHD.mp4
+wait 2.0
+# 01: the main window, both rails
+load Surround 5.1.mov
+wait 1.0
+menu RightRail
+wait 2.5
+seek 100
+play
+wait 1.5
+shot store_01_main
+pause
+menu RightRail
+# 08: safety guides
+load Color Bars 1080p.mov
+wait 1.0
+seek 120
+menu SafetyGuides
+wait 0.6
+set safety/guide 16x9
+wait 0.8
+shot store_08_guides
+set safety/guide
+menu SafetyGuides
+# 07: a playlist
+playlist MEDIA/Color Bars 1080p.mov|MEDIA/Test Pattern A.mov|MEDIA/Test Pattern B.mov|MEDIA/Surround 5.1.mov
+wait 1.5
+click 1100 300
+wait 0.6
+seek 700
+wait 0.8
+shot store_07_playlist
+# 06: notes
+load Color Bars 1080p.mov
+wait 1.0
+menu LeftRail
+set ui/dragViewportMovesWindow false
+menu Notes
+wait 1.2
+seek 96
+wait 0.5
+click 72 765
+wait 1.0
+click 268 879
+type Legal line sits too close to title safe
+click 1300 930
+seek 200
+wait 0.5
+click 72 765
+wait 1.0
+click 520 879
+type Check the white patch level
+click 1300 930
+wait 0.3
+down 800 500
+wait 0.06
+move 805 470
+wait 0.06
+move 860 430
+wait 0.06
+move 960 415
+wait 0.06
+move 1060 440
+wait 0.06
+move 1100 520
+wait 0.06
+move 1050 600
+wait 0.06
+move 940 625
+wait 0.06
+move 830 590
+wait 0.06
+move 800 500
+wait 0.06
+up 800 500
+wait 0.5
+seek 330
+wait 0.5
+click 72 765
+wait 1.0
+seek 200
+wait 0.8
+leave
+shot store_06_notes
+menu Notes
+# 02: an OCIO chain with the waveform
+load Render_v001. [0001-0048]
+wait 1.5
+menu ColorPanel
+color on
+newocio
+wait 3.0
+shot store_02_color
+# 03: an HDR master on its minColor preset
+load Gradient PQ UHD.mp4
+wait 1.5
+seek 60
+preset P3-D65 PQ master
+wait 1.5
+click 1475 775
+wait 0.8
+click 1303 743
+leave
+wait 1.0
+shot store_03_hdr
+menu ColorPanel
+# 04 / 05: dual view
+load Test Pattern A.mov
+wait 1.0
+bsource MEDIA/Test Pattern B.mov
+wait 1.5
+dual split
+wait 1.0
+seek 200
+wait 0.8
+shot store_04_split
+bsource MEDIA/Test Pattern A v2.mov
+wait 1.5
+dual diff
+wait 0.8
+seek 200
+down 1655 968
+move 1660 968
+move 1676 968
+up 1676 968
+wait 0.8
+shot store_05_difference
+quit
