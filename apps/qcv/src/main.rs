@@ -945,6 +945,9 @@ impl App {
                 }
                 let facts = l.feed.facts();
                 if l.last_facts.as_ref() != Some(&facts) { l.last_facts = Some(facts); g.ui_dirty = true; }
+                // a stream side's colour tags onto its item, as in the single view (QCView `pushLiveTags`): the Auto label and the
+                // side's chain read them
+                if let live::Feed::Stream(st) = &l.feed { let (tr_, pr_, mx_) = st.tags(); let id = l.item.clone(); if self.project.set_live_video_tags(&id, &tr_, &pr_, &mx_) { g.ui_dirty = true; } }
             }
         }
         if self.dual.is_some() && self.side_live.iter().any(|l| l.is_some()) && std::env::var_os("QCV_TRACE_DUAL").is_some() && let Some(ed) = g.presenter.engine.dual() { println!("dual live: shown A {} B {} · live A {} B {}", ed.a.frames_shown, ed.b.frames_shown, self.side_live[0].is_some(), self.side_live[1].is_some()); }
@@ -1127,7 +1130,8 @@ impl App {
                 // the EXR layer tiles: the loaded sequence item's layers (the project's), its current layer, its first frame
                 let (ls, cur, first) = self.project.item(&self.loaded_item).filter(|m| m.media_type == qcv_project::MediaType::ImageSequence && self.player.as_ref().is_some_and(|p| p.decoder().as_sequence().is_some())).map(|m| (m.image_seq.available_layers.clone(), m.image_seq.layer.clone(), m.path.clone())).unwrap_or_default();
                 g.inspector.set_seq_layers(ls, &cur, &first);
-                if let Some(l) = self.live.as_ref() {
+                // the live cards: the single view's feed, or — in dual — the TARGET side's when that side is live (rows 213 / 258)
+                if let Some(l) = self.live.as_ref().or_else(|| if self.dual.is_some() { self.side_live[islot.min(1)].as_ref() } else { None }) {
                     // a live item (row 228): the feed's facts and its audio reader's
                     let f = l.feed.facts(); let (st, ch, rate) = l.audio_src.as_ref().map(|a| a.facts()).unwrap_or((0, 0, 0));
                     let peaks = l.audio_src.as_ref().map(|a| { use qcv_player::audio::AudioSourceCtl; a.peak_levels() }).unwrap_or([0.0; 16]);
