@@ -4518,11 +4518,6 @@ msgstr "Keine Ausgaben installiert. Eine Ausgabe registriert sich in %1."
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "ColorPanel"
-msgid "Video"
-msgstr "Video"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
 msgid "Color is off: the picture is already shown as stored."
 msgstr "Farbe ist aus: Das Bild wird bereits wie gespeichert angezeigt."
 
@@ -4535,3 +4530,8 @@ msgstr "Nicht verfügbar, solange das Bild in HDR angezeigt wird."
 msgctxt "ColorPanel"
 msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
 msgstr "Zeigt das Bild so, wie es ein nicht farbverwalteter Rec.709-Desktop zeigt: Schatten und Mitteltöne heller als in der genauen Ansicht. Eine Emulation, keine Referenz. Screenshots, Ausgänge und die Wellenform sind nicht betroffen."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video gamma"
+msgstr "Video-Gamma"

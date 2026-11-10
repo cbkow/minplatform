@@ -4518,11 +4518,6 @@ msgstr "Nenhuma saída instalada. Uma saída se registra em %1."
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "ColorPanel"
-msgid "Video"
-msgstr "Vídeo"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
 msgid "Color is off: the picture is already shown as stored."
 msgstr "A cor está desativada: a imagem já é exibida como está armazenada."
 
@@ -4535,3 +4530,8 @@ msgstr "Indisponível enquanto a imagem é exibida em HDR."
 msgctxt "ColorPanel"
 msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
 msgstr "Mostra a imagem como um desktop Rec.709 sem gerenciamento de cor: sombras e meios-tons mais claros que na visualização exata. Uma emulação, não uma referência. Capturas, saídas e a forma de onda não são afetadas."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video gamma"
+msgstr "Gama de vídeo"

@@ -138,7 +138,7 @@ impl ColorDrawer {
             wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None, peaks_dual: None, wf_readout: Rect::ZERO, tips: min_ui::Tooltips::default(),
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
-            video: { let mut b = ActionButton::new("", "").size_s(); b.label = Some(tr("Video").to_string()); b }, video_pill: Rect::ZERO,
+            video: { let mut b = ActionButton::new("", "").size_s(); b.label = Some(tr("Video gamma").to_string()); b }, video_pill: Rect::ZERO,
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
             save_as: TextButton::new(tr("Save as preset…"), Variant::Secondary).size_s(), reset: TextButton::new(tr("Reset to default"), Variant::Secondary).size_s(),
             apply_all: TextButton::new(tr("Apply to all clips"), Variant::Secondary).size_s(), make_default: TextButton::new(tr("Make project default"), Variant::Secondary).size_s(),
@@ -239,7 +239,7 @@ impl ColorDrawer {
         let bottom = Rect::new(full.x0 + pad, full.y1 - row, full.x1 - pad, full.y1);
         let (sw, sh) = Switch::size(scale);
         self.on_rect = bottom; self.on.rect = Rect::new(bottom.x0, bottom.y0 + (row - sh) / 2.0, bottom.x0 + sw, bottom.y0 + (row + sh) / 2.0);
-        // the viewer aids, right-aligned: Exposure [slider] 0.0 st · Gamma [slider] 1.00 · RGB R G B A Y · Video · ↺
+        // the viewer aids, right-aligned: Exposure [slider] 0.0 st · Gamma [slider] 1.00 · RGB R G B A Y · Video gamma · ↺
         let (rw, rh) = self.aids_reset.measure(fonts, scale);
         let mut ax = bottom.x1 - rw; self.aids_reset.rect = Rect::new(ax, bottom.y0 + (row - rh) / 2.0, ax + rw, bottom.y0 + (row + rh) / 2.0);
         { let (vw, vh) = self.video.measure(fonts, scale); ax -= vw + t::SPACING_200 as f64 * scale; self.video.rect = Rect::new(ax, bottom.y0 + (row - vh) / 2.0, ax + vw, bottom.y0 + (row + vh) / 2.0); }
@@ -555,7 +555,7 @@ impl ColorDrawer {
         // row 246: the picture is deliberately not the accurate one while the Video emulation acts
         self.video_pill = Rect::ZERO;
         if v.video && v.video_state == 0 {
-            let pl = fonts.detail("VIDEO", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let pl = fonts.detail("VIDEO GAMMA", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
             let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
             self.video_pill = Rect::new(x, py, x + pw, py + ph);
             paint::rounded(scene, self.video_pill, ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);

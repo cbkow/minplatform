@@ -4526,11 +4526,6 @@ msgstr "Виходи не встановлено. Вихід реєструєт�
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "ColorPanel"
-msgid "Video"
-msgstr "Відео"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
 msgid "Color is off: the picture is already shown as stored."
 msgstr "Колір вимкнено: зображення вже показується таким, як збережено."
 
@@ -4543,3 +4538,8 @@ msgstr "Недоступно, поки зображення показуєтьс
 msgctxt "ColorPanel"
 msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
 msgstr "Показує зображення так, як це робить робочий стіл Rec.709 без керування кольором: тіні та середні тони світліші, ніж у точному вигляді. Емуляція, а не еталон. Знімки екрана, виходи та осцилограма не змінюються."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video gamma"
+msgstr "Відеогама"

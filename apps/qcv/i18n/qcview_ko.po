@@ -4510,11 +4510,6 @@ msgstr "설치된 출력이 없습니다. 출력은 %1에 스스로 등록됩니
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "ColorPanel"
-msgid "Video"
-msgstr "비디오"
-
-#. drafted 2026-11-09, unreviewed
-msgctxt "ColorPanel"
 msgid "Color is off: the picture is already shown as stored."
 msgstr "색상이 꺼져 있습니다. 화면은 이미 저장된 그대로 표시됩니다."
 
@@ -4527,3 +4522,8 @@ msgstr "화면이 HDR로 표시되는 동안에는 사용할 수 없습니다."
 msgctxt "ColorPanel"
 msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
 msgstr "색상 관리가 없는 Rec.709 데스크톱처럼 화면을 표시합니다. 어두운 영역과 중간 톤이 정확한 보기보다 밝아집니다. 에뮬레이션이며 기준이 아닙니다. 스크린샷, 출력, 파형에는 영향을 주지 않습니다."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video gamma"
+msgstr "비디오 감마"
