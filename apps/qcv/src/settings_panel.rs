@@ -75,7 +75,7 @@ impl SettingsPanel {
             Group { title: tr("Interface"), header: Rect::ZERO, rows: vec![
                 pick(k::LANGUAGE, "Language", "Language of the interface. System default follows the OS setting. Applies at once.", true, LANG_NAMES, LANG_CODES),
                 sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
-                sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", false),
+                sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", true),
                 sw(k::TIMELINE_WAVEFORMS, "Timeline audio waveforms", "Draw the audio waveform in the scrubber. Peaks decode lazily in the background.", true),
                 pick(k::SCREENSHOT_FORMAT, "Screenshot format", "Format for Desktop screenshots. JPEG is smaller, PNG and TIFF are lossless.", true, &["PNG", "PNG 16-bit", "JPEG", "TIFF 16-bit"], &["png", "png16", "jpeg", "tiff"]),
                 sw(k::SCREENSHOT_GUIDES, "Include safety guides in screenshots", "Draw the active safety guide into Desktop and clipboard screenshots.", true),

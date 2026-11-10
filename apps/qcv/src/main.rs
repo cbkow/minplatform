@@ -145,6 +145,8 @@ struct App {
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// macOS: `mac_open`'s batches (the Finder's Open / Open With / a dropped Dock icon, `qcview://` links); None elsewhere.
     os_open_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    /// a left press on the picture that nothing claimed: where it landed — travel past the threshold moves the window (row 251)
+    move_arm: Option<(f64, f64)>,
     /// macOS: the Sparkle start has been attempted (once, after the window exists).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))] updater_tried: bool,
     /// colour (canon rows 198–208): the user's presets; the shared minColor pass (and its build); what the slot holds; an OCIO build in flight
@@ -1192,6 +1194,7 @@ impl App {
     }
     /// One pointer event through the UI's router: the transport bar's commands go the keys' way (`Transport::apply`).
     fn pointer(&mut self, e: min_ui::Event) {
+        if matches!(e, min_ui::Event::Up { .. } | min_ui::Event::Leave) { self.move_arm = None; }   // whoever takes the release: the window-move arm ends with the button
         let now = Instant::now();
         let Some(g) = self.gpu.as_mut() else { return };
         let (w, h) = g.ui.as_ref().map(|u| u.size()).unwrap_or((1, 1)); let scale = g.window.scale_factor();
@@ -1470,6 +1473,25 @@ impl App {
                 transport_bar::Cmd::ToggleNotes => self.toggle_notes(),
                 transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
             }
+        }
+        // QCView `startWindowMove` (canon row 251): a left press on the PICTURE that nothing above claimed — no panel, menu or
+        // dialog, no annotation tool, not the Split seam, not a lane or a bar (each returned before here) — arms a window
+        // move; 8 px of travel with the button held hands the press to the OS (a native move: snapping, other monitors).
+        // A click that does not travel stays a click. Refused: the setting off, fullscreen.
+        match e {
+            min_ui::Event::Down { x, y, button: min_ui::Button::Primary } => {
+                let ok = self.settings.bool(settings::k::DRAG_VIEWPORT_MOVES_WINDOW) && !self.annot.active
+                    && self.gpu.as_ref().is_some_and(|g| !g.fullscreen && !g.seam_drag && g.presenter.engine.content_rect().is_some_and(|(cx, cy, cw, ch)| x >= cx as f64 && y >= cy as f64 && x < (cx + cw) as f64 && y < (cy + ch) as f64));
+                self.move_arm = ok.then_some((x, y));
+            }
+            min_ui::Event::Move { x, y } => if let Some((px, py)) = self.move_arm {
+                let Some(g) = self.gpu.as_ref() else { return };
+                if (x - px).abs() + (y - py).abs() >= 8.0 * g.window.scale_factor() {
+                    self.move_arm = None;
+                    if let Err(e) = g.window.drag_window() { log::warn!("window move: {e}"); }
+                }
+            },
+            _ => self.move_arm = None,
         }
     }
     /// A settings change took: push it to whatever it drives (QCView's `WindowManager` setters, one by one).
@@ -2477,7 +2499,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { os_open_rx, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
