@@ -62,7 +62,12 @@ short gap" and the next frame sees one frame twice and never sees its neighbour 
 pictures a second while it lasts. That is the walk's 12–13 new frames a second. Neither the codec nor PQ is in it; the PQ
 clip was the only one played long enough for the phase to cross the window.
 
-Not measured: the real card (its clock's actual offset from the screen's), Windows, NDI (QCBridgeN reads the same way).
+Not measured: the real card (its clock's actual offset from the screen's), Windows.
+
+NDI (read after the walk, correcting this record's first draft): QCBridgeN does NOT read the ring the way QCBridgeA did — it
+polls every millisecond and sends each frame as it lands (`clock_video = false`, a synthesized timecode); there is no
+second clock sampling the ring, so the beat cannot happen there. The 33 / 50 ms arrival goes out as it is and the receiver
+reclocks it.
 
 ## Proposals — rulings needed
 
@@ -72,7 +77,9 @@ Not measured: the real card (its clock's actual offset from the screen's), Windo
    added delay. It also fixes QCView 2.x feeding the same sink.
 2. **The port stamps the descriptor at submit** [proposed: yes] — QCView's rule; today two frames collected together carry
    one frame index and one timestamp.
-3. **QCBridgeN the same way** [proposed: after the AJA walk confirms 1].
+3. **QCBridgeN the same way** [proposed: after the AJA walk confirms 1]. — CLOSED without a change, see above.
+
+The walk of 1 and 2 (the user, 2026-11-10, the T-TAP Pro): "this is working much better".
 4. **The port publishes off the main thread / reuses the wire texture / blits into the slot** [proposed: not now — the
    measurements show no cost there on this machine; revisit with the Windows box's numbers].
 5. **Evening out the producer's cadence** (publish on the frame clock, not the redraw) [proposed: no — QCView publishes on
