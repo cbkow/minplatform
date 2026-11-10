@@ -68,5 +68,36 @@ inserted whole (the Qt minNotes accepts only `event.text.length === 1`, so every
 (c) the selection set from outside must be honoured exactly, in UTF-16 units, before the keys arrive; (d) the minimum
 read surface is value + selectedTextRange (get / set) + selectedText + frameForRange + frame.
 
+Undo (the user, 12 × ⌘Z): every chunk came back — but a correction typed in three 16-unit chunks took three undos. **The
+editor must coalesce a burst of typed chunks into one undo step.** The user: "everything seemed to work perfectly".
+
+### Step 2, the stack (macOS, 2026-11-10): `spikes/s3-text` (parley + vello, AccessKit 0.25 through accesskit_winit) as `S9Stack.app`
+Four defects stood between the S3 scaffold and a writing tool; all four were ours, three of one family:
+1. **A crash on the first outside query**: an empty paragraph's line reads the range 0..1 → a slice past the end (`ax.rs`).
+2. **Every rectangle half-size and half-offset on a 2x screen**: AccessKit's macOS adapter reads BACKING pixels; the tree
+   was built in points. One `Affine::scale(scale)` on the root (a 12-character range: 48 px → 96 px, as drawn).
+3. **The runs did not add up to the value**: the document value joins blocks with "\n", the per-line runs left it out, so
+   every offset after the first paragraph was off by one per paragraph. The block's last line now carries the joiner.
+4. **A selection that crossed a line wrap was REPORTED as starting at the next line** (anchor and focus were derived from
+   one line). Grammarly reads the selection back before it types; in the first run one correction then landed 28
+   characters late ("of been checked for spe" → " but nobody did. We wer"). With anchor and focus placed independently the
+   same sequence landed on bytes 46..69, as meant. (Why a wrong read-back moved the NEXT target by exactly the caret's
+   offset was not established; the symptom went with the fix.)
+
+**`tools/s9/axcheck.swift`** — an outside check through the AX API, no typing: `AXStringForRange` against the value, and a
+set of `AXSelectedTextRange` read back as `AXSelectedText`. On the fixed build, 302 positions: reads 0 mismatches;
+selections 11 mismatches, ALL of them selections spanning two paragraphs (the scaffold's selection lives in one block).
+
+**Second run by the user on the fixed build: 9 corrections, 9 on the intended range** (the log names each range's text
+before the typed chunks arrive). Grammarly's own behaviour was the same as against the reference window: it attached,
+underlined, selected, typed in chunks of ≤ 16.
+
+**Reading:** the stack CAN serve Grammarly through AccessKit, read side and write side. But the reference window (one
+flat UTF-16 text, geometry straight from the layout) was right the first time, and every defect here was a conversion
+between "offset in the document" and "run + character index" or between coordinate spaces. Cross-block selection, rich
+spans and off-screen blocks (the scaffold exposes visible lines only, so offsets would not add up in a long document)
+are still ahead on this route. Leaning: the document's text element is written directly against the platform's text
+protocol over a flat text + block map; AccessKit serves the rest of the interface. Not yet a verdict.
+
 ## Verdict
 (pending)

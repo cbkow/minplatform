@@ -1,0 +1,12 @@
+Their are several reasons why this document have mistakes in it. Each one are here on purpose, so that a writing tool has something to find and to fix.
+
+The first paragraph is plane prose. It should of been checked for speling, but nobody did. We was in a hurry and the the deadline were close.
+
+A second idea: when a correction is accepted, the right words must change and nothing else. If the the wrong range is replaced, the tool and the editor disagrees about where the text is.
+
+Here is a line with an accent, café, and a dash — both are more then one byte in some encodings, wich is where counting usually go wrong.
+
+Scrolling matters too. After the window is resized or scrolled, an underline that was drawed under a word must still sit under that word, not were the word used to be.
+
+This last paragraph is corect on purpose. It gives the reader, and the tool, something to compare the others against.
+

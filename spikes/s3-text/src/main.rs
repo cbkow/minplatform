@@ -234,8 +234,9 @@ impl ApplicationHandler<AkEvent> for App {
         match event.window_event {
             AkWindowEvent::InitialTreeRequested => { println!("accesskit: initial tree requested"); self.push_ax(); }
             AkWindowEvent::ActionRequested(req) => {
+                if !matches!(req.data, Some(accesskit::ActionData::SetTextSelection(_))) { println!("AX action {:?} data {:?}", req.action, req.data); }
                 if let Some(accesskit::ActionData::SetTextSelection(sel)) = req.data {
-                    if let Some((b, a, f)) = ax::selection_to_bytes(&self.ax_refs, &sel) { self.focus = b; { let bl = &mut self.blocks[b]; let mut d = bl.editor.driver(&mut self.font_cx, &mut self.layout_cx); d.move_to_byte(a); d.extend_selection_to_byte(f); } self.push_ax(); if let Some(c) = &self.ctx { c.window.request_redraw(); } }
+                    if let Some((b, a, f)) = ax::selection_to_bytes(&self.ax_refs, &sel) { println!("AX SetTextSelection → block {b} bytes {a}..{f} \"{}\"", self.blocks[b].editor.raw_text().get(a.min(f)..a.max(f)).unwrap_or("?")); self.focus = b; { let bl = &mut self.blocks[b]; let mut d = bl.editor.driver(&mut self.font_cx, &mut self.layout_cx); d.move_to_byte(a); d.extend_selection_to_byte(f); } self.push_ax(); if let Some(c) = &self.ctx { c.window.request_redraw(); } }
                 }
             }
             AkWindowEvent::AccessibilityDeactivated => {}
@@ -296,7 +297,7 @@ impl ApplicationHandler<AkEvent> for App {
                         "a" => { let end = self.blocks[f].editor.raw_text().len(); self.apply(f, |d| { d.move_to_byte(0); d.extend_selection_to_byte(end); }) }
                         _ => redraw = false,
                     },
-                    _ => if let Some(t) = event.text.as_ref() { if t.chars().any(|ch| ch.is_control()) { redraw = false } else { let t = t.to_string(); self.apply(f, |d| d.insert_or_replace_selection(&t)) } } else { redraw = false },
+                    _ => if let Some(t) = event.text.as_ref() { if t.chars().any(|ch| ch.is_control()) { redraw = false } else { let t = t.to_string(); if t.chars().count() > 1 { println!("KEY text ×{}: {t:?}", t.chars().count()); } self.apply(f, |d| d.insert_or_replace_selection(&t)) } } else { redraw = false },
                 }
             }
             _ => redraw = false,
@@ -311,7 +312,7 @@ fn main() {
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
     let lines: usize = arg("--lines").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let text = if lines > 0 { generate(lines) } else { "S3 text — type here. Shift+arrows select, click places the caret, IME preedit draws underlined.\n\nThe long pole of min-ui is this editor: parley + vello + IME + AccessKit on one node tree.".to_string() };
+    let text = if let Some(f) = arg("--file") { std::fs::read_to_string(&f).expect("--file") } else if lines > 0 { generate(lines) } else { "S3 text — type here. Shift+arrows select, click places the caret, IME preedit draws underlined.\n\nThe long pole of min-ui is this editor: parley + vello + IME + AccessKit on one node tree.".to_string() };
     #[cfg(target_os = "macos")]
     unsafe { objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(true, objc2_foundation::ns_string!("ApplePressAndHoldEnabled")); }
     let el = EventLoop::<AkEvent>::with_user_event().build().unwrap();
