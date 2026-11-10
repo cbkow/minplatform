@@ -280,7 +280,8 @@ impl crate::App {
             let e = &g.presenter.engine; e.frames_shown.hash(&mut h);
             let a = g.drawer.aids; a.exposure.to_bits().hash(&mut h); a.gamma.to_bits().hash(&mut h); a.channel.hash(&mut h);
             format!("{:?}", e.geometry()).hash(&mut h);
-            if let Some(d) = e.dual() { format!("{:?}", d.mode).hash(&mut h); d.seam.to_bits().hash(&mut h); }
+            // in dual the pictures are shown on the SIDE engines — the main engine's count stands still (canon row 255)
+            if let Some(d) = e.dual() { d.a.frames_shown.hash(&mut h); d.b.frames_shown.hash(&mut h); format!("{:?}", d.mode).hash(&mut h); d.seam.to_bits().hash(&mut h); }
         }
         self.color_bound.hash(&mut h); self.loaded_item.hash(&mut h);
         // the chain's SETTINGS, not only which engine is bound (a slider drag keeps the engine; QCView's stamp holds the chain)
