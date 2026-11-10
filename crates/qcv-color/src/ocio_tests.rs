@@ -124,3 +124,65 @@ fn the_knee_split_matches_the_cpu() {
     }
     eprintln!("OCIO + Knee split vs CPU: worst relative error {worst:.2e}");
 }
+
+/// A scratch folder holding the test's LUT files: a 2³ `.cube` that halves every value, and a `.ccc` with two corrections
+/// ("double" first, then "half").
+fn lut_files(tag: &str) -> (std::path::PathBuf, String, String) {
+    let dir = std::env::temp_dir().join(format!("qcv-ocio-luts-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cube = dir.join("half.cube");
+    let mut s = String::from("TITLE \"half\"\nLUT_3D_SIZE 2\n");
+    for b in 0..2 { for g in 0..2 { for r in 0..2 { s += &format!("{} {} {}\n", r as f32 * 0.5, g as f32 * 0.5, b as f32 * 0.5); } } }
+    std::fs::write(&cube, s).unwrap();
+    let ccc = dir.join("two.ccc");
+    let cc = |id: &str, k: f32| format!("<ColorCorrection id=\"{id}\"><SOPNode><Slope>{k} {k} {k}</Slope><Offset>0 0 0</Offset><Power>1 1 1</Power></SOPNode><SatNode><Saturation>1</Saturation></SatNode></ColorCorrection>");
+    std::fs::write(&ccc, format!("<ColorCorrectionCollection xmlns=\"urn:ASC:CDL:v1.2\">{}{}</ColorCorrectionCollection>", cc("double", 2.0), cc("half", 0.5))).unwrap();
+    (dir, cube.to_string_lossy().into_owned(), ccc.to_string_lossy().into_owned())
+}
+
+#[test]
+fn a_scene_lut_and_a_correction_id_act_on_the_inputs_values() {
+    let Some(b) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let (dir, cube, ccc) = lut_files("cpu");
+    let base = Spec { input: "Rec.1886".into(), view: "Standard".into(), ..Default::default() };
+    let run = |spec: &Spec, px: &[f32]| { let mut v = px.to_vec(); Chain::build(&b, spec).unwrap_or_else(|e| panic!("{spec:?}: {e}")).apply_cpu(&mut v); v };
+    let px = [0.8f32, 0.4, 0.2, 1.0, 0.5, 0.5, 0.5, 1.0];
+    let scaled = |k: f32| -> Vec<f32> { px.chunks(4).flat_map(|c| [c[0] * k, c[1] * k, c[2] * k, c[3]]).collect() };
+    let close = |a: &[f32], w: &[f32], what: &str| for (x, y) in a.iter().zip(w) { assert!((x - y).abs() < 2e-3, "{what}: {a:?} vs {w:?}"); };
+    // the file acts on the Input's own values, before the view: the LUT'd picture = the plain chain on the scaled values
+    close(&run(&Spec { scene_lut: cube.clone(), ..base.clone() }, &px), &run(&base, &scaled(0.5)), "a .cube that halves");
+    // a .ccc: no id = the first correction; an id picks its own; an index works too (QCView: \"its id, or an index\")
+    close(&run(&Spec { scene_lut: ccc.clone(), ..base.clone() }, &scaled(0.25)), &run(&base, &scaled(0.5)), "no id = the first (double)");
+    close(&run(&Spec { scene_lut: ccc.clone(), ccc_id: "half".into(), ..base.clone() }, &px), &run(&base, &scaled(0.5)), "id half");
+    close(&run(&Spec { scene_lut: ccc.clone(), ccc_id: "1".into(), ..base.clone() }, &px), &run(&base, &scaled(0.5)), "index 1 = half");
+    // what cannot load says so: an unknown id, a missing file — never a silent chain without the LUT
+    assert!(Chain::build(&b, &Spec { scene_lut: ccc.clone(), ccc_id: "nope".into(), ..base.clone() }).is_err(), "an unknown Correction ID builds");
+    assert!(Chain::build(&b, &Spec { scene_lut: dir.join("gone.cube").to_string_lossy().into_owned(), ..base.clone() }).is_err(), "a missing LUT builds");
+    // and with the Knee on, the split's pre half carries it
+    let (pre, _, _) = Chain::build_split(&b, &Spec { input: "Linear Rec.709".into(), view: "Standard".into(), scene_lut: ccc.clone(), ccc_id: "half".into(), ..Default::default() }).unwrap();
+    let (plain, _, _) = Chain::build_split(&b, &Spec { input: "Linear Rec.709".into(), view: "Standard".into(), ..Default::default() }).unwrap();
+    let (mut a, mut w) = (px.to_vec(), scaled(0.5)); pre.apply_cpu(&mut a); plain.apply_cpu(&mut w);
+    close(&a, &w, "the split's pre half");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_scene_lut_on_the_gpu_matches_the_cpu() {
+    let Some((dev, q)) = gpu() else { eprintln!("no GPU with passthrough — skipped"); return };
+    let Some(blender) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let (dir, cube, ccc) = lut_files("gpu");
+    for spec in [Spec { input: "Rec.1886".into(), view: "Standard".into(), scene_lut: cube, ..Default::default() }, Spec { input: "Rec.1886".into(), view: "Standard".into(), scene_lut: ccc, ccc_id: "half".into(), ..Default::default() }] {
+        let mut px: Vec<[f32; 3]> = (0..=32).map(|i| { let x = i as f32 / 32.0; [x, x, x] }).collect();
+        px.extend([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.9, 0.05, 0.02], [0.5, 0.4, 0.3]]);
+        let mut pass = OcioPass::new(&dev, &q, &blender, spec.clone(), crate::Knee::default()).unwrap_or_else(|e| panic!("{spec:?}: {e}"));
+        let got = crate::tests::run_gpu_pass(&dev, &q, &mut pass, &px);
+        let mut cpu: Vec<f32> = px.iter().flat_map(|p| [p[0], p[1], p[2], 1.0]).collect();
+        Chain::build(&blender, &spec).unwrap().apply_cpu(&mut cpu);
+        for (i, g) in got.iter().enumerate() { for c in 0..3 {
+            let w = cpu[i * 4 + c]; let err = (g[c] - w).abs() / w.abs().max(0.05);
+            assert!(err < 6e-3, "{spec:?}: {:?} → GPU {g:?} vs CPU {:?}", px[i], &cpu[i * 4..i * 4 + 3]);
+        } }
+        eprintln!("{} + {}: built in {:.0} ms", spec.input, spec.scene_lut.rsplit('/').next().unwrap_or(""), pass.build_ms);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

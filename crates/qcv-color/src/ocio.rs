@@ -22,10 +22,10 @@ unsafe extern "C" {
     fn oc_config_item(c: *const RawConfig, what: c_int, i: c_int) -> *const c_char;
     fn oc_config_family(c: *const RawConfig, cs: *const c_char) -> *const c_char;
     fn oc_config_encoding(c: *const RawConfig, cs: *const c_char) -> *const c_char;
-    fn oc_chain_build(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, lang: c_int, fn_name: *const c_char, err: *mut c_char, n: usize) -> *mut RawChain;
+    fn oc_chain_build(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, ccc_id: *const c_char, lang: c_int, fn_name: *const c_char, err: *mut c_char, n: usize) -> *mut RawChain;
     fn oc_chain_free(c: *mut RawChain);
     fn oc_chain_build_scope(c: *const RawConfig, input: *const c_char, lang: c_int, side: *mut c_int, err: *mut c_char, n: usize) -> *mut RawChain;
-    fn oc_chain_build_split(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, lang: c_int, pre: *mut *mut RawChain, post: *mut *mut RawChain, err: *mut c_char, n: usize) -> c_int;
+    fn oc_chain_build_split(c: *const RawConfig, input: *const c_char, look: *const c_char, view: *const c_char, scene_lut: *const c_char, ccc_id: *const c_char, lang: c_int, pre: *mut *mut RawChain, post: *mut *mut RawChain, err: *mut c_char, n: usize) -> c_int;
     fn oc_chain_shader(c: *const RawChain) -> *const c_char;
     fn oc_chain_num_uniforms(c: *const RawChain) -> c_uint;
     fn oc_chain_num_textures(c: *const RawChain) -> c_uint;
@@ -66,9 +66,12 @@ impl Config {
     pub fn encoding(&self, cs: &str) -> String { s(unsafe { oc_config_encoding(self.raw, cstr(cs).as_ptr()) }) }
 }
 
-/// What a chain is: the user's four choices (the config is the `Config` it is built against).
+/// What a chain is: the user's choices (the config is the `Config` it is built against). `scene_lut` = a LUT / CDL file's
+/// path (`.cube .3dl .csp .cc .ccc .cdl`, "" = none), applied to the values as they are after the Look — no conversion
+/// either side (QCView's code; its "scene-linear" wording was wrong, spec step6-luts B1); `ccc_id` = the correction inside a
+/// `.ccc` / `.cdl` (its id or an index; "" = the first).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct Spec { pub input: String, pub look: String, pub view: String, pub scene_lut: String }
+pub struct Spec { pub input: String, pub look: String, pub view: String, pub scene_lut: String, pub ccc_id: String }
 
 /// One built chain: OCIO's processor, its generated shader and LUTs, the CPU processor (the ground truth).
 pub struct Chain { raw: *mut RawChain, _config: Arc<Config> }
@@ -82,7 +85,7 @@ impl Chain {
     pub fn build(config: &Arc<Config>, spec: &Spec) -> Result<Chain, String> {
         let mut err = vec![0u8; 4096];
         let lang = if cfg!(windows) { 1 } else { 0 };
-        let raw = unsafe { oc_chain_build(config.raw, cstr(&spec.input).as_ptr(), cstr(&spec.look).as_ptr(), cstr(&spec.view).as_ptr(), cstr(&spec.scene_lut).as_ptr(), lang, c"OCIODisplay".as_ptr(), err.as_mut_ptr() as *mut c_char, err.len()) };
+        let raw = unsafe { oc_chain_build(config.raw, cstr(&spec.input).as_ptr(), cstr(&spec.look).as_ptr(), cstr(&spec.view).as_ptr(), cstr(&spec.scene_lut).as_ptr(), cstr(&spec.ccc_id).as_ptr(), lang, c"OCIODisplay".as_ptr(), err.as_mut_ptr() as *mut c_char, err.len()) };
         if raw.is_null() { return Err(CStr::from_bytes_until_nul(&err).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()) }
         Ok(Chain { raw, _config: config.clone() })
     }
@@ -91,7 +94,7 @@ impl Chain {
         let mut err = vec![0u8; 4096];
         let (mut pre, mut post) = (std::ptr::null_mut(), std::ptr::null_mut());
         let lang = if cfg!(windows) { 1 } else { 0 };
-        let side = unsafe { oc_chain_build_split(config.raw, cstr(&spec.input).as_ptr(), cstr(&spec.look).as_ptr(), cstr(&spec.view).as_ptr(), cstr(&spec.scene_lut).as_ptr(), lang, &mut pre, &mut post, err.as_mut_ptr() as *mut c_char, err.len()) };
+        let side = unsafe { oc_chain_build_split(config.raw, cstr(&spec.input).as_ptr(), cstr(&spec.look).as_ptr(), cstr(&spec.view).as_ptr(), cstr(&spec.scene_lut).as_ptr(), cstr(&spec.ccc_id).as_ptr(), lang, &mut pre, &mut post, err.as_mut_ptr() as *mut c_char, err.len()) };
         if side == 0 { return Err(CStr::from_bytes_until_nul(&err).map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()) }
         Ok((Chain { raw: pre, _config: config.clone() }, Chain { raw: post, _config: config.clone() }, if side == 1 { crate::Side::Scene } else { crate::Side::Display }))
     }

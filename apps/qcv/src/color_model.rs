@@ -7,7 +7,8 @@ use qcv_color::{Chain, Knee};
 use serde_json::{json, Map, Value};
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct OcioChain { pub config: String, pub input: String, pub look: String, pub view: String, pub scene_lut: String, pub knee: Knee }
+pub struct OcioChain { pub config: String, pub input: String, pub look: String, pub view: String, pub scene_lut: String, /// the correction inside a `.ccc` / `.cdl` Scene LUT (QCView `sceneLut.cccId`; "" = the first)
+    pub ccc_id: String, pub knee: Knee }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipChain { MinColor(Chain), Ocio(OcioChain) }
@@ -50,12 +51,12 @@ pub fn mc_from_map(m: &Map<String, Value>, base: Chain) -> Chain {
 }
 
 fn ocio_to_map(c: &OcioChain) -> Map<String, Value> {
-    let v = json!({ "engine": "ocio", "config": c.config, "input": c.input, "look": c.look, "view": c.view, "sceneLut": { "path": c.scene_lut, "cccId": "" }, "knee": knee_to(&c.knee) });
+    let v = json!({ "engine": "ocio", "config": c.config, "input": c.input, "look": c.look, "view": c.view, "sceneLut": { "path": c.scene_lut, "cccId": c.ccc_id }, "knee": knee_to(&c.knee) });
     v.as_object().cloned().unwrap()
 }
 fn ocio_from_map(m: &Map<String, Value>) -> Option<OcioChain> {
     let view = s(m, "view"); if view.is_empty() { return None }
-    Some(OcioChain { config: s(m, "config"), input: s(m, "input"), look: s(m, "look"), view, scene_lut: s(&o(m, "sceneLut"), "path"), knee: knee_from(&o(m, "knee"), Knee::default()) })
+    Some(OcioChain { config: s(m, "config"), input: s(m, "input"), look: s(m, "look"), view, scene_lut: s(&o(m, "sceneLut"), "path"), ccc_id: s(&o(m, "sceneLut"), "cccId"), knee: knee_from(&o(m, "knee"), Knee::default()) })
 }
 
 impl Stored {
@@ -156,10 +157,15 @@ mod tests {
         let pin: Map<String, Value> = serde_json::from_str(r#"{"input":{"gamut":3,"transfer":14,"limited":false}}"#).unwrap();
         let Some(Stored { chain: ClipChain::MinColor(c), .. }) = Stored::from_clip_maps(&Map::new(), &pin, &fallback_default()) else { panic!() };
         assert_eq!((c.in_gamut, c.in_transfer, c.agx_on), (3, 14, 0));
-        let ocio = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.2".into(), input: "Rec.1886".into(), look: String::new(), view: "AgX".into(), scene_lut: String::new(), knee: Knee::default() }), preset: "Mine".into() };
+        let ocio = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.2".into(), input: "Rec.1886".into(), look: String::new(), view: "AgX".into(), scene_lut: String::new(), ccc_id: String::new(), knee: Knee::default() }), preset: "Mine".into() };
         let (oc, mc) = ocio.to_clip_maps(&Map::new(), &pin);
         assert_eq!(mc, pin, "the minColor pins survive an OCIO chain");
         assert_eq!(Stored::from_clip_maps(&oc, &mc, &fallback_default()), Some(ocio));
         assert_eq!(Stored::from_clip_maps(&Map::new(), &Map::new(), &fallback_default()), None, "no maps = follows the default");
+        // the Scene LUT and its Correction ID ride in QCView's own keys (`sceneLut.path` / `sceneLut.cccId`)
+        let lut = Stored { chain: ClipChain::Ocio(OcioChain { config: "Blender5.2".into(), input: "Rec.1886".into(), look: String::new(), view: "Standard".into(), scene_lut: "/grades/shot.ccc".into(), ccc_id: "sh010".into(), knee: Knee::default() }), preset: String::new() };
+        let m = lut.to_map();
+        assert_eq!(m["sceneLut"], serde_json::json!({ "path": "/grades/shot.ccc", "cccId": "sh010" }));
+        assert_eq!(Stored::from_map(&m), Some(lut));
     }
 }

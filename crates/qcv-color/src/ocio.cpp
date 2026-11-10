@@ -112,8 +112,9 @@ const char *oc_config_item(const OcConfig *c, int what, int i) {
 const char *oc_config_family(const OcConfig *c, const char *cs) { OCIO::ConstColorSpaceRcPtr s = c->cfg->getColorSpace(cs); return s ? s->getFamily() : ""; }
 const char *oc_config_encoding(const OcConfig *c, const char *cs) { OCIO::ConstColorSpaceRcPtr s = c->cfg->getColorSpace(cs); return s ? s->getEncoding() : ""; }
 
-// input → [look] → [scene LUT / CDL] → our display + view. lang: 0 MSL 2.0, 1 HLSL SM 5.0.
-OcChain *oc_chain_build(const OcConfig *c, const char *input, const char *look, const char *view, const char *scene_lut,
+// input → [look] → [scene LUT / CDL] → our display + view. lang: 0 MSL 2.0, 1 HLSL SM 5.0. ccc_id: the correction inside a
+// .ccc / .cdl (its id, or an index; empty = the first) — QCView's OcioChainBuilder, FileTransform::setCCCId.
+OcChain *oc_chain_build(const OcConfig *c, const char *input, const char *look, const char *view, const char *scene_lut, const char *ccc_id,
                         int lang, const char *fn_name, char *err, size_t errn)
 {
     try {
@@ -130,6 +131,7 @@ OcChain *oc_chain_build(const OcConfig *c, const char *input, const char *look, 
         if (scene_lut && *scene_lut) {
             OCIO::FileTransformRcPtr ft = OCIO::FileTransform::Create();
             ft->setSrc(scene_lut); ft->setInterpolation(OCIO::INTERP_BEST); ft->setDirection(OCIO::TRANSFORM_DIR_FORWARD);
+            if (ccc_id && *ccc_id) ft->setCCCId(ccc_id);
             g->appendTransform(ft);
         }
         OCIO::DisplayViewTransformRcPtr dvt = OCIO::DisplayViewTransform::Create();
@@ -152,7 +154,7 @@ OcChain *oc_chain_build(const OcConfig *c, const char *input, const char *look, 
 // QCView's split (OcioChainBuilder::buildSplitTransforms): pre = [look] [scene LUT] → the interchange role; post =
 // interchange → the display's view. The Knee runs between, in linear light. side: 1 scene (aces_interchange, AP0 D60),
 // 2 display (cie_xyz_d65_interchange); both put 1.0 at 100 nits.
-int oc_chain_build_split(const OcConfig *c, const char *input, const char *look, const char *view, const char *scene_lut,
+int oc_chain_build_split(const OcConfig *c, const char *input, const char *look, const char *view, const char *scene_lut, const char *ccc_id,
                          int lang, OcChain **pre_out, OcChain **post_out, char *err, size_t errn)
 {
     try {
@@ -162,7 +164,7 @@ int oc_chain_build_split(const OcConfig *c, const char *input, const char *look,
             const char *res = OCIO::LookTransform::GetLooksResultColorSpace(c->cfg, c->cfg->getCurrentContext(), look);
             if (res && *res) { OCIO::LookTransformRcPtr lt = OCIO::LookTransform::Create(); lt->setSrc(input); lt->setDst(res); lt->setLooks(look); pre->appendTransform(lt); src = res; }
         }
-        if (scene_lut && *scene_lut) { OCIO::FileTransformRcPtr ft = OCIO::FileTransform::Create(); ft->setSrc(scene_lut); ft->setInterpolation(OCIO::INTERP_BEST); pre->appendTransform(ft); }
+        if (scene_lut && *scene_lut) { OCIO::FileTransformRcPtr ft = OCIO::FileTransform::Create(); ft->setSrc(scene_lut); ft->setInterpolation(OCIO::INTERP_BEST); if (ccc_id && *ccc_id) ft->setCCCId(ccc_id); pre->appendTransform(ft); }
         OCIO::ConstColorSpaceRcPtr scs = c->cfg->getColorSpace(src.c_str());
         if (!scs) { put(err, errn, "unknown input colourspace"); return 0; }
         if (scs->isData()) { put(err, errn, "the input is a data colourspace: nothing for the Knee to act on"); return 0; }

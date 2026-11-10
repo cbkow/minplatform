@@ -53,7 +53,7 @@ impl crate::App {
         let on = self.settings.bool(crate::settings::k::COLOR_ENABLED) && self.color_bound[slot].is_some();
         let (_, stored, _) = self.chain_of(&self.slot_item(slot));
         let meta = self.gpu.as_ref().and_then(|g| if self.dual.is_some() { g.presenter.engine.dual().and_then(|d| if slot == 1 { d.b.shown_meta() } else { d.a.shown_meta() }) } else if slot == 0 { g.presenter.engine.shown_meta() } else { None });
-        let chain_key = if !on { "bypass".to_string() } else { match &stored.chain { ClipChain::MinColor(c) => format!("mc|{c:?}"), ClipChain::Ocio(o) => format!("ocio|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.knee) } };
+        let chain_key = if !on { "bypass".to_string() } else { match &stored.chain { ClipChain::MinColor(c) => format!("mc|{c:?}"), ClipChain::Ocio(o) => format!("ocio|{}|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.ccc_id, o.knee) } };
         let Some(g) = self.gpu.as_mut() else { return self.thumb_color[slot].generation };
         // the Video emulation as the slot's picture has it on screen (canon row 262: thumbnails carry it too)
         let emu = on && crate::color::slot_engine(g, slot, self.dual.is_some()).is_some_and(|e| e.video_emulation());
@@ -84,7 +84,7 @@ impl crate::App {
                 std::thread::Builder::new().name("thumb-ocio".into()).spawn(move || {
                     let Ok(c) = qcv_color::ocio::Config::open(&cfg) else { return };
                     let view = crate::capture::sdr_view(&c.views(), &o.view).unwrap_or(o.view.clone());
-                    match qcv_color::ocio::OcioPass::new(&d, &q, &c, qcv_color::ocio::Spec { input: o.input, look: o.look, view, scene_lut: o.scene_lut }, o.knee) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn ColorPass + Send>); } Err(e) => log::warn!("thumbnail OCIO: {e}") }
+                    match qcv_color::ocio::OcioPass::new(&d, &q, &c, qcv_color::ocio::Spec { input: o.input, look: o.look, view, scene_lut: o.scene_lut, ccc_id: o.ccc_id }, o.knee) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn ColorPass + Send>); } Err(e) => log::warn!("thumbnail OCIO: {e}") }
                 }).ok();
             }
         }

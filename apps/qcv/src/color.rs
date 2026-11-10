@@ -83,7 +83,7 @@ pub fn ocio_wanted() -> Option<(String, qcv_color::ocio::Spec)> {
     let p: Vec<&str> = v.split('|').collect();
     if p.len() < 3 { log::warn!("QCV_OCIO wants <config>|<input>|<view>[|<look>], got {v:?}"); return None }
     let cfg = ocio_configs_dir().join(p[0]).join("config.ocio");
-    Some((cfg.to_string_lossy().into_owned(), qcv_color::ocio::Spec { input: p[1].into(), view: p[2].into(), look: p.get(3).unwrap_or(&"").to_string(), scene_lut: String::new() }))
+    Some((cfg.to_string_lossy().into_owned(), qcv_color::ocio::Spec { input: p[1].into(), view: p[2].into(), look: p.get(3).unwrap_or(&"").to_string(), scene_lut: String::new(), ccc_id: String::new() }))
 }
 
 /// Build an OCIO pass on a worker (OCIO + the backend compile); `None` on the channel when it failed (logged).
@@ -229,10 +229,10 @@ impl crate::App {
                     self.ocio_rx[slot] = None;
                 }
                 ClipChain::Ocio(o) => {
-                    let key = format!("{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.knee);
+                    let key = format!("{}|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.ccc_id, o.knee);
                     if self.color_bound[slot].as_deref() == Some(key.as_str()) || self.ocio_rx[slot].as_ref().is_some_and(|(k, _)| *k == key) { continue }
                     let cfg = ocio_config_path(&o.config);
-                    let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut };
+                    let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut, ccc_id: o.ccc_id };
                     let (d, q, knee) = (engine.device.clone(), engine.queue.clone(), o.knee);
                     let (tx, rx) = mpsc::channel();
                     std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
@@ -291,7 +291,7 @@ impl crate::App {
                 self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(st);
             }
             DCmd::NewOcio => {
-                let o = self.fixup_ocio(OcioChain { config: BUNDLED[0].0.into(), input: String::new(), look: String::new(), view: String::new(), scene_lut: String::new(), knee: qcv_color::Knee::default() });
+                let o = self.fixup_ocio(OcioChain { config: BUNDLED[0].0.into(), input: String::new(), look: String::new(), view: String::new(), scene_lut: String::new(), ccc_id: String::new(), knee: qcv_color::Knee::default() });
                 self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(Stored { chain: ClipChain::Ocio(o), preset: String::new() });
             }
             DCmd::OpenConfig => {
