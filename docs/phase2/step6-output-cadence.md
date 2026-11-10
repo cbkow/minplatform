@@ -80,7 +80,8 @@ reclocks it.
 3. **QCBridgeN the same way** [proposed: after the AJA walk confirms 1]. — CLOSED without a change, see above.
 
 The walk of 1 and 2 (the user, 2026-11-10, the T-TAP Pro): "this is working much better".
-4. **The port publishes off the main thread / reuses the wire texture / blits into the slot** [proposed: not now — the
+4. (REVERSED the same day by spike S8 and canon row 261: the publish moved to the frame's own tick and a collector thread
+   writes the ring — 33 ms → 2.5–6 ms.) **The port publishes off the main thread / reuses the wire texture / blits into the slot** [proposed: not now — the
    measurements show no cost there on this machine; revisit with the Windows box's numbers].
 5. **Evening out the producer's cadence** (publish on the frame clock, not the redraw) [proposed: no — QCView publishes on
    its redraw too, and 1 absorbs it].

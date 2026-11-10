@@ -888,6 +888,9 @@ impl App {
         }
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
+        // the outputs: this tick's picture goes out now (canon row 261) — after the frame is shown, before the viewport's draw
+        if self.outputs.any_enabled() { self.outputs_publish(); }
+        let Some(g) = self.gpu.as_mut() else { return };
         // the notes sidecar rewritten by another app (minNotes, a second QCView): reload (canon §4.5's watcher)
         // (only with the Notes panel open — the user 2026-11-09 — and paused: a stat on a slow mount must never hitch playback;
         // opening the panel polls on its first tick, so edits made while it was shut land then)

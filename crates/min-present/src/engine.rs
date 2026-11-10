@@ -198,7 +198,8 @@ pub struct Engine {
     imports: Imports, imports_n: u32,
     /// The last `show`'s import / upload cost on the calling thread, ms.
     pub last_show_ms: f32,
-    pub frames_shown: u64,
+    pub frames_shown: u64, /// when `show` last took a frame (the outputs' shown → ring trace)
+    pub last_shown_at: Option<std::time::Instant>,
 }
 
 /// The pixel-aspect choice (QCView's Aspect pill, per clip): Square renders the stored pixels untouched (the default —
@@ -306,7 +307,7 @@ impl Engine {
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
         let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), video_emu: false, out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
-            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
+            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, last_shown_at: None, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
     }
@@ -608,7 +609,7 @@ impl Engine {
         // `submit` flushes and only a maintain reclaims. A window's draw submits every refresh; a headless engine showing
         // without drawing never did (4 GB after 120 software 4K shows). An empty submit + poll here keeps staging at one frame.
         if self.standalone { self.queue.submit(std::iter::empty()); let _ = self.device.poll(wgpu::PollType::Poll); }
-        self.frames_shown += 1;
+        self.frames_shown += 1; self.last_shown_at = Some(std::time::Instant::now());
         self.last_show_ms = t.elapsed().as_secs_f32() * 1000.0;
         Ok(())
     }

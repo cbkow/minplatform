@@ -55,7 +55,31 @@ fn hlg_oetf(e: vec3<f32>) -> vec3<f32> {
 "#;
 
 struct Staging { buf: wgpu::Buffer, w: u32, h: u32, bpr: u32, state: std::sync::Arc<std::sync::atomic::AtomicU8>, tag: u64, /// the submit order (`take` hands frames out oldest first) and when it was submitted
-    seq: u64, at: std::time::Instant }
+    seq: u64, at: std::time::Instant, /// the copy's submission (a `Readback` waits for exactly it)
+    index: Option<wgpu::SubmissionIndex>, /// handed to a `Readback`: `take` leaves it alone
+    detached: bool }
+
+/// One frame's copy-out, detached from the encoder (`WireEncoder::detach_last`) so ANOTHER THREAD can wait for the GPU and
+/// take the bytes the moment they exist — the app's tick only comes round once a refresh (spike S8: 33 ms from a frame shown
+/// to its ring commit on the tick, 3–6 ms this way). Dropping it without `collect` leaves the buffer to be reclaimed by a
+/// later `submit`.
+pub struct Readback { buf: wgpu::Buffer, pub w: u32, pub h: u32, pub bpr: u32, pub tag: u64, pub seq: u64, pub at: std::time::Instant, state: std::sync::Arc<std::sync::atomic::AtomicU8>, index: wgpu::SubmissionIndex }
+impl Readback {
+    /// Wait (at most `timeout`) for the GPU to finish this frame's copy, hand the bytes (rows `bpr` apart) to `f`, free the
+    /// buffer. False when the copy failed or did not finish in time.
+    pub fn collect(self, device: &wgpu::Device, timeout: std::time::Duration, f: &mut dyn FnMut(&[u8])) -> bool {
+        use std::sync::atomic::Ordering::*;
+        let t0 = std::time::Instant::now();
+        let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(self.index.clone()), timeout: Some(timeout) });
+        // the map's callback runs on a poll after the submission is done — usually that one
+        while self.state.load(Acquire) == 1 && t0.elapsed() < timeout { let _ = device.poll(wgpu::PollType::Poll); if self.state.load(Acquire) == 1 { std::thread::sleep(std::time::Duration::from_micros(200)); } }
+        match self.state.load(Acquire) {
+            2 => { let ok = match self.buf.slice(..).get_mapped_range() { Ok(data) => { f(&data); true } Err(_) => false }; self.buf.unmap(); self.state.store(0, Release); ok }
+            3 => { self.state.store(0, Release); false }
+            _ => false,   // still mapping: `submit` reclaims the buffer once the map lands and this handle is gone
+        }
+    }
+}
 
 /// What the copy-out did since the counters were last taken (`QCV_TRACE_OUTPUT`): frames submitted, refused with every
 /// staging buffer busy, handed out; takes that handed out two or more at once; takes whose buffers finished in another order
@@ -95,12 +119,14 @@ impl WireEncoder {
         use std::sync::atomic::Ordering::*;
         let (w, h) = (canvas.width(), canvas.height());
         let bpr = (w * 4).div_ceil(256) * 256;
+        // a detached buffer whose `Readback` is gone (dropped, or timed out before the map landed): free again
+        for s in &mut self.staging { if s.detached && std::sync::Arc::strong_count(&s.state) == 1 { match s.state.load(Acquire) { 2 => { s.buf.unmap(); s.state.store(0, Release); } 3 => s.state.store(0, Release), _ => {} } } }
         let i = match self.staging.iter().position(|s| s.state.load(Acquire) == 0 && s.w == w && s.h == h) {
             Some(i) => i,
             None => {
                 if self.staging.len() >= 3 { if let Some(j) = self.staging.iter().position(|s| s.state.load(Acquire) == 0 || s.state.load(Acquire) == 3) { self.staging.remove(j); } else { if self.trace { self.stats.busy += 1; } return false } }
                 let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("wire staging"), size: (bpr * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
-                self.staging.push(Staging { buf, w, h, bpr, state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)), tag: 0, seq: 0, at: std::time::Instant::now() });
+                self.staging.push(Staging { buf, w, h, bpr, state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)), tag: 0, seq: 0, at: std::time::Instant::now(), index: None, detached: false });
                 self.staging.len() - 1
             }
         };
@@ -109,7 +135,7 @@ impl WireEncoder {
         self.seq += 1; let seq = self.seq; if self.trace { self.stats.submitted += 1; }
         let s = &mut self.staging[i];
         enc.copy_texture_to_buffer(out.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &s.buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s.bpr), rows_per_image: Some(h) } }, wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
-        queue.submit([enc.finish()]);
+        s.index = Some(queue.submit([enc.finish()])); s.detached = false;
         s.state.store(1, Release); s.tag = tag; s.seq = seq; s.at = std::time::Instant::now();
         let st = s.state.clone();
         s.buf.slice(..).map_async(wgpu::MapMode::Read, move |r| st.store(if r.is_ok() { 2 } else { 3 }, Release));
@@ -133,6 +159,13 @@ impl WireEncoder {
         }
         out
     }
+    /// The frame `submit` last accepted, as a `Readback` for another thread; `take` no longer sees it.
+    pub fn detach_last(&mut self) -> Option<Readback> {
+        let seq = self.seq;
+        let s = self.staging.iter_mut().find(|s| s.seq == seq && !s.detached && s.state.load(std::sync::atomic::Ordering::Acquire) != 0)?;
+        s.detached = true;
+        Some(Readback { buf: s.buf.clone(), w: s.w, h: s.h, bpr: s.bpr, tag: s.tag, seq: s.seq, at: s.at, state: s.state.clone(), index: s.index.clone()? })
+    }
     /// The sequence number of the frame `submit` last accepted — `take` hands it back with the bytes, so the caller can keep
     /// what it knew about the frame when it was drawn.
     pub fn last_seq(&self) -> u64 { self.seq }
@@ -143,7 +176,7 @@ impl WireEncoder {
         use std::sync::atomic::Ordering::*;
         let _ = device.poll(wgpu::PollType::Poll);
         let mut any = false;
-        let mut ready: Vec<usize> = (0..self.staging.len()).filter(|&i| self.staging[i].state.load(Acquire) == 2).collect();
+        let mut ready: Vec<usize> = (0..self.staging.len()).filter(|&i| !self.staging[i].detached && self.staging[i].state.load(Acquire) == 2).collect();
         if self.trace && ready.len() > 1 { self.stats.multi += 1; if ready.windows(2).any(|p| self.staging[p[0]].seq > self.staging[p[1]].seq) { self.stats.disorder += 1; } }
         ready.sort_by_key(|&i| self.staging[i].seq);
         for i in ready {
@@ -152,7 +185,7 @@ impl WireEncoder {
             if let Ok(data) = s.buf.slice(..).get_mapped_range() { f(&data, s.w, s.h, s.bpr, s.tag, s.seq); }
             s.buf.unmap(); s.state.store(0, Release); any = true;
         }
-        for s in &self.staging { if s.state.load(Acquire) == 3 { s.state.store(0, Release); } }
+        for s in &self.staging { if !s.detached && s.state.load(Acquire) == 3 { s.state.store(0, Release); } }
         any
     }
 }

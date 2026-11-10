@@ -79,7 +79,8 @@ pub struct Spec { pub w: u32, pub h: u32, pub fmt: min_present::wire::WireFormat
 
 pub struct Output {
     pub m: Manifest, pub enabled: bool,
-    ring: Option<OutputRing>, audio: Option<qcv_ring::audio::AudioRing>,
+    ring: Option<OutputRing>, /// the collector thread's handle on the same ring: frames are written there, the handshake here
+    wire: Option<std::sync::Arc<OutWire>>, audio: Option<qcv_ring::audio::AudioRing>,
     child: Option<Child>, launched: bool, launch_due: Option<Instant>, restarts: Vec<Instant>, dying: Option<(Child, Instant)>,
     /// the sink process's state (fix 2): "", "running", "failed to start: …", "restarting (n)", "exited; not restarting …", "attached"
     pub plugin: String,
@@ -92,21 +93,55 @@ pub struct Output {
 
 #[derive(Default)]
 pub struct OutputBus { pub outputs: Vec<Output>, last_poll: Option<Instant>, restored: bool, enc: Option<min_present::wire::WireEncoder>, tap: Vec<f32>, audio_t: i64, /// the overlay (guides / strokes): its vello layer and what it holds (size + the overlay's signature)
-    layer: Option<min_ui::UiLayer>, layer_key: Option<u64>, trace: OutTrace, /// the frames being copied out: the wire encoder's sequence number → what the frame was when it was drawn
-    meta: std::collections::VecDeque<(u64, FrameMeta)> }
+    layer: Option<min_ui::UiLayer>, layer_key: Option<u64>, trace: OutTrace, collector: Option<Collector> }
 
-/// A frame's facts AT SUBMIT (QCView stamps the descriptor at encode, canon row 259): two frames whose copies finish on one
-/// tick must not carry one frame index, one timecode and one timestamp.
-struct FrameMeta { playing: bool, frame: i64, fps: f64, tc: Option<String>, ns: i64, dual_b: bool, drawn: u32 }
-
-/// `QCV_TRACE_OUTPUT`: the output path's timing, a line a second — the gap between publish calls (the app's tick), the time
-/// one call takes on the main thread (render + encode + the ring copies), and the wire encoder's counters.
+/// An output's frame writer: the collector's own mapping of the ring, and the spec generation that is live — a frame drawn
+/// for an older answer is dropped, not committed.
+struct OutWire { ring: std::sync::Mutex<OutputRing>, spec_gen: std::sync::atomic::AtomicU64 }
+/// One frame on its way out: the copy to wait for, where it goes, and its descriptor AS DRAWN (QCView stamps at encode,
+/// canon row 259: two frames finishing together must not share one frame index, one timecode, one timestamp).
+struct Job { rb: min_present::wire::Readback, wire: std::sync::Arc<OutWire>, spec_gen: u64, desc: OutputFrameDesc, shown_at: Option<Instant>, playing: bool }
 #[derive(Default)]
-struct OutTrace { since: Option<Instant>, last: Option<Instant>, gap_ms: Vec<f32>, publish_ms: Vec<f32> }
+struct CollectStats { committed: u32, dropped: u32, readback_ms: Vec<f32>, shown_ms: Vec<f32> }
+/// The COLLECTOR (canon row 261, spike S8): a thread that waits for the GPU to finish each output frame's copy and writes it
+/// into the ring at once, in submit order — the tick comes round only once a refresh, and waiting for it cost one.
+struct Collector { tx: std::sync::mpsc::Sender<Job>, stats: std::sync::Arc<std::sync::Mutex<CollectStats>> }
+impl Collector {
+    fn new(device: wgpu::Device) -> Collector {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let stats = std::sync::Arc::new(std::sync::Mutex::new(CollectStats::default()));
+        let st = stats.clone();
+        let _ = std::thread::Builder::new().name("qcv-output-collect".into()).spawn(move || {
+            while let Ok(Job { rb, wire, spec_gen, mut desc, shown_at, playing }) = rx.recv() {
+                let (bpr, h, at) = (rb.bpr, rb.h, rb.at);
+                let mut done = false;
+                let ok = rb.collect(&device, Duration::from_secs(1), &mut |bytes| {
+                    if wire.spec_gen.load(std::sync::atomic::Ordering::Acquire) != spec_gen { return }   // a stale shape
+                    let Ok(mut ring) = wire.ring.lock() else { return };
+                    let n = bpr as usize * h as usize;
+                    let Some(dst) = ring.begin_write(n as u64) else { return };
+                    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, n.min(bytes.len())); }
+                    desc.bytes_per_row = bpr;
+                    ring.commit(desc); done = true;
+                });
+                if let Ok(mut s) = st.lock() {
+                    if ok && done { s.committed += 1; if s.readback_ms.len() < 4096 { s.readback_ms.push(at.elapsed().as_secs_f32() * 1000.0); if let Some(t) = shown_at && playing { s.shown_ms.push(t.elapsed().as_secs_f32() * 1000.0); } } } else { s.dropped += 1; }
+                }
+            }
+        });
+        Collector { tx, stats }
+    }
+}
+
+/// `QCV_TRACE_OUTPUT`: the output path's timing, a line a second — frames submitted / refused (every copy buffer busy) /
+/// committed to a ring / dropped (a stale shape, a failed copy), a frame shown → its ring commit, the copy back alone, and
+/// the time one publish call takes on the main thread (render + encode).
+#[derive(Default)]
+struct OutTrace { since: Option<Instant>, publish_ms: Vec<f32> }
 fn pct(v: &mut [f32], p: f32) -> f32 { if v.is_empty() { return 0.0 } v.sort_by(|a, b| a.total_cmp(b)); v[(((v.len() - 1) as f32) * p).round() as usize] }
 
 impl OutputBus {
-    pub fn new() -> OutputBus { OutputBus { outputs: scan().into_iter().map(|m| Output { m, enabled: false, ring: None, audio: None, child: None, launched: false, launch_due: None, restarts: vec![], dying: None, plugin: String::new(), spec: None, spec_gen: 0, present: false, status: String::new(), shape: String::new(), req: None, req_gen: 0, auto_class: None, published: None, pub_tag: 0, drawn: 0, pinned_transfer: false, reanswer: false }).collect(), ..Default::default() } }
+    pub fn new() -> OutputBus { OutputBus { outputs: scan().into_iter().map(|m| Output { m, enabled: false, ring: None, wire: None, audio: None, child: None, launched: false, launch_due: None, restarts: vec![], dying: None, plugin: String::new(), spec: None, spec_gen: 0, present: false, status: String::new(), shape: String::new(), req: None, req_gen: 0, auto_class: None, published: None, pub_tag: 0, drawn: 0, pinned_transfer: false, reanswer: false }).collect(), ..Default::default() } }
     pub fn any_enabled(&self) -> bool { self.outputs.iter().any(|o| o.enabled) }
 }
 
@@ -142,6 +177,9 @@ impl crate::App {
         };
         let audio = qcv_ring::audio::AudioRing::create(&aname, 1_000_000_000, qcv_ring::audio::DEFAULT_SLOTS, qcv_ring::audio::DEFAULT_SLOT_FRAMES, 2).ok();
         if let Some(a) = &audio { a.begin_session(AudioSession { sample_rate: 48000, channels: 2, speed: 1.0, push_frames: 1024, ..Default::default() }); }
+        // the frames' writer: a second mapping of the ring, owned by the collector's jobs (QCView: the render thread commits, the GUI
+        // thread shakes hands — one ring, two threads, no lock between them)
+        o.wire = match OutputRing::open(&name) { Ok(r) => Some(std::sync::Arc::new(OutWire { ring: std::sync::Mutex::new(r), spec_gen: std::sync::atomic::AtomicU64::new(0) })), Err(e) => { log::warn!("outputs: {id}: the frame writer could not open the ring: {e}"); None } };
         o.ring = Some(ring); o.audio = audio; o.enabled = true; o.present = false; o.spec = None; o.req = None; o.status.clear(); o.shape.clear(); o.published = None; o.pinned_transfer = false;
         o.restarts.clear(); o.plugin.clear();
         o.launch_due = o.m.installed.then(|| Instant::now() + LAUNCH_GRACE);
@@ -157,7 +195,7 @@ impl crate::App {
         if let Some(r) = &o.ring { r.set_state(OutputState::Retired); }
         if let Some(a) = &o.audio { a.set_state(qcv_ring::audio::State::Retired); }
         std::thread::sleep(Duration::from_millis(30));
-        o.ring = None; o.audio = None; o.enabled = false; o.present = false; o.spec = None; o.launch_due = None; o.plugin.clear(); o.status.clear(); o.shape.clear();
+        o.ring = None; o.wire = None; o.audio = None; o.enabled = false; o.present = false; o.spec = None; o.launch_due = None; o.plugin.clear(); o.status.clear(); o.shape.clear();
         if let Some(c) = o.child.take() { if o.launched { o.dying = Some((c, Instant::now() + Duration::from_secs(3))); } }
         o.launched = false;
         if let Some(key) = k::output_key(id, "enabled") { self.settings.set_bool(key, false); }
@@ -182,7 +220,6 @@ impl crate::App {
         if !self.outputs.restored && self.gpu.is_some() { self.outputs.restored = true; self.outputs_restore(); }
         if !self.outputs.any_enabled() { return }
         self.outputs_audio();
-        self.outputs_publish();
         if self.outputs.last_poll.is_some_and(|t| now.duration_since(t) < POLL) { return }
         self.outputs.last_poll = Some(now);
         self.output_tap_sync();   // the player / live feed may have changed since
@@ -323,22 +360,24 @@ impl crate::App {
         if let Some(cur) = self.overlay_note() { self.annot.ink_sig(&cur).hash(&mut h); }
         h.finish()
     }
-    /// Publish-on-change (QCView: no clock of its own): every accepted, present output whose stamp moved gets a frame; finished
-    /// read-backs land in their rings.
-    fn outputs_publish(&mut self) {
+    /// Publish-on-change (QCView: no clock of its own): every accepted, present output whose stamp moved gets a frame, drawn
+    /// and encoded here and handed to the collector. Called from the tick AFTER the frame is shown (canon row 261: at the top
+    /// of the tick a frame went out one refresh after it was shown).
+    pub(crate) fn outputs_publish(&mut self) {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !*ON.get_or_init(|| std::env::var_os("QCV_TRACE_OUTPUT").is_some()) { return self.outputs_publish_now() }
         let t0 = Instant::now();
-        { let tr = &mut self.outputs.trace; if let Some(l) = tr.last { tr.gap_ms.push(t0.duration_since(l).as_secs_f32() * 1000.0); } tr.last = Some(t0); tr.since.get_or_insert(t0); }
+        self.outputs.trace.since.get_or_insert(t0);
         if let Some(e) = self.outputs.enc.as_mut() { e.trace = true; }
         self.outputs_publish_now();
         let tr = &mut self.outputs.trace; tr.publish_ms.push(t0.elapsed().as_secs_f32() * 1000.0);
         if tr.since.is_some_and(|s| s.elapsed() >= Duration::from_secs(1)) {
             tr.since = Some(Instant::now());
-            let mut st = self.outputs.enc.as_mut().map(|e| std::mem::take(&mut e.stats)).unwrap_or_default();
-            let (mut g, mut p) = (std::mem::take(&mut tr.gap_ms), std::mem::take(&mut tr.publish_ms));
-            println!("output trace: submitted {} busy {} taken {} multi {} disorder {} · readback ms p50 {:.1} p95 {:.1} max {:.1} · publish ms p50 {:.2} p95 {:.2} max {:.2} · tick gap ms p50 {:.1} p95 {:.1} max {:.1} (n={})",
-                st.submitted, st.busy, st.taken, st.multi, st.disorder, pct(&mut st.latency_ms, 0.5), pct(&mut st.latency_ms, 0.95), pct(&mut st.latency_ms, 1.0), pct(&mut p, 0.5), pct(&mut p, 0.95), pct(&mut p, 1.0), pct(&mut g, 0.5), pct(&mut g, 0.95), pct(&mut g, 1.0), g.len());
+            let st = self.outputs.enc.as_mut().map(|e| std::mem::take(&mut e.stats)).unwrap_or_default();
+            let mut c = self.outputs.collector.as_ref().and_then(|c| c.stats.lock().ok().map(|mut s| std::mem::take(&mut *s))).unwrap_or_default();
+            let mut p = std::mem::take(&mut tr.publish_ms);
+            println!("output trace: submitted {} busy {} committed {} dropped {} · shown→ring ms p50 {:.1} p95 {:.1} max {:.1} · copy back ms p50 {:.1} p95 {:.1} max {:.1} · main thread ms p50 {:.2} p95 {:.2} max {:.2}",
+                st.submitted, st.busy, c.committed, c.dropped, pct(&mut c.shown_ms, 0.5), pct(&mut c.shown_ms, 0.95), pct(&mut c.shown_ms, 1.0), pct(&mut c.readback_ms, 0.5), pct(&mut c.readback_ms, 0.95), pct(&mut c.readback_ms, 1.0), pct(&mut p, 0.5), pct(&mut p, 0.95), pct(&mut p, 1.0));
         }
     }
     fn outputs_publish_now(&mut self) {
@@ -350,23 +389,9 @@ impl crate::App {
         let Some(g) = self.gpu.as_mut() else { return };
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
         let enc = self.outputs.enc.get_or_insert_with(|| min_present::wire::WireEncoder::new(&dev));
-        // the finished frames → their rings (tag = output index << 32 | spec_gen)
-        let outs = &mut self.outputs.outputs; let metas = &mut self.outputs.meta;
-        enc.take(&dev, &mut |bytes, w, hh, bpr, tag, seq| {
-            while metas.front().is_some_and(|m| m.0 < seq) { metas.pop_front(); }
-            let Some((_, FrameMeta { playing, frame, fps, tc, ns, dual_b, drawn })) = metas.front().is_some_and(|m| m.0 == seq).then(|| metas.pop_front()).flatten() else { return };
-            let (i, sgen) = ((tag >> 32) as usize, tag & 0xffff_ffff);
-            let Some(o) = outs.get_mut(i) else { return };
-            let (Some(ring), Some(spec)) = (o.ring.as_mut(), o.spec) else { return };
-            if o.spec_gen & 0xffff_ffff != sgen || spec.w != w || spec.h != hh { return }   // a stale shape: dropped
-            let Some(dst) = ring.begin_write(bpr as u64 * hh as u64) else { return };
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, (bpr * hh) as usize); }
-            let (fn_, fd) = fps_rational(fps);
-            let mut flags = (if spec.content == v::CONTENT_SIDE_B { 0 } else { v::FRAME_HAS_A }) | (if dual_b && spec.content != v::CONTENT_SIDE_A { v::FRAME_HAS_B } else { 0 }) | if playing { 0 } else { v::FRAME_PAUSED };
-            let tcp = tc.as_deref().and_then(pack_tc);
-            if let Some((_, drop)) = tcp { flags |= v::FRAME_TIMECODE_VALID | if drop { v::FRAME_DROP_FRAME } else { 0 }; }
-            ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: drawn, flags, presentation_ns: ns, source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
-        });
+        let collector = self.outputs.collector.get_or_insert_with(|| Collector::new(dev.clone()));
+        // the generation the collector may commit for (a frame drawn for an older answer is dropped there)
+        for o in &self.outputs.outputs { if let Some(w) = &o.wire { w.spec_gen.store(o.spec_gen, std::sync::atomic::Ordering::Release); } }
         // the new frames
         for i in 0..self.outputs.outputs.len() {
             let o = &self.outputs.outputs[i];
@@ -411,7 +436,17 @@ impl crate::App {
             }
             let o = &mut self.outputs.outputs[i];
             o.pub_tag += 1;
-            if enc.submit(&dev, &q, &canvas, overlay, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); o.drawn = if overlay.is_some() { drawn } else { 0 }; self.outputs.meta.push_back((enc.last_seq(), FrameMeta { playing, frame, fps, tc: tc.clone(), ns: qcvo::now_ns(), dual_b, drawn: o.drawn })); }
+            let Some(wire) = o.wire.clone() else { continue };
+            if enc.submit(&dev, &q, &canvas, overlay, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) {
+                o.published = Some(stamp); o.drawn = if overlay.is_some() { drawn } else { 0 };
+                // the frame's descriptor as drawn, and off to the collector
+                let (fn_, fd) = fps_rational(fps);
+                let mut flags = (if spec.content == v::CONTENT_SIDE_B { 0 } else { v::FRAME_HAS_A }) | (if dual_b && spec.content != v::CONTENT_SIDE_A { v::FRAME_HAS_B } else { 0 }) | if playing { 0 } else { v::FRAME_PAUSED };
+                let tcp = tc.as_deref().and_then(pack_tc);
+                if let Some((_, drop)) = tcp { flags |= v::FRAME_TIMECODE_VALID | if drop { v::FRAME_DROP_FRAME } else { 0 }; }
+                let desc = OutputFrameDesc { width: spec.w, height: spec.h, bytes_per_row: 0, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: o.drawn, flags, presentation_ns: qcvo::now_ns(), source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 };
+                if let Some(rb) = enc.detach_last() { let _ = collector.tx.send(Job { rb, wire, spec_gen: o.spec_gen, desc, shown_at: g.presenter.engine.last_shown_at, playing }); }
+            }
         }
     }
     /// The frame's transport facts: playing, the source frame, its fps, the timecode (QCView fills none of these — fix 7).
