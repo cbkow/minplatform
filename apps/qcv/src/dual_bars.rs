@@ -190,13 +190,14 @@ impl DualBars {
                 let selected = self.selected.as_ref().is_some_and(|(s, id)| *s == side && *id == c.id);
                 let hovered = self.hover.as_ref().is_some_and(|h| h.0 == side && h.1 == c.id);
                 let current = c.contains(st.current as i64);
-                // Spectrum 2: neutral surfaces (the playlist bar's greys), the side's colour as a 2-px accent along the top
+                // Spectrum 2: neutral surfaces (the playlist bar's greys) under a slight wash of the side's colour (canon row 263)
                 let fill = if selected { t::PLAYLIST_BAR_SELECTED_COLOR } else if hovered { t::PLAYLIST_BAR_CLIP_HOVER_COLOR } else if current { t::PLAYLIST_BAR_CURRENT_COLOR } else { t::PLAYLIST_BAR_CLIP_COLOR };
                 // drawn inside the lane only: zoomed in on a long film a clip spans far off-screen, and vello's coverage breaks at those extents
                 let (vx0, vx1) = (lane.x0 + LABEL_W * scale, lane.x1 + 4.0 * scale);   // never under the row label
                 let cr = Rect::new((x0 + 0.5 * scale).max(vx0), y0, (x1 - 0.5 * scale).max(x0 + scale).min(vx1), y1);
                 if cr.x1 <= cr.x0 { continue }
                 paint::rounded(scene, cr, radius, fill);
+                paint::rounded(scene, cr, radius, if side == Side::A { t::CLIP_BAR_SIDE_A_TINT_COLOR } else { t::CLIP_BAR_SIDE_B_TINT_COLOR });
                 if let Some((s, id, z)) = &self.hover { if *s == side && *id == c.id && g.is_none() { let w = 2.0 * scale; let hc = t::PLAYLIST_BAR_HANDLE_COLOR; match z { Zone::Head => paint::rect(scene, Rect::new(cr.x0, y0, cr.x0 + w, y1), hc), Zone::Tail => paint::rect(scene, Rect::new(cr.x1 - w, y0, cr.x1, y1), hc), Zone::Body => {} } } }
             }
         }
