@@ -64,11 +64,11 @@
   "negative-content-color-default":    { "value": "{red-1000}" },
   "informative-visual-color":          { "value": "{blue-900}" },
 
-  "$sides": "Dual view's A and B: indigo and pink (canon row 263, the user 2026-11-10) - the blue-to-pink family beside the blue accent, off the warning orange and the state pills' yellow. Were cyan-900 / orange-900; QCView: #446a90 / #a0664a.",
-  "side-a-color":       { "value": "{indigo-900}" },
-  "side-a-muted-color": { "value": "{indigo-500}" },
-  "side-b-color":       { "value": "{pink-900}" },
-  "side-b-muted-color": { "value": "{pink-500}" },
+  "$sides": "Dual view's A and B: cyan and a muted tan (canon row 263, the user 2026-11-10) - the calm pair that separates for colour-blind viewers and stays clear of the selection blue, the pennants' purple, the state pills' yellow and the status colours. Were cyan-900 / orange-900 (B was the warnings' orange), then indigo / pink for an hour; QCView: #446a90 / #a0664a.",
+  "side-a-color":       { "value": "{cyan-900}" },
+  "side-a-muted-color": { "value": "{cyan-500}" },
+  "side-b-color":       { "value": "{brown-1000}" },
+  "side-b-muted-color": { "value": "{brown-500}" },
   "note-marker-color":  { "value": "{purple-900}" },
 
   "overlay-color": { "value": "{black}", "alpha": 0.4 },

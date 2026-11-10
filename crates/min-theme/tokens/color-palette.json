@@ -88,22 +88,13 @@
   "purple-1000": { "value": "rgb(186, 127, 237)" },
   "purple-1100": { "value": "rgb(197, 149, 240)" },
 
-  "$sides": "Indigo and pink: Spectrum 2's dark ramps (adobe/spectrum-design-data, read 2026-11-10), adopted for dual view's A and B (canon row 263).",
-  "indigo-400":  { "value": "rgb(62, 12, 174)" },
-  "indigo-500":  { "value": "rgb(79, 30, 209)" },
-  "indigo-600":  { "value": "rgb(95, 52, 235)" },
-  "indigo-700":  { "value": "rgb(109, 75, 248)" },
-  "indigo-800":  { "value": "rgb(116, 91, 252)" },
-  "indigo-900":  { "value": "rgb(128, 119, 254)" },
-  "indigo-1000": { "value": "rgb(139, 141, 254)" },
-  "indigo-1100": { "value": "rgb(153, 161, 255)" },
-
-  "pink-400":  { "value": "rgb(115, 7, 75)" },
-  "pink-500":  { "value": "rgb(143, 18, 97)" },
-  "pink-600":  { "value": "rgb(171, 29, 119)" },
-  "pink-700":  { "value": "rgb(196, 39, 138)" },
-  "pink-800":  { "value": "rgb(213, 45, 151)" },
-  "pink-900":  { "value": "rgb(236, 67, 175)" },
-  "pink-1000": { "value": "rgb(251, 90, 196)" },
-  "pink-1100": { "value": "rgb(255, 122, 210)" }
+  "$sides": "Brown: Spectrum 2's dark ramp (adobe/spectrum-design-data, read 2026-11-10), adopted for dual view's B (canon row 263).",
+  "brown-400":  { "value": "rgb(78, 55, 19)" },
+  "brown-500":  { "value": "rgb(98, 71, 30)" },
+  "brown-600":  { "value": "rgb(115, 88, 47)" },
+  "brown-700":  { "value": "rgb(132, 104, 61)" },
+  "brown-800":  { "value": "rgb(143, 114, 69)" },
+  "brown-900":  { "value": "rgb(163, 132, 84)" },
+  "brown-1000": { "value": "rgb(181, 147, 98)" },
+  "brown-1100": { "value": "rgb(199, 163, 112)" }
 }
