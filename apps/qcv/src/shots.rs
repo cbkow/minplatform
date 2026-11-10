@@ -68,6 +68,7 @@ impl crate::App {
                 "preset" => { if let Some(st) = self.colors.all().into_iter().find(|p| p.name == tail).map(|p| p.stored) { self.color_cmd(crate::color_drawer::Cmd::Pick(st)); } else { eprintln!("shots: no preset named '{tail}' (have: {:?})", self.colors.all().iter().map(|p| p.name.clone()).collect::<Vec<_>>()); } }
                 "newocio" => self.color_cmd(crate::color_drawer::Cmd::NewOcio),
                 "live" => self.connect_url(&tail, ""),
+                "output" => { use crate::output_panel::Cmd as O; let id = rest.get(1).copied().unwrap_or("").to_string(); match rest.first().copied() { Some("start") => self.output_cmd(O::Start(id)), Some("stop") => self.output_cmd(O::Stop(id)), Some("transfer") => self.output_cmd(O::Transfer(id, num(2) as i64)), _ => eprintln!("shots: output start|stop|transfer ID [N]") } }
                 "color" => self.color_cmd(crate::color_drawer::Cmd::SetOn(rest.first() == Some(&"on"))),
                 "set" => { if let (Some(k), Some(v)) = (rest.first(), rest.get(1)) { match *v { "true" | "false" => { self.settings.set_bool(k, *v == "true"); } n if n.parse::<i64>().is_ok() => { self.settings.set_int(k, n.parse().unwrap()); } s => { self.settings.set_str(k, s); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
                 "seek" => { let f = num(0) as i32; if let Some(d) = self.dual.as_mut() { d.seek_to_frame(f); } else if let Some(p) = self.player.as_mut() { p.seek_to_frame(f); } }

@@ -1,0 +1,21 @@
+# output.md, qcbridge-aja.md, qcbridge-ndi.md — the Output cards. This batch switches the REAL sinks on (QCBridgeN, and
+# QCBridgeA on the AJA card): run it only with the card free, and expect bars on the reference monitor for a few seconds.
+size 1440 1000
+open MEDIA/Color Bars 1080p.mov
+wait 1.5
+click 95 366
+wait 0.5
+output start ndi
+wait 5.0
+leave
+shot qcv3_046 0 340 280 268
+shot qcv3_054 0 510 280 92
+output stop ndi
+output transfer aja 2
+output start aja
+wait 7.0
+shot qcv3_047 0 340 280 350
+shot qcv3_053 0 386 280 242
+output stop aja
+wait 1.5
+quit
