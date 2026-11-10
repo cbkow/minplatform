@@ -2057,7 +2057,7 @@ impl ApplicationHandler for App {
         #[cfg(windows)] {
             use winit::platform::windows::{WinIcon, WindowAttributesWindows};
             let small = { let mut r = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/icons/qcviewMac-64.png")[..])); r.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA | png::Transformations::STRIP_16);
-                r.read_info().ok().and_then(|mut rd| { let mut buf = vec![0u8; rd.output_buffer_size()?]; let info = rd.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
+                r.read_info().ok().and_then(|mut rd| { let mut buf = vec![0u8; rd.output_buffer_size()]; let info = rd.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
                     if info.color_type != png::ColorType::Rgba { return None } winit::icon::RgbaIcon::new(buf, info.width, info.height).ok().map(winit::icon::Icon::from) }) };
             if small.is_none() { log::warn!("the title-bar icon did not decode"); }
             attrs = attrs.with_window_icon(small);
