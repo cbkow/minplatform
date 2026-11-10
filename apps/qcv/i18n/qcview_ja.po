@@ -4587,3 +4587,8 @@ msgstr "一部のクリップに、適用されていないQCView 2のシーンL
 msgctxt "ColorPanel"
 msgid "LUT exported with Video gamma: %1"
 msgstr "ビデオガンマ付きでLUTを書き出しました: %1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ViewportOverlay"
+msgid "That live source is already on the other side"
+msgstr "そのライブソースはすでに反対側にあります"

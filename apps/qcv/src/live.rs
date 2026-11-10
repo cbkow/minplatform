@@ -64,12 +64,11 @@ impl crate::App {
         let Some(id) = self.project.add_live_stream(host.url(), host.label()) else { return };
         self.load_item(&id);
     }
-    /// QCView `startLiveStream`: a `qcbae://` item reads its host's shared memory; any other URL opens as a network stream.
-    pub(crate) fn start_live(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
-        let Some(host) = Host::parse(&item.path) else { return self.start_stream(id, item) };
-        self.player = None;   // the file transport stops; the feed owns the picture
+    /// A live item's feed (and, for a host, its audio player), made WITHOUT touching the view: the single view adopts it
+    /// (`start_live`), or a dual side does (canon row 258). None = refused (a Blender listener while the input is off).
+    pub(crate) fn make_live(&mut self, id: &str, item: &qcv_project::MediaItem) -> Option<Live> {
+        let Some(host) = Host::parse(&item.path) else { return self.make_stream_live(id, item) };
         let sync_key = crate::settings::k::live_sync_key(host.key());
-        if let Some(g) = self.gpu.as_mut() { g.settings_panel.set_live_sync_key(sync_key); }
         let mut audio_src = None;
         let audio = match qcv_player::audio::AudioPlayer::new() {
             Ok(mut au) => {
@@ -80,15 +79,45 @@ impl crate::App {
                 au.set_volume(self.settings.float(k::VOLUME) as f32); au.set_muted(self.settings.bool(k::MUTED));
                 au.set_live_playdown(self.settings.bool(k::LIVE_PLAYDOWN));
                 au.set_routing_mode(crate::routing_of(item));   // the item's Mix pill (QCView: the clip's routing mode)
-                if let Some(g) = self.gpu.as_mut() { g.inspector.set_routing(crate::routing_of(item)); }
                 audio_src = Some(au.open_live(&host.audio_ring_name()));
                 Some(au)
             }
             Err(e) => { log::warn!("live audio: {e}"); None }
         };
         let mut feed = Feed::Host(HostFeed::new(host)); feed.set_video_hold_ms(qcv_player::audio::live::video_hold_ms());
-        self.live = Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio, audio_src });
-        self.loaded_item = id.to_string();
+        log::info!("live: {} ({})", item.name, host.url());
+        Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio, audio_src })
+    }
+    /// QCView `startLiveStream` for a network URL (`LiveStreamDecoder`): the decoder on its own thread, no audio (QCView
+    /// discards a stream's audio), the hardware decoder when the setting allows it (QCView's macOS ignored the setting).
+    fn make_stream_live(&mut self, id: &str, item: &qcv_project::MediaItem) -> Option<Live> {
+        // a LISTENER the Blender card brought is a Blender clip: it listens only while the Blender input is on (QCView's gate —
+        // which failed silently, and held every listener URL). One the user opened this session listens regardless (row 243:
+        // the walk 2026-11-09 — QCView as the receiver for its own Stream card).
+        if item.path.contains("mode=listener") && !self.blender.enabled && !self.blender.user_listeners.contains(item.path.trim()) {
+            self.toast(trw("Turn on File ▸ Connect to Blender to listen for this Blender session"), min_ui::ToastKind::Notice); return None
+        }
+        let hw = if self.settings.bool(crate::settings::k::HW_DECODE) { self.hw.clone() } else { None };
+        let feed = Feed::Stream(StreamFeed::open(&item.path, hw));
+        log::info!("live: {} ({})", item.name, qcv_player::stream_feed::redact(&item.path));
+        Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio: None, audio_src: None })
+    }
+    /// QCView `startLiveStream`: a `qcbae://` item reads its host's shared memory; any other URL opens as a network stream.
+    /// The feed becomes the single view's.
+    pub(crate) fn start_live(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
+        let Some(l) = self.make_live(id, item) else { return false };
+        self.adopt_live(l, item);
+        true
+    }
+    /// The single view takes a feed — a new one, or a dual side's coming back with no reconnect (row 258, R8): the file
+    /// transport stops, the feed owns the picture, the item's choices reach the screen.
+    pub(crate) fn adopt_live(&mut self, mut l: Live, item: &qcv_project::MediaItem) {
+        self.player = None;
+        if let Some(host) = Host::parse(&item.path) { let sync_key = crate::settings::k::live_sync_key(host.key()); if let Some(g) = self.gpu.as_mut() { g.settings_panel.set_live_sync_key(sync_key); g.inspector.set_routing(crate::routing_of(item)); } }
+        if let Some(au) = l.audio.as_mut() { au.set_live_playdown(self.settings.bool(crate::settings::k::LIVE_PLAYDOWN)); }
+        l.review = None; l.review_rx = None;
+        self.loaded_item = l.item.clone();
+        self.live = Some(l);
         self.source_path.clear(); self.source_label = item.name.clone();   // the screenshot's name (QCView: the stream's name)
         if let Some(g) = self.gpu.as_mut() {
             g.presenter.engine.clear_frame();
@@ -97,8 +126,6 @@ impl crate::App {
         }
         self.apply_color();
         self.sync_stream_notes();
-        log::info!("live: {} ({})", item.name, host.url());
-        true
     }
     /// Per tick: the feed's newest frame to the screen; its facts changing redraws the strip. Ends the feed when its item is
     /// no longer the loaded one.
@@ -118,31 +145,6 @@ impl crate::App {
         if l.last_facts.as_ref() != Some(&facts) { l.last_facts = Some(facts); g.ui_dirty = true; }
         // a stream's colour tags onto its item (QCView `pushLiveTags`: session facts, no dirty) — the Auto label reads them
         if let Feed::Stream(s) = &l.feed { let (t, p, m) = s.tags(); let id = l.item.clone(); if self.project.set_live_video_tags(&id, &t, &p, &m) { if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } } }
-    }
-    /// QCView `startLiveStream` for a network URL (`LiveStreamDecoder`): the decoder on its own thread, no audio (QCView
-    /// discards a stream's audio), the hardware decoder when the setting allows it (QCView's macOS ignored the setting).
-    fn start_stream(&mut self, id: &str, item: &qcv_project::MediaItem) -> bool {
-        // a LISTENER the Blender card brought is a Blender clip: it listens only while the Blender input is on (QCView's gate —
-        // which failed silently, and held every listener URL). One the user opened this session listens regardless (row 243:
-        // the walk 2026-11-09 — QCView as the receiver for its own Stream card).
-        if item.path.contains("mode=listener") && !self.blender.enabled && !self.blender.user_listeners.contains(item.path.trim()) {
-            self.toast(trw("Turn on File ▸ Connect to Blender to listen for this Blender session"), min_ui::ToastKind::Notice); return false
-        }
-        self.player = None;
-        let hw = if self.settings.bool(crate::settings::k::HW_DECODE) { self.hw.clone() } else { None };
-        let feed = Feed::Stream(StreamFeed::open(&item.path, hw));
-        self.live = Some(Live { review: None, review_rx: None, feed, item: id.to_string(), last_facts: None, audio: None, audio_src: None });
-        self.loaded_item = id.to_string();
-        self.source_path.clear(); self.source_label = item.name.clone();
-        if let Some(g) = self.gpu.as_mut() {
-            g.presenter.engine.clear_frame();
-            g.presenter.engine.set_transfer_override(transfer_choice(item.transfer_override)); g.inspector.set_transfer(item.transfer_override);
-            g.presenter.engine.set_geometry(min_present::engine::Geometry::default()); g.content_set = None; g.ui_dirty = true;
-        }
-        self.apply_color();
-        self.sync_stream_notes();
-        log::info!("live: {} ({})", item.name, qcv_player::stream_feed::redact(&item.path));
-        true
     }
     /// The live row's buttons (QCView's LiveStrip): Transfer as the Inspector applies it, the panels, the screenshots.
     pub(crate) fn live_cmd(&mut self, c: crate::live_strip::Cmd) {

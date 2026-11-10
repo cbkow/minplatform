@@ -126,7 +126,8 @@ struct App {
     presents: Vec<f32>, last_present: Option<Instant>, show_ms: Vec<f32>, last_report: Instant, shown_in_window: u32,
     fetches: HashMap<AsyncRequestSerial, DropTarget>, /// the last OS-drag position over the window (physical px)
     drag_pos: Option<(f64, f64)>, mods: qcv_player::Mods, finished: bool, frames_presented: u64, edr_seen: f64, /// a QCBridge host feed in the single view (rows 227–228)
-    live: Option<live::Live>, /// the Blender input (row 227 2b): the card watcher, this session's item
+    live: Option<live::Live>, /// dual view's LIVE sides (canon row 258): each side's own feed, shown on that side's engine
+    side_live: [Option<live::Live>; 2], /// the Blender input (row 227 2b): the card watcher, this session's item
     blender: blender::BlenderInput, /// the outputs (row 227 step 3): the registered sinks, their rings, the publisher
     outputs: outputs::OutputBus, /// note images off the UI thread (QCView writes them on a worker): the newest clean frame in memory (key, RGBA8, size — the
     /// annotated composite and Review read it, not the disk), the workers' results, the annotated redraw due 400 ms after the last stroke
@@ -218,10 +219,8 @@ impl App {
         if item.media_type == qcv_project::MediaType::DualPair { self.load_dual_view(id); return }
         // in dual (QCView `loadRequested`): a video / sequence becomes A in place; anything else falls back to the single view
         if self.dual.is_some() {
-            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::ImageSequence) {
-                let info = self.dual_media(id);
-                let ok = self.dual.as_mut().map(|d| d.set_side(qcv_player::Side::A, info).is_ok()).unwrap_or(false);
-                if ok { self.dual_side_changed(qcv_player::Side::A); }
+            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::ImageSequence | qcv_project::MediaType::LiveStream) {
+                let ok = self.set_dual_side(qcv_player::Side::A, id);
                 self.project.set_load_failed(id, !ok);
                 if ok { self.project.set_active_item(id); self.loaded_item = id.to_string(); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
                 return
@@ -393,6 +392,40 @@ impl App {
             _ => None,
         }
     }
+    /// A live item as a dual side's description (row 258): present and unclocked — no rate, no length, no clip.
+    fn live_media(&self, id: &str) -> Option<qcv_timeline::MediaInfo> {
+        let m = self.project.item(id)?;
+        (m.media_type == qcv_project::MediaType::LiveStream).then(|| qcv_timeline::MediaInfo { id: id.to_string(), name: m.name.clone(), path: m.path.clone(), kind: qcv_timeline::ClipMediaKind::Video, rate: qcv_timeline::Rate::new(24, 1), duration: 0, width: 0, height: 0, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: 0, sequence_end_frame: 0, sequence_exr_layer: String::new(), sequence_missing: vec![] })
+    }
+    /// The media a side's lane holds: a live side has no clip on the timeline (QCView's docs; its code made an editable one
+    /// that did nothing — spec `step6-live-dual.md` §5 item 3).
+    fn dual_track_media(d: &qcv_player::DualTransport, side: qcv_player::Side) -> Option<&qcv_timeline::MediaInfo> { if d.is_live(side) { None } else { d.media(side) } }
+    /// Put a project item on a dual side IN PLACE (row 211 c): a video / sequence through its transport, a live item through
+    /// its feed (row 258). A live item's running feed MOVES — from the single view, never reconnected (R8); the same live
+    /// item on both sides is refused (R9: two readers of one ring or one listener port).
+    fn set_dual_side(&mut self, side: qcv_player::Side, id: &str) -> bool {
+        let i = side as usize; let other = 1 - i;
+        if self.dual.is_none() { return false }
+        if let Some(info) = self.live_media(id) {
+            if self.side_live[other].as_ref().is_some_and(|l| l.item == id) { self.toast(trv("That live source is already on the other side"), min_ui::ToastKind::Notice); return false }
+            if self.side_live[i].as_ref().is_some_and(|l| l.item == id) { return true }
+            let Some(item) = self.project.item(id).cloned() else { return false };
+            let feed = match self.live.take() { Some(l) if l.item == id => Some(l), other_live => { self.live = other_live; self.make_live(id, &item) } };
+            let Some(mut l) = feed else { return false };
+            l.review = None; l.review_rx = None;
+            if let Some(au) = l.audio.as_mut() { au.set_live_playdown(false); }   // a dual side's sound arrives with step 3
+            if let Some(d) = self.dual.as_mut() { d.set_live_side(side, info); }
+            self.side_live[i] = Some(l);
+            if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { if i == 0 { ed.a.clear_frame(); } else { ed.b.clear_frame(); } } }
+        } else {
+            let info = self.dual_media(id);
+            if info.is_none() { return false }
+            if let Some(d) = self.dual.as_mut() { if let Err(e) = d.set_side(side, info) { println!("dual {side:?}: {e}"); return false } }
+            self.side_live[i] = None;
+        }
+        self.dual_side_changed(side);
+        true
+    }
     /// QCView `setCompositorMode`: Single leaves dual; any other mode enters it (A = the loaded clip, B = the project's B
     /// source — either may be empty: that side is blank and a drop target) or just switches the presenter's mode.
     fn set_compare_mode(&mut self, mode: CompareMode) {
@@ -413,12 +446,16 @@ impl App {
                     d.for_each_audio(|au| { au.set_volume(vol); au.set_muted(mute); au.set_sync_offset_ms(sync); au.set_scrub_muted(scrub); });
                     let f = (sec * d.rate().as_f64()).round() as i32; d.seek_to_frame(f);   // the single view's time carries into A
                     println!("dual: master {:.3} fps, {} frames", d.rate().as_f64(), d.frame_count());
-                    let mut ed = qcv_timeline::Editor::default(); ed.load_dual(d.media(qcv_player::Side::A), d.media(qcv_player::Side::B), d.rate());
+                    let mut ed = qcv_timeline::Editor::default(); ed.load_dual(Self::dual_track_media(&d, qcv_player::Side::A), Self::dual_track_media(&d, qcv_player::Side::B), d.rate());
                     self.dual_editor = Some(ed);
                     if let Some(g) = self.gpu.as_mut() { g.dual_bars.selected = None; g.dual_bars.target = qcv_player::Side::B; if self.mincolor[1].is_none() && self.mincolor_ready[1].is_none() && !color::harness_active() { self.mincolor_ready[1] = Some(color::mincolor_ahead(&g.presenter.engine.device, &g.presenter.engine.queue)); } }
                     self.color_bound = [None, None]; self.ocio_rx = [None, None]; self.ocio_error = [None, None];
                     self.dual = Some(d); self.close_notes(); self.annot.load(None);   // annotations: single view only (row 215)
                     if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(true); }
+                    // the live sides (row 258): A's running feed moves in from the single view; a live B opens its own
+                    let a_id = self.loaded_item.clone();
+                    if self.live_media(&a_id).is_some() { self.set_dual_side(qcv_player::Side::A, &a_id); }
+                    if self.live_media(&b_id).is_some() && b_id != a_id { self.set_dual_side(qcv_player::Side::B, &b_id); }
                 }
                 Err(e) => { println!("dual: {e}"); self.toast(&fill(trw("Couldn’t open: %1"), &[&e]), min_ui::ToastKind::Negative); return }
             }
@@ -433,18 +470,22 @@ impl App {
         let sec = d.current_frame() as f64 / d.rate().as_f64().max(1e-9);
         d.retire();
         self.active_dual_view.clear(); self.dual_editor = None; self.color_bound = [None, None]; self.ocio_rx = [None, None]; self.ocio_error = [None, None];
+        // the live sides end with dual — except A's feed, which goes back to the single view running (row 258, R8)
+        let back = self.side_live[0].take().filter(|l| l.item == self.loaded_item); self.side_live[1] = None;
         if let Some(g) = self.gpu.as_mut() { if g.popover_side.take().is_some() { g.clip_popover.close(); } }
         if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(false); g.presenter.engine.set_color_pass(None); g.seam_hot = false; g.seam_drag = false; g.ui_dirty = true; }   // the single view rebinds its chain on reload
         let id = self.loaded_item.clone();
+        if let Some(l) = back { if let Some(item) = self.project.item(&id).cloned() { self.project.set_active_item(&id); self.adopt_live(l, &item); return } }
         if !id.is_empty() { self.load_item(&id); if let Some(p) = self.player.as_mut() { let f = (sec * p.rate().as_f64()).round() as i32; p.seek_to_frame(f); } }
     }
     /// QCView `setBSource` (in place here — row 211 c): audio-only refused.
     fn set_b_source(&mut self, id: &str) -> bool {
-        let info = self.dual_media(id);
-        if info.is_none() { self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false }
+        if self.dual_media(id).is_none() && self.live_media(id).is_none() { self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false }
+        if self.dual.is_some() {
+            let before = self.side_live[0].as_ref().is_some_and(|l| l.item == id);   // refused with its own toast
+            if !self.set_dual_side(qcv_player::Side::B, id) { if !before { self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); } return false }
+        }
         self.project.set_b_source_media_id(id);
-        if let Some(d) = self.dual.as_mut() { if let Err(e) = d.set_side(qcv_player::Side::B, info) { println!("dual B: {e}"); self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false } }
-        self.dual_side_changed(qcv_player::Side::B);
         if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; }
         true
     }
@@ -452,6 +493,7 @@ impl App {
     fn clear_b_source(&mut self) {
         self.project.set_b_source_media_id("");
         if let Some(d) = self.dual.as_mut() { let _ = d.set_side(qcv_player::Side::B, None); }
+        self.side_live[1] = None;
         self.dual_side_changed(qcv_player::Side::B);
         if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.b.clear_frame(); } g.ui_dirty = true; }
     }
@@ -635,13 +677,13 @@ impl App {
         let Some(item) = self.project.item(&id).cloned() else { return };
         if let Some(t) = self.dual.as_mut().and_then(|d| d.side_mut(side)) { t.set_range_override(range_of(&item)); t.audio.set_routing_mode(routing_of(&item)); }
         if let Some(g) = self.gpu.as_mut() { if let Some(en) = color::slot_engine(g, slot, true) { en.set_geometry(min_present::engine::Geometry { par: par_of(&item), rotation: rotation_of(&item) }); en.set_transfer_override(transfer_choice(item.transfer_override)); } g.content_set = None; g.insp_seen = (9, String::new()); }
-        if !item.path.is_empty() { self.meta.request_video_extraction(&id, &item.path); self.meta.request_adobe_extraction(&id, &item.path); }
+        if !item.path.is_empty() && item.media_type != qcv_project::MediaType::LiveStream { self.meta.request_video_extraction(&id, &item.path); self.meta.request_adobe_extraction(&id, &item.path); }
     }
     /// A side's media changed in place: its track becomes the full clip; the master rate re-times the other side's edits.
     fn dual_side_changed(&mut self, side: qcv_player::Side) {
         let (Some(d), Some(ed)) = (self.dual.as_mut(), self.dual_editor.as_mut()) else { return };
         if ed.timeline.rate != d.rate() { ed.retime_master(d.rate()); }
-        ed.set_track_media(dual_bars::track(side), d.media(side));
+        ed.set_track_media(dual_bars::track(side), Self::dual_track_media(d, side));
         d.set_timeline(&ed.timeline, false);
         if let Some(g) = self.gpu.as_mut() { if g.dual_bars.selected.as_ref().is_some_and(|(s, _)| *s == side) { g.dual_bars.selected = None; } g.ui_dirty = true; }
         self.apply_item_to_side(side);
@@ -889,6 +931,20 @@ impl App {
                 }
             }
         }
+        // dual's LIVE sides (row 258): each feed's newest frame on its side's engine, whatever the master does — paused,
+        // scrubbed, looping (QCView `DualLiveSource`: the newest frame for any master frame asked)
+        if self.dual.is_some() {
+            let dev = if cfg!(target_os = "macos") { Some(g.presenter.engine.device.clone()) } else { None };
+            for i in 0..2 {
+                let Some(l) = self.side_live[i].as_mut() else { continue };
+                if let Some(f) = l.feed.tick(now, dev.as_ref()) && let Some(ed) = g.presenter.engine.dual_mut() {
+                    match (if i == 0 { &mut ed.a } else { &mut ed.b }).show(&f) { Ok(()) => { shown_new = true; g.ui_dirty = true; } Err(e) => log::warn!("live side: show: {e}") }
+                }
+                let facts = l.feed.facts();
+                if l.last_facts.as_ref() != Some(&facts) { l.last_facts = Some(facts); g.ui_dirty = true; }
+            }
+        }
+        if self.dual.is_some() && self.side_live.iter().any(|l| l.is_some()) && std::env::var_os("QCV_TRACE_DUAL").is_some() && let Some(ed) = g.presenter.engine.dual() { println!("dual live: shown A {} B {} · live A {} B {}", ed.a.frames_shown, ed.b.frames_shown, self.side_live[0].is_some(), self.side_live[1].is_some()); }
         if reopen { self.o.sw = true; self.player = None; let path = self.source_path.clone(); let _ = self.open(&path); return }
         if !shown_new { if let Some(p) = self.player.as_mut() { p.idle_refresh(); } }
         // the outputs: this tick's picture goes out now (canon row 261) — after the frame is shown, before the viewport's draw
@@ -2542,7 +2598,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], ocio_error: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], ocio_error: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, side_live: [None, None], blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }

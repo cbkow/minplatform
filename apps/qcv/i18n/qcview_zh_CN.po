@@ -4587,3 +4587,8 @@ msgstr "部分片段带有来自 QCView 2 的场景 LUT，但尚未应用。为�
 msgctxt "ColorPanel"
 msgid "LUT exported with Video gamma: %1"
 msgstr "LUT 已导出（含视频伽马）：%1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ViewportOverlay"
+msgid "That live source is already on the other side"
+msgstr "该实时源已在另一侧"

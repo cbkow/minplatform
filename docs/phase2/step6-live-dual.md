@@ -562,3 +562,14 @@ Each with a [proposed] default and its reason.
 
 New strings this would add (each needs 11-language drafts): `Live source` (existing 2.x string, context
 `ViewportOverlay`), the LIVE bar label if R4 stands, and the refusal toast if R9 stands.
+
+---
+
+## 8. Progress (the build, from 2026-11-10)
+
+| Step | What | State |
+|---|---|---|
+| 1a | `qcv-player::dual`: the live side — present, unclocked (`set_live_side`, `is_live`, `present`, `has_clocked_side`); out of the master's rate and length, never Blank, passed by seek / play | Built, unit-tested (a live side beside a file, alone, replaced by a file) |
+| 1b | The shell: `live.rs` makes a feed apart from adopting it (`make_live` / `adopt_live`); `App.side_live` holds one feed per live side; `set_dual_side` puts a file OR a live item on a side in place — a running feed MOVES in from the single view and back out on leaving dual (R8, no reconnect); the same live item on both sides is refused with a toast (R9, one new string); a live item loaded while in dual becomes A in place; `set_b_source` takes a live item; each live side's newest frame is shown on its side's engine every tick; a live side has no clip on the lane (R4's LIVE bar is step 2); the outputs' "has B" and the colour slots ask `present()` | Built. Checked in an isolated run with the synthetic host (`probe`) on A against a file on B: one connection, the live side showing 24 new frames a second beside the file (`QCV_TRACE_DUAL=1` prints `dual live: shown A n B n`). **Walk owed.** NOT yet: the way in from a live item in the single view (R2 — the mode buttons are on the strip the live row replaces), so today a live side is reached from a FILE: enter a dual mode, then make the live item B, or load it as A |
+| 2–6 | Chips / bars / transport; audio; colour / Inspector / scopes; saved Dual Views / Blender; outputs / captures / edges | Not started. A live side is SILENT until step 3 (its player's Listen is forced off while it is a side) |
+

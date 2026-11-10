@@ -4595,3 +4595,8 @@ msgstr "Alcuni clip contengono una LUT di scena di QCView 2 che non è applicata
 msgctxt "ColorPanel"
 msgid "LUT exported with Video gamma: %1"
 msgstr "LUT esportata con gamma video: %1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ViewportOverlay"
+msgid "That live source is already on the other side"
+msgstr "Quella sorgente live è già sull'altro lato"

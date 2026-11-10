@@ -4587,3 +4587,8 @@ msgstr "일부 클립에 적용되지 않은 QCView 2의 장면 LUT가 있습니
 msgctxt "ColorPanel"
 msgid "LUT exported with Video gamma: %1"
 msgstr "비디오 감마를 포함해 LUT 내보냄: %1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ViewportOverlay"
+msgid "That live source is already on the other side"
+msgstr "해당 라이브 소스는 이미 반대쪽에 있습니다"

@@ -225,7 +225,7 @@ impl crate::App {
         self.output_tap_sync();   // the player / live feed may have changed since
         let src = self.output_source_size();
         let wide = src.0 > 1920 || src.1 > 1080;
-        let (dual, has_b) = (self.dual.is_some(), self.dual.as_ref().is_some_and(|d| d.side(qcv_player::Side::B).is_some()));
+        let (dual, has_b) = (self.dual.is_some(), self.dual.as_ref().is_some_and(|d| d.present(qcv_player::Side::B)));
         let layers_on = (if self.settings.bool(k::OUTPUT_GUIDES) { v::LAYER_GUIDES } else { 0 }) | (if self.settings.bool(k::OUTPUT_NOTES) { v::LAYER_ANNOTATIONS } else { 0 });
         let ids: Vec<String> = self.outputs.outputs.iter().filter(|o| o.enabled).map(|o| o.m.id.clone()).collect();
         let mut changed = false;
@@ -386,7 +386,7 @@ impl crate::App {
         let (ov_sig, note) = (self.overlay_sig(), self.overlay_note().filter(|c| self.annot.has_ink(c)));
         let (gw, gcol) = { let st = &self.settings; let c = min_ui::color_picker::parse_hex(&st.string(k::SAFETY_COLOR)).unwrap_or([1.0, 1.0, 0.0]); (st.float(k::SAFETY_WIDTH), peniko::Color::new([c[0], c[1], c[2], (st.float(k::SAFETY_OPACITY) as f32).clamp(0.0, 1.0)])) };
         let (playing, frame, fps, tc) = self.output_transport();
-        let dual_b = self.dual.as_ref().is_some_and(|d| d.side(qcv_player::Side::B).is_some());
+        let dual_b = self.dual.as_ref().is_some_and(|d| d.present(qcv_player::Side::B));
         let Some(g) = self.gpu.as_mut() else { return };
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
         let enc = self.outputs.enc.get_or_insert_with(|| min_present::wire::WireEncoder::new(&dev));

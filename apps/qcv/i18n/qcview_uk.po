@@ -4603,3 +4603,8 @@ msgstr "Деякі кліпи мають LUT сцени з QCView 2, який н
 msgctxt "ColorPanel"
 msgid "LUT exported with Video gamma: %1"
 msgstr "LUT експортовано з відеогамою: %1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ViewportOverlay"
+msgid "That live source is already on the other side"
+msgstr "Це джерело наживо вже на іншому боці"
