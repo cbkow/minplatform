@@ -10,6 +10,12 @@ fallback for the TIFF layouts the `tiff` crate refuses (row 189).
 | libjpeg-turbo 3.x, the TurboJPEG 3 API (`turbojpeg.h`, `tj3*`) | JPEG is lossy: the pixels ARE the decoder's IDCT + upsampling, and QCView's are libjpeg-turbo's (the pure-Rust decoder measured 2–4 code values off) | Homebrew `jpeg-turbo` (3.2.1); pkg-config `libturbojpeg` | vcpkg `libjpeg-turbo:x64-windows` → `TURBOJPEG_DIR=C:\vcpkg\installed\x64-windows` |
 | libtiff 4.x (`tiffio.h`) | QCView's TIFF library: its `TIFFReadRGBAImageOriented` reads palette / subsampled YCbCr / Lab / old-JPEG TIFFs the `tiff` crate refuses | Homebrew `libtiff` (4.7.2); pkg-config `libtiff-4` | vcpkg `tiff:x64-windows` → `TIFF_DIR=C:\vcpkg\installed\x64-windows` |
 
+**macOS, since 2026-11-09 (canon row 248):** `zsh tools/deps/build-macos.sh` builds the pinned set (`tools/deps/deps.pin`:
+Imath, OpenEXR, OpenColorIO as dylibs; libjpeg-turbo and libtiff static) from source for macOS 13.0 into the ignored
+`external/deps/macos-arm64`; the build scripts of `min-image` and `qcv-color` use that prefix when it exists and fall back to
+Homebrew's (the table) when it does not. The release is built ONLY on the vendored prefix — Homebrew's libraries are built
+for the build machine's OS.
+
 At run time on Windows the prefix's `bin` (OpenEXRCore-3_5.dll, deflate, turbojpeg.dll, tiff.dll) goes on PATH.
 Moving a version: a point release is free; a minor bump re-runs `cargo test -p min-image` on both machines (the EXR
 comparison against FFmpeg and the JPEG comparison against `djpeg` are bit-exact).

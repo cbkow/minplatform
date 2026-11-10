@@ -9,7 +9,7 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo:rerun-if-env-changed=OPENEXR_DIR");
     let mut includes: Vec<PathBuf> = vec![];
-    if let Ok(dir) = env::var("OPENEXR_DIR") {
+    if let Some(dir) = prefix("OPENEXR_DIR") {
         let d = PathBuf::from(dir);
         includes.push(d.join("include").join("OpenEXR")); includes.push(d.join("include"));
         println!("cargo:rustc-link-search=native={}", d.join("lib").display());
@@ -30,10 +30,19 @@ fn main() {
     libtiff();
 }
 
+/// A library's prefix: its environment variable, else — on macOS — the vendored `external/deps/macos-arm64` when
+/// `tools/deps/build-macos.sh` has built it (the release's libraries, minos 13.0), else None (pkg-config: Homebrew).
+fn prefix(var: &str) -> Option<PathBuf> {
+    if let Ok(d) = env::var(var) { return Some(PathBuf::from(d)) }
+    let v = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../external/deps/macos-arm64");
+    println!("cargo:rerun-if-changed={}", v.join("lib").display());
+    (env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") && v.join("lib").join("libtiff.a").exists()).then_some(v)
+}
+
 fn turbojpeg() {
     println!("cargo:rerun-if-env-changed=TURBOJPEG_DIR");
     let mut includes: Vec<PathBuf> = vec![];
-    if let Ok(dir) = env::var("TURBOJPEG_DIR") {
+    if let Some(dir) = prefix("TURBOJPEG_DIR") {
         let d = PathBuf::from(dir);
         includes.push(d.join("include"));
         println!("cargo:rustc-link-search=native={}", d.join("lib").display());
@@ -56,11 +65,14 @@ fn turbojpeg() {
 fn libtiff() {
     println!("cargo:rerun-if-env-changed=TIFF_DIR");
     let mut includes: Vec<PathBuf> = vec![];
-    if let Ok(dir) = env::var("TIFF_DIR") {
+    if let Some(dir) = prefix("TIFF_DIR") {
         let d = PathBuf::from(dir);
         includes.push(d.join("include"));
         println!("cargo:rustc-link-search=native={}", d.join("lib").display());
-        println!("cargo:rustc-link-lib=tiff");
+        if d.join("lib").join("libtiff.a").exists() {
+            // the vendored static libtiff (tools/deps): its JPEG-in-TIFF comes from libturbojpeg.a's libjpeg objects, zlib from the system
+            println!("cargo:rustc-link-lib=static=tiff"); println!("cargo:rustc-link-lib=static=turbojpeg"); println!("cargo:rustc-link-lib=z");
+        } else { println!("cargo:rustc-link-lib=tiff"); }
     } else {
         let lib = pkg_config::Config::new().atleast_version("4.0").probe("libtiff-4").expect("libtiff not found — `brew install libtiff` (macOS) or set TIFF_DIR");
         includes.extend(lib.include_paths.iter().cloned());

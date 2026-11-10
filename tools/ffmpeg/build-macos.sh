@@ -2,7 +2,7 @@
 # The family's macOS FFmpeg (canon row 187, revised 2026-11-08): FFmpeg n${FFMPEG_VERSION} from source with the three local
 # patches QCView carries (tools/ffmpeg/patches: 0001 DNxHR 444 adaptive colour transform, 0002 MXF RGBA range, 0003 ProRes RAW
 # Bayer patterns), shared, into the gitignored external/ffmpeg/macos-arm64. Homebrew's stock build lost the patches (the
-# Avid DNxHR 444 speckle, the RGB MXF range). Decoders only beyond FFmpeg's own: dav1d (Homebrew) for software AV1 — the
+# Avid DNxHR 444 speckle, the RGB MXF range). Decoders only beyond FFmpeg's own: dav1d (static, from source) for software AV1 — the
 # player encodes nothing — plus libsrt (static, over static mbedTLS for the passphrase's AES) for the live srt:// input
 # (2026-11-09: the first build left it out; QCView's recipe, dependencies.md §2). Run from the repo root:  zsh tools/ffmpeg/build-macos.sh
 set -euo pipefail
@@ -22,7 +22,15 @@ if [ ! -f "$DEPS/lib/libsrt.a" ]; then
   printf '#include <srt/srt.h>\nint main(void){ srt_startup(); srt_cleanup(); return 0; }\n' > $ROOT/external/ffmpeg/deps-src/srt-check.c
   cc $ROOT/external/ffmpeg/deps-src/srt-check.c -o $ROOT/external/ffmpeg/deps-src/srt-check $(PKG_CONFIG_PATH="$DEPS/lib/pkgconfig" pkg-config --cflags --libs srt) && $ROOT/external/ffmpeg/deps-src/srt-check && echo "libsrt $SRT_VERSION + mbedTLS $MBEDTLS_VERSION: links and runs"
 fi
-export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+if [ ! -f "$DEPS/lib/libdav1d.a" ]; then   # 2026-11-09 (row 248): dav1d from source, static, minos 13.0 — Homebrew's is built for the build machine's OS
+  mkdir -p "$ROOT/external/ffmpeg/deps-src" && cd "$ROOT/external/ffmpeg/deps-src"
+  [ -d dav1d ] || git clone -q --depth 1 --branch "$DAV1D_VERSION" https://code.videolan.org/videolan/dav1d.git dav1d
+  ARCH="-arch arm64 -mmacosx-version-min=13.0"
+  rm -rf dav1d/build && meson setup dav1d/build dav1d --prefix="$DEPS" --libdir=lib --buildtype=release --default-library=static \
+    -Denable_tools=false -Denable_tests=false -Dc_args="$ARCH" -Dc_link_args="$ARCH" > /dev/null && ninja -C dav1d/build install > /dev/null
+fi
+# pkg-config sees the deps prefix ONLY: nothing of Homebrew's can be detected (the first builds picked up its dav1d, X11 and xcb)
+export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig"; unset PKG_CONFIG_PATH
 [ -d "$SRC/.git" ] || git clone -q --depth 1 --branch "n$FFMPEG_VERSION" https://github.com/FFmpeg/FFmpeg.git "$SRC"
 cd "$SRC"
 git checkout -q -- . && git clean -qfdx
@@ -31,8 +39,10 @@ for p in "$ROOT"/tools/ffmpeg/patches/*.patch; do git apply --verbose "$p" 2>&1 
   --enable-gpl --enable-version3 \
   --enable-videotoolbox --enable-audiotoolbox \
   --enable-libdav1d --enable-libsrt \
+  --disable-xlib --disable-libxcb --disable-sdl2 --disable-vdpau \
   --disable-doc --disable-debug --arch=arm64 \
   --extra-cflags="-mmacosx-version-min=13.0" --extra-ldflags="-mmacosx-version-min=13.0" > "$ROOT/external/ffmpeg/configure-macos.log"
 make -j"$NCPU" > "$ROOT/external/ffmpeg/make-macos.log" 2>&1
 rm -rf "$PREFIX"; make install > /dev/null
+if otool -L "$PREFIX"/lib/*.dylib | grep -E '/opt/homebrew|/usr/local'; then echo "a Homebrew library is linked" >&2; exit 1; fi
 echo "installed $(grep -o 'n[0-9.]*' "$PREFIX/include/libavutil/ffversion.h" | head -1) → $PREFIX"

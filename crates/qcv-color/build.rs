@@ -47,13 +47,17 @@ fn agx_loader() -> String {
     out + "    return a;\n}\n"
 }
 
-/// OCIO 2.6 (feature `ocio`): `OCIO_ROOT=<prefix>` or pkg-config; the shim in `src/ocio.cpp`.
+/// OCIO 2.6 (feature `ocio`): `OCIO_ROOT=<prefix>`, the vendored macOS prefix, or pkg-config; the shim in `src/ocio.cpp`.
 fn ocio() {
     println!("cargo:rerun-if-changed=src/ocio.cpp");
     println!("cargo:rerun-if-env-changed=OCIO_ROOT");
     if env::var_os("CARGO_FEATURE_OCIO").is_none() { return }
-    let (inc, lib) = if let Some(root) = env::var_os("OCIO_ROOT") {
-        let r = PathBuf::from(root); (r.join("include"), r.join("lib"))
+    // macOS: the vendored build (tools/deps/build-macos.sh → external/deps/macos-arm64, minos 13.0) when it exists
+    let vend = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../external/deps/macos-arm64");
+    println!("cargo:rerun-if-changed={}", vend.join("lib").display());
+    let vend = (env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") && vend.join("lib").join("libOpenColorIO.dylib").exists()).then_some(vend);
+    let (inc, lib) = if let Some(r) = env::var_os("OCIO_ROOT").map(PathBuf::from).or(vend) {
+        (r.join("include"), r.join("lib"))
     } else {
         let var = |flag: &str| String::from_utf8(std::process::Command::new("pkg-config").args([flag, "OpenColorIO"]).output().expect("pkg-config (or set OCIO_ROOT)").stdout).unwrap().trim().to_string();
         (PathBuf::from(var("--variable=includedir")), PathBuf::from(var("--variable=libdir")))

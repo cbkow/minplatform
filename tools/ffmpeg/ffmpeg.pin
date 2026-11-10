@@ -11,6 +11,8 @@ MACOS_SOURCE=source-patched
 # submodule + Python codegen). Windows' BtbN recipe already enables libsrt.
 SRT_VERSION=1.5.6
 MBEDTLS_VERSION=3.6.7
+# macOS dav1d (software AV1): static, from source, minos 13.0 (QCView-Player dependencies.md pin).
+DAV1D_VERSION=1.5.4
 # Windows: BtbN's gpl-shared RECIPE built with the three patches (tools/ffmpeg/build-win64-wsl.sh, 2026-11-08) — same source as
 # the stock asset below (n9.0.2-48-gd4070a14ce), patched; the zip is self-built, not downloadable: it lives on rhombus
 # (C:\qcb-lab\…-patched.zip) and its hash is PATCHED_SHA256. fetch-win64.ps1 fetches the STOCK zip (no patches) — a fallback only. (Vulkan + libplacebo on, so the ProRes Vulkan hwaccel is present; d3d12va too).
