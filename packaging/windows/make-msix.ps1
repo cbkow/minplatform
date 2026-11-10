@@ -5,7 +5,7 @@
 #   - every DLL any of those imports, found by WALKING THE IMPORT TABLES: from the FFmpeg and vcpkg folders, and the
 #     Visual C++ runtime from Visual Studio's redistributable folder (2.x shipped NO runtime and ran only where one
 #     happened to be installed). A DLL that is neither staged nor part of Windows FAILS the build.
-#   - dxcompiler.dll + dxil.dll (the DX12 renderer's shader compiler), assets\OCIO, LICENSE
+#   - dxcompiler.dll (the DX12 renderer's shader compiler), assets\OCIO, LICENSE
 #   - AppxManifest.xml generated here: the version from apps\qcv\Cargo.toml, the file types from
 #     crates\qcv-project\src\extensions.rs (one list for both OSes, only what the app opens)
 # The .msix is UNSIGNED - what Partner Center takes (Microsoft signs it). -Pfx signs a private sideload copy for testing.
@@ -108,10 +108,11 @@ while ($queue.Count -gt 0) {
 if ($missing.Count) { $missing | ForEach-Object { Write-Host "MISSING $_" }; throw "The package would not start on a clean Windows: $($missing.Count) DLL(s) unresolved." }
 Write-Host ("  staged by the import walk: " + (($staged | Sort-Object) -join " "))
 
-foreach ($d in "dxcompiler.dll", "dxil.dll") {
+# the DX12 shader compiler (tools\dxc\dxc.pin: dxcompiler.dll alone - dxil.dll is not needed) with its two licence files
+foreach ($d in "dxcompiler.dll", "LICENSE-LLVM.txt", "LICENCE-MIT.txt") {
     $p = Join-Path $Dxc $d
-    if (-not (Test-Path $p)) { throw "No $d in $Dxc (the DX12 shader compiler)." }
-    Copy-Item $p $stage
+    if (-not (Test-Path $p)) { throw "No $d in $Dxc (tools\dxc\fetch-win64.ps1)." }
+    Copy-Item $p $(if ($d -like "*.dll") { $stage } else { Join-Path $stage ("dxc-" + $d) })
 }
 New-Item -ItemType Directory -Path (Join-Path $stage "assets") | Out-Null
 Copy-Item -Recurse (Join-Path $root "apps\qcv\assets\OCIO") (Join-Path $stage "assets\OCIO")
