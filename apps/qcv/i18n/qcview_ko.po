@@ -4582,3 +4582,8 @@ msgstr "하이라이트 니 없이 LUT 내보냄: %1"
 msgctxt "ColorPanel"
 msgid "Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT."
 msgstr "일부 클립에 적용되지 않은 QCView 2의 장면 LUT가 있습니다. 클립에 OCIO 체인을 지정하면 해당 LUT가 사용됩니다."
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "LUT exported with Video gamma: %1"
+msgstr "비디오 감마를 포함해 LUT 내보냄: %1"

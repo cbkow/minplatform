@@ -4582,3 +4582,8 @@ msgstr "ハイライトニーなしでLUTを書き出しました: %1"
 msgctxt "ColorPanel"
 msgid "Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT."
 msgstr "一部のクリップに、適用されていないQCView 2のシーンLUTがあります。クリップにOCIOチェーンを設定すると、そのLUTが使われます。"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "LUT exported with Video gamma: %1"
+msgstr "ビデオガンマ付きでLUTを書き出しました: %1"

@@ -200,7 +200,7 @@ fn an_exported_cube_read_back_as_a_scene_lut_is_the_chain() {
         (Spec { input: "Rec.1886".into(), view: "Standard".into(), ..Default::default() }, crate::Knee { enabled: true, source_nits: 400.0, target_nits: 100.0, start: -1.0 }),
     ].into_iter().enumerate() {
         let t0 = std::time::Instant::now();
-        let (rgb, skipped) = crate::bake::bake_ocio(&b, &spec, knee, crate::bake::CUBE_SIZE).unwrap();
+        let (rgb, skipped) = crate::bake::bake_ocio(&b, &spec, knee, crate::bake::CUBE_SIZE, false).unwrap();
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         assert!(!skipped, "{spec:?}: the Knee was left out");
         let path = dir.join(format!("out{case}.cube"));   // a name of its own: OCIO caches a LUT file by its path

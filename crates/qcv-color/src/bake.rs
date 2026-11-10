@@ -3,13 +3,17 @@
 //! values, no shaper, values not clamped, written to a temporary file and renamed. What QCView baked to the chosen display's
 //! codes is here the chain as a screenshot sees it (R9): its SDR twin — the caller hands the SDR view / the 100-nit minColor
 //! chain — in linear light (1.0 = 100 nits), then the sRGB curve. Baked: Input → Look → Scene LUT (+ Correction ID) → Knee
-//! → the view / the Rendering. Never the viewer aids, never the Video emulation (R10).
+//! → the view / the Rendering. Never the viewer aids (R10). The VIDEO emulation (canon rows 246 / 262) is baked when it is
+//! acting on the screen (the user 2026-11-10, reversing R10's "never"): the SDR range leaves as the 1/2.4 power — the screen's
+//! `srgb_eotf(pow(c, 1/2.4))` followed by this file's sRGB curve is exactly that — and anything outside it as sRGB.
 use crate::{ocio, Chain, Knee};
 use std::sync::Arc;
 
 /// QCView's size (the QML passed 65; not a choice).
 pub const CUBE_SIZE: usize = 65;
 
+/// Linear light → the cube's code: sRGB, or with the Video emulation the 1/2.4 power on the SDR range.
+fn encode(v: f32, video: bool) -> f32 { if video && (0.0..=1.0).contains(&v) { v.powf(1.0 / 2.4) } else { srgb(v) } }
 /// The sRGB curve, mirrored for negatives and open above 1.0 (QCView wrote what the chain gave, unclamped).
 fn srgb(v: f32) -> f32 { let a = v.abs(); let e = if a <= 0.0031308 { 12.92 * a } else { 1.055 * a.powf(1.0 / 2.4) - 0.055 }; e.copysign(v) }
 
@@ -22,7 +26,7 @@ fn lattice(n: usize) -> Vec<f32> {
 
 /// An OCIO chain on `n`³ points → sRGB-encoded RGB triplets, and whether the Knee was LEFT OUT (it is on, but the chain
 /// cannot be split around it — QCView exported without it and said so only in its log, spec B6; the caller tells the user).
-pub fn bake_ocio(config: &Arc<ocio::Config>, spec: &ocio::Spec, knee: Knee, n: usize) -> Result<(Vec<f32>, bool), String> {
+pub fn bake_ocio(config: &Arc<ocio::Config>, spec: &ocio::Spec, knee: Knee, n: usize, video: bool) -> Result<(Vec<f32>, bool), String> {
     let mut px = lattice(n);
     let mut skipped = false;
     let split = if knee.enabled { match ocio::Chain::build_split(config, spec) { Ok(s) => Some(s), Err(_) => { skipped = true; None } } } else { None };
@@ -35,14 +39,14 @@ pub fn bake_ocio(config: &Arc<ocio::Config>, spec: &ocio::Spec, knee: Knee, n: u
         }
         None => ocio::Chain::build(config, spec)?.apply_cpu(&mut px),
     }
-    Ok((px.chunks(4).flat_map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2])]).collect(), skipped))
+    Ok((px.chunks(4).flat_map(|c| [encode(c[0], video), encode(c[1], video), encode(c[2], video)]).collect(), skipped))
 }
 
 /// A minColor chain on `n`³ points → sRGB-encoded RGB triplets. The chain is the SDR one (the caller sets the 100-nit
 /// peaks, as a capture does); the screen's linear hand-off is what the CPU twin returns.
-pub fn bake_mincolor(chain: &Chain, n: usize) -> Vec<f32> {
+pub fn bake_mincolor(chain: &Chain, n: usize, video: bool) -> Vec<f32> {
     let blocks = crate::resolve(chain, false);
-    lattice(n).chunks(4).flat_map(|c| { let o = crate::apply_cpu(&blocks, [c[0], c[1], c[2]]); [srgb(o[0]), srgb(o[1]), srgb(o[2])] }).collect()
+    lattice(n).chunks(4).flat_map(|c| { let o = crate::apply_cpu(&blocks, [c[0], c[1], c[2]]); [encode(o[0], video), encode(o[1], video), encode(o[2], video)] }).collect()
 }
 
 /// QCView's file, byte for byte in its shape: the five header lines, then one "r g b" line per lattice point. `title` =
@@ -89,12 +93,16 @@ mod tests {
     #[test]
     fn a_mincolor_bake_is_the_chain_then_srgb() {
         let mut chain = Chain::default(); chain.peak_nits = 100.0; chain.agx_peak = 100.0;
-        let n = 5; let rgb = bake_mincolor(&chain, n);
+        let n = 5; let rgb = bake_mincolor(&chain, n, false);
         assert_eq!(rgb.len(), n * n * n * 3);
         let b = crate::resolve(&chain, false);
         // the lattice point (r, g, b) = (2, 3, 1) of 5
         let i = (1 * n * n + 3 * n + 2) * 3; let o = crate::apply_cpu(&b, [0.5, 0.75, 0.25]);
         for c in 0..3 { assert!((rgb[i + c] - srgb(o[c])).abs() < 1e-6, "{:?} vs {:?}", &rgb[i..i + 3], o); }
         assert!(rgb.iter().all(|v| v.is_finite()));
+        // with the Video emulation: the 1/2.4 power on the SDR range — lighter midtones, black and white where they were
+        let vid = bake_mincolor(&chain, n, true);
+        for c in 0..3 { let lin = o[c]; if lin > 0.01 && lin < 0.9 { assert!((vid[i + c] - lin.powf(1.0 / 2.4)).abs() < 1e-6 && vid[i + c] > rgb[i + c]); } }
+        assert!((encode(0.0, true), encode(1.0, true)) == (0.0, 1.0) && encode(2.0, true) == srgb(2.0));
     }
 }

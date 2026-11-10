@@ -4598,3 +4598,8 @@ msgstr "LUT экспортирован без Highlight Knee: %1"
 msgctxt "ColorPanel"
 msgid "Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT."
 msgstr "Некоторые клипы содержат LUT сцены из QCView 2, который не применяется. Назначьте клипу цепочку OCIO, чтобы использовать его LUT."
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "LUT exported with Video gamma: %1"
+msgstr "LUT экспортирован с видеогаммой: %1"

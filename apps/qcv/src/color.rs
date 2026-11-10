@@ -432,26 +432,29 @@ impl crate::App {
     /// EXPORT LUT (canon row 257, spec `docs/phase2/step6-luts.md` R9–R14): the edited target's chain — the clip on screen,
     /// dual's edited side, else the project default — baked to QCView's 65³ `.cube`: Input → Look → Scene LUT → Knee → the
     /// view / the Rendering, as a screenshot sees it (the SDR twin, sRGB-encoded). Works with Color off; never the viewer
-    /// aids or the Video emulation. No suggested name (a clip's or a preset's name would ride out in a file sent elsewhere).
+    /// aids. The Video emulation is baked while it is lit and acting on the screen (the user 2026-11-10: "Can we keep the
+    /// video gamma if toggled?") — as screenshots and outputs carry it since row 262 — and the toast says so. No suggested name (a clip's or a preset's name would ride out in a file sent elsewhere).
     fn export_lut(&mut self) {
         let tc = |s: &'static str| min_i18n::trc("ColorPanel", s);
         let (_, st, _) = self.color_target();
         let Some(path) = rfd::FileDialog::new().set_title(tc("Export LUT…")).add_filter(tc("3D LUT (*.cube)"), &["cube"]).save_file() else { return };
         let path = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")) { path } else { let mut p = path.into_os_string(); p.push(".cube"); std::path::PathBuf::from(p) };
         let n = qcv_color::bake::CUBE_SIZE;
+        let video = { let v = self.color_view(); v.video && v.video_state == 0 };
         let baked: Result<(Vec<f32>, bool, &str), String> = match st.chain {
-            ClipChain::MinColor(c) => { let mut sdr = c; sdr.peak_nits = 100.0; sdr.agx_peak = 100.0; Ok((qcv_color::bake::bake_mincolor(&sdr, n), false, "minColor Transform LUT")) }
+            ClipChain::MinColor(c) => { let mut sdr = c; sdr.peak_nits = 100.0; sdr.agx_peak = 100.0; Ok((qcv_color::bake::bake_mincolor(&sdr, n, video), false, "minColor Transform LUT")) }
             ClipChain::Ocio(o) => match self.ocio_config(&o.config) {
                 None => Err(min_i18n::trc("qcv::OCIOConfigManager", "No OCIO config loaded").to_string()),
                 Some(cfg) => {
                     let view = crate::capture::sdr_view(&cfg.views(), &o.view).unwrap_or_else(|| o.view.clone());
                     let spec = qcv_color::ocio::Spec { input: o.input.clone(), look: o.look.clone(), view, scene_lut: lut_native(&o.scene_lut), ccc_id: o.ccc_id.clone() };
-                    qcv_color::bake::bake_ocio(&cfg, &spec, o.knee, n).map(|(rgb, skipped)| (rgb, skipped, "OCIO Transform LUT"))
+                    qcv_color::bake::bake_ocio(&cfg, &spec, o.knee, n, video).map(|(rgb, skipped)| (rgb, skipped, "OCIO Transform LUT"))
                 }
             },
         };
         let name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         let (text, kind) = match baked.and_then(|(rgb, skipped, title)| qcv_color::bake::write_atomic(&path, &qcv_color::bake::cube_text(title, n, &rgb)).map(|_| skipped).map_err(|e| e.to_string())) {
+            Ok(false) if video => (min_i18n::fill(tc("LUT exported with Video gamma: %1"), &[&name]), min_ui::ToastKind::Positive),
             Ok(false) => (min_i18n::fill(tc("LUT exported: %1"), &[&name]), min_ui::ToastKind::Positive),
             // the chain could not be split around the Knee: QCView exported without it and only its log said so (spec B6)
             Ok(true) => (min_i18n::fill(tc("LUT exported without the Highlight Knee: %1"), &[&name]), min_ui::ToastKind::Notice),

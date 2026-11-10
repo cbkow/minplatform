@@ -428,5 +428,7 @@ R9 are ruled first, since those three decide behaviour rather than layout.
 
 Strings beyond QCView's (ColorPanel; each drafted in 11 languages): `Couldn't load the Scene LUT %1: %2`; `Bake this chain to a 65³ .cube LUT: its SDR picture, sRGB-encoded`; `Choose an input and a view first`; `LUT exported without the Highlight Knee: %1`; `Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT.`
 
+R10 amended by the user 2026-11-10 ("Can we keep the video gamma if toggled?"): the Video emulation IS baked into an export while it is lit and acting on the screen (Color on, an SDR picture) — the SDR range as the 1/2.4 power — and the toast reads `LUT exported with Video gamma: %1` (a sixth string, 11 drafts). The viewer aids stay out.
+
 Not done, knowingly: B4 / B7 / B10 as ruled; the clip badges (`LUT` / `CDL`) — 3.0 has no colour badges yet. Noticed: OCIO caches a LUT file by its path, so a file changed on disk under the same name is not re-read until the app restarts (2.x the same [inferred]). Found on the way and fixed: the
 Video gamma tooltip still said screenshots and outputs were unaffected after row 262 — reworded, 11 drafts.
