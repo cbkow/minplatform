@@ -174,10 +174,11 @@ impl DualBars {
         for side in [Side::A, Side::B] {
             let lane = self.lane(side); let (y0, y1) = (lane.y0 + inset, lane.y1 - inset);
             // the row's label cell in the scrubber's end inset: the side letter in its colour (as on the chips); the TARGET lane's
-            // cell is filled (⌘K and the keys act there) — the walk 2026-11-08: neutral clips, labelled rows
+            // cell (⌘K and the keys act there) is filled with the side's colour under a white letter (canon row 263)
             let cell = Rect::new(lane.x0, lane.y0, lane.x0 + LABEL_W * scale, lane.y1);
-            if self.target == side { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, t::NEUTRAL_SUBTLE_BACKGROUND_COLOR_DEFAULT); }
-            let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, 10.0 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
+            let target = self.target == side;
+            if target { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, if side == Side::A { t::SIDE_A_SELECTED_BACKGROUND_COLOR } else { t::SIDE_B_SELECTED_BACKGROUND_COLOR }); }
+            let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, 10.0 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if target { t::WHITE } else if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x1 - l.width() as f64 - 4.0 * scale, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));   // flush right, by the clips
             for c in clips(tl, side) {
                 let (mut x0, mut x1) = Self::span(c, sc, st, scale);

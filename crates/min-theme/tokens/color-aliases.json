@@ -70,6 +70,9 @@
   "side-a-muted-color": { "value": "{cyan-500}" },
   "side-b-color":       { "value": "{brown-1000}" },
   "side-b-muted-color": { "value": "{brown-500}" },
+  "$side-selected": "The TARGET lane's label cell on the dual lanes: the side's colour as a fill under a white letter (canon row 263, the user 2026-11-10). The 700 steps: white reads 5.2 : 1 on both (the 900 / 1000 letter colours give 3.5 and 2.9).",
+  "side-a-selected-background-color": { "value": "{cyan-700}" },
+  "side-b-selected-background-color": { "value": "{brown-700}" },
   "note-marker-color":  { "value": "{purple-900}" },
 
   "overlay-color": { "value": "{black}", "alpha": 0.4 },
