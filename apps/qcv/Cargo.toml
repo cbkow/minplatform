@@ -56,7 +56,7 @@ sys-locale = "0.3"
 muda = { version = "0.21", default-features = false }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSString", "NSUserDefaults", "NSArray", "NSURL", "NSObject", "NSEnumerator", "NSBundle"] }
-objc2-app-kit = { workspace = true, features = ["NSMenu", "NSMenuItem", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
+objc2-app-kit = { workspace = true, features = ["NSMenu", "NSMenuItem", "NSApplication", "NSResponder", "NSWindow", "NSScreen", "NSWorkspace"] }
 
 [target.'cfg(windows)'.dependencies]
 # Windows shortcuts (.lnk) resolve through the shell's IShellLink (QCView's QFileInfo::symLinkTarget)

@@ -36,7 +36,8 @@ pub enum ExportFormat { Markdown, Html, Pdf, Docx }
 pub struct StreamMode { pub review: Option<String>, pub needs_save: bool }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Cmd { AddNote, Export(ExportFormat), Seek(i64), /// a stream note's card: its frame on the viewport (QCView `enterReview`)
+pub enum Cmd { AddNote, Export(ExportFormat), /// a stream's notes folder handed to minNotes (QCView `openNotesInMinNotes`; canon row 256)
+    OpenInMinNotes, Seek(i64), /// a stream note's card: its frame on the viewport (QCView `enterReview`)
     Review(String), /// the LIVE / REVIEW pill: freeze ↔ back to live
     Pill, /// the Save tile (QCView `requestProjectSave`)
     Save, Text(String, String), Addressed(String, bool), Delete(String), Tool(Option<Tool>), Color(String), Width(f32), /// the drawer resized (logical px)
@@ -158,7 +159,7 @@ impl NotesDrawer {
         // the export menu owns the pointer while open
         if self.menu.is_open() {
             let (pick, d, _) = self.menu.event(e);
-            if let Some(i) = pick { self.menu.close(); cmds.push(Cmd::Export([ExportFormat::Markdown, ExportFormat::Html, ExportFormat::Pdf, ExportFormat::Docx][i.min(3)])); }
+            if let Some(i) = pick { self.menu.close(); cmds.push(if i > 3 { Cmd::OpenInMinNotes } else { Cmd::Export([ExportFormat::Markdown, ExportFormat::Html, ExportFormat::Pdf, ExportFormat::Docx][i]) }); }
             let _ = d;
             return (cmds, true, true)
         }
@@ -196,7 +197,11 @@ impl NotesDrawer {
             if ex_h {
                 let any = !self.cards.is_empty();
                 let bounds = Rect::new(self.rect.x0, 0.0, self.rect.x1, self.rect.y1);
-                self.menu.open_at(vec![MenuItem::action(tr("Markdown folder…"), any), MenuItem::action(tr("HTML (single file)…"), any), MenuItem::action(tr("PDF…"), any), MenuItem::action(tr("DOCX…"), any)], fonts, self.export.x0, self.export.y0, bounds, self.scale);
+                let mut items = vec![MenuItem::action(tr("Markdown folder…"), any), MenuItem::action(tr("HTML (single file)…"), any), MenuItem::action(tr("PDF…"), any), MenuItem::action(tr("DOCX…"), any)];
+                // QCView's Open in minNotes: a stream's notes only (a file's notes reach minNotes through the media). A menu row has
+                // no tooltip, so "minNotes is not installed" stands at the row's right edge when it is greyed (canon row 256).
+                if self.stream.is_some() { let have = crate::os_actions::minnotes_available(); items.push(MenuItem::Separator); items.push(MenuItem::with_shortcut(tr("Open in minNotes"), have && any, if have { "" } else { tr("minNotes is not installed") })); }
+                self.menu.open_at(items, fonts, self.export.x0, self.export.y0, bounds, self.scale);
                 dirty = true;
             }
             if let Some((i, part)) = hover { let c = &self.cards[i]; match part {

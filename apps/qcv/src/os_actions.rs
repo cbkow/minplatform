@@ -13,6 +13,39 @@ pub fn open(path: &str) -> std::io::Result<()> {
     #[cfg(all(unix, not(target_os = "macos")))] { Command::new("xdg-open").arg(path).spawn().map(|_| ()) }
 }
 
+/// Hand a URL to whatever the OS has registered for its scheme (QCView `QDesktopServices::openUrl`); Err when nothing took it.
+/// Not `open` above: Windows' arm there rewrites the argument as a path.
+pub fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")] { let st = Command::new("open").arg(url).stderr(std::process::Stdio::null()).status()?; if st.success() { Ok(()) } else { Err(std::io::Error::other("no application opens this link")) } }
+    #[cfg(windows)] {
+        use windows::{core::{w, HSTRING, PCWSTR}, Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL}};
+        let u = HSTRING::from(url);
+        let r = unsafe { ShellExecuteW(None, w!("open"), PCWSTR(u.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+        if r.0 as isize > 32 { Ok(()) } else { Err(std::io::Error::other("no application opens this link")) }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))] { Command::new("xdg-open").arg(url).spawn().map(|_| ()) }
+}
+
+/// Is minNotes installed? (Canon row 256.) OURS: the OS is asked who opens `minnotes:` — QCView probed two install paths (and
+/// one machine-wide registry key), which misses a Store or per-user install on Windows and a copy outside /Applications on
+/// macOS. Asked each time the export menu opens, so installing minNotes while QCView runs is seen.
+pub fn minnotes_available() -> bool {
+    #[cfg(target_os = "macos")] {
+        use objc2_foundation::{NSString, NSURL};
+        #[allow(unused_unsafe)]
+        unsafe {
+            let Some(url) = NSURL::URLWithString(&NSString::from_str("minnotes:///")) else { return false };
+            objc2_app_kit::NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&url).is_some()
+        }
+    }
+    #[cfg(windows)] {
+        use windows::{core::{w, PWSTR}, Win32::UI::Shell::{AssocQueryStringW, ASSOCF_IS_PROTOCOL, ASSOCSTR_COMMAND, ASSOCSTR_FRIENDLYAPPNAME}};
+        // a classic handler answers COMMAND; a packaged (Store) one has no command line but a friendly name
+        [ASSOCSTR_COMMAND, ASSOCSTR_FRIENDLYAPPNAME].into_iter().any(|what| { let mut n = 0u32; let _ = unsafe { AssocQueryStringW(ASSOCF_IS_PROTOCOL, what, w!("minnotes"), None, PWSTR::null(), &mut n) }; n > 1 })
+    }
+    #[cfg(all(unix, not(target_os = "macos")))] { false }
+}
+
 /// Select the file in Finder / Explorer (Linux: open its folder) — QCView `revealInFileManager`, its quoting carried: Explorer
 /// parses `/select,"C:\path"` only when the comma form stays outside the quotes, so the command line is built raw.
 pub fn reveal(path: &str) -> std::io::Result<()> {
@@ -93,3 +126,7 @@ pub fn notices_file() -> Option<String> {
     Some(std::fs::canonicalize(&found).unwrap_or(found).to_string_lossy().into_owned())
 }
 
+
+#[cfg(test)]
+#[test]
+fn the_minnotes_probe_answers() { println!("minnotes handler registered: {}", minnotes_available()); }

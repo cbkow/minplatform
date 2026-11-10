@@ -529,6 +529,11 @@ impl App {
         use notes_drawer::Cmd as N;
         match c {
             N::Export(f) => self.export_notes(f),
+            N::OpenInMinNotes => {
+                // the stream's notes folder as a minnotes:/// link (minNotes opens or creates its document inside it)
+                let sent = self.annot.dir().filter(|_| self.live.is_some()).and_then(|d| min_paths::links::minnotes_link(&d.to_string_lossy())).is_some_and(|u| match os_actions::open_url(&u) { Ok(()) => true, Err(e) => { log::warn!("minNotes: {e}"); false } });
+                if !sent { self.toast(&min_i18n::trc("qcv::WindowManager", "minNotes is not installed"), min_ui::ToastKind::Negative); }
+            }
             N::AddNote => {
                 // a live item: the note goes on a frozen frame (QCView `ensureFrozenForNote`); Add on a saved note's Review is a no-op
                 if self.live.as_ref().is_some_and(|l| l.review.is_none()) { self.freeze_live(); }
