@@ -151,8 +151,13 @@ impl crate::App {
         use crate::live_strip::Cmd;
         match c {
             Cmd::Transfer(t) => {
-                let Some(id) = self.live.as_ref().map(|l| l.item.clone()) else { return };
-                if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_transfer_override(transfer_choice(t)); g.inspector.set_transfer(t); g.content_set = None; g.ui_dirty = true; }
+                // the single view's feed — or, on a dual's live row (row 258, R5), the target side's (else the other live side)
+                let dual = self.dual.is_some();
+                let (slot, id) = match self.live.as_ref() {
+                    Some(l) => (0, l.item.clone()),
+                    None => { let tg = self.gpu.as_ref().map(|g| g.dual_bars.target as usize).unwrap_or(0); let Some(s) = [tg, 1 - tg].into_iter().find(|s| self.side_live[*s].is_some()) else { return }; (s, self.side_live[s].as_ref().unwrap().item.clone()) }
+                };
+                if let Some(g) = self.gpu.as_mut() { if let Some(en) = crate::color::slot_engine(g, slot, dual) { en.set_transfer_override(transfer_choice(t)); } g.inspector.set_transfer(t); g.content_set = None; g.ui_dirty = true; }
                 self.project.set_transfer_override(&id, t);
             }
             Cmd::Listen => { use crate::settings::k; let on = !self.settings.bool(k::LIVE_PLAYDOWN); self.settings.set_bool(k::LIVE_PLAYDOWN, on); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(on); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }

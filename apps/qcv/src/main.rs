@@ -1007,7 +1007,10 @@ impl App {
             let st = scrub_state(pb(&self.dual, &self.player), self.player.as_ref());
             let bar_h = if g.compact { 0.0 } else if self.pl_editor.is_some() { clip_bar::ClipBar::height(scale) } else if self.dual.is_some() { dual_bars::DualBars::height(scale) } else { 0.0 };   // +28 a playlist, +24 dual (row 169)   // +20 for a playlist (row 169)
             // a live feed (row 228): ONE row, QCView's LiveStrip, in place of the strip, the transport and the scrubber
-            let live_on = self.live.is_some() && !g.compact;
+            // the live row: a live item in the single view — or a dual with NO clocked side (live + live, live + empty; canon
+            // row 258, R5): there is nothing for the transport, the scrubber or the lanes to drive, so the row stands in, with
+            // the dual controls on it (QCView left no controls at all there)
+            let live_on = (self.live.is_some() || (self.dual.as_ref().is_some_and(|d| !d.has_clocked_side()) && self.side_live.iter().any(|l| l.is_some()))) && !g.compact;
             let strip_h = if live_on { 0.0 } else { t::STATUS_STRIP_HEIGHT as f64 * scale };
             let bands_h = if g.compact { t::SCRUBBER_HEIGHT as f64 * scale } else if live_on { t::TRANSPORT_BAR_HEIGHT as f64 * scale } else { strip_h + (t::TRANSPORT_BAR_HEIGHT + t::SCRUBBER_HEIGHT) as f64 * scale + bar_h };
             if g.fullscreen {
@@ -1171,7 +1174,8 @@ impl App {
             }
             let _ = frame;
             if live_on {
-                if let Some(l) = self.live.as_ref() {
+                let row = self.live.as_ref().or_else(|| { let t = g.dual_bars.target as usize; self.side_live[t].as_ref().or(self.side_live[1 - t].as_ref()) });   // dual: the target side's feed
+                if let Some(l) = row {
                     let item = self.project.item(&l.item);
                     let (name, transfer) = item.map(|i| (i.name.clone(), i.transfer_override)).unwrap_or_default();
                     let facts = l.feed.facts(); let secs = l.feed.live_seconds(); let app = l.feed.app();
@@ -1241,7 +1245,7 @@ impl App {
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
                 }
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
-                if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
+                if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some() && !live_on) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint(scene, content, scale, Some(g.pointer.0)); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), gap); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
                 if live_on { g.live_strip.paint_overlays(scene, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now); }
                 g.strip.paint_popover(scene, &mut g.fonts, scale);
@@ -1463,14 +1467,15 @@ impl App {
         let g = self.gpu.as_mut().unwrap();
         // the dual controls sit ON the live row while a live item is loaded (row 258, R2): they take their presses first — the
         // row itself swallows everything inside its rect
-        if self.live.is_some() && !g.compact && !g.fullscreen {
+        let row_on = self.live.is_some() || (self.dual.as_ref().is_some_and(|d| !d.has_clocked_side()) && self.side_live.iter().any(|l| l.is_some()));
+        if row_on && !g.compact && !g.fullscreen {
             let (dc, dd, consumed) = g.dualc.event(&e, now, scale);
             if dd { g.ui_dirty = true; }
             if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
         }
         let g = self.gpu.as_mut().unwrap();
         // a live feed's row (row 228): its own buttons and the Transfer menu; the bands it replaced take nothing
-        if self.live.is_some() && !g.compact {
+        if row_on && !g.compact {
             let (lc, ld, consumed) = g.live_strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
             if ld { g.ui_dirty = true; }
             let _ = g;
@@ -1479,7 +1484,7 @@ impl App {
         }
         let g = self.gpu.as_mut().unwrap();
         // dual view's controls (row 173) — they own the pointer while their slider drags
-        if self.live.is_none() && !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
+        if !row_on && !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
             let (dc, dd, consumed) = g.dualc.event(&e, now, scale);
             if dd { g.ui_dirty = true; }
             if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
@@ -1545,7 +1550,7 @@ impl App {
         if !bcmds.is_empty() || g.clip_bar.is_pressed() { for c in bcmds { self.bar_cmd(c); } return }
         // dual's lanes (row 212): Shift moves a clip alone, Ctrl / Cmd slips; while one is pressed they own the pointer
         let mut lcmds = vec![];
-        if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some()) { if g.dual_bars.is_pressed() || e.pos().is_some_and(|(x, y)| g.dual_bars.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
+        if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some() && !row_on) { if g.dual_bars.is_pressed() || e.pos().is_some_and(|(x, y)| g.dual_bars.hit(x, y)) || matches!(e, min_ui::Event::Leave) {
             let (c, d) = g.dual_bars.event(&e, now, self.mods.ctrl, self.mods.shift, &ed.timeline, &g.scrubber, &st, scale); if d { g.ui_dirty = true; } lcmds = c;
             // the edit scrub: the frame at the trim edge / the slipped content on that side while the gesture drags
             if let (Some((side, clip, src)), Some(d)) = (g.dual_bars.edit_preview(&ed.timeline, &g.scrubber, &st, scale), self.dual.as_mut()) { if matches!(e, min_ui::Event::Move { .. }) { d.edit_preview(side, &clip, src); } }
