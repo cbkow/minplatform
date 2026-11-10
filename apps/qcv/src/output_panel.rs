@@ -191,8 +191,6 @@ impl OutputPanel {
 
 fn nits_cmd(id: &str, i: usize, v: i64) -> Cmd { match i { 0 => Cmd::Peak(id.into(), v), 1 => Cmd::Cll(id.into(), v), _ => Cmd::Fall(id.into(), v) } }
 
-/// QCView's empty state, with this OS's folder (QCView named the macOS one everywhere).
-fn empty_text() -> String {
-    let folder = if cfg!(windows) { "%ProgramData%\\QCView\\Outputs" } else { "Application Support/QCView/Outputs" };
-    min_i18n::fill(tr("No outputs installed. An output registers itself in %1."), &[&folder])
-}
+/// The empty state (canon row 262, the user 2026-11-10: QCView's sentence — "No outputs installed. An output registers
+/// itself in <folder>." — trimmed; the folder is the installers' business).
+fn empty_text() -> String { tr("No outputs found").to_string() }

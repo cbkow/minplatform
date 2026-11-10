@@ -546,29 +546,29 @@ impl ColorDrawer {
         // QCView's amber KNEE pill: the picture is not 1:1 while the knee compresses
         let kneeing = match &v.stored.chain { ClipChain::MinColor(c) => c.knee_on != 0 && c.knee_src > c.knee_tgt, ClipChain::Ocio(o) => o.knee.enabled && o.knee.source_nits > if qcv_color::ocio::view_is_sdr(&o.view) { 100.0 } else { o.knee.target_nits } };
         { if v.on && kneeing {
-            let pl = fonts.detail("KNEE", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let pl = fonts.detail("KNEE", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::STATE_PILL_CONTENT_COLOR));
             let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
-            paint::rounded(scene, Rect::new(x, py, x + pw, py + ph), ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
+            paint::rounded(scene, Rect::new(x, py, x + pw, py + ph), ph / 2.0, t::STATE_PILL_BACKGROUND_COLOR);
             min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
             x += pw + t::SPACING_100 as f64 * s;
         } }
         // row 246: the picture is deliberately not the accurate one while the Video emulation acts
         self.video_pill = Rect::ZERO;
         if v.video && v.video_state == 0 {
-            let pl = fonts.detail("VIDEO GAMMA", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let pl = fonts.detail("VIDEO GAMMA", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::STATE_PILL_CONTENT_COLOR));
             let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
             self.video_pill = Rect::new(x, py, x + pw, py + ph);
-            paint::rounded(scene, self.video_pill, ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
+            paint::rounded(scene, self.video_pill, ph / 2.0, t::STATE_PILL_BACKGROUND_COLOR);
             min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
             x += pw + t::SPACING_100 as f64 * s;
         }
         // row 222: the display can't show this picture's highlights — they clip; informational, the tooltip names the Knee
         self.clip_pill = Rect::ZERO;
         if v.clip_warn {
-            let pl = fonts.detail(tr("SDR display — highlights clip"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let pl = fonts.detail(tr("SDR display — highlights clip"), t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::STATE_PILL_CONTENT_COLOR));
             let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
             self.clip_pill = Rect::new(x, py, x + pw, py + ph);
-            paint::rounded(scene, self.clip_pill, ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
+            paint::rounded(scene, self.clip_pill, ph / 2.0, t::STATE_PILL_BACKGROUND_COLOR);
             min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
         }
         for b in [&self.reset, &self.apply_all, &self.make_default] { if v.has_clip { b.paint(scene, fonts, s, now); } }

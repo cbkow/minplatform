@@ -4547,3 +4547,8 @@ msgstr "QCView에는 DirectX 12와 최신 그래픽 드라이버가 필요합니
 msgctxt "Main"
 msgid "Licenses…"
 msgstr "라이선스…"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs found"
+msgstr "출력을 찾을 수 없습니다"

@@ -54,8 +54,10 @@ impl crate::App {
         let (_, stored, _) = self.chain_of(&self.slot_item(slot));
         let meta = self.gpu.as_ref().and_then(|g| if self.dual.is_some() { g.presenter.engine.dual().and_then(|d| if slot == 1 { d.b.shown_meta() } else { d.a.shown_meta() }) } else if slot == 0 { g.presenter.engine.shown_meta() } else { None });
         let chain_key = if !on { "bypass".to_string() } else { match &stored.chain { ClipChain::MinColor(c) => format!("mc|{c:?}"), ClipChain::Ocio(o) => format!("ocio|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.knee) } };
-        let key = format!("{chain_key}|{:?}", meta.map(|m| (m.transfer, m.primaries)));
         let Some(g) = self.gpu.as_mut() else { return self.thumb_color[slot].generation };
+        // the Video emulation as the slot's picture has it on screen (canon row 262: thumbnails carry it too)
+        let emu = on && crate::color::slot_engine(g, slot, self.dual.is_some()).is_some_and(|e| e.video_emulation());
+        let key = format!("{chain_key}|{:?}|{emu}", meta.map(|m| (m.transfer, m.primaries)));
         let tc = &mut self.thumb_color[slot];
         if tc.engine.is_none() { tc.engine = Some(Engine::new(g.presenter.engine.device.clone(), g.presenter.engine.queue.clone(), wgpu::TextureFormat::Rgba16Float)); }
         // a pass landing
@@ -66,6 +68,7 @@ impl crate::App {
         if key == tc.key { return tc.generation }
         tc.key = key.clone(); tc.meta = meta; tc.generation += 1; tc.pending = None;
         let en = tc.engine.as_mut().unwrap();
+        en.set_video_emulation(emu);
         en.set_color_pass(None);   // bypass meanwhile (and for good when colour is off)
         if !on { return tc.generation }
         let (d, q) = (en.device.clone(), en.queue.clone());

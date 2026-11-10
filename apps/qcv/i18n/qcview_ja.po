@@ -4547,3 +4547,8 @@ msgstr "QCView には DirectX 12 と最新のグラフィックスドライバ�
 msgctxt "Main"
 msgid "Licenses…"
 msgstr "ライセンス…"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs found"
+msgstr "出力が見つかりません"

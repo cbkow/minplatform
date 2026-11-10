@@ -587,7 +587,7 @@ impl InspectorPanel {
                         let label_w = (l.width() as f64).max(LABEL_W * scale * 0.6);
                         let avail = (r.width() - label_w - t::SPACING_200 as f64 * scale).max(40.0);
                         let fam = if row.mono { Family::Mono } else { Family::Sans }; let size = if row.mono { t::CODE_SIZE_S } else { t::BODY_SIZE_S };
-                        let vc = if row.warn { t::NOTICE_VISUAL_COLOR } else { t::RAIL_LABEL_COLOR };
+                        let vc = if row.warn { t::STATE_PILL_CONTENT_COLOR } else { t::RAIL_LABEL_COLOR };
                         let mut v = fonts.layout(&row.value, fam, size * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(vc));
                         let note_w = if row.note.is_empty() { 0.0 } else { fonts.layout(&row.note, Family::Sans, t::DETAIL_SIZE_S * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 + t::SPACING_100 as f64 * scale };
                         let avail_v = (avail - note_w).max(30.0);

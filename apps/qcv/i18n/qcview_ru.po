@@ -4563,3 +4563,8 @@ msgstr "QCView требуется DirectX 12 и актуальный графи�
 msgctxt "Main"
 msgid "Licenses…"
 msgstr "Лицензии…"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs found"
+msgstr "Выходы не найдены"

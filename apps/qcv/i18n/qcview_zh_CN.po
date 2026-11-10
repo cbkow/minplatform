@@ -4547,3 +4547,8 @@ msgstr "QCView 需要 DirectX 12 和最新的显卡驱动程序。"
 msgctxt "Main"
 msgid "Licenses…"
 msgstr "许可证…"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs found"
+msgstr "未找到输出"

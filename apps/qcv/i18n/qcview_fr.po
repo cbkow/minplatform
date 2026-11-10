@@ -4555,3 +4555,8 @@ msgstr "QCView nécessite DirectX 12 et un pilote graphique à jour."
 msgctxt "Main"
 msgid "Licenses…"
 msgstr "Licences…"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "LeftRail"
+msgid "No outputs found"
+msgstr "Aucune sortie trouvée"

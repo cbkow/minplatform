@@ -760,7 +760,7 @@ impl Engine {
         if self.shown.is_none() { return Err(Error::NoFrame) }
         let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
         let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
-        let emu = std::mem::replace(&mut self.video_emu, false);   // a capture is the picture, not the emulation (row 246)
+        // the Video emulation stays as the screen has it (canon row 262, reversing row 246's "the screen only")
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
         self.write_uniforms();
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
@@ -770,7 +770,7 @@ impl Engine {
         self.encode_picture(&mut enc, &view, None);
         self.queue.submit([enc.finish()]);
         let px = if self.target_format == wgpu::TextureFormat::Rgba16Float { readback::read_rgba16f(&self.device, &self.queue, &tex, w, h) } else { vec![] };
-        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.video_emu = emu; self.write_uniforms();
+        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.write_uniforms();
         if px.is_empty() { return Err(Error::NoFormat) }
         // the RGB is premultiplied (= over black); the alpha beside it
         Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), px.chunks(4).map(|c| c[3].clamp(0.0, 1.0)).collect(), w, h))
@@ -781,7 +781,6 @@ impl Engine {
     /// HDR peak in bypass, its geometry for a guide).
     pub fn capture_dual(&mut self, aids: bool) -> Result<DualCapture, Error> {
         let Some(mut d) = self.dual.take() else { return Err(Error::NoFrame) };
-        let emu = (d.a.video_emulation(), d.b.video_emulation()); d.a.set_video_emulation(false); d.b.set_video_emulation(false);   // row 246: never in a capture
         let r = (|| {
             if !d.a.has_frame() && !d.b.has_frame() { return Err(Error::NoFrame) }
             let region = |e: &Engine, rect: [u32; 4]| CaptureRegion { rect, peak: e.bypass_hdr_peak(), src: (e.video.0 as f64, e.video.1 as f64), quarters: e.rotation_quarters() };
@@ -827,7 +826,6 @@ impl Engine {
                 }
             }
         })();
-        d.a.set_video_emulation(emu.0); d.b.set_video_emulation(emu.1);
         self.dual = Some(d);
         self.relayout_dual();   // the screen's layout back
         r
@@ -844,7 +842,7 @@ impl Engine {
     pub fn render_output_placed(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<(wgpu::Texture, Vec<Placement>), Error> {
         if self.shown.is_none() && self.dual.as_ref().is_none_or(|d| !d.a.has_frame() && !d.b.has_frame()) { return Err(Error::NoFrame) }
         let saved = (self.viewport, self.content, self.out_gain, self.display, self.scope_view);
-        let emu = std::mem::replace(&mut self.video_emu, false);   // an output is the picture, not the emulation (row 246)
+        // an output carries the Video emulation the screen shows (canon row 262)
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; self.display = DisplayMode { out, white }; self.scope_view = None;
         self.write_uniforms();
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("output canvas"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
@@ -852,18 +850,16 @@ impl Engine {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("output") });
         { let _ = pass_clear_clear(&mut enc, "output clear", &view); }
         if let Some(mut d) = self.dual.take() {
-            let side_emu = (d.a.video_emulation(), d.b.video_emulation()); d.a.set_video_emulation(false); d.b.set_video_emulation(false);
             d.layout((w, h), None, self.display, self.aids, 1.0, None);
             d.encode(&mut enc, &view);
             self.queue.submit([enc.finish()]);
-            d.a.set_video_emulation(side_emu.0); d.b.set_video_emulation(side_emu.1);
             self.dual = Some(d);
         } else { self.encode_picture(&mut enc, &view, None); self.queue.submit([enc.finish()]); }
         let places: Vec<Placement> = match self.dual.as_ref() {
             Some(d) => { let mut v = vec![d.a.picture_placement()]; if d.mode == crate::dual::CompareMode::SideBySide { v.push(d.b.picture_placement()); } v.into_iter().flatten().collect() }
             None => self.picture_placement().into_iter().collect(),
         };
-        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.video_emu = emu; self.write_uniforms(); self.relayout_dual();
+        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.write_uniforms(); self.relayout_dual();
         Ok((tex, places))
     }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32
@@ -1119,6 +1115,9 @@ mod tests {
         let worst = bypass.iter().zip(&emulated).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
         assert!(worst <= 1.0 / 512.0, "the emulation vs as-stored: worst diff {worst}");
         assert!(emulated[mid] > via_chain[mid] + 0.02 && (emulated[255 * 4] - via_chain[255 * 4]).abs() < 2e-3 && emulated[0].abs() < 2e-3, "midtones lift, black and white stay");
+        // row 262: a capture (screenshots, note images, thumbnails) carries the emulation the screen shows
+        let (cap_on, cw, _) = e.capture(false).unwrap(); e.set_video_emulation(false); let (cap_off, _, _) = e.capture(false).unwrap(); e.set_video_emulation(true);
+        let cm = (cw as usize / 2) * 3; assert!(cap_on[cm] > cap_off[cm] + 0.02, "a capture with the emulation {} sits above one without {}", cap_on[cm], cap_off[cm]);
         e.set_color_pass(None); let still = e.render_offscreen(256, 16).unwrap();
         assert!(bypass.iter().zip(&still).all(|(a, b)| (a - b).abs() < 1e-6), "bypass is untouched by the flag");
         e.set_video_emulation(false);
