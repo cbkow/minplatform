@@ -56,8 +56,9 @@
 
   "positive-visual-color":             { "value": "{green-900}" },
   "positive-background-color-default": { "value": "{green-800}" },
-  "notice-visual-color":               { "value": "{orange-900}" },
-  "notice-background-color-default":   { "value": "{orange-800}" },
+  "$notice": "The notice colour is YELLOW, the state pills' own (canon row 264, the user 2026-11-10) - Spectrum 2's notice is orange (orange-900 / orange-800), which sat 2 from the negative red for a deutan viewer (yellow: 14) and was the deep orange the user did not want.",
+  "notice-visual-color":               { "value": "{yellow-1100}" },
+  "notice-background-color-default":   { "value": "{yellow-900}" },
   "negative-visual-color":             { "value": "{red-900}" },
   "negative-background-color-default": { "value": "{red-800}" },
   "negative-background-color-hover":   { "value": "{red-900}" },
