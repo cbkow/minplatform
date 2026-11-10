@@ -15,7 +15,7 @@
 pub enum Cmd {
     OpenMedia, OpenStream, NewProject, OpenProject, SaveProject, SaveProjectAs, RecentMedia(String), ClearRecentMedia, RecentProject(String), ClearRecentProjects, Quit,
     Compact, Pin, Fullscreen, DefaultFrame, LeftRail, RightRail,
-    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, ConnectBlender, Docs, CopyProjectLink, About, ColorPanel,
+    Background, SafetyGuides, Shortcuts, Settings, Notes, ConnectAe, ConnectPremiere, ConnectBlender, Docs, CopyProjectLink, About, CheckForUpdates, ColorPanel,
 }
 
 /// A shortcut's key (always with Cmd / Ctrl).
@@ -72,9 +72,10 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         item("Color Panel", sc(K::D3), Cmd::ColorPanel), item("Notes", sc(K::D4), Cmd::Notes),   // QCView's View ▸ Timeline is gone: Compact Mode replaces it (the user 2026-11-09)
     ];
     let tools = vec![item("Background", None, Cmd::Background), item("Safety Guides", None, Cmd::SafetyGuides), item("Keyboard Shortcuts", sc(K::Slash), Cmd::Shortcuts), item("Settings…", sc(K::Comma), Cmd::Settings)];
-    // Check for Updates waits for an updater: hidden, as QCView hides it off macOS; on macOS About lives in the app menu
+    // Check for Updates… is Sparkle's (macOS): QCView hides it elsewhere; on macOS About itself lives in the app menu
     let mut about = vec![];
     if !mac { about.extend([item("About QCView…", None, Cmd::About), Node::Sep]); }
+    if mac { about.push(item("Check for Updates…", None, Cmd::CheckForUpdates)); }
     about.push(item("Docs", None, Cmd::Docs));
     vec![(tr("&File"), file), (tr("&View"), view), (tr("&Tools"), tools), (tr("&About"), about)]
 }

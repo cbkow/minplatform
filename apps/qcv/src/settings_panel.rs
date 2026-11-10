@@ -1,6 +1,6 @@
 //! The Settings section of the left rail (the 2026-11-07 rails ruling: QCView's `LeftRail.qml` Settings section carried
-//! row for row, with its own GroupHeaders — Performance / Interface / Audio — as sub-headers; "Updates" is macOS-only
-//! in QCView and this app has no updater yet, so the group waits). Rows whose feature has not landed here are drawn
+//! row for row, with its own GroupHeaders — Performance / Interface / Audio — as sub-headers; "Updates" is macOS-only,
+//! as in QCView: Sparkle's switch). Rows whose feature has not landed here are drawn
 //! disabled; the shape of the panel is final. A row = a label (wrapping to two lines, its help as a tooltip — QCView's
 //! `RowLabel`) and a control at the right: Switch, NumberField or Picker. "Reset all preferences…" asks first (QCView's
 //! confirm) and then resets the store; the owner applies the result.
@@ -60,7 +60,10 @@ impl SettingsPanel {
         if let Ctl::Number(n) = &mut threads.ctl { let z = std::mem::replace(n, NumberField::new(0, 0, 32, 1)); *n = z.zero_label(tr("Auto")); }
         let mut hw = sw(k::HW_DECODE, "Enable hardware decoding", "GPU decode (D3D12VA) when the format allows; applies on the next open.", true);
         hw.windows_only = true;   // QCView: `visible: Qt.platform.os === "windows"` (VideoToolbox is always on where it applies)
-        let groups = vec![
+        #[cfg(target_os = "macos")] let updater = crate::sparkle::bundled();
+        #[cfg(not(target_os = "macos"))] let updater = false;
+        let _ = updater;
+        let mut groups = vec![
             Group { title: tr("Performance"), header: Rect::ZERO, rows: vec![
                 num(k::IMAGE_SEQ_THREADS, "Image-seq decode threads", "Applies on the next sequence load.", true, 1, 64, 1),
                 num(k::IMAGE_SEQ_READ_AHEAD, "Image-seq cache window", "Frames cached ahead of the playhead for image sequences.", true, 24, 240, 6),
@@ -86,6 +89,12 @@ impl SettingsPanel {
                 num(k::LIVE_BUFFER_MS, "Live audio buffer", "How much bridge audio is queued before it plays; in milliseconds.", true, 20, 200, 10),
             ] },
         ];
+        // QCView: `visible: Qt.platform.os === "osx"` — Sparkle is macOS's updater (Windows updates through the Store). Before Audio.
+        if cfg!(target_os = "macos") {
+            groups.insert(2, Group { title: tr("Updates"), header: Rect::ZERO, rows: vec![
+                sw(k::AUTO_UPDATE_CHECKS, "Automatically check for updates", "Checks daily for updates, sending only your IP and app/OS version. Update manually anytime from the About menu.", updater),
+            ] });
+        }
         SettingsPanel {
             section: Section::new(tr("Settings"), true), groups, reset: TextButton::new(tr("Reset all preferences…"), Variant::Secondary).size_s(),
             dialog: Dialog::new(tr("Reset all preferences?"), tr("Every setting goes back to its default, including the window's size and position and the rails' layout. Media stays open."), vec![(tr("Cancel"), Variant::Secondary), (tr("Reset"), Variant::Negative)]),

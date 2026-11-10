@@ -55,7 +55,7 @@ sys-locale = "0.3"
 # the native menu bar (row 143); Windows draws QCView's in-window bar instead (row 194)
 muda = { version = "0.21", default-features = false }
 objc2 = { workspace = true }
-objc2-foundation = { workspace = true, features = ["NSString", "NSUserDefaults", "NSArray", "NSURL", "NSObject", "NSEnumerator"] }
+objc2-foundation = { workspace = true, features = ["NSString", "NSUserDefaults", "NSArray", "NSURL", "NSObject", "NSEnumerator", "NSBundle"] }
 objc2-app-kit = { workspace = true, features = ["NSMenu", "NSMenuItem", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
 
 [target.'cfg(windows)'.dependencies]
