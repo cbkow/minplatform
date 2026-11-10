@@ -327,7 +327,8 @@ impl App {
     fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title(trm("Open Project")).add_filter(trm("QCView Project"), &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
     fn open_project(&mut self, path: &str) {
         match self.project.open_project(path) {
-            Ok(probes) => { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.warn_unapplied_qcview_luts(); self.schedule_probes(probes); self.note_recent_project(path); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            Ok(probes) => { if let Some(d) = self.dual.take() { d.retire(); self.side_live = [None, None]; self.dual_editor = None; self.active_dual_view.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(false); g.presenter.engine.set_color_pass(None); g.seam_hot = false; g.seam_drag = false; } }   // a dual session ends with its project
+                self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.warn_unapplied_qcview_luts(); self.schedule_probes(probes); self.note_recent_project(path); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Err(e) => log::warn!("{e}"),
         }
     }
@@ -356,7 +357,8 @@ impl App {
             self.after_project_save(&old);
         }
     }
-    fn new_project(&mut self) { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.project.new_project(); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
+    fn new_project(&mut self) { self.leave_dual();   // a dual session ends with its project (it kept running on the old items)
+        self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.project.new_project(); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_geometry(Default::default()); g.ui_dirty = true; } self.apply_color(); }
     /// Open the file in the Transport (the raw open; the project paths above call it). True when it opened.
     /// The transport options every open uses — QCView's performance settings apply at open: threads, hardware decode (its
     /// row is Windows-only), the scrub cache budget and the inter-codec hw-scrub gate.
