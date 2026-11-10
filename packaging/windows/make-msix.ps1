@@ -181,7 +181,7 @@ if ($Pfx) {
     $signArgs = @("sign", "/fd", "SHA256", "/f", $Pfx)
     if ($env:QCV_SIGNING_PASSWORD) { $signArgs += @("/p", $env:QCV_SIGNING_PASSWORD) }
     $signArgs += $side
-    & $signTool @signArgs | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE) - the certificate's subject must equal the manifest's Publisher." }
+    $signOut = & $signTool @signArgs 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ("signtool failed ($LASTEXITCODE): " + (($signOut | Select-Object -Last 3) -join " | ") + " (the certificate's subject must equal the manifest's Publisher)") }
     Write-Host "  signed $side (private testing only)"
 }
