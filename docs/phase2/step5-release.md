@@ -3,7 +3,7 @@
 Read from QCView-Player at v2.7.3 (+3 commits, branch `min-paths`) on 2026-11-09: `scripts/` (RELEASE.md, sign-and-notarize.sh,
 bundle_dylibs.sh, prune_bundle.sh, fetch_sparkle.sh, update_appcast.sh), `packaging/`, `installer/` (msix/AppxManifest.xml.in,
 build_msix.ps1, README.md), `src/app/CMakeLists.txt`, `docs/` (the site, `appcast.xml`), `LICENSES/`. No secret is quoted here.
-**Status: the spec. The rulings are OPEN — nothing in this step is built.**
+**Status: the spec. RULED 2026-11-09 (canon row 248) — nothing in this step is built yet.**
 
 ## What 2.x users have installed (so what 3.0 must be, to upgrade them in place)
 
@@ -60,6 +60,22 @@ unversioned). The Store product is `9p4z15p5g805`. A 2.x Mac will only ever look
 - Windows: an icon and version resource in the exe, the runtime window / title-bar icons, the DLL staging, the CRT choice, the MSIX.
 - Both: a generated third-party notices file for the Rust crates; the ffmpeg / ffprobe helpers question.
 
-## Rulings needed
+## Rulings (2026-11-09, canon row 248)
 
-See the proposal of 2026-11-09 (canon row to follow once ruled).
+1. **Identity unchanged** on both OSes (the table above), so 2.x upgrades in place. A real 2.7.3 → 3.0 Sparkle update is
+   proven against a private test feed before the public feed gets its item.
+2. **No import of 2.x settings.** 3.0 starts from its own defaults; 2.x project files still open.
+3. **Sideload is the user's own test vehicle.** The signing script stays; nothing is published or documented for users.
+4. **Licences: files plus an in-app view.** LICENSE and a generated third-party notices file in both packages (gap 1, gap 2).
+5. **One file-type list for both OSes, only what 3.0 opens** (gap 5).
+6. **Icons:** the macOS icon = Dock / Finder and the in-window title-bar icon on Windows; the regular Windows icon = taskbar,
+   desktop, Store tiles.
+7. **Platforms unchanged** (macOS arm64 13.0+, Windows x64); the privacy policy is corrected for the updater (gap 3).
+8. **Repos:** source here; QCView-Player is the product repo (releases, site, feed, issues, notices) — a clean `main` prepared
+   on a review branch, 2.x kept on a `2.x` branch cut at release, a source archive of this repo's tag on every release.
+
+## Order of work
+
+macOS packaging first (native libraries off Homebrew → the bundle, Info.plist and icon → Apple-event opens → Sparkle → sign /
+notarize / DMG → the test update), then Windows (icon and version resource, window icons, DLL staging, the CRT, the MSIX, an
+upgrade test), then the notices, the privacy policy and the 3.0 docs, then QCView-Player's clean `main`.
