@@ -99,5 +99,18 @@ spans and off-screen blocks (the scaffold exposes visible lines only, so offsets
 are still ahead on this route. Leaning: the document's text element is written directly against the platform's text
 protocol over a flat text + block map; AccessKit serves the rest of the interface. Not yet a verdict.
 
-## Verdict
+### Step 3a, long documents, probed from outside (`axcheck.swift`; 2026-11-10; synthetic text, 95 and 950 paragraphs)
+| Window | Document | Reads wrong | Selections wrong | 69 probes took | Tree build per update |
+|---|---|---|---|---|---|
+| Stack, visible lines only (the S3 design) | 5,000 words | **68 of 69** (nil off screen) | **67 of 69** | 3.3 s | — |
+| Stack, every line exposed (`S9_ALL_LINES=1`) | 5,000 words (315 lines) | 0 | 2 (both across paragraphs) | 3.3 s | **27–31 ms** |
+| Stack, every line exposed | 50,000 words (3,066 lines, 275k units) | 0 | 0 | **20.2 s** | **272 ms** |
+| Reference window (flat text, TextKit geometry) | 50,000 words | 0 | 0 | 3.4 s | none (no tree) |
+
+**Reading:** exposing only what is on screen cannot work — an outside tool addresses the document by offset and the
+offsets stop adding up. Exposing everything is correct but costs O(document) twice in this stack: the scaffold rebuilds
+the whole tree on every edit and selection change (272 ms at 50,000 words against a 16.7 ms bar; a per-block cache and
+incremental updates would cut that), and AccessKit's consumer side walks the runs for each query (about 245 ms per
+probe more than the reference at this size — and Grammarly made 2,000 geometry calls in a minute on a 900-character
+text). The second cost is inside the library, not ours to cache.
 (pending)

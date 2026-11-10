@@ -144,7 +144,7 @@ impl App {
         let mut texts: Vec<(usize, String)> = vec![];
         let mut views = vec![];
         for (i, b) in self.blocks.iter_mut().enumerate() {
-            if i != focus && (b.y + b.height < vy0 || b.y > vy1) { continue }
+            if i != focus && (b.y + b.height < vy0 || b.y > vy1) && std::env::var_os("S9_ALL_LINES").is_none() { continue }
             texts.push((i, b.editor.raw_text().to_string()));
             views.push((b.editor.layout(fc, lc) as *const parley::Layout<Brush>, (PAD * scale + b.y as f64 - self.scroll as f64) / scale, i == focus));
         }
@@ -152,7 +152,7 @@ impl App {
         let doc_value = &self.doc_value;
         let mut refs_out = None;
         c.adapter.update_if_active(|| { let (update, mut refs) = ax::tree(&bviews, &sel, PAD, scale, size, vis, doc_value); for r in refs.iter_mut() { r.block = texts[r.block].0; } refs_out = Some(refs); update });
-        if let Some(r) = refs_out { self.ax_refs = r; self.ax_us.push(t.elapsed().as_secs_f32() * 1e6); }
+        if let Some(r) = refs_out { self.ax_refs = r; let us = t.elapsed().as_secs_f32() * 1e6; self.ax_us.push(us); if std::env::var_os("S9_ALL_LINES").is_some() && self.ax_us.len() % 8 == 1 { println!("ax tree build {:.1} ms ({} lines)", us / 1000.0, self.ax_refs.len()); } }
     }
 
     // ---------- drawing ----------

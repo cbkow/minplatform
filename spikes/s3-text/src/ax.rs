@@ -25,7 +25,8 @@ pub fn tree<B: parley::Brush>(blocks: &[BlockView<'_, B>], sel: &Selection, pad_
             let top = b.y + ((m.baseline - m.line_height + m.offset) / scale as f32) as f64;
             let bottom = b.y + ((m.baseline + m.offset) / scale as f32) as f64;
             let in_view = bottom >= visible.0 && top <= visible.1;
-            if !in_view && !b.focused { continue }
+            // S9: S9_ALL_LINES=1 exposes every line (the offsets an outside tool computes only add up when nothing is left out)
+            if !in_view && !b.focused && std::env::var_os("S9_ALL_LINES").is_none() { continue }
             let id = NodeId(next_id); next_id += 1;
             let range = line.text_range(); let range = range.start.min(b.text.len())..range.end.min(b.text.len());   // an empty block's line reads 0..1
             // S9: the runs must add up to the document value, which joins blocks with "\n" — the block's last line carries it

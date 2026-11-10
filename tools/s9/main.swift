@@ -6,7 +6,7 @@
 //                     selectedTextRange, setSelectedTextRange, visibleCharacterRange, numberOfCharacters, stringForRange,
 //                     attributedStringForRange, frameForRange, rangeForLine, lineForIndex, rangeForPosition,
 //                     rangeForIndex, styleRangeForIndex, insertionPointLineNumber, notifications)
-//   S9_WORDS=N        a generated document of about N words instead of the sample
+//   S9_WORDS=N        a generated document of about N words instead of the sample;  S9_FILE=<path> a text file instead
 import Cocoa
 
 // ───────────────────────────── the log
@@ -334,7 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: nil) { _ in Log.w("SCROLL", "\(Int(scroll.contentView.bounds.minY))"); self.editor.note(.layoutChanged) }
         let w = ProcessInfo.processInfo.environment["S9_WORDS"].flatMap(Int.init)
-        editor.setText(w.map(generated) ?? sample)
+        let f = ProcessInfo.processInfo.environment["S9_FILE"].flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+        editor.setText(f ?? w.map(generated) ?? sample)
         let main = NSMenu(); let appItem = NSMenuItem(); main.addItem(appItem)
         let appMenu = NSMenu(); appMenu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu
         let editItem = NSMenuItem(); main.addItem(editItem); let edit = NSMenu(title: "Edit")
