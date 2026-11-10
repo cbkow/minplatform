@@ -4539,4 +4539,4 @@ msgstr "Gamma de vídeo"
 #. drafted 2026-11-09, unreviewed
 msgctxt "RightRail"
 msgid "Middle drag"
-msgstr "Arrastrar con botón central"
+msgstr "Arrastre central"

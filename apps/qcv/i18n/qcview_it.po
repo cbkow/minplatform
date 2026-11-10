@@ -4494,7 +4494,7 @@ msgstr "Attiva File ▸ Connetti a Blender per ascoltare questa sessione di Blen
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Transfer"
-msgstr "Trasferimento"
+msgstr "Transfer"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
@@ -4539,4 +4539,4 @@ msgstr "Gamma video"
 #. drafted 2026-11-09, unreviewed
 msgctxt "RightRail"
 msgid "Middle drag"
-msgstr "Trascina con tasto centrale"
+msgstr "Trascinamento centrale"

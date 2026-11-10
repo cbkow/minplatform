@@ -4486,7 +4486,7 @@ msgstr "このBlenderセッションを受信するには、ファイル ▸ Ble
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Transfer"
-msgstr "伝達特性"
+msgstr "伝達関数"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"

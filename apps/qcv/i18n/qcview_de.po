@@ -4494,7 +4494,7 @@ msgstr "Aktivieren Sie Datei ▸ Mit Blender verbinden, um auf diese Blender-Sit
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Transfer"
-msgstr "Übertragung"
+msgstr "Transfer"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"

@@ -4502,7 +4502,7 @@ msgstr "Увімкніть Файл ▸ Підключитися до Blender, �
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Transfer"
-msgstr "Передавальна функція"
+msgstr "Трансфер"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
@@ -4512,7 +4512,7 @@ msgstr "Растр"
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Primaries"
-msgstr "Основні кольори"
+msgstr "Первинні кольори"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
@@ -4547,4 +4547,4 @@ msgstr "Відеогама"
 #. drafted 2026-11-09, unreviewed
 msgctxt "RightRail"
 msgid "Middle drag"
-msgstr "Середня кнопка + перетягування"
+msgstr "Тягнути середньою кнопкою"

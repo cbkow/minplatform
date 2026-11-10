@@ -4502,7 +4502,7 @@ msgstr "Включите Файл ▸ Подключиться к Blender, чт�
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Transfer"
-msgstr "Передаточная функция"
+msgstr "Трансфер"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
@@ -4512,7 +4512,7 @@ msgstr "Растр"
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
 msgid "Primaries"
-msgstr "Основные цвета"
+msgstr "Праймериз"
 
 #. drafted 2026-11-09, unreviewed
 msgctxt "LeftRail"
@@ -4547,4 +4547,4 @@ msgstr "Видеогамма"
 #. drafted 2026-11-09, unreviewed
 msgctxt "RightRail"
 msgid "Middle drag"
-msgstr "Средняя кнопка + перетаскивание"
+msgstr "Тянуть средней кнопкой"
