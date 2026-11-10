@@ -35,6 +35,7 @@ final class Log {
     }
 }
 let off: Set<String> = Set((ProcessInfo.processInfo.environment["S9_OFF"] ?? "").split(separator: ",").map(String.init))
+let offscreenZero = ProcessInfo.processInfo.environment["S9_OFFSCREEN"] == "zero"
 func R(_ r: NSRange) -> String { r.location == NSNotFound ? "{NotFound,\(r.length)}" : "{\(r.location),\(r.length)}" }
 
 // ───────────────────────────── the editor
@@ -71,7 +72,7 @@ final class EditorView: NSView, NSTextInputClient {
         layout.ensureLayout(for: container)
         let h = layout.usedRect(for: container).height + 2 * inset
         setFrameSize(NSSize(width: w, height: max(h, enclosingScrollView?.contentSize.height ?? h)))
-        lines = nil; needsDisplay = true
+        lines = nil; visCache = nil; needsDisplay = true
     }
     func note(_ n: NSAccessibility.Notification) { if !off.contains("notifications") { NSAccessibility.post(element: self, notification: n) } }
 
@@ -119,6 +120,8 @@ final class EditorView: NSView, NSTextInputClient {
     }
     /// The character range of every laid-out line (plus the empty last line after a trailing newline).
     var lines: [NSRange]? = nil
+    var visCache: (NSRect, NSRange)? = nil
+    func visibleChars() -> NSRange { let vr = visibleRect; if let c = visCache, c.0 == vr { return c.1 }; let g = layout.glyphRange(forBoundingRect: vr.offsetBy(dx: -inset, dy: -inset), in: container); let r = layout.characterRange(forGlyphRange: g, actualGlyphRange: nil); visCache = (vr, r); return r }
     func lineRanges() -> [NSRange] {
         if let l = lines { return l }
         var out: [NSRange] = []; var g = 0; let n = layout.numberOfGlyphs
@@ -270,6 +273,9 @@ final class EditorView: NSView, NSTextInputClient {
     override func accessibilityFrame(for range: NSRange) -> NSRect {
         if off.contains("frameForRange") { Log.w("ax.frameForRange", "WITHHELD"); return .zero }
         let r = NSIntersectionRange(range, NSRange(location: 0, length: length))
+        // S9_OFFSCREEN=zero: a range with nothing on screen answers an empty rectangle at once (does the tool then stop
+        // bisecting it? it re-asks for the whole document after every scroll)
+        if offscreenZero { let v = visibleChars(); if NSIntersectionRange(r, v).length == 0 && !(r.length == 0 && NSLocationInRange(r.location, v)) { Log.counts["ax.frameForRange(offscreen)", default: 0] += 1; return .zero } }
         let f = screen(rect(for: r.length == 0 ? NSRange(location: min(range.location, length), length: 0) : r))
         Log.w("ax.frameForRange", "\(R(range)) → (\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))×\(Int(f.height)))"); return f
     }

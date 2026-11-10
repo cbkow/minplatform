@@ -113,4 +113,21 @@ the whole tree on every edit and selection change (272 ms at 50,000 words agains
 incremental updates would cut that), and AccessKit's consumer side walks the runs for each query (about 245 ms per
 probe more than the reference at this size — and Grammarly made 2,000 geometry calls in a minute on a 900-character
 text). The second cost is inside the library, not ours to cache.
+
+### Step 3b, the user on the reference window at 50,000 words (2026-11-10)
+The user: typing "seem ok", "the right words are changing", "a noticeable lag between scrolling and then grammarly
+catching up to the viewport". The log: **515,953 `frameForRange` calls** in the session. After EVERY scroll Grammarly
+re-asks the geometry of every flagged range in the WHOLE document (offsets 0..274,955), 24,000–130,000 calls over about
+8 s, answered at 25–30 thousand a second — the wait is the number of round trips, not our answers. It never asks
+`visibleCharacterRange`. The text was hostile on purpose (about a third of its sentences are wrong: thousands of flags).
+
+**Answering off-screen ranges with an empty rectangle (`S9_OFFSCREEN=zero`) did not help** (the user: "as slow or
+slower — a matter of seconds"): about 110,000 calls in the first 30 s, 9,600 of them for on-screen ranges; the catch-up
+still took 9 s. The cost is one visit per flagged range, wherever it is.
+
+**Reading:** Grammarly's catch-up after a scroll (and presumably after any layout change) grows with the number of
+flagged ranges in the element it is attached to. The only lever on our side is HOW MUCH TEXT ONE ELEMENT HOLDS.
+Typing and corrections are unaffected at this size.
+
+## Verdict
 (pending)
