@@ -413,7 +413,10 @@ impl App {
             let feed = match self.live.take() { Some(l) if l.item == id => Some(l), other_live => { self.live = other_live; self.make_live(id, &item) } };
             let Some(mut l) = feed else { return false };
             l.review = None; l.review_rx = None;
-            if let Some(au) = l.audio.as_mut() { au.set_live_playdown(false); }   // a dual side's sound arrives with step 3
+            // a host side's sound (row 258 step 3, R6 / R7): heard by its SIDE's mute alone — A heard, B muted by default —
+            // never by the Listen setting, which is the single view's live row's
+            let side_muted = self.dual.as_ref().is_some_and(|d| d.side_muted(side));
+            if let Some(au) = l.audio.as_mut() { au.set_live_playdown(!side_muted); au.set_volume(self.settings.float(settings::k::VOLUME) as f32); au.set_muted(self.settings.bool(settings::k::MUTED)); au.set_routing_mode(routing_of(&item)); }
             if let Some(d) = self.dual.as_mut() { d.set_live_side(side, info); }
             self.side_live[i] = Some(l);
             if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { if i == 0 { ed.a.clear_frame(); } else { ed.b.clear_frame(); } } }
@@ -774,7 +777,7 @@ impl App {
             Cmd::Mode(m) => self.set_compare_mode(m),
             Cmd::ClearB => self.clear_b_source(),
             Cmd::Target(sd) => if let Some(g) = self.gpu.as_mut() { g.dual_bars.target = sd; g.ui_dirty = true; },
-            Cmd::ToggleSideMute(sd) => { if let Some(d) = self.dual.as_mut() { let m = !d.side_muted(sd); d.set_side_muted(sd, m); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            Cmd::ToggleSideMute(sd) => { if let Some(d) = self.dual.as_mut() { let m = !d.side_muted(sd); d.set_side_muted(sd, m); if let Some(au) = self.side_live[sd as usize].as_mut().and_then(|l| l.audio.as_mut()) { au.set_live_playdown(!m); } } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Cmd::Seam(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.seam = v.clamp(0.0, 1.0); } g.ui_dirty = true; },
             Cmd::Gain(v) => if let Some(g) = self.gpu.as_mut() { if let Some(ed) = g.presenter.engine.dual_mut() { ed.gain = v.clamp(1.0, dual_controls::GAIN_MAX); } g.ui_dirty = true; },
             Cmd::Save => {
@@ -976,7 +979,8 @@ impl App {
                 { let live = [self.dual.as_ref().is_some_and(|d| d.is_live(qcv_player::Side::A)), self.dual.as_ref().is_some_and(|d| d.is_live(qcv_player::Side::B))]; if g.dual_bars.live != live { g.dual_bars.live = live; g.ui_dirty = true; } }
                 let extra = match (self.dual.as_ref(), self.dual_editor.as_ref()) { (Some(d), Some(ed)) => g.dual_bars.offset_text(&ed.timeline, d.current_frame() as i64).unwrap_or_default(), _ => String::new() };
                 if extra != g.strip.extra { g.strip.extra = extra; g.ui_dirty = true; }
-                let aud = |s: qcv_player::Side| self.dual.as_ref().filter(|d| d.side_has_audio(s)).map(|d| d.side_muted(s));
+                // a side's speaker pill: a file with an audio track, or a live host whose audio segment carries sound (row 258)
+                let aud = |s: qcv_player::Side| self.dual.as_ref().filter(|d| d.side_has_audio(s) || self.side_live[s as usize].as_ref().and_then(|l| l.audio_src.as_ref()).is_some_and(|a| a.has_audio())).map(|d| d.side_muted(s));
                 if g.dualc.set_audio(aud(qcv_player::Side::A), aud(qcv_player::Side::B)) { g.ui_dirty = true; }
                 if g.dualc.tick(now) || g.dualc.animating(now) { g.ui_dirty = true; }
             }
@@ -1451,7 +1455,7 @@ impl App {
                     inspector_panel::Cmd::Stride(s) => { if let Some(c) = self.player.as_ref().and_then(|p| p.decoder().as_sequence()) { c.cache().set_stride(s); } if !self.loaded_item.is_empty() { let id = self.loaded_item.clone(); self.project.set_image_seq_cache_stride(&id, s); } g.ui_dirty = true; }
                     inspector_panel::Cmd::Range(r) => { if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.set_range_override(r); if !p.is_playing() { let f = p.current_frame(); p.seek_to_frame(f); } } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_video_range_override(&id, match r { qcv_player::RangeOverride::Full => qcv_project::VideoRange::Full, qcv_player::RangeOverride::Limited => qcv_project::VideoRange::Limited, _ => qcv_project::VideoRange::Auto }); } }   // QCView: "applies on the next seek or play" — paused, re-decode the frame on screen
                     inspector_panel::Cmd::Transfer(t) => { if let Some(en) = color::slot_engine(g, slot, dual_on) { en.set_transfer_override(transfer_choice(t)); } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); self.project.set_transfer_override(&id, t); } }
-                    inspector_panel::Cmd::Routing(m) => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_routing_mode(m); g.inspector.set_routing(m); } if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.audio.set_routing_mode(m); } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
+                    inspector_panel::Cmd::Routing(m) => { if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_routing_mode(m); g.inspector.set_routing(m); } if dual_on { if let Some(au) = self.side_live[slot.min(1)].as_mut().and_then(|l| l.audio.as_mut()) { au.set_routing_mode(m); } } if let Some(p) = insp_transport(&mut self.dual, &mut self.player, slot) { p.audio.set_routing_mode(m); } if !target_id.is_empty() { let id = target_id.clone(); self.project.set_audio_routing_mode(&id, match m { qcv_player::RoutingMode::Downmix5_1 => qcv_project::AudioRoutingMode::Downmix5_1, qcv_player::RoutingMode::Stereo7_8 => qcv_project::AudioRoutingMode::Stereo7_8, _ => qcv_project::AudioRoutingMode::Auto }); } }
                     inspector_panel::Cmd::Origin(o) => { g.strip.origin = Some(o); g.strip.sync(pb(&self.dual, &self.player)); }
                     inspector_panel::Cmd::Par(par) => { { let sl = insp_slot(&self.dual, g); let dual_on = self.dual.is_some(); if let Some(en) = color::slot_engine(g, sl, dual_on) { let mut geo = en.geometry(); geo.par = par; en.set_geometry(geo); } } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); let (mode, n, d) = match par { min_present::engine::Par::Square => (qcv_project::PixelAspectMode::Square, 1, 1), min_present::engine::Par::Detected => (qcv_project::PixelAspectMode::Detected, 1, 1), min_present::engine::Par::Custom(n, d) => (qcv_project::PixelAspectMode::Custom, n as i32, d as i32) }; self.project.set_pixel_aspect(&id, mode, n, d); } }
                     inspector_panel::Cmd::Rotation(r) => { if let Some(en) = color::slot_engine(g, slot, dual_on) { let mut geo = en.geometry(); geo.rotation = r; en.set_geometry(geo); } g.content_set = None; if !target_id.is_empty() { let id = target_id.clone(); self.project.set_rotation_override(&id, r.map(|d| d as i32).unwrap_or(-1)); } }
@@ -1580,7 +1584,7 @@ impl App {
                 transport_bar::Cmd::RevealGuides => self.reveal(Reveal::Guides),
                 transport_bar::Cmd::ToggleColor => self.color_cmd(color_drawer::Cmd::Toggle),
                 transport_bar::Cmd::ToggleNotes => self.toggle_notes(),
-                transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
+                transport_bar::Cmd::Volume(v) => { if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } for l in self.side_live.iter_mut().flatten() { if let Some(au) = l.audio.as_mut() { au.set_volume(v); } } }
             }
         }
         self.window_move_arm(&e);
@@ -1619,8 +1623,8 @@ impl App {
             match key {
                 k::TIMELINE_HOVER_THUMBS => { g.thumbs.enabled = self.settings.bool(key); g.ui_dirty = true; }
                 k::TIMELINE_WAVEFORMS => { g.waveform_enabled = self.settings.bool(key); if !g.waveform_enabled { g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); } g.ui_dirty = true; }
-                k::VOLUME => { let v = self.settings.float(key) as f32; if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_volume(v); } if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } }
-                k::MUTED => { let m = self.settings.bool(key); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_muted(m); } if let Some(p) = self.player.as_mut() { p.audio.set_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_muted(m)); } }
+                k::VOLUME => { let v = self.settings.float(key) as f32; if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_volume(v); } if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } for l in self.side_live.iter_mut().flatten() { if let Some(au) = l.audio.as_mut() { au.set_volume(v); } } }
+                k::MUTED => { let m = self.settings.bool(key); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_muted(m); } if let Some(p) = self.player.as_mut() { p.audio.set_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_muted(m)); } for l in self.side_live.iter_mut().flatten() { if let Some(au) = l.audio.as_mut() { au.set_muted(m); } } }
                 k::DUAL_SYNC_OFFSET_MS => if let Some(d) = self.dual.as_mut() { let ms = self.settings.int(key) as i32; d.for_each_audio(|au| au.set_sync_offset_ms(ms)); },
                 k::SYNC_OFFSET_MS => if let Some(p) = self.player.as_mut() { p.audio.set_sync_offset_ms(self.settings.int(key) as i32); },
                 #[cfg(target_os = "macos")] k::AUTO_UPDATE_CHECKS => sparkle::set_automatic(self.settings.bool(key)),
