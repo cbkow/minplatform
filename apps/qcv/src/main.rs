@@ -34,6 +34,7 @@ mod settings_panel;
 mod inspector_panel;
 mod os_actions;
 mod menu;
+#[cfg(target_os = "macos")] mod mac_open;
 mod single_instance;
 mod logging;
 mod background_panel;
@@ -138,6 +139,8 @@ struct App {
     menu_queue: Vec<menu::Cmd>,
     /// single instance (row 143): what later launches forwarded
     single_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    /// macOS: `mac_open`'s batches (the Finder's Open / Open With / a dropped Dock icon, `qcview://` links); None elsewhere.
+    os_open_rx: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     /// colour (canon rows 198–208): the user's presets; the shared minColor pass (and its build); what the slot holds; an OCIO build in flight
     colors: color_model::Library, /// per colour SLOT (0 = the single view / dual A, 1 = dual B): the minColor pass, its build in flight
     /// screenshots being encoded on workers (row 216): the format's name on success
@@ -2112,6 +2115,8 @@ impl ApplicationHandler for App {
         // single instance: a later launch's files / links, the window raised (QCView `dispatchOpenArgsOnPrimary`)
         let forwarded: Vec<Vec<String>> = self.single_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
         for args in forwarded { self.open_forwarded(args); }
+        // macOS: the Finder's documents and qcview:// links (Apple events), held until the window exists
+        if self.gpu.is_some() { let opened: Vec<Vec<String>> = self.os_open_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default(); for args in opened { self.open_forwarded(args); } }
         // the menu bar: its commands, then its live parts (the Recent submenus, the two checkmarks)
         for c in std::mem::take(&mut self.menu_queue) { self.menu_cmd(c, el); }
         let list = |k| self.settings.string(k).lines().filter(|l| !l.is_empty()).map(str::to_string).collect::<Vec<_>>();
@@ -2429,13 +2434,15 @@ fn main() {
     let _ = logging::install();
     let single_rx = if multi { None } else { single_instance::listen() };
     let el = EventLoop::new().unwrap();
+    #[cfg(target_os = "macos")] let os_open_rx = Some(mac_open::install());
+    #[cfg(not(target_os = "macos"))] let os_open_rx: Option<std::sync::mpsc::Receiver<Vec<String>>> = None;
     let mut settings = settings::open();
     settings.set_bool(settings::k::BLENDER_SESSIONS, false);   // QCView: the Blender input is OFF at every launch, never restored
     i18n::apply(&settings.string(settings::k::LANGUAGE));   // row 197: the picker's language (QCV_LANG wins), before the window builds its panels
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { os_open_rx, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
