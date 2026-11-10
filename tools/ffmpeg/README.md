@@ -5,8 +5,8 @@ through their CMake `FFMPEG_DIR` — so a machine carries ONE build and every ap
 
 | OS | Source | How the build finds it |
 |---|---|---|
-| macOS | Homebrew `ffmpeg` at the pinned version (`brew list --versions ffmpeg`) | pkg-config; nothing to set |
-| Windows | BtbN's gpl-shared build, fetched by `fetch-win64.ps1` into `external/ffmpeg/win64` (gitignored) | `FFMPEG_DIR=<repo>\external\ffmpeg\win64` for the build; `PATH += <FFMPEG_DIR>\bin` at run time |
+| macOS | built from source with the local patches by `build-macos.sh` into `external/ffmpeg/macos-arm64` (gitignored) | the build scripts use that prefix when it exists; pkg-config (a Homebrew `ffmpeg`) otherwise, for development only |
+| Windows | BtbN's gpl-shared recipe with the local patches, built by `build-win64-wsl.sh` (or the stock dated asset fetched by `fetch-win64.ps1`) into `external/ffmpeg/win64` (gitignored) | `FFMPEG_DIR=<repo>\external\ffmpeg\win64` for the build; `PATH += <FFMPEG_DIR>\bin` at run time |
 
 The binaries never enter the repository (the repo is public; the Windows zip is 82 MB): the pin and the fetch script do.
 The pin names a DATED BtbN release asset (immutable), never the `latest` one, which is re-zipped daily; the script
