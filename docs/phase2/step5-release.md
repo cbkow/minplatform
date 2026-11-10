@@ -88,5 +88,19 @@ upgrade test), then the notices, the privacy policy and the 3.0 docs, then QCVie
   `extensions.rs`; the .icns and the macOS 26 layered icon; the dylibs and Sparkle.framework in Frameworks; ad-hoc signed).
   The Finder's documents and `qcview://` links open (`mac_open.rs`, an application delegate). Sparkle 2.9.2
   (`tools/sparkle/fetch.sh`, `sparkle.rs`: loaded at run time, About ▸ Check for Updates…, Settings ▸ Updates). Version 3.0.0.
-- **Open, macOS:** the Developer ID signature, notarization and the DMG (`sign-and-notarize.sh` adapted); the entitlements
-  (2.x's four were Qt's; the port may need none); the 2.7.3 → 3.0 update against a private test feed.
+- **2026-11-09, macOS, later:** signed and notarized (`packaging/macos/sign-macos.sh`: hardened runtime, NO entitlements; the
+  app and `QCView-MacOS.dmg` accepted). The 2.7.3 → 3.0 update PROVEN on a copy of 2.7.3 against a private local feed (the
+  DMG signed with the keychain's Sparkle key was accepted, the bundle replaced in place, Sparkle starts in the signed 3.0 and
+  reads the real feed). QCView is the suite's ffmpeg provider again (`toolbox.rs`, `Contents/Helpers/{ffmpeg,ffprobe}`).
+- **2026-11-09, Windows:** `apps/qcv/build.rs` (the exe's icon, version details, the long-path manifest); the two window icons;
+  `packaging/windows/make-msix.ps1` — stages by WALKING IMPORT TABLES (the VC++ runtime ships: 2.x shipped none), generates
+  the manifest (2.x's identity; file types from `extensions.rs`), packs the unsigned MSIX (101 MB) and can sign a private
+  sideload copy (`-SignThumbprint`: a test certificate in the user's store, made on the box 2026-11-09 — the old PFX's
+  password is lost). Proven on the box: a Windows Sandbox with NO VC++ runtime loads and starts the staged build; the
+  sideloaded 2.7.3 was replaced IN PLACE by 3.0.0.0 (same package family), which runs from WindowsApps, mirrors the ffmpeg
+  tools and registers its 55 file types and the `qcview.exe` alias.
+- **Rows 249–251** the same day: the title bar / menu row / rails are one surface on Windows; no usable graphics device →
+  a dark message and exit; dragging the picture moves the window (compact mode too).
+- **Open:** a walk of 3.0 on macOS 13 / 14 (the user's other Macs); the Windows libraries pinned to the Mac's set; the generated
+  third-party notices + the in-app Licences view; the privacy policy; the 3.0 docs; QCView-Player's clean `main`; the Store
+  submission; the Sparkle private key's backup (the user's).
