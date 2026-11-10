@@ -413,9 +413,11 @@ impl App {
             let feed = match self.live.take() { Some(l) if l.item == id => Some(l), other_live => { self.live = other_live; self.make_live(id, &item) } };
             let Some(mut l) = feed else { return false };
             l.review = None; l.review_rx = None;
-            // a host side's sound (row 258 step 3, R6 / R7): heard by its SIDE's mute alone — A heard, B muted by default —
-            // never by the Listen setting, which is the single view's live row's
-            let side_muted = self.dual.as_ref().is_some_and(|d| d.side_muted(side));
+            // a host side's sound (row 258 step 3, R6): heard by its SIDE's mute alone, never by the Listen setting (the single
+            // view's live row's). A LIVE side starts MUTED on either side (the user 2026-11-10, reversing R7's "A heard": the
+            // host application is usually playing the same sound in the room — an echo)
+            if let Some(d) = self.dual.as_mut() { d.set_side_muted(side, true); }
+            let side_muted = true;
             if let Some(au) = l.audio.as_mut() { au.set_live_playdown(!side_muted); au.set_volume(self.settings.float(settings::k::VOLUME) as f32); au.set_muted(self.settings.bool(settings::k::MUTED)); au.set_routing_mode(routing_of(&item)); }
             if let Some(d) = self.dual.as_mut() { d.set_live_side(side, info); }
             self.side_live[i] = Some(l);
@@ -424,7 +426,8 @@ impl App {
             let info = self.dual_media(id);
             if info.is_none() { return false }
             if let Some(d) = self.dual.as_mut() { if let Err(e) = d.set_side(side, info) { println!("dual {side:?}: {e}"); return false } }
-            self.side_live[i] = None;
+            // a file taking a live side's place gets the side's own default back (A heard, B muted)
+            if self.side_live[i].take().is_some() { if let Some(d) = self.dual.as_mut() { d.set_side_muted(side, i == 1); } }
         }
         self.dual_side_changed(side);
         true
