@@ -36,6 +36,8 @@ pub struct DualControls {
     /// each side's audio: None = no audio (no pill), Some(muted); the pills' rects + hover
     audio: [Option<bool>; 2], pill: [Rect; 2], pill_hover: [bool; 2],
     pub tooltips: Tooltips,
+    /// a LIVE side (canon row 258; QCView's chip dot): (live now, the tooltip's line — the feed's detail, else "Live source")
+    live: [Option<(bool, String)>; 2],
 }
 
 impl DualControls {
@@ -48,7 +50,7 @@ impl DualControls {
         DualControls { rect: Rect::ZERO, active: false, available: true, saved: false, mode: CompareMode::Single, seam: 0.5, gain: 1.0,
             a: Chip::new(), b: Chip::new(), close_b: ActionButton::new("x", tr("Close source B")).size_s(), modes, slider: Slider::new(0.5), readout: String::new(), readout_rect: Rect::ZERO,
             update: ActionButton::new("floppy-disk", tr("Update this saved dual view")), save: ActionButton::new("floppy-disk", tr("Save dual view")),
-            drop_side: None, target: Side::B, audio: [None, None], pill: [Rect::ZERO; 2], pill_hover: [false; 2], tooltips: Tooltips::default() }
+            drop_side: None, target: Side::B, live: [None, None], audio: [None, None], pill: [Rect::ZERO; 2], pill_hover: [false; 2], tooltips: Tooltips::default() }
     }
     /// The state to show; returns true when something visible changed.
     #[allow(clippy::too_many_arguments)]
@@ -113,6 +115,7 @@ impl DualControls {
     /// The edit target (row 212): its chip carries a hairline in the side colour while dual is on.
     pub fn set_target(&mut self, s: Side) -> bool { if self.target == s { return false } self.target = s; true }
     /// The sides' audio (QCView shows a side's pill in dual when that side has audio).
+    pub fn set_live(&mut self, a: Option<(bool, String)>, b: Option<(bool, String)>) -> bool { if self.live == [a.clone(), b.clone()] { return false } self.live = [a, b]; true }
     pub fn set_audio(&mut self, a: Option<bool>, b: Option<bool>) -> bool { if self.audio == [a, b] { return false } self.audio = [a, b]; true }
     pub fn set_drop_side(&mut self, s: Option<Side>) -> bool { if self.drop_side == s { return false } self.drop_side = s; true }
     /// Returns (commands, redraw needed, consumed).
@@ -139,8 +142,10 @@ impl DualControls {
             let btns = self.modes.buttons.iter().chain([&self.close_b, &self.update, &self.save]);
             for (i, b) in btns.enumerate() { if b.rect.contains(p) { return Some((100 + i as u64, b.rect, b.tooltip.clone())) } }
             for i in 0..2 { if self.pill[i].contains(p) { let m = self.audio[i] == Some(true); let s = match (i, m) { (0, true) => "A audio muted — click to unmute", (0, false) => "A audio on — click to mute", (_, true) => "B audio muted — click to unmute", _ => "B audio on — click to mute" }; return Some((10 + i as u64 * 2 + m as u64, self.pill[i], tr(s).to_string())) } }
-            if self.a.rect.contains(p) { if let Some(n) = &self.a.name { return Some((1, self.a.rect, n.clone())) } }
-            if self.b.rect.contains(p) { if let Some(n) = &self.b.name { return Some((2, self.b.rect, n.clone())) } }
+            // a live side's chip adds the feed's line (QCView: the detail, else "Live source")
+            let tip = |n: &String, l: &Option<(bool, String)>| match l { Some((_, d)) => format!("{n} — {d}"), None => n.clone() };
+            if self.a.rect.contains(p) { if let Some(n) = &self.a.name { return Some((1, self.a.rect, tip(n, &self.live[0]))) } }
+            if self.b.rect.contains(p) { if let Some(n) = &self.b.name { return Some((2, self.b.rect, tip(n, &self.live[1]))) } }
             None
         });
         if self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now) { dirty = true; }
@@ -163,7 +168,9 @@ impl DualControls {
             let l = fonts.layout(if side == Side::A { tr("A") } else { tr("B") }, Family::Sans, t::RAIL_LABEL_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(letter_c));
             let ly = c.rect.y0 + (c.rect.height() - l.height() as f64) / 2.0;
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((c.rect.x0 + pad, ly)));
-            let nx = c.rect.x0 + pad + l.width() as f64 + t::SPACING_100 as f64 * scale;
+            let mut nx = c.rect.x0 + pad + l.width() as f64 + t::SPACING_100 as f64 * scale;
+            // the live dot (QCView's chip; the project list's): red while frames arrive, the notice colour otherwise
+            if let Some((on, _)) = &self.live[side as usize] { let d = 6.0 * scale; let dy = c.rect.y0 + (c.rect.height() - d) / 2.0; paint::rounded(scene, Rect::new(nx, dy, nx + d, dy + d), d / 2.0, if *on { t::NEGATIVE_VISUAL_COLOR } else { t::NOTICE_VISUAL_COLOR }); nx += d + t::SPACING_75 as f64 * scale; }
             let pr = self.pill[side as usize];
             let right = if pr.area() > 0.0 { pr.x0 - 4.0 * scale } else if side == Side::B && self.close_b.rect.area() > 0.0 { self.close_b.rect.x0 - 4.0 * scale } else { c.rect.x1 - pad };
             let (text, color, weight) = match &c.name {

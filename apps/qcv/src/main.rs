@@ -970,6 +970,9 @@ impl App {
                 let (mode, seam, gain) = g.presenter.engine.dual().map(|d| (d.mode, d.seam, d.gain)).unwrap_or((CompareMode::Single, 0.5, 1.0));
                 if g.dualc.sync(self.dual.is_some(), self.pl_editor.is_none(), mode, a, b, seam, gain, !self.active_dual_view.is_empty()) { g.ui_dirty = true; }
                 if g.dualc.set_target(g.dual_bars.target) { g.ui_dirty = true; }
+                { // a live side's chip: its dot and its line (the feed's detail, else QCView's "Live source")
+                  let chip = |l: &Option<live::Live>| l.as_ref().map(|l| { let f = l.feed.facts(); (f.status == qcv_player::host_feed::Status::Live, match (&f.detail, f.status) { (Some((k, a)), st) if st != qcv_player::host_feed::Status::Live => live_strip::detail_text(k, a, l.feed.app()), _ => trv("Live source").to_string() }) });
+                  if g.dualc.set_live(chip(&self.side_live[0]), chip(&self.side_live[1])) { g.ui_dirty = true; } }
                 { let live = [self.dual.as_ref().is_some_and(|d| d.is_live(qcv_player::Side::A)), self.dual.as_ref().is_some_and(|d| d.is_live(qcv_player::Side::B))]; if g.dual_bars.live != live { g.dual_bars.live = live; g.ui_dirty = true; } }
                 let extra = match (self.dual.as_ref(), self.dual_editor.as_ref()) { (Some(d), Some(ed)) => g.dual_bars.offset_text(&ed.timeline, d.current_frame() as i64).unwrap_or_default(), _ => String::new() };
                 if extra != g.strip.extra { g.strip.extra = extra; g.ui_dirty = true; }
