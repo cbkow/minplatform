@@ -1458,6 +1458,14 @@ impl App {
             let _ = g;
         }
         let g = self.gpu.as_mut().unwrap();
+        // the dual controls sit ON the live row while a live item is loaded (row 258, R2): they take their presses first — the
+        // row itself swallows everything inside its rect
+        if self.live.is_some() && !g.compact && !g.fullscreen {
+            let (dc, dd, consumed) = g.dualc.event(&e, now, scale);
+            if dd { g.ui_dirty = true; }
+            if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
+        }
+        let g = self.gpu.as_mut().unwrap();
         // a live feed's row (row 228): its own buttons and the Transfer menu; the bands it replaced take nothing
         if self.live.is_some() && !g.compact {
             let (lc, ld, consumed) = g.live_strip.event(&e, now, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
@@ -1468,7 +1476,7 @@ impl App {
         }
         let g = self.gpu.as_mut().unwrap();
         // dual view's controls (row 173) — they own the pointer while their slider drags
-        if !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
+        if self.live.is_none() && !g.compact && !g.fullscreen && (!grabbed || g.dualc.dragging()) {
             let (dc, dd, consumed) = g.dualc.event(&e, now, scale);
             if dd { g.ui_dirty = true; }
             if consumed || !dc.is_empty() { let _ = g; for c in dc { self.dual_cmd(c); } return }
