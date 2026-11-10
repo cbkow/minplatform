@@ -71,7 +71,6 @@ impl SettingsPanel {
             ] },
             Group { title: tr("Interface"), header: Rect::ZERO, rows: vec![
                 pick(k::LANGUAGE, "Language", "Language of the interface. System default follows the OS setting. Applies at once.", true, LANG_NAMES, LANG_CODES),
-                sw(k::ALWAYS_OPEN_MINIMAL, "Always open in minimal mode", "Launch with the rails collapsed.", true),
                 sw(k::TIMELINE_HOVER_THUMBS, "Timeline hover thumbnails", "Show a frame thumbnail while the pointer rests on the timeline.", true),
                 sw(k::DRAG_VIEWPORT_MOVES_WINDOW, "Drag viewport to move window", "Dragging the picture moves the window.", false),
                 sw(k::TIMELINE_WAVEFORMS, "Timeline audio waveforms", "Draw the audio waveform in the scrubber. Peaks decode lazily in the background.", true),

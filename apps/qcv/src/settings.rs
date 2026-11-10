@@ -55,7 +55,6 @@ pub mod k {
     pub const SCREENSHOT_GUIDES: &str = "export/screenshotGuides";
     pub const LOOP_ENABLED: &str = "playback/loopEnabled";
     pub const ALWAYS_ON_TOP: &str = "ui/alwaysOnTop";
-    pub const ALWAYS_OPEN_MINIMAL: &str = "ui/alwaysOpenMinimal";
     pub const DRAG_VIEWPORT_MOVES_WINDOW: &str = "ui/dragViewportMovesWindow";
     pub const LANGUAGE: &str = "ui/language";
     pub const TIMELINE_HOVER_THUMBS: &str = "ui/timelineHoverThumbs";
@@ -110,7 +109,6 @@ static KEYS: &[Key] = &[
     Key::str(k::SAFETY_COLOR, "#ffff00"), Key::str(k::ANNOTATION_COLOR, "#ff0000"), Key::float(k::NOTES_DRAWER_HEIGHT, 340.0, 320.0, 720.0), Key::str(k::SAFETY_GUIDE, ""), Key::float(k::SAFETY_OPACITY, 0.7, 0.0, 1.0), Key::float(k::SAFETY_WIDTH, 2.0, 1.0, 8.0),
     Key::bool(k::LOOP_ENABLED, true),
     Key::bool(k::ALWAYS_ON_TOP, false),
-    Key::bool(k::ALWAYS_OPEN_MINIMAL, false),
     Key::bool(k::DRAG_VIEWPORT_MOVES_WINDOW, true),
     Key::str(k::LANGUAGE, ""),
     Key::bool(k::TIMELINE_HOVER_THUMBS, true),

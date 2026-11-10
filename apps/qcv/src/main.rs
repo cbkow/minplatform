@@ -2073,10 +2073,10 @@ impl ApplicationHandler for App {
         window.focus_window();
         println!("window: surface {:?} scale {} visible {:?} monitor {:?}", window.surface_size(), window.scale_factor(), window.is_visible(), window.current_monitor().and_then(|m| m.name().map(|n| n.to_string())));
         window.request_redraw();
-        // the rails from the store (QCView `ui.layout/*`; "Always open in minimal mode" collapses both at launch)
-        let (left, right, waveform_enabled, thumbs_enabled) = { let st = &self.settings; use settings::k; let minimal = st.bool(k::ALWAYS_OPEN_MINIMAL);
-            let mut l = min_ui::Rail::new(min_ui::Side::Left, st.int(k::LEFT_RAIL_WIDTH) as f64, minimal || st.bool(k::LEFT_RAIL_COLLAPSED)); l.settle();
-            let mut r = min_ui::Rail::new(min_ui::Side::Right, st.int(k::RIGHT_RAIL_WIDTH) as f64, minimal || st.bool(k::RIGHT_RAIL_COLLAPSED)); r.settle();
+        // the rails from the store (QCView `ui.layout/*`); QCView's "Always open in minimal mode" is gone with the mode (row 245)
+        let (left, right, waveform_enabled, thumbs_enabled) = { let st = &self.settings; use settings::k;
+            let mut l = min_ui::Rail::new(min_ui::Side::Left, st.int(k::LEFT_RAIL_WIDTH) as f64, st.bool(k::LEFT_RAIL_COLLAPSED)); l.settle();
+            let mut r = min_ui::Rail::new(min_ui::Side::Right, st.int(k::RIGHT_RAIL_WIDTH) as f64, st.bool(k::RIGHT_RAIL_COLLAPSED)); r.settle();
             l.shortcut = if cfg!(target_os = "macos") { "⌘1" } else { "Ctrl+1" }.into(); r.shortcut = if cfg!(target_os = "macos") { "⌘2" } else { "Ctrl+2" }.into();
             (l, r, st.bool(k::TIMELINE_WAVEFORMS), st.bool(k::TIMELINE_HOVER_THUMBS)) };
         // the UI layer (stage 4): at the surface's physical size, on the presenter's device; `QCV_NO_UI=1` leaves it out for A/B
