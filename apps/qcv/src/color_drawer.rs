@@ -24,7 +24,8 @@ fn tr(s: &'static str) -> &'static str { min_i18n::trc("ColorPanel", s) }
 pub enum Cmd { /// the caret below the picture: closes the open bottom panel (Color or Notes), else opens Color
     Tab, Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
     NewOcio, OpenConfig, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
-    Aids(ViewerAids), /// the drawer's height after a drag of its top edge (logical px)
+    Aids(ViewerAids), /// the Video emulation's toggle (row 246)
+    Video(bool), /// the drawer's height after a drag of its top edge (logical px)
     Height(f64), /// the waveform's state as the user set it (kept across launches): scale override, HDR top, open
     Waveform(Option<bool>, f32, bool), ResetToDefault, ApplyToAll, MakeDefault, SetOn(bool), SavePreset(String), RenamePreset(String, String), UpdatePreset(String), DeletePreset(String), Toggle }
 
@@ -51,6 +52,9 @@ pub struct View {
     pub hdr_source: bool,
     /// row 222: an HDR picture on a screen with no headroom — its highlights clip (the amber pill beside KNEE)
     pub clip_warn: bool,
+    /// row 246, the Video emulation: the setting, and why it cannot act now (0 = it can · 1 = Color is off: the picture is
+    /// already as stored · 2 = the picture is shown in HDR)
+    pub video: bool, pub video_state: u8,
 }
 
 /// What an OCIO chain's columns offer (from the loaded config; the configs are the bundled three + a user's file).
@@ -91,7 +95,7 @@ pub struct ColorDrawer {
     /// the readout's band under the card (QCView's readout sits below its waveform; the caption row had no room)
     wf_readout: Rect, /// the readout's tooltip (QCView: the brightest channel lives there, not inline)
     tips: min_ui::Tooltips,
-    exp: Slider, gam: Slider, chan: ActionGroup, aids_reset: ActionButton, pub(crate) aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
+    exp: Slider, gam: Slider, chan: ActionGroup, video: ActionButton, video_pill: Rect, aids_reset: ActionButton, pub(crate) aids: ViewerAids, exp_rect: Rect, gam_rect: Rect, last_aid_press: Option<(u8, Instant)>,
     save_as: TextButton, reset: TextButton, apply_all: TextButton, make_default: TextButton,
     header: Rect,
     menu: Menu, menu_for: Option<String>,
@@ -134,6 +138,7 @@ impl ColorDrawer {
             wf_hdr: wf.0, wf_peak_nits: if PEAKS.contains(&(wf.1 as i32)) { wf.1 } else { 1000.0 }, wf_card: Rect::ZERO, wf_trace: Rect::ZERO, wf_src_hdr: false, wf_col: Rect::ZERO, wf_collapse: Rect::ZERO, wf_expanded: wf.2, wf_hover: false, hscroll: 0.0, content_w: 0.0, body: Rect::ZERO, peaks: None, peaks_dual: None, wf_readout: Rect::ZERO, tips: min_ui::Tooltips::default(),
             exp: Slider::new(0.5), gam: Slider::new(((1.0f32 - 0.25) / 3.75).clamp(0.0, 1.0)),
             chan: ActionGroup::new(["RGB", "R", "G", "B", "A", "Y"].iter().enumerate().map(|(i, l)| { let mut b = ActionButton::new("", l).size_s(); b.label = Some((if i == 0 { tr("RGB") } else { l }).to_string()); b.selected = i == 0; b }).collect()).compact(),
+            video: { let mut b = ActionButton::new("", "").size_s(); b.label = Some(tr("Video").to_string()); b }, video_pill: Rect::ZERO,
             aids_reset: ActionButton::new("arrow-counter-clockwise", tr("Reset exposure, gamma and channel")).size_s(), aids: ViewerAids::default(), exp_rect: Rect::ZERO, gam_rect: Rect::ZERO, last_aid_press: None,
             save_as: TextButton::new(tr("Save as preset…"), Variant::Secondary).size_s(), reset: TextButton::new(tr("Reset to default"), Variant::Secondary).size_s(),
             apply_all: TextButton::new(tr("Apply to all clips"), Variant::Secondary).size_s(), make_default: TextButton::new(tr("Make project default"), Variant::Secondary).size_s(),
@@ -207,6 +212,7 @@ impl ColorDrawer {
         self.reset.enabled = v.has_clip && v.own;
         self.apply_all.enabled = v.has_clip;
         self.make_default.enabled = v.has_clip && v.own;
+        self.video.selected = v.video; self.video.enabled = v.video_state == 0;
         self.view = Some(v);
         true
     }
@@ -233,11 +239,13 @@ impl ColorDrawer {
         let bottom = Rect::new(full.x0 + pad, full.y1 - row, full.x1 - pad, full.y1);
         let (sw, sh) = Switch::size(scale);
         self.on_rect = bottom; self.on.rect = Rect::new(bottom.x0, bottom.y0 + (row - sh) / 2.0, bottom.x0 + sw, bottom.y0 + (row + sh) / 2.0);
-        // the viewer aids, right-aligned: Exposure [slider] 0.0 st · Gamma [slider] 1.00 · RGB R G B A Y · ↺
+        // the viewer aids, right-aligned: Exposure [slider] 0.0 st · Gamma [slider] 1.00 · RGB R G B A Y · Video · ↺
         let (rw, rh) = self.aids_reset.measure(fonts, scale);
         let mut ax = bottom.x1 - rw; self.aids_reset.rect = Rect::new(ax, bottom.y0 + (row - rh) / 2.0, ax + rw, bottom.y0 + (row + rh) / 2.0);
+        { let (vw, vh) = self.video.measure(fonts, scale); ax -= vw + t::SPACING_200 as f64 * scale; self.video.rect = Rect::new(ax, bottom.y0 + (row - vh) / 2.0, ax + vw, bottom.y0 + (row + vh) / 2.0); }
         let cw: f64 = self.chan.buttons.iter().map(|b| b.measure(fonts, scale).0).sum::<f64>() + t::ACTION_GROUP_GAP_COMPACT as f64 * scale * 5.0;
         ax -= cw + t::SPACING_200 as f64 * scale; let ch = self.chan.buttons[0].measure(fonts, scale).1; self.chan.layout(fonts, ax, bottom.y0 + (row - ch) / 2.0, scale);
+        self.video.corners = min_ui::action_button::Corners::all(self.chan.buttons[0].corners.tl);   // the channel group's rounding
         let sl = 140.0 * scale; let rd = 72.0 * scale; let lab = 64.0 * scale;
         ax -= rd + sl + lab + t::SPACING_300 as f64 * scale; self.gam_rect = Rect::new(ax, bottom.y0, ax + lab + sl + rd, bottom.y1); self.gam.rect = Rect::new(ax + lab, bottom.y0, ax + lab + sl, bottom.y1);
         ax -= rd + sl + lab + t::SPACING_400 as f64 * scale; self.exp_rect = Rect::new(ax, bottom.y0, ax + lab + sl + rd, bottom.y1); self.exp.rect = Rect::new(ax + lab, bottom.y0, ax + lab + sl, bottom.y1);
@@ -351,6 +359,10 @@ impl ColorDrawer {
         // the readout's tooltip: QCView `ScopeController` — the brightest channel, this frame and the clip's max, for the row under the pointer
         let tip = e.pos().filter(|_| !matches!(e, Event::Leave) && self.naming.is_none() && !self.menu.is_open()).and_then(|(x, y)| {
             // the caret: QCView's rail words with the panel's key — it collapses whichever bottom panel is open, else opens Color
+            if self.video.rect.contains(kurbo::Point::new(x, y)) || self.video_pill.contains(kurbo::Point::new(x, y)) {
+                let why = match self.view.as_ref().map(|v| v.video_state).unwrap_or(0) { 1 => tr("Color is off: the picture is already shown as stored."), 2 => tr("Not available while the picture is shown in HDR."), _ => tr("Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected.") };
+                return Some((6997, if self.video_pill.contains(kurbo::Point::new(x, y)) { self.video_pill } else { self.video.rect }, why.to_string()))
+            }
             if self.clip_pill.contains(kurbo::Point::new(x, y)) { return Some((6998, self.clip_pill, tr("This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them.").to_string())) }
             if self.tab.contains(kurbo::Point::new(x, y)) && self.present.value(now) > 0.5 {
                 let mac = cfg!(target_os = "macos");
@@ -454,6 +466,7 @@ impl ColorDrawer {
         let (v, d) = self.gam.event(e, now, self.scale); dirty |= d; if let Some(v) = v { a.gamma = ((0.25 + v * 3.75) / 0.05).round() * 0.05; }
         for (i, rsp) in self.chan.event(e, now) { dirty = true; if rsp == Response::Clicked { a.channel = i as u8; } }
         if self.aids_reset.event(e, now) == Response::Clicked { a = ViewerAids::default(); }
+        match self.video.event(e, now) { Response::Clicked => { cmds.push(Cmd::Video(!self.video.selected)); dirty = true; } Response::None => {} _ => dirty = true }
         if a != self.aids { self.set_aids(a); cmds.push(Cmd::Aids(a)); }
         let (c, d) = self.save_as.event(e, now); dirty |= d; if c { self.open_naming(Naming::Save, fonts, bounds); dirty = true; }
         let (c, d) = self.reset.event(e, now); dirty |= d; if c { cmds.push(Cmd::ResetToDefault); }
@@ -539,6 +552,16 @@ impl ColorDrawer {
             min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
             x += pw + t::SPACING_100 as f64 * s;
         } }
+        // row 246: the picture is deliberately not the accurate one while the Video emulation acts
+        self.video_pill = Rect::ZERO;
+        if v.video && v.video_state == 0 {
+            let pl = fonts.detail("VIDEO", t::RAIL_GROUP_HEADER_SIZE * s as f32, paint::color(t::GRAY_50));
+            let ph = t::COMPONENT_HEIGHT_50 as f64 * s * 0.9; let pw = pl.width() as f64 + 2.0 * t::SPACING_100 as f64 * s; let py = self.header.y0 + (self.header.height() - ph) / 2.0;
+            self.video_pill = Rect::new(x, py, x + pw, py + ph);
+            paint::rounded(scene, self.video_pill, ph / 2.0, t::NOTICE_BACKGROUND_COLOR_DEFAULT);
+            min_ui::fonts::draw_layout(scene, &pl, Affine::translate((x + t::SPACING_100 as f64 * s, py + (ph - pl.height() as f64) / 2.0)));
+            x += pw + t::SPACING_100 as f64 * s;
+        }
         // row 222: the display can't show this picture's highlights — they clip; informational, the tooltip names the Knee
         self.clip_pill = Rect::ZERO;
         if v.clip_warn {
@@ -630,6 +653,7 @@ impl ColorDrawer {
             min_ui::fonts::draw_layout(scene, &vl, Affine::translate((r.x1 - vl.width() as f64, mid(&vl, r))));
         }
         self.chan.paint(scene, fonts, s, now);
+        self.video.paint(scene, fonts, s, now);
         if !self.aids.is_identity() { self.aids_reset.paint(scene, fonts, s, now); }
         scene.pop_layer();
     }

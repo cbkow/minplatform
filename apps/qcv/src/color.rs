@@ -176,9 +176,29 @@ impl crate::App {
         let side = self.dual.is_some().then(|| if self.edit_slot() == 1 { qcv_player::Side::B } else { qcv_player::Side::A });
         // row 222: the picture can exceed SDR white (an HDR file shown as is, or a chain whose last stage outputs HDR) on a screen
         // that has no headroom — its highlights clip; the drawer says so and points at the Highlight Knee
-        let picture_hdr = match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => mincolor_outputs_hdr(c), ClipChain::Ocio(o) => !qcv_color::ocio::view_is_sdr(&o.view) && !(o.knee.enabled && o.knee.target_nits <= 100.5) };
+        let picture_hdr = picture_is_hdr(&stored, on, tags_hdr);
         let clip_warn = self.screen_hdr == Some(false) && picture_hdr && id.is_some();
-        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn }
+        // row 246: the Video emulation acts on a chain's SDR picture — with Color off the picture is already as stored
+        let video_state = if !on { 1 } else if picture_hdr { 2 } else { 0 };
+        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn, video: self.settings.bool(crate::settings::k::VIDEO_EMULATION), video_state }
+    }
+    /// The Video emulation onto the screen's engines (row 246), each tick: the setting, where a chain renders that slot's
+    /// picture in SDR. Never in the difference view (its sides feed arithmetic, not a display).
+    pub(crate) fn sync_video_emulation(&mut self) {
+        let want = self.settings.bool(crate::settings::k::VIDEO_EMULATION) && self.settings.bool(crate::settings::k::COLOR_ENABLED);
+        let dual = self.dual.is_some();
+        let mut flags = [false; 2];
+        for slot in 0..if dual { 2 } else { 1 } {
+            if !want || self.color_bound[slot].is_none() { continue }
+            let (id, stored, _) = self.chain_of(&self.slot_item(slot));
+            let tags_hdr = id.as_ref().and_then(|i| self.project.item(i)).is_some_and(|m| { let t = m.video.color_transfer.to_lowercase(); t.contains("2084") || t.contains("pq") || t.contains("hlg") || t.contains("arib") });
+            flags[slot] = !picture_is_hdr(&stored, true, tags_hdr);
+        }
+        let Some(g) = self.gpu.as_mut() else { return };
+        if g.presenter.engine.dual().is_some_and(|d| d.mode == min_present::dual::CompareMode::Difference) { flags = [false; 2]; }
+        let mut changed = false;
+        for slot in 0..if dual { 2 } else { 1 } { if let Some(e) = slot_engine(g, slot, dual) && e.video_emulation() != flags[slot] { e.set_video_emulation(flags[slot]); changed = true; } }
+        if changed { g.ui_dirty = true; }
     }
     /// Bind each visible picture's chain to its engine: the single view's (slot 0), or dual's A (slot 0) and B (slot 1), each
     /// from its own clip (row 205); off = bypass. minColor = the slot's pass (a uniform update); OCIO = a pass built on a
@@ -307,6 +327,7 @@ impl crate::App {
             DCmd::DeletePreset(name) => { self.colors.user.retain(|p| p.name != name); self.colors.save(); }
             DCmd::Waveform(hdr, peak, open) => { self.settings.set_int(k::WAVEFORM_SCALE, match hdr { None => -1, Some(false) => 0, Some(true) => 1 }); self.settings.set_int(k::WAVEFORM_PEAK, peak as i64); self.settings.set_bool(k::WAVEFORM_OPEN, open); }
             DCmd::Height(h) => { self.settings.set_int(k::COLOR_DRAWER_HEIGHT, h.round() as i64); }
+            DCmd::Video(on) => { self.settings.set_bool(k::VIDEO_EMULATION, on); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             DCmd::Aids(a) => { if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_viewer_aids(a); } }
             DCmd::Tab => { if self.gpu.as_ref().is_some_and(|g| g.notes.open) { self.close_notes(); return } return self.color_cmd(DCmd::Toggle) }
             DCmd::Toggle => { let opening = self.gpu.as_ref().is_some_and(|g| !g.drawer.open); if opening { self.close_notes(); } if let Some(g) = self.gpu.as_mut() { g.drawer.toggle(now); self.settings.set_bool(k::COLOR_DRAWER_OPEN, g.drawer.open); g.ui_dirty = true; } }   // one drawer at a time (row 215)
@@ -326,6 +347,10 @@ pub(crate) fn slot_engine(g: &mut crate::Gpu, slot: usize, dual: bool) -> Option
 /// Row 222: whether a minColor chain can put out more than SDR white — its LAST stage decides: AgX or OpenDRT by their target
 /// peak; un-tone-mapped, the Highlight Knee's target when it is on, else the input (a PQ / HLG source passes its highlights
 /// through; scene-linear / SDR inputs are SDR-referred).
+/// Row 222's test: can the picture this chain hands the display exceed SDR white? With Color off, the source's own tags say.
+pub(crate) fn picture_is_hdr(stored: &Stored, on: bool, tags_hdr: bool) -> bool {
+    match &stored.chain { _ if !on => tags_hdr, ClipChain::MinColor(c) => mincolor_outputs_hdr(c), ClipChain::Ocio(o) => !qcv_color::ocio::view_is_sdr(&o.view) && !(o.knee.enabled && o.knee.target_nits <= 100.5) }
+}
 pub(crate) fn mincolor_outputs_hdr(c: &qcv_color::Chain) -> bool {
     if c.agx_on != 0 { return c.agx_peak > 100.5 }
     if c.open_drt != 0 { return c.peak_nits > 100.5 }

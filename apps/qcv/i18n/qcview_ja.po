@@ -4507,3 +4507,23 @@ msgstr "nit"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "出力はインストールされていません。出力は %1 に自身を登録します。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video"
+msgstr "ビデオ"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Color is off: the picture is already shown as stored."
+msgstr "カラーはオフです。画像はすでに保存されたままの状態で表示されています。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Not available while the picture is shown in HDR."
+msgstr "画像が HDR で表示されている間は使用できません。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
+msgstr "カラーマネジメントなしの Rec.709 デスクトップと同じように画像を表示します。シャドウと中間調が正確な表示より明るくなります。エミュレーションであり、リファレンスではありません。スクリーンショット、出力、波形には影響しません。"

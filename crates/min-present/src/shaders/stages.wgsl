@@ -17,7 +17,7 @@ struct U {
   rgb_expand: f32,       // legal-range RGB → full (rgb_range.h's rule)
   rot: f32,              // display rotation, quarter turns CW; the sampler inverse-rotates (QCView's rotatedSrcUv)
   off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
-  pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y —
+  pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y = the Video emulation (row 246)
   bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
   media: vec4<f32>,      // the media rect in viewport px (x, y, w, h; y down)
   vp: vec4<f32>,         // the viewport size in px
@@ -93,7 +93,11 @@ fn viewer_aids(lin: vec3<f32>) -> vec3<f32> {
 fn alpha_view() -> bool { return u.aids.w > 0.5 && u.aids.z > 3.5 && u.aids.z < 4.5; }
 // Stage 3 — the display transform. 0 EDR linear · 2 PQ encode · 3 SDR linear clipped (sRGB surface) · 4 SDR sRGB-encoded.
 fn stage3(lin_in: vec3<f32>, mode: f32, white: f32) -> vec4<f32> {
-  let lin = viewer_aids(lin_in);
+  var lin = viewer_aids(lin_in);
+  // VIDEO (canon row 246): the colour chain's SDR picture shown as an unmanaged Rec.709 desktop shows it — its display light
+  // re-encoded for a gamma-2.4 display and those code values taken as sRGB (the reverse of the 2.4 → sRGB translation the
+  // surface otherwise gets). Black and white stay; shadows and midtones lift. Only the SDR range moves.
+  if (u.pad1.y > 0.5 && (mode < 0.5 || mode > 2.5)) { let c = clamp(lin, vec3(0.0), vec3(1.0)); lin = srgb_eotf(pow(c, vec3(1.0 / 2.4))) + (lin - c); }
   // the extended-linear surface: on Windows scRGB 1.0 is 80 nits, so SDR white (1.0 here) is lifted to the user's SDR brightness
   if (mode < 0.5) { return vec4(max(lin, vec3(0.0)) * select(1.0, u.pad1.x, u.pad1.x > 0.0), 1.0); }
   if (mode < 2.5) { return vec4(pq_oetf(max(lin, vec3(0.0)) * white), 1.0); }

@@ -4523,3 +4523,23 @@ msgstr "Ниты"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "Выходы не установлены. Выход регистрируется в %1."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video"
+msgstr "Видео"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Color is off: the picture is already shown as stored."
+msgstr "Цвет выключен: изображение уже показывается таким, как сохранено."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Not available while the picture is shown in HDR."
+msgstr "Недоступно, пока изображение показывается в HDR."
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
+msgstr "Показывает изображение так, как его показывает рабочий стол Rec.709 без управления цветом: тени и средние тона светлее, чем в точном виде. Эмуляция, а не эталон. Снимки экрана, выходы и осциллограмма не затрагиваются."

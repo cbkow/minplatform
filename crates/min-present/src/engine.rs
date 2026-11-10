@@ -178,7 +178,8 @@ pub struct Engine {
     /// Stage 4: the UI layer's pipeline (blended), its uniform, and the bind group for the overlay texture when one is set.
     overlay_pipeline: wgpu::RenderPipeline, overlay_ubuf: wgpu::Buffer, overlay: Option<wgpu::BindGroup>,
     /// Stage 0: the viewport background under the picture's alpha (row 153): QCView's four modes, the bounds mix per mode, the checker tile in device px.
-    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
+    bg_pipeline: wgpu::RenderPipeline, bg_ubuf: wgpu::Buffer, bg_bind: wgpu::BindGroup, bg_mode: u8, bg_mix: [f32; 4], ui_scale: f32, aids: ViewerAids, /// the Video emulation (row 246): the chain's SDR picture as an unmanaged Rec.709 desktop shows it; the screen only
+    video_emu: bool, /// the extended-linear output's gain (canon row 184: Windows' SDR white ÷ 80)
     out_gain: f32,
     scope: Option<Scope>, scope_view: Option<ScopeView>, /// dual view's waveform tints, A / B (linear RGB; QCView's cyan / orange until the shell sets the theme's)
     side_tints: ([f32; 3], [f32; 3]),
@@ -304,7 +305,7 @@ impl Engine {
         let mut bg_mix = [0.0f32, 1.0, 0.7, 0.7];
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
-        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
+        let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), video_emu: false, out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
             video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
@@ -507,6 +508,10 @@ impl Engine {
     /// The waveform's last histogram (512 × 512, row 0 = the top of the scale) — tests and probes.
     #[doc(hidden)] pub fn scope_counts(&self) -> Option<Vec<u32>> { let s = self.scope.as_ref()?; let b = readback::read_buffer(&self.device, &self.queue, &s.hist, 512 * 512 * 4); Some(bytemuck::cast_slice(&b).to_vec()) }
     /// The viewer aids on the screen pass (a uniform write).
+    /// The Video emulation on the screen pass (row 246). It acts only where a colour chain renders the picture: with no chain
+    /// an SDR source is already shown as stored (row 180), and a capture / an output never carries it.
+    pub fn set_video_emulation(&mut self, on: bool) { if on != self.video_emu { self.video_emu = on; self.write_uniforms(); } }
+    pub fn video_emulation(&self) -> bool { self.video_emu }
     pub fn set_viewer_aids(&mut self, a: ViewerAids) { if a != self.aids { self.aids = a; self.write_uniforms(); self.relayout_dual(); } }
     pub fn viewer_aids(&self) -> ViewerAids { self.aids }
     /// Scale the screen's extended-linear output (Windows scRGB: 1.0 = 80 nits, so SDR white needs the user's SDR level ÷ 80).
@@ -636,7 +641,7 @@ impl Engine {
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
         let rotq = self.rotation_quarters() as f32;
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, 0.0], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, if self.video_emu { 1.0 } else { 0.0 }], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -754,6 +759,7 @@ impl Engine {
         if self.shown.is_none() { return Err(Error::NoFrame) }
         let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
         let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
+        let emu = std::mem::replace(&mut self.video_emu, false);   // a capture is the picture, not the emulation (row 246)
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
         self.write_uniforms();
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("capture"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[] });
@@ -763,7 +769,7 @@ impl Engine {
         self.encode_picture(&mut enc, &view, None);
         self.queue.submit([enc.finish()]);
         let px = if self.target_format == wgpu::TextureFormat::Rgba16Float { readback::read_rgba16f(&self.device, &self.queue, &tex, w, h) } else { vec![] };
-        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.write_uniforms();
+        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.video_emu = emu; self.write_uniforms();
         if px.is_empty() { return Err(Error::NoFormat) }
         // the RGB is premultiplied (= over black); the alpha beside it
         Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), px.chunks(4).map(|c| c[3].clamp(0.0, 1.0)).collect(), w, h))
@@ -774,6 +780,7 @@ impl Engine {
     /// HDR peak in bypass, its geometry for a guide).
     pub fn capture_dual(&mut self, aids: bool) -> Result<DualCapture, Error> {
         let Some(mut d) = self.dual.take() else { return Err(Error::NoFrame) };
+        let emu = (d.a.video_emulation(), d.b.video_emulation()); d.a.set_video_emulation(false); d.b.set_video_emulation(false);   // row 246: never in a capture
         let r = (|| {
             if !d.a.has_frame() && !d.b.has_frame() { return Err(Error::NoFrame) }
             let region = |e: &Engine, rect: [u32; 4]| CaptureRegion { rect, peak: e.bypass_hdr_peak(), src: (e.video.0 as f64, e.video.1 as f64), quarters: e.rotation_quarters() };
@@ -819,6 +826,7 @@ impl Engine {
                 }
             }
         })();
+        d.a.set_video_emulation(emu.0); d.b.set_video_emulation(emu.1);
         self.dual = Some(d);
         self.relayout_dual();   // the screen's layout back
         r
@@ -835,6 +843,7 @@ impl Engine {
     pub fn render_output_placed(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<(wgpu::Texture, Vec<Placement>), Error> {
         if self.shown.is_none() && self.dual.as_ref().is_none_or(|d| !d.a.has_frame() && !d.b.has_frame()) { return Err(Error::NoFrame) }
         let saved = (self.viewport, self.content, self.out_gain, self.display, self.scope_view);
+        let emu = std::mem::replace(&mut self.video_emu, false);   // an output is the picture, not the emulation (row 246)
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; self.display = DisplayMode { out, white }; self.scope_view = None;
         self.write_uniforms();
         let tex = self.device.create_texture(&wgpu::TextureDescriptor { label: Some("output canvas"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: self.target_format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[] });
@@ -842,16 +851,18 @@ impl Engine {
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("output") });
         { let _ = pass_clear_clear(&mut enc, "output clear", &view); }
         if let Some(mut d) = self.dual.take() {
+            let side_emu = (d.a.video_emulation(), d.b.video_emulation()); d.a.set_video_emulation(false); d.b.set_video_emulation(false);
             d.layout((w, h), None, self.display, self.aids, 1.0, None);
             d.encode(&mut enc, &view);
+            self.queue.submit([enc.finish()]);
+            d.a.set_video_emulation(side_emu.0); d.b.set_video_emulation(side_emu.1);
             self.dual = Some(d);
-        } else { self.encode_picture(&mut enc, &view, None); }
-        self.queue.submit([enc.finish()]);
+        } else { self.encode_picture(&mut enc, &view, None); self.queue.submit([enc.finish()]); }
         let places: Vec<Placement> = match self.dual.as_ref() {
             Some(d) => { let mut v = vec![d.a.picture_placement()]; if d.mode == crate::dual::CompareMode::SideBySide { v.push(d.b.picture_placement()); } v.into_iter().flatten().collect() }
             None => self.picture_placement().into_iter().collect(),
         };
-        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.write_uniforms(); self.relayout_dual();
+        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.video_emu = emu; self.write_uniforms(); self.relayout_dual();
         Ok((tex, places))
     }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32
@@ -1101,6 +1112,15 @@ mod tests {
         let bypass = e.render_offscreen(256, 16).unwrap();
         e.set_color_pass(Some(Box::new(IdentityColorPass))); let via_chain = e.render_offscreen(256, 16).unwrap();
         let mid = 128 * 4; assert!(bypass[mid] > via_chain[mid] + 0.02, "bypass {} should sit above the 2.4 read {}", bypass[mid], via_chain[mid]);
+        // VIDEO (canon row 246): with the chain engaged, the emulation undoes the 2.4 → sRGB translation — the BT.1886 source is
+        // back at its stored values, the picture bypass shows; with no chain the flag does nothing
+        e.set_video_emulation(true); let emulated = e.render_offscreen(256, 16).unwrap();
+        let worst = bypass.iter().zip(&emulated).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst <= 1.0 / 512.0, "the emulation vs as-stored: worst diff {worst}");
+        assert!(emulated[mid] > via_chain[mid] + 0.02 && (emulated[255 * 4] - via_chain[255 * 4]).abs() < 2e-3 && emulated[0].abs() < 2e-3, "midtones lift, black and white stay");
+        e.set_color_pass(None); let still = e.render_offscreen(256, 16).unwrap();
+        assert!(bypass.iter().zip(&still).all(|(a, b)| (a - b).abs() < 1e-6), "bypass is untouched by the flag");
+        e.set_video_emulation(false);
         e.set_color_pass(None); e.show(&f).unwrap();
         // the ramp is a ramp: linear light rises monotonically with x, black at code 16, 1.0 at code 235
         let row: Vec<f32> = (0..256).map(|x| fused[x * 4]).collect();

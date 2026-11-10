@@ -811,6 +811,7 @@ impl App {
         self.outputs_tick(Instant::now());
         { let lines = self.blender_status(); if let Some(g) = self.gpu.as_mut() && g.settings_panel.set_blender_lines(lines) { g.ui_dirty = true; } }
         let color_view = self.color_view();
+        self.sync_video_emulation();
         if let Some(g) = self.gpu.as_mut() && let Some(rx) = &g.mincolor_rx && let Ok(pass) = rx.try_recv() {
             g.presenter.engine.set_color_pass(Some(pass)); g.mincolor_rx = None; log::info!("colour chain bound to the slot");
         }
@@ -2670,7 +2671,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
                 let o = color_model::OcioChain { config: "ACES_2.0".into(), input: cfg.inputs().into_iter().find(|i| i.contains("ACEScg")).unwrap_or_default(), look: String::new(), view: cfg.views().into_iter().find(|v| v.contains("SDR")).unwrap_or_default(), scene_lut: String::new(), knee: qcv_color::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } };
                 (color_model::Stored { chain: color_model::ClipChain::Ocio(o), preset: String::new() }, Some(color_drawer::OcioLists { configs: color::BUNDLED.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(), inputs: cfg.inputs(), looks: cfg.looks(), views: cfg.views() }))
             } else { (edited, None) };
-            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true, clip_warn: std::env::var_os("QCV_UI_SNAP_CLIP").is_some() }, t0);
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true, clip_warn: std::env::var_os("QCV_UI_SNAP_CLIP").is_some(), video: std::env::var_os("QCV_UI_SNAP_VIDEO").is_some(), video_state: 0 }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
             engine.set_scope(d.scope());
             d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts, kurbo::Rect::new(0.0, 0.0, 1e5, 1e5), shown_at);

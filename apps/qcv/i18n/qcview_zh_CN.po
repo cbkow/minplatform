@@ -4507,3 +4507,23 @@ msgstr "尼特"
 msgctxt "LeftRail"
 msgid "No outputs installed. An output registers itself in %1."
 msgstr "未安装输出。输出会在 %1 中自行注册。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Video"
+msgstr "视频"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Color is off: the picture is already shown as stored."
+msgstr "色彩已关闭：画面已按存储的原样显示。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Not available while the picture is shown in HDR."
+msgstr "画面以 HDR 显示时不可用。"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "ColorPanel"
+msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected."
+msgstr "按未做色彩管理的 Rec.709 桌面的方式显示画面：暗部和中间调比准确视图更亮。这是模拟，不是参考。截图、输出和波形不受影响。"
