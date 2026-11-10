@@ -92,7 +92,12 @@ pub struct Output {
 
 #[derive(Default)]
 pub struct OutputBus { pub outputs: Vec<Output>, last_poll: Option<Instant>, restored: bool, enc: Option<min_present::wire::WireEncoder>, tap: Vec<f32>, audio_t: i64, /// the overlay (guides / strokes): its vello layer and what it holds (size + the overlay's signature)
-    layer: Option<min_ui::UiLayer>, layer_key: Option<u64>, trace: OutTrace }
+    layer: Option<min_ui::UiLayer>, layer_key: Option<u64>, trace: OutTrace, /// the frames being copied out: the wire encoder's sequence number → what the frame was when it was drawn
+    meta: std::collections::VecDeque<(u64, FrameMeta)> }
+
+/// A frame's facts AT SUBMIT (QCView stamps the descriptor at encode, canon row 259): two frames whose copies finish on one
+/// tick must not carry one frame index, one timecode and one timestamp.
+struct FrameMeta { playing: bool, frame: i64, fps: f64, tc: Option<String>, ns: i64, dual_b: bool, drawn: u32 }
 
 /// `QCV_TRACE_OUTPUT`: the output path's timing, a line a second — the gap between publish calls (the app's tick), the time
 /// one call takes on the main thread (render + encode + the ring copies), and the wire encoder's counters.
@@ -346,8 +351,10 @@ impl crate::App {
         let dev = g.presenter.engine.device.clone(); let q = g.presenter.engine.queue.clone();
         let enc = self.outputs.enc.get_or_insert_with(|| min_present::wire::WireEncoder::new(&dev));
         // the finished frames → their rings (tag = output index << 32 | spec_gen)
-        let outs = &mut self.outputs.outputs;
-        enc.take(&dev, &mut |bytes, w, hh, bpr, tag| {
+        let outs = &mut self.outputs.outputs; let metas = &mut self.outputs.meta;
+        enc.take(&dev, &mut |bytes, w, hh, bpr, tag, seq| {
+            while metas.front().is_some_and(|m| m.0 < seq) { metas.pop_front(); }
+            let Some((_, FrameMeta { playing, frame, fps, tc, ns, dual_b, drawn })) = metas.front().is_some_and(|m| m.0 == seq).then(|| metas.pop_front()).flatten() else { return };
             let (i, sgen) = ((tag >> 32) as usize, tag & 0xffff_ffff);
             let Some(o) = outs.get_mut(i) else { return };
             let (Some(ring), Some(spec)) = (o.ring.as_mut(), o.spec) else { return };
@@ -358,7 +365,7 @@ impl crate::App {
             let mut flags = (if spec.content == v::CONTENT_SIDE_B { 0 } else { v::FRAME_HAS_A }) | (if dual_b && spec.content != v::CONTENT_SIDE_A { v::FRAME_HAS_B } else { 0 }) | if playing { 0 } else { v::FRAME_PAUSED };
             let tcp = tc.as_deref().and_then(pack_tc);
             if let Some((_, drop)) = tcp { flags |= v::FRAME_TIMECODE_VALID | if drop { v::FRAME_DROP_FRAME } else { 0 }; }
-            ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: o.drawn, flags, presentation_ns: qcvo::now_ns(), source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
+            ring.commit(OutputFrameDesc { width: w, height: hh, bytes_per_row: bpr, pixel_format: match spec.fmt { min_present::wire::WireFormat::Bgra8 => OutputPixelFormat::Bgra8 as u32, min_present::wire::WireFormat::Rgb10 => OutputPixelFormat::Rgb10 as u32 }, transfer: spec.transfer, content: spec.content, layers: drawn, flags, presentation_ns: ns, source_frame_index: frame, source_fps_num: fn_, source_fps_den: fd, timecode: tcp.map(|t| t.0).unwrap_or(0), _pad0: 0 });
         });
         // the new frames
         for i in 0..self.outputs.outputs.len() {
@@ -404,7 +411,7 @@ impl crate::App {
             }
             let o = &mut self.outputs.outputs[i];
             o.pub_tag += 1;
-            if enc.submit(&dev, &q, &canvas, overlay, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); o.drawn = if overlay.is_some() { drawn } else { 0 }; }
+            if enc.submit(&dev, &q, &canvas, overlay, spec.fmt, encoding, ((i as u64) << 32) | (o.spec_gen & 0xffff_ffff)) { o.published = Some(stamp); o.drawn = if overlay.is_some() { drawn } else { 0 }; self.outputs.meta.push_back((enc.last_seq(), FrameMeta { playing, frame, fps, tc: tc.clone(), ns: qcvo::now_ns(), dual_b, drawn: o.drawn })); }
         }
     }
     /// The frame's transport facts: playing, the source frame, its fps, the timecode (QCView fills none of these — fix 7).

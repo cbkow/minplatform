@@ -900,7 +900,7 @@ mod tests {
         for (fmt, tag) in [(crate::wire::WireFormat::Bgra8, 1u64), (crate::wire::WireFormat::Rgb10, 2)] {
             assert!(w.submit(&e.device, &e.queue, &canvas, None, fmt, crate::wire::WireEncoding::Sdr, tag));
             let mut got = None;
-            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, ww, hh, bpr, t| got = Some((b.to_vec(), ww, hh, bpr, t))) { break } }
+            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, ww, hh, bpr, t, _| got = Some((b.to_vec(), ww, hh, bpr, t))) { break } }
             let (b, ww, hh, bpr, t) = got.expect("a frame came back");
             assert_eq!((ww, hh, bpr, t), (128, 32, 512, tag));
             let px = |x: u32, y: u32| u32::from_le_bytes(b[(y * bpr + x * 4) as usize..(y * bpr + x * 4 + 4) as usize].try_into().unwrap());
@@ -917,7 +917,7 @@ mod tests {
         for (enc, want, tol, tag) in [(crate::wire::WireEncoding::Pq { p3: false, white: 100.0 }, 520i32, 6, 3u64), (crate::wire::WireEncoding::Hlg { white: 100.0 }, 645, 8, 4)] {
             assert!(w.submit(&e.device, &e.queue, &canvas, None, crate::wire::WireFormat::Rgb10, enc, tag));
             let mut got = None;
-            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _| got = Some((b.to_vec(), bpr))) { break } }
+            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _, _| got = Some((b.to_vec(), bpr))) { break } }
             let (b, bpr) = got.expect("a frame");
             let v = u32::from_le_bytes(b[(16 * bpr + 127 * 4) as usize..(16 * bpr + 127 * 4 + 4) as usize].try_into().unwrap());
             let (r, g, bb) = ((v & 0x3ff) as i32, ((v >> 10) & 0x3ff) as i32, ((v >> 20) & 0x3ff) as i32);
@@ -932,7 +932,7 @@ mod tests {
         for (enc, want, tol, tag) in [(crate::wire::WireEncoding::Sdr, 1023i32, 0, 5u64), (crate::wire::WireEncoding::Pq { p3: false, white: 100.0 }, 594, 4, 6), (crate::wire::WireEncoding::Hlg { white: 100.0 }, 767, 5, 7)] {
             assert!(w.submit(&e.device, &e.queue, &canvas, Some(&ovv), crate::wire::WireFormat::Rgb10, enc, tag));
             let mut got = None;
-            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _| got = Some((b.to_vec(), bpr))) { break } }
+            for _ in 0..200 { let _ = e.device.poll(wgpu::PollType::wait_indefinitely()); if w.take(&e.device, &mut |b, _, _, bpr, _, _| got = Some((b.to_vec(), bpr))) { break } }
             let (b, bpr) = got.expect("a frame");
             let r = |x: u32, y: u32| (u32::from_le_bytes(b[(y * bpr + x * 4) as usize..(y * bpr + x * 4 + 4) as usize].try_into().unwrap()) & 0x3ff) as i32;
             assert!((r(10, 2) - want).abs() <= tol, "{enc:?}: the overlay's white = {} (want {want})", r(10, 2));

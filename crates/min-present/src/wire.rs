@@ -133,10 +133,13 @@ impl WireEncoder {
         }
         out
     }
+    /// The sequence number of the frame `submit` last accepted — `take` hands it back with the bytes, so the caller can keep
+    /// what it knew about the frame when it was drawn.
+    pub fn last_seq(&self) -> u64 { self.seq }
     /// The finished frames in the order they were submitted, each handed to `f` as (bytes with `bpr`-byte rows, w, h, bpr,
-    /// tag); their buffers are free again after. (The order is the submit sequence, not the tag: one output's frames share a
+    /// tag, seq); their buffers are free again after. (The order is the submit sequence, not the tag: one output's frames share a
     /// tag, and two that finish on the same poll would otherwise go out in buffer order — an older frame after a newer one.)
-    pub fn take(&mut self, device: &wgpu::Device, f: &mut dyn FnMut(&[u8], u32, u32, u32, u64)) -> bool {
+    pub fn take(&mut self, device: &wgpu::Device, f: &mut dyn FnMut(&[u8], u32, u32, u32, u64, u64)) -> bool {
         use std::sync::atomic::Ordering::*;
         let _ = device.poll(wgpu::PollType::Poll);
         let mut any = false;
@@ -146,7 +149,7 @@ impl WireEncoder {
         for i in ready {
             let s = &self.staging[i];
             if self.trace { self.stats.taken += 1; self.stats.latency_ms.push(s.at.elapsed().as_secs_f32() * 1000.0); }
-            if let Ok(data) = s.buf.slice(..).get_mapped_range() { f(&data, s.w, s.h, s.bpr, s.tag); }
+            if let Ok(data) = s.buf.slice(..).get_mapped_range() { f(&data, s.w, s.h, s.bpr, s.tag, s.seq); }
             s.buf.unmap(); s.state.store(0, Release); any = true;
         }
         for s in &self.staging { if s.state.load(Acquire) == 3 { s.state.store(0, Release); } }
