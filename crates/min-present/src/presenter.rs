@@ -22,6 +22,8 @@ pub struct Presenter {
     rgb10_ok: bool,
     /// an SDR monitor (Windows): the engine draws into this fp16 buffer as ever, one pass encodes it to the 10-bit sRGB surface
     sdr10: Option<Sdr10>,
+    /// frames in a row the surface refused to hand over (not counting an occluded window) — see [`Presenter::stalled`]
+    fail_streak: u32,
 }
 
 /// Canon row 220's final stage: the engine's linear fp16 picture (1.0 = SDR white) → sRGB-encoded 10-bit, clamped to SDR —
@@ -111,7 +113,7 @@ impl Presenter {
         engine.set_viewport(config.width, config.height);
         engine.set_display(DisplayMode { out, white: 100.0 });
         let rgb10_ok = offers(wgpu::TextureFormat::Rgb10a2Unorm, wgpu::SurfaceColorSpaces::SRGB) && format == wgpu::TextureFormat::Rgba16Float;
-        Ok(Presenter { engine, surface, config, info, ns_view, rgb10_ok, sdr10: None })
+        Ok(Presenter { engine, surface, config, info, ns_view, rgb10_ok, sdr10: None, fail_streak: 0 })
     }
     pub fn info(&self) -> &OutputInfo { &self.info }
     /// Canon row 220 (Windows): the window's monitor shows no HDR → a 10-bit sRGB surface fed by one encode pass; HDR → the
@@ -145,8 +147,9 @@ impl Presenter {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Occluded => { log::warn!("surface occluded ({}x{} {:?})", self.config.width, self.config.height, self.config.format); return false }
-            other => { log::warn!("get_current_texture: {other:?}"); self.surface.configure(&self.engine.device, &self.config); return false }
+            other => { self.fail_streak += 1; if self.fail_streak <= 3 || self.fail_streak % 600 == 0 { log::warn!("get_current_texture: {other:?} (×{})", self.fail_streak); } self.surface.configure(&self.engine.device, &self.config); return false }
         };
+        self.fail_streak = 0;
         let view = frame.texture.create_view(&Default::default());
         let mut enc = self.engine.device.create_command_encoder(&Default::default());
         if let Some(s) = &self.sdr10 {
@@ -160,6 +163,17 @@ impl Presenter {
         before_present();
         self.engine.queue.present(frame);
         true
+    }
+    /// The surface has refused a frame this many times in a row: the graphics device is gone or cannot present here (a machine
+    /// with no usable GPU loses its device at the first present and every later frame fails; a resize costs one or two).
+    pub fn stalled(&self) -> bool { self.fail_streak >= 120 }
+    /// Can the surface still hand over a frame? Asked once after the first present, before the window is shown: the frame
+    /// is taken and dropped unpresented. False = the first present killed the device (no usable GPU).
+    pub fn surface_alive(&mut self) -> bool {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(_) | wgpu::CurrentSurfaceTexture::Suboptimal(_) | wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => true,
+            other => { log::error!("the surface is dead after the first present: {other:?}"); false }
+        }
     }
     /// macOS: the potential EDR headroom of the screen holding the window (≤ 1 = no HDR there) — read for the Color drawer's
     /// "highlights clip" pill only (canon row 222); None elsewhere.

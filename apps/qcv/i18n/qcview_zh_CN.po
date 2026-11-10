@@ -4532,3 +4532,8 @@ msgstr "视频伽马"
 msgctxt "RightRail"
 msgid "Middle drag"
 msgstr "中键拖动"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
+msgstr "QCView 无法使用这台电脑的图形设备进行绘制。需要支持 DirectX 12 的显卡和最新的驱动程序。不支持没有 GPU 的虚拟机和远程会话。"

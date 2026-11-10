@@ -4540,3 +4540,8 @@ msgstr "Video-Gamma"
 msgctxt "RightRail"
 msgid "Middle drag"
 msgstr "Mittlere Taste ziehen"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
+msgstr "QCView kann mit der Grafikhardware dieses Computers nicht zeichnen. Erforderlich ist eine Grafikkarte mit DirectX-12-Unterstützung und aktuellem Treiber. Virtuelle Maschinen und Remotesitzungen ohne GPU werden nicht unterstützt."

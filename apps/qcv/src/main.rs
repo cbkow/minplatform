@@ -36,6 +36,7 @@ mod os_actions;
 mod menu;
 #[cfg(target_os = "macos")] mod mac_open;
 #[cfg(target_os = "macos")] mod sparkle;
+mod fatal;
 mod single_instance;
 mod toolbox;
 mod logging;
@@ -1167,6 +1168,7 @@ impl App {
             if let Some(ms) = u.render(&g.presenter.engine.device, &g.presenter.engine.queue) { g.ui_ms.push(ms); }
         }
         let presented = g.presenter.draw(|| g.window.pre_present_notify());
+        if g.presenter.stalled() { fatal::no_graphics("the surface stopped handing over frames"); }
         if presented {
             self.frames_presented += 1;
             if let Some(lp) = self.last_present { self.presents.push((now - lp).as_secs_f32() * 1000.0); }
@@ -2081,7 +2083,7 @@ impl ApplicationHandler for App {
         let ns_view = { use raw_window_handle::{HasWindowHandle, RawWindowHandle}; match window.window_handle().unwrap().as_raw() { RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr()), _ => None } };
         #[cfg(not(target_os = "macos"))]
         let ns_view = None;
-        let mut presenter = Presenter::new(&instance, surface, (size.width, size.height), self.o.out, ns_view).expect("presenter");
+        let mut presenter = match Presenter::new(&instance, surface, (size.width, size.height), self.o.out, ns_view) { Ok(p) => p, Err(e) => fatal::no_graphics(&format!("no renderer: {e}")) };
         let mut d = presenter.engine.display(); d.white = self.o.white; presenter.engine.set_display(d);
         presenter.engine.set_content_rect(Some(content_rect(size.width, size.height, window.scale_factor())));
         presenter.engine.set_background(self.settings.int(settings::k::BACKGROUND_MODE) as u8); presenter.engine.set_ui_scale(window.scale_factor() as f32);
@@ -2129,7 +2131,13 @@ impl ApplicationHandler for App {
         if let Some(b) = self.o.dual.clone() { self.enter_dual(&b); }
         if std::env::var_os("QCV_OPEN_NOTES").is_some() { self.toggle_notes(); }   // harness: the Notes drawer at launch
         // the first frame, then the window (see `show_after_first_frame`)
-        if show_after_first_frame { self.tick(); if let Some(g) = self.gpu.as_ref() { g.window.set_visible(true); g.window.request_redraw(); } }
+        if show_after_first_frame {
+            self.tick();
+            // no usable GPU (a virtual machine, a remote session): the first present kills the device and the window would sit
+            // blank — say so instead, before the window is ever shown (the Sandbox walk, 2026-11-09)
+            if self.gpu.as_mut().is_some_and(|g| !g.presenter.surface_alive()) { fatal::no_graphics("the first present lost the device"); }
+            if let Some(g) = self.gpu.as_ref() { g.window.set_visible(true); g.window.request_redraw(); }
+        }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.o.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.o.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); return } }

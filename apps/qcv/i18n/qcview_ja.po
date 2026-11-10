@@ -4532,3 +4532,8 @@ msgstr "ビデオガンマ"
 msgctxt "RightRail"
 msgid "Middle drag"
 msgstr "中ボタンドラッグ"
+
+#. drafted 2026-11-09, unreviewed
+msgctxt "Main"
+msgid "QCView cannot draw with this computer's graphics device. It needs a graphics card that supports DirectX 12, with a current driver. Virtual machines and remote sessions without a GPU are not supported."
+msgstr "このコンピューターのグラフィックスデバイスでは QCView を描画できません。DirectX 12 に対応したグラフィックスカードと最新のドライバーが必要です。GPU のない仮想マシンやリモートセッションには対応していません。"
