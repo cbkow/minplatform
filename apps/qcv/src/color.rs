@@ -1,7 +1,7 @@
 //! The colour engines in the app (canon §18, rows 198–204). Until the Color drawer and its presets land (row 199, the
 //! preset UX talk owed), a chain is engaged only from the harness: `QCV_MINCOLOR=<name>` with one of [`TEST_CHAINS`], or
-//! `QCV_OCIO=<config>|<input>|<view>[|<look>]` against a bundled config folder (`QCV_OCIO_CONFIGS`, else QCView's
-//! checkout beside this repo — where the configs ship from is a packaging question).
+//! `QCV_OCIO=<config>|<input>|<view>[|<look>]` against a bundled config folder (`QCV_OCIO_CONFIGS`, else the app's own
+//! `assets/OCIO`).
 //! The minColor pipeline builds OFF the main thread at startup (515 ms cold on macOS; QCView built it ahead too) and
 //! binds to the slot when ready.
 use qcv_color::{ids, Chain, MinColorPass};
@@ -54,9 +54,12 @@ pub fn wanted_ahead(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<mpsc::
 /// The bundled configs' folder (Blender5.2/ ACES_1.3/ ACES_2.0/).
 pub fn ocio_configs_dir() -> std::path::PathBuf {
     std::env::var_os("QCV_OCIO_CONFIGS").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        // the configs ship with the app (`apps/qcv/assets/OCIO`; they came over from QCView-Player 2026-11-09): beside the
+        // executable in a Windows package, in the bundle's Resources on macOS, else this workspace's copy (target/<profile>/QCView)
         let exe = std::env::current_exe().unwrap_or_default();
-        // target/<profile>/qcv → the repo → its sibling QCView-Player
-        exe.ancestors().nth(4).map(|r| r.join("QCView-Player/assets/OCIO")).unwrap_or_default()
+        let dir = exe.parent().unwrap_or(std::path::Path::new(""));
+        let candidates = [dir.join("assets/OCIO"), dir.join("../Resources/assets/OCIO"), exe.ancestors().nth(3).map(|r| r.join("apps/qcv/assets/OCIO")).unwrap_or_default()];
+        candidates.iter().find(|p| p.is_dir()).cloned().unwrap_or_else(|| candidates[2].clone())
     })
 }
 

@@ -1,11 +1,11 @@
 //! OCIO on the GPU against OCIO's own CPU processor, on the three bundled configs (row 198), through the one display.
-//! Configs: `QCV_OCIO_CONFIGS` (a folder holding Blender5.2/ ACES_1.3/ ACES_2.0/), else QCView's checkout beside this
-//! repo (`../QCView-Player/assets/OCIO`) — where they ship from is a packaging question. Skips when absent.
+//! Configs: `QCV_OCIO_CONFIGS` (a folder holding Blender5.2/ ACES_1.3/ ACES_2.0/), else the app's own copy
+//! (`apps/qcv/assets/OCIO`, moved here from QCView-Player 2026-11-09). Skips when absent.
 use super::ocio::*;
 
 pub fn configs_dir() -> Option<std::path::PathBuf> {
     let p = std::env::var_os("QCV_OCIO_CONFIGS").map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../QCView-Player/assets/OCIO"));
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/qcv/assets/OCIO"));
     p.join("Blender5.2/config.ocio").exists().then_some(p)
 }
 
