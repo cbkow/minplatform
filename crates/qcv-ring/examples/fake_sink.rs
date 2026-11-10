@@ -131,8 +131,9 @@ impl Cadence {
         self.card_last = Some(idx);
     }
     fn report(&mut self, id: &str, total: bool) {
-        if total { println!("fake_sink {id}: cadence TOTAL: {}", self.all.line()); }
-        else if self.sec.new > 0 { println!("fake_sink {id}: cadence: {}", self.sec.line()); }
+        // `FAKE_SINK_LOG=<file>`: the lines appended there too (a sink QCView launches on Windows has no console to print to)
+        let line = if total { format!("fake_sink {id}: cadence TOTAL: {}", self.all.line()) } else if self.sec.new > 0 { format!("fake_sink {id}: cadence: {}", self.sec.line()) } else { String::new() };
+        if !line.is_empty() { println!("{line}"); if let Some(p) = std::env::var_os("FAKE_SINK_LOG") { use std::io::Write; if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) { let _ = writeln!(f, "{line}"); } } }
         self.sec = Tally::default();
     }
 }

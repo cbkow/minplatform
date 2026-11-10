@@ -376,7 +376,8 @@ impl crate::App {
             let st = self.outputs.enc.as_mut().map(|e| std::mem::take(&mut e.stats)).unwrap_or_default();
             let mut c = self.outputs.collector.as_ref().and_then(|c| c.stats.lock().ok().map(|mut s| std::mem::take(&mut *s))).unwrap_or_default();
             let mut p = std::mem::take(&mut tr.publish_ms);
-            println!("output trace: submitted {} busy {} committed {} dropped {} · shown→ring ms p50 {:.1} p95 {:.1} max {:.1} · copy back ms p50 {:.1} p95 {:.1} max {:.1} · main thread ms p50 {:.2} p95 {:.2} max {:.2}",
+            // through the log, not a print: on Windows the windowed app's prints go to the launching console, never to a file
+            log::info!("output trace: submitted {} busy {} committed {} dropped {} · shown→ring ms p50 {:.1} p95 {:.1} max {:.1} · copy back ms p50 {:.1} p95 {:.1} max {:.1} · main thread ms p50 {:.2} p95 {:.2} max {:.2}",
                 st.submitted, st.busy, c.committed, c.dropped, pct(&mut c.shown_ms, 0.5), pct(&mut c.shown_ms, 0.95), pct(&mut c.shown_ms, 1.0), pct(&mut c.readback_ms, 0.5), pct(&mut c.readback_ms, 0.95), pct(&mut c.readback_ms, 1.0), pct(&mut p, 0.5), pct(&mut p, 0.95), pct(&mut p, 1.0));
         }
     }
