@@ -4562,3 +4562,18 @@ msgstr "색상 관리가 없는 Rec.709 데스크톱처럼 화면을 표시합�
 msgctxt "ColorPanel"
 msgid "Couldn't load the Scene LUT %1: %2"
 msgstr "장면 LUT %1을(를) 불러올 수 없습니다: %2"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Bake this chain to a 65³ .cube LUT: its SDR picture, sRGB-encoded"
+msgstr "이 체인을 65³ .cube LUT로 베이크: SDR 화면, sRGB 인코딩"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Choose an input and a view first"
+msgstr "입력과 뷰를 먼저 선택하십시오"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "LUT exported without the Highlight Knee: %1"
+msgstr "하이라이트 니 없이 LUT 내보냄: %1"

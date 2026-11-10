@@ -183,9 +183,12 @@ impl crate::App {
         let clip_warn = self.screen_hdr == Some(false) && picture_hdr && id.is_some();
         // row 246: the Video emulation acts on a chain's SDR picture — with Color off the picture is already as stored
         let video_state = if !on { 1 } else if picture_hdr { 2 } else { 0 };
+        // row 257 R13: Export LUT is offered whenever the edited chain is complete, Color on or off, either engine (QCView
+        // gated it on OCIO's state even under minColor — spec B5)
+        let export_ok = match &stored.chain { ClipChain::MinColor(_) => true, ClipChain::Ocio(o) => !o.input.is_empty() && !o.view.is_empty() && self.ocio_configs.contains_key(&o.config) };
         // row 257 R5: the edited chain's Scene LUT did not load (whichever slot shows that chain)
         let lut_error = match &stored.chain { ClipChain::Ocio(o) => { let key = ocio_key(o); self.ocio_error.iter().flatten().find(|(k, _)| *k == key).map(|(_, why)| why.clone()).unwrap_or_default() } _ => String::new() };
-        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn, video: self.settings.bool(crate::settings::k::VIDEO_EMULATION), video_state, lut_error }
+        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn, video: self.settings.bool(crate::settings::k::VIDEO_EMULATION), video_state, lut_error, export_ok }
     }
     /// The Video emulation onto the screen's engines (row 246), each tick: the setting, where a chain renders that slot's
     /// picture in SDR. Never in the difference view (its sides feed arithmetic, not a display).
@@ -317,6 +320,7 @@ impl crate::App {
                 let o = self.fixup_ocio(OcioChain { config: BUNDLED[0].0.into(), input: String::new(), look: String::new(), view: String::new(), scene_lut: String::new(), ccc_id: String::new(), knee: qcv_color::Knee::default() });
                 self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(Stored { chain: ClipChain::Ocio(o), preset: String::new() });
             }
+            DCmd::ExportLut => self.export_lut(),
             DCmd::PickLut => {
                 // QCView's `lutPicker`: "Choose LUT", the scene slot's two filters; a new file starts at its first correction
                 let (_, st, _) = self.color_target();
@@ -402,6 +406,39 @@ mod hdr_chain_tests {
         c.knee_tgt = 600.0; assert!(super::mincolor_outputs_hdr(&c));
         c.agx_on = 1; c.agx_peak = 100.0; assert!(!super::mincolor_outputs_hdr(&c), "AgX to SDR");
         c.agx_on = 0; c.knee_on = 0; c.open_drt = 1; c.peak_nits = 1000.0; assert!(super::mincolor_outputs_hdr(&c), "OpenDRT at 1000 nits");
+    }
+}
+
+impl crate::App {
+    /// EXPORT LUT (canon row 257, spec `docs/phase2/step6-luts.md` R9–R14): the edited target's chain — the clip on screen,
+    /// dual's edited side, else the project default — baked to QCView's 65³ `.cube`: Input → Look → Scene LUT → Knee → the
+    /// view / the Rendering, as a screenshot sees it (the SDR twin, sRGB-encoded). Works with Color off; never the viewer
+    /// aids or the Video emulation. No suggested name (a clip's or a preset's name would ride out in a file sent elsewhere).
+    fn export_lut(&mut self) {
+        let tc = |s: &'static str| min_i18n::trc("ColorPanel", s);
+        let (_, st, _) = self.color_target();
+        let Some(path) = rfd::FileDialog::new().set_title(tc("Export LUT…")).add_filter(tc("3D LUT (*.cube)"), &["cube"]).save_file() else { return };
+        let path = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("cube")) { path } else { let mut p = path.into_os_string(); p.push(".cube"); std::path::PathBuf::from(p) };
+        let n = qcv_color::bake::CUBE_SIZE;
+        let baked: Result<(Vec<f32>, bool, &str), String> = match st.chain {
+            ClipChain::MinColor(c) => { let mut sdr = c; sdr.peak_nits = 100.0; sdr.agx_peak = 100.0; Ok((qcv_color::bake::bake_mincolor(&sdr, n), false, "minColor Transform LUT")) }
+            ClipChain::Ocio(o) => match self.ocio_config(&o.config) {
+                None => Err(min_i18n::trc("qcv::OCIOConfigManager", "No OCIO config loaded").to_string()),
+                Some(cfg) => {
+                    let view = crate::capture::sdr_view(&cfg.views(), &o.view).unwrap_or_else(|| o.view.clone());
+                    let spec = qcv_color::ocio::Spec { input: o.input.clone(), look: o.look.clone(), view, scene_lut: lut_native(&o.scene_lut), ccc_id: o.ccc_id.clone() };
+                    qcv_color::bake::bake_ocio(&cfg, &spec, o.knee, n).map(|(rgb, skipped)| (rgb, skipped, "OCIO Transform LUT"))
+                }
+            },
+        };
+        let name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let (text, kind) = match baked.and_then(|(rgb, skipped, title)| qcv_color::bake::write_atomic(&path, &qcv_color::bake::cube_text(title, n, &rgb)).map(|_| skipped).map_err(|e| e.to_string())) {
+            Ok(false) => (min_i18n::fill(tc("LUT exported: %1"), &[&name]), min_ui::ToastKind::Positive),
+            // the chain could not be split around the Knee: QCView exported without it and only its log said so (spec B6)
+            Ok(true) => (min_i18n::fill(tc("LUT exported without the Highlight Knee: %1"), &[&name]), min_ui::ToastKind::Notice),
+            Err(why) => { log::warn!("Export LUT: {why}"); (min_i18n::fill(tc("Export LUT failed — %1"), &[&why]), min_ui::ToastKind::Negative) }
+        };
+        if let Some(g) = self.gpu.as_mut() { g.toast.show(&text, kind, std::time::Instant::now()); g.ui_dirty = true; }
     }
 }
 

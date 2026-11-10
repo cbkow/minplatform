@@ -4578,3 +4578,18 @@ msgstr "Показывает изображение так, как его пок
 msgctxt "ColorPanel"
 msgid "Couldn't load the Scene LUT %1: %2"
 msgstr "Не удалось загрузить LUT сцены %1: %2"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Bake this chain to a 65³ .cube LUT: its SDR picture, sRGB-encoded"
+msgstr "Запечь эту цепочку в .cube LUT 65³: её SDR-изображение в кодировке sRGB"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Choose an input and a view first"
+msgstr "Сначала выберите Input и View"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "LUT exported without the Highlight Knee: %1"
+msgstr "LUT экспортирован без Highlight Knee: %1"

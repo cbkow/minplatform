@@ -4570,3 +4570,18 @@ msgstr "Mostra l’immagine come fa un desktop Rec.709 senza gestione del colore
 msgctxt "ColorPanel"
 msgid "Couldn't load the Scene LUT %1: %2"
 msgstr "Impossibile caricare la LUT di scena %1: %2"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Bake this chain to a 65³ .cube LUT: its SDR picture, sRGB-encoded"
+msgstr "Esporta questa catena in una LUT .cube 65³: la sua immagine SDR, codificata in sRGB"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Choose an input and a view first"
+msgstr "Scegli prima un input e una view"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "LUT exported without the Highlight Knee: %1"
+msgstr "LUT esportata senza il Knee alte luci: %1"

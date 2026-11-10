@@ -186,3 +186,34 @@ fn a_scene_lut_on_the_gpu_matches_the_cpu() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_exported_cube_read_back_as_a_scene_lut_is_the_chain() {
+    // Export LUT (canon row 257): the cube maps the Input's code values to the chain's SDR picture, sRGB-encoded. Read back by
+    // OCIO as a Scene LUT in front of an identity view (Standard on linear Rec.709), it must give what the chain gives.
+    let Some(b) = open("Blender5.2") else { eprintln!("no configs — skipped"); return };
+    let dir = std::env::temp_dir().join(format!("qcv-ocio-bake-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+    let srgb = |v: f32| if v <= 0.0031308 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    for (case, (spec, knee)) in [
+        (Spec { input: "Rec.1886".into(), view: "Standard".into(), ..Default::default() }, crate::Knee::default()),
+        (Spec { input: "Rec.1886".into(), view: "AgX".into(), ..Default::default() }, crate::Knee::default()),
+        (Spec { input: "Rec.1886".into(), view: "Standard".into(), ..Default::default() }, crate::Knee { enabled: true, source_nits: 400.0, target_nits: 100.0, start: -1.0 }),
+    ].into_iter().enumerate() {
+        let t0 = std::time::Instant::now();
+        let (rgb, skipped) = crate::bake::bake_ocio(&b, &spec, knee, crate::bake::CUBE_SIZE).unwrap();
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        assert!(!skipped, "{spec:?}: the Knee was left out");
+        let path = dir.join(format!("out{case}.cube"));   // a name of its own: OCIO caches a LUT file by its path
+        crate::bake::write_atomic(&path, &crate::bake::cube_text("OCIO Transform LUT", crate::bake::CUBE_SIZE, &rgb)).unwrap();
+        let back = Chain::build(&b, &Spec { input: "Linear Rec.709".into(), view: "Standard".into(), scene_lut: path.to_string_lossy().into_owned(), ..Default::default() }).unwrap();
+        let px = [0.1f32, 0.1, 0.1, 1.0, 0.5, 0.5, 0.5, 1.0, 0.9, 0.3, 0.2, 1.0, 0.25, 0.75, 0.5, 1.0];
+        let mut got = px.to_vec(); back.apply_cpu(&mut got);
+        // the chain itself, with the same Knee
+        let mut want = px.to_vec();
+        if knee.enabled { let (pre, post, side) = Chain::build_split(&b, &spec).unwrap(); pre.apply_cpu(&mut want); for c in want.chunks_mut(4) { let k = crate::knee_cpu(&knee, side, view_is_sdr(&spec.view), [c[0], c[1], c[2]]); c[..3].copy_from_slice(&k); } post.apply_cpu(&mut want); }
+        else { Chain::build(&b, &spec).unwrap().apply_cpu(&mut want); }
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() { if i % 4 == 3 { continue } assert!((g - srgb(w.max(0.0))).abs() < 4e-3, "{spec:?} {knee:?}: {got:?} vs sRGB of {want:?}"); }
+        eprintln!("{} → {} (knee {}): 65³ baked in {ms:.0} ms", spec.input, spec.view, knee.enabled);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
