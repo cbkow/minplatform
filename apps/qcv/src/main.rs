@@ -2514,7 +2514,7 @@ impl ApplicationHandler for App {
                 if pressed && !event.repeat && self.mods.ctrl && !self.mods.shift && matches!(&event.logical_key, Key::Character(c) if c == "4") { self.toggle_notes(); return }
                 // Esc's ladder (QCView): the stroke, the selection (above), then Review, then compact / fullscreen
                 if pressed && !event.repeat && matches!(event.logical_key, Key::Named(NamedKey::Escape)) && !self.mods.ctrl && !self.mods.shift && !self.mods.alt && self.exit_review() { return }
-                if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { if self.gpu.as_ref().is_some_and(|g| g.compact) { self.toggle_compact(); return } if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); return } self.finish(); el.exit(); return }
+                if pressed && matches!(event.logical_key, Key::Named(NamedKey::Escape)) { if self.gpu.as_ref().is_some_and(|g| g.compact) { self.toggle_compact(); return } if self.gpu.as_ref().is_some_and(|g| g.fullscreen) { self.toggle_fullscreen(); return } return }   // Escape never quits (canon row 265): Cmd / Ctrl+Q and the window's close button do
                 let key = match &event.logical_key {
                     Key::Character(c) if c == " " => Some(qcv_player::Key::Space),
                     Key::Character(c) => c.chars().next().map(qcv_player::Key::Char),

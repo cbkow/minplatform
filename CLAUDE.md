@@ -1,13 +1,13 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-10, evening):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`), being released as QCView 3.0. Packaging,
-  notices and the privacy policy are done; of the four 2.x features put back before the release (rows 254–258), note pennants,
-  Open in minNotes and **the Scene LUT / Export LUT (row 257) are built** (walks owed); **a live source as a dual-view side
-  (row 258) is next**, then the docs rewrite and the final notarization. The same day also brought the AJA hardware walk and
-  what came of it (rows 259–264: the output path's collector thread, QCBridgeA 0.0.2, the colour pass). The Stream card was
-  built and REMOVED (row 244) — do not re-propose it. **Read `docs/phase2/handoff-2026-11-10.md` first** (its last section is
-  the day's second half), then `handoff-2026-11-09.md` (how to run things) and the canon `docs/rust-wgpu-port.md` (rows are the
-  rulings, each dated; the newest are at the end of the last Decisions table).
+- **State (2026-11-10, night):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`), being released as QCView 3.0. The
+  features are in (rows 254–258 built), the manual is rewritten with its screenshots (worktree `../QCView-Player-3.0`, branch
+  `3.0-release`), rulings 265–267 are the newest. **Next = the final builds** (both packaged builds are stale: macOS
+  notarization + the Sparkle update, the Windows MSIX + its clean-machine and upgrade checks), then the user's walks, the
+  pushes and the Store submission. The Stream card was built and REMOVED (row 244) — do not re-propose it. **Read
+  `docs/phase2/handoff-2026-11-10.md` first** (its LAST section is where things stand), then `handoff-2026-11-09.md` (how to
+  run things) and the canon `docs/rust-wgpu-port.md` (rows are the rulings, each dated; the newest are at the end of the
+  last Decisions table).
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a
