@@ -76,6 +76,10 @@ impl LiveStrip {
         let ty = rect.y0 + (rect.height() - th) / 2.0;
         self.transfer.rect = Rect::new(gx - t::SPACING_300 as f64 * scale - tw, ty, gx - t::SPACING_300 as f64 * scale, ty + th);
     }
+    /// Where the row's own controls begin (the Transfer chip's left edge): dual view's chips and mode buttons sit before it
+    /// while a live item is loaded (canon row 258, R2 — the status strip that carries them is replaced by this row).
+    pub fn controls_left(&self) -> f64 { self.transfer.rect.x0 }
+    pub fn rect(&self) -> Rect { self.rect }
     /// The status row's animation: the live dot pulses (QCView: 1 → 0.35 over 900 ms each way).
     pub fn animating(&self) -> bool { (self.review.is_none() && self.facts.as_ref().is_some_and(|f| f.status == Status::Live)) || self.tips.next_change(Instant::now()).is_some() }
     pub fn event(&mut self, e: &Event, now: Instant, fonts: &mut Fonts, bounds: Rect) -> (Vec<Cmd>, bool, bool) {

@@ -40,12 +40,13 @@ fn clips(tl: &Timeline, side: Side) -> Vec<&Clip> { let mut v: Vec<&Clip> = tl.t
 pub fn offset(c: &Clip, master: qcv_timeline::Rate) -> i64 { c.start - rescale(c.source_in, c.source_rate, master) }
 
 pub struct DualBars {
-    pub rect: Rect, pub selected: Option<(Side, String)>, pub target: Side,
+    pub rect: Rect, pub selected: Option<(Side, String)>, pub target: Side, /// the LIVE sides (canon row 258, R4): a full-width bar labelled LIVE, no clip, no edit
+    pub live: [bool; 2],
     hover: Option<(Side, String, Zone)>, press: Option<Gesture>, last_click: Option<(String, Instant)>, pointer: (f64, f64),
 }
 
 impl DualBars {
-    pub fn new() -> DualBars { DualBars { rect: Rect::ZERO, selected: None, target: Side::B, hover: None, press: None, last_click: None, pointer: (0.0, 0.0) } }
+    pub fn new() -> DualBars { DualBars { rect: Rect::ZERO, selected: None, target: Side::B, live: [false; 2], hover: None, press: None, last_click: None, pointer: (0.0, 0.0) } }
     pub fn height(scale: f64) -> f64 { 2.0 * LANE * scale }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.rect.contains(kurbo::Point::new(x, y)) }
     pub fn is_pressed(&self) -> bool { self.press.is_some() }
@@ -180,6 +181,15 @@ impl DualBars {
             if target { paint::rounded(scene, cell.inset(-1.0 * scale), 2.0 * scale, if side == Side::A { t::SIDE_A_SELECTED_BACKGROUND_COLOR } else { t::SIDE_B_SELECTED_BACKGROUND_COLOR }); }
             let l = fonts.layout(if side == Side::A { "A" } else { "B" }, Family::Sans, 10.0 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if target { t::WHITE } else if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
             min_ui::fonts::draw_layout(scene, &l, Affine::translate((cell.x1 - l.width() as f64 - 4.0 * scale, cell.y0 + (cell.height() - l.height() as f64) / 2.0)));   // flush right, by the clips
+            if self.live[side as usize] {
+                // a live side has no clip: one bar across the lane in the side's wash, labelled LIVE — nothing to trim, slip, cut or
+                // delete, nothing saved (QCView drew an editable full-width clip that did nothing; spec `step6-live-dual.md` §5.3)
+                let lr = Rect::new(lane.x0 + LABEL_W * scale + 0.5 * scale, y0, lane.x1, y1);
+                paint::rounded(scene, lr, radius, t::PLAYLIST_BAR_CLIP_COLOR);
+                paint::rounded(scene, lr, radius, if side == Side::A { t::CLIP_BAR_SIDE_A_TINT_COLOR } else { t::CLIP_BAR_SIDE_B_TINT_COLOR });
+                let ll = fonts.layout(min_i18n::trc("LiveStrip", "LIVE"), Family::Sans, 9.0 * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(if side == Side::A { t::SIDE_A_COLOR } else { t::SIDE_B_COLOR }));
+                min_ui::fonts::draw_layout(scene, &ll, Affine::translate((lr.x0 + 6.0 * scale, lr.y0 + (lr.height() - ll.height() as f64) / 2.0)));
+            }
             for c in clips(tl, side) {
                 let (mut x0, mut x1) = Self::span(c, sc, st, scale);
                 match &preview {

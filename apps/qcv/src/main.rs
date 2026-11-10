@@ -970,6 +970,7 @@ impl App {
                 let (mode, seam, gain) = g.presenter.engine.dual().map(|d| (d.mode, d.seam, d.gain)).unwrap_or((CompareMode::Single, 0.5, 1.0));
                 if g.dualc.sync(self.dual.is_some(), self.pl_editor.is_none(), mode, a, b, seam, gain, !self.active_dual_view.is_empty()) { g.ui_dirty = true; }
                 if g.dualc.set_target(g.dual_bars.target) { g.ui_dirty = true; }
+                { let live = [self.dual.as_ref().is_some_and(|d| d.is_live(qcv_player::Side::A)), self.dual.as_ref().is_some_and(|d| d.is_live(qcv_player::Side::B))]; if g.dual_bars.live != live { g.dual_bars.live = live; g.ui_dirty = true; } }
                 let extra = match (self.dual.as_ref(), self.dual_editor.as_ref()) { (Some(d), Some(ed)) => g.dual_bars.offset_text(&ed.timeline, d.current_frame() as i64).unwrap_or_default(), _ => String::new() };
                 if extra != g.strip.extra { g.strip.extra = extra; g.ui_dirty = true; }
                 let aud = |s: qcv_player::Side| self.dual.as_ref().filter(|d| d.side_has_audio(s)).map(|d| d.side_muted(s));
@@ -1187,7 +1188,10 @@ impl App {
                 g.strip.layout(w as f64, bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale, scale);
                 { let sr = g.strip.rect; let fw = g.strip.fps_width(&mut g.fonts, scale); let gap = t::SPACING_300 as f64 * scale;
                   let ew = g.strip.extra_width(&mut g.fonts, scale);
-                  g.dualc.layout(&mut g.fonts, g.strip.wells_right() + ew + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale); }
+                  g.dualc.layout(&mut g.fonts, g.strip.wells_right() + ew + gap, sr.x1 - t::SPACING_100 as f64 * scale - fw - if fw > 0.0 { gap } else { 0.0 }, sr.y0, sr.height(), scale);
+                  // a live item loaded (row 258, R2): the live row stands where the strip was, so the dual controls sit on it,
+                  // before its Transfer chip — the way into dual from a live source (QCView showed them for a stream)
+                  if live_on { let lr = g.live_strip.rect(); g.dualc.layout(&mut g.fonts, lr.x0 + lr.width() * 0.4, g.live_strip.controls_left() - gap, lr.y0, lr.height(), scale); } }
                 // the seam (Split wipe: grey, white under the pointer / while dragged) and side-by-side's fixed grey centre line (QCView's compositor)
                 let seam_line = g.presenter.engine.dual().and_then(|d| match d.mode { CompareMode::Split => Some((d.seam_x(), g.seam_hot || g.seam_drag)), CompareMode::SideBySide => g.presenter.engine.content_rect().map(|(cx, _, cw, _)| (cx as f64 + (cw / 2) as f64, false)), _ => None });
                 let content = g.presenter.engine.content_rect().map(|(x, y, cw, ch)| kurbo::Rect::new(x as f64, y as f64, (x + cw) as f64, (y + ch) as f64)).unwrap_or(kurbo::Rect::new(0.0, 0.0, w as f64, h as f64));
@@ -1228,7 +1232,7 @@ impl App {
                 if let (Some((sx, hot)), Some((_, cy, _, ch))) = (seam_line, g.presenter.engine.content_rect()) { let lw = (2.0 * scale).round().max(1.0); let c = if hot { min_theme::Color::rgba(1.0, 1.0, 1.0, 1.0) } else { min_theme::Color::rgba(0.4, 0.4, 0.4, 1.0) }; min_ui::paint::rect(scene, kurbo::Rect::new(sx - lw / 2.0, cy as f64, sx + lw / 2.0, (cy + ch) as f64), c); }
                 if !g.fullscreen { g.drawer.paint(scene, &mut g.fonts, now); g.notes.paint(scene, &mut g.fonts, now); g.drawer.paint_tab(scene, &mut g.fonts, now); }
                 if !g.fullscreen { if let Some(mb) = g.menu_bar.as_ref() { mb.bar.paint(scene, &mut g.fonts, scale); } }
-                if live_on { g.live_strip.paint(scene, &mut g.fonts, now); } else {
+                if live_on { g.live_strip.paint(scene, &mut g.fonts, now); g.dualc.paint(scene, &mut g.fonts, scale, now); } else {
                 g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
                 g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
