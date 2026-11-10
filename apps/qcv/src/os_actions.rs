@@ -39,9 +39,9 @@ pub fn minnotes_available() -> bool {
         }
     }
     #[cfg(windows)] {
-        use windows::{core::{w, PWSTR}, Win32::UI::Shell::{AssocQueryStringW, ASSOCF_IS_PROTOCOL, ASSOCSTR_COMMAND, ASSOCSTR_FRIENDLYAPPNAME}};
+        use windows::{core::w, Win32::UI::Shell::{AssocQueryStringW, ASSOCF_IS_PROTOCOL, ASSOCSTR_COMMAND, ASSOCSTR_FRIENDLYAPPNAME}};
         // a classic handler answers COMMAND; a packaged (Store) one has no command line but a friendly name
-        [ASSOCSTR_COMMAND, ASSOCSTR_FRIENDLYAPPNAME].into_iter().any(|what| { let mut n = 0u32; let _ = unsafe { AssocQueryStringW(ASSOCF_IS_PROTOCOL, what, w!("minnotes"), None, PWSTR::null(), &mut n) }; n > 1 })
+        [ASSOCSTR_COMMAND, ASSOCSTR_FRIENDLYAPPNAME].into_iter().any(|what| { let mut n = 0u32; let _ = unsafe { AssocQueryStringW(ASSOCF_IS_PROTOCOL, what, w!("minnotes"), None, None, &mut n) }; n > 1 })
     }
     #[cfg(all(unix, not(target_os = "macos")))] { false }
 }
