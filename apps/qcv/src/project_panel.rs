@@ -84,7 +84,7 @@ impl ProjectPanel {
     pub fn sync(&mut self, pm: &ProjectManager, active_loaded_id: &str) -> bool {
         if pm.revision() == self.revision_seen && self.active == active_loaded_id { return false }
         self.revision_seen = pm.revision(); self.active = active_loaded_id.to_string();
-        self.title = pm.name().to_string(); self.dirty = pm.dirty();
+        self.title = pm.display_name(); self.dirty = pm.dirty();
         // QCView's list: items in bin order, grouped by the section label of their type (ImageSequence splits out of the Images bin)
         let order = [MediaType::Video, MediaType::Audio, MediaType::Image, MediaType::ImageSequence, MediaType::Playlist, MediaType::DualPair, MediaType::LiveStream];
         let mut groups: Vec<Group> = vec![];

@@ -43,7 +43,10 @@ mod tests {
         assert_eq!(pm.next_playlist_auto_name(), "Playlist_01");
         let dir = std::env::temp_dir().join(format!("qcv-project-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.qcvproj").to_string_lossy().to_string();
+        assert_eq!(pm.display_name(), "Untitled", "an unsaved project shows its stored name");
         pm.save_project(&path).unwrap();
+        assert_eq!(pm.display_name(), std::path::Path::new(&path).file_stem().unwrap().to_string_lossy(), "a saved project shows its file's name");
+        assert_eq!(pm.name(), "Untitled", "the stored name is QCView's, untouched");
         assert!(!pm.dirty());
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("\"schema\": \"qcview.project.v2\"") && text.contains("\"videoRangeOverride\": \"full\"") && text.contains("\"pixelAspectMode\": 2") && !text.contains("transferOverride"), "{text}");

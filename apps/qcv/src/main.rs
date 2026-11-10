@@ -1025,7 +1025,7 @@ impl App {
                 g.ui_dirty = true;
             }
             // the window title: QCView's "clip — project" with a dot while unsaved
-            { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("QCView — {} — {}{}", self.source_label, self.project.name(), if self.project.dirty() { " •" } else { "" }), _ => format!("QCView — {}{}", self.project.name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
+            { let title = match self.player.as_ref() { Some(_) if !self.source_label.is_empty() => format!("QCView — {} — {}{}", self.source_label, self.project.display_name(), if self.project.dirty() { " •" } else { "" }), _ => format!("QCView — {}{}", self.project.display_name(), if self.project.dirty() { " •" } else { "" }) }; if title != g.title_shown { g.window.set_title(&title); g.title_shown = title; } }
             g.settings_panel.sync(&self.settings, now);
             if g.settings_panel.tick(now) || g.inspector.tick(now) || g.inspector.animating(now) || g.shortcuts.animating(now) || g.background_panel.animating(now) || g.output_panel.animating(now) || g.background_panel.tooltips.tick(now) || g.guides_panel.animating(now) || g.project_panel.animating(now) { g.ui_dirty = true; }
             if !chromeless {

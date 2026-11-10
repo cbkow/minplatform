@@ -61,6 +61,13 @@ impl ProjectManager {
     pub fn uuid(&self) -> &str { &self.uuid }
     pub fn file_path(&self) -> &str { &self.file_path }
     pub fn name(&self) -> &str { &self.name }
+    /// The name to SHOW: a saved project is its file's name without the extension; an unsaved one its stored name
+    /// ("Untitled"). QCView never renames a project — its stored `name` stays "Untitled" in every file it writes, and its
+    /// own interface shows no project name — so the stored name cannot be the label (the user 2026-11-10).
+    pub fn display_name(&self) -> String {
+        if self.file_path.is_empty() { return self.name.clone() }
+        std::path::Path::new(&self.file_path).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| self.name.clone())
+    }
     pub fn created_at(&self) -> &str { &self.created_at }
     pub fn modified_at(&self) -> &str { &self.modified_at }
     pub fn dirty(&self) -> bool { self.dirty }
