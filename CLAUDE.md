@@ -8,6 +8,9 @@
   REMOVED (row 244) — do not re-propose it. **Read `docs/phase2/handoff-2026-11-10.md` first** (its LAST sections are
   where things stand), then `handoff-2026-11-09.md` (how to run things) and the canon `docs/rust-wgpu-port.md` (rows are
   the rulings, each dated; the newest are at the end of the last Decisions table).
+- **Phase 3 (minNotes) has opened** (2026-11-10): a rethink, not a port — the Qt app is read for purpose and frozen
+  contracts, and "QCView's behaviour wins ties" below does NOT apply to it (row 268). Nothing is built. Read
+  `docs/phase3/handoff-2026-11-10.md` (rulings 268–274, what is proposed, the spike S9 on exposing text to Grammarly).
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a
