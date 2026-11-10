@@ -2052,6 +2052,18 @@ impl ApplicationHandler for App {
         // Windows paints a new window with its class brush — white — until the first frame is presented (the walk 2026-11-09:
         // "the app opens white for a couple ms before the UI populates"): the window is created hidden there and shown at the
         // end of this set-up, once a frame is on its swap chain. macOS shows nothing before the layer's first frame.
+        // Windows' two window icons (canon row 248, the user 2026-11-09): the small one — the title bar's — is the macOS icon;
+        // the big one — the taskbar's and Alt+Tab's — is the regular Windows icon, the exe's own resource (build.rs, id 1).
+        #[cfg(windows)] {
+            use winit::platform::windows::{WinIcon, WindowAttributesWindows};
+            let small = { let mut r = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/icons/qcviewMac-64.png")[..])); r.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA | png::Transformations::STRIP_16);
+                r.read_info().ok().and_then(|mut rd| { let mut buf = vec![0u8; rd.output_buffer_size()?]; let info = rd.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
+                    if info.color_type != png::ColorType::Rgba { return None } winit::icon::RgbaIcon::new(buf, info.width, info.height).ok().map(winit::icon::Icon::from) }) };
+            if small.is_none() { log::warn!("the title-bar icon did not decode"); }
+            attrs = attrs.with_window_icon(small);
+            let big = WinIcon::from_resource(1, None).map_err(|e| log::warn!("no icon resource in this exe: {e}")).ok().map(winit::icon::Icon::from);
+            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big)));
+        }
         let show_after_first_frame = cfg!(windows);
         if show_after_first_frame { attrs = attrs.with_visible(false); }
         let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(attrs).expect("window"));

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The MSIX manifest (canon row 248) - QCView 2.x's identity, so the Store and a sideload replace 2.x in place.
+     make-msix.ps1 fills @VERSION@ (apps/qcv/Cargo.toml, four parts) and @FILE_TYPES@ (crates/qcv-project/src/extensions.rs). -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  IgnorableNamespaces="uap uap5 rescap">
+
+  <Identity
+    Name="cbkow.QCView"
+    Version="@VERSION@"
+    Publisher="CN=C64A1D41-EFAA-4EED-AE81-0C074867D4E9"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>QCView</DisplayName>
+    <PublisherDisplayName>cbkow</PublisherDisplayName>
+    <Logo>images\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="zh-cn" />
+    <Resource Language="ja" />
+    <Resource Language="ko" />
+    <Resource Language="de" />
+    <Resource Language="fr" />
+    <Resource Language="es" />
+    <Resource Language="pt-br" />
+    <Resource Language="it" />
+    <Resource Language="pl" />
+    <Resource Language="ru" />
+    <Resource Language="uk" />
+  </Resources>
+
+  <Applications>
+    <Application Id="QCView" Executable="qcview.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="QCView"
+        Description="Professional media player and reviewer"
+        BackgroundColor="transparent"
+        Square150x150Logo="images\Square150x150Logo.png"
+        Square44x44Logo="images\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="images\Wide310x150Logo.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+@FILE_TYPES@
+        <!-- Protocol handler: qcview:// -->
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="qcview">
+            <uap:DisplayName>QCView Protocol</uap:DisplayName>
+          </uap:Protocol>
+        </uap:Extension>
+
+        <!-- Execution alias: run "qcview" from any terminal -->
+        <uap5:Extension Category="windows.appExecutionAlias">
+          <uap5:AppExecutionAlias>
+            <uap5:ExecutionAlias Alias="qcview.exe" />
+          </uap5:AppExecutionAlias>
+        </uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>
