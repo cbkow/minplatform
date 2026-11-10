@@ -5,7 +5,7 @@
 //! clip's minColor chain and hands back the edited chain.
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
-use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, Family, Fonts, KeyEvent, NumberField, Response, ScrollBar, Slider, Switch, TextButton, Variant};
+use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, FieldResponse, Family, Fonts, ImeEvent, KeyEvent, NumberField, Response, ScrollBar, Slider, Switch, TextButton, TextField, Variant};
 use qcv_color::Chain;
 use std::time::Instant;
 use vello::Scene;
@@ -311,6 +311,159 @@ impl AgxPanel {
             label(scene, fonts, tr(name), ix, y, h, s, t::RAIL_GROUP_HEADER_COLOR, false);
             label_right(scene, fonts, &format!("{:.2}", get(&c)), ix + iw, y, h, s, t::RAIL_LABEL_COLOR);
             sl.paint(scene, s, now);
+        }
+        scene.pop_layer();
+        self.f.sb.paint(scene, now);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Scene LUT (QCView ColorPanel.qml's LutTileColumn, canon row 257 — spec `docs/phase2/step6-luts.md` R1–R8): an OCIO
+// chain's LUT / CDL file, applied to the Input's values after the Look. The same card as the Knee: collapsed to the strip
+// by default, the dot while a file is set. Inside, QCView's tile: one big target ("+ Add LUT" / "Replace LUT", the file's
+// name under it, "click to choose" when empty), a ✕ to clear, and — for a `.ccc` / `.cdl` — the Correction ID field. No ↺
+// and no pin dot: under row 205 the LUT is one field of the clip's whole chain. A file that cannot load says so here.
+
+/// What the card asks for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LutCmd { /// open the picker
+    Pick, Clear, /// the Correction ID, trimmed ("" = the first)
+    Id(String) }
+
+/// QCView: the field shows for `.ccc` / `.cdl` only (not `.cc`, one correction).
+pub fn lut_takes_id(path: &str) -> bool { let p = path.to_ascii_lowercase(); p.ends_with(".ccc") || p.ends_with(".cdl") }
+fn file_name(path: &str) -> &str { path.rsplit(['/', '\\']).next().unwrap_or(path) }
+/// A middle-elided copy of `text` that fits `w` px (QCView's Text.ElideMiddle on the file name).
+fn elide_middle(fonts: &mut Fonts, text: &str, family: Family, size: f32, w: f64) -> String {
+    let fits = |fonts: &mut Fonts, t: &str| fonts.layout(t, family, size, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 <= w;
+    if fits(fonts, text) { return text.to_string() }
+    let ch: Vec<char> = text.chars().collect();
+    for keep in (2..ch.len()).rev() {
+        let (a, b) = (keep.div_ceil(2), keep / 2);
+        let t: String = ch[..a].iter().chain(std::iter::once(&'…')).chain(ch[ch.len() - b..].iter()).collect();
+        if fits(fonts, &t) { return t }
+    }
+    "…".into()
+}
+
+pub struct LutPanel {
+    f: Frame, path: String, ccc_id: String, /// why the chain could not be built with this file ("" = it loaded)
+    error: String, target: Rect, clear: Rect, target_hover: bool, clear_hover: bool, id: TextField, name: String, error_lines: Vec<String>,
+}
+
+impl LutPanel {
+    pub fn new() -> LutPanel {
+        let mut id = TextField::new(Family::Mono, t::RAIL_LABEL_SIZE); id.placeholder = tr("Correction ID (first)").to_string();
+        LutPanel { f: Frame::new(tr("Scene LUT")), path: String::new(), ccc_id: String::new(), error: String::new(), target: Rect::ZERO, clear: Rect::ZERO, target_hover: false, clear_hover: false, id, name: String::new(), error_lines: vec![] }
+    }
+    pub fn relabel(&mut self) { self.f.title = tr("Scene LUT"); self.id.placeholder = tr("Correction ID (first)").to_string(); }
+    pub fn set_expanded(&mut self, e: bool) { self.f.expanded = e; }
+    pub fn width(&self) -> f64 { self.f.width() }
+    pub fn focused(&self) -> bool { self.id.focused }
+    pub fn dragging(&self) -> bool { self.f.sb.dragging() || self.id.dragging() }
+    fn loaded(&self) -> bool { !self.path.is_empty() }
+    fn id_shown(&self) -> bool { lut_takes_id(&self.path) }
+    pub fn sync(&mut self, path: &str, ccc_id: &str, error: &str) {
+        if self.path != path || self.ccc_id != ccc_id { if !self.id.focused || self.path != path { self.id.set_text(ccc_id); } }
+        if self.path != path { self.id.focused = false; }
+        self.path = path.to_string(); self.ccc_id = ccc_id.to_string(); self.error = error.to_string(); self.id.error = !error.is_empty() && self.id_shown();
+    }
+    /// The tooltip under the pointer: the strip's (QCView "%1 — %2" / "%1 — click to expand"), the ✕'s, the caret's.
+    pub fn tooltip(&self, x: f64, y: f64) -> Option<(String, Rect)> {
+        let p = kurbo::Point::new(x, y);
+        if !self.f.expanded { return self.f.card.contains(p).then(|| (if self.loaded() { min_i18n::fill(tr("%1 — %2"), &[&tr("Scene LUT"), &file_name(&self.path)]) } else { min_i18n::fill(tr("%1 — click to expand"), &[&tr("Scene LUT")]) }, self.f.card)) }
+        if self.f.collapse.contains(p) { return Some((tr("Collapse").to_string(), self.f.collapse)) }
+        if self.loaded() && self.clear.contains(p) { return Some((tr("Clear LUT").to_string(), self.clear)) }
+        None
+    }
+    pub fn layout(&mut self, fonts: &mut Fonts, x: f64, y0: f64, y1: f64, scale: f64) -> f64 {
+        let w = self.f.layout(x, y0, y1, scale);
+        if !self.f.expanded { return w }
+        let s = scale; let (ix, iy, iw) = self.f.inner(); let gap = t::SPACING_100 as f64 * s;
+        let th = 76.0 * s;
+        self.target = Rect::new(ix, iy, ix + iw, iy + th);
+        let b = 22.0 * s; self.clear = Rect::new(ix + iw - b, iy, ix + iw, iy + b);
+        self.name = if self.loaded() { elide_middle(fonts, file_name(&self.path), Family::Mono, t::CODE_SIZE_S * s as f32, iw - 2.0 * gap) } else { String::new() };
+        let mut y = iy + th + gap;
+        if self.id_shown() { let h = t::COMPONENT_HEIGHT_75 as f64 * s; self.id.layout(fonts, Rect::new(ix, y, ix + iw, y + h), s); y += h + gap; } else { self.id.rect = Rect::ZERO; }
+        // the reason a file did not load, wrapped by words into the card's width
+        self.error_lines.clear();
+        if !self.error.is_empty() {
+            let size = t::DETAIL_SIZE_S * s as f32; let mut line = String::new();
+            for word in self.error.split_whitespace() {
+                let cand = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+                if !line.is_empty() && fonts.layout(&cand, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE).width() as f64 > iw { self.error_lines.push(std::mem::take(&mut line)); line = word.to_string(); } else { line = cand; }
+                if self.error_lines.len() >= 6 { break }
+            }
+            if !line.is_empty() && self.error_lines.len() < 6 { self.error_lines.push(line); }
+            y += self.error_lines.len() as f64 * 14.0 * s + gap;
+        }
+        self.f.finish_layout(y - iy);
+        w
+    }
+    pub fn event(&mut self, e: &Event, _now: Instant, fonts: &mut Fonts) -> (Option<LutCmd>, bool) {
+        if let Some(d) = self.f.event(e, _now) { return (None, d) }
+        if !self.f.expanded { return (None, false) }
+        let mut d = std::mem::take(&mut self.f.dirty);
+        let over = self.f.over_card(e);
+        let p = e.pos().map(|(x, y)| kurbo::Point::new(x, y));
+        let (ch, th) = (over && self.loaded() && p.is_some_and(|p| self.clear.contains(p)), over && p.is_some_and(|p| self.target.contains(p)));
+        let th = th && !ch;
+        if matches!(e, Event::Leave) || (ch, th) != (self.clear_hover, self.target_hover) { d |= (ch, th) != (self.clear_hover, self.target_hover); self.clear_hover = ch; self.target_hover = th; }
+        if self.id_shown() && (over || self.id.dragging() || matches!(e, Event::Up { .. } | Event::Leave)) { d |= self.id.pointer(e, fonts); }
+        if let Event::Down { button: Button::Primary, .. } = e {
+            // a press anywhere but the field commits what was typed there
+            let leaving = self.id.focused && !p.is_some_and(|p| self.id.rect.contains(p));
+            if leaving { self.id.focused = false; let t = self.id.text().trim().to_string(); if t != self.ccc_id && !(ch || th) { return (Some(LutCmd::Id(t)), true) } }
+            if ch { return (Some(LutCmd::Clear), true) }
+            if th { return (Some(LutCmd::Pick), true) }
+            if leaving { return (None, true) }
+        }
+        (None, d)
+    }
+    pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Option<LutCmd> {
+        match self.id.key(k, fonts) {
+            FieldResponse::Accepted => { self.id.focused = false; let t = self.id.text().trim().to_string(); (t != self.ccc_id).then_some(LutCmd::Id(t)) }
+            FieldResponse::Cancelled => { self.id.focused = false; let old = self.ccc_id.clone(); self.id.set_text(&old); None }
+            _ => None,
+        }
+    }
+    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if self.id.focused { self.id.ime(e, fonts); } }
+    /// The drawer lost the keyboard (a press elsewhere, the panel closing): QCView commits on editing-finished.
+    pub fn blur(&mut self) -> Option<LutCmd> {
+        if !self.id.focused { return None }
+        self.id.focused = false; let t = self.id.text().trim().to_string(); (t != self.ccc_id).then_some(LutCmd::Id(t))
+    }
+    pub fn wheel(&mut self, x: f64, y: f64, dy: f64, now: Instant) -> bool { self.f.wheel(x, y, dy, now) }
+    pub fn animating(&self, now: Instant) -> bool { self.f.strip_hover.animating(now) || self.f.sb.animating(now) }
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
+        self.f.paint_frame(scene, fonts, self.loaded(), now);
+        if !self.f.expanded { return }
+        let s = self.f.scale; let (ix, _, iw) = self.f.inner();
+        scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.f.card);
+        // the one big target
+        let bad = !self.error.is_empty();
+        paint::rounded(scene, self.target, t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, if self.target_hover { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_1_COLOR });
+        let cx = |w: f64| ix + (iw - w) / 2.0;
+        let icon_c = if bad { t::NEGATIVE_VISUAL_COLOR } else if self.loaded() { t::POSITIVE_VISUAL_COLOR } else { t::RAIL_GROUP_HEADER_COLOR };
+        let mut y = self.target.y0 + t::SPACING_100 as f64 * s;
+        if let Some(g) = fonts.icon(if bad { "warning" } else { "cube" }, t::ICON_SIZE_LARGE * s as f32, paint::color(icon_c)) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((cx(g.width() as f64), y))); y += g.height() as f64 + 2.0 * s; }
+        let l = fonts.layout(if self.loaded() { tr("Replace LUT") } else { tr("+ Add LUT") }, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(t::RAIL_LABEL_COLOR));
+        min_ui::fonts::draw_layout(scene, &l, Affine::translate((cx(l.width() as f64), y))); y += l.height() as f64 + 2.0 * s;
+        if self.loaded() {
+            let n = fonts.layout(&self.name, Family::Mono, t::CODE_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(if bad { t::NEGATIVE_VISUAL_COLOR } else { t::RAIL_GROUP_HEADER_COLOR }));
+            min_ui::fonts::draw_layout(scene, &n, Affine::translate((cx(n.width() as f64), y)));
+            if self.clear_hover { paint::rounded(scene, self.clear, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
+            if let Some(g) = fonts.icon("x", t::ICON_SIZE_SMALL * s as f32, paint::color(if self.clear_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::RAIL_GROUP_HEADER_COLOR })) { min_ui::fonts::draw_layout(scene, &g, Affine::translate((self.clear.x0 + (self.clear.width() - g.width() as f64) / 2.0, self.clear.y0 + (self.clear.height() - g.height() as f64) / 2.0))); }
+        } else {
+            let h = fonts.layout(tr("click to choose"), Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR));
+            min_ui::fonts::draw_layout(scene, &h, Affine::translate((cx(h.width() as f64), y)) * Affine::skew(-0.2, 0.0));
+        }
+        if self.id_shown() { self.id.paint(scene, fonts, s); }
+        let mut ey = if self.id_shown() { self.id.rect.y1 } else { self.target.y1 } + t::SPACING_100 as f64 * s;
+        for line in &self.error_lines {
+            let el = fonts.layout(line, Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::NEGATIVE_VISUAL_COLOR));
+            min_ui::fonts::draw_layout(scene, &el, Affine::translate((ix, ey))); ey += 14.0 * s;
         }
         scene.pop_layer();
         self.f.sb.paint(scene, now);

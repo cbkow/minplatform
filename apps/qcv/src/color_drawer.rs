@@ -10,7 +10,7 @@
 use crate::color_model::{ClipChain, OcioChain, Preset, Stored};
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
-use crate::color_columns::{AgxPanel, KneePanel};
+use crate::color_columns::{AgxPanel, KneePanel, LutCmd, LutPanel};
 use min_present::ViewerAids;
 use min_i18n::fill;
 use min_ui::{anim::{mix, Ramp}, paint, ActionButton, ActionGroup, Button, Event, Response, Slider, Family, FieldResponse, Fonts, ImeEvent, KeyEvent, ListColumn, ListRow, Menu, MenuItem, Popover, Switch, TextButton, TextField, Variant};
@@ -23,7 +23,8 @@ fn tr(s: &'static str) -> &'static str { min_i18n::trc("ColorPanel", s) }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd { /// the caret below the picture: closes the open bottom panel (Color or Notes), else opens Color
     Tab, Pick(Stored), Edit(Stored), /// "New OCIO chain…" / the Config column's "Open config…"
-    NewOcio, OpenConfig, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
+    NewOcio, OpenConfig, /// the Scene LUT card's picker (canon row 257)
+    PickLut, /// the bottom row's viewer aids (QCView: session-only, never in presets or exports)
     Aids(ViewerAids), /// the Video emulation's toggle (row 246)
     Video(bool), /// the drawer's height after a drag of its top edge (logical px)
     Height(f64), /// the waveform's state as the user set it (kept across launches): scale override, HDR top, open
@@ -55,6 +56,8 @@ pub struct View {
     /// row 246, the Video emulation: the setting, and why it cannot act now (0 = it can · 1 = Color is off: the picture is
     /// already as stored · 2 = the picture is shown in HDR)
     pub video: bool, pub video_state: u8,
+    /// why the edited OCIO chain could not be built with its Scene LUT ("" = it loaded) — canon row 257, R5
+    pub lut_error: String,
 }
 
 /// What an OCIO chain's columns offer (from the loaded config; the configs are the bundled three + a user's file).
@@ -80,7 +83,7 @@ pub struct ColorDrawer {
     /// OCIO's columns (QCView: Config · Input · Look · View)
     ocfg: ListColumn, oinput: ListColumn, olook: ListColumn, oview: ListColumn, ocfg_keys: Vec<String>,
     preset_rows: Vec<PresetRow>,
-    knee: KneePanel, agx: AgxPanel, /// the target the columns' open / collapsed state was last set for
+    knee: KneePanel, agx: AgxPanel, lut: LutPanel, /// the target the columns' open / collapsed state was last set for
     columns_for: String,
     on: Switch, on_rect: Rect,
     /// QCView's viewer-aids row: Exposure (±4 st), Gamma (0.25–4), the channel view, one reset
@@ -115,7 +118,7 @@ impl ColorDrawer {
     pub fn relabel(&mut self) {
         let f = Self::new(self.open, self.height, (self.wf_hdr, self.wf_peak_nits, self.wf_expanded));
         for (c, n) in [(&mut self.presets, &f.presets), (&mut self.gamut, &f.gamut), (&mut self.transfer, &f.transfer), (&mut self.render, &f.render), (&mut self.ocfg, &f.ocfg), (&mut self.oinput, &f.oinput), (&mut self.olook, &f.olook), (&mut self.oview, &f.oview)] { c.title = n.title.clone(); }
-        self.knee.relabel();
+        self.knee.relabel(); self.lut.relabel();
         for (b, n) in self.chan.buttons.iter_mut().zip(f.chan.buttons) { b.label = n.label; }
         self.aids_reset.tooltip = f.aids_reset.tooltip;
         for (b, n) in [(&mut self.save_as, &f.save_as), (&mut self.reset, &f.reset), (&mut self.apply_all, &f.apply_all), (&mut self.make_default, &f.make_default)] { b.label = n.label.clone(); }
@@ -131,7 +134,7 @@ impl ColorDrawer {
             presets: ListColumn::new(tr("Presets")), gamut: ListColumn::new(tr("Input gamut")), transfer: ListColumn::new(tr("Input transfer")), render: ListColumn::new(tr("Rendering")),
             ocfg: ListColumn::new(tr("Config")), oinput: ListColumn::new(tr("Input")).with_filter(), olook: ListColumn::new(tr("Look")), oview: ListColumn::new(tr("View")), ocfg_keys: vec![],
             preset_rows: vec![],
-            knee: KneePanel::new(), agx: AgxPanel::new(), columns_for: String::new(),
+            knee: KneePanel::new(), agx: AgxPanel::new(), lut: LutPanel::new(), columns_for: String::new(),
             on: Switch::new(false), on_rect: Rect::ZERO,
             wf_scale: ActionGroup::new(["SDR", "HDR"].iter().map(|l| { let mut b = ActionButton::new("", l).size_s(); b.label = Some(l.to_string()); b }).collect()).compact(),
             wf_peak: TextButton::new("1000 nits", Variant::Secondary).size_s(),
@@ -149,15 +152,15 @@ impl ColorDrawer {
     pub fn toggle(&mut self, now: Instant) { self.open = !self.open; self.open_ramp.set_target(if self.open { 1.0 } else { 0.0 }, now); }
     /// The drawer's height on screen now (px), for the layout that pushes the picture up.
     pub fn visible_height(&self, now: Instant, scale: f64) -> f64 { (self.height * scale * self.open_ramp.value(now) as f64).round() }
-    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee.animating(now) || self.agx.animating(now) || self.exp.animating(now) || self.gam.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
+    pub fn animating(&self, now: Instant) -> bool { self.open_ramp.animating(now) || self.tab_ramp.animating(now) || self.present.animating(now) || [&self.presets, &self.gamut, &self.transfer, &self.render].iter().any(|l| l.animating(now)) || self.knee.animating(now) || self.agx.animating(now) || self.lut.animating(now) || self.exp.animating(now) || self.gam.animating(now) || self.on.animating(now) || [&self.save_as, &self.reset, &self.apply_all, &self.make_default].iter().any(|b| b.animating(now)) }
     pub fn is_modal(&self) -> bool { self.menu.is_open() || self.naming.is_some() }
-    pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee.focused() || self.agx.focused() || self.oinput.focused() }
+    pub fn has_focus(&self) -> bool { self.naming.is_some() || self.knee.focused() || self.agx.focused() || self.oinput.focused() || self.lut.focused() }
     /// The top edge is under the pointer or being dragged (the shell shows the row-resize cursor).
     /// The pointer is on the floating tab (it keeps the tabs from fading while parked there).
     pub fn tab_hovered(&self) -> bool { self.tab_hover }
     pub fn splitter_hovered(&self) -> bool { self.split_hover || self.split_drag.is_some() }
     fn split_zone(&self) -> Rect { let z = t::SPLITTER_HOT_ZONE as f64 * self.scale; Rect::new(self.rect.x0, self.rect.y0 - z, self.rect.x1, self.rect.y0 + z) }
-    fn dragging(&self) -> bool { self.split_drag.is_some() || self.knee.dragging() || self.agx.dragging() || self.exp.dragging() || self.gam.dragging() }
+    fn dragging(&self) -> bool { self.split_drag.is_some() || self.knee.dragging() || self.agx.dragging() || self.lut.dragging() || self.exp.dragging() || self.gam.dragging() }
     pub fn set_pointer_present(&mut self, on: bool, now: Instant) { if on { if self.present.target() < 0.5 { self.present = Ramp::new(1.0, t::ANIMATION_DURATION_SLIDE); } } else { self.present.set_target(0.0, now); } }
 
     /// Mirror the shell's state; true when something visible changed.
@@ -201,7 +204,10 @@ impl ColorDrawer {
             self.olook.set_rows(lrows); self.olook.set_selected(Some(lists.looks.iter().position(|l| *l == o.look).map(|i| i + 1).unwrap_or(0)));
             self.oview.set_rows(lists.views.iter().map(ListRow::item).collect()); self.oview.set_selected(lists.views.iter().position(|w| *w == o.view));
             let kc = qcv_color::Chain { knee_on: o.knee.enabled as i32, knee_src: o.knee.source_nits, knee_tgt: o.knee.target_nits, knee_start: o.knee.start, ..Default::default() };
-            if self.columns_for != v.target { self.columns_for = v.target.clone(); self.knee.set_expanded(o.knee.enabled); }
+            // the optional cards open for a chain that uses them, once per target (and for a LUT that failed to load)
+            if self.columns_for != v.target { self.columns_for = v.target.clone(); self.knee.set_expanded(o.knee.enabled); self.lut.set_expanded(!o.scene_lut.is_empty()); }
+            if !v.lut_error.is_empty() { self.lut.set_expanded(true); }
+            self.lut.sync(&o.scene_lut, &o.ccc_id, &v.lut_error);
             self.knee.set_sdr_view(qcv_color::ocio::view_is_sdr(&o.view));
             self.knee.sync(&kc, v.file_peak, now);
         }
@@ -268,9 +274,9 @@ impl ColorDrawer {
         let area = Rect::new(body.x0, body.y0, (body.x1 - ww - gap).max(body.x0), body.y1);
         self.body = area;
         // (min width, weight): lists stretch, the control columns do not
-        enum Col { Presets, List(u8), Knee, Agx }
+        enum Col { Presets, List(u8), Lut, Knee, Agx }
         let cols: Vec<(Col, f64, f64)> = if ocio {
-            vec![(Col::Presets, 180.0, 1.0), (Col::List(0), 110.0, 0.5), (Col::List(1), 190.0, 1.2), (Col::List(2), 180.0, 1.0), (Col::List(3), 200.0, 1.6), (Col::Knee, self.knee.width(), 0.0)]
+            vec![(Col::Presets, 180.0, 1.0), (Col::List(0), 110.0, 0.5), (Col::List(1), 190.0, 1.2), (Col::List(2), 180.0, 1.0), (Col::Lut, self.lut.width(), 0.0), (Col::List(3), 200.0, 1.6), (Col::Knee, self.knee.width(), 0.0)]
         } else {
             vec![(Col::Presets, 200.0, 1.0), (Col::List(4), 160.0, 1.0), (Col::List(5), 170.0, 1.0), (Col::Knee, self.knee.width(), 0.0), (Col::Agx, self.agx.width(), 0.0)]
         };
@@ -287,6 +293,7 @@ impl ColorDrawer {
             match c {
                 Col::Presets => { self.presets.layout(Rect::new(x, body.y0, x + cw, body.y1 - bh - t::SPACING_100 as f64 * scale), scale); self.save_as.rect = Rect::new(x, body.y1 - bh, x + bw, body.y1); }
                 Col::List(k) => { let r = Rect::new(x, body.y0, x + cw, body.y1); match k { 0 => self.ocfg.layout(r, scale), 1 => self.oinput.layout_with(fonts, r, scale), 2 => self.olook.layout(r, scale), 3 => self.oview.layout(r, scale), 4 => self.gamut.layout(r, scale), _ => self.transfer.layout(r, scale) } }
+                Col::Lut => { self.lut.layout(fonts, x, body.y0, body.y1, scale); }
                 Col::Knee => { self.knee.layout(fonts, x, body.y0, body.y1, scale); }
                 Col::Agx => { self.agx.layout(fonts, x, body.y0, body.y1, scale); }
             }
@@ -310,6 +317,13 @@ impl ColorDrawer {
         Some(Cmd::Edit(Stored { chain: ClipChain::MinColor(c), preset: v.stored.preset.clone() }))
     }
 
+    /// The Scene LUT card's edit (an OCIO chain only): clearing the file clears its Correction ID.
+    fn lut_edit(&self, c: LutCmd) -> Option<Cmd> {
+        let v = self.view.as_ref()?;
+        let ClipChain::Ocio(o) = &v.stored.chain else { return None };
+        let edit = |o: OcioChain| Cmd::Edit(Stored { chain: ClipChain::Ocio(o), preset: v.stored.preset.clone() });
+        Some(match c { LutCmd::Pick => Cmd::PickLut, LutCmd::Clear => edit(OcioChain { scene_lut: String::new(), ccc_id: String::new(), ..o.clone() }), LutCmd::Id(id) => edit(OcioChain { ccc_id: id, ..o.clone() }) })
+    }
     /// The knee's edit, onto whichever engine the chain is on.
     fn knee_edit(&self, c: qcv_color::Chain) -> Option<Cmd> {
         let v = self.view.as_ref()?;
@@ -360,9 +374,10 @@ impl ColorDrawer {
         let tip = e.pos().filter(|_| !matches!(e, Event::Leave) && self.naming.is_none() && !self.menu.is_open()).and_then(|(x, y)| {
             // the caret: QCView's rail words with the panel's key — it collapses whichever bottom panel is open, else opens Color
             if self.video.rect.contains(kurbo::Point::new(x, y)) || self.video_pill.contains(kurbo::Point::new(x, y)) {
-                let why = match self.view.as_ref().map(|v| v.video_state).unwrap_or(0) { 1 => tr("Color is off: the picture is already shown as stored."), 2 => tr("Not available while the picture is shown in HDR."), _ => tr("Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, outputs and the waveform are not affected.") };
+                let why = match self.view.as_ref().map(|v| v.video_state).unwrap_or(0) { 1 => tr("Color is off: the picture is already shown as stored."), 2 => tr("Not available while the picture is shown in HDR."), _ => tr("Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, thumbnails and outputs carry it; the waveform does not.") };
                 return Some((6997, if self.video_pill.contains(kurbo::Point::new(x, y)) { self.video_pill } else { self.video.rect }, why.to_string()))
             }
+            if self.view.as_ref().is_some_and(|v| v.stored.chain.is_ocio() && v.ocio.is_some()) && let Some((text, r)) = self.lut.tooltip(x, y) { return Some((6996, r, text)) }
             if self.clip_pill.contains(kurbo::Point::new(x, y)) { return Some((6998, self.clip_pill, tr("This display has no HDR headroom: highlights above SDR white clip. Turn on the Highlight Knee to fit them.").to_string())) }
             if self.tab.contains(kurbo::Point::new(x, y)) && self.present.value(now) > 0.5 {
                 let mac = cfg!(target_os = "macos");
@@ -437,6 +452,7 @@ impl ColorDrawer {
             if let Some(i) = r.clicked { if let Some(n) = lists.inputs.get(i) { cmds.push(edit(OcioChain { input: n.clone(), ..o.clone() })); } }
             let r = self.olook.event(e, now, None); dirty |= r.dirty;
             if let Some(i) = r.clicked { cmds.push(edit(OcioChain { look: if i == 0 { String::new() } else { lists.looks.get(i - 1).cloned().unwrap_or_default() }, ..o.clone() })); }
+            let (lc, d) = self.lut.event(e, now, fonts); dirty |= d; if let Some(c) = lc.and_then(|c| self.lut_edit(c)) { cmds.push(c); }
             let r = self.oview.event(e, now, None); dirty |= r.dirty;
             if let Some(i) = r.clicked { if let Some(n) = lists.views.get(i) { cmds.push(edit(OcioChain { view: n.clone(), ..o.clone() })); } }
             let (c, d) = self.knee.event(e, now, fonts); dirty |= d;
@@ -487,7 +503,7 @@ impl ColorDrawer {
         if !self.rect.contains(kurbo::Point::new(x, y)) { return false }
         let mut moved = false;
         for l in [&mut self.presets, &mut self.gamut, &mut self.transfer, &mut self.render, &mut self.ocfg, &mut self.oinput, &mut self.olook, &mut self.oview] { moved |= l.wheel(x, y, dy_px); }
-        let now = Instant::now(); moved |= self.knee.wheel(x, y, dy_px, now); moved |= self.agx.wheel(x, y, dy_px, now);
+        let now = Instant::now(); moved |= self.knee.wheel(x, y, dy_px, now); moved |= self.agx.wheel(x, y, dy_px, now); moved |= self.lut.wheel(x, y, dy_px, now);
         moved
     }
     /// Keys while a field has focus (the preset name, the knee numbers). Returns commands and whether the key was used.
@@ -500,17 +516,19 @@ impl ColorDrawer {
             }
         }
         if self.oinput.focused() { self.oinput.key(k, fonts); return (vec![], true) }
+        if self.lut.focused() { return (self.lut.key(k, fonts).and_then(|c| self.lut_edit(c)).into_iter().collect(), true) }
         if self.knee.focused() { return (self.knee.key(k, fonts).and_then(|c| self.knee_edit(c)).into_iter().collect(), true) }
         if self.agx.focused() { return (self.agx.key(k, fonts).and_then(|c| self.with_chain(c)).into_iter().collect(), true) }
         (vec![], false)
     }
-    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if self.naming.is_some() { self.name_field.ime(e, fonts); } else if self.oinput.focused() { self.oinput.ime(e, fonts); } }
-    pub fn is_typing(&self) -> bool { self.naming.is_some() || self.oinput.focused() }
+    pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if self.naming.is_some() { self.name_field.ime(e, fonts); } else if self.oinput.focused() { self.oinput.ime(e, fonts); } else if self.lut.focused() { self.lut.ime(e, fonts); } }
+    pub fn is_typing(&self) -> bool { self.naming.is_some() || self.oinput.focused() || self.lut.focused() }
     /// A press elsewhere commits a typed knee number.
     pub fn blur(&mut self) -> Vec<Cmd> {
         let mut cmds = vec![];
         self.oinput.blur();
         if let Some(c) = self.knee.blur() { cmds.extend(self.knee_edit(c)); }
+        if let Some(c) = self.lut.blur() { cmds.extend(self.lut_edit(c)); }
         if let Some(c) = self.agx.blur() { cmds.extend(self.with_chain(c)); }
         cmds
     }
@@ -581,7 +599,7 @@ impl ColorDrawer {
                 self.knee.paint(scene, fonts, now); self.agx.paint(scene, fonts, now);
             }
             ClipChain::Ocio(_) => {
-                if v.ocio.is_some() { for l in [&mut self.ocfg, &mut self.oinput, &mut self.olook, &mut self.oview] { l.paint(scene, fonts, now); } self.knee.paint(scene, fonts, now); }
+                if v.ocio.is_some() { for l in [&mut self.ocfg, &mut self.oinput, &mut self.olook, &mut self.oview] { l.paint(scene, fonts, now); } self.lut.paint(scene, fonts, now); self.knee.paint(scene, fonts, now); }
                 else { let l = fonts.layout(tr("Loading the OCIO config…"), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::RAIL_GROUP_HEADER_COLOR)); min_ui::fonts::draw_layout(scene, &l, Affine::translate((self.save_as.rect.x1 + 40.0 * s, self.header.y1 + 40.0 * s))); }
             }
         }

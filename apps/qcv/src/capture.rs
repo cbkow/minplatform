@@ -241,7 +241,7 @@ impl crate::App {
                 let dual = self.dual.is_some();
                 let Some(g) = self.gpu.as_mut() else { return Restore::None };
                 let Some(en) = color::slot_engine(g, slot, dual) else { return Restore::None };
-                let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: view.clone(), scene_lut: o.scene_lut, ccc_id: o.ccc_id };
+                let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: view.clone(), scene_lut: crate::color::lut_native(&o.scene_lut), ccc_id: o.ccc_id };
                 match qcv_color::ocio::OcioPass::new(&en.device, &en.queue, &cfg, spec, o.knee) {
                     Ok(p) => { log::info!("screenshot: OCIO view '{}' → '{view}' for the capture", o.view); let old = en.take_color_pass(); en.set_color_pass(Some(Box::new(p))); Restore::Ocio(old) }
                     Err(e) => { log::warn!("screenshot: no SDR twin for '{}' ({e}); capturing the HDR view clipped", o.view); Restore::None }

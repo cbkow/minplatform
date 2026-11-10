@@ -4552,3 +4552,13 @@ msgstr "许可证…"
 msgctxt "LeftRail"
 msgid "No outputs found"
 msgstr "未找到输出"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, thumbnails and outputs carry it; the waveform does not."
+msgstr "按未做色彩管理的 Rec.709 桌面的方式显示画面：暗部和中间调比准确视图更亮。这是模拟，不是参考。截图、缩略图和输出会带上它；波形不会。"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Couldn't load the Scene LUT %1: %2"
+msgstr "无法加载场景 LUT %1：%2"

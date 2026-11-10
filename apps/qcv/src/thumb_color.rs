@@ -84,7 +84,7 @@ impl crate::App {
                 std::thread::Builder::new().name("thumb-ocio".into()).spawn(move || {
                     let Ok(c) = qcv_color::ocio::Config::open(&cfg) else { return };
                     let view = crate::capture::sdr_view(&c.views(), &o.view).unwrap_or(o.view.clone());
-                    match qcv_color::ocio::OcioPass::new(&d, &q, &c, qcv_color::ocio::Spec { input: o.input, look: o.look, view, scene_lut: o.scene_lut, ccc_id: o.ccc_id }, o.knee) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn ColorPass + Send>); } Err(e) => log::warn!("thumbnail OCIO: {e}") }
+                    match qcv_color::ocio::OcioPass::new(&d, &q, &c, qcv_color::ocio::Spec { input: o.input, look: o.look, view, scene_lut: crate::color::lut_native(&o.scene_lut), ccc_id: o.ccc_id }, o.knee) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn ColorPass + Send>); } Err(e) => log::warn!("thumbnail OCIO: {e}") }
                 }).ok();
             }
         }

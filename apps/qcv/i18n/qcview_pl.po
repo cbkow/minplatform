@@ -4568,3 +4568,13 @@ msgstr "Licencje…"
 msgctxt "LeftRail"
 msgid "No outputs found"
 msgstr "Nie znaleziono wyjść"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, thumbnails and outputs carry it; the waveform does not."
+msgstr "Pokazuje obraz tak, jak robi to pulpit Rec.709 bez zarządzania kolorem: cienie i półtony jaśniejsze niż w dokładnym widoku. Emulacja, nie wzorzec. Zrzuty ekranu, miniatury i wyjścia ją zawierają; przebieg nie."
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Couldn't load the Scene LUT %1: %2"
+msgstr "Nie udało się wczytać LUT sceny %1: %2"

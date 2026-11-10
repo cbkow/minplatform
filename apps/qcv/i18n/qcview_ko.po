@@ -4552,3 +4552,13 @@ msgstr "라이선스…"
 msgctxt "LeftRail"
 msgid "No outputs found"
 msgstr "출력을 찾을 수 없습니다"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Show the picture as an unmanaged Rec.709 desktop does: shadows and midtones lighter than the accurate view. An emulation, not a reference. Screenshots, thumbnails and outputs carry it; the waveform does not."
+msgstr "색상 관리가 없는 Rec.709 데스크톱처럼 화면을 표시합니다. 어두운 영역과 중간 톤이 정확한 보기보다 밝아집니다. 에뮬레이션이며 기준이 아닙니다. 스크린샷, 썸네일, 출력에도 적용됩니다. 파형에는 적용되지 않습니다."
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Couldn't load the Scene LUT %1: %2"
+msgstr "장면 LUT %1을(를) 불러올 수 없습니다: %2"

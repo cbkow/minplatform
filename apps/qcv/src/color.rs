@@ -183,7 +183,9 @@ impl crate::App {
         let clip_warn = self.screen_hdr == Some(false) && picture_hdr && id.is_some();
         // row 246: the Video emulation acts on a chain's SDR picture — with Color off the picture is already as stored
         let video_state = if !on { 1 } else if picture_hdr { 2 } else { 0 };
-        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn, video: self.settings.bool(crate::settings::k::VIDEO_EMULATION), video_state }
+        // row 257 R5: the edited chain's Scene LUT did not load (whichever slot shows that chain)
+        let lut_error = match &stored.chain { ClipChain::Ocio(o) => { let key = ocio_key(o); self.ocio_error.iter().flatten().find(|(k, _)| *k == key).map(|(_, why)| why.clone()).unwrap_or_default() } _ => String::new() };
+        View { target, side, has_clip: id.is_some(), own, stored, custom, on, presets: self.colors.all(), file_peak, ocio, hdr_source, clip_warn, video: self.settings.bool(crate::settings::k::VIDEO_EMULATION), video_state, lut_error }
     }
     /// The Video emulation onto the screen's engines (row 246), each tick: the setting, where a chain renders that slot's
     /// picture in SDR. Never in the difference view (its sides feed arithmetic, not a display).
@@ -215,10 +217,10 @@ impl crate::App {
             let (_, stored, _) = self.chain_of(&self.slot_item(slot));
             let dual = self.dual.is_some();
             let Some(g) = self.gpu.as_mut() else { return };
-            let Some(engine) = slot_engine(g, slot, dual) else { self.color_bound[slot] = None; self.ocio_rx[slot] = None; continue };
+            let Some(engine) = slot_engine(g, slot, dual) else { self.color_bound[slot] = None; self.ocio_rx[slot] = None; self.ocio_error[slot] = None; continue };
             if !on || !shown {
                 if self.color_bound[slot].is_some() { engine.set_color_pass(None); self.color_bound[slot] = None; }
-                self.ocio_rx[slot] = None;
+                self.ocio_rx[slot] = None; self.ocio_error[slot] = None;
                 continue
             }
             match stored.chain {
@@ -226,17 +228,20 @@ impl crate::App {
                     let Some(rc) = self.mincolor[slot].clone() else { continue };   // binds when the build lands
                     rc.borrow_mut().set_chain(c);
                     if self.color_bound[slot].as_deref() != Some("minColor") { engine.set_color_pass(Some(Box::new(SharedPass(rc)))); self.color_bound[slot] = Some("minColor".into()); }
-                    self.ocio_rx[slot] = None;
+                    self.ocio_rx[slot] = None; self.ocio_error[slot] = None;
                 }
                 ClipChain::Ocio(o) => {
-                    let key = format!("{}|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.ccc_id, o.knee);
+                    let key = ocio_key(&o);
                     if self.color_bound[slot].as_deref() == Some(key.as_str()) || self.ocio_rx[slot].as_ref().is_some_and(|(k, _)| *k == key) { continue }
+                    // a Scene LUT that did not load: bypass stays, and the same chain is not built again and again
+                    if self.ocio_error[slot].as_ref().is_some_and(|(k, _)| *k == key) { continue }
+                    self.ocio_error[slot] = None;
                     let cfg = ocio_config_path(&o.config);
-                    let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: o.scene_lut, ccc_id: o.ccc_id };
+                    let spec = qcv_color::ocio::Spec { input: o.input, look: o.look, view: o.view, scene_lut: lut_native(&o.scene_lut), ccc_id: o.ccc_id };
                     let (d, q, knee) = (engine.device.clone(), engine.queue.clone(), o.knee);
                     let (tx, rx) = mpsc::channel();
                     std::thread::Builder::new().name("ocio-build".into()).spawn(move || {
-                        match qcv_color::ocio::Config::open(&cfg).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee)) { Ok(p) => { let _ = tx.send(Box::new(p) as Box<dyn min_present::ColorPass + Send>); } Err(e) => log::error!("OCIO: {e}") }
+                        match qcv_color::ocio::Config::open(&cfg).and_then(|c| qcv_color::ocio::OcioPass::new(&d, &q, &c, spec, knee)) { Ok(p) => { let _ = tx.send(Ok(Box::new(p) as Box<dyn min_present::ColorPass + Send>)); } Err(e) => { log::error!("OCIO: {e}"); let _ = tx.send(Err(e)); } }
                     }).ok();
                     self.ocio_rx[slot] = Some((key, rx));
                 }
@@ -247,10 +252,28 @@ impl crate::App {
     pub(crate) fn poll_color(&mut self) {
         for slot in 0..2 {
             if let Some(rx) = &self.mincolor_ready[slot] && let Ok(p) = rx.try_recv() { self.mincolor[slot] = Some(Rc::new(RefCell::new(p))); self.mincolor_ready[slot] = None; self.apply_color(); }
-            if let Some((key, rx)) = &self.ocio_rx[slot] && let Ok(p) = rx.try_recv() {
+            if let Some((key, rx)) = &self.ocio_rx[slot] && let Ok(built) = rx.try_recv() {
                 let key = key.clone(); self.ocio_rx[slot] = None;
                 let dual = self.dual.is_some();
-                if let Some(g) = self.gpu.as_mut() { if let Some(e) = slot_engine(g, slot, dual) { e.set_color_pass(Some(p)); self.color_bound[slot] = Some(key); } g.ui_dirty = true; }
+                match built {
+                    Ok(p) => { self.ocio_error[slot] = None; if let Some(g) = self.gpu.as_mut() { if let Some(e) = slot_engine(g, slot, dual) { e.set_color_pass(Some(p)); self.color_bound[slot] = Some(key); } g.ui_dirty = true; } }
+                    Err(why) => {
+                        // canon row 257, R5: a Scene LUT that cannot load (missing, malformed, an unknown Correction ID) says so and
+                        // the clip drops to Color BYPASS — never the previous clip's chain, never this chain minus its LUT (QCView
+                        // showed the old picture and told the user nothing). A chain without a LUT keeps its old behaviour.
+                        let (_, stored, _) = self.chain_of(&self.slot_item(slot));
+                        let lut = match &stored.chain { ClipChain::Ocio(o) if ocio_key(o) == key && !o.scene_lut.is_empty() => Some(o.scene_lut.clone()), _ => None };
+                        if let Some(lut) = lut {
+                            let name = lut.rsplit(['/', '\\']).next().unwrap_or(&lut).to_string();
+                            if let Some(g) = self.gpu.as_mut() {
+                                if let Some(e) = slot_engine(g, slot, dual) { e.set_color_pass(None); }
+                                g.toast.show(&min_i18n::fill(min_i18n::trc("ColorPanel", "Couldn't load the Scene LUT %1: %2"), &[&name, &why]), min_ui::ToastKind::Negative, std::time::Instant::now());
+                                g.ui_dirty = true;
+                            }
+                            self.color_bound[slot] = None; self.ocio_error[slot] = Some((key, why));
+                        }
+                    }
+                }
             }
         }
     }
@@ -293,6 +316,15 @@ impl crate::App {
             DCmd::NewOcio => {
                 let o = self.fixup_ocio(OcioChain { config: BUNDLED[0].0.into(), input: String::new(), look: String::new(), view: String::new(), scene_lut: String::new(), ccc_id: String::new(), knee: qcv_color::Knee::default() });
                 self.settings.set_bool(k::COLOR_ENABLED, true); self.write_target(Stored { chain: ClipChain::Ocio(o), preset: String::new() });
+            }
+            DCmd::PickLut => {
+                // QCView's `lutPicker`: "Choose LUT", the scene slot's two filters; a new file starts at its first correction
+                let (_, st, _) = self.color_target();
+                let tc = |s: &'static str| min_i18n::trc("ColorPanel", s);
+                if let (ClipChain::Ocio(o), Some(p)) = (st.chain.clone(), rfd::FileDialog::new().set_title(tc("Choose LUT")).add_filter(tc("LUT / CDL files (*.cube *.3dl *.csp *.cc *.ccc *.cdl)"), &["cube", "3dl", "csp", "cc", "ccc", "cdl"]).add_filter(tc("All files (*)"), &["*"]).pick_file()) {
+                    self.settings.set_bool(k::COLOR_ENABLED, true);
+                    self.write_target(Stored { chain: ClipChain::Ocio(OcioChain { scene_lut: p.to_string_lossy().into_owned(), ccc_id: String::new(), ..o }), preset: st.preset });
+                }
             }
             DCmd::OpenConfig => {
                 let (_, st, _) = self.color_target();
@@ -372,3 +404,9 @@ mod hdr_chain_tests {
         c.agx_on = 0; c.knee_on = 0; c.open_drt = 1; c.peak_nits = 1000.0; assert!(super::mincolor_outputs_hdr(&c), "OpenDRT at 1000 nits");
     }
 }
+
+/// What makes an OCIO pass what it is (a change = a new build).
+pub(crate) fn ocio_key(o: &OcioChain) -> String { format!("{}|{}|{}|{}|{}|{}|{:?}", o.config, o.input, o.look, o.view, o.scene_lut, o.ccc_id, o.knee) }
+/// A stored Scene LUT path as this OS opens it. The project keeps the path VERBATIM (QCView's form, canon row 257 R7); only
+/// the separators are turned here — the app has no drive / mount mapping for any path yet.
+pub(crate) fn lut_native(path: &str) -> String { if path.is_empty() { String::new() } else { crate::os_actions::native(path) } }

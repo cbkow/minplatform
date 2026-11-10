@@ -416,3 +416,15 @@ already exist. Roughly: Correction ID plumbing + rebuild key (½ day); the Scene
 (1 day); Export LUT bake, writer, button, dialog, toasts (1 day incl. the SDR-twin encode); the 2.x-pin handling of R6
 (½ day); tests + the two-OS walk (1 day). About 500–700 lines with tests, two to three sessions — provided R5, R6 and
 R9 are ruled first, since those three decide behaviour rather than layout.
+
+## 8. Progress (the build, from 2026-11-10)
+
+| Stage | What | State |
+|---|---|---|
+| 1 | The Correction ID end to end (`Spec.ccc_id`, `OcioChain.ccc_id`, both C++ builders → `FileTransform::setCCCId`, QCView's `sceneLut.cccId`); the pass and thumbnail keys carry the LUT path and the id (C1, C2) | Built. Tests (`qcv-color` `ocio_tests`): a `.cube` and a two-correction `.ccc` act on the Input's values — id, index, the first by default; an unknown id and a missing file fail to build; the Knee split's pre half carries it; the GPU matches OCIO's CPU processor |
+| 2 | The Scene LUT card (R2–R4, R8): `color_columns.rs` `LutPanel`, between Look and View, collapsed by default, opened once per target for a chain with a LUT; the picker (`Cmd::PickLut`, QCView's title and two filters; a new file clears the id); ✕ Clear; the Correction ID field for `.ccc` / `.cdl`. R5: a file that cannot load → a negative toast naming it with OCIO's reason, the card in an error state (opened), the clip in Color BYPASS, no rebuild until the chain changes. R7: the path is stored verbatim; only the separators are turned when the file is opened (the app has no drive / mount mapping for any path yet — R7's "min-paths mapping" is not there to apply) | Built; both card states checked in headless snapshots (`QCV_UI_SNAP_COLOR=ocio QCV_UI_SNAP_LUT=<path> [QCV_UI_SNAP_LUT_ERR=<text>]`). **Walk owed** with real files: a `.cube`, a `.ccc` with ids, a missing file, dual view (a LUT per side), screenshots / thumbnails / an output carrying it |
+| 3 | Export LUT (R9–R14, B5 / B6 / B9) | Not started |
+| 4 | 2.x projects' Scene LUT pins (R6): never erased, seeded into a first OCIO chain, one toast on open | Not started |
+
+One string beyond QCView's: `Couldn't load the Scene LUT %1: %2` (ColorPanel; 11 drafts). Found on the way and fixed: the
+Video gamma tooltip still said screenshots and outputs were unaffected after row 262 — reworded, 11 drafts.

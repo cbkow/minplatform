@@ -165,7 +165,10 @@ struct App {
     mincolor: [Option<std::rc::Rc<std::cell::RefCell<qcv_color::MinColorPass>>>; 2], mincolor_ready: [Option<std::sync::mpsc::Receiver<qcv_color::MinColorPass>>; 2],
     /// the OCIO configs the drawer has opened, by key
     ocio_configs: HashMap<String, std::sync::Arc<qcv_color::ocio::Config>>,
-    color_bound: [Option<String>; 2], ocio_rx: [Option<(String, std::sync::mpsc::Receiver<Box<dyn min_present::ColorPass + Send>>)>; 2],
+    color_bound: [Option<String>; 2], ocio_rx: [Option<(String, std::sync::mpsc::Receiver<Result<Box<dyn min_present::ColorPass + Send>, String>>)>; 2],
+    /// a chain whose Scene LUT could not be loaded: (the chain's key, OCIO's reason) — that slot shows Color bypass and the
+    /// build is not retried until the chain changes (canon row 257, R5)
+    ocio_error: [Option<(String, String)>; 2],
 }
 
 impl App {
@@ -413,7 +416,7 @@ impl App {
                     let mut ed = qcv_timeline::Editor::default(); ed.load_dual(d.media(qcv_player::Side::A), d.media(qcv_player::Side::B), d.rate());
                     self.dual_editor = Some(ed);
                     if let Some(g) = self.gpu.as_mut() { g.dual_bars.selected = None; g.dual_bars.target = qcv_player::Side::B; if self.mincolor[1].is_none() && self.mincolor_ready[1].is_none() && !color::harness_active() { self.mincolor_ready[1] = Some(color::mincolor_ahead(&g.presenter.engine.device, &g.presenter.engine.queue)); } }
-                    self.color_bound = [None, None]; self.ocio_rx = [None, None];
+                    self.color_bound = [None, None]; self.ocio_rx = [None, None]; self.ocio_error = [None, None];
                     self.dual = Some(d); self.close_notes(); self.annot.load(None);   // annotations: single view only (row 215)
                     if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(true); }
                 }
@@ -429,7 +432,7 @@ impl App {
         let Some(d) = self.dual.take() else { return };
         let sec = d.current_frame() as f64 / d.rate().as_f64().max(1e-9);
         d.retire();
-        self.active_dual_view.clear(); self.dual_editor = None; self.color_bound = [None, None]; self.ocio_rx = [None, None];
+        self.active_dual_view.clear(); self.dual_editor = None; self.color_bound = [None, None]; self.ocio_rx = [None, None]; self.ocio_error = [None, None];
         if let Some(g) = self.gpu.as_mut() { if g.popover_side.take().is_some() { g.clip_popover.close(); } }
         if let Some(g) = self.gpu.as_mut() { g.presenter.engine.set_dual(false); g.presenter.engine.set_color_pass(None); g.seam_hot = false; g.seam_drag = false; g.ui_dirty = true; }   // the single view rebinds its chain on reload
         let id = self.loaded_item.clone();
@@ -2539,7 +2542,7 @@ fn main() {
     let mut settings = settings;
     settings.set_bool(settings::k::COLOR_ENABLED, false);   // colour starts off at every launch; a project with assigned chains turns it on
     let colors = color_model::Library::load(settings.path());
-    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
+    let app = App { os_open_rx, move_arm: None, updater_tried: false, thumb_color: Default::default(), capture_rx: vec![], export_rx: vec![], dual: None, active_dual_view: String::new(), dual_editor: None, annot: annotate::Annotations::new(), colors, ocio_configs: HashMap::new(), mincolor: [None, None], mincolor_ready: [None, None], color_bound: [None, None], ocio_rx: [None, None], ocio_error: [None, None], single_rx, #[cfg(target_os = "macos")] menu: None, alt_clean: false, menu_queue: vec![], unsupported_toast: None, pl_editor: None, drag_pos: None, hw_intra: None, last_tick: Instant::now(), scrub_last_req: None, o, gpu: None, player: None, hw: None, settings, meta: qcv_meta::MetadataService::new(2), project: qcv_project::ProjectManager::new(), loaded_item: String::new(), source_label: String::new(), source_path: String::new(), t0: None, t_open: None, first_presented: false, presents: vec![], last_present: None, show_ms: vec![], last_report: Instant::now(), shown_in_window: 0, fetches: HashMap::new(), mods: qcv_player::Mods::default(), finished: false, frames_presented: 0, edr_seen: 0.0, live: None, blender: blender::BlenderInput::new(), outputs: outputs::OutputBus::new(), note_img: None, note_img_rx: vec![], annot_due: None, screen_hdr: None, snapped: false, verified: false };
     el.run_app(app).unwrap();
     println!("main: event loop returned · wall {}", unix_ms());   // anything after this is the process's own exit (DLL detach, driver teardown)
 }
@@ -2645,6 +2648,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
     let mut left = min_ui::Rail::new(min_ui::Side::Left, 280.0, false); left.settle();
     let mut right = min_ui::Rail::new(min_ui::Side::Right, 320.0, false); right.settle();
     let rails_bottom = bands_y - t::STATUS_STRIP_HEIGHT as f64 * scale;
+    // `QCV_UI_SNAP_LUT=<path>` (with `QCV_UI_SNAP_COLOR=ocio`): the Scene LUT card open on that file; `QCV_UI_SNAP_LUT_ERR=<text>`: its error state
     // `QCV_UI_SNAP_COLOR=1`: the Color drawer open (row 199) on a sample state — a user preset, the chain edited (Custom), a clip that owns it
     let mut drawer = std::env::var_os("QCV_UI_SNAP_COLOR").map(|_| { let mut d = color_drawer::ColorDrawer::new(true, 320.0, (None, 1000.0, true)); d.set_pointer_present(true, t0); d });
     let rails_bottom = rails_bottom - drawer.as_ref().map(|d| d.visible_height(t0, scale)).unwrap_or(0.0);
@@ -2792,10 +2796,10 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
             // `QCV_UI_SNAP_COLOR=ocio`: an OCIO chain on the bundled ACES 2.0 config
             let (stored, ocio) = if std::env::var("QCV_UI_SNAP_COLOR").as_deref() == Ok("ocio") {
                 let cfg = qcv_color::ocio::Config::open(&color::ocio_config_path("ACES_2.0")).expect("ACES 2.0 config");
-                let o = color_model::OcioChain { config: "ACES_2.0".into(), input: cfg.inputs().into_iter().find(|i| i.contains("ACEScg")).unwrap_or_default(), look: String::new(), view: cfg.views().into_iter().find(|v| v.contains("SDR")).unwrap_or_default(), scene_lut: String::new(), ccc_id: String::new(), knee: qcv_color::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } };
+                let o = color_model::OcioChain { config: "ACES_2.0".into(), input: cfg.inputs().into_iter().find(|i| i.contains("ACEScg")).unwrap_or_default(), look: String::new(), view: cfg.views().into_iter().find(|v| v.contains("SDR")).unwrap_or_default(), scene_lut: std::env::var("QCV_UI_SNAP_LUT").unwrap_or_default(), ccc_id: String::new(), knee: qcv_color::Knee { enabled: true, source_nits: 1000.0, target_nits: 1000.0, start: -1.0 } };
                 (color_model::Stored { chain: color_model::ClipChain::Ocio(o), preset: String::new() }, Some(color_drawer::OcioLists { configs: color::BUNDLED.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(), inputs: cfg.inputs(), looks: cfg.looks(), views: cfg.views() }))
             } else { (edited, None) };
-            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true, clip_warn: std::env::var_os("QCV_UI_SNAP_CLIP").is_some(), video: std::env::var_os("QCV_UI_SNAP_VIDEO").is_some(), video_state: 0 }, t0);
+            d.sync(color_drawer::View { target: "HDR_Chart_P3-D65_PQ.mov".into(), side: None, has_clip: true, own: true, stored, custom: true, on: true, presets, file_peak: (1000, 1000.0), ocio, hdr_source: true, clip_warn: std::env::var_os("QCV_UI_SNAP_CLIP").is_some(), video: std::env::var_os("QCV_UI_SNAP_VIDEO").is_some(), video_state: 0, lut_error: std::env::var("QCV_UI_SNAP_LUT_ERR").unwrap_or_default() }, t0);
             d.layout(&mut fonts, content, 0.0, rails_bottom, w as f64, scale, t0);
             engine.set_scope(d.scope());
             d.paint(scene, &mut fonts, shown_at); d.paint_tab(scene, &mut fonts, shown_at); d.paint_overlays(scene, &mut fonts, kurbo::Rect::new(0.0, 0.0, 1e5, 1e5), shown_at);
