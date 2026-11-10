@@ -1,7 +1,7 @@
 //! The file logger — QCView's `installFileLogger` (app/main.cpp): every log line also goes to `qcv-log.txt` in the per-user log
-//! folder (macOS `~/Library/Logs/qcv`, Windows `%LOCALAPPDATA%\\qcv\\logs`, else `~/.local/state/qcv`; `QCV_LOG_DIR`
+//! folder (macOS `~/Library/Logs/QCView`, Windows `%LOCALAPPDATA%\\QCView\\logs`, else `~/.local/state/QCView`; `QCV_LOG_DIR`
 //! overrides), the previous session's log rotated to `qcv-log.prev.txt` first so a crash survives one relaunch; QCView's line
-//! shape `[hh:mm:ss.zzz t=xxxx] I  message`. OURS: the folder is `qcv`, not `QCView` (the two apps' logs never mix), and the
+//! shape `[hh:mm:ss.zzz t=xxxx] I  message`. The folder is the product's (canon row 253; the file names are not 2.x's). OURS: the
 //! default filter is `info` with the GPU stack at `warn` (RUST_LOG still wins). Only the window logs to a file — the harness
 //! modes keep plain stderr.
 use std::io::Write;
@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 pub fn log_dir() -> std::path::PathBuf {
     if let Some(d) = std::env::var_os("QCV_LOG_DIR") { return d.into() }
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-    if cfg!(target_os = "macos") { home.join("Library/Logs/qcv") }
-    else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("qcv").join("logs")).unwrap_or_else(|| std::path::PathBuf::from(".")) }
-    else { home.join(".local/state/qcv") }
+    if cfg!(target_os = "macos") { home.join("Library/Logs/QCView") }
+    else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("QCView").join("logs")).unwrap_or_else(|| std::path::PathBuf::from(".")) }
+    else { home.join(".local/state/QCView") }
 }
 
 struct Tee(Arc<Mutex<std::fs::File>>);

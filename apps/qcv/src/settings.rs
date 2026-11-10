@@ -5,7 +5,10 @@
 //! where `ScrubOptions::default()` had turned it on for Windows — the D3D12VA scrub check (row 149) is still owed.
 use min_settings::{Key, Schema, Settings};
 
-pub const APP: &str = "qcv";
+/// The per-user folder's name — the product's (canon row 253): settings beside the suite's `toolbox.json` and the QCBridge cards.
+pub const APP: &str = "QCView";
+/// The folder the port used before row 253; its `settings.json` is moved over once.
+const OLD_APP: &str = "qcv";
 pub const ENV: &str = "QCV";
 
 pub mod k {
@@ -141,10 +144,36 @@ static KEYS: &[Key] = &[
 
 pub static SCHEMA: Schema = Schema { keys: KEYS };
 
+/// Row 253's one-time move: `<old>/settings.json` → `<new>/settings.json` when the new one does not exist yet (a
+/// `QCV_SETTINGS_DIR` override names one folder for both, so nothing moves).
+fn adopt_old_folder(old: Option<std::path::PathBuf>, new: Option<std::path::PathBuf>) {
+    let (Some(old), Some(new)) = (old, new) else { return };
+    let (from, to) = (old.join("settings.json"), new.join("settings.json"));
+    if old == new || to.exists() || !from.exists() { return }
+    let moved = std::fs::create_dir_all(&new).and_then(|_| std::fs::rename(&from, &to));
+    match moved { Ok(()) => { let _ = std::fs::remove_dir(&old); log::info!("settings: moved from {}", from.display()) } Err(e) => log::warn!("settings: could not move {}: {e}", from.display()) }
+}
+
 pub fn open() -> Settings {
+    adopt_old_folder(Settings::dir_for(OLD_APP, ENV), Settings::dir_for(APP, ENV));
     let s = Settings::open(APP, ENV, &SCHEMA);
     match s.path() { Some(p) => log::info!("settings: {}", p.display()), None => log::info!("settings: no store (in memory)") }
     s
+}
+
+#[cfg(test)]
+#[test]
+fn old_folder_is_adopted_once() {
+    let t = std::env::temp_dir().join(format!("qcv-adopt-{}", std::process::id()));
+    let (old, new) = (t.join("qcv"), t.join("QCView"));
+    std::fs::create_dir_all(&old).unwrap(); std::fs::write(old.join("settings.json"), "{\"a\":1}").unwrap();
+    adopt_old_folder(Some(old.clone()), Some(new.clone()));
+    assert_eq!(std::fs::read_to_string(new.join("settings.json")).unwrap(), "{\"a\":1}"); assert!(!old.exists());
+    // a second old file never overwrites the adopted one
+    std::fs::create_dir_all(&old).unwrap(); std::fs::write(old.join("settings.json"), "{\"a\":2}").unwrap();
+    adopt_old_folder(Some(old.clone()), Some(new.clone()));
+    assert_eq!(std::fs::read_to_string(new.join("settings.json")).unwrap(), "{\"a\":1}");
+    let _ = std::fs::remove_dir_all(&t);
 }
 
 #[cfg(test)]
