@@ -1,28 +1,100 @@
 # minplatform
 
-The shared Rust + wgpu media platform for the family — QCView-Player, minNotes, ufb, MinRender —
-in its **theoretical / spike phase**. Nothing here ships. The Qt apps keep shipping untouched; this
-repo never modifies them. Interop with them is only through the frozen contracts (the `.qcview`
-sidecar, `.mnd`, the three QCBridge rings) and, later, a C ABI.
+The source code of **QCView 3**, a media player and reviewer for Windows and macOS, and of the Rust + wgpu platform it is
+built on.
 
-**Start at [docs/rust-wgpu-port.md](docs/rust-wgpu-port.md) §13 (where we are) and §21 (the path
-forward).** The Decisions tables in that document are the agenda; every ruling is dated there.
+- **Download and manual:** [qcview.app](https://qcview.app) · [releases](https://github.com/cbkow/QCView-Player/releases)
+- **QCView 2** (Qt Quick / QML), which QCView 3 replaces: the
+  [`2.x` branch of QCView-Player](https://github.com/cbkow/QCView-Player/tree/2.x)
+
+QCView 3 is a rewrite of QCView 2: the same decoders, colour pipeline, project files and notes, on one renderer
+([wgpu](https://wgpu.rs): Metal on macOS, Direct3D 12 on Windows) and its own interface. It opens QCView 2's projects
+and notes and installs over it.
+
+## What is here
 
 ```
-docs/           the canon (rust-wgpu-port.md) + docs/spikes/<id>.md: one verdict per spike
-crates/         only crates with a consumer or a frozen contract — never speculative
-spikes/         bin crates, numbered; question / pass bar with a number / time box / verdict
-apps/           vertical slices (apps/qcv = the QCView-shaped reference app, first)
-vendor/         byte-exact C++ reference copies for cross-implementation tests (stamped)
-tools/          CI checks: dependency direction, vendor stamps, per-crate licences
+apps/qcv/       QCView 3 (the binary is `QCView`)
+crates/         the platform: decoding (min-ffmpeg, min-image, qcv-mxf), presenting (min-present), the interface
+                (min-ui, min-theme, min-i18n), colour (qcv-color), the player, timeline, project, notes and metadata
+                (qcv-*), the QCBridge rings (qcv-ring), settings and paths (min-settings, min-paths)
+packaging/      the macOS bundle and the Windows MSIX, and the third-party notices' generator
+tools/          the native libraries' build scripts and version pins (deps/, ffmpeg/, sparkle/), translations (i18n/),
+                the manual's scripted screenshots (docs-shots/)
+vendor/         byte-exact reference copies of the contracts shared with the companion apps (stamped)
+docs/           the design record: docs/rust-wgpu-port.md, whose Decisions tables date every ruling; docs/phase2/ for
+                the port's specs and handoffs; docs/spikes/ for the measured verdicts
+spikes/         the experiments those verdicts came from
 ```
 
-Privacy: `fixtures/` is gitignored and holds client footage, derived fixtures, traces and logs; nothing
-tracked names a client or a source file. Spikes take media paths from `fixtures/sources.env` or argv.
+## Building QCView
 
-Rules (§21.2): spikes depend on crates, never the reverse; a spike that passes is never renamed
-into `crates/` — the crate is written fresh with the spike as its first integration test.
+Rust 1.98 or later (`rustup`), plus the native libraries QCView links: FFmpeg, OpenColorIO, OpenEXR (with Imath),
+libjpeg-turbo and libtiff. Their versions are pinned in `tools/deps/deps.pin`, `tools/deps/vcpkg-windows.pin` and
+`tools/ffmpeg/ffmpeg.pin`. Nothing binary is in the repository: the scripts fetch sources and build into `external/`
+(gitignored).
 
-Licences are **per crate** (row 116, proposed): shared `min-*` / `qcv-*` crates MIT OR Apache-2.0
-(`qcv-ring` MIT — the companions vendor the ring sources), `apps/*` GPL-3.0-or-later like their Qt
-ancestors. Until the first crate lands there is nothing here to license.
+### macOS (Apple Silicon, macOS 13 or later)
+
+Xcode's command-line tools, CMake, Ninja, Meson and pkg-config are needed by the library builds.
+
+```sh
+zsh tools/deps/build-macos.sh        # Imath, OpenEXR, OpenColorIO, libjpeg-turbo, libtiff → external/deps/macos-arm64
+zsh tools/ffmpeg/build-macos.sh      # FFmpeg with QCView's three patches (tools/ffmpeg/patches) → external/ffmpeg/macos-arm64
+cargo build --release -p qcv         # → target/release/QCView
+```
+
+The app bundle, as released:
+
+```sh
+zsh tools/sparkle/fetch.sh           # Sparkle, the updater (external/sparkle)
+zsh packaging/macos/make-app.sh      # → target/dist/qcview.app, signed ad hoc: it runs on the machine that built it
+```
+
+`packaging/macos/sign-macos.sh` makes the signed and notarized DMG; it needs a Developer ID and a notary profile of
+your own (`CODESIGN_TEAM_ID`, `NOTARY_PROFILE`).
+
+### Windows (x64)
+
+Visual Studio 2022 (the C++ workload) and [vcpkg](https://github.com/microsoft/vcpkg) at the commit named in
+`tools/deps/vcpkg-windows.pin`:
+
+```bat
+C:\vcpkg\vcpkg.exe install opencolorio openexr libjpeg-turbo tiff --triplet x64-windows
+```
+
+FFmpeg: `tools/ffmpeg/build-win64-wsl.sh` builds the patched FFmpeg, and `tools/ffmpeg/README.md` describes the pin.
+Point the build at both, and put their DLL folders on `PATH` to run the result:
+
+```bat
+set FFMPEG_DIR=<repo>\external\ffmpeg\win64
+set OCIO_ROOT=C:\vcpkg\installed\x64-windows
+set OPENEXR_DIR=%OCIO_ROOT%
+set TIFF_DIR=%OCIO_ROOT%
+set TURBOJPEG_DIR=%OCIO_ROOT%
+cargo build --release -p qcv
+```
+
+`packaging\windows\make-msix.ps1` stages the build with every DLL it imports and packs the MSIX (unsigned, as the
+Microsoft Store takes it).
+
+### Tests
+
+```sh
+cargo test --release --workspace
+```
+
+Tests that need media take their paths from `fixtures/sources.env` or the command line and skip when it is absent;
+`fixtures/` is not in the repository.
+
+## Third-party notices
+
+QCView shows them under **About ▸ Licenses…**. They are generated by `packaging/notices/make_notices.py` from the
+lock file and `packaging/notices/components.json`; the texts are in `packaging/notices/licenses/`.
+
+## Licence
+
+**GPL-3.0-or-later** (`LICENSE`), with the exceptions listed in [`LICENSE.md`](LICENSE.md): `crates/min-paths` and
+`crates/min-paths-ffi` are MIT OR Apache-2.0, and the ring contract under `vendor/qcbae` is MIT OR GPL-3.0.
+
+Copyright © 2025–2026 cbkow.
