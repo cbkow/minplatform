@@ -942,6 +942,12 @@ impl App {
                 }
             }
         }
+        // a dual side's feed lives exactly as long as its side IS that live item (row 258 step 6): dual left by any road, the
+        // side replaced or cleared, the item deleted, a project opened or closed — the feed ends here
+        for i in 0..2 {
+            let keep = self.side_live[i].as_ref().is_none_or(|l| self.dual.as_ref().is_some_and(|d| { let side = if i == 0 { qcv_player::Side::A } else { qcv_player::Side::B }; d.is_live(side) && d.media(side).is_some_and(|m| m.id == l.item) }) && self.project.item(&l.item).is_some());
+            if !keep { self.side_live[i] = None; log::info!("live: a dual side's feed ended"); }
+        }
         // dual's LIVE sides (row 258): each feed's newest frame on its side's engine, whatever the master does — paused,
         // scrubbed, looping (QCView `DualLiveSource`: the newest frame for any master frame asked)
         if self.dual.is_some() {
@@ -2585,7 +2591,15 @@ impl ApplicationHandler for App {
                 if let Some(t) = target { if let Ok(s) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.fetches.insert(s, t); } }
             }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() { let raw: Vec<String> = uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)).collect(); let projects: Vec<String> = raw.iter().filter(|p| p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let media: Vec<String> = raw.iter().filter(|p| !p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let admitted = if media.is_empty() { vec![] } else { self.admit_media_paths(&media) }; for p in &projects { self.open_project(p); } if let DropTarget::Side(sd) = target { self.drop_on_side(sd, admitted); return } if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in admitted.iter().cloned() { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport && projects.is_empty(); for p in admitted { if self.add_and_load(&p, first).is_some() { first = false; } } } }
+                if let Some(target) = self.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() {
+                    // a stream LINK (srt://…, qcbae://…) dropped on a dual side becomes that side (row 258, R18; QCView admits any
+                    // `scheme://` — here it was filtered out before it could reach a side)
+                    if let DropTarget::Side(sd) = target && let Some(url) = uris.iter().map(|u| u.to_string()).find(|u| u.contains("://") && !u.starts_with("file:")) {
+                        if url.contains("mode=listener") { self.blender.user_listeners.insert(url.trim().to_string()); }
+                        if let Some(id) = self.project.add_live_stream(&url, "") { if sd == qcv_player::Side::B { self.set_b_source(&id); } else { self.load_item(&id); } }
+                        return
+                    }
+                    let raw: Vec<String> = uris.iter().filter_map(|u| min_paths::url::file_url_to_path(u)).collect(); let projects: Vec<String> = raw.iter().filter(|p| p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let media: Vec<String> = raw.iter().filter(|p| !p.to_lowercase().ends_with(".qcvproj")).cloned().collect(); let admitted = if media.is_empty() { vec![] } else { self.admit_media_paths(&media) }; for p in &projects { self.open_project(p); } if let DropTarget::Side(sd) = target { self.drop_on_side(sd, admitted); return } if let DropTarget::Playlist(x) = target { let mut ids = vec![]; for p in admitted.iter().cloned() { if let Some(id) = self.add_and_load(&p, false) { ids.push(id); } } self.playlist_insert(&ids, x as f64); return } let mut first = target == DropTarget::Viewport && projects.is_empty(); for p in admitted { if self.add_and_load(&p, first).is_some() { first = false; } } } }
             }
             _ => {}
         }

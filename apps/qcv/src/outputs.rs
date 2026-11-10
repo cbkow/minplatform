@@ -207,6 +207,9 @@ impl crate::App {
         let on = self.outputs.any_enabled();
         if let Some(p) = self.player.as_mut() { p.audio.set_output_tap(on); }
         if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_output_tap(on); }
+        // dual view (row 258 step 6): each side's player — a file's, or a live host's
+        if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_output_tap(on)); }
+        for l in self.side_live.iter_mut().flatten() { if let Some(au) = l.audio.as_mut() { au.set_output_tap(on); } }
     }
     fn launch(o: &mut Output) {
         let mut c = Command::new(&o.m.exec); c.args(&o.m.args).env("QCVO_ID", &o.m.id);
@@ -318,6 +321,15 @@ impl crate::App {
     fn output_source_size(&self) -> (u32, u32) {
         if let Some(l) = self.live.as_ref() { let f = l.feed.facts(); return (f.width, f.height) }
         if let Some(p) = self.player.as_ref() { let i = p.info(); return (i.width, i.height) }
+        // dual view: the larger side — a file's stream, or a live side's raster (row 258 step 6; it answered 0 × 0 in dual)
+        if let Some(d) = self.dual.as_ref() {
+            let mut best = (0u32, 0u32);
+            for (i, side) in [qcv_player::Side::A, qcv_player::Side::B].into_iter().enumerate() {
+                let s = match (d.side(side), self.side_live[i].as_ref()) { (Some(t), _) => { let inf = t.info(); (inf.width, inf.height) } (None, Some(l)) => { let f = l.feed.facts(); (f.width, f.height) } _ => (0, 0) };
+                if s.0 as u64 * s.1 as u64 > best.0 as u64 * best.1 as u64 { best = s; }
+            }
+            return best
+        }
         (0, 0)
     }
     /// The change stamp (QCView `OutputStamp`): a new frame, the colour, the aids, the geometry, Review, a dual change, a new spec.
@@ -459,6 +471,12 @@ impl crate::App {
             let f = p.current_frame();
             return (p.is_playing(), f as i64, p.rate().as_f64(), fmt.is_valid().then(|| fmt.format(start + f)))
         }
+        // dual view (row 258 step 6; it answered Paused, frame 0, no rate): the master's transport — or, with no clocked
+        // side, the first live side's feed (never Paused: its frames keep coming). No timecode: two sources, two clocks.
+        if let Some(d) = self.dual.as_ref() {
+            if d.has_clocked_side() { return (d.is_playing(), d.current_frame() as i64, d.rate().as_f64(), None) }
+            if let Some(l) = self.side_live.iter().flatten().next() { return (true, l.feed.facts().frames as i64, l.feed.host_fps().unwrap_or(0.0), None) }
+        }
         (false, 0, 0.0, None)
     }
     /// The mixed audio → every present output's audio ring, 1024-frame planar packets (QCView `OutputBus::tapAudio`); the master
@@ -467,6 +485,19 @@ impl crate::App {
         let mut buf = std::mem::take(&mut self.outputs.tap);
         if let Some(p) = self.player.as_mut() { p.audio.drain_tap(&mut buf); }
         if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.drain_tap(&mut buf); }
+        // dual view (row 258 step 6): every side's tap is drained (none may grow), and the output carries the first HEARD
+        // side — A when both are unmuted. QCView's mixer summed the heard sides; two taps filled by two device callbacks do
+        // not line up sample for sample here, so the sum is not attempted.
+        if self.dual.is_some() {
+            let mut taken = false;
+            for (i, side) in [qcv_player::Side::A, qcv_player::Side::B].into_iter().enumerate() {
+                let mut one = vec![];
+                if let Some(t) = self.dual.as_mut().and_then(|d| d.side_mut(side)) { t.audio.drain_tap(&mut one); }
+                if let Some(au) = self.side_live[i].as_mut().and_then(|l| l.audio.as_mut()) { au.drain_tap(&mut one); }
+                let heard = self.dual.as_ref().is_some_and(|d| !d.side_muted(side));
+                if heard && !taken && !one.is_empty() { buf.extend_from_slice(&one); taken = true; }
+            }
+        }
         let muted = self.settings.bool(k::MUTED) || self.settings.bool(k::OUTPUT_FEED_MUTED);
         let n = buf.len() / 2 / 1024 * 1024;
         if n == 0 { self.outputs.tap = buf; return }
