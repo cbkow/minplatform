@@ -328,7 +328,7 @@ impl App {
     fn open_project_dialog(&mut self) { if let Some(p) = rfd::FileDialog::new().set_title(trm("Open Project")).add_filter(trm("QCView Project"), &["qcvproj"]).pick_file() { self.open_project(&p.to_string_lossy()); } }
     fn open_project(&mut self, path: &str) {
         match self.project.open_project(path) {
-            Ok(probes) => { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.schedule_probes(probes); self.note_recent_project(path); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
+            Ok(probes) => { self.settings.set_bool(settings::k::COLOR_ENABLED, false); self.color_on_for_project(); self.warn_unapplied_qcview_luts(); self.schedule_probes(probes); self.note_recent_project(path); self.blender_project_replaced(); self.player = None; self.loaded_item.clear(); let active = self.project.active_item_id().to_string(); if !active.is_empty() { self.load_item(&active); } if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
             Err(e) => log::warn!("{e}"),
         }
     }

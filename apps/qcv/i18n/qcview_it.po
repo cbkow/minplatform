@@ -4585,3 +4585,8 @@ msgstr "Scegli prima un input e una view"
 msgctxt "ColorPanel"
 msgid "LUT exported without the Highlight Knee: %1"
 msgstr "LUT esportata senza il Knee alte luci: %1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT."
+msgstr "Alcuni clip contengono una LUT di scena di QCView 2 che non è applicata. Assegna una catena OCIO a un clip per usarne la LUT."

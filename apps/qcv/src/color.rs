@@ -145,6 +145,14 @@ fn stream_nudge(item: &qcv_project::MediaItem, mut d: Stored) -> Stored {
 impl crate::App {
     /// Colour starts OFF at every launch (the user 2026-11-08: "ensure color is OFF when the app opens fresh unless a project has a
     /// specific media-item with assigned color"); opening a project that has a clip with its own chain turns it on.
+    /// Canon row 257, R6b: a project whose clips carry QCView 2 Scene LUTs that 3.0 is not applying says so once, on open
+    /// (a 2.x pin has no config and no view to build a chain from, and no clip is switched to OCIO for it — R6c).
+    pub(crate) fn warn_unapplied_qcview_luts(&mut self) {
+        let n = self.project.pool().iter().filter(|m| !crate::color_model::pin_scene_lut(&m.ocio_clip).is_empty()).count();
+        if n == 0 { return }
+        log::info!("project: {n} clip(s) carry a QCView 2 Scene LUT pin that is not applied");
+        if let Some(g) = self.gpu.as_mut() { g.toast.show(min_i18n::trc("ColorPanel", "Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT."), min_ui::ToastKind::Notice, std::time::Instant::now()); g.ui_dirty = true; }
+    }
     pub(crate) fn color_on_for_project(&mut self) {
         let assigned = self.project.pool().iter().any(|m| Stored::from_clip_maps(&m.ocio_clip, &m.min_color_clip, &fallback_default()).is_some());
         if assigned { self.settings.set_bool(crate::settings::k::COLOR_ENABLED, true); }
@@ -302,9 +310,19 @@ impl crate::App {
         let (_, st, _) = self.color_target();
         if let ClipChain::Ocio(o) = st.chain { if !self.ocio_configs.contains_key(&o.config) { let _ = self.ocio_config(&o.config); } }
     }
+    /// Canon row 257, R6a: the first OCIO chain written to a clip that holds a QCView 2 pin takes the pin's slots (its names
+    /// checked against the chain's config), so 2.x's Scene LUT — and its Input, Look and Knee — are never erased by 3.0.
+    fn seed_qcview_pin(&mut self, st: Stored, pin: &serde_json::Map<String, serde_json::Value>, prev: &Stored) -> Stored {
+        let ClipChain::Ocio(o) = st.chain else { return st };
+        if !crate::color_model::is_qcview_pin(pin) { return Stored { chain: ClipChain::Ocio(o), preset: st.preset } }
+        let prev = match &prev.chain { ClipChain::Ocio(p) => Some(p), _ => None };
+        let seeded = o.clone().seeded_from_pin(pin, prev);
+        if seeded != o { log::info!("colour: a QCView 2 pin seeded the clip's first OCIO chain (input / look / Scene LUT / knee)"); }
+        Stored { chain: ClipChain::Ocio(self.fixup_ocio(seeded)), preset: st.preset }
+    }
     fn write_target(&mut self, st: Stored) {
         match self.project.item(&self.slot_item(self.edit_slot())).cloned() {
-            Some(item) => { let (oc, mc) = st.to_clip_maps(&item.ocio_clip, &item.min_color_clip); self.project.set_color_clip(&item.id, oc, mc); }
+            Some(item) => { let (_, prev, _) = self.color_target(); let st = self.seed_qcview_pin(st, &item.ocio_clip, &prev); let (oc, mc) = st.to_clip_maps(&item.ocio_clip, &item.min_color_clip); self.project.set_color_clip(&item.id, oc, mc); }
             None => { self.project.set_color_default(st.to_map()); }
         }
     }
@@ -337,11 +355,12 @@ impl crate::App {
                     self.write_target(Stored { chain: ClipChain::Ocio(o), preset: st.preset });
                 }
             }
-            DCmd::ResetToDefault => { let id = self.slot_item(self.edit_slot()); if self.project.item(&id).is_some() { self.project.set_color_clip(&id, Default::default(), Default::default()); } }
+            // the clip's own chain goes; a QCView 2 pin it never used stays in the file (row 257, R6a: never erased)
+            DCmd::ResetToDefault => { let id = self.slot_item(self.edit_slot()); if let Some(item) = self.project.item(&id).cloned() { let keep = if crate::color_model::is_qcview_pin(&item.ocio_clip) { item.ocio_clip } else { Default::default() }; self.project.set_color_clip(&id, keep, Default::default()); } }
             DCmd::ApplyToAll => {
                 let (_, st, _) = self.color_target();
                 let ids: Vec<(String, _, _)> = self.project.pool().iter().filter(|m| !matches!(m.media_type, qcv_project::MediaType::Audio | qcv_project::MediaType::LiveStream)).map(|m| (m.id.clone(), m.ocio_clip.clone(), m.min_color_clip.clone())).collect();
-                for (id, oc, mc) in ids { let (oc, mc) = st.to_clip_maps(&oc, &mc); self.project.set_color_clip(&id, oc, mc); }
+                for (id, oc, mc) in ids { let prev = self.chain_of(&id).1; let st = self.seed_qcview_pin(st.clone(), &oc, &prev); let (oc, mc) = st.to_clip_maps(&oc, &mc); self.project.set_color_clip(&id, oc, mc); }
             }
             DCmd::MakeDefault => { let (_, st, _) = self.color_target(); self.project.set_color_default(st.to_map()); }
             DCmd::SetOn(on) => { self.settings.set_bool(k::COLOR_ENABLED, on); }

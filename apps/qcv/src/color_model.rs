@@ -54,6 +54,29 @@ fn ocio_to_map(c: &OcioChain) -> Map<String, Value> {
     let v = json!({ "engine": "ocio", "config": c.config, "input": c.input, "look": c.look, "view": c.view, "sceneLut": { "path": c.scene_lut, "cccId": c.ccc_id }, "knee": knee_to(&c.knee) });
     v.as_object().cloned().unwrap()
 }
+/// A QCView 2 pin: an `ocioClip` map WITHOUT our `engine` marker — only the slots 2.x set on that clip (`input`, `look`,
+/// `sceneLut {path, cccId}`, `knee`, `hostDisplay`), no config and no view, so not a chain by itself (canon row 257, R6).
+pub fn is_qcview_pin(m: &Map<String, Value>) -> bool { !m.is_empty() && s(m, "engine") != "ocio" }
+/// The Scene LUT such a pin holds ("" = none).
+pub fn pin_scene_lut(m: &Map<String, Value>) -> String { if is_qcview_pin(m) { s(&o(m, "sceneLut"), "path") } else { String::new() } }
+
+impl OcioChain {
+    /// The FIRST OCIO chain written to a clip that holds a QCView 2 pin takes the pin's slots (R6a: never erase): Input and
+    /// Look (the caller checks the names against the config afterwards), the Scene LUT with its Correction ID, the Knee. A
+    /// slot the user has just changed keeps their value: `prev` = the chain the clip showed before this write, and only
+    /// the slots equal to it are taken from the pin.
+    pub fn seeded_from_pin(mut self, pin: &Map<String, Value>, prev: Option<&OcioChain>) -> OcioChain {
+        if !is_qcview_pin(pin) { return self }
+        let free = |mine: &dyn Fn(&OcioChain) -> bool| prev.is_none_or(mine);
+        let v = s(pin, "input"); if !v.is_empty() && free(&|p| p.input == self.input) { self.input = v; }
+        let v = s(pin, "look"); if !v.is_empty() && free(&|p| p.look == self.look) { self.look = v; }
+        let lut = o(pin, "sceneLut"); let path = s(&lut, "path");
+        if !path.is_empty() && free(&|p| p.scene_lut == self.scene_lut && p.ccc_id == self.ccc_id) { self.scene_lut = path; self.ccc_id = s(&lut, "cccId"); }
+        let kn = o(pin, "knee"); if !kn.is_empty() && free(&|p| p.knee == self.knee) { self.knee = knee_from(&kn, self.knee); }
+        self
+    }
+}
+
 fn ocio_from_map(m: &Map<String, Value>) -> Option<OcioChain> {
     let view = s(m, "view"); if view.is_empty() { return None }
     Some(OcioChain { config: s(m, "config"), input: s(m, "input"), look: s(m, "look"), view, scene_lut: s(&o(m, "sceneLut"), "path"), ccc_id: s(&o(m, "sceneLut"), "cccId"), knee: knee_from(&o(m, "knee"), Knee::default()) })
@@ -75,7 +98,8 @@ impl Stored {
     pub fn to_clip_maps(&self, old_ocio: &Map<String, Value>, old_mc: &Map<String, Value>) -> (Map<String, Value>, Map<String, Value>) {
         match &self.chain {
             ClipChain::MinColor(c) => { let mut mc = mc_to_map(c); if !self.preset.is_empty() { mc.insert("preset".into(), self.preset.clone().into()); } let mut oc = old_ocio.clone(); oc.remove("engine"); (oc, mc) }
-            ClipChain::Ocio(c) => { let mut oc = ocio_to_map(c); if !self.preset.is_empty() { oc.insert("preset".into(), self.preset.clone().into()); } (oc, old_mc.clone()) }
+            // QCView's `hostDisplay` (a Blender stream clip's display emulation) is not ours to drop: it rides through
+            ClipChain::Ocio(c) => { let mut oc = ocio_to_map(c); if !self.preset.is_empty() { oc.insert("preset".into(), self.preset.clone().into()); } if let Some(h) = old_ocio.get("hostDisplay") { oc.insert("hostDisplay".into(), h.clone()); } (oc, old_mc.clone()) }
         }
     }
     /// A clip's own chain from its maps; None = it follows the project default. QCView's minColor pins (input / knee only)
@@ -167,5 +191,20 @@ mod tests {
         let m = lut.to_map();
         assert_eq!(m["sceneLut"], serde_json::json!({ "path": "/grades/shot.ccc", "cccId": "sh010" }));
         assert_eq!(Stored::from_map(&m), Some(lut));
+        // a QCView 2 pin (no `engine`, no view): not a chain, and never erased — the first OCIO chain written takes its slots
+        let pin2: Map<String, Value> = serde_json::from_str(r#"{"input":"ARRI LogC3","look":"Show","sceneLut":{"path":"/grades/a.cdl","cccId":"sh020"},"knee":{"enabled":true,"sourceNits":600.0,"targetNits":100.0,"start":-1.0},"hostDisplay":"sRGB"}"#).unwrap();
+        assert!(is_qcview_pin(&pin2)); assert_eq!(pin_scene_lut(&pin2), "/grades/a.cdl");
+        assert_eq!(Stored::from_clip_maps(&pin2, &Map::new(), &fallback_default()), None, "a 2.x pin alone follows the default");
+        let fresh = OcioChain { config: "ACES_2.0".into(), input: "ACEScg".into(), look: String::new(), view: "SDR".into(), scene_lut: String::new(), ccc_id: String::new(), knee: Knee::default() };
+        let seeded = fresh.clone().seeded_from_pin(&pin2, None);
+        assert_eq!((seeded.input.as_str(), seeded.look.as_str(), seeded.scene_lut.as_str(), seeded.ccc_id.as_str(), seeded.knee.enabled, seeded.knee.source_nits), ("ARRI LogC3", "Show", "/grades/a.cdl", "sh020", true, 600.0));
+        assert_eq!((seeded.config.as_str(), seeded.view.as_str()), ("ACES_2.0", "SDR"), "the config and the view are the new chain's");
+        // the user has just picked another Input on the chain the clip showed: theirs stays, the rest comes from the pin
+        let edited = OcioChain { input: "Rec.1886".into(), ..fresh.clone() }.seeded_from_pin(&pin2, Some(&fresh));
+        assert_eq!((edited.input.as_str(), edited.scene_lut.as_str()), ("Rec.1886", "/grades/a.cdl"));
+        // written, the map is ours (marked), keeps QCView's hostDisplay, and is not seeded twice
+        let (oc, _) = Stored { chain: ClipChain::Ocio(seeded.clone()), preset: String::new() }.to_clip_maps(&pin2, &Map::new());
+        assert_eq!(oc["hostDisplay"], "sRGB"); assert!(!is_qcview_pin(&oc)); assert_eq!(oc["sceneLut"]["cccId"], "sh020");
+        assert_eq!(seeded.clone().seeded_from_pin(&oc, None), seeded);
     }
 }

@@ -4577,3 +4577,8 @@ msgstr "请先选择输入和视图"
 msgctxt "ColorPanel"
 msgid "LUT exported without the Highlight Knee: %1"
 msgstr "LUT 已导出（不含高光拐点）：%1"
+
+#. drafted 2026-11-10, unreviewed
+msgctxt "ColorPanel"
+msgid "Some clips carry a Scene LUT from QCView 2 that is not applied. Give a clip an OCIO chain to use its LUT."
+msgstr "部分片段带有来自 QCView 2 的场景 LUT，但尚未应用。为片段指定 OCIO 链即可使用其 LUT。"
