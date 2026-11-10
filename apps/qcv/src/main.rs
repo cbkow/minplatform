@@ -2647,7 +2647,7 @@ fn main() {
     if o.headless.is_some() { run_headless(o); return }
     // QCView's single-instance handoff: a running window takes this launch's arguments (absolute: its working folder differs)
     let multi = std::env::var_os("QCV_MULTI_INSTANCE").is_some();
-    let fwd: Vec<String> = o.files.iter().map(|a| if a.contains("://") { a.clone() } else { std::fs::canonicalize(a).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| a.clone()) }).collect();
+    let fwd: Vec<String> = o.files.iter().map(|a| if a.contains("://") { a.clone() } else { std::fs::canonicalize(a).map(|p| qcv_project::plain_path(&p.to_string_lossy())).unwrap_or_else(|_| a.clone()) }).collect();
     if !multi && single_instance::forward(&fwd) { println!("qcv: handed {} argument(s) to the running window", fwd.len()); return }
     let _ = logging::install();
     toolbox::publish();   // QCView: the suite's ffmpeg manifest for the QCBridge Blender add-on

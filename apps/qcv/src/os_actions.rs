@@ -123,7 +123,7 @@ pub fn notices_file() -> Option<String> {
         let out = std::path::PathBuf::from(local).join("QCView");
         if std::fs::create_dir_all(&out).is_ok() && std::fs::copy(&found, out.join(NAME)).is_ok() { return Some(out.join(NAME).to_string_lossy().into_owned()) }
     }
-    Some(std::fs::canonicalize(&found).unwrap_or(found).to_string_lossy().into_owned())
+    Some(qcv_project::plain_path(&std::fs::canonicalize(&found).unwrap_or(found).to_string_lossy()))
 }
 
 

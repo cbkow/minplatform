@@ -6,7 +6,7 @@ pub mod io;
 pub mod manager;
 pub use model::*;
 pub use io::{ProjectFile, SCHEMA_TAG, SCHEMA_VERSION, PROJECT_DIR_TOKEN, collapse_project_dir, expand_project_dir, to_qt_json};
-pub use manager::{ProjectManager, Probe, now_iso_utc};
+pub use manager::{ProjectManager, Probe, now_iso_utc, plain_path};
 
 #[cfg(test)]
 mod tests {

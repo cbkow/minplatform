@@ -45,6 +45,14 @@ pub fn stamp_local(utc_offset_secs: i64) -> String {
 
 impl Default for ProjectManager { fn default() -> Self { Self::new() } }
 
+/// Windows: `std::fs::canonicalize` answers a VERBATIM path (`\\?\C:\…`, `\\?\UNC\server\share\…`). A path the user
+/// sees, a project stores and another app is handed is the plain one, as QCView's `absoluteFilePath` gave: without this
+/// every item read `//?/C:/…` in the Inspector and in the saved project, which no longer matched the same file's plain path in a project saved by 2.x.
+pub fn plain_path(p: &str) -> String {
+    if let Some(r) = p.strip_prefix(r"\\?\UNC\") { return format!(r"\\{r}") }
+    p.strip_prefix(r"\\?\").unwrap_or(p).to_string()
+}
+
 impl ProjectManager {
     pub fn new() -> ProjectManager {
         let now = now_iso_utc();
@@ -125,7 +133,7 @@ impl ProjectManager {
         let p = Path::new(raw_path);
         if raw_path.is_empty() || !p.exists() { log::warn!("ProjectManager: addMediaFile — '{raw_path}' does not exist"); return (None, vec![]) }
         if !extensions::is_supported_media_file(raw_path) { log::warn!("ProjectManager: addMediaFile — '{raw_path}' refused ({})", if p.is_dir() { "a folder" } else { "not a media file type" }); return (None, vec![]) }
-        let abs = std::fs::canonicalize(p).map(|a| a.to_string_lossy().replace('\\', "/")).unwrap_or_else(|_| raw_path.replace('\\', "/"));
+        let abs = std::fs::canonicalize(p).map(|a| plain_path(&a.to_string_lossy()).replace('\\', "/")).unwrap_or_else(|_| raw_path.replace('\\', "/"));
         self.note_recent(&abs);
         if extensions::kind_for_path(&abs) == extensions::Kind::Image {
             if let Some(seq) = min_paths::sequence::detect_on_disk(Path::new(&abs)) {
@@ -332,6 +340,14 @@ impl ProjectManager {
 
 #[cfg(test)]
 mod live_name_tests {
+    #[test]
+    fn a_verbatim_windows_path_becomes_the_plain_one() {
+        assert_eq!(super::plain_path(r"\\?\C:\Media\a.mov"), r"C:\Media\a.mov");
+        assert_eq!(super::plain_path(r"\\?\UNC\server\share\a.mov"), r"\\server\share\a.mov");
+        assert_eq!(super::plain_path(r"C:\Media\a.mov"), r"C:\Media\a.mov");
+        assert_eq!(super::plain_path("/Volumes/Media/a.mov"), "/Volumes/Media/a.mov");
+    }
+
     #[test]
     fn a_stream_is_named_host_port_never_its_query() {
         let mut m = super::ProjectManager::new();
