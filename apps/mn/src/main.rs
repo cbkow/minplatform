@@ -333,6 +333,7 @@ impl ApplicationHandler for App {
                 // The rule is kept narrow so that ordinary typing can never be lost to it: only a REPEATED key the text input
                 // did not pass on starts it, and it ends with the first key that is passed on.
                 #[cfg(target_os = "macos")] { use text_element::KeyFate; let fate = text_element::key_fate();
+                    text_element::key_log(format!("key {:?} text {:?} repeat {} -> {fate:?}", event.logical_key, event.text, event.repeat));
                     if fate == KeyFate::Replaced { self.accent_popup = false; return }
                     if !self.mods.1 && fate == KeyFate::Swallowed && (event.repeat || self.accent_popup) { self.accent_popup = true; return }
                     self.accent_popup = false; }

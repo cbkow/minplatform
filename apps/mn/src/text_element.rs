@@ -54,6 +54,11 @@ thread_local! {
 fn log(name: &'static str, detail: String) {
     LOG.with_borrow_mut(|l| { let Some((t0, out, counts)) = l.as_mut() else { return }; let n = counts.entry(name).or_default(); *n += 1; if *n <= 3 || name == "setSelectedTextRange" { let _ = writeln!(out, "{:9.3}  {name} {detail}", t0.elapsed().as_secs_f64()); } });
 }
+/// `MN_KEY_LOG=<file>`: every key press as the app saw it and what the system's text input did with it.
+pub fn key_log(line: String) {
+    thread_local! { static OUT: RefCell<Option<Option<std::fs::File>>> = const { RefCell::new(None) }; }
+    OUT.with_borrow_mut(|o| { let f = o.get_or_insert_with(|| std::env::var_os("MN_KEY_LOG").and_then(|p| std::fs::File::create(p).ok())); if let Some(f) = f { let _ = writeln!(f, "{line}"); } });
+}
 pub fn log_summary() { LOG.with_borrow_mut(|l| { if let Some((_, out, counts)) = l.as_mut() { let _ = writeln!(out, "-- call counts --"); for (k, v) in counts.iter() { let _ = writeln!(out, "{v:8}  {k}"); } } }); }
 
 fn host() -> Option<&'static mut dyn TextHost> { HOST.get().map(|p| unsafe { &mut *p }) }
@@ -118,6 +123,7 @@ unsafe extern "C-unwind" fn v_hit(_: &AnyObject, _: Sel, _p: NSPoint) -> *mut An
 // on offer, a key that steers the accent popup), or it REPLACED the letter before the caret (the accent chosen).
 unsafe extern "C-unwind" fn v_insert_text(this: &AnyObject, _: Sel, string: *mut AnyObject, range: NSRange) {
     INSERTED.set(true);
+    key_log(format!("  insertText {:?} range {{{},{}}}", unsafe { let is_attr: Bool = msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)]; let s: *mut NSString = if is_attr.as_bool() { msg_send![string, string] } else { string.cast() }; (*s).to_string() }, range.location as isize, range.length));
     if range.location != isize::MAX as usize && range.location != usize::MAX && range.length > 0 {
         let text: String = unsafe { let is_attr: Bool = msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)]; let s: *mut NSString = if is_attr.as_bool() { msg_send![string, string] } else { string.cast() }; (*s).to_string() };
         log("insertText (replacing)", format!("{text:?} over {{{},{}}}", range.location, range.length));
@@ -126,8 +132,24 @@ unsafe extern "C-unwind" fn v_insert_text(this: &AnyObject, _: Sel, string: *mut
     }
     unsafe { let _: () = msg_send![super(this, &*BELOW.get()), insertText: string, replacementRange: range]; }
 }
+/// The system's text input asks where the selection is and what text is there before it offers a held letter's accents
+/// (winit answers "no selection" and "no text", and the system then just repeats the letter). While an input method is
+/// composing, winit's own answers stand.
+unsafe extern "C-unwind" fn v_selected_range(this: &AnyObject, _: Sel) -> NSRange {
+    let marked: Bool = unsafe { msg_send![this, hasMarkedText] };
+    if marked.as_bool() { return unsafe { msg_send![super(this, &*BELOW.get()), selectedRange] } }
+    match host() { Some(h) => { let (l, n) = h.ax_selection(); NSRange::new(l, n) } None => NSRange::new(isize::MAX as usize, 0) }
+}
+unsafe extern "C-unwind" fn v_substring(_: &AnyObject, _: Sel, range: NSRange, actual: *mut NSRange) -> *mut AnyObject {
+    let Some(h) = host() else { return std::ptr::null_mut() };
+    let len = h.ax_len16(); let start = range.location.min(len); let n = range.length.min(len - start);
+    if !actual.is_null() { unsafe { *actual = NSRange::new(start, n); } }
+    let s = h.ax_substring(start, n);
+    unsafe { let a: *mut AnyObject = msg_send![objc2::class!(NSAttributedString), alloc]; let a: *mut AnyObject = msg_send![a, initWithString: nsstr(&s)]; msg_send![a, autorelease] }
+}
 unsafe extern "C-unwind" fn v_do_command(this: &AnyObject, _: Sel, command: Sel) {
     COMMAND.set(true);
+    key_log(format!("  doCommand {}", command.name().to_string_lossy()));
     unsafe { let _: () = msg_send![super(this, &*BELOW.get()), doCommandBySelector: command]; }
 }
 /// What became of the key press being handled: `Typed` — the system's text input passed it on as text or as a command
@@ -195,6 +217,8 @@ pub fn install(host: *mut dyn TextHost, view: *mut AnyObject) {
         v.add_method(sel!(accessibilityHitTest:), v_hit as unsafe extern "C-unwind" fn(_, _, _) -> _);
         v.add_method(sel!(insertText:replacementRange:), v_insert_text as unsafe extern "C-unwind" fn(_, _, _, _));
         v.add_method(sel!(doCommandBySelector:), v_do_command as unsafe extern "C-unwind" fn(_, _, _));
+        v.add_method(sel!(selectedRange), v_selected_range as unsafe extern "C-unwind" fn(_, _) -> _);
+        v.add_method(sel!(attributedSubstringForProposedRange:actualRange:), v_substring as unsafe extern "C-unwind" fn(_, _, _, _) -> _);
         objc2::ffi::object_setClass(view, v.register() as *const AnyClass);
     }
 }
