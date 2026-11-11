@@ -195,7 +195,7 @@ mod tests {
         let block = |id, parent, kind: Kind, children: Vec<BlockId>| Block { id, parent, rank: crate::rank::Rank::first(), kind, text: String::new(), spans: Spans::new(), children };
         // one step: a Columns block with one column appears, and `b` moves into it
         h.commit(&mut d, vec![
-            Change::Insert { index: 2, blocks: vec![block(cols, None, Kind::Columns, vec![col]), block(col, Some(cols), Kind::Column, vec![])] },
+            Change::Insert { index: 2, blocks: vec![block(cols, None, Kind::Columns, vec![col]), block(col, Some(cols), Kind::column(), vec![])] },
             Change::Move { id: b, from: (None, 1), to: (Some(col), 0) },
         ], 0).unwrap();
         assert_eq!(d.children(Some(col)), &[b]);

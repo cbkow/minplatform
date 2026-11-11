@@ -18,27 +18,50 @@ pub enum Kind {
     /// One media item; the descriptor is carried as the file's JSON until the media step gives it a type.
     Media { descriptor: String },
     Columns,
-    Column,
-    Table,
-    Row,
-    Cell,
+    /// `width`: this column's share of the row, the shares of a Columns block summing to 1.
+    Column { width: f32 },
+    Table { header_rows: u8, columns: Vec<ColumnSpec> },
+    /// Colours are strings as the file gives them (hex in practice); empty = none.
+    Row { bg: String, fg: String },
+    Cell { bg: String, fg: String },
 }
+
+/// What a table column holds (row 273: text, choice, checkmark, timecode).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColumnKind { Text, Choice { options: Vec<ChoiceOption> }, Check, Timecode { fps: f64 } }
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChoiceOption { pub id: String, pub label: String, pub color: String }
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnSpec {
+    /// A manual width in px; None = sized to its content.
+    pub width: Option<u32>,
+    /// 0 left, 1 centre, 2 right
+    pub align: u8,
+    pub bg: String,
+    pub fg: String,
+    pub kind: ColumnKind,
+}
+impl Default for ColumnSpec { fn default() -> Self { ColumnSpec { width: None, align: 0, bg: String::new(), fg: String::new(), kind: ColumnKind::Text } } }
 impl Kind {
+    pub fn column() -> Kind { Kind::Column { width: 0.0 } }
+    pub fn table() -> Kind { Kind::Table { header_rows: 0, columns: vec![] } }
+    pub fn row() -> Kind { Kind::Row { bg: String::new(), fg: String::new() } }
+    pub fn cell() -> Kind { Kind::Cell { bg: String::new(), fg: String::new() } }
     /// Holds text the caret can enter.
     pub fn is_text(&self) -> bool { matches!(self, Kind::Paragraph | Kind::Heading { .. } | Kind::Quote | Kind::Code { .. } | Kind::Bullet { .. } | Kind::Numbered { .. } | Kind::Task { .. }) }
-    pub fn is_container(&self) -> bool { matches!(self, Kind::Columns | Kind::Column | Kind::Table | Kind::Row | Kind::Cell) }
+    pub fn is_container(&self) -> bool { matches!(self, Kind::Columns | Kind::Column { .. } | Kind::Table { .. } | Kind::Row { .. } | Kind::Cell { .. }) }
     /// What may sit directly inside what (row 273): a Columns block holds Columns' columns, a Table rows, a Row cells;
     /// a column or a cell holds leaves; a table may sit in a column; no columns in columns, no tables in tables, no
     /// Columns block in a cell. `parent` None is the document itself.
     pub fn may_hold(parent: Option<&Kind>, child: &Kind) -> bool {
         match (parent, child) {
-            (Some(Kind::Columns), c) => matches!(c, Kind::Column),
-            (Some(Kind::Table), c) => matches!(c, Kind::Row),
-            (Some(Kind::Row), c) => matches!(c, Kind::Cell),
-            (_, Kind::Column | Kind::Row | Kind::Cell) => false,
+            (Some(Kind::Columns), c) => matches!(c, Kind::Column { .. }),
+            (Some(Kind::Table { .. }), c) => matches!(c, Kind::Row { .. }),
+            (Some(Kind::Row { .. }), c) => matches!(c, Kind::Cell { .. }),
+            (_, Kind::Column { .. } | Kind::Row { .. } | Kind::Cell { .. }) => false,
             (None, _) => true,
-            (Some(Kind::Column), c) => !matches!(c, Kind::Columns),
-            (Some(Kind::Cell), c) => !matches!(c, Kind::Columns | Kind::Table),
+            (Some(Kind::Column { .. }), c) => !matches!(c, Kind::Columns),
+            (Some(Kind::Cell { .. }), c) => !matches!(c, Kind::Columns | Kind::Table { .. }),
             (Some(_), _) => false,   // a leaf holds nothing
         }
     }
@@ -103,7 +126,7 @@ impl Doc {
         let mut up = parent;
         while let Some(p) = up {
             let b = &self.blocks[&p];
-            if matches!((kind, &b.kind), (Kind::Table, Kind::Cell) | (Kind::Columns, Kind::Column) | (Kind::Columns, Kind::Cell)) { return Err(TreeError::NotAllowed { parent, child }) }
+            if matches!((kind, &b.kind), (Kind::Table { .. }, Kind::Cell { .. }) | (Kind::Columns, Kind::Column { .. }) | (Kind::Columns, Kind::Cell { .. })) { return Err(TreeError::NotAllowed { parent, child }) }
             up = b.parent;
         }
         Ok(())
@@ -168,8 +191,9 @@ impl Doc {
     pub fn index_of(&self, id: BlockId) -> Option<usize> { let p = self.blocks.get(&id)?.parent; self.children(p).iter().position(|c| *c == id) }
     pub fn set_kind(&mut self, id: BlockId, kind: Kind) -> Result<(), TreeError> {
         let b = self.blocks.get(&id).ok_or(TreeError::UnknownBlock(id))?;
-        // a kind change stays within leaves that hold text: it never makes or unmakes a container or a media block
-        if !(b.kind.is_text() && kind.is_text()) { return Err(TreeError::NotAllowed { parent: b.parent, child: id }) }
+        // a kind change stays within leaves that hold text, or changes a container's own attributes (a column's width,
+        // a table's columns, a colour): it never makes or unmakes a container or a media block
+        if !((b.kind.is_text() && kind.is_text()) || (b.kind.is_container() && std::mem::discriminant(&b.kind) == std::mem::discriminant(&kind))) { return Err(TreeError::NotAllowed { parent: b.parent, child: id }) }
         self.blocks.get_mut(&id).unwrap().kind = kind; Ok(())
     }
     pub fn set_text(&mut self, id: BlockId, text: impl Into<String>) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.text = text.into(); Ok(()) }
@@ -204,15 +228,15 @@ mod tests {
         let (cols, col, table, row, cell) = (id(), id(), id(), id(), id());
         d.insert(None, 0, cols, Kind::Columns, "").unwrap();
         assert!(matches!(d.insert(Some(cols), 0, id(), Kind::Paragraph, "x"), Err(TreeError::NotAllowed { .. })));   // a Columns block holds columns only
-        d.insert(Some(cols), 0, col, Kind::Column, "").unwrap();
-        d.insert(Some(col), 0, table, Kind::Table, "").unwrap();                                                      // a table in a column
-        d.insert(Some(table), 0, row, Kind::Row, "").unwrap();
-        d.insert(Some(row), 0, cell, Kind::Cell, "").unwrap();
+        d.insert(Some(cols), 0, col, Kind::column(), "").unwrap();
+        d.insert(Some(col), 0, table, Kind::table(), "").unwrap();                                                      // a table in a column
+        d.insert(Some(table), 0, row, Kind::row(), "").unwrap();
+        d.insert(Some(row), 0, cell, Kind::cell(), "").unwrap();
         d.insert(Some(cell), 0, id(), Kind::Paragraph, "in a cell").unwrap();
         d.insert(Some(cell), 1, id(), Kind::Media { descriptor: "{}".into() }, "").unwrap();
-        for bad in [Kind::Table, Kind::Columns] { assert!(matches!(d.insert(Some(cell), 0, id(), bad, ""), Err(TreeError::NotAllowed { .. }))); }
+        for bad in [Kind::table(), Kind::Columns] { assert!(matches!(d.insert(Some(cell), 0, id(), bad, ""), Err(TreeError::NotAllowed { .. }))); }
         assert!(matches!(d.insert(Some(col), 0, id(), Kind::Columns, ""), Err(TreeError::NotAllowed { .. })));
-        assert!(matches!(d.insert(None, 0, id(), Kind::Cell, ""), Err(TreeError::NotAllowed { .. })));
+        assert!(matches!(d.insert(None, 0, id(), Kind::cell(), ""), Err(TreeError::NotAllowed { .. })));
         let p = id(); d.insert(None, 0, p, Kind::Paragraph, "leaf").unwrap();
         assert!(matches!(d.insert(Some(p), 0, id(), Kind::Paragraph, ""), Err(TreeError::NotAllowed { .. })));         // a leaf holds nothing
     }
@@ -221,13 +245,13 @@ mod tests {
         let mut d = Doc::new();
         let (cols, c1, c2, p, t) = (id(), id(), id(), id(), id());
         d.insert(None, 0, cols, Kind::Columns, "").unwrap();
-        d.insert(Some(cols), 0, c1, Kind::Column, "").unwrap();
-        d.insert(Some(cols), 1, c2, Kind::Column, "").unwrap();
+        d.insert(Some(cols), 0, c1, Kind::column(), "").unwrap();
+        d.insert(Some(cols), 1, c2, Kind::column(), "").unwrap();
         d.insert(Some(c1), 0, p, Kind::Paragraph, "text").unwrap();
         d.move_to(p, Some(c2), 0).unwrap();
         assert_eq!((d.children(Some(c1)).len(), d.children(Some(c2)), d.get(p).unwrap().parent), (0, &[p][..], Some(c2)));
         assert_eq!(d.move_to(cols, Some(c2), 0), Err(TreeError::WouldNestInItself));
-        d.insert(None, 1, t, Kind::Table, "").unwrap();
+        d.insert(None, 1, t, Kind::table(), "").unwrap();
         d.move_to(t, Some(c1), 0).unwrap();
         let removed = d.remove(cols).unwrap();
         assert_eq!(removed.len(), 5);

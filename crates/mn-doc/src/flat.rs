@@ -62,9 +62,9 @@ mod tests {
         d.insert(None, 0, ids[0], Kind::Heading { level: 1 }, "Caf\u{e9} \u{1F600}").unwrap();       // 6 chars, 7 UTF-16 units, 10 bytes
         d.insert(None, 1, ids[1], Kind::Media { descriptor: "{}".into() }, "").unwrap();
         d.insert(None, 2, ids[2], Kind::Columns, "").unwrap();
-        d.insert(Some(ids[2]), 0, ids[3], Kind::Column, "").unwrap();
+        d.insert(Some(ids[2]), 0, ids[3], Kind::column(), "").unwrap();
         d.insert(Some(ids[3]), 0, ids[4], Kind::Paragraph, "left").unwrap();
-        d.insert(Some(ids[2]), 1, ids[5], Kind::Column, "").unwrap();
+        d.insert(Some(ids[2]), 1, ids[5], Kind::column(), "").unwrap();
         d.insert(Some(ids[5]), 0, ids[6], Kind::Code { lang: "txt".into() }, "a\nb").unwrap();
         d.insert(None, 3, ids[7], Kind::Paragraph, "").unwrap();
         (d, ids)

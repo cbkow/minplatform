@@ -2111,6 +2111,7 @@ dependencies = [
 name = "mn-doc"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "uuid",
 ]
 

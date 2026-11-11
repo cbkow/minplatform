@@ -21,6 +21,9 @@ impl BlockId {
         BlockId(v)
     }
     pub fn from_u128(v: u128) -> Self { BlockId(v) }
+    /// An id made from this one, the same every time: the parts a conversion has to invent (a table around its first
+    /// row, the cells of a row) get ids that a second conversion of the same file gives again.
+    pub fn derived(self, n: u128) -> Self { BlockId(self.0.wrapping_add(n)) }
     /// Parses the 26-character form (case-insensitive; I, L → 1 and O → 0 as Crockford reads them).
     pub fn parse(s: &str) -> Option<Self> {
         let b = s.as_bytes();
