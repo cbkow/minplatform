@@ -30,6 +30,8 @@ pub trait TextHost {
     fn ax_viewport(&mut self) -> (f64, f64);
     /// 0 at the top, 1 at the bottom.
     fn ax_scroll_fraction(&mut self) -> f64;
+    /// The system's text input replaces the character before the caret (the accent chosen after a long press).
+    fn replace_before_caret(&mut self, text: &str);
 }
 
 #[link(name = "AppKit", kind = "framework")]
@@ -42,6 +44,10 @@ thread_local! {
     static AREA: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
     static BAR: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
     static BELOW: Cell<*const AnyClass> = const { Cell::new(std::ptr::null()) };
+    // what the system's text input did with the key being handled (see `key_fate`)
+    static INSERTED: Cell<bool> = const { Cell::new(false) };
+    static COMMAND: Cell<bool> = const { Cell::new(false) };
+    static REPLACED: Cell<Option<Instant>> = const { Cell::new(None) };
     static LOG: RefCell<Option<(Instant, std::fs::File, BTreeMap<&'static str, u64>)>> = const { RefCell::new(None) };
 }
 /// `MN_AX_LOG=<file>`: the first call of each kind and, at the end, how often each came (to see a tool attach).
@@ -107,6 +113,33 @@ unsafe extern "C-unwind" fn v_children(this: &AnyObject, _: Sel) -> *mut AnyObje
 unsafe extern "C-unwind" fn v_focus(_: &AnyObject, _: Sel) -> *mut AnyObject { log("view.focusedUIElement", String::new()); TEXT.get() }
 unsafe extern "C-unwind" fn v_hit(_: &AnyObject, _: Sel, _p: NSPoint) -> *mut AnyObject { TEXT.get() }
 
+// ── the view's text input: winit forwards a key to the app whatever the system's text input made of it. Two of the
+// system's answers have to be told apart from "an ordinary key" — it SWALLOWED the key (a held letter whose accents are
+// on offer, a key that steers the accent popup), or it REPLACED the letter before the caret (the accent chosen).
+unsafe extern "C-unwind" fn v_insert_text(this: &AnyObject, _: Sel, string: *mut AnyObject, range: NSRange) {
+    INSERTED.set(true);
+    if range.location != isize::MAX as usize && range.location != usize::MAX && range.length > 0 {
+        let text: String = unsafe { let is_attr: Bool = msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)]; let s: *mut NSString = if is_attr.as_bool() { msg_send![string, string] } else { string.cast() }; (*s).to_string() };
+        log("insertText (replacing)", format!("{text:?} over {{{},{}}}", range.location, range.length));
+        if let Some(h) = host() { h.replace_before_caret(&text); }
+        REPLACED.set(Some(Instant::now()));
+    }
+    unsafe { let _: () = msg_send![super(this, &*BELOW.get()), insertText: string, replacementRange: range]; }
+}
+unsafe extern "C-unwind" fn v_do_command(this: &AnyObject, _: Sel, command: Sel) {
+    COMMAND.set(true);
+    unsafe { let _: () = msg_send![super(this, &*BELOW.get()), doCommandBySelector: command]; }
+}
+/// What became of the key press being handled: `Typed` — the system's text input passed it on as text or as a command
+/// (the app acts on it); `Swallowed` — the text input kept it for itself (the app ignores it); `Replaced` — it turned
+/// into a replacement that has already been applied (the app ignores the key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyFate { Typed, Swallowed, Replaced }
+pub fn key_fate() -> KeyFate {
+    let (inserted, command, replaced) = (INSERTED.replace(false), COMMAND.replace(false), REPLACED.take());
+    if replaced.is_some_and(|t| t.elapsed().as_millis() < 100) { KeyFate::Replaced } else if inserted || command { KeyFate::Typed } else { KeyFate::Swallowed }
+}
+
 /// Hangs the elements on `view` (winit's NSView). `host` must outlive the window; call [`uninstall`] before it goes.
 pub fn install(host: *mut dyn TextHost, view: *mut AnyObject) {
     HOST.set(Some(host)); VIEW.set(view);
@@ -160,6 +193,8 @@ pub fn install(host: *mut dyn TextHost, view: *mut AnyObject) {
         v.add_method(sel!(accessibilityChildren), v_children as unsafe extern "C-unwind" fn(_, _) -> _);
         v.add_method(sel!(accessibilityFocusedUIElement), v_focus as unsafe extern "C-unwind" fn(_, _) -> _);
         v.add_method(sel!(accessibilityHitTest:), v_hit as unsafe extern "C-unwind" fn(_, _, _) -> _);
+        v.add_method(sel!(insertText:replacementRange:), v_insert_text as unsafe extern "C-unwind" fn(_, _, _, _));
+        v.add_method(sel!(doCommandBySelector:), v_do_command as unsafe extern "C-unwind" fn(_, _, _));
         objc2::ffi::object_setClass(view, v.register() as *const AnyClass);
     }
 }

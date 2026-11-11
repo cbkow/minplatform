@@ -53,7 +53,7 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
 /// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool }
 
-struct App { store: Option<Store>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+struct App { store: Option<Store>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -259,6 +259,12 @@ impl text_element::TextHost for App {
     }
     fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (MARGIN, PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
     fn ax_viewport(&mut self) -> (f64, f64) { self.gpu.as_ref().map(|g| { let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); (w as f64 / s, h as f64 / s) }).unwrap_or((0.0, 0.0)) }
+    fn replace_before_caret(&mut self, text: &str) {
+        let now = self.now_ms(); if !self.ensure() { return }
+        let l = self.layout.as_ref().unwrap();
+        if self.ed.selection().is_some_and(|s| s.is_caret()) { self.ed.move_caret(l, Move::Left, true); }
+        let d = self.ed.insert(text, now).unwrap_or(Dirty::Nothing); self.apply(d);
+    }
     fn ax_scroll_fraction(&mut self) -> f64 {
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return 0.0 }; let s = g.window.scale_factor();
         let max = (l.height as f64 + 2.0 * PAD * s - g.presenter.size().1 as f64).max(1.0); (self.scroll / max).clamp(0.0, 1.0)
@@ -321,7 +327,16 @@ impl ApplicationHandler for App {
                     #[cfg(target_os = "macos")] text_element::changed(false);
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
+                // macOS: a key the system's text input kept for itself (a held letter offering its accents, a key steering
+                // that popup) or turned into a replacement is not the app's to act on; Cmd shortcuts always are
+                // The rule is kept narrow so that ordinary typing can never be lost to it: only a REPEATED key the text input
+                // did not pass on starts it, and it ends with the first key that is passed on.
+                #[cfg(target_os = "macos")] { use text_element::KeyFate; let fate = text_element::key_fate();
+                    if fate == KeyFate::Replaced { self.accent_popup = false; return }
+                    if !self.mods.1 && fate == KeyFate::Swallowed && (event.repeat || self.accent_popup) { self.accent_popup = true; return }
+                    self.accent_popup = false; }
+                let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
             WindowEvent::Ime(e) => { let now = self.now_ms(); let d = match e {
                     winit::event::Ime::Preedit(text, cursor) => self.ed.set_preedit(&text, cursor, now).unwrap_or(Dirty::Nothing),
                     winit::event::Ime::Commit(text) => self.ed.commit_preedit(&text, now).unwrap_or(Dirty::Nothing),
@@ -388,6 +403,6 @@ fn main() {
             None => sample(),
         },
     } };
-    let app = App { store, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { store, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
