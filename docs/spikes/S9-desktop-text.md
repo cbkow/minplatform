@@ -346,5 +346,38 @@ Grammarly's own page for integrators (found by search, not readable by fetch: HT
 Text pattern, no parent of zero width or height, and the Scroll pattern where the field scrolls.
 **Not known yet:** what Grammarly asks of a window on Windows and how a correction arrives. Nothing logs Grammarly's calls there yet (the reference-window step is not built).
 
+### Step 5b, the Windows reference window (`spikes/s9-uia`; the box, Grammarly for Windows; the user accepting by hand; 2026-11-11)
+A top-level HWND drawn by hand (fixed-pitch GDI text, our own wrap) whose `WM_GETOBJECT` returns ONE hand-written
+provider: `IRawElementProviderSimple` (control type Document) + `ITextProvider` + `IValueProvider` +
+`IScrollProvider`, ranges as `ITextRangeProvider` over flat UTF-16 offsets; every provider call and input message logged.
+
+**Grammarly attached and corrected: 10 suggestions accepted by the user ("seems to be working"), each first edit on
+exactly the selected range.**
+- **Attach.** 0.3 s after launch the text was read once, paragraph by paragraph, and nothing followed for 52 s. The
+  window had been opened by a scheduled task. When it lost and regained focus (our outside probe did that), Grammarly
+  read the properties, took the Text and Scroll patterns and within 0.6 s asked `GetBoundingRectangles` for the ranges
+  it flags on the Mac ({219,7} "speling", {199,2} "of", …). So it engages on a real focus change — which puts step 5a's
+  "no recognition" in doubt: that window was also opened by a task and may never have been clicked into.
+- **What it asks.** Properties: ControlType, Name, ClassName, AutomationId, FrameworkId, HasKeyboardFocus,
+  IsControlElement, IsOffscreen, IsPassword, and ids 30020 / 30002. Patterns asked: Value, Scroll, Text, and (not
+  given) Text2 (10024), LegacyIAccessible (10018), 10029. Reading: `DocumentRange`, then a walk with
+  `MoveEndpointByUnit(Paragraph)` / `(Character)` and `GetText` per paragraph (the line break as its own read),
+  `GetChildren`, `GetSelection`, `ExpandToEnclosingUnit(Paragraph)` at the caret; after each edit it re-reads the
+  paragraphs. Geometry: `GetBoundingRectangles` per flagged range, reached by moving endpoints by character counts.
+  Not called in this run: `Value` (ours only), `SetValue`, `RangeFromPoint`, `FindText`, `ScrollIntoView`, any `EM_` /
+  `WM_SETTEXT` message, `WM_PASTE`.
+- **How a correction arrives — the same model as macOS:** `ITextRangeProvider::Select()` on the span to change, about
+  100 ms later the replacement TYPED: one `WM_KEYDOWN` with `VK_PACKET` (0xE7, scan 0) + one `WM_CHAR` per UTF-16
+  unit, about 0.3 ms apart ("of been checked for speling" → 30 characters in 15 ms). Nothing is set through
+  accessibility. One unit per event, so the undo joining of step 3h is REQUIRED on Windows (this window's own undo
+  takes one character per Ctrl+Z; not exercised by the user).
+- Not judged or not reached: where the underlines sat (not asked of the user in numbers), scrolling (the text fits
+  the window), Ctrl+Z, which of the properties and patterns Grammarly requires (`S9_OFF`, `S9_CT=edit` exist), Narrator.
+
+**Reading:** on Windows too a hand-written text provider over a flat UTF-16 text is found, read, underlined and
+corrected by Grammarly, and the write path is again ordinary typing after a selection set from outside. Whether
+AccessKit's own Windows adapter (step 5a) is enough is the open question — if it is, Windows needs no hand-written
+element at all.
+
 ## Verdict
 (pending)
