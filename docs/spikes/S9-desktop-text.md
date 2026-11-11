@@ -332,7 +332,8 @@ The same session as step 3h (about 9 minutes, 951 blocks, 275k UTF-16 units, a t
 + render + present, CPU side) p50 1.38 ms, p95 2.18 ms, max 3.54 ms — while Grammarly made 1,415,872 `frameForRange`
 calls. Pass bar 4 (16.7 ms p95) is met with a wide margin. The figure is from the key event's arrival to the
 `present` call, not to photons.
-How scrolling looked to the user at this size was not reported.
+Scrolling at this size, the user: "it seemed decent enough as far as catching up — as fast as other apps". So the
+moving frame and the scroll area hold on the 50,000-word worst case; step 3b's seconds of catch-up are gone.
 
 ### Step 5a, Windows: the stack as it is, read from outside (the box, Grammarly installed 2026-11-11; `S9_ALL_LINES=1`)
 `spikes/s3-text` builds unchanged on Windows; AccessKit's adapter answers UI Automation. A PowerShell probe through
@@ -340,8 +341,10 @@ How scrolling looked to the user at this size was not reported.
 "Editor", framework "AccessKit", with `TextPattern` and `ValuePattern` (not read-only); the document range returns the
 whole text; 20 of 20 six-character reads at offsets match; a five-character range returns one rectangle; selection is
 "Single" with one range. `GetVisibleRanges` returns none.
-**Not known yet:** whether Grammarly attaches, where its underlines sit, and how a correction arrives on Windows —
-needs the user at the box. Nothing logs Grammarly's calls there yet (the reference-window step is not built).
+**The user at the box: "there was no grammarly recognition yet"** — one look, at a window that closed itself after 75 s.
+Grammarly's own page for integrators (found by search, not readable by fetch: HTTP 403) asks for the UI Automation
+Text pattern, no parent of zero width or height, and the Scroll pattern where the field scrolls.
+**Not known yet:** what Grammarly asks of a window on Windows and how a correction arrives. Nothing logs Grammarly's calls there yet (the reference-window step is not built).
 
 ## Verdict
 (pending)
