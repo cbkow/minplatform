@@ -45,8 +45,9 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
     use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
     use winit::dpi::{PhysicalPosition, PhysicalSize};
     let mut data = ImeRequestData::default();
+    let area = area.or(enable.then_some(Rect::new(0.0, 0.0, 1.0, 1.0)));
     if let Some(r) = area { data = data.with_cursor_area(PhysicalPosition::new(r.x0, r.y0).into(), PhysicalSize::new(r.width().max(1.0), r.height().max(1.0)).into()); }
-    let req = if enable { match ImeEnableRequest::new(ImeCapabilities::new().with_cursor_area(), data) { Some(r) => ImeRequest::Enable(r), None => return } } else { ImeRequest::Update(data) };
+    let req = if enable { match ImeEnableRequest::new(ImeCapabilities::new().with_cursor_area(), data) { Some(r) => ImeRequest::Enable(r), None => { log::warn!("ime: the enable request was not accepted"); return } } } else { ImeRequest::Update(data) };
     if let Err(e) = window.request_ime_update(req) { log::debug!("ime: {e}"); }
 }
 /// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
@@ -284,7 +285,8 @@ impl ApplicationHandler for App {
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, window.scale_factor());
         window.request_redraw();
         #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
-        ime(window.as_ref().as_ref(), None, true);
+        // the request is REFUSED (silently) unless every capability asked for comes with its first value: the caret's area
+        ime(window.as_ref().as_ref(), Some(Rect::new(0.0, 0.0, 1.0, 1.0)), true);
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
@@ -343,6 +345,10 @@ fn sessions_root() -> std::path::PathBuf {
 
 fn main() {
     env_logger::init();
+    // holding a letter offers its accents (the system's popup) instead of repeating it — the app says so itself, so it
+    // does not depend on a machine-wide setting
+    #[cfg(target_os = "macos")]
+    objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(true, objc2_foundation::ns_string!("ApplePressAndHoldEnabled"));
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     // a collection: the first argument that is not an option or an option's value

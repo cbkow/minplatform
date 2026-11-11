@@ -35,4 +35,4 @@ arboard = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
-objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSRange", "objc2-core-foundation"] }
+objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSRange", "NSUserDefaults", "objc2-core-foundation"] }
