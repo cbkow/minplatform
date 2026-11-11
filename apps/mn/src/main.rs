@@ -33,6 +33,7 @@ mod menu;
 mod paint;
 mod sidebar;
 mod toolbar;
+mod footer;
 #[cfg(target_os = "macos")]
 mod text_element;
 
@@ -84,7 +85,11 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { /// the blank page's buttons: New Collection, Open
+struct App { foot: footer::Footer, /// the footer's height, physical px
+    bottom: f64, /// the last save's outcome for the footer's readout (text, a warning)
+    status: Option<(String, bool)>, /// the notes with something that is not in the document yet (the tree's dots, the readout's count)
+    changed: std::collections::HashSet<BlockId>,
+    /// the blank page's buttons: New Collection, Open
     splash: [min_ui::text_button::TextButton; 2], pointer_here: bool, bar: toolbar::Toolbar, /// the band spans the window (the sidebar starts below it) rather than only the page
     bar_wide: bool, /// the page's top: the band's height, physical px
     top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
@@ -136,10 +141,19 @@ impl App {
         else { self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(0.0, h as f64, s, now)).unwrap_or(0.0); self.top = self.bar.layout(&mut g.fonts, self.side_w, w as f64, 0.0, s); }
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
-        { let st = self.ed.state(); self.bar.sync(&toolbar::Shown { state: &st, has_note: !self.blank, has_file: self.store.is_some(), unpublished: self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some()), saving: self.saving.is_some() }); }
+        self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
+        { let st = self.ed.state(); self.bar.sync(&toolbar::Shown { state: &st, has_note: !self.blank });
+            let unsaved = self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some());
+            // the readout: a save under way, a save that failed, what is not in the document yet, else the last outcome
+            let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
+            let (text, warn) = if self.store.is_none() { (String::new(), false) } else if self.saving.is_some() { ("Saving\u{2026}".to_string(), false) }
+                else if let Some((t, true)) = &self.status { (t.clone(), true) }
+                else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
+                else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
+            self.foot.sync(&footer::Shown { text: &text, warn, has_note: !self.blank, has_file: self.store.is_some(), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
-        if (self.side_w, page_w + self.top * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + self.top * 1e-3); self.geom_moved = Some(now); }
+        if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
         #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
@@ -153,8 +167,8 @@ impl App {
         }
         let l = self.layout.as_ref().unwrap();
         // after an edit or a caret move the caret is brought into view
-        if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); let view_h = h as f64 - self.top; if top < self.scroll { self.scroll = top } else if bottom > self.scroll + view_h { self.scroll = bottom - view_h } } }
-        self.scroll = self.scroll.clamp(0.0, (l.height as f64 + 2.0 * PAD * s - (h as f64 - self.top)).max(0.0));
+        if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); let view_h = h as f64 - self.top - self.bottom; if top < self.scroll { self.scroll = top } else if bottom > self.scroll + view_h { self.scroll = bottom - view_h } } }
+        self.scroll = self.scroll.clamp(0.0, (l.height as f64 + 2.0 * PAD * s - (h as f64 - self.top - self.bottom)).max(0.0));
         #[cfg(target_os = "macos")] if (self.scroll - self.last_scroll).abs() > 0.01 { text_element::scrolled(); }
         self.last_scroll = self.scroll;
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
@@ -181,9 +195,13 @@ impl App {
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
         // the band first: the sidebar's floating caret sits over its left end when the band is over the page only
-        self.bar.paint(scene, &mut g.fonts, now);
-        if let Some(sb) = self.sidebar.as_mut() { sb.paint(scene, &mut g.fonts, self.store.as_ref().map(|st| st.note), now); if sb.rail.animating(now) { g.window.request_redraw(); } }
-        self.bar.paint_tooltip(scene, &mut g.fonts, view, now);
+        self.bar.paint(scene, &mut g.fonts, now); self.foot.paint(scene, &mut g.fonts, now);
+        if let Some(sb) = self.sidebar.as_mut() {
+            let mut changed = self.changed.clone(); if let Some(st) = self.store.as_ref() { if st.edited.is_some() { changed.insert(st.note); } }
+            sb.paint(scene, &mut g.fonts, self.store.as_ref().map(|st| st.note), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
+            sb.paint_tooltip(scene, &mut g.fonts, view, now); }
+        self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
+        if self.foot.tick(now) { g.window.request_redraw(); }
         if self.bar.tick(now) { g.window.request_redraw(); }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
@@ -212,7 +230,7 @@ impl App {
     }
     /// The note as it stands goes into the staged work copy (autosave never touches the real file — row 272).
     fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
-        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => { st.unpublished = true; st.edited_since_stage = true; } Err(e) => eprintln!("autosave: {e}") }
+        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(st.note); } Err(e) => eprintln!("autosave: {e}") }
             if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } self.title(); }
     /// Save (rows 285, 293): the note goes to the staged copy, a complete new file is made THERE, and a helper thread
     /// makes it the document (`share::put`) — the window never waits on the document's place, which may be a share
@@ -226,6 +244,7 @@ impl App {
         let Some(session) = st.session.as_ref() else { return };
         if self.saver.busy() { eprintln!("save: an earlier save has not come back from the document's place yet (it may be a share that does not answer). Your changes are kept on this machine."); return }
         let expect = match session.base_print() { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); return } };
+        self.status = None;
         self.saving = Some(Saving { attempt: 0, expect, to: None, merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
     }
@@ -255,8 +274,11 @@ impl App {
                 match &sv.merged { Some(m) => println!("saved {place} — merged with a save by someone else: {m}"), None => println!("saved {place}") }
                 let merged = sv.merged.clone(); let doubled = sv.doubled;
                 self.saving = None;
+                // the footer says how it went; a dialog only when there is something to look at (both versions of a paragraph kept)
+                self.status = Some((if merged.is_some() { "Saved \u{2014} merged with someone else\u{2019}s changes" } else { "Saved" }.to_string(), false));
+                if !self.unpublished() { self.changed.clear(); }
                 if std::mem::take(&mut self.close_after_save) && !self.unpublished() && doubled == 0 { self.proceed(); }
-                else if merged.is_some() { use min_ui::text_button::Variant as V;
+                else if doubled > 0 { use min_ui::text_button::Variant as V;
                     let body = if doubled > 0 { format!("Someone else saved this document while you were working. Their changes have been merged with yours. {doubled} paragraph(s) were changed by both of you: both versions are kept, the second marked, for you to choose between.") } else { "Someone else saved this document while you were working. Their changes have been merged with yours.".to_string() };
                     self.ask(Ask::Notice, "The document was merged", &body, vec![("OK", V::Primary)]); }
             }
@@ -330,7 +352,7 @@ impl App {
     fn end_session(&mut self) {
         self.autosave();
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
-        self.store = None; self.sidebar = None; self.others.clear(); self.ed = Editor::new(Doc::new()); self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = true; self.side_w = 0.0;
+        self.store = None; self.sidebar = None; self.others.clear(); self.changed.clear(); self.status = None; self.ed = Editor::new(Doc::new()); self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = true; self.side_w = 0.0;
         #[cfg(target_os = "macos")] text_element::changed(true);
     }
     /// Opens (or, with `create`, starts) a collection in this window. A failure is said in a dialog.
@@ -364,7 +386,6 @@ impl App {
         let now = self.now_ms();
         let block = |me: &mut App, b: B| { let d = me.ed.set_block_kind(b, now).unwrap_or(Dirty::Nothing); me.apply(d); };
         match tool {
-            T::Undo => self.menu_cmd(M::Undo), T::Redo => self.menu_cmd(M::Redo), T::Save => self.menu_cmd(M::Save),
             T::Bold => self.menu_cmd(M::Bold), T::Italic => self.menu_cmd(M::Italic), T::Underline => self.menu_cmd(M::Underline), T::Strike => self.menu_cmd(M::Strike), T::Code => self.menu_cmd(M::Code), T::Highlight => self.menu_cmd(M::Highlight), T::ClearFormat => self.menu_cmd(M::ClearFormat),
             T::Paragraph => block(self, B::Paragraph), T::Bullet => block(self, B::Bullet), T::Numbered => block(self, B::Numbered), T::Task => block(self, B::Task), T::Quote => block(self, B::Quote), T::CodeBlock => block(self, B::Code),
             // Heading steps through the first three levels and back to a paragraph
@@ -392,6 +413,7 @@ impl App {
                 self.request_close(Pending::New(p)) },
             M::SaveAs => self.save_as(),
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
+            M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
@@ -402,7 +424,7 @@ impl App {
         match (what, i) {
             (Ask::Delete(id), 1) => self.delete_entry(id),
             // Don't Save: the changes are given up — the session goes, the document stays as it is
-            (Ask::Close, 1) => { if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } self.proceed(); }
+            (Ask::Close, 1) => { self.changed.clear(); if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } self.proceed(); }
             (Ask::Close, 0) => { self.after_close = None; }
             (Ask::Close, 2) => { self.close_after_save = true; self.save(); }
             (Ask::Recovered, 1) => self.ask(Ask::DiscardRecovered, "Discard these changes?", "The changes from the earlier session will be removed from this machine. This cannot be undone.", vec![("Cancel", V::Secondary), ("Discard", V::Negative)]),
@@ -444,7 +466,7 @@ impl App {
     /// A save ended without the document being written.
     fn save_failed(&mut self, why: &str) {
         use min_ui::text_button::Variant as V;
-        self.close_after_save = false;
+        self.close_after_save = false; self.status = Some(("Save failed \u{2014} your changes are kept on this machine".to_string(), true));
         let name = self.doc_name();
         self.ask(Ask::SaveFailed, &format!("Couldn\u{2019}t save \u{201c}{name}\u{201d}"), &format!("{why} Your changes are kept on this machine."), vec![("OK", V::Secondary), ("Retry", V::Primary)]);
     }
@@ -469,12 +491,12 @@ impl App {
         let parent = sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
         let id = match st.col.create(parent, kind, if kind == mn_store::DocKind::Folder { "New folder" } else { "" }) { Ok(id) => id, Err(e) => { eprintln!("new: {e}"); return } };
         if kind == mn_store::DocKind::Note { let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); let _ = st.col.save_note(id, &d); }
-        st.unpublished = true; sb.set_tree(&st.col); sb.selected = Some(id);
+        st.unpublished = true; sb.set_tree(&st.col); sb.selected = Some(id); self.changed.insert(id);
         if kind == mn_store::DocKind::Folder { sb.start_rename(id, &mut g.fonts); g.window.request_redraw(); } else { sb.focused = false; self.open_note(id); self.ed.select_all(); }
     }
     fn rename_entry(&mut self, id: BlockId, name: &str) {
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
-        if st.col.rename(id, name).is_ok() { st.unpublished = true; sb.set_tree(&st.col); }
+        if st.col.rename(id, name).is_ok() { st.unpublished = true; sb.set_tree(&st.col); self.changed.insert(id); }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// Asks before deleting (the entry leaves the file at the next publish).
@@ -487,7 +509,7 @@ impl App {
     fn delete_entry(&mut self, id: BlockId) {
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
         if let Err(e) = st.col.remove(id) { eprintln!("delete: {e}"); return }
-        st.unpublished = true; sb.set_tree(&st.col); sb.selected = None; self.others.retain(|k, _| sb.row(*k).is_some());
+        st.unpublished = true; sb.set_tree(&st.col); sb.selected = None; self.others.retain(|k, _| sb.row(*k).is_some()); self.changed.retain(|k| sb.row(*k).is_some());
         // the open note went with it: another one opens, or a new one is made
         if sb.row(st.note).is_none() {
             let next = sb.rows.iter().find(|r| r.kind == mn_store::DocKind::Note).map(|r| r.id);
@@ -501,6 +523,7 @@ impl App {
         match a { sidebar::Act::None => {}, sidebar::Act::Redraw => { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Open(id) => { if self.sidebar.as_ref().and_then(|sb| sb.row(id)).is_some_and(|r| r.kind == mn_store::DocKind::Note) { self.open_note(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Fold(id) => { if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.toggle_fold(id); sb.set_tree(&st.col); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            sidebar::Act::NewNote => self.new_entry(mn_store::DocKind::Note), sidebar::Act::NewFolder => self.new_entry(mn_store::DocKind::Folder),
             sidebar::Act::Renamed(id, name) => self.rename_entry(id, &name) }
     }
     /// A pointer event for whatever lies over the page. True: it was taken (the note must not act on it).
@@ -518,6 +541,8 @@ impl App {
         if self.blank { let mut hit = None; for (i, b) in self.splash.iter_mut().enumerate() { if b.event(&e, now).0 { hit = Some(i); } }
             if let Some(g) = &self.gpu { g.window.request_redraw(); }
             match hit { Some(0) => self.menu_cmd(menu::Cmd::NewCollection), Some(_) => self.menu_cmd(menu::Cmd::Open), None => {} } }
+        let (did, on_foot) = self.foot.event(&e, now);
+        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Find => continue }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (tools, on_bar) = self.bar.event(&e, now);
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -648,7 +673,7 @@ impl text_element::TextHost for App {
     }
     fn ax_scroll_fraction(&mut self) -> f64 {
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return 0.0 }; let s = g.window.scale_factor();
-        let max = (l.height as f64 + 2.0 * PAD * s - (g.presenter.size().1 as f64 - self.top)).max(1.0); (self.scroll / max).clamp(0.0, 1.0)
+        let max = (l.height as f64 + 2.0 * PAD * s - (g.presenter.size().1 as f64 - self.top - self.bottom)).max(1.0); (self.scroll / max).clamp(0.0, 1.0)
     }
 }
 
@@ -678,7 +703,7 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
-        if let Some(at) = self.bar.next_change(Instant::now()) { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
+        if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
             // a command changes what is shown, and no window event follows it to ask for the frame
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -859,7 +884,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], pointer_here: false, bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], pointer_here: false, bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }

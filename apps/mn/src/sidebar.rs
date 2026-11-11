@@ -3,7 +3,7 @@
 //! renames; the window creates and deletes. Sizes, colours and icons are the theme's — the tokens QCView's project panel uses.
 use std::{collections::HashSet, time::Instant};
 use kurbo::{Affine, Rect};
-use min_ui::{fonts::draw_layout, paint, rail::{Rail, Side}, Button, Event, Family, FieldResponse, Fonts, KeyEvent, TextField};
+use min_ui::{action_button::{ActionButton, Response}, action_group::ActionGroup, tooltip::Tooltips, fonts::draw_layout, paint, rail::{Rail, Side}, Button, Event, Family, FieldResponse, Fonts, KeyEvent, TextField};
 use min_theme::tokens as t;
 use mn_doc::BlockId;
 use mn_store::{Collection, DocKind};
@@ -12,11 +12,14 @@ use vello::Scene;
 /// A row's height and the step from one row to the next, logical px (QCView's project rows).
 const ROW: f64 = t::COMPONENT_HEIGHT_75 as f64 + t::RAIL_ROW_GAP as f64;
 const INDENT: f64 = t::ICON_SIZE_SMALL as f64;
+/// The header row's height with the gap under it, logical px.
+const HEAD: f64 = t::COMPONENT_HEIGHT_75 as f64 + t::SPACING_100 as f64;
 /// The caret's slot at the start of a row: a press here folds or unfolds, anywhere else on the row selects.
 const CARET: f64 = t::RAIL_SECTION_CHEVRON_SIZE as f64;
 
 pub struct Row { pub id: BlockId, pub parent: Option<BlockId>, pub depth: usize, pub kind: DocKind, pub title: String, pub named: bool, pub has_children: bool }
-pub enum Act { None, Redraw, Open(BlockId), Renamed(BlockId, String), /// fold or unfold this folder
+pub enum Act { None, Redraw, /// the header's buttons
+    NewNote, NewFolder, Open(BlockId), Renamed(BlockId, String), /// fold or unfold this folder
     Fold(BlockId) }
 /// The keys the tree takes while it has the focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,12 +29,16 @@ pub struct Sidebar {
     pub rail: Rail, pub rows: Vec<Row>, folded: HashSet<BlockId>, pub selected: Option<BlockId>,
     /// keys go to the tree (Enter renames, Delete deletes) rather than to the note
     pub focused: bool,
+    /// the header: a search field for the collection (shown, not built yet), new note, new folder
+    head: ActionGroup, search: Rect, tooltips: Tooltips,
     hover: Option<usize>, rename: Option<(BlockId, TextField)>, last_down: Option<(Instant, BlockId)>, scale: f64,
 }
 
 impl Sidebar {
-    pub fn new() -> Sidebar { let mut rail = Rail::new(Side::Left, 240.0, false); rail.settle(); rail.tab_centered = true; rail.shortcut = if cfg!(target_os = "macos") { "⌘1" } else { "Ctrl+1" }.into();
-        Sidebar { rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
+    pub fn new() -> Sidebar { let mut rail = Rail::new(Side::Left, 240.0, false); rail.settle(); rail.tab_centered = true; rail.header_extra = HEAD; rail.shortcut = if cfg!(target_os = "macos") { "⌘1" } else { "Ctrl+1" }.into();
+        let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
+        let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
+        Sidebar { head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
     pub fn set_tree(&mut self, col: &Collection) {
         fn walk(col: &Collection, parent: Option<BlockId>, depth: usize, folded: &HashSet<BlockId>, out: &mut Vec<Row>) {
@@ -63,6 +70,7 @@ impl Sidebar {
     pub fn layout(&mut self, top: f64, height: f64, scale: f64, now: Instant) -> f64 {
         self.scale = scale; self.rail.layout(0.0, top, height, scale, now);
         self.rail.content_height = self.rows.len() as f64 * ROW * scale;
+        self.head.rect = Rect::ZERO; self.search = Rect::ZERO;
         self.rail.visible_width(now, scale)
     }
     fn row_rect(&self, i: usize) -> Rect { let c = self.rail.content_rect(); let y = c.y0 + i as f64 * ROW * self.scale - self.rail.scroll; Rect::new(c.x0, y, c.x1, y + ROW * self.scale) }
@@ -80,6 +88,16 @@ impl Sidebar {
         // fold arrow and tab, the splitter, the scrollbar — are taken here; the rows get what is left
         let own = r.toggled || r.width_changed || self.rail.is_dragging() || self.rail.splitter_hovered() || self.rail.scrollbar_hovered() || e.pos().is_some_and(|(x, y)| self.rail.over_control(x, y, now));
         if own { return (Act::Redraw, true) }
+        // the header's buttons
+        if self.rail.rect.width() > 1.0 {
+            let clicked = self.head.event(e, now).into_iter().find(|(_, r)| *r == Response::Clicked).map(|(i, _)| i);
+            if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
+            let over = self.head.buttons.iter().enumerate().find(|(_, b)| b.hovered()).map(|(i, b)| (i as u64, b.rect, b.tooltip.clone()))
+                .or_else(|| e.pos().filter(|(x, y)| self.search.contains(kurbo::Point::new(*x, *y))).map(|_| (9, self.search, "Search the collection \u{2014} not yet".to_string())));
+            self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now);
+            match clicked { Some(0) => return (Act::NewNote, true), Some(_) => return (Act::NewFolder, true), None => {} }
+            if e.pos().is_some_and(|(x, y)| self.rail.hit(x, y) && y < self.rail.rect.y0 + self.rail.header_height()) { return (Act::Redraw, true) }
+        }
         let Some((x, y)) = e.pos() else { let had = self.hover.take().is_some(); return (if had || r.dirty { Act::Redraw } else { Act::None }, false) };
         let inside = self.rail.hit(x, y);
         if let Some((id, f)) = self.rename.as_mut() {
@@ -112,10 +130,30 @@ impl Sidebar {
         Some(match f.key(k, fonts) { FieldResponse::Accepted => { let (id, text) = (*id, f.text().trim().to_string()); self.rename = None; Act::Renamed(id, text) } FieldResponse::Cancelled => { self.rename = None; Act::Redraw } _ => Act::Redraw })
     }
     pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) -> bool { match self.rename.as_mut() { Some((_, f)) => { f.ime(e, fonts); true } None => false } }
-    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, current: Option<BlockId>, now: Instant) {
+    pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) || self.head.animating(now) }
+    pub fn next_change(&self, now: Instant) -> Option<Instant> { self.tooltips.next_change(now) }
+    pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, self.scale, bounds, now); }
+    /// `changed`: the notes with something that is not in the document yet (a dot at the row's end).
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, current: Option<BlockId>, changed: &HashSet<BlockId>, now: Instant) {
         if self.rail.rect.width() < 1.0 { self.rail.paint_foreground(scene, fonts, self.scale, now); return }
         let s = self.scale;
         self.rail.paint_background(scene, now);
+        // the header: [ search … ] [new note][new folder], clipped to the rail as it slides
+        {
+            let (pad, hh) = (t::RAIL_PADDING as f64 * s, t::COMPONENT_HEIGHT_75 as f64 * s);
+            let (x0, x1, y) = (self.rail.rect.x0 + pad, self.rail.rect.x1 - pad, self.rail.rect.y0 + pad);
+            scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.rail.rect);
+            let w = self.head.layout(fonts, 0.0, 0.0, s); let bh = self.head.rect.height();
+            self.head.layout(fonts, x1 - w, y + (hh - bh) / 2.0, s);
+            self.search = Rect::new(x0, y, (x1 - w - t::SPACING_100 as f64 * s).max(x0), y + hh);
+            paint::rounded(scene, self.search, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR_IDLE);
+            let mut x = self.search.x0 + t::SPACING_75 as f64 * s;
+            if let Some(g) = fonts.icon("magnifying-glass", t::ICON_SIZE_SMALL * s as f32, paint::color(t::DISABLED_CONTENT_COLOR)) { draw_layout(scene, &g, Affine::translate((x, y + (hh - g.height() as f64) / 2.0))); x += g.width() as f64 + t::TEXT_TO_VISUAL_75 as f64 * s; }
+            let l = fonts.layout_fit("Search", Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR), (self.search.x1 - x - t::SPACING_75 as f64 * s).max(10.0));
+            draw_layout(scene, &l, Affine::translate((x, y + (hh - l.height() as f64) / 2.0)));
+            self.head.paint(scene, fonts, s, now);
+            scene.pop_layer();
+        }
         self.rail.push_clip(scene);
         let icon = t::ICON_SIZE_SMALL as f64 * s;
         for i in 0..self.rows.len() {
@@ -135,7 +173,10 @@ impl Sidebar {
             let slug = match row.kind { DocKind::Note => Some("note"), DocKind::Canvas => Some("bounding-box"), DocKind::Folder => None };
             if let Some(g) = slug.and_then(|g| fonts.icon(g, icon as f32, paint::color(label))) { draw_layout(scene, &g, Affine::translate((x, mid(g.height() as f64)))); x += icon + t::TEXT_TO_VISUAL_75 as f64 * s; }
             if self.rename.as_ref().is_some_and(|(id, _)| *id == row.id) { continue }
-            let l = fonts.layout_fit(&row.title, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(label), (r.x1 - x - t::SPACING_75 as f64 * s).max(10.0));
+            // something of this note is not in the document yet
+            let dot = 6.0 * s; let has_dot = changed.contains(&row.id);
+            if has_dot { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(label), None, &kurbo::Circle::new((r.x1 - t::SPACING_100 as f64 * s - dot / 2.0, r.y0 + r.height() / 2.0), dot / 2.0)); }
+            let l = fonts.layout_fit(&row.title, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(label), (r.x1 - x - t::SPACING_75 as f64 * s - if has_dot { dot + t::SPACING_100 as f64 * s } else { 0.0 }).max(10.0));
             draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64))));
         }
         if let Some((id, f)) = self.rename.as_mut() { if let Some(i) = self.rows.iter().position(|r| r.id == *id) {

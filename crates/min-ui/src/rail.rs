@@ -30,6 +30,8 @@ pub struct Rail {
     pub rect: Rect,
     /// the floating tab sits at the middle of the rail's height instead of its top (minNotes, canon row 297: clear of the band above the page)
     pub tab_centered: bool,
+    /// a header row above the scrolling body, logical px (minNotes' sidebar: search, new note, new folder — row 299); 0 = none
+    pub header_extra: f64,
     splitter: Rect, hot: Rect, tab: Rect,
     splitter_hover: bool, drag: Option<(f64, f64)>, tab_hover: bool, inside: bool, last_scroll: Option<Instant>,
     /// the overlay scrollbar: hovered (drawn thicker, S2's way) and a thumb drag (pointer y at grab, scroll at grab)
@@ -47,7 +49,7 @@ pub struct Rail {
 impl Rail {
     pub fn new(side: Side, width: f64, collapsed: bool) -> Rail {
         Rail { side, width: width.clamp(t::RAIL_WIDTH_MIN as f64, t::RAIL_WIDTH_MAX as f64), collapsed, open: Ramp::new(if collapsed { 0.0 } else { 1.0 }, t::RAIL_COLLAPSE_DURATION), scroll: 0.0, content_height: 0.0, rect: Rect::ZERO,
-            tab_centered: false, splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
+            tab_centered: false, header_extra: 0.0, splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
     }
     pub fn set_collapsed(&mut self, c: bool, now: Instant) { if self.collapsed != c { self.collapsed = c; self.open.set_target(if c { 0.0 } else { 1.0 }, now); } }
     pub fn toggle(&mut self, now: Instant) { let c = !self.collapsed; self.set_collapsed(c, now); }
@@ -82,7 +84,7 @@ impl Rail {
     pub fn over_control(&self, x: f64, y: f64, now: Instant) -> bool { self.fully_open(now) && (self.collapse.contains(kurbo::Point::new(x, y)) || self.scrollbar_hit(x, y, now).is_some()) }
     /// The space above the scrolling body: the padding alone — the collapse arrow that once had a header strip floats outside
     /// the rail as its tab now (2026-11-08).
-    pub fn header_height(&self) -> f64 { t::RAIL_PADDING as f64 * self.scale }
+    pub fn header_height(&self) -> f64 { (t::RAIL_PADDING as f64 + self.header_extra) * self.scale }
     /// Where the panel lays its content: below the header strip, inset by the padding, its top shifted by the scroll.
     pub fn content_rect(&self) -> Rect {
         let pad = t::RAIL_PADDING as f64 * self.scale;

@@ -12,28 +12,25 @@ use vello::Scene;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
-    Undo, Redo,
     Paragraph, Heading, Bullet, Numbered, Task, Quote, CodeBlock, Outdent, Indent,
     Bold, Italic, Underline, Strike, Code, Highlight, Color, Link, ClearFormat,
     Table, Columns, Divider, Image, File, Chip,
-    Find, Export, FullWidth, Save,
     /// not a button: the band's own caret was pressed (the page must be laid out again)
     Fold,
 }
 impl Tool {
     /// Built: the button does something today.
-    fn built(self) -> bool { !matches!(self, Tool::Color | Tool::Link | Tool::Table | Tool::Columns | Tool::Image | Tool::File | Tool::Chip | Tool::Find | Tool::Export | Tool::FullWidth) }
+    fn built(self) -> bool { !matches!(self, Tool::Color | Tool::Link | Tool::Table | Tool::Columns | Tool::Image | Tool::File | Tool::Chip) }
     /// (icon, a label when there is no icon, the command's name, its key).
     fn face(self) -> (&'static str, Option<&'static str>, &'static str, &'static str) {
         match self {
-            Tool::Undo => ("arrow-counter-clockwise", None, "Undo", "Z"), Tool::Redo => ("arrow-clockwise", None, "Redo", "Shift+Z"),
-            Tool::Paragraph => ("paragraph", None, "Paragraph", ""), Tool::Heading => ("text-h", None, "Heading (again for the next level)", ""), Tool::Bullet => ("list-bullets", None, "Bulleted list", ""), Tool::Numbered => ("list-numbers", None, "Numbered list", ""),
+                        Tool::Paragraph => ("paragraph", None, "Paragraph", ""), Tool::Heading => ("text-h", None, "Heading (again for the next level)", ""), Tool::Bullet => ("list-bullets", None, "Bulleted list", ""), Tool::Numbered => ("list-numbers", None, "Numbered list", ""),
             Tool::Task => ("list-checks", None, "Task list", ""), Tool::Quote => ("quotes", None, "Quote", ""), Tool::CodeBlock => ("code-block", None, "Code block", ""), Tool::Outdent => ("text-outdent", None, "Outdent", "Shift+Tab"), Tool::Indent => ("text-indent", None, "Indent", "Tab"),
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Highlight", "Shift+H"), Tool::Color => ("palette", None, "Text colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
             Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture or video", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
-            Tool::Find => ("magnifying-glass", None, "Find", "F"), Tool::Export => ("export", None, "Export", ""), Tool::FullWidth => ("arrows-out-line-horizontal", None, "Full width", ""), Tool::Save => ("floppy-disk", None, "Save", "S"), Tool::Fold => ("", None, "", ""),
+            Tool::Fold => ("", None, "", ""),
         }
     }
     fn tooltip(self) -> String {
@@ -47,7 +44,7 @@ impl Tool {
 }
 
 /// What the band needs to know to light and enable its buttons.
-pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool, pub has_file: bool, pub unpublished: bool, pub saving: bool }
+pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool }
 
 pub struct Toolbar { groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
     right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64,
@@ -58,14 +55,12 @@ impl Toolbar {
     pub fn new() -> Toolbar {
         use Tool::*;
         let sets: Vec<Vec<Tool>> = vec![
-            vec![Undo, Redo],
             vec![Paragraph, Heading, Bullet, Numbered, Task, Quote, CodeBlock], vec![Outdent, Indent],
             vec![Bold, Italic, Underline, Strike, Code, Highlight, Color, Link, ClearFormat],
             vec![Table, Columns, Divider, Image, File, Chip],
-            vec![Find, Export, FullWidth], vec![Save],
         ];
         let groups = sets.iter().map(|set| ActionGroup::new(set.iter().map(|tool| { let (icon, label, _, _) = tool.face(); let mut b = ActionButton::new(icon, &tool.tooltip()).enabled(tool.built()); b.label = label.map(|l| l.to_string()); b }).collect()).compact()).collect();
-        Toolbar { groups, right_from: sets.len() - 2, tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, tab: Rect::ZERO, tab_hover: false, present: false }
+        Toolbar { groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, tab: Rect::ZERO, tab_hover: false, present: false }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -80,7 +75,7 @@ impl Toolbar {
         let total: f64 = widths.iter().sum::<f64>() + gap * (widths.len().saturating_sub(1)) as f64;
         let one_row = total <= x1 - x0 - 2.0 * pad;
         let (mut cx, mut cy) = (x0 + pad, y);
-        let right_w: f64 = widths[self.right_from..].iter().sum::<f64>() + gap * (widths.len() - self.right_from - 1) as f64;
+        let right_w: f64 = widths[self.right_from..].iter().sum::<f64>() + gap * (widths.len() - self.right_from).saturating_sub(1) as f64;
         for (i, g) in self.groups.iter_mut().enumerate() {
             if one_row && i == self.right_from { cx = x1 - pad - right_w; }
             if !one_row && cx + widths[i] > x1 - pad && cx > x0 + pad { cx = x0 + pad; cy += row; }
@@ -95,7 +90,6 @@ impl Toolbar {
         for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
             let k = s.state.kind.as_ref(); let mark = |m: MarkKind| s.state.marks.contains(&m);
             let (enabled, selected) = match tool {
-                Tool::Undo => (s.has_note && s.state.can_undo, false), Tool::Redo => (s.has_note && s.state.can_redo, false),
                 Tool::Paragraph => (s.has_note, matches!(k, Some(Kind::Paragraph))),
                 Tool::Heading => { b.icon = match k { Some(Kind::Heading { level: 1 }) => "text-h-one", Some(Kind::Heading { level: 2 }) => "text-h-two", Some(Kind::Heading { level: 3 }) => "text-h-three", _ => "text-h" }; (s.has_note, matches!(k, Some(Kind::Heading { .. }))) }
                 Tool::Bullet => (s.has_note, matches!(k, Some(Kind::Bullet { .. }))), Tool::Numbered => (s.has_note, matches!(k, Some(Kind::Numbered { .. }))), Tool::Task => (s.has_note, matches!(k, Some(Kind::Task { .. }))),
@@ -104,8 +98,6 @@ impl Toolbar {
                 Tool::Bold => (s.has_note, mark(MarkKind::Bold)), Tool::Italic => (s.has_note, mark(MarkKind::Italic)), Tool::Underline => (s.has_note, mark(MarkKind::Underline)), Tool::Strike => (s.has_note, mark(MarkKind::Strike)),
                 Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Highlight => (s.has_note, mark(MarkKind::Highlight)),
                 Tool::ClearFormat | Tool::Divider => (s.has_note, false),
-                // lit while something is not in the document yet
-                Tool::Save => (s.has_file && !s.saving, s.unpublished),
                 _ => (false, false),
             };
             b.enabled = enabled && tool.built(); b.selected = selected && b.enabled;
