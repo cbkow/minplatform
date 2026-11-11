@@ -25,8 +25,8 @@ fn item(label: &'static str, sc: Option<Sc>, cmd: Cmd) -> Node { Node::Item { la
 pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     vec![
         ("File", vec![
-            item("New Note", sc('n'), Cmd::NewNote), item("New Folder", sc_shift('n'), Cmd::NewFolder), Node::Sep,
-            item("New Collection…", sc_alt('n'), Cmd::NewCollection), item("Open…", sc('o'), Cmd::Open), Node::Recent, Node::Sep,
+            item("New Collection…", sc_alt('n'), Cmd::NewCollection), item("New Note", sc('n'), Cmd::NewNote), item("New Folder", sc_shift('n'), Cmd::NewFolder), Node::Sep,
+            item("Open…", sc('o'), Cmd::Open), Node::Recent, Node::Sep,
             item("Save", sc('s'), Cmd::Save), item("Save As…", sc_shift('s'), Cmd::SaveAs), Node::Sep,
             item("Close Collection", sc('w'), Cmd::CloseCollection),
         ]),

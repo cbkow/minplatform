@@ -28,6 +28,8 @@ pub struct Rail {
     pub scroll: f64,
     pub content_height: f64,
     pub rect: Rect,
+    /// the floating tab sits at the middle of the rail's height instead of its top (minNotes, canon row 297: clear of the band above the page)
+    pub tab_centered: bool,
     splitter: Rect, hot: Rect, tab: Rect,
     splitter_hover: bool, drag: Option<(f64, f64)>, tab_hover: bool, inside: bool, last_scroll: Option<Instant>,
     /// the overlay scrollbar: hovered (drawn thicker, S2's way) and a thumb drag (pointer y at grab, scroll at grab)
@@ -45,7 +47,7 @@ pub struct Rail {
 impl Rail {
     pub fn new(side: Side, width: f64, collapsed: bool) -> Rail {
         Rail { side, width: width.clamp(t::RAIL_WIDTH_MIN as f64, t::RAIL_WIDTH_MAX as f64), collapsed, open: Ramp::new(if collapsed { 0.0 } else { 1.0 }, t::RAIL_COLLAPSE_DURATION), scroll: 0.0, content_height: 0.0, rect: Rect::ZERO,
-            splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
+            tab_centered: false, splitter: Rect::ZERO, hot: Rect::ZERO, tab: Rect::ZERO, splitter_hover: false, drag: None, tab_hover: false, inside: false, last_scroll: None, sb_hover: false, sb_drag: None, sb_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), collapse: Rect::ZERO, collapse_hover: false, collapse_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tooltips: Tooltips::default(), shortcut: String::new(), present: Ramp::new(0.0, t::ANIMATION_DURATION_SLIDE), splitter_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), tab_ramp: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER), scale: 1.0 }
     }
     pub fn set_collapsed(&mut self, c: bool, now: Instant) { if self.collapsed != c { self.collapsed = c; self.open.set_target(if c { 0.0 } else { 1.0 }, now); } }
     pub fn toggle(&mut self, now: Instant) { let c = !self.collapsed; self.set_collapsed(c, now); }
@@ -63,7 +65,7 @@ impl Rail {
         self.scale = scale;
         let vw = self.visible_width(now, scale);
         let hz = t::SPLITTER_HOT_ZONE as f64 * scale; let th = t::HAIRLINE as f64 * scale;
-        let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let tab_y = y0 + t::SPACING_75 as f64 * scale;   // the floating tab (the user 2026-11-08: "I like how the close button for this panel floats outside the panel. Can we do the same for the sidebar rails?"): one element that flips, open or closed
+        let sz = t::COMPONENT_HEIGHT_75 as f64 * scale; let tab_y = if self.tab_centered { (y0 + y1 - sz) / 2.0 } else { y0 + t::SPACING_75 as f64 * scale };   // the floating tab (the user 2026-11-08: "I like how the close button for this panel floats outside the panel. Can we do the same for the sidebar rails?"): one element that flips, open or closed
         let m = t::SPACING_75 as f64 * scale;   // a 4-px margin from the window's edge: a real button, clear of the chrome border (the user 2026-11-07)
         match self.side {
             Side::Left => { self.rect = Rect::new(edge_x, y0, edge_x + vw, y1); self.splitter = Rect::new(self.rect.x1 - th, y0, self.rect.x1, y1); self.hot = Rect::new(self.rect.x1 - hz, y0, self.rect.x1 + hz, y1); self.tab = Rect::new(edge_x + vw + m, tab_y, edge_x + vw + m + sz, tab_y + sz); }
