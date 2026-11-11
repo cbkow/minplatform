@@ -1,13 +1,14 @@
 # minplatform — working notes for Claude
 
-- **State (2026-11-10, end of day):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.0 is RELEASED
-  on macOS** (tag `v3.0.0`; the DMG, the site and the appcast live in QCView-Player, whose `main` is the home page and
-  whose `2.x` branch holds QCView 2's source — read QCView's code from `2.x`). **Windows 3.0.1 is SUBMITTED to the
-  Microsoft Store** (tag `v3.0.1`, a Windows-only path fix on top of 3.0.0); certification is pending. If it is rejected,
-  the handoff's last section says what was submitted, where it is kept and how to rebuild. The Stream card was built and
-  REMOVED (row 244) — do not re-propose it. **Read `docs/phase2/handoff-2026-11-10.md` first** (its LAST sections are
-  where things stand), then `handoff-2026-11-09.md` (how to run things) and the canon `docs/rust-wgpu-port.md` (rows are
-  the rulings, each dated; the newest are at the end of the last Decisions table).
+- **State (2026-11-11):** Phase 2 — `apps/qcv` is the QCView port (binary `QCView`). **QCView 3.0.2 is RELEASED on macOS**
+  (tag `v3.0.2`; the DMG, the site and the appcast live in QCView-Player, whose `main` is the home page and whose `2.x`
+  branch holds QCView 2's source — read QCView's code from `2.x`). **Windows 3.0.2 is PACKED for the Microsoft Store**
+  (the submission is the user's; it supersedes the 3.0.1 that was pending certification). 3.0.2 = audio files (single
+  view, playlists, dual), the playbar's waveform following the timeline, and four port fixes (rows 277–280). The Stream
+  card was built and REMOVED (row 244) — do not re-propose it. **Read `docs/phase2/handoff-2026-11-10.md` first** (its
+  LAST sections are where things stand — the 3.0.2 section and its "Open after this release" list), then
+  `handoff-2026-11-09.md` (how to run things) and the canon `docs/rust-wgpu-port.md` (rows are the rulings, each dated;
+  the newest are at the end of the last Decisions table).
 - **Phase 3 (minNotes) has opened** (2026-11-10): a rethink, not a port — the Qt app is read for purpose and frozen
   contracts, and "QCView's behaviour wins ties" below does NOT apply to it (row 268). Nothing is built. Read
   `docs/phase3/handoff-2026-11-10.md` (rulings 268–274, what is proposed, the spike S9 on exposing text to Grammarly).
