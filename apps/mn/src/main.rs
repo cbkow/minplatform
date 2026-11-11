@@ -85,13 +85,15 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { /// commands to run at the loop's next idle step
+struct App { /// the tree's context menu and the row it was opened on (None: the empty part of the sidebar)
+    ctx: min_ui::menu::Menu, ctx_for: Option<BlockId>,
+    /// commands to run at the loop's next idle step
     later: Vec<menu::Cmd>, foot: footer::Footer, /// the footer's height, physical px
     bottom: f64, /// the last save's outcome for the footer's readout (text, a warning)
     status: Option<(String, bool)>, /// the notes with something that is not in the document yet (the tree's dots, the readout's count)
     changed: std::collections::HashSet<BlockId>,
     /// the blank page's buttons: New Collection, Open
-    splash: [min_ui::text_button::TextButton; 2], pointer_here: bool, bar: toolbar::Toolbar, /// the band spans the window (the sidebar starts below it) rather than only the page
+    splash: [min_ui::text_button::TextButton; 2], bar: toolbar::Toolbar, /// the band spans the window (the sidebar starts below it) rather than only the page
     bar_wide: bool, /// the page's top: the band's height, physical px
     top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
     blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
@@ -151,7 +153,7 @@ impl App {
                 else if let Some((t, true)) = &self.status { (t.clone(), true) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { text: &text, warn, has_note: !self.blank, has_file: self.store.is_some(), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { text: &text, warn, has_note: !self.blank, has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
@@ -202,6 +204,7 @@ impl App {
             sb.paint(scene, &mut g.fonts, self.store.as_ref().map(|st| st.note), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
             sb.paint_tooltip(scene, &mut g.fonts, view, now); }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
+        if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
         if self.foot.tick(now) { g.window.request_redraw(); }
         if self.bar.tick(now) { g.window.request_redraw(); }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
@@ -381,6 +384,33 @@ impl App {
         self.saving = Some(Saving { attempt: 0, expect, to: Some(path), merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
     }
+    /// A right press: over the tree it opens the context menu (row 300) on the row under it, which is selected.
+    fn context(&mut self, x: f64, y: f64) {
+        if self.confirm.is_some() { return }
+        let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
+        if !sb.rail.hit(x, y) { return }
+        use min_ui::menu::MenuItem as I;
+        let key = |k: &str| if cfg!(target_os = "macos") { format!("{k}\u{2318}N") } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
+        self.ctx_for = sb.id_at(x, y);
+        if let Some(id) = self.ctx_for { sb.selected = Some(id); sb.focused = true; }
+        let mut items = vec![];
+        if self.ctx_for.is_some() { items.push(I::with_shortcut("Rename", true, "\u{21b5}")); items.push(I::Separator); }
+        items.push(I::with_shortcut("New Note", true, &key(""))); items.push(I::with_shortcut("New Folder", true, &key("\u{21e7}")));
+        if self.ctx_for.is_some() { items.push(I::Separator); items.push(I::with_shortcut("Delete\u{2026}", true, "\u{232b}")); }
+        let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
+        self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
+        g.window.request_redraw();
+    }
+    /// An item of the context menu was chosen (its place among the items, separators counted).
+    fn ctx_pick(&mut self, i: usize) {
+        let label = match self.ctx.items.get(i) { Some(min_ui::menu::MenuItem::Action { label, .. }) => label.clone(), _ => return };
+        match (label.as_str(), self.ctx_for) {
+            ("Rename", Some(id)) => if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { sb.start_rename(id, &mut g.fonts); },
+            ("New Note", _) => self.new_entry(mn_store::DocKind::Note), ("New Folder", _) => self.new_entry(mn_store::DocKind::Folder),
+            (_, Some(id)) => self.ask_delete(id),
+            _ => {}
+        }
+    }
     /// A button of the toolbar (row 297): the same routines the menu and the keys run.
     fn tool(&mut self, tool: toolbar::Tool) {
         use toolbar::Tool as T; use menu::Cmd as M; use mn_edit::BlockType as B;
@@ -392,7 +422,6 @@ impl App {
             // Heading steps through the first three levels and back to a paragraph
             T::Heading => { let next = match self.ed.state().kind { Some(Kind::Heading { level }) if level < 3 => B::Heading(level + 1), Some(Kind::Heading { .. }) => B::Paragraph, _ => B::Heading(1) }; block(self, next) }
             T::Indent | T::Outdent => { let d = self.ed.indent(tool == T::Outdent, now).ok().flatten().unwrap_or(Dirty::Nothing); self.apply(d); }
-            T::Fold => self.layout = None,
             T::Divider => { let d = self.ed.insert_divider(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             _ => {}
         }
@@ -413,6 +442,8 @@ impl App {
                 if p.exists() { let aside = p.with_extension(format!("replaced-{}.mnd", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))); let _ = std::fs::rename(&p, aside); }
                 self.request_close(Pending::New(p)) },
             M::SaveAs => self.save_as(),
+            // the selected row's name (the open note's when nothing is selected); the sidebar is opened for it
+            M::Rename => if let (Some(sb), Some(g), Some(st)) = (self.sidebar.as_mut(), self.gpu.as_mut(), self.store.as_ref()) { let id = sb.selected.unwrap_or(st.note); if sb.rail.collapsed { sb.rail.set_collapsed(false, Instant::now()); } sb.start_rename(id, &mut g.fonts); },
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
@@ -535,9 +566,8 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
-        // the floating carets (the band's, the sidebar's) show while the pointer is in the window: a frame is owed when that changes
-        let here = !matches!(e, min_ui::Event::Leave);
-        if here != self.pointer_here { self.pointer_here = here; if let Some(sb) = self.sidebar.as_mut() { sb.rail.set_pointer_present(here, now); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        // the tree's context menu is over everything but a dialog: while it is open the event is its own
+        if self.ctx.is_open() { let (chosen, _, _) = self.ctx.event(&e); if let Some(i) = chosen { self.ctx_pick(i); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // no collection: the page's two buttons
         if self.blank { let mut hit = None; for (i, b) in self.splash.iter_mut().enumerate() { if b.event(&e, now).0 { hit = Some(i); } }
             if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -546,7 +576,7 @@ impl App {
             // a press on a button is the button's to the end: the release must come back here, not go to the page
             if hit.is_some() || e.pos().is_some_and(|(x, y)| self.splash.iter().any(|b| b.hit(x, y))) { return true } }
         let (did, on_foot) = self.foot.event(&e, now);
-        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Find => continue }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Find => continue }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (tools, on_bar) = self.bar.event(&e, now);
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -562,6 +592,7 @@ impl App {
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - self.top - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        if self.ctx.is_open() { if matches!(key, Key::Named(NamedKey::Escape)) { self.ctx.close(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         // where there is no native menu to take them, the file commands' keys are run here
         if cmd && cfg!(not(target_os = "macos")) { if let Key::Character(c) = key { let m = match (c.to_lowercase().as_str(), shift, alt) { ("o", false, false) => Some(menu::Cmd::Open), ("w", false, false) => Some(menu::Cmd::CloseCollection), ("q", false, false) => Some(menu::Cmd::Quit), ("s", true, false) => Some(menu::Cmd::SaveAs), ("n", false, true) => Some(menu::Cmd::NewCollection), _ => None }; if let Some(m) = m { self.menu_cmd(m); return } } }
         if self.blank { return }
@@ -751,6 +782,11 @@ impl ApplicationHandler for App {
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
+            WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
+                // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
+                let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Secondary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Secondary } };
+                if self.ctx.is_open() { self.chrome_pointer(e); } else if state == ElementState::Pressed { self.context(position.x, position.y); }
+            }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
@@ -889,7 +925,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], pointer_here: false, bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }

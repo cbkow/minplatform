@@ -15,8 +15,6 @@ pub enum Tool {
     Paragraph, Heading, Bullet, Numbered, Task, Quote, CodeBlock, Outdent, Indent,
     Bold, Italic, Underline, Strike, Code, Highlight, Color, Link, ClearFormat,
     Table, Columns, Divider, Image, File, Chip,
-    /// not a button: the band's own caret was pressed (the page must be laid out again)
-    Fold,
 }
 impl Tool {
     /// Built: the button does something today.
@@ -30,7 +28,6 @@ impl Tool {
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Highlight", "Shift+H"), Tool::Color => ("palette", None, "Text colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
             Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture or video", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
-            Tool::Fold => ("", None, "", ""),
         }
     }
     fn tooltip(self) -> String {
@@ -47,9 +44,7 @@ impl Tool {
 pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool }
 
 pub struct Toolbar { groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
-    right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64,
-    /// the floating caret under the band's right end that folds it away and brings it back (the rails' tab, turned)
-    tab: Rect, tab_hover: bool, present: bool }
+    right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64 }
 
 impl Toolbar {
     pub fn new() -> Toolbar {
@@ -60,15 +55,13 @@ impl Toolbar {
             vec![Table, Columns, Divider, Image, File, Chip],
         ];
         let groups = sets.iter().map(|set| ActionGroup::new(set.iter().map(|tool| { let (icon, label, _, _) = tool.face(); let mut b = ActionButton::new(icon, &tool.tooltip()).enabled(tool.built()); b.label = label.map(|l| l.to_string()); b }).collect()).compact()).collect();
-        Toolbar { groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, tab: Rect::ZERO, tab_hover: false, present: false }
+        Toolbar { groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0 }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         self.scale = scale;
-        let (sz, m) = (t::COMPONENT_HEIGHT_75 as f64 * scale, t::SPACING_75 as f64 * scale);
-        let place_tab = |me: &mut Toolbar, bottom: f64| me.tab = Rect::new(x1 - 4.0 * m - sz, bottom + m, x1 - 4.0 * m, bottom + m + sz);
-        if self.hidden { place_tab(self, y); self.rect = Rect::new(x0, y, x1, y); for g in &mut self.groups { for b in &mut g.buttons { b.rect = Rect::ZERO; } g.rect = Rect::ZERO; } return 0.0 }
+        if self.hidden { self.rect = Rect::new(x0, y, x1, y); for g in &mut self.groups { for b in &mut g.buttons { b.rect = Rect::ZERO; } g.rect = Rect::ZERO; } return 0.0 }
         let (row, pad, gap) = (t::TRANSPORT_BAR_HEIGHT as f64 * scale, t::SPACING_100 as f64 * scale, t::SPACING_200 as f64 * scale);
         let widths: Vec<f64> = self.groups.iter_mut().map(|g| g.layout(fonts, 0.0, 0.0, scale)).collect();
         let button_h = self.groups.first().map(|g| g.rect.height()).unwrap_or(row);
@@ -82,7 +75,7 @@ impl Toolbar {
             g.layout(fonts, cx, cy + (row - button_h) / 2.0, scale);
             cx += widths[i] + gap;
         }
-        self.rect = Rect::new(x0, y, x1, cy + row); place_tab(self, cy + row);
+        self.rect = Rect::new(x0, y, x1, cy + row);
         self.rect.height()
     }
     /// Lights and enables the buttons from where the caret is and what the collection's state is.
@@ -106,10 +99,6 @@ impl Toolbar {
     pub fn hit(&self, x: f64, y: f64) -> bool { !self.hidden && self.rect.contains(kurbo::Point::new(x, y)) }
     /// A pointer event: the tools pressed, and whether the event was the band's.
     pub fn event(&mut self, e: &Event, now: Instant) -> (Vec<Tool>, bool) {
-        self.present = !matches!(e, Event::Leave);
-        let on_tab = e.pos().is_some_and(|(x, y)| self.tab.contains(kurbo::Point::new(x, y)));
-        self.tab_hover = on_tab;
-        if on_tab { if matches!(e, Event::Down { .. }) { self.hidden = !self.hidden; return (vec![Tool::Fold], true) } return (vec![], true) }
         if self.hidden { return (vec![], false) }
         let mut out = vec![];
         for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (i, r) in g.event(e, now) { if r == Response::Clicked { out.push(set[i]); } } }
@@ -121,11 +110,6 @@ impl Toolbar {
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) || self.groups.iter().any(|g| g.animating(now)) }
     pub fn next_change(&self, now: Instant) -> Option<Instant> { self.tooltips.next_change(now) }
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
-        if self.present {
-            if self.tab_hover { paint::rounded(scene, self.tab, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * self.scale, t::HOVER_BACKGROUND_COLOR); }
-            let c = if self.tab_hover { t::NEUTRAL_CONTENT_COLOR_HOVER } else { t::RAIL_OPEN_TAB_COLOR };
-            if let Some(g) = fonts.icon(if self.hidden { "caret-down" } else { "caret-up" }, t::ICON_SIZE_SMALL * self.scale as f32, paint::color(c)) { min_ui::fonts::draw_layout(scene, &g, kurbo::Affine::translate((self.tab.x0 + (self.tab.width() - g.width() as f64) / 2.0, self.tab.y0 + (self.tab.height() - g.height() as f64) / 2.0))); }
-        }
         if self.hidden { return }
         paint::rect(scene, self.rect, t::BAND_BACKGROUND_COLOR);
         paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y1 - t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_COLOR);

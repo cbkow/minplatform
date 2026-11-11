@@ -75,6 +75,8 @@ impl Sidebar {
     }
     fn row_rect(&self, i: usize) -> Rect { let c = self.rail.content_rect(); let y = c.y0 + i as f64 * ROW * self.scale - self.rail.scroll; Rect::new(c.x0, y, c.x1, y + ROW * self.scale) }
     fn row_at(&self, x: f64, y: f64) -> Option<usize> { let c = self.rail.content_rect(); if !c.contains(kurbo::Point::new(x, y)) { return None } let i = ((y - c.y0 + self.rail.scroll) / (ROW * self.scale)).floor(); (i >= 0.0 && (i as usize) < self.rows.len()).then_some(i as usize) }
+    /// The row under a window point (the context menu's target).
+    pub fn id_at(&self, x: f64, y: f64) -> Option<BlockId> { self.row_at(x, y).map(|i| self.rows[i].id) }
     pub fn renaming(&self) -> bool { self.rename.is_some() }
     pub fn start_rename(&mut self, id: BlockId, fonts: &mut Fonts) {
         let Some(r) = self.row(id) else { return }; let text = if r.named { r.title.clone() } else { String::new() };

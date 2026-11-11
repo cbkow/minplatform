@@ -5,7 +5,7 @@
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
-    NewCollection, Open, OpenRecent(String), ClearRecent, Save, SaveAs, CloseCollection, NewNote, NewFolder, Quit,
+    NewCollection, Open, OpenRecent(String), ClearRecent, Save, SaveAs, CloseCollection, NewNote, NewFolder, Rename, Quit,
     Undo, Redo, Cut, Copy, Paste, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
@@ -25,7 +25,7 @@ fn item(label: &'static str, sc: Option<Sc>, cmd: Cmd) -> Node { Node::Item { la
 pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
     vec![
         ("File", vec![
-            item("New Collection…", sc_alt('n'), Cmd::NewCollection), item("New Note", sc('n'), Cmd::NewNote), item("New Folder", sc_shift('n'), Cmd::NewFolder), Node::Sep,
+            item("New Collection…", sc_alt('n'), Cmd::NewCollection), item("New Note", sc('n'), Cmd::NewNote), item("New Folder", sc_shift('n'), Cmd::NewFolder), item("Rename", None, Cmd::Rename), Node::Sep,
             item("Open…", sc('o'), Cmd::Open), Node::Recent, Node::Sep,
             item("Save", sc('s'), Cmd::Save), item("Save As…", sc_shift('s'), Cmd::SaveAs), Node::Sep,
             item("Close Collection", sc('w'), Cmd::CloseCollection),
