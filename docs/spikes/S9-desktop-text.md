@@ -229,5 +229,24 @@ Grammarly: attach, underline, 14 corrections accepted by the user in this step, 
 re-tested. What the element must be is now a list: the full text protocol declared; a flat UTF-16 text; the frame of
 the whole document moving with the scroll; a scroll area and scroll bar around it; no layout notification on scroll.
 
+### Step 4, the OS checker called directly (`tools/s9/spellcheck.swift`, `NSSpellChecker`; macOS, 2026-11-11)
+| Text | Found | Whole text | One paragraph |
+|---|---|---|---|
+| The flawed sample (911 units, about 20 deliberate mistakes) | 4 spelling, 4 grammar, 1 correction | 17 ms | 1.1 ms |
+| Realistic, 5,016 words | 10 spelling, 9 grammar, 3 corrections | 132 ms | 1.1 ms |
+| 50,000 words, a third of the sentences wrong | 966 spelling, 1,053 grammar, 8 corrections | 1,026 ms | 1.0 ms |
+
+It finds misspellings (with guesses) and a thin layer of grammar: "Their are" → There, "should of" → have, a doubled
+word, one agreement error. On the flawed sample it missed "Each one are", "We was", "the deadline were", "plane
+prose", "more then", "disagrees", "were the word used to be" — the class of error the user keeps Grammarly for (on
+the same sample the user accepted 9 Grammarly corrections in step 1). British spellings are flagged under "en"
+("colour"): the language must follow the user's setting.
+Two traps: `.grammar` and `.correction` asked WITHOUT `.spelling` return nothing; an `.orthography` option silences
+the grammar pass.
+**Reading:** as the guaranteed floor it is cheap enough to run per edited paragraph (1 ms) and on a whole note at
+open (0.13 s at 5,000 words, off the main thread at 50,000) — red underlines for spelling without any third party.
+It does not replace a writing tool. Apple's Writing Tools in its limited mode (`NSWritingToolsCoordinator` for a
+custom view) is NOT measured yet.
+
 ## Verdict
 (pending)
