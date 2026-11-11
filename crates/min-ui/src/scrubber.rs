@@ -14,6 +14,11 @@ use std::time::{Duration, Instant};
 use vello::Scene;
 
 /// What the node reads each frame (the Transport's view of the active timeline).
+/// One waveform drawn on the band: its peaks per track pixel column and its colour (`WaveLayer::plain` = the scrubber's own).
+#[derive(Clone, Copy)]
+pub struct WaveLayer<'a> { pub peaks: &'a [(f32, f32)], pub color: min_theme::Color }
+impl<'a> WaveLayer<'a> { pub fn plain(peaks: &'a [(f32, f32)]) -> WaveLayer<'a> { WaveLayer { peaks, color: t::SCRUBBER_WAVEFORM_COLOR } } }
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScrubState {
     pub frames: i32, pub fps: f64, pub current: i32,
@@ -170,8 +175,8 @@ impl Scrubber {
         (cmds, dirty)
     }
 
-    /// `peaks`: optional (min, max) in −1..1 per TRACK pixel column for the visible range (the audio probe's memo).
-    pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, s: &ScrubState, peaks: Option<&[(f32, f32)]>) {
+    /// `waves`: the waveform layers, each (min, max) in −1..1 per TRACK pixel column for the visible range (the audio probe's memo).
+    pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, scale: f64, s: &ScrubState, waves: &[WaveLayer]) {
         let r = self.rect; let hair = t::HAIRLINE as f64 * scale;
         paint::rect(scene, r, t::SCRUBBER_BACKGROUND_COLOR);
         paint::hline(scene, r.x0, r.x1, r.y0, hair, t::DIVIDER_COLOR);
@@ -192,12 +197,14 @@ impl Scrubber {
             return
         }
         // the waveform as the band's quiet background (the probe's peaks, when there are any)
-        if let Some(pk) = peaks {
+        // one layer for a single clip or a playlist; dual view's two sides overlaid, back to front (canon row 280)
+        for w in waves {
+            let pk = w.peaks; if pk.is_empty() { continue }
             let wave_h = r.height() * t::SCRUBBER_WAVEFORM_HEIGHT_RATIO; let base = r.y1;
             let mut path = BezPath::new(); path.move_to((tx0, base));
             for (i, (mn, mx)) in pk.iter().enumerate() { let a = mn.abs().max(mx.abs()).min(1.0) as f64; path.line_to((tx0 + i as f64, base - a * wave_h)); }
             path.line_to((tx0 + pk.len() as f64, base)); path.close_path();
-            scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(t::SCRUBBER_WAVEFORM_COLOR), None, &path);
+            scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(w.color), None, &path);
         }
         // ticks for the visible range
         let (t_start, t_end) = (self.scroll_x / pps, (self.scroll_x + self.track_w) / pps);

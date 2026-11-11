@@ -105,7 +105,8 @@ struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, /// the minColo
     toast: min_ui::Toast,
     /// Compact mode (canon row 172; QCView's chromeless + CompactStrip): the picture and one 32-px band, no title bar.
     compact: bool, compact_strip: compact_strip::CompactStrip, pinned: bool, /// View ▸ Status Bar (Ctrl+5) / Minimal Mode hid the strip
-    waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, wave_req: (String, f64, f64, usize), wave_peaks: Vec<(f32, f32)>,
+    waveform: qcv_player::WaveformProbeEngine, wave_seen: u64, /// the playbar's waveforms (row 280): what was asked (the window, the columns, each layer's clips) and the layers drawn, back to front
+    wave_key: String, wave_layers: Vec<(min_theme::Color, Vec<(f32, f32)>)>,
     /// The rails (canon §16.3 + the 2026-11-07 rails ruling): left = Settings (QCView's section), right = the Inspector; both hidden in fullscreen.
     left: min_ui::Rail, right: min_ui::Rail, settings_panel: settings_panel::SettingsPanel, background_panel: background_panel::BackgroundPanel, output_panel: output_panel::OutputPanel, guides_panel: guides_panel::GuidesPanel, /// the shown safety guide, parsed once per choice
     guide: Option<(String, guides::Guide)>, /// the annotated thumbnail's offscreen vello layer (built on first use)
@@ -1194,18 +1195,52 @@ impl App {
             if g.compact { g.strip.sync(pb(&self.dual, &self.player)); let tc = g.strip.timecode_text().to_string(); g.compact_strip.set_live(self.live.is_some()); g.compact_strip.sync(pb(&self.dual, &self.player), &tc, g.pinned, now); g.compact_strip.layout(&mut g.fonts, w as f64, scrub_y, scale); let sr = g.compact_strip.scrub_rect; g.scrubber.layout(sr, scale); if g.compact_strip.tick(now) { g.ui_dirty = true; } }
             else { g.scrubber.layout(kurbo::Rect::new(0.0, scrub_y, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale), scale); let lanes = if bar_h > 0.0 { kurbo::Rect::new(0.0, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale, w as f64, scrub_y + t::SCRUBBER_HEIGHT as f64 * scale + bar_h) } else { kurbo::Rect::ZERO }; g.clip_bar.rect = if self.pl_editor.is_some() { lanes } else { kurbo::Rect::ZERO }; g.dual_bars.rect = if self.dual.is_some() { lanes } else { kurbo::Rect::ZERO }; }
             if g.scrubber.follow(&st, scale) { g.ui_dirty = true; }
-            // the waveform: ask the probe engine for the visible window at column resolution; repaint as peaks land
-            if let Some(p) = self.player.as_ref() { if p.audio.has_audio() && g.waveform_enabled {
-                g.waveform.set_playback_active(p.is_playing() || p.is_scrubbing());
-                let (t0, t1) = g.scrubber.visible_window(&st); let cols = g.scrubber.track_columns();
-                let req = (p.path().to_string(), t0, t1, cols);
-                if req != g.wave_req { g.wave_req = req.clone(); g.waveform.request_window(&req.0, t0, t1, cols); g.ui_dirty = true; }
-                let wgen = g.waveform.data_generation();
-                if wgen != g.wave_seen || g.ui_dirty { g.wave_seen = wgen; g.wave_peaks = g.waveform.sample_columns(&req.0, t0, t1, cols).into_iter().map(|c| if c.valid { (c.mn, c.mx) } else { (0.0, 0.0) }).collect(); g.ui_dirty = true; }
-            } else if !g.wave_peaks.is_empty() {
-                // a clip without audio (or the probe switched off): QCView's waveform loader goes inactive and draws nothing — never the previous clip's peaks
-                g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); g.ui_dirty = true;
-            } }
+            // the waveforms on the playbar (canon row 280): every clip with sound on the timeline, at its place and from its own
+            // source range — a single clip, a playlist's clips end to end, dual view's two sides overlaid in their colours (the
+            // heard side in front at full strength, a muted one behind and dimmer). The probe engine is asked for the visible
+            // window at column resolution; the layers are re-sampled as peaks land.
+            {
+                // (the file, its start and length on the timeline, its source in — all seconds)
+                type Seg = (String, f64, f64, f64);
+                let segs = |tl: &qcv_timeline::Timeline, id: &str| -> Vec<Seg> { let fps = tl.rate.as_f64().max(1e-9); tl.tracks.iter().find(|t| t.id == id).map(|t| t.clips.iter().filter(|c| !c.is_gap && c.has_audio && !c.media_path.is_empty()).map(|c| (c.media_path.clone(), c.start as f64 / fps, c.duration as f64 / fps, c.source_in as f64 / c.source_rate.as_f64().max(1e-9))).collect()).unwrap_or_default() };
+                let mut layers: Vec<(min_theme::Color, Vec<Seg>)> = vec![];
+                if g.waveform_enabled {
+                    if let (Some(d), Some(ed)) = (self.dual.as_ref(), self.dual_editor.as_ref()) {
+                        let mut sides: Vec<(bool, min_theme::Color, Vec<Seg>)> = [(qcv_player::Side::A, t::SIDE_A_COLOR, qcv_timeline::TRACK_A), (qcv_player::Side::B, t::SIDE_B_COLOR, qcv_timeline::TRACK_B)].into_iter().map(|(sd, c, id)| (d.side_muted(sd), c, segs(&ed.timeline, id))).collect();
+                        sides.sort_by_key(|x| !x.0);   // muted first = behind
+                        for (muted, mut c, sg) in sides { c.a = if muted { WAVE_MUTED_ALPHA } else { WAVE_HEARD_ALPHA }; if !sg.is_empty() { layers.push((c, sg)); } }
+                    } else if let Some(p) = self.player.as_ref() {
+                        if p.is_playlist() { if let Some(ed) = self.pl_editor.as_ref() { let sg = segs(&ed.timeline, clip_bar::TRACK); if !sg.is_empty() { layers.push((t::SCRUBBER_WAVEFORM_COLOR, sg)); } } }
+                        else if p.audio.has_audio() { layers.push((t::SCRUBBER_WAVEFORM_COLOR, vec![(p.path().to_string(), 0.0, p.frame_count() as f64 / p.rate().as_f64().max(1e-9), 0.0)])); }
+                    }
+                }
+                if layers.is_empty() {
+                    // nothing with sound (or the probe switched off, or dual view entered with silent sides): never the previous peaks
+                    if !g.wave_layers.is_empty() || !g.wave_key.is_empty() { g.wave_layers.clear(); g.wave_key.clear(); g.ui_dirty = true; }
+                } else {
+                    let busy = match self.dual.as_ref() { Some(d) => d.is_playing() || d.is_scrubbing(), None => self.player.as_ref().is_some_and(|p| p.is_playing() || p.is_scrubbing()) };
+                    g.waveform.set_playback_active(busy);
+                    let (t0, t1) = g.scrubber.visible_window(&st); let cols = g.scrubber.track_columns();
+                    let span = if cols > 0 { (t1 - t0) / cols as f64 } else { 0.0 };
+                    // a clip's visible columns and the source seconds under them (the same seconds per column for every clip)
+                    let place = |sg: &Seg| -> Option<(usize, usize, f64)> { if span <= 0.0 { return None } let (a, b) = (sg.1.max(t0), (sg.1 + sg.2).min(t1)); if b <= a { return None } let c0 = ((a - t0) / span).round() as usize; let c1 = (((b - t0) / span).round() as usize).min(cols); (c1 > c0).then(|| (c0, c1 - c0, sg.3 + (t0 + c0 as f64 * span - sg.1))) };
+                    let key = format!("{t0:.6} {t1:.6} {cols} {}", layers.iter().map(|(c, sg)| format!("{:.2}{:.2}{:.2}{:.2}{sg:?}", c.r, c.g, c.b, c.a)).collect::<String>());
+                    let asked = key != g.wave_key;
+                    if asked {
+                        g.wave_key = key;
+                        // one request per FILE (the engine keeps one pending per path): the span its clips need, at the playbar's resolution
+                        let mut want: HashMap<&str, (f64, f64)> = HashMap::new();
+                        for (_, sg) in &layers { for s in sg { if let Some((_, n, s0)) = place(s) { let e = want.entry(s.0.as_str()).or_insert((s0, s0 + n as f64 * span)); e.0 = e.0.min(s0); e.1 = e.1.max(s0 + n as f64 * span); } } }
+                        for (path, (s0, s1)) in want { g.waveform.request_window(path, s0.max(0.0), s1, (((s1 - s0.max(0.0)) / span).round() as usize).max(1)); }
+                    }
+                    let wgen = g.waveform.data_generation();
+                    if asked || wgen != g.wave_seen {
+                        g.wave_seen = wgen;
+                        g.wave_layers = layers.iter().map(|(c, sg)| { let mut pk = vec![(0.0f32, 0.0f32); cols]; for s in sg { if let Some((c0, n, s0)) = place(s) { for (i, p) in g.waveform.sample_columns(&s.0, s0, s0 + n as f64 * span, n).into_iter().enumerate() { if p.valid { pk[c0 + i] = (p.mn, p.mx); } } } } (*c, pk) }).collect();
+                        g.ui_dirty = true;
+                    }
+                }
+            }
             let [tc0, tc1] = &mut self.thumb_color;
             if let Some(d) = self.dual.as_mut() {
                 // dual (row 170: a pair tracking the pointer, A above B): each side's frame under the master hover through its
@@ -1253,7 +1288,7 @@ impl App {
                 let scene = u.scene_mut();
                 if g.compact {
                     scene.reset();
-                    g.scrubber.paint(scene, &mut g.fonts, scale, &st, None);
+                    g.scrubber.paint(scene, &mut g.fonts, scale, &st, &[]);
                     g.compact_strip.paint(scene, &mut g.fonts, scale, now);
                     if self.dual.is_some() { let hb = g.thumbs_b.shown_height(content); let gap = if hb > 0.0 { hb + t::SPACING_100 as f64 * scale } else { 0.0 }; g.thumbs_b.paint(scene, content, scale, Some(g.pointer.0)); g.thumbs.paint_lifted(scene, content, scale, Some(g.pointer.0), gap); } else { g.thumbs.paint(scene, content, scale, Some(g.pointer.0)); }
                     g.compact_strip.paint_tooltip(scene, &mut g.fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), now);
@@ -1290,7 +1325,7 @@ impl App {
                 if live_on { g.live_strip.paint(scene, &mut g.fonts, now); g.dualc.paint(scene, &mut g.fonts, scale, now); } else {
                 g.strip.paint(scene, &mut g.fonts, scale, now); g.dualc.paint(scene, &mut g.fonts, scale, now);
                 g.bar.paint(scene, &mut g.fonts, scale, now);
-                g.scrubber.paint(scene, &mut g.fonts, scale, &st, if g.wave_peaks.is_empty() { None } else { Some(&g.wave_peaks) });
+                { let waves: Vec<min_ui::WaveLayer> = g.wave_layers.iter().map(|(c, pk)| min_ui::WaveLayer { peaks: pk, color: *c }).collect(); g.scrubber.paint(scene, &mut g.fonts, scale, &st, &waves); }
                 }
                 if let Some(ed) = self.pl_editor.as_ref() { g.clip_bar.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
                 if let (Some(ed), true) = (self.dual_editor.as_ref(), self.dual.is_some() && !live_on) { g.dual_bars.paint(scene, &mut g.fonts, &ed.timeline, &g.scrubber, &st, scale); }
@@ -1667,7 +1702,7 @@ impl App {
             let Some(g) = self.gpu.as_mut() else { return };
             match key {
                 k::TIMELINE_HOVER_THUMBS => { g.thumbs.enabled = self.settings.bool(key); g.ui_dirty = true; }
-                k::TIMELINE_WAVEFORMS => { g.waveform_enabled = self.settings.bool(key); if !g.waveform_enabled { g.wave_peaks.clear(); g.wave_req = (String::new(), 0.0, 0.0, 0); } g.ui_dirty = true; }
+                k::TIMELINE_WAVEFORMS => { g.waveform_enabled = self.settings.bool(key); if !g.waveform_enabled { g.wave_layers.clear(); g.wave_key.clear(); } g.ui_dirty = true; }
                 k::VOLUME => { let v = self.settings.float(key) as f32; if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_volume(v); } if let Some(p) = self.player.as_mut() { p.audio.set_volume(v); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_volume(v)); } for l in self.side_live.iter_mut().flatten() { if let Some(au) = l.audio.as_mut() { au.set_volume(v); } } }
                 k::MUTED => { let m = self.settings.bool(key); if let Some(au) = self.live.as_mut().and_then(|l| l.audio.as_mut()) { au.set_muted(m); } if let Some(p) = self.player.as_mut() { p.audio.set_muted(m); } if let Some(d) = self.dual.as_mut() { d.for_each_audio(|au| au.set_muted(m)); } for l in self.side_live.iter_mut().flatten() { if let Some(au) = l.audio.as_mut() { au.set_muted(m); } } }
                 k::DUAL_SYNC_OFFSET_MS => if let Some(d) = self.dual.as_mut() { let ms = self.settings.int(key) as i32; d.for_each_audio(|au| au.set_sync_offset_ms(ms)); },
@@ -2132,6 +2167,9 @@ fn sequence_failed_on_timeline(p: &Transport) -> Vec<i32> {
 
 /// The scrubber's view of the Transport.
 /// The loaded playhead, single or dual (the bands read either through `Playback`).
+/// Dual view's waveforms on the playbar (row 280): the heard side's strength, a muted side's.
+const WAVE_HEARD_ALPHA: f32 = 0.55;
+const WAVE_MUTED_ALPHA: f32 = 0.20;
 fn pb<'a>(dual: &'a Option<qcv_player::DualTransport>, player: &'a Option<Transport>) -> Option<&'a dyn Playback> { match dual { Some(d) => Some(d), None => player.as_ref().map(|p| p as &dyn Playback) } }
 fn pb_mut<'a>(dual: &'a mut Option<qcv_player::DualTransport>, player: &'a mut Option<Transport>) -> Option<&'a mut dyn Playback> { match dual { Some(d) => Some(d), None => player.as_mut().map(|p| p as &mut dyn Playback) } }
 fn scrub_state(p: Option<&dyn Playback>, single: Option<&Transport>) -> min_ui::ScrubState {
@@ -2301,7 +2339,7 @@ impl ApplicationHandler for App {
         if let Some(u) = ui.as_mut() { presenter.engine.set_overlay(Some(u.view())); }
         let wf = (match self.settings.int(settings::k::WAVEFORM_SCALE) { 0 => Some(false), 1 => Some(true), _ => None }, self.settings.int(settings::k::WAVEFORM_PEAK) as f32, self.settings.bool(settings::k::WAVEFORM_OPEN));
         let drawer = color_drawer::ColorDrawer::new(self.settings.bool(settings::k::COLOR_DRAWER_OPEN), self.settings.int(settings::k::COLOR_DRAWER_HEIGHT) as f64, wf);
-        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], clip_peak_hdr: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), note_tips: Default::default(), note_cursor: false, thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_req: (String::new(), 0.0, 0.0, 0), wave_peaks: vec![],
+        self.gpu = Some(Gpu { window, presenter, mincolor_rx, drawer, dualc: dual_controls::DualControls::new(), dual_bars: dual_bars::DualBars::new(), popover_side: None, notes: { let mut n = notes_drawer::NotesDrawer::new(); n.height = self.settings.float(settings::k::NOTES_DRAWER_HEIGHT).clamp(notes_drawer::HEIGHT_MIN, notes_drawer::HEIGHT_MAX); n }, notes_current: None, insp_seen: (0, String::new()), dual_dialog: dual_dialog(), stream_dialog: stream_dialog(), seam_hot: false, seam_drag: false, annot_down: false, last_move: Instant::now(), sdr_checked: None, clip_peak: [None, None], clip_peak_hdr: None, ui, clip_bar: clip_bar::ClipBar::new(), clip_popover: clip_popover::ClipPopover::new(), toast: min_ui::Toast::new(), fonts: min_ui::Fonts::new(), ui_ms: vec![], ui_shown_frame: None, bar: transport_bar::TransportBar::new(), strip: status_strip::StatusStrip::new(), live_strip: live_strip::LiveStrip::new(), scrubber: min_ui::Scrubber::new(), note_tips: Default::default(), note_cursor: false, thumbs_b: hover_thumbs::HoverThumbs::new(), thumbs: hover_thumbs::HoverThumbs::new(), pointer: (-1.0, -1.0), ui_dirty: true, seq_status: None, fullscreen: false, bands: min_ui::anim::Ramp::new(1.0, 0) /* the bands POP in fullscreen, as the rails do (the user 2026-11-07: "it's simpler"); the 160-ms slide is retired */, bands_leave: None, waveform: qcv_player::WaveformProbeEngine::new(), wave_seen: 0, wave_key: String::new(), wave_layers: vec![],
             compact: false, compact_strip: compact_strip::CompactStrip::new(), pinned: false, left, right, settings_panel: settings_panel::SettingsPanel::new(), background_panel: background_panel::BackgroundPanel::new(), output_panel: output_panel::OutputPanel::new(), guides_panel: guides_panel::GuidesPanel::new(), guide: None, thumb_layer: None, project_panel: project_panel::ProjectPanel::new(), title_shown: String::new(), inspector: inspector_panel::InspectorPanel::new(), shortcuts: shortcuts::ShortcutsPanel::new(), shortcuts_reveal: false, lang_gen: min_i18n::generation(), content_set: None, waveform_enabled, cursor: winit::cursor::CursorIcon::Default, menu_bar: None,
             about: about_dialog() });
         if let Some(g) = self.gpu.as_mut() { let l = |c: min_theme::Color| { let v = c.linear(); [v[0], v[1], v[2]] }; g.presenter.engine.set_side_tints(l(t::SCOPE_SIDE_A_COLOR), l(t::SCOPE_SIDE_B_COLOR)); }
@@ -2915,7 +2953,7 @@ fn run_ui_bench(o: Opts, n: u32, snap: Option<String>, size: Option<(u32, u32)>)
         strip.paint(scene, &mut fonts, scale, shown_at);
         if let Some(d) = dualc.as_mut() { d.paint(scene, &mut fonts, scale, shown_at); }
         bar.paint(scene, &mut fonts, scale, shown_at);
-        scrubber.paint(scene, &mut fonts, scale, &st, if wave_peaks.is_empty() { None } else { Some(&wave_peaks) });
+        { let waves = if wave_peaks.is_empty() { vec![] } else { vec![min_ui::WaveLayer::plain(&wave_peaks)] }; scrubber.paint(scene, &mut fonts, scale, &st, &waves); }
         thumbs.paint(scene, content, scale, Some(w as f64 * 0.62));
         strip.paint_popover(scene, &mut fonts, scale);
         bar.paint_tooltip(scene, &mut fonts, scale, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), shown_at);

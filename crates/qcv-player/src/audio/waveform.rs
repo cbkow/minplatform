@@ -15,7 +15,7 @@ const BASE_SLOT_SEC: f64 = 0.005;
 const MAX_RUNG: i32 = 24;               // 5 ms · 2^24 ≈ 23 h
 const LINEAR_SPAN_MAX_SEC: f64 = 60.0;
 const SPARSE_PROBE_FRAMES: usize = 960; // 20 ms @ 48 kHz
-const MAX_SOURCES: usize = 4;
+const MAX_SOURCES: usize = 16;   // a playlist's clips on screen at once (canon row 280; QCView's 4 served one strip per row)
 const OUT_RATE: f64 = 48000.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

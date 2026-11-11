@@ -7,6 +7,7 @@ use qcv_timeline::{ClipMediaKind, Editor, InOutRange, MediaInfo, Rate, Timeline}
 /// The source facts a clip needs: the project's metadata when the service has delivered it, else a synchronous probe (QCView
 /// reflows on `binsChanged` instead; a probe at load keeps the first build right).
 pub fn media_info(m: &MediaItem) -> MediaInfo {
+    let mut probed_audio = false;
     let (kind, mut fps, mut frames, mut w, mut h) = match m.media_type {
         MediaType::ImageSequence => (ClipMediaKind::ImageSequence, m.image_seq.frame_rate, m.image_seq.frame_count as i64, m.image_seq.width, m.image_seq.height),
         MediaType::Audio => (ClipMediaKind::Audio, 0.0, 0, 0, 0),
@@ -14,14 +15,14 @@ pub fn media_info(m: &MediaItem) -> MediaInfo {
     };
     if kind == ClipMediaKind::Video && (fps <= 0.0 || frames <= 0) {
         let v = qcv_meta::extract(&m.path);
-        if v.loaded { fps = v.frame_rate; frames = v.total_frames as i64; w = v.width; h = v.height; }
+        if v.loaded { fps = v.frame_rate; frames = v.total_frames as i64; w = v.width; h = v.height; probed_audio = v.audio_channels > 0; }   // the item's `has_audio` is not known yet either (the playbar's waveform reads the clip's)
         else { log::warn!("playlist: no metadata for '{}' — the clip is empty until it arrives", m.name); }
     }
     let rate = if fps > 0.0 { Rate::from_f64(fps) } else { Rate::new(24, 1) };
     // an audio clip (canon row 278): its duration at the audio mode's 24 fps — the item's, or a probe before the metadata arrives
     let secs = if kind == ClipMediaKind::Audio && m.duration <= 0.0 { qcv_meta::extract(&m.path).duration } else { m.duration };
     if frames <= 0 && secs > 0.0 { frames = (secs * rate.as_f64()).round() as i64; }
-    MediaInfo { id: m.id.clone(), name: m.name.clone(), path: m.path.clone(), kind, rate, duration: frames.max(0), width: w.max(0) as u32, height: h.max(0) as u32, has_audio: m.has_audio || kind == ClipMediaKind::Audio,
+    MediaInfo { id: m.id.clone(), name: m.name.clone(), path: m.path.clone(), kind, rate, duration: frames.max(0), width: w.max(0) as u32, height: h.max(0) as u32, has_audio: m.has_audio || probed_audio || kind == ClipMediaKind::Audio,
         sequence_pattern: if m.media_type == MediaType::ImageSequence { std::path::Path::new(&m.image_seq.directory).join(&m.image_seq.pattern).to_string_lossy().into_owned() } else { String::new() },   // QCView opens a sequence clip from its item's directory + pattern (`startImageSequence`)
         sequence_start_frame: m.image_seq.start_frame as i64, sequence_end_frame: m.image_seq.end_frame as i64,
         // the item's EXR layer and gaps on disk travel with the clip (QCView's `startImageSequence` reads them off the item)
