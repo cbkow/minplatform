@@ -374,7 +374,10 @@ impl App {
         let scrub = Some(qcv_player::ScrubOptions { budget_bytes: (st.int(settings::k::SCRUB_CACHE_MB).max(1) as usize) << 20, hw_inter_scrub: st.bool(settings::k::HW_SCRUB_INTER), stats: *TRACE_SCRUB, ..Default::default() });
         let loop_enabled = st.bool(settings::k::LOOP_ENABLED) || self.o.looping;   // the store's loop (QCView default ON); `--loop` forces it for the harness
         let seq = qcv_player::image_sequence_cache::StreamingConfig::from_settings(st.int(settings::k::IMAGE_SEQ_THREADS) as i32, st.int(settings::k::IMAGE_SEQ_READ_AHEAD) as i32);   // QCView reads them at each sequence load
-        TransportOptions { hw, hw_intra: if self.o.sw { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, uploader: self.gpu.as_ref().map(|g| g.presenter.engine.uploader()), ..Default::default() }
+        // the switch off = software for EVERYTHING, the Vulkan intra codecs too (QCView `kForceSoftwareDecode` sets skipVulkan + skipAllHw:
+        // the escape hatch for a machine with broken GPU drivers)
+        if !hw_ok { log::info!("software decode forced: performance/hardwareDecodeEnabled is off"); }
+        TransportOptions { hw, hw_intra: if self.o.sw || !hw_ok { None } else { self.hw_intra.clone() }, threads, loop_enabled, refresh_ms: self.o.refresh_ms, scrub, seq, uploader: self.gpu.as_ref().map(|g| g.presenter.engine.uploader()), ..Default::default() }
     }
     // ---- dual view (canon rows 173 / 211) ---------------------------------------------------------------------------
     /// `--dual <B>` (the harness / a manual launch): B joins the project as its B source, then QCV_DUAL_MODE's mode (side by side).
