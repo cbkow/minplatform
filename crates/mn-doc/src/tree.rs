@@ -2,7 +2,7 @@
 //! item; two containers exist — Columns (layout) and Table (data) — with their inner levels (Column; Row, Cell) as
 //! blocks of their own so that every part has an id a merge can address.
 use std::collections::HashMap;
-use crate::{id::BlockId, inline::Spans};
+use crate::{id::BlockId, inline::Spans, rank::{self, Rank}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -44,16 +44,24 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Block {
     pub id: BlockId,
     pub parent: Option<BlockId>,
+    /// Where the block sorts among its siblings in the file ([`rank`]). The document keeps it in step with the order
+    /// of `children`; it is how order is STORED, not part of what a document says — two documents with the same blocks
+    /// in the same order are equal whatever their ranks.
+    pub rank: Rank,
     pub kind: Kind,
     /// UTF-8; empty for media, dividers and containers.
     pub text: String,
     /// Inline formatting over `text` (byte offsets); always empty for a code block and for blocks without text.
     pub spans: Spans,
     pub children: Vec<BlockId>,
+}
+
+impl PartialEq for Block {
+    fn eq(&self, o: &Block) -> bool { self.id == o.id && self.parent == o.parent && self.kind == o.kind && self.text == o.text && self.spans == o.spans && self.children == o.children }
 }
 
 #[derive(Debug, PartialEq)]
@@ -84,7 +92,8 @@ impl Doc {
         let list = self.children_mut(parent)?;
         if index > list.len() { return Err(TreeError::IndexPastEnd) }
         list.insert(index, id);
-        self.blocks.insert(id, Block { id, parent, kind, text: text.into(), spans: Spans::new(), children: vec![] });
+        self.blocks.insert(id, Block { id, parent, rank: Rank::first(), kind, text: text.into(), spans: Spans::new(), children: vec![] });
+        self.place(parent, index, None);
         Ok(())
     }
     fn check(&self, parent: Option<BlockId>, kind: &Kind, child: BlockId) -> Result<(), TreeError> {
@@ -98,6 +107,26 @@ impl Doc {
             up = b.parent;
         }
         Ok(())
+    }
+    /// Gives child `index` of `parent` a rank between its neighbours — `keep` if that still fits (a block put back by
+    /// undo returns to its old rank). When the new rank has grown past [`rank::MAX_LEN`], the whole list is re-spread.
+    fn place(&mut self, parent: Option<BlockId>, index: usize, keep: Option<Rank>) {
+        let list = self.children(parent);
+        let id = list[index];
+        let before = index.checked_sub(1).map(|i| self.blocks[&list[i]].rank.clone());
+        let after = list.get(index + 1).map(|n| self.blocks[n].rank.clone());
+        let fits = |r: &Rank| before.as_ref().is_none_or(|b| b < r) && after.as_ref().is_none_or(|a| r < a);
+        let new = match keep { Some(k) if fits(&k) => Some(k), _ => Rank::between(before.as_ref(), after.as_ref()).ok() };
+        match new {
+            Some(r) if r.len() <= rank::MAX_LEN => self.blocks.get_mut(&id).unwrap().rank = r,
+            _ => { let ids = list.to_vec(); for (id, r) in ids.iter().zip(rank::spread(ids.len())) { self.blocks.get_mut(id).unwrap().rank = r; } }
+        }
+    }
+    /// Sets every list's ranks from the order of its children (a document assembled from a file whose ranks are not
+    /// to be trusted, or from another format).
+    pub fn rerank(&mut self) {
+        let parents: Vec<Option<BlockId>> = std::iter::once(None).chain(self.blocks.keys().map(|k| Some(*k))).collect();
+        for p in parents { let ids = self.children(p).to_vec(); for (id, r) in ids.iter().zip(rank::spread(ids.len())) { self.blocks.get_mut(id).unwrap().rank = r; } }
     }
     /// Removes a block and everything under it; returns the removed blocks, the block itself first.
     pub fn remove(&mut self, id: BlockId) -> Result<Vec<Block>, TreeError> {
@@ -120,6 +149,7 @@ impl Doc {
         if index > list.len() { self.children_mut(old)?.insert(at, id); return Err(TreeError::IndexPastEnd) }
         list.insert(index, id);
         self.blocks.get_mut(&id).unwrap().parent = parent;
+        self.place(parent, index, None);
         Ok(())
     }
     /// Puts back a subtree that [`Doc::remove`] returned (the top block first, every block with its `children` list as
@@ -132,6 +162,7 @@ impl Doc {
         if index > list.len() { return Err(TreeError::IndexPastEnd) }
         list.insert(index, top.id);
         for b in blocks { self.blocks.insert(b.id, b.clone()); }
+        self.place(top.parent, index, Some(top.rank.clone()));
         Ok(())
     }
     pub fn index_of(&self, id: BlockId) -> Option<usize> { let p = self.blocks.get(&id)?.parent; self.children(p).iter().position(|c| *c == id) }
@@ -201,5 +232,23 @@ mod tests {
         let removed = d.remove(cols).unwrap();
         assert_eq!(removed.len(), 5);
         assert!(d.is_empty());
+    }
+    /// The ranks always sort the way the children are listed, through inserts anywhere, moves, undo-style re-inserts
+    /// and a rebalance.
+    #[test]
+    fn ranks_follow_the_order_of_the_children() {
+        fn check(d: &Doc) { for p in std::iter::once(None).chain(d.walk().iter().map(|b| Some(b.id))) { let r: Vec<&Rank> = d.children(p).iter().map(|c| &d.get(*c).unwrap().rank).collect(); assert!(r.windows(2).all(|w| w[0] < w[1]), "{r:?}"); assert!(r.iter().all(|x| x.len() <= rank::MAX_LEN)); } }
+        let mut d = Doc::new(); let mut ids = vec![];
+        for i in 0..40 { let x = id(); d.insert(None, i, x, Kind::Paragraph, "").unwrap(); ids.push(x); }       // appended
+        for _ in 0..40 { d.insert(None, 0, id(), Kind::Paragraph, "").unwrap(); }                                 // prepended
+        for _ in 0..600 { d.insert(None, 41, id(), Kind::Paragraph, "").unwrap(); check(&d); }                    // always at one place: forces a rebalance
+        d.move_to(ids[39], None, 0).unwrap(); d.move_to(ids[0], None, 300).unwrap(); check(&d);
+        let before = d.get(ids[5]).unwrap().rank.clone();
+        let at = d.index_of(ids[5]).unwrap();
+        let gone = d.remove(ids[5]).unwrap(); d.insert_tree(at, &gone).unwrap();
+        assert_eq!(d.get(ids[5]).unwrap().rank, before);                                                          // put back where it was: its old rank
+        let order: Vec<BlockId> = d.children(None).to_vec();
+        d.rerank(); check(&d);
+        assert_eq!(d.children(None), &order[..]);
     }
 }
