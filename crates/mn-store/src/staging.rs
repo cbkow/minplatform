@@ -5,7 +5,7 @@
 //!
 //! One session folder: `work.mnd`, `base.mnd`, `origin` (where the file lives and what it looked like when read) and
 //! `lock` (held locked while the session lives).
-use std::{fs::{self, File}, io::{self, Write}, path::{Path, PathBuf}, time::UNIX_EPOCH};
+use std::{fs::{self, File}, io, path::{Path, PathBuf}, time::UNIX_EPOCH};
 
 /// What the original looked like when it was last read or written by us.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +111,7 @@ pub fn discard(left: &Leftover) -> io::Result<()> { fs::remove_dir_all(&left.dir
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     fn scratch(name: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("mn-store-{name}-{}", uuid::Uuid::new_v4().simple())); fs::create_dir_all(d.join("share")).unwrap(); fs::create_dir_all(d.join("staging")).unwrap(); d }
     fn put(path: &Path, s: &str) -> io::Result<()> { let mut f = File::create(path)?; f.write_all(s.as_bytes()) }
 

@@ -88,6 +88,8 @@ fn column_spec(v: &Value) -> ColumnSpec {
 pub fn convert_page(blocks: &[OldBlock]) -> Converted {
     let mut notes = Vec::new();
     let mut queue: std::collections::VecDeque<Parsed> = blocks.iter().map(|b| parse(b, &mut notes)).collect();
+    // an invented id must not be one the page already uses (nor one invented before it)
+    let mut taken: std::collections::HashSet<BlockId> = queue.iter().map(|p| p.id).collect();
 
     // 1. the flat list → top-level items, with the old load repair's rules (spec §4.5)
     let mut items: Vec<Item> = Vec::new(); let mut in_table = false;
@@ -117,16 +119,16 @@ pub fn convert_page(blocks: &[OldBlock]) -> Converted {
 
     // 2. the items → the tree
     let mut doc = Doc::new();
-    fn leaf(doc: &mut Doc, parent: Option<BlockId>, p: Parsed) {
+    fn leaf(doc: &mut Doc, parent: Option<BlockId>, p: Parsed, notes: &mut Vec<String>) {
         let at = doc.children(parent).len();
-        if doc.insert(parent, at, p.id, p.kind, p.text).is_ok() { let _ = doc.set_spans(p.id, p.spans); }
+        match doc.insert(parent, at, p.id, p.kind, p.text) { Ok(()) => { let _ = doc.set_spans(p.id, p.spans); } Err(e) => notes.push(format!("{}: could not be placed ({e:?}) and was left out", p.id)) }
     }
-    fn fresh(doc: &Doc, wanted: BlockId) -> BlockId { if doc.get(wanted).is_none() { wanted } else { BlockId::new() } }
+    let mut fresh = |wanted: BlockId| { let id = if taken.contains(&wanted) { BlockId::new() } else { wanted }; taken.insert(id); id };
     let mut table: Option<(BlockId, usize)> = None;   // the open table and its column count
     let mut items = items.into_iter().peekable();
     while let Some(item) = items.next() {
         match item {
-            Item::Leaf(p) => { table = None; leaf(&mut doc, None, p); }
+            Item::Leaf(p) => { table = None; leaf(&mut doc, None, p, &mut notes); }
             Item::Layout { record, lanes } => {
                 table = None;
                 let old: Vec<f64> = record.attrs.get("ratios").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
@@ -134,9 +136,9 @@ pub fn convert_page(blocks: &[OldBlock]) -> Converted {
                 let at = doc.children(None).len();
                 doc.insert(None, at, record.id, Kind::Columns, "").expect("a Columns block at the top level");
                 for (k, (_, blocks)) in lanes.into_iter().enumerate() {
-                    let col = fresh(&doc, record.id.derived(1 + k as u128));
+                    let col = fresh(record.id.derived(1 + k as u128));
                     doc.insert(Some(record.id), k, col, Kind::Column { width: w[k] }, "").expect("a column in a Columns block");
-                    for p in blocks { leaf(&mut doc, Some(col), p); }
+                    for p in blocks { leaf(&mut doc, Some(col), p, &mut notes); }
                 }
             }
             Item::TableRow { record, head, cells } => {
@@ -146,7 +148,7 @@ pub fn convert_page(blocks: &[OldBlock]) -> Converted {
                     // count and the header count can be settled before the rows go in
                     let cols: Vec<ColumnSpec> = style.get("cols").and_then(Value::as_array).map(|a| a.iter().map(column_spec).collect()).unwrap_or_default();
                     let widest = cells.keys().next_back().map(|c| c + 1).unwrap_or(1);
-                    let id = fresh(&doc, record.id.derived(1000));
+                    let id = fresh(record.id.derived(1000));
                     let at = doc.children(None).len();
                     doc.insert(None, at, id, Kind::Table { header_rows: record.attrs.get("header").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 255.0) as u8, columns: cols.clone() }, "").expect("a table at the top level");
                     table = Some((id, cols.len().max(widest)));
@@ -160,9 +162,9 @@ pub fn convert_page(blocks: &[OldBlock]) -> Converted {
                 let colour = |key: &str, c: usize| style.get(key).and_then(Value::as_array).and_then(|a| a.get(c)).and_then(Value::as_str).unwrap_or("").to_string();
                 let mut cells = cells;
                 for c in 0..=cells.keys().next_back().copied().unwrap_or(0) {
-                    let cid = fresh(&doc, record.id.derived(1 + c as u128));
+                    let cid = fresh(record.id.derived(1 + c as u128));
                     doc.insert(Some(record.id), c, cid, Kind::Cell { bg: colour("cbg", c), fg: colour("cfg", c) }, "").expect("a cell in a row");
-                    for p in cells.remove(&c).unwrap_or_default() { leaf(&mut doc, Some(cid), p); }
+                    for p in cells.remove(&c).unwrap_or_default() { leaf(&mut doc, Some(cid), p, &mut notes); }
                 }
                 // the table ends here unless another headerless table row follows
                 if !matches!(items.peek(), Some(Item::TableRow { head: false, .. })) { finish_table(&mut doc, tid, table.unwrap().1); table = None; }
@@ -289,5 +291,15 @@ mod tests {
         assert_eq!(widths(&[0.9, 0.9], &[0, 1]), [0.5, 0.5]);                                  // does not sum to 1
         assert_eq!(widths(&[0.0, 1.0], &[0, 1]), [0.5, 0.5]);                                  // a ratio that is not positive
         assert_eq!(widths(&[0.5, 0.5], &[0, 1, 0]), [1.0 / 3.0; 3]);                           // a lane number twice
+    }
+    /// Ids one apart (never so in a real file, but nothing may be lost if they were): an invented id steps aside.
+    #[test]
+    fn an_invented_id_never_takes_a_blocks_own() {
+        let near = |n: u128| BlockId::from_u128((0x0190_0000_0000u128 << 80) + n).to_string();
+        let v: Vec<OldBlock> = [(1u128, "split", r#"{"ratios":[0.5,0.5]}"#, ""), (2, "paragraph", r#"{"cell":0}"#, "left"), (3, "paragraph", r#"{"cell":1}"#, "right")].iter()
+            .map(|(n, k, a, c)| OldBlock { id: near(*n), depth: 0, kind: k.to_string(), attrs: Some(a.to_string()), content: c.to_string() }).collect();
+        let c = convert_page(&v);
+        assert_eq!(show(&c.doc), "COLUMNS\n  column 0.50\n    p \"left\"\n  column 0.50\n    p \"right\"\n");
+        assert!(c.notes.is_empty());
     }
 }

@@ -58,6 +58,8 @@ soundtouch = { version = "0.5.4", features = ["bundled"] }   # step 2b: WSOLA te
 anyhow = "1"
 png = "0.17"
 env_logger = "0.11"
+# minNotes (Phase 3): the collection file is SQLite, compiled in (no system library; row 272)
+rusqlite = { version = "0.42", features = ["bundled"] }
 log = "0.4"
 
 [profile.release]

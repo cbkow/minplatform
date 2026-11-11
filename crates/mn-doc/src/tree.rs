@@ -145,6 +145,16 @@ impl Doc {
             _ => { let ids = list.to_vec(); for (id, r) in ids.iter().zip(rank::spread(ids.len())) { self.blocks.get_mut(id).unwrap().rank = r; } }
         }
     }
+    /// Takes ranks read from a file, if they agree with the order of every list (each list strictly ascending) and
+    /// every block has one; returns false and changes nothing otherwise.
+    pub fn adopt_ranks(&mut self, ranks: impl IntoIterator<Item = (BlockId, Rank)>) -> bool {
+        let given: HashMap<BlockId, Rank> = ranks.into_iter().collect();
+        if given.len() != self.blocks.len() || !self.blocks.keys().all(|k| given.contains_key(k)) { return false }
+        let ordered = |list: &[BlockId]| list.windows(2).all(|w| given[&w[0]] < given[&w[1]]) && list.iter().all(|c| given[c].len() <= rank::MAX_LEN);
+        if !ordered(&self.root) || !self.blocks.values().all(|b| ordered(&b.children)) { return false }
+        for (id, r) in given { self.blocks.get_mut(&id).unwrap().rank = r; }
+        true
+    }
     /// Sets every list's ranks from the order of its children (a document assembled from a file whose ranks are not
     /// to be trusted, or from another format).
     pub fn rerank(&mut self) {
