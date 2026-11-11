@@ -125,9 +125,9 @@ impl Collection {
             let pid = match &parent { Some(p) => Some(id_of(p)?), None => None };
             for (at, (id_text, rank, kind, attrs, text)) in by_parent.remove(&parent).unwrap_or_default().into_iter().enumerate() {
                 let id = id_of(&id_text)?;
-                let (kind, text, spans) = codec::decode(&kind, attrs.as_deref(), text);
+                let (kind, text, spans, conflict) = codec::decode(&kind, attrs.as_deref(), text);
                 doc.insert(pid, at, id, kind, text).map_err(|e| Error::Corrupt(format!("{id}: {e:?}")))?;
-                doc.set_spans(id, spans).ok();
+                doc.set_spans(id, spans).ok(); doc.set_conflict(id, conflict).ok();
                 ranks.push((id, rank)); todo.push(Some(id_text));
             }
         }

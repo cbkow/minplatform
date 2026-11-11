@@ -42,6 +42,7 @@ pub fn encode(b: &Block) -> (&'static str, Option<String>, String) {
         Kind::Row { bg, fg } => { put(&mut a, "bg", bg); put(&mut a, "fg", fg); "row" }
         Kind::Cell { bg, fg } => { put(&mut a, "bg", bg); put(&mut a, "fg", fg); "cell" }
     };
+    if let Some(c) = b.conflict { a.insert("conflict".into(), json!(c.to_string())); }
     if !b.spans.is_empty() {
         a.insert("spans".into(), Value::Array(b.spans.to_utf16(&b.text).into_iter().map(|(start, end, k, u)| {
             let mut o = Map::new(); o.insert("s".into(), json!(start)); o.insert("e".into(), json!(end)); o.insert("k".into(), json!(k));
@@ -53,8 +54,9 @@ pub fn encode(b: &Block) -> (&'static str, Option<String>, String) {
 }
 
 /// The inverse; an unknown kind name reads as a paragraph (a file from a later build still opens what it can).
-pub fn decode(name: &str, attrs: Option<&str>, text: String) -> (Kind, String, Spans) {
+pub fn decode(name: &str, attrs: Option<&str>, text: String) -> (Kind, String, Spans, Option<mn_doc::BlockId>) {
     let a = attrs.and_then(|x| serde_json::from_str::<Value>(x).ok()).and_then(|v| match v { Value::Object(m) => Some(m), _ => None }).unwrap_or_default();
+    let conflict = a.get("conflict").and_then(Value::as_str).and_then(mn_doc::BlockId::parse);
     let depth = n(&a, "depth").clamp(0, 8) as u8;
     let kind = match name {
         "heading" => Kind::Heading { level: n(&a, "level").clamp(1, 6) as u8 },
@@ -77,10 +79,10 @@ pub fn decode(name: &str, attrs: Option<&str>, text: String) -> (Kind, String, S
         "cell" => Kind::Cell { bg: s(&a, "bg"), fg: s(&a, "fg") },
         _ => Kind::Paragraph,
     };
-    if !kind.is_text() { return (kind, String::new(), Spans::new()) }
+    if !kind.is_text() { return (kind, String::new(), Spans::new(), conflict) }
     let raw: Vec<(usize, usize, &str, &str)> = a.get("spans").and_then(Value::as_array).map(|v| v.iter().filter_map(|x| {
         let o = x.as_object()?; Some((o.get("s")?.as_u64()? as usize, o.get("e")?.as_u64()? as usize, o.get("k")?.as_str()?, o.get("u").and_then(Value::as_str).unwrap_or("")))
     }).collect()).unwrap_or_default();
     let spans = if matches!(kind, Kind::Code { .. }) { Spans::new() } else { Spans::from_utf16(&text, raw) };
-    (kind, text, spans)
+    (kind, text, spans, conflict)
 }

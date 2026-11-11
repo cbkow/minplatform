@@ -80,11 +80,14 @@ pub struct Block {
     pub text: String,
     /// Inline formatting over `text` (byte offsets); always empty for a code block and for blocks without text.
     pub spans: Spans,
+    /// Set on the SECOND of two versions a merge had to keep (row 283, ruling 4): the id of the block this one is in
+    /// conflict with. Resolved by deleting either of the two (and clearing the mark on the one kept).
+    pub conflict: Option<BlockId>,
     pub children: Vec<BlockId>,
 }
 
 impl PartialEq for Block {
-    fn eq(&self, o: &Block) -> bool { self.id == o.id && self.parent == o.parent && self.kind == o.kind && self.text == o.text && self.spans == o.spans && self.children == o.children }
+    fn eq(&self, o: &Block) -> bool { self.id == o.id && self.parent == o.parent && self.kind == o.kind && self.text == o.text && self.spans == o.spans && self.conflict == o.conflict && self.children == o.children }
 }
 
 #[derive(Debug, PartialEq)]
@@ -115,7 +118,7 @@ impl Doc {
         let list = self.children_mut(parent)?;
         if index > list.len() { return Err(TreeError::IndexPastEnd) }
         list.insert(index, id);
-        self.blocks.insert(id, Block { id, parent, rank: Rank::first(), kind, text: text.into(), spans: Spans::new(), children: vec![] });
+        self.blocks.insert(id, Block { id, parent, rank: Rank::first(), kind, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] });
         self.place(parent, index, None);
         Ok(())
     }
@@ -207,6 +210,7 @@ impl Doc {
         self.blocks.get_mut(&id).unwrap().kind = kind; Ok(())
     }
     pub fn set_text(&mut self, id: BlockId, text: impl Into<String>) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.text = text.into(); Ok(()) }
+    pub fn set_conflict(&mut self, id: BlockId, with: Option<BlockId>) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.conflict = with; Ok(()) }
     pub fn set_spans(&mut self, id: BlockId, spans: Spans) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.spans = spans; Ok(()) }
     /// Every block in document order (a parent before its children).
     pub fn walk(&self) -> Vec<&Block> {

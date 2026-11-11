@@ -192,7 +192,7 @@ mod tests {
     fn structure_undoes_with_its_subtree_and_a_step_is_all_or_nothing() {
         let (mut d, a, b) = doc(); let mut h = History::new(); let before = d.clone();
         let (cols, col, p) = (BlockId::new(), BlockId::new(), BlockId::new());
-        let block = |id, parent, kind: Kind, children: Vec<BlockId>| Block { id, parent, rank: crate::rank::Rank::first(), kind, text: String::new(), spans: Spans::new(), children };
+        let block = |id, parent, kind: Kind, children: Vec<BlockId>| Block { id, parent, rank: crate::rank::Rank::first(), kind, text: String::new(), spans: Spans::new(), conflict: None, children };
         // one step: a Columns block with one column appears, and `b` moves into it
         h.commit(&mut d, vec![
             Change::Insert { index: 2, blocks: vec![block(cols, None, Kind::Columns, vec![col]), block(col, Some(cols), Kind::column(), vec![])] },
