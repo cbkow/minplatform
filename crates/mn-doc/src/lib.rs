@@ -7,10 +7,12 @@
 pub mod change;
 pub mod flat;
 pub mod id;
+pub mod inline;
 pub mod text;
 pub mod tree;
 
 pub use change::{Change, ChangeError, History};
 pub use flat::FlatText;
 pub use id::BlockId;
+pub use inline::{Mark, MarkKind, Span, Spans};
 pub use tree::{Block, Doc, Kind, TreeError};

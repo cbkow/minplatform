@@ -2,7 +2,7 @@
 //! per document serves undo and redo across typing and structure, and the set of blocks a history touched is what a
 //! save has to merge.
 use std::collections::BTreeSet;
-use crate::{id::BlockId, tree::{Block, Doc, Kind, TreeError}};
+use crate::{id::BlockId, inline::Spans, tree::{Block, Doc, Kind, TreeError}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
@@ -11,8 +11,11 @@ pub enum Change {
     /// The inverse of Insert: the same subtree leaves.
     Remove { index: usize, blocks: Vec<Block> },
     Move { id: BlockId, from: (Option<BlockId>, usize), to: (Option<BlockId>, usize) },
-    /// In `id`'s text, `removed` at byte `at` becomes `inserted`.
-    Text { id: BlockId, at: usize, removed: String, inserted: String },
+    /// In `id`'s text, `removed` at byte `at` becomes `inserted`; the block's formatting goes from `old_spans` to
+    /// `new_spans` (both whole: an edit can drop a span, and undo has to bring it back).
+    Text { id: BlockId, at: usize, removed: String, inserted: String, old_spans: Spans, new_spans: Spans },
+    /// Formatting alone changes.
+    Format { id: BlockId, old: Spans, new: Spans },
     Kind { id: BlockId, old: Kind, new: Kind },
 }
 
@@ -26,7 +29,8 @@ impl Change {
             Change::Insert { index, blocks } => Change::Remove { index, blocks },
             Change::Remove { index, blocks } => Change::Insert { index, blocks },
             Change::Move { id, from, to } => Change::Move { id, from: to, to: from },
-            Change::Text { id, at, removed, inserted } => Change::Text { id, at, removed: inserted, inserted: removed },
+            Change::Text { id, at, removed, inserted, old_spans, new_spans } => Change::Text { id, at, removed: inserted, inserted: removed, old_spans: new_spans, new_spans: old_spans },
+            Change::Format { id, old, new } => Change::Format { id, old: new, new: old },
             Change::Kind { id, old, new } => Change::Kind { id, old: new, new: old },
         }
     }
@@ -34,8 +38,16 @@ impl Change {
     pub fn touched(&self, into: &mut BTreeSet<BlockId>) {
         match self {
             Change::Insert { blocks, .. } | Change::Remove { blocks, .. } => into.extend(blocks.iter().map(|b| b.id)),
-            Change::Move { id, .. } | Change::Text { id, .. } | Change::Kind { id, .. } => { into.insert(*id); }
+            Change::Move { id, .. } | Change::Text { id, .. } | Change::Format { id, .. } | Change::Kind { id, .. } => { into.insert(*id); }
         }
+    }
+    /// Records a text edit as the document stands now: `removed` bytes at `at` become `inserted`, and the formatting
+    /// follows by the rules of [`Spans::edit`]. Offsets must be on character boundaries.
+    pub fn edit(doc: &Doc, id: BlockId, at: usize, removed: usize, inserted: &str) -> Result<Change, ChangeError> {
+        let b = doc.get(id).ok_or(TreeError::UnknownBlock(id))?;
+        let gone = b.text.get(at..at + removed).ok_or(ChangeError::TextMismatch { id, at })?;
+        let mut new_spans = b.spans.clone(); new_spans.edit(at, removed, inserted.len());
+        Ok(Change::Text { id, at, removed: gone.to_string(), inserted: inserted.to_string(), old_spans: b.spans.clone(), new_spans })
     }
     /// Records the removal of `id` with its subtree, as the document stands now.
     pub fn removal(doc: &Doc, id: BlockId) -> Result<Change, ChangeError> {
@@ -61,13 +73,19 @@ impl Doc {
                 if self.get(*id).map(|b| b.parent) != Some(from.0) || self.index_of(*id) != Some(from.1) { return Err(ChangeError::Stale(*id)) }
                 self.move_to(*id, to.0, to.1)?;
             }
-            Change::Text { id, at, removed, inserted } => {
+            Change::Text { id, at, removed, inserted, old_spans, new_spans } => {
                 let b = self.get(*id).ok_or(TreeError::UnknownBlock(*id))?;
                 let end = at + removed.len();
                 if b.text.get(*at..end) != Some(removed.as_str()) { return Err(ChangeError::TextMismatch { id: *id, at: *at }) }
+                if &b.spans != old_spans { return Err(ChangeError::Stale(*id)) }
                 let mut t = String::with_capacity(b.text.len() + inserted.len());
                 t.push_str(&b.text[..*at]); t.push_str(inserted); t.push_str(&b.text[end..]);
                 self.set_text(*id, t)?;
+                self.set_spans(*id, new_spans.clone())?;
+            }
+            Change::Format { id, old, new } => {
+                if self.get(*id).map(|b| &b.spans) != Some(old) { return Err(ChangeError::Stale(*id)) }
+                self.set_spans(*id, new.clone())?;
             }
             Change::Kind { id, old, new } => {
                 if self.get(*id).map(|b| &b.kind) != Some(old) { return Err(ChangeError::Stale(*id)) }
@@ -100,11 +118,11 @@ impl History {
         }
         for c in &changes { c.touched(&mut self.touched); }
         self.redo.clear();
-        if let [Change::Text { id, at, removed, inserted }] = changes.as_slice() {
+        if let [Change::Text { id, at, removed, inserted, new_spans, .. }] = changes.as_slice() {
             if let Some(Step { changes: prev, at_ms }) = self.undo.last_mut() {
-                if let Some(Change::Text { id: pid, at: pat, inserted: pins, .. }) = prev.last_mut() {
+                if let Some(Change::Text { id: pid, at: pat, inserted: pins, new_spans: pspans, .. }) = prev.last_mut() {
                     if removed.is_empty() && pid == id && *pat + pins.len() == *at && now_ms.saturating_sub(*at_ms) < JOIN_MS {
-                        pins.push_str(inserted); *at_ms = now_ms; return Ok(())
+                        pins.push_str(inserted); *pspans = new_spans.clone(); *at_ms = now_ms; return Ok(())
                     }
                 }
             }
@@ -142,13 +160,14 @@ mod tests {
         (d, a, b)
     }
     fn text(d: &Doc, id: BlockId) -> &str { &d.get(id).unwrap().text }
-    fn ins(id: BlockId, at: usize, s: &str) -> Vec<Change> { vec![Change::Text { id, at, removed: String::new(), inserted: s.into() }] }
+    fn ins(id: BlockId, at: usize, s: &str) -> Vec<Change> { vec![txt(id, at, "", s)] }
+    fn txt(id: BlockId, at: usize, removed: &str, inserted: &str) -> Change { Change::Text { id, at, removed: removed.into(), inserted: inserted.into(), old_spans: Spans::new(), new_spans: Spans::new() } }
 
     /// The spike S9's finding: a correction is a replacement of the selection followed by more typed chunks.
     #[test]
     fn a_typed_burst_is_one_undo_step() {
         let (mut d, a, _) = doc(); let mut h = History::new();
-        h.commit(&mut d, vec![Change::Text { id: a, at: 3, removed: "was".into(), inserted: "w".into() }], 1000).unwrap();
+        h.commit(&mut d, vec![txt(a, 3, "was", "w")], 1000).unwrap();
         for (i, ch) in ["e", "r", "e"].iter().enumerate() { h.commit(&mut d, ins(a, 4 + i, ch), 1001 + i as u64).unwrap(); }
         assert_eq!((text(&d, a), h.steps()), ("We were in a hurry", 1));
         assert!(h.undo(&mut d).unwrap());
@@ -164,7 +183,7 @@ mod tests {
         h.commit(&mut d, ins(a, 2, "z"), 299 + JOIN_MS).unwrap();              // a pause
         h.commit(&mut d, ins(a, 0, "q"), 299 + JOIN_MS + 1).unwrap();          // not where the last insert ended
         h.commit(&mut d, ins(b, 0, "r"), 299 + JOIN_MS + 2).unwrap();          // another block
-        h.commit(&mut d, vec![Change::Text { id: b, at: 0, removed: "r".into(), inserted: String::new() }], 299 + JOIN_MS + 3).unwrap();
+        h.commit(&mut d, vec![txt(b, 0, "r", "")], 299 + JOIN_MS + 3).unwrap();
         assert_eq!(h.steps(), 5);
         while h.undo(&mut d).unwrap() {}
         assert_eq!((text(&d, a), text(&d, b)), ("We was in a hurry", "second"));
@@ -173,7 +192,7 @@ mod tests {
     fn structure_undoes_with_its_subtree_and_a_step_is_all_or_nothing() {
         let (mut d, a, b) = doc(); let mut h = History::new(); let before = d.clone();
         let (cols, col, p) = (BlockId::new(), BlockId::new(), BlockId::new());
-        let block = |id, parent, kind: Kind, children: Vec<BlockId>| Block { id, parent, kind, text: String::new(), children };
+        let block = |id, parent, kind: Kind, children: Vec<BlockId>| Block { id, parent, kind, text: String::new(), spans: Spans::new(), children };
         // one step: a Columns block with one column appears, and `b` moves into it
         h.commit(&mut d, vec![
             Change::Insert { index: 2, blocks: vec![block(cols, None, Kind::Columns, vec![col]), block(col, Some(cols), Kind::Column, vec![])] },
@@ -196,9 +215,28 @@ mod tests {
     #[test]
     fn a_record_is_refused_on_a_document_it_was_not_made_for() {
         let (mut d, a, _) = doc();
-        assert_eq!(d.apply(&Change::Text { id: a, at: 3, removed: "were".into(), inserted: "was".into() }), Err(ChangeError::TextMismatch { id: a, at: 3 }));
+        assert_eq!(d.apply(&txt(a, 3, "were", "was")), Err(ChangeError::TextMismatch { id: a, at: 3 }));
         assert_eq!(d.apply(&Change::Move { id: a, from: (None, 1), to: (None, 0) }), Err(ChangeError::Stale(a)));
         assert_eq!(d.apply(&Change::Kind { id: a, old: Kind::Quote, new: Kind::Paragraph }), Err(ChangeError::Stale(a)));
-        assert!(d.apply(&Change::Text { id: a, at: 1, removed: "\u{e9}".into(), inserted: String::new() }).is_err());
+        assert!(d.apply(&txt(a, 1, "\u{e9}", "")).is_err());
+    }
+    /// A correction inside a bold, linked word keeps both; undo brings back a span a deletion dropped.
+    #[test]
+    fn formatting_follows_an_edit_and_comes_back_with_undo() {
+        use crate::inline::Mark;
+        let (mut d, a, _) = doc(); let mut h = History::new();
+        let mut s = Spans::new(); s.put(3, 6, Mark::Bold); s.put(3, 6, Mark::Link("u".into()));
+        h.commit(&mut d, vec![Change::Format { id: a, old: Spans::new(), new: s.clone() }], 0).unwrap();
+        let fix = Change::edit(&d, a, 3, 3, "were").unwrap();
+        h.commit(&mut d, vec![fix], 1000).unwrap();
+        let b = d.get(a).unwrap();
+        assert_eq!(b.text, "We were in a hurry");
+        assert!(b.spans.covers(3, 7, &Mark::Bold) && b.spans.covers(3, 7, &Mark::Link("u".into())));
+        let cut = Change::edit(&d, a, 2, 6, "").unwrap();
+        h.commit(&mut d, vec![cut], 2000).unwrap();
+        assert!(d.get(a).unwrap().spans.is_empty());
+        h.undo(&mut d).unwrap(); h.undo(&mut d).unwrap();
+        assert_eq!((d.get(a).unwrap().text.as_str(), &d.get(a).unwrap().spans), ("We was in a hurry", &s));
+        assert!(Change::edit(&d, a, 1, 99, "").is_err());
     }
 }

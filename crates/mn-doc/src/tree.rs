@@ -2,7 +2,7 @@
 //! item; two containers exist — Columns (layout) and Table (data) — with their inner levels (Column; Row, Cell) as
 //! blocks of their own so that every part has an id a merge can address.
 use std::collections::HashMap;
-use crate::id::BlockId;
+use crate::{id::BlockId, inline::Spans};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -51,6 +51,8 @@ pub struct Block {
     pub kind: Kind,
     /// UTF-8; empty for media, dividers and containers.
     pub text: String,
+    /// Inline formatting over `text` (byte offsets); always empty for a code block and for blocks without text.
+    pub spans: Spans,
     pub children: Vec<BlockId>,
 }
 
@@ -82,7 +84,7 @@ impl Doc {
         let list = self.children_mut(parent)?;
         if index > list.len() { return Err(TreeError::IndexPastEnd) }
         list.insert(index, id);
-        self.blocks.insert(id, Block { id, parent, kind, text: text.into(), children: vec![] });
+        self.blocks.insert(id, Block { id, parent, kind, text: text.into(), spans: Spans::new(), children: vec![] });
         Ok(())
     }
     fn check(&self, parent: Option<BlockId>, kind: &Kind, child: BlockId) -> Result<(), TreeError> {
@@ -140,6 +142,7 @@ impl Doc {
         self.blocks.get_mut(&id).unwrap().kind = kind; Ok(())
     }
     pub fn set_text(&mut self, id: BlockId, text: impl Into<String>) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.text = text.into(); Ok(()) }
+    pub fn set_spans(&mut self, id: BlockId, spans: Spans) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.spans = spans; Ok(()) }
     /// Every block in document order (a parent before its children).
     pub fn walk(&self) -> Vec<&Block> {
         let mut out = Vec::with_capacity(self.blocks.len());
