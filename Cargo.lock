@@ -2119,6 +2119,7 @@ name = "mn-store"
 version = "0.1.0"
 dependencies = [
  "mn-doc",
+ "uuid",
 ]
 
 [[package]]

@@ -11,3 +11,4 @@ description = "minNotes — the collection file: staging, save, the base copy (c
 
 [dependencies]
 mn-doc = { path = "../mn-doc" }
+uuid = { workspace = true }
