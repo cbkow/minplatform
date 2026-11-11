@@ -418,5 +418,28 @@ The attach test of step 5c on the AccessKit stack: with the patch switched off (
 Whether a correction lands through AccessKit's ranges (a `Select()` that becomes an action request, then typed
 characters) needs the user's hands.
 
+### Step 5e, edits and scrolling on Windows: the AccessKit stack against the reference window (the user at the box, 2026-11-11)
+**The patched AccessKit stack** (step 5d), the user: "grammarly underlines are not updating with changes and as soon
+as I scroll, they go away completely". The log: one pass of 24 `GetBoundingRectangles` at launch; one `Select` (one
+correction accepted); afterwards 18 `GetVisibleRanges` calls and NOT ONE geometry call. Why it stops measuring was not
+established (the scaffold rebuilds its tree, with new line nodes, on every edit — the first suspect).
+
+**The reference window** on a text six times longer (5,526 units, scrolls), the user: "this seems to work" — underlines
+update after corrections and follow the wheel. The log: 13 corrections (`Select` + typed characters), 29 scroll
+steps, 881 `GetBoundingRectangles`, 27 `GetVisibleRanges`; ranges outside the viewport are answered with no rectangle.
+The Scroll pattern is fetched and none of its methods is called; the window raises the vertical-percent
+property-changed event on each wheel step (`S9_OFF=scrollevent` withholds it — NOT tried, so whether the event
+matters is open).
+
+**Focus, the trap of this leg.** A first attempt at this run showed no underlines at all: Grammarly had read the text
+once at launch and nothing more, as in step 5b's first 52 s. A window opened by a scheduled task takes focus before
+the tool is watching, and a click into an already-focused window is no focus change. The window now raises
+`UIA_AutomationFocusChangedEventId` on its text element 3 s after launch; hands-off, geometry requests begin 0.5 s
+after that event (257 in the run). The editor should announce focus itself rather than rely on the host window.
+
+**Reading:** on Windows as on macOS the hand-written text element is found, underlined, corrected, and followed
+through edits and scrolling on the first serious try; the AccessKit route is found only after a patch and then stops
+after the first edit.
+
 ## Verdict
 (pending)
