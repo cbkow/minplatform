@@ -41,7 +41,11 @@ pub struct Editor {
     /// Marks switched on (true) or off (false) for the next typed run, with no selection (Cmd+B and then typing);
     /// forgotten when the caret moves.
     armed: Vec<(Mark, bool)>,
+    /// An input method is composing: its text stands in the block (so it is laid out and drawn in place) but is NOT in
+    /// the history — the block as it was is kept here and put back when the composition ends or changes.
+    preedit: Option<Preedit>,
 }
+struct Preedit { block: BlockId, at: usize, len: usize, text: String, spans: Spans }
 
 /// Changes built one after another, each against the document as the ones before it leave it.
 struct Batch { scratch: Doc, changes: Vec<Change> }
@@ -57,7 +61,7 @@ fn next_char(s: &str, at: usize) -> usize { s[at..].chars().next().map(|c| at + 
 fn paragraph(parent: Option<BlockId>, text: &str) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind: Kind::Paragraph, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] } }
 
 impl Editor {
-    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![] } }
+    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None } }
     pub fn selection(&self) -> Option<Selection> { self.sel }
     pub fn set_selection(&mut self, s: Option<Selection>) { self.sel = s.map(|s| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }); self.goal_x = None; self.upstream = false; self.armed.clear(); }
     /// A position made legal: on a character boundary, inside the block, and never inside a chip.
@@ -74,9 +78,47 @@ impl Editor {
         Some(if a < f { (s.anchor, s.focus) } else { (s.focus, s.anchor) })
     }
 
+    // ── composing (an input method: accents by long press, dead keys, Chinese / Japanese / Korean input)
+    /// Takes the composing text out again; the caret is back where the composition began. Every other edit and every
+    /// caret move ends a composition this way first.
+    fn end_preedit(&mut self) -> Option<BlockId> {
+        let p = self.preedit.take()?;
+        let _ = self.doc.set_text(p.block, p.text); let _ = self.doc.set_spans(p.block, p.spans);
+        self.sel = Some(Selection::caret(Pos { block: p.block, at: p.at })); Some(p.block)
+    }
+    /// The composition's text as it now stands (empty: the composition was abandoned), with the input method's caret
+    /// inside it (byte offsets). It is shown in place of the selection, underlined by the painter; nothing is recorded
+    /// until [`Editor::commit_preedit`].
+    pub fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let mut dirty = Dirty::Nothing;
+        let restored = self.end_preedit();
+        if restored.is_none() && self.sel.is_some_and(|s| !s.is_caret()) { let mut b = self.batch(); let p = self.delete_selection(&mut b)?; dirty = self.commit(b, p, now_ms)?; }
+        let Some(p) = self.sel.map(|s| s.focus) else { return Ok(dirty) };
+        let Some(blk) = self.doc.get(p.block).filter(|b| b.kind.is_text()).cloned() else { return Ok(dirty) };
+        if !text.is_empty() {
+            let at = blk.spans.snap_out_of_chip(p.at.min(blk.text.len()));
+            let mut shown = String::with_capacity(blk.text.len() + text.len()); shown.push_str(&blk.text[..at]); shown.push_str(text); shown.push_str(&blk.text[at..]);
+            let mut spans = blk.spans.clone(); spans.edit(at, 0, text.len());
+            let _ = self.doc.set_text(p.block, shown); let _ = self.doc.set_spans(p.block, spans);
+            let caret = cursor.map(|c| c.1.min(text.len())).unwrap_or(text.len());
+            self.sel = Some(Selection::caret(Pos { block: p.block, at: at + caret }));
+            self.preedit = Some(Preedit { block: p.block, at, len: text.len(), text: blk.text, spans: blk.spans });
+        }
+        Ok(match dirty { Dirty::Structure => Dirty::Structure, Dirty::Blocks(mut v) => { if !v.contains(&p.block) { v.push(p.block); } Dirty::Blocks(v) } Dirty::Nothing => if restored.is_some() || !text.is_empty() { Dirty::Blocks(vec![p.block]) } else { Dirty::Nothing } })
+    }
+    /// The input method's result: it is typed in, as one edit.
+    pub fn commit_preedit(&mut self, text: &str, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let restored = self.end_preedit();
+        let d = self.insert(text, now_ms)?;
+        Ok(match (d, restored) { (Dirty::Nothing, Some(b)) => Dirty::Blocks(vec![b]), (d, _) => d })
+    }
+    /// The composing text's place: (block, start, end) in bytes.
+    pub fn preedit(&self) -> Option<(BlockId, usize, usize)> { self.preedit.as_ref().map(|p| (p.block, p.at, p.at + p.len)) }
+
     // ── pointing
     /// A press at a point of the note (the layout's coordinates); `extend` keeps the anchor (Shift, or a drag).
     pub fn point(&mut self, layout: &NoteLayout, x: f64, y: f64, extend: bool) {
+        if self.preedit.is_some() { return }   // the input method owns the caret until it ends
         let Some((block, at)) = layout.hit(&self.doc, x, y) else { return };
         let p = self.valid(Pos { block, at });
         self.sel = Some(match (extend, self.sel) { (true, Some(s)) => Selection { anchor: s.anchor, focus: p }, _ => Selection::caret(p) });
@@ -94,6 +136,7 @@ impl Editor {
 
     // ── moving
     pub fn move_caret(&mut self, layout: &NoteLayout, m: Move, extend: bool) {
+        if self.preedit.is_some() { return }
         let Some(s) = self.sel else { return };
         self.armed.clear();
         // without Shift, Left / Right on a range go to that end of it
@@ -199,6 +242,7 @@ impl Editor {
     /// selection) apply to what is typed; a typed Markdown marker that completes a pattern converts it (as a step of its
     /// own, so one undo gives the typed characters back).
     pub fn insert(&mut self, text: &str, now_ms: u64) -> Result<Dirty, ChangeError> {
+        self.end_preedit();
         let mut b = self.batch();
         let Some(mut p) = self.delete_selection(&mut b)? else { return Ok(Dirty::Nothing) };
         let armed = std::mem::take(&mut self.armed);
@@ -288,6 +332,7 @@ impl Editor {
     pub fn enter(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> { self.insert("\n", now_ms) }
     /// Backspace (`forward` false) or Delete (true).
     pub fn delete(&mut self, forward: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        if self.preedit.is_some() { return Ok(Dirty::Nothing) }
         let Some(s) = self.sel else { return Ok(Dirty::Nothing) };
         let mut b = self.batch();
         if !s.is_caret() { let p = self.delete_selection(&mut b)?; return self.commit(b, p, now_ms) }
@@ -317,10 +362,12 @@ impl Editor {
         self.commit(b, Some(Pos { block: first, at }), now_ms)
     }
     pub fn undo(&mut self) -> Result<Dirty, ChangeError> {
+        if self.end_preedit().is_some() { return Ok(Dirty::Structure) }
         if !self.history.undo(&mut self.doc)? { return Ok(Dirty::Nothing) }
         let m = self.marks.pop().unwrap_or((None, None)); self.sel = m.0.and_then(|s| self.live(s)); self.redo_marks.push(m); self.goal_x = None; Ok(Dirty::Structure)
     }
     pub fn redo(&mut self) -> Result<Dirty, ChangeError> {
+        if self.end_preedit().is_some() { return Ok(Dirty::Structure) }
         if !self.history.redo(&mut self.doc)? { return Ok(Dirty::Nothing) }
         let m = self.redo_marks.pop().unwrap_or((None, None)); self.sel = m.1.and_then(|s| self.live(s)); self.marks.push(m); self.goal_x = None; Ok(Dirty::Structure)
     }
@@ -512,5 +559,26 @@ mod tests {
         t.e.toggle_mark(Mark::Bold, t.now).unwrap(); t.keys("er");                                      // Cmd+B again inside the run: off for what follows
         assert_eq!(t.marks(), vec![(6, 10, Mark::Bold), (6, 12, Mark::Italic)]);
         t.mv(Move::Left, false); t.mv(Move::Right, false); t.keys("!"); assert_eq!(t.marks(), vec![(6, 10, Mark::Bold), (6, 12, Mark::Italic)]);
+    }
+    /// An input method composes in place; only its result is an edit.
+    #[test]
+    fn a_composition_shows_in_place_and_only_its_result_is_recorded() {
+        let mut t = setup(); t.at(4, 4); let steps = t.e.history.steps();
+        let d = t.e.set_preedit("ni", Some((2, 2)), 100).unwrap(); t.relay(d);
+        assert_eq!((t.text(4), t.pos(), t.e.preedit()), ("lastni".into(), (4, 6), Some((t.ids[4], 4, 6))));
+        let d = t.e.set_preedit("\u{4f60}\u{597d}", None, 200).unwrap(); t.relay(d);                     // the candidate replaces the letters
+        assert_eq!((t.text(4), t.e.history.steps()), ("last\u{4f60}\u{597d}".into(), steps));
+        t.mv(Move::Left, false); assert_eq!(t.pos(), (4, 10));                                           // the caret is the input method's while it composes
+        let d = t.e.commit_preedit("\u{4f60}\u{597d}", 300).unwrap(); t.relay(d);
+        assert_eq!((t.text(4), t.e.preedit(), t.e.history.steps()), ("last\u{4f60}\u{597d}".into(), None, steps + 1));
+        t.e.undo().unwrap(); assert_eq!((t.text(4), t.pos()), ("last".into(), (4, 4)));
+        // abandoned: the block is as it was, nothing recorded
+        let d = t.e.set_preedit("e\u{301}", None, 400).unwrap(); t.relay(d); let d = t.e.set_preedit("", None, 500).unwrap(); t.relay(d);
+        assert_eq!((t.text(4), t.e.history.steps(), t.pos()), ("last".into(), steps, (4, 4)));
+        // over a selection: the selection goes (one step), then the composition stands where it was
+        t.e.set_selection(Some(Selection { anchor: Pos { block: t.ids[4], at: 1 }, focus: Pos { block: t.ids[4], at: 3 } }));
+        let d = t.e.set_preedit("x", None, 600).unwrap(); t.relay(d);
+        assert_eq!((t.text(4), t.e.history.steps()), ("lxt".into(), steps + 1));
+        let d = t.e.commit_preedit("X", 700).unwrap(); t.relay(d); assert_eq!(t.text(4), "lXt");
     }
 }

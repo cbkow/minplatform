@@ -37,7 +37,18 @@ mod text_element;
 const MARGIN: f64 = 48.0;
 const PAD: f64 = 28.0;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts }
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts, ime_area: Option<Rect> }
+
+/// Input methods on (accents by long press, dead keys, Chinese / Japanese / Korean input), with the caret's place for
+/// the candidate window (winit 0.31's request API).
+fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
+    use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
+    use winit::dpi::{PhysicalPosition, PhysicalSize};
+    let mut data = ImeRequestData::default();
+    if let Some(r) = area { data = data.with_cursor_area(PhysicalPosition::new(r.x0, r.y0).into(), PhysicalSize::new(r.width().max(1.0), r.height().max(1.0)).into()); }
+    let req = if enable { match ImeEnableRequest::new(ImeCapabilities::new().with_cursor_area(), data) { Some(r) => ImeRequest::Enable(r), None => return } } else { ImeRequest::Update(data) };
+    if let Err(e) = window.request_ime_update(req) { log::debug!("ime: {e}"); }
+}
 /// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool }
 
@@ -104,7 +115,11 @@ impl App {
         scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::PAGE, None, &view);
         for r in self.ed.selection_rects(l) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::SELECTION, None, &(r + off)); }
         paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view);
-        if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &(c + off)); } }
+        // a composition is underlined where it stands
+        if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
+        if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &c);
+            // the input method's candidate window follows the caret
+            if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
         g.presenter.draw(|| window.pre_present_notify());
@@ -130,7 +145,8 @@ impl App {
         true
     }
     /// The note as it stands goes into the staged work copy (autosave never touches the real file — row 272).
-    fn autosave(&mut self) { if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("autosave: {e}") } } } self.title(); }
+    fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
+        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("autosave: {e}") } } } self.title(); }
     /// Save: the staged copy is published over the original by rename; if someone else saved meanwhile, their file is
     /// merged in first (row 285) and the note on screen is replaced by the merged one.
     fn save(&mut self) {
@@ -268,7 +284,8 @@ impl ApplicationHandler for App {
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, window.scale_factor());
         window.request_redraw();
         #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new() }); self.t0 = Some(Instant::now()); self.title();
+        ime(window.as_ref().as_ref(), None, true);
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         // autosave to the staging a second after the last edit
@@ -303,6 +320,14 @@ impl ApplicationHandler for App {
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
+            WindowEvent::Ime(e) => { let now = self.now_ms(); let d = match e {
+                    winit::event::Ime::Preedit(text, cursor) => self.ed.set_preedit(&text, cursor, now).unwrap_or(Dirty::Nothing),
+                    winit::event::Ime::Commit(text) => self.ed.commit_preedit(&text, now).unwrap_or(Dirty::Nothing),
+                    _ => return };
+                if self.ed.preedit().is_some() { // shown, not recorded: the layout follows, the file and the desktop's text do not hear of it yet
+                    match d { Dirty::Structure => self.layout = None, Dirty::Blocks(ids) => if let (Some(l), Some(g)) = (self.layout.as_mut(), self.gpu.as_mut()) { for id in ids { l.update_block(&self.ed.doc, &mut g.fonts, id); } }, Dirty::Nothing => {} }
+                    self.flat = None; self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); }
+                } else { self.apply(d); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
