@@ -1,0 +1,63 @@
+diff -ru a/src/node.rs b/src/node.rs
+--- a/src/node.rs	2026-11-11 13:41:47
++++ b/src/node.rs	2026-11-11 13:41:47
+@@ -1443,10 +1443,18 @@
+         },
+ 
+         fn GetVisibleRanges(&self) -> Result<*mut SAFEARRAY> {
+-            // TBD: Do we need this? The Quorum GUI toolkit, which is our
+-            // current point of comparison for text functionality,
+-            // doesn't implement it.
+-            Ok(std::ptr::null_mut())
++            // S9 (minplatform spike): Grammarly for Windows does not engage with a text
++            // element that reports no visible range. Report the document range.
++            crate::util::s9_log("GetVisibleRanges");
++            if std::env::var("S9_AK_VISIBLE").as_deref() == Ok("0") {
++                return Ok(std::ptr::null_mut());
++            }
++            self.resolve_for_text_pattern(|node| {
++                let range = node.document_range();
++                let platform_range: ITextRangeProvider = PlatformTextRange::new(&self.context, range).into();
++                let iunknown: IUnknown = platform_range.cast()?;
++                Ok(safe_array_from_com_slice(&[iunknown]))
++            })
+         },
+ 
+         fn RangeFromChild(&self, _child: Ref<IRawElementProviderSimple>) -> Result<ITextRangeProvider> {
+diff -ru a/src/text.rs b/src/text.rs
+--- a/src/text.rs	2026-11-11 13:41:47
++++ b/src/text.rs	2026-11-11 13:41:47
+@@ -492,6 +492,7 @@
+     }
+ 
+     fn GetBoundingRectangles(&self) -> Result<*mut SAFEARRAY> {
++        crate::util::s9_log("GetBoundingRectangles");
+         self.read_with_context(|range, context| {
+             let rects = range.bounding_boxes();
+             if rects.is_empty() {
+@@ -592,6 +593,7 @@
+     }
+ 
+     fn Select(&self) -> Result<()> {
++        crate::util::s9_log("Select");
+         self.do_action(|range, tree| {
+             let (target_node, target_tree) = tree.state().locate_node(range.node().id()).unwrap();
+             ActionRequest {
+diff -ru a/src/util.rs b/src/util.rs
+--- a/src/util.rs	2026-11-11 13:41:47
++++ b/src/util.rs	2026-11-11 13:41:47
+@@ -534,3 +534,14 @@
+         });
+     }
+ }
++
++/// S9 (minplatform spike): one line per call into `S9_AK_LOG`, to see from outside whether a tool engages.
++pub(crate) fn s9_log(what: &str) {
++    use std::io::Write;
++    if let Ok(path) = std::env::var("S9_AK_LOG") {
++        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
++            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
++            let _ = writeln!(f, "{t} {what}");
++        }
++    }
++}

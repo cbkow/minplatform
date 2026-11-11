@@ -408,7 +408,7 @@ fn main() {
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let has = |k: &str| args.iter().any(|a| a == k);
     let lines: usize = arg("--lines").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let text = if let Some(f) = arg("--file") { std::fs::read_to_string(&f).expect("--file") } else if lines > 0 { generate(lines) } else { "S3 text — type here. Shift+arrows select, click places the caret, IME preedit draws underlined.\n\nThe long pole of min-ui is this editor: parley + vello + IME + AccessKit on one node tree.".to_string() };
+    let text = if let Some(f) = arg("--file") { std::fs::read_to_string(&f).expect("--file").replace("\r\n", "\n") } else if lines > 0 { generate(lines) } else { "S3 text — type here. Shift+arrows select, click places the caret, IME preedit draws underlined.\n\nThe long pole of min-ui is this editor: parley + vello + IME + AccessKit on one node tree.".to_string() };
     #[cfg(target_os = "macos")]
     unsafe { objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(true, objc2_foundation::ns_string!("ApplePressAndHoldEnabled")); }
     let el = EventLoop::<AkEvent>::with_user_event().build().unwrap();
