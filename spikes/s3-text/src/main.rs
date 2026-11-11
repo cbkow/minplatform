@@ -25,7 +25,7 @@ struct App {
     rc: RenderContext, ctx: Option<Ctx>, font_cx: FontContext, layout_cx: LayoutContext<Brush>,
     blocks: Vec<Block>, focus: usize, scroll: f32, single: bool,
     shift: bool, cmd: bool, cursor: (f64, f64), clipboard: Option<arboard::Clipboard>,
-    undo: Vec<Op>, redo: Vec<Op>, last_edit: Option<Instant>, doc_value: String, doc_dirty: bool,
+    undo: Vec<Op>, redo: Vec<Op>, last_edit: Option<Instant>, last_caret: Option<(usize, usize)>, burst_before: String, doc_value: String, doc_dirty: bool,
     /// S9 step 3f (`S9_NATIVE=1`): the flat UTF-16 view of the document — where each block starts (+ the total), and what to tell the desktop after this event
     u16_starts: Vec<usize>, native: bool, note: Option<bool>, follow: bool,
     proxy: Option<winit::event_loop::EventLoopProxy<AkEvent>>, ax_refs: Vec<ax::LineRef>,
@@ -83,29 +83,34 @@ impl App {
     // ---------- editing through ops ----------
     fn apply(&mut self, block: usize, f: impl FnOnce(&mut parley::PlainEditorDriver<'_, Brush>)) {
         let before = self.blocks[block].editor.raw_text().to_string();
+        let sel0 = { let s = self.blocks[block].editor.raw_selection(); (s.anchor().index(), s.focus().index()) };
         let t = Instant::now();
         { let b = &mut self.blocks[block]; let mut d = b.editor.driver(&mut self.font_cx, &mut self.layout_cx); f(&mut d); }
         let _ = self.blocks[block].editor.layout(&mut self.font_cx, &mut self.layout_cx);   // the relayout is part of the key's cost
         self.per_key_us.push(t.elapsed().as_secs_f32() * 1e6);
         let after = self.blocks[block].editor.raw_text().to_string();
         if before != after {
-            let p = before.bytes().zip(after.bytes()).take_while(|(a, b)| a == b).count();
-            let mut p = p; while !before.is_char_boundary(p) || !after.is_char_boundary(p) { p -= 1; }
-            let sfx = before[p..].bytes().rev().zip(after[p..].bytes().rev()).take_while(|(a, b)| a == b).count();
-            let mut sfx = sfx; while !before.is_char_boundary(before.len() - sfx) || !after.is_char_boundary(after.len() - sfx) { sfx -= 1; }
-            let (removed, inserted) = (&before[p..before.len() - sfx], &after[p..after.len() - sfx]);
+            let caret = self.blocks[block].editor.raw_selection().focus().index();
             // S9: a writing tool types one correction as SEVERAL key events (≤ 16 UTF-16 units each, 1–86 ms apart in the
-            // logs). A pure insert that continues the previous step within `S9_COALESCE` ms (default 300; 0 = off) joins it,
-            // so one ⌘Z takes the whole correction back.
+            // logs). A pure insert AT THE CARET THE PREVIOUS EDIT LEFT, within `S9_COALESCE` ms (default 300; 0 = off), joins
+            // that edit's undo step, so one ⌘Z takes the whole correction back. (The step is re-derived from the text before
+            // the burst: comparing positions of diffed ops fails when the inserted text repeats its neighbours.)
             let window = std::env::var("S9_COALESCE").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(300);
-            let merged = match (self.undo.last_mut(), self.last_edit) {
-                (Some(l), Some(when)) if l.block == block && removed.is_empty() && p == l.at + l.inserted.len() && (when.elapsed().as_millis() as u64) < window => { l.inserted.push_str(inserted); true }
-                _ => false,
-            };
-            if !merged { self.undo.push(Op { block, at: p, removed: removed.to_string(), inserted: inserted.to_string() }); }
+            let pure_insert = sel0.0 == sel0.1 && caret >= sel0.0 && after.len() == before.len() + (caret - sel0.0) && after.is_char_boundary(caret) && after[..sel0.0] == before[..sel0.0] && after[caret..] == before[sel0.0..];
+            let merged = pure_insert && !self.undo.is_empty() && self.last_caret == Some((block, sel0.0)) && self.last_edit.is_some_and(|w| (w.elapsed().as_millis() as u64) < window);
+            if !merged { self.burst_before = before.clone(); }
+            let from = &self.burst_before;
+            let p = from.bytes().zip(after.bytes()).take_while(|(a, b)| a == b).count();
+            let mut p = p; while !from.is_char_boundary(p) || !after.is_char_boundary(p) { p -= 1; }
+            let sfx = from[p..].bytes().rev().zip(after[p..].bytes().rev()).take_while(|(a, b)| a == b).count();
+            let mut sfx = sfx; while !from.is_char_boundary(from.len() - sfx) || !after.is_char_boundary(after.len() - sfx) { sfx -= 1; }
+            let (removed, inserted) = (&from[p..from.len() - sfx], &after[p..after.len() - sfx]);
+            let op = Op { block, at: p, removed: removed.to_string(), inserted: inserted.to_string() };
+            #[cfg(target_os = "macos")] if self.native { native_ax::log("EDIT", format!("block {block} byte {p}: {removed:?} → {inserted:?}{} [undo steps {}]", if merged { " (the step so far; joined)" } else { "" }, self.undo.len() + usize::from(!merged)), true); }
+            if merged { *self.undo.last_mut().unwrap() = op } else { self.undo.push(op) }
+            self.last_caret = Some((block, caret));
             self.last_edit = Some(Instant::now());
             self.redo.clear();
-            #[cfg(target_os = "macos")] if self.native { native_ax::log("EDIT", format!("block {block} byte {p}: {removed:?} → {inserted:?}{} [undo steps {}]", if merged { " (joined the previous undo step)" } else { "" }, self.undo.len()), true); }
             self.note = Some(true);
         } else if self.note.is_none() { self.note = Some(false); }
         self.restack(block);
@@ -122,7 +127,7 @@ impl App {
     }
     fn undo_one(&mut self, redo: bool) {
         let Some(op) = (if redo { self.redo.pop() } else { self.undo.pop() }) else { return };
-        self.last_edit = None;
+        self.last_edit = None; self.last_caret = None;
         #[cfg(target_os = "macos")] if self.native { native_ax::log(if redo { "REDO" } else { "UNDO" }, format!("block {} byte {}: {:?} ⇄ {:?}", op.block, op.at, op.removed, op.inserted), true); }
         let t = Instant::now();
         let (remove, insert) = if redo { (op.removed.clone(), op.inserted.clone()) } else { (op.inserted.clone(), op.removed.clone()) };
@@ -409,7 +414,7 @@ fn main() {
     let el = EventLoop::<AkEvent>::with_user_event().build().unwrap();
     let proxy = el.create_proxy();
     let mut app = App { rc: RenderContext::new(), ctx: None, font_cx: FontContext::new(), layout_cx: LayoutContext::new(), blocks: vec![], focus: 0, scroll: 0.0, single: has("--single"),
-        shift: false, cmd: false, cursor: (0.0, 0.0), clipboard: arboard::Clipboard::new().ok(), undo: vec![], redo: vec![], last_edit: None, doc_value: String::new(), doc_dirty: true, u16_starts: vec![], native: std::env::var_os("S9_NATIVE").is_some(), note: None, follow: true, proxy: Some(proxy), ax_refs: vec![],
+        shift: false, cmd: false, cursor: (0.0, 0.0), clipboard: arboard::Clipboard::new().ok(), undo: vec![], redo: vec![], last_edit: None, last_caret: None, burst_before: String::new(), doc_value: String::new(), doc_dirty: true, u16_starts: vec![], native: std::env::var_os("S9_NATIVE").is_some(), note: None, follow: true, proxy: Some(proxy), ax_refs: vec![],
         seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), t0: Instant::now(), probe: arg("--probe").and_then(|v| v.parse().ok()).unwrap_or(0), probe_done: false,
         key_recv: None, key_present_ms: vec![], frame_ms: vec![], draw_ms: vec![], ax_us: vec![], per_key_us: vec![], undo_us: vec![], frames: 0 };
     app.load(&text);
