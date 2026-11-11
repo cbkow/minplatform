@@ -60,8 +60,8 @@ impl Sidebar {
     }
     pub fn row(&self, id: BlockId) -> Option<&Row> { self.rows.iter().find(|r| r.id == id) }
     /// Places the rail; returns the width it takes of the window, physical px.
-    pub fn layout(&mut self, height: f64, scale: f64, now: Instant) -> f64 {
-        self.scale = scale; self.rail.layout(0.0, 0.0, height, scale, now);
+    pub fn layout(&mut self, top: f64, height: f64, scale: f64, now: Instant) -> f64 {
+        self.scale = scale; self.rail.layout(0.0, top, height, scale, now);
         self.rail.content_height = self.rows.len() as f64 * ROW * scale;
         self.rail.visible_width(now, scale)
     }

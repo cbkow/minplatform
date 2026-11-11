@@ -8,7 +8,7 @@ pub enum Cmd {
     NewCollection, Open, OpenRecent(String), ClearRecent, Save, SaveAs, CloseCollection, NewNote, NewFolder, Quit,
     Undo, Redo, Cut, Copy, Paste, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
-    Sidebar,
+    Sidebar, Toolbar, ToolbarWide,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -40,7 +40,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
             item("Inline Code", sc('e'), Cmd::Code), item("Highlight", sc_shift('h'), Cmd::Highlight), Node::Sep,
             item("Clear Formatting", sc('\\'), Cmd::ClearFormat),
         ]),
-        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar)]),
+        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), Node::Sep, item("Toolbar Across the Window / Over the Page", None, Cmd::ToolbarWide)]),
     ]
 }
 
@@ -62,7 +62,7 @@ mod native {
     pub struct AppMenu { pub menu: Menu, ids: HashMap<MenuId, Cmd>, recent: Submenu, seen: Option<Vec<String>> }
 
     fn accel(s: Sc) -> Option<Accelerator> {
-        let code = match s.key { 'a' => Code::KeyA, 'b' => Code::KeyB, 'c' => Code::KeyC, 'e' => Code::KeyE, 'h' => Code::KeyH, 'i' => Code::KeyI, 'n' => Code::KeyN, 'o' => Code::KeyO, 'q' => Code::KeyQ, 's' => Code::KeyS, 'u' => Code::KeyU, 'v' => Code::KeyV, 'w' => Code::KeyW, 'x' => Code::KeyX, 'z' => Code::KeyZ, '1' => Code::Digit1, '\\' => Code::Backslash, _ => return None };
+        let code = match s.key { 'a' => Code::KeyA, 'b' => Code::KeyB, 'c' => Code::KeyC, 'e' => Code::KeyE, 'h' => Code::KeyH, 'i' => Code::KeyI, 'n' => Code::KeyN, 'o' => Code::KeyO, 'q' => Code::KeyQ, 's' => Code::KeyS, 'u' => Code::KeyU, 'v' => Code::KeyV, 'w' => Code::KeyW, 'x' => Code::KeyX, 'z' => Code::KeyZ, '1' => Code::Digit1, '2' => Code::Digit2, '\\' => Code::Backslash, _ => return None };
         let mut m = Modifiers::META; if s.shift { m |= Modifiers::SHIFT; } if s.alt { m |= Modifiers::ALT; }
         Some(Accelerator::new(m, code))
     }

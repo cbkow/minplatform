@@ -18,6 +18,16 @@ pub struct Pos { pub block: BlockId, pub at: usize }
 pub struct Selection { pub anchor: Pos, pub focus: Pos }
 impl Selection { pub fn caret(p: Pos) -> Self { Selection { anchor: p, focus: p } } pub fn is_caret(&self) -> bool { self.anchor == self.focus } }
 
+/// The block types a control can ask for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockType { Paragraph, Heading(u8), Bullet, Numbered, Task, Quote, Code }
+impl BlockType {
+    pub fn is(&self, k: &Kind) -> bool { matches!((self, k), (BlockType::Paragraph, Kind::Paragraph) | (BlockType::Bullet, Kind::Bullet { .. }) | (BlockType::Numbered, Kind::Numbered { .. }) | (BlockType::Task, Kind::Task { .. }) | (BlockType::Quote, Kind::Quote) | (BlockType::Code, Kind::Code { .. })) || matches!((self, k), (BlockType::Heading(n), Kind::Heading { level }) if n == level) }
+}
+/// What is "on" where the caret or the selection is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct State { pub kind: Option<Kind>, pub marks: Vec<mn_doc::MarkKind>, pub can_undo: bool, pub can_redo: bool }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move { Left, Right, Up, Down, LineStart, LineEnd, WordLeft, WordRight, DocStart, DocEnd }
 
@@ -312,6 +322,52 @@ impl Editor {
         if let Some(m) = self.marks.last_mut() { if d != Dirty::Nothing { m.1 = keep; } }
         Ok(d)
     }
+    /// What a block-type control asks for.
+    /// The text blocks in the selection (or the caret's block) become `want`; when every one of them already is, they
+    /// become plain paragraphs (the control toggles). A list keeps each item's depth; a block that becomes a code block
+    /// loses its formatting. Blocks without text are left alone.
+    pub fn set_block_kind(&mut self, want: BlockType, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((a, z)) = self.ordered() else { return Ok(Dirty::Nothing) };
+        let l = leaves(&self.doc); let (Some(i), Some(j)) = (l.iter().position(|x| *x == a.block), l.iter().position(|x| *x == z.block)) else { return Ok(Dirty::Nothing) };
+        let ids: Vec<BlockId> = l[i..=j].iter().copied().filter(|id| self.doc.get(*id).is_some_and(|b| b.kind.is_text())).collect();
+        let all = !ids.is_empty() && ids.iter().all(|id| want.is(&self.doc.get(*id).unwrap().kind));
+        let mut b = self.batch();
+        for id in ids {
+            let blk = self.doc.get(id).unwrap(); let old = blk.kind.clone();
+            let depth = match &old { Kind::Bullet { depth } | Kind::Numbered { depth } | Kind::Task { depth, .. } => *depth, _ => 0 };
+            let new = if all { Kind::Paragraph } else { match want { BlockType::Paragraph => Kind::Paragraph, BlockType::Heading(n) => Kind::Heading { level: n.clamp(1, 6) }, BlockType::Bullet => Kind::Bullet { depth }, BlockType::Numbered => Kind::Numbered { depth }, BlockType::Task => Kind::Task { depth, state: 0 }, BlockType::Quote => Kind::Quote, BlockType::Code => Kind::Code { lang: String::new() } } };
+            if new == old { continue }
+            if matches!(new, Kind::Code { .. }) && !blk.spans.is_empty() { b.push(Change::Format { id, old: blk.spans.clone(), new: Spans::new() })?; }
+            b.push(Change::Kind { id, old, new })?;
+        }
+        let keep = self.sel; let d = self.commit(b, None, now_ms)?; self.sel = keep; if let Some(m) = self.marks.last_mut() { if d != Dirty::Nothing { m.1 = keep; } }
+        Ok(d)
+    }
+    /// A divider goes in below the caret's block, with the caret in a paragraph after it (a new one if none follows).
+    pub fn insert_divider(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some(p) = self.sel.map(|s| s.focus) else { return Ok(Dirty::Nothing) };
+        let Some(blk) = self.doc.get(p.block).cloned() else { return Ok(Dirty::Nothing) };
+        let index = self.doc.index_of(p.block).unwrap() + 1; let mut b = self.batch();
+        let mut div = paragraph(blk.parent, ""); div.kind = Kind::Divider; b.push(Change::Insert { index, blocks: vec![div] })?;
+        let next = self.doc.children(blk.parent).get(index).copied().filter(|n| self.doc.get(*n).is_some_and(|x| x.kind.is_text()));
+        let caret = match next { Some(n) => n, None => { let para = paragraph(blk.parent, ""); let id = para.id; b.push(Change::Insert { index: index + 1, blocks: vec![para] })?; id } };
+        self.commit(b, Some(Pos { block: caret, at: 0 }), now_ms)
+    }
+    /// What a toolbar shows as "on": the kind of the caret's block, the marks that cover the selection (at a caret: the
+    /// marks typing would get — those around it, as the armed ones change them), and whether undo / redo have a step.
+    pub fn state(&self) -> State {
+        let mut st = State { can_undo: self.history.can_undo(), can_redo: self.history.can_redo(), ..State::default() };
+        let Some((a, z)) = self.ordered() else { return st };
+        st.kind = self.doc.get(self.sel.unwrap().focus.block).map(|b| b.kind.clone());
+        let kinds = [mn_doc::MarkKind::Bold, mn_doc::MarkKind::Italic, mn_doc::MarkKind::Underline, mn_doc::MarkKind::Strike, mn_doc::MarkKind::Code, mn_doc::MarkKind::Highlight];
+        if a == z {
+            if let Some(blk) = self.doc.get(a.block) { for k in kinds { let around = a.at > 0 && blk.spans.as_slice().iter().any(|sp| sp.mark.kind() == k && sp.start < a.at && sp.end > a.at); let on = match self.armed.iter().find(|(m, _)| m.kind() == k) { Some((_, on)) => *on, None => around }; if on { st.marks.push(k); } } }
+        } else {
+            let ranges = self.text_ranges(a, z);
+            for k in kinds { if !ranges.is_empty() && ranges.iter().all(|(id, s, e)| { let blk = self.doc.get(*id).unwrap(); let mut at = *s; for sp in blk.spans.as_slice().iter().filter(|sp| sp.mark.kind() == k) { if sp.start > at { break } at = at.max(sp.end); } at >= *e }) { st.marks.push(k); } }
+        }
+        st
+    }
     /// Tab / Shift+Tab: the list items in the selection go one level in or out (0…8). False when there was no list item
     /// (the caller may then give the key another meaning).
     pub fn indent(&mut self, out: bool, now_ms: u64) -> Result<Option<Dirty>, ChangeError> {
@@ -580,5 +636,29 @@ mod tests {
         let d = t.e.set_preedit("x", None, 600).unwrap(); t.relay(d);
         assert_eq!((t.text(4), t.e.history.steps()), ("lxt".into(), steps + 1));
         let d = t.e.commit_preedit("X", 700).unwrap(); t.relay(d); assert_eq!(t.text(4), "lXt");
+    }
+    #[test]
+    fn a_block_type_control_sets_toggles_and_reports() {
+        let mut t = setup();
+        t.e.set_selection(Some(Selection { anchor: Pos { block: t.ids[0], at: 1 }, focus: Pos { block: t.ids[3], at: 1 } }));
+        let d = t.e.set_block_kind(BlockType::Bullet, 100).unwrap(); t.relay(d);
+        assert_eq!((t.e.doc.get(t.ids[0]).unwrap().kind.clone(), t.e.doc.get(t.ids[1]).unwrap().kind.clone(), matches!(t.e.doc.get(t.ids[2]).unwrap().kind, Kind::Media { .. })), (Kind::Bullet { depth: 0 }, Kind::Bullet { depth: 0 }, true));
+        assert!(matches!(t.e.state().kind, Some(Kind::Bullet { .. })));
+        let d = t.e.set_block_kind(BlockType::Bullet, 2000).unwrap(); t.relay(d);                       // all of them already: back to paragraphs
+        assert_eq!(t.e.doc.get(t.ids[0]).unwrap().kind, Kind::Paragraph);
+        t.e.undo().unwrap(); t.e.undo().unwrap(); assert_eq!(t.e.doc.get(t.ids[0]).unwrap().kind, Kind::Heading { level: 1 });
+        // marks: on over a covered selection, on at a caret inside a run, and armed marks show before anything is typed
+        t.e.set_selection(Some(Selection { anchor: Pos { block: t.ids[1], at: 4 }, focus: Pos { block: t.ids[1], at: 9 } }));
+        t.e.toggle_mark(Mark::Bold, 3000).unwrap(); assert_eq!(t.e.state().marks, [mn_doc::MarkKind::Bold]);
+        t.at(1, 6); assert_eq!(t.e.state().marks, [mn_doc::MarkKind::Bold]);
+        t.at(1, 20); assert!(t.e.state().marks.is_empty()); t.e.toggle_mark(Mark::Italic, 3100).unwrap(); assert_eq!(t.e.state().marks, [mn_doc::MarkKind::Italic]);
+        // a code block drops formatting; a divider goes in below with the caret after it
+        t.at(1, 6); let d = t.e.set_block_kind(BlockType::Code, 4000).unwrap(); t.relay(d);
+        assert!(t.e.doc.get(t.ids[1]).unwrap().spans.is_empty() && matches!(t.e.doc.get(t.ids[1]).unwrap().kind, Kind::Code { .. }));
+        t.at(4, 2); let n = t.e.doc.children(None).len(); let d = t.e.insert_divider(5000).unwrap(); t.relay(d);
+        let kids = t.e.doc.children(None).to_vec(); let at = kids.iter().position(|k| *k == t.ids[4]).unwrap();
+        // what follows is not text (the Columns block), so a paragraph is made for the caret too
+        assert_eq!((kids.len(), t.e.doc.get(kids[at + 1]).unwrap().kind.clone(), t.e.doc.get(kids[at + 2]).unwrap().kind.clone(), t.e.selection().unwrap().focus.block), (n + 2, Kind::Divider, Kind::Paragraph, kids[at + 2]));
+        assert!(t.e.state().can_undo);
     }
 }

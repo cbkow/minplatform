@@ -32,6 +32,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 mod menu;
 mod paint;
 mod sidebar;
+mod toolbar;
 #[cfg(target_os = "macos")]
 mod text_element;
 
@@ -83,7 +84,9 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
+struct App { bar: toolbar::Toolbar, /// the band spans the window (the sidebar starts below it) rather than only the page
+    bar_wide: bool, /// the page's top: the band's height, physical px
+    top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
     blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
     after_close: Option<Pending>, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
     told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
@@ -127,10 +130,15 @@ impl App {
         let t = Instant::now();
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let now = Instant::now();
         // the sidebar takes its width off the page (it slides when it folds, so the page follows frame by frame)
-        self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(h as f64, s, now)).unwrap_or(0.0);
+        // the band: across the window (the sidebar starts below it) or over the page only (beside the sidebar)
+        if self.bar_wide { self.bar.lead = 0.0; self.top = self.bar.layout(&mut g.fonts, 0.0, w as f64, 0.0, s); self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(self.top, h as f64, s, now)).unwrap_or(0.0); }
+        else { self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(0.0, h as f64, s, now)).unwrap_or(0.0); self.bar.lead = if self.sidebar.is_some() { (min_theme::tokens::COMPONENT_HEIGHT_75 + 2.0 * min_theme::tokens::SPACING_75) as f64 } else { 0.0 }; self.top = self.bar.layout(&mut g.fonts, self.side_w, w as f64, 0.0, s); }
+        // the sidebar's caret floats over the page's top left corner: it is hit before the band
+
+        { let st = self.ed.state(); self.bar.sync(&toolbar::Shown { state: &st, has_note: !self.blank, has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), unpublished: self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some()), saving: self.saving.is_some() }); }
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
-        if (self.side_w, page_w) != self.told_geom { self.told_geom = (self.side_w, page_w); self.geom_moved = Some(now); }
+        if (self.side_w, page_w + self.top * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + self.top * 1e-3); self.geom_moved = Some(now); }
         #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
@@ -144,12 +152,12 @@ impl App {
         }
         let l = self.layout.as_ref().unwrap();
         // after an edit or a caret move the caret is brought into view
-        if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); if top < self.scroll { self.scroll = top } else if bottom > self.scroll + h as f64 { self.scroll = bottom - h as f64 } } }
-        self.scroll = self.scroll.clamp(0.0, (l.height as f64 + 2.0 * PAD * s - h as f64).max(0.0));
+        if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); let view_h = h as f64 - self.top; if top < self.scroll { self.scroll = top } else if bottom > self.scroll + view_h { self.scroll = bottom - view_h } } }
+        self.scroll = self.scroll.clamp(0.0, (l.height as f64 + 2.0 * PAD * s - (h as f64 - self.top)).max(0.0));
         #[cfg(target_os = "macos")] if (self.scroll - self.last_scroll).abs() > 0.01 { text_element::scrolled(); }
         self.last_scroll = self.scroll;
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
-        let off = kurbo::Vec2::new(self.side_w + MARGIN * s, PAD * s - self.scroll);
+        let off = kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll);
         let scene = g.ui.scene_mut(); scene.reset();
         scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &view);
         if self.blank {
@@ -167,6 +175,8 @@ impl App {
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
         if let Some(sb) = self.sidebar.as_mut() { sb.paint(scene, &mut g.fonts, self.store.as_ref().map(|st| st.note), now); if sb.rail.animating(now) { g.window.request_redraw(); } }
+        self.bar.paint(scene, &mut g.fonts, now); self.bar.paint_tooltip(scene, &mut g.fonts, view, now);
+        if self.bar.tick(now) { g.window.request_redraw(); }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
@@ -340,6 +350,23 @@ impl App {
         self.saving = Some(Saving { attempt: 0, expect, to: Some(path), merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
     }
+    /// A button of the toolbar (row 297): the same routines the menu and the keys run.
+    fn tool(&mut self, tool: toolbar::Tool) {
+        use toolbar::Tool as T; use menu::Cmd as M; use mn_edit::BlockType as B;
+        let now = self.now_ms();
+        let block = |me: &mut App, b: B| { let d = me.ed.set_block_kind(b, now).unwrap_or(Dirty::Nothing); me.apply(d); };
+        match tool {
+            T::Sidebar => self.menu_cmd(M::Sidebar), T::Undo => self.menu_cmd(M::Undo), T::Redo => self.menu_cmd(M::Redo), T::Save => self.menu_cmd(M::Save),
+            T::Bold => self.menu_cmd(M::Bold), T::Italic => self.menu_cmd(M::Italic), T::Underline => self.menu_cmd(M::Underline), T::Strike => self.menu_cmd(M::Strike), T::Code => self.menu_cmd(M::Code), T::Highlight => self.menu_cmd(M::Highlight), T::ClearFormat => self.menu_cmd(M::ClearFormat),
+            T::Paragraph => block(self, B::Paragraph), T::Bullet => block(self, B::Bullet), T::Numbered => block(self, B::Numbered), T::Task => block(self, B::Task), T::Quote => block(self, B::Quote), T::CodeBlock => block(self, B::Code),
+            // Heading steps through the first three levels and back to a paragraph
+            T::Heading => { let next = match self.ed.state().kind { Some(Kind::Heading { level }) if level < 3 => B::Heading(level + 1), Some(Kind::Heading { .. }) => B::Paragraph, _ => B::Heading(1) }; block(self, next) }
+            T::Indent | T::Outdent => { let d = self.ed.indent(tool == T::Outdent, now).ok().flatten().unwrap_or(Dirty::Nothing); self.apply(d); }
+            T::Fold => self.layout = None,
+            T::Divider => { let d = self.ed.insert_divider(now).unwrap_or(Dirty::Nothing); self.apply(d); }
+            _ => {}
+        }
+    }
     /// A command of the menu bar (row 296).
     fn menu_cmd(&mut self, c: menu::Cmd) {
         use menu::Cmd as M;
@@ -356,6 +383,8 @@ impl App {
                 if p.exists() { let aside = p.with_extension(format!("replaced-{}.mnd", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))); let _ = std::fs::rename(&p, aside); }
                 self.request_close(Pending::New(p)) },
             M::SaveAs => self.save_as(),
+            M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
+            M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
     }
@@ -474,7 +503,12 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
+        let on_rail_tab = !self.bar_wide && self.sidebar.is_some() && e.pos().is_some_and(|(x, y)| { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (m, sz) = (min_theme::tokens::SPACING_75 as f64 * s, min_theme::tokens::COMPONENT_HEIGHT_75 as f64 * s); x >= self.side_w + m && x <= self.side_w + m + sz && y >= m && y <= m + sz });
+        let (tools, on_bar) = if on_rail_tab { self.bar.event(&min_ui::Event::Move { x: -1.0, y: -1.0 }, now) } else { self.bar.event(&e, now) };
+        if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
+        // the rail's floating tab (the caret that reopens a folded sidebar, as in QCView) shows while the pointer is in the window
+        sb.rail.set_pointer_present(!matches!(e, min_ui::Event::Leave), now);
         let (a, taken) = sb.event(&e, &mut g.fonts, now);
         if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; }
         self.act(a); taken
@@ -483,7 +517,7 @@ impl App {
         if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{}{} — minNotes", name, if self.saving.is_some() { " — saving…" } else { "" }, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
-    fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - PAD * s + self.scroll) }
+    fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - self.top - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
         // where there is no native menu to take them, the file commands' keys are run here
@@ -589,9 +623,9 @@ impl text_element::TextHost for App {
         let (f, l) = (self.flat.as_ref().unwrap(), self.layout.as_ref().unwrap()); let s = l.scale as f64;
         let rects = if length == 0 { f.locate16(location).and_then(|(line, at)| l.caret(&self.ed.doc, line.block, at, 1.0)).into_iter().collect() } else { l.flat_rects(&self.ed.doc, f, location, length) };
         let Some(u) = rects.into_iter().reduce(|a: Rect, b| a.union(b)) else { return (0.0, 0.0, 0.0, 0.0) };
-        ((u.x0 + self.side_w + MARGIN * s) / s, (u.y0 + PAD * s - self.scroll) / s, u.width() / s, u.height() / s)
+        ((u.x0 + self.side_w + MARGIN * s) / s, (u.y0 + self.top + PAD * s - self.scroll) / s, u.width() / s, u.height() / s)
     }
-    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (self.side_w / s + MARGIN, PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
+    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (self.side_w / s + MARGIN, self.top / s + PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
     fn ax_viewport(&mut self) -> (f64, f64) { self.gpu.as_ref().map(|g| { let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); (w as f64 / s, h as f64 / s) }).unwrap_or((0.0, 0.0)) }
     fn replace_before_caret(&mut self, text: &str) {
         let now = self.now_ms(); if !self.ensure() { return }
@@ -601,7 +635,7 @@ impl text_element::TextHost for App {
     }
     fn ax_scroll_fraction(&mut self) -> f64 {
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return 0.0 }; let s = g.window.scale_factor();
-        let max = (l.height as f64 + 2.0 * PAD * s - g.presenter.size().1 as f64).max(1.0); (self.scroll / max).clamp(0.0, 1.0)
+        let max = (l.height as f64 + 2.0 * PAD * s - (g.presenter.size().1 as f64 - self.top)).max(1.0); (self.scroll / max).clamp(0.0, 1.0)
     }
 }
 
@@ -631,6 +665,7 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        if let Some(at) = self.bar.next_change(Instant::now()) { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         #[cfg(target_os = "macos")] while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c); } }
         if let Some(t) = self.geom_moved { let due = t + std::time::Duration::from_millis(150); if Instant::now() >= due { self.geom_moved = None; #[cfg(target_os = "macos")] text_element::relaid(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
         // a dialog's answer, or a save that was to be followed by closing, ended the session
@@ -666,6 +701,7 @@ impl ApplicationHandler for App {
                 self.scroll -= match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 };
                 g.window.request_redraw();
             },
+            WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y }) { return }
@@ -805,6 +841,6 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() != Ok("page"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
