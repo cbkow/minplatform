@@ -117,17 +117,30 @@ impl Session {
     /// The same at a new place (nothing may be there), which becomes this session's original.
     pub fn save_as(&mut self, to: &Path, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> { self.publish(to, None, produce) }
     fn publish(&mut self, to: &Path, expect: Option<crate::share::Fingerprint>, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+        let staged = self.stage_publish(produce)?;
+        match crate::share::put(&staged, to, expect) {
+            Ok(_) => self.published(to),
+            Err(e) => { let _ = fs::remove_file(&staged); Err(match e { crate::share::PutError::Raced => io::Error::new(io::ErrorKind::Interrupted, e.to_string()), crate::share::PutError::Unverified => io::Error::new(io::ErrorKind::InvalidData, e.to_string()), crate::share::PutError::Io(e) => e }) }
+        }
+    }
+    /// The two halves of a publish, for a caller that runs [`crate::share::put`] itself (off its main thread):
+    /// `produce` writes the complete new file INTO THE SESSION, which is flushed; its path is returned.
+    pub fn stage_publish(&self, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<PathBuf> {
         let staged = self.dir.join("publish.mnd"); let _ = fs::remove_file(&staged);
-        let result = (|| {
-            produce(&staged)?;
-            File::options().write(true).open(&staged)?.sync_all()?;
-            crate::share::put(&staged, to, expect).map_err(|e| match e { crate::share::PutError::Raced => io::Error::new(io::ErrorKind::Interrupted, e.to_string()), crate::share::PutError::Unverified => io::Error::new(io::ErrorKind::InvalidData, e.to_string()), crate::share::PutError::Io(e) => e })?;
-            fs::rename(&staged, self.dir.join("base.mnd"))
-        })();
-        if result.is_err() { let _ = fs::remove_file(&staged); return result }
+        let r = produce(&staged).and_then(|()| File::options().write(true).open(&staged)?.sync_all());
+        if let Err(e) = r { let _ = fs::remove_file(&staged); return Err(e) }
+        Ok(staged)
+    }
+    /// The staged file has become the document at `to` (a `put` succeeded): it is the new base, and `to` this
+    /// session's original.
+    pub fn published(&mut self, to: &Path) -> io::Result<()> {
+        fs::rename(self.dir.join("publish.mnd"), self.dir.join("base.mnd"))?;
+        let _ = fs::remove_file(self.dir.join("theirs.mnd"));
         self.original = to.to_path_buf(); self.stamp = Stamp::of(to).ok();   // the stamp is a hint only: a share may still answer with the old one
         write_origin(&self.dir, &self.original, self.stamp)
     }
+    /// Where a fetched copy of someone else's save goes.
+    pub fn theirs_path(&self) -> PathBuf { self.dir.join("theirs.mnd") }
     /// A clean close: the session folder goes. (Dropping a session WITHOUT this leaves it as a leftover — which is
     /// what a crash does, and what a caller with unsaved work may choose.)
     pub fn close(self) -> io::Result<()> { let dir = self.dir.clone(); drop(self); fs::remove_dir_all(dir) }

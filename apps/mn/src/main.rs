@@ -53,9 +53,13 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
     if let Err(e) = window.request_ime_update(req) { log::debug!("ime: {e}"); }
 }
 /// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
-struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool }
+struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool, /// an edit went to the staged copy after the file being saved was made
+    edited_since_stage: bool }
+/// A save under way: which try, what the document is expected to be, what a merge brought.
+struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, merged: Option<String>, started: Instant }
+enum SaveStep { Put(Result<mn_store::share::Fingerprint, mn_store::share::PutError>), Fetched(std::io::Result<mn_store::share::Fingerprint>) }
 
-struct App { store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(BlockId, min_ui::dialog::Dialog)>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+struct App { saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(BlockId, min_ui::dialog::Dialog)>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -154,41 +158,77 @@ impl App {
     }
     /// The note as it stands goes into the staged work copy (autosave never touches the real file — row 272).
     fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
-        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("autosave: {e}") }
+        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => { st.unpublished = true; st.edited_since_stage = true; } Err(e) => eprintln!("autosave: {e}") }
             if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } self.title(); }
-    /// Save: the staged copy is published over the original by rename; if someone else saved meanwhile, their file is
-    /// merged in first (row 285) and the note on screen is replaced by the merged one.
+    /// Save (rows 285, 293): the note goes to the staged copy, a complete new file is made THERE, and a helper thread
+    /// makes it the document (`share::put`) — the window never waits on the document's place, which may be a share
+    /// that does not answer. If the document is not the one this session knows (someone else saved), their file is
+    /// fetched, checked, merged, and the result is put instead. Nothing is written when the document is missing or
+    /// cannot be reached; the work stays on this machine.
     fn save(&mut self) {
+        if self.saving.is_some() { return }
         self.autosave();
         let Some(st) = self.store.as_mut() else { println!("save: this note has no file"); return };
-        let Some(session) = st.session.as_mut() else { return };
-        let mut raced = false;   // the document's date said "unchanged" but its content did not: merge after all
-        for attempt in 0..3 {
-            // what is at the document's place decides; "missing" and "unreachable" never lead to a write (row 291, UFB's lesson)
-            let probe = session.probe();
-            match &probe {
-                mn_store::staging::Original::Missing => { eprintln!("save: the document is no longer at {} — it was moved or deleted, or its drive or share is not connected. Nothing was written; your changes are kept on this machine.", session.original().display()); break }
-                mn_store::staging::Original::Unreachable(e) => { eprintln!("save: the document cannot be reached ({e}). Nothing was written; your changes are kept on this machine."); break }
-                _ => {}
+        let Some(session) = st.session.as_ref() else { return };
+        if self.saver.busy() { eprintln!("save: an earlier save has not come back from the document's place yet (it may be a share that does not answer). Your changes are kept on this machine."); return }
+        let expect = match session.base_print() { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); return } };
+        self.saving = Some(Saving { attempt: 0, expect, merged: None, started: Instant::now() });
+        self.put_staged();
+    }
+    /// Stages the collection as it stands and sends it to the document's place, expecting `saving.expect` there.
+    fn put_staged(&mut self) {
+        let (Some(st), Some(sv)) = (self.store.as_mut(), self.saving.as_ref()) else { return };
+        let Some(session) = st.session.as_ref() else { self.saving = None; return };
+        let col = &st.col;
+        let staged = match session.stage_publish(|tmp| col.publish(tmp).map_err(std::io::Error::other)) { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); self.saving = None; return } };
+        st.edited_since_stage = false;
+        let (to, expect) = (session.original().to_path_buf(), sv.expect);
+        self.saver.start(move || SaveStep::Put(mn_store::share::put(&staged, &to, expect)));
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// A step of the save came back from the helper thread.
+    fn save_step(&mut self, step: SaveStep) {
+        use mn_store::share::PutError;
+        let (Some(st), Some(sv)) = (self.store.as_mut(), self.saving.as_mut()) else { return };
+        let Some(session) = st.session.as_mut() else { self.saving = None; return };
+        let place = session.original().display().to_string();
+        match step {
+            SaveStep::Put(Ok(_)) => {
+                let to = session.original().to_path_buf();
+                if let Err(e) = session.published(&to) { eprintln!("save: the document was written, but the session could not record it: {e}"); }
+                st.unpublished = st.edited_since_stage || st.edited.is_some();
+                match &sv.merged { Some(m) => println!("saved {place} — merged with a save by someone else: {m}"), None => println!("saved {place}") }
+                self.saving = None;
             }
-            let result = if matches!(probe, mn_store::staging::Original::Changed) || raced {
-                let (theirs, stamp) = match session.fetch_theirs() { Ok(x) => x, Err(e) => { eprintln!("save: {e}"); return } };
-                match st.col.merge_from(session.base().as_deref(), &theirs) {
+            // not the document we know: someone saved (or it is gone) — look at what is there
+            SaveStep::Put(Err(PutError::Raced)) if sv.attempt < 3 => {
+                sv.attempt += 1;
+                let (from, to) = (session.original().to_path_buf(), session.theirs_path());
+                self.saver.start(move || SaveStep::Fetched(mn_store::share::fetch(&from, &to)));
+            }
+            SaveStep::Put(Err(e)) => {
+                let why = match &e { PutError::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied => "its folder cannot be written to".to_string(), PutError::Raced => "it keeps being saved by someone else".to_string(), other => other.to_string() };
+                eprintln!("save: {place} was NOT saved — {why}. Your changes are kept on this machine."); self.saving = None;
+            }
+            SaveStep::Fetched(Err(e)) => {
+                let why = if e.kind() == std::io::ErrorKind::NotFound { "it is no longer there — moved or deleted, or its drive or share is not connected".to_string() } else { format!("it cannot be reached ({e})") };
+                eprintln!("save: {place} was NOT saved — {why}. Nothing was written; your changes are kept on this machine."); self.saving = None;
+            }
+            SaveStep::Fetched(Ok(print)) => {
+                // their file, on this machine now: checked by opening it, merged into the staged copy (row 285), and sent
+                let (base, theirs) = (session.base(), session.theirs_path());
+                match st.col.merge_from(base.as_deref(), &theirs) {
                     Ok(report) => {
-                        println!("save: merged with a save by someone else — {} note(s) changed here; tree {:?}; {} note(s) with reported cases", report.changed.len(), report.tree, report.notes.len());
+                        sv.merged = Some(format!("{} note(s) changed here, {} with cases to look at{}", report.changed.len(), report.notes.len(), if report.tree.is_empty() { String::new() } else { format!(", tree {:?}", report.tree) }));
                         for (id, cases) in &report.notes { println!("  note {id}: {cases:?}"); }
+                        sv.expect = Some(print);
                         for id in &report.changed { self.others.remove(id); }
                         if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); }
                         if report.changed.contains(&st.note) { if let Ok(doc) = st.col.load_note(st.note) { self.ed = Editor::new(doc); self.layout = None; self.flat = None; } }   // the history starts over after a merge
+                        self.put_staged();
                     }
-                    Err(e) => { eprintln!("save: the merge failed, nothing was written: {e}"); return }
+                    Err(e) => { eprintln!("save: {place} was NOT saved — what is there could not be read as a collection ({e}). Nothing was written; your changes are kept on this machine."); self.saving = None; }
                 }
-                let col = &st.col; session.save_merged(stamp, |tmp| col.publish(tmp).map_err(std::io::Error::other))
-            } else { let col = &st.col; session.save(|tmp| col.publish(tmp).map_err(std::io::Error::other)) };
-            match result {
-                Ok(()) => { st.unpublished = false; println!("saved {}", session.original().display()); break }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted && attempt < 2 => { raced = true; continue }   // saved by someone else under us: merge (again)
-                Err(e) => { eprintln!("save: {e} — the file is untouched"); break }
             }
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -260,7 +300,7 @@ impl App {
         if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; }
         self.act(a); taken
     }
-    fn title(&self) { if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{} — minNotes", name, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
+    fn title(&self) { if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{}{} — minNotes", name, if self.saving.is_some() { " — saving…" } else { "" }, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - PAD * s + self.scroll) }
@@ -324,6 +364,9 @@ impl App {
     fn finish(&mut self) {
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
+        // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
+        let t = Instant::now(); while self.saving.is_some() && t.elapsed().as_secs() < 20 { if let Some(step) = self.saver.poll() { self.save_step(step); } else { std::thread::sleep(std::time::Duration::from_millis(5)); } }
+        if self.saving.take().is_some() { self.saver.abandon(); eprintln!("save: no answer from the document's place; your changes are kept on this machine"); }
         // a session with nothing unpublished is cleaned up; one WITH unpublished work is left where it is, to be taken up
         // again at the next open of the file (nothing typed is dropped by closing the window)
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { println!("closed with unsaved changes: they are kept and will be taken up again when the file is next opened"); drop(s) } else { let _ = s.close(); } } }
@@ -404,6 +447,13 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        // a save's steps come back from the helper thread
+        if let Some(step) = self.saver.poll() { self.save_step(step); }
+        if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
+            // no answer from the document's place: stop waiting (the call itself cannot be ended; its late result is dropped)
+            eprintln!("save: the document's place has not answered for 20 seconds. It is treated as unreachable; your changes are kept on this machine. Whether the save went through is not known — it is looked at again at the next Save.");
+            self.saver.abandon(); self.saving = None; self.title();
+        } else { el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + std::time::Duration::from_millis(40))); } }
         // autosave to the staging a second after the last edit
         if let Some(t) = self.store.as_ref().and_then(|s| s.edited) { let due = t + std::time::Duration::from_millis(1000); if Instant::now() >= due { self.autosave(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
         if self.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.seconds); if Instant::now() >= dl { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
@@ -523,7 +573,7 @@ fn main() {
         let (note, title) = match entry { Some(e) => (e.id, e.title), None => { let id = col.create(None, DocKind::Note, "Untitled").expect("new note"); let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); col.save_note(id, &d).expect("new note"); (id, "Untitled".to_string()) } };
         let doc = col.load_note(note).expect("note");
         println!("opened {} — note {:?}: {} blocks; first text: {:?}", path.display(), title, doc.len(), doc.walk().iter().find(|b| b.kind.is_text()).map(|b| b.text.chars().take(60).collect::<String>()).unwrap_or_default());
-        store = Some(Store { session: Some(session), col, note, title, edited: None, unpublished: left.is_some() });
+        store = Some(Store { session: Some(session), col, note, title, edited: None, unpublished: left.is_some(), edited_since_stage: false });
         doc
     });
     let doc = if let Some(d) = opened { d } else { match arg("--v2") {
@@ -544,6 +594,6 @@ fn main() {
         },
     } };
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
