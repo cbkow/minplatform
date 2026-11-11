@@ -5,6 +5,7 @@
 //!   S9_LOG=<file>      where the log goes (default .\s9-uia.log)
 //!   S9_CT=edit         control type Edit instead of Document
 //!   S9_OFF=a,b         withhold: value, scroll, text, events
+//!   S9_TREE=child      the text is a CHILD element of the window (a fragment under a fragment root), as a toolkit's tree has it
 #[cfg(not(windows))]
 fn main() { eprintln!("s9-uia is the Windows leg of the spike S9"); }
 
@@ -12,6 +13,7 @@ fn main() { eprintln!("s9-uia is the Windows leg of the spike S9"); }
 fn main() { win::run(); }
 
 #[cfg(windows)]
+#[allow(non_upper_case_globals)]
 mod win {
     use std::{cell::{Cell, RefCell}, collections::HashMap, io::Write, time::Instant};
     use windows::{core::*, Win32::{Foundation::*, Graphics::Gdi::*, System::{Com::*, DataExchange::*, LibraryLoader::GetModuleHandleW, Memory::*, Ole::*, Variant::*}, UI::{Accessibility::*, HiDpi::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*}}};
@@ -23,7 +25,8 @@ mod win {
     thread_local! {
         static LOG: RefCell<Option<Log>> = const { RefCell::new(None) };
         static DOC: RefCell<Doc> = RefCell::new(Doc::default());
-        static ROOT: RefCell<Option<IRawElementProviderSimple>> = const { RefCell::new(None) };
+        static ROOT: RefCell<Option<IRawElementProviderSimple>> = const { RefCell::new(None) };   // what WM_GETOBJECT hands out
+        static ELEM: RefCell<Option<IRawElementProviderSimple>> = const { RefCell::new(None) };   // the text element (the same object unless S9_TREE=child)
     }
     /// One line per call; a call repeated with the same detail is counted, not re-printed.
     fn log(name: &str, detail: String, always: bool) {
@@ -90,7 +93,7 @@ mod win {
     }
     fn notify(value: bool) {
         if off("events") { return }
-        let root = ROOT.with_borrow(|r| r.clone()); let Some(root) = root else { return };
+        let root = ELEM.with_borrow(|r| r.clone()); let Some(root) = root else { return };
         unsafe { if UiaClientsAreListening().as_bool() { if value { let _ = UiaRaiseAutomationEvent(&root, UIA_Text_TextChangedEventId); } let _ = UiaRaiseAutomationEvent(&root, UIA_Text_TextSelectionChangedEventId); } }
     }
     fn redraw() { let h = DOC.with_borrow(|d| d.hwnd); unsafe { let _ = InvalidateRect(Some(HWND(h as _)), None, false); } }
@@ -106,6 +109,45 @@ mod win {
     fn doubles(v: &[f64]) -> *mut SAFEARRAY { unsafe { let sa = SafeArrayCreateVector(VT_R8, 0, v.len() as u32); for (i, d) in v.iter().enumerate() { let _ = SafeArrayPutElement(sa, &(i as i32), d as *const f64 as *const _); } sa } }
     fn unit_name(u: TextUnit) -> &'static str { ["char", "format", "word", "line", "paragraph", "page", "document"].get(u.0 as usize).copied().unwrap_or("?") }
 
+    fn child_tree() -> bool { std::env::var("S9_TREE").as_deref() == Ok("child") }
+    // S9_TREE=child: the HWND's provider is a bare fragment root, the text a fragment under it
+    #[implement(IRawElementProviderSimple, IRawElementProviderFragment, IRawElementProviderFragmentRoot)]
+    struct Frame;
+    #[implement(IRawElementProviderSimple, IRawElementProviderFragment)]
+    struct Leaf { inner: IRawElementProviderSimple }
+    fn elem_fragment() -> Result<IRawElementProviderFragment> { ELEM.with_borrow(|e| e.clone()).ok_or_else(Error::empty)?.cast() }
+    impl IRawElementProviderSimple_Impl for Frame_Impl {
+        fn ProviderOptions(&self) -> Result<ProviderOptions> { Ok(ProviderOptions_ServerSideProvider | ProviderOptions_UseComThreading) }
+        fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> { log("frame.GetPatternProvider", format!("{}", id.0), false); Err(Error::empty()) }
+        fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> Result<VARIANT> { log("frame.GetPropertyValue", format!("{}", id.0), false); Ok(VARIANT::default()) }
+        fn HostRawElementProvider(&self) -> Result<IRawElementProviderSimple> { unsafe { UiaHostProviderFromHwnd(HWND(DOC.with_borrow(|d| d.hwnd) as _)) } }
+    }
+    impl IRawElementProviderFragment_Impl for Frame_Impl {
+        fn Navigate(&self, dir: NavigateDirection) -> Result<IRawElementProviderFragment> { log("frame.Navigate", format!("{}", dir.0), false); if dir == NavigateDirection_FirstChild || dir == NavigateDirection_LastChild { elem_fragment() } else { Err(Error::empty()) } }
+        fn GetRuntimeId(&self) -> Result<*mut SAFEARRAY> { Ok(std::ptr::null_mut()) }
+        fn BoundingRectangle(&self) -> Result<UiaRect> { Ok(UiaRect::default()) }
+        fn GetEmbeddedFragmentRoots(&self) -> Result<*mut SAFEARRAY> { Ok(std::ptr::null_mut()) }
+        fn SetFocus(&self) -> Result<()> { Ok(()) }
+        fn FragmentRoot(&self) -> Result<IRawElementProviderFragmentRoot> { Ok(self.to_interface()) }
+    }
+    impl IRawElementProviderFragmentRoot_Impl for Frame_Impl {
+        fn ElementProviderFromPoint(&self, _x: f64, _y: f64) -> Result<IRawElementProviderFragment> { log("frame.ElementProviderFromPoint", String::new(), false); elem_fragment() }
+        fn GetFocus(&self) -> Result<IRawElementProviderFragment> { log("frame.GetFocus", String::new(), false); elem_fragment() }
+    }
+    impl IRawElementProviderSimple_Impl for Leaf_Impl {
+        fn ProviderOptions(&self) -> Result<ProviderOptions> { Ok(ProviderOptions_ServerSideProvider | ProviderOptions_UseComThreading) }
+        fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> { unsafe { self.inner.GetPatternProvider(id) } }
+        fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> Result<VARIANT> { unsafe { self.inner.GetPropertyValue(id) } }
+        fn HostRawElementProvider(&self) -> Result<IRawElementProviderSimple> { Err(Error::empty()) }
+    }
+    impl IRawElementProviderFragment_Impl for Leaf_Impl {
+        fn Navigate(&self, dir: NavigateDirection) -> Result<IRawElementProviderFragment> { log("leaf.Navigate", format!("{}", dir.0), false); if dir == NavigateDirection_Parent { ROOT.with_borrow(|r| r.clone()).ok_or_else(Error::empty)?.cast() } else { Err(Error::empty()) } }
+        fn GetRuntimeId(&self) -> Result<*mut SAFEARRAY> { unsafe { let sa = SafeArrayCreateVector(VT_I4, 0, 2); for (i, v) in [UiaAppendRuntimeId as i32, 1].iter().enumerate() { let _ = SafeArrayPutElement(sa, &(i as i32), v as *const i32 as *const _); } Ok(sa) } }
+        fn BoundingRectangle(&self) -> Result<UiaRect> { let (h, w, ht) = DOC.with_borrow(|d| (d.hwnd, d.w, d.h)); let mut p = POINT::default(); unsafe { let _ = ClientToScreen(HWND(h as _), &mut p); } log("leaf.BoundingRectangle", format!("({},{} {w}x{ht})", p.x, p.y), false); Ok(UiaRect { left: p.x as f64, top: p.y as f64, width: w as f64, height: ht as f64 }) }
+        fn GetEmbeddedFragmentRoots(&self) -> Result<*mut SAFEARRAY> { Ok(std::ptr::null_mut()) }
+        fn SetFocus(&self) -> Result<()> { log("leaf.SetFocus", String::new(), true); Ok(()) }
+        fn FragmentRoot(&self) -> Result<IRawElementProviderFragmentRoot> { ROOT.with_borrow(|r| r.clone()).ok_or_else(Error::empty)?.cast() }
+    }
     impl IRawElementProviderSimple_Impl for Root_Impl {
         fn ProviderOptions(&self) -> Result<ProviderOptions> { Ok(ProviderOptions_ServerSideProvider | ProviderOptions_UseComThreading) }
         fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> {
@@ -198,7 +240,7 @@ mod win {
             log("range.GetBoundingRectangles", format!("{{{a},{}}} -> {} rects{}", b - a, v.len() / 4, v.chunks(4).next().map(|r| format!(" ({},{} {}x{})", r[0], r[1], r[2], r[3])).unwrap_or_default()), false);
             Ok(doubles(&v))
         }
-        fn GetEnclosingElement(&self) -> Result<IRawElementProviderSimple> { log("range.GetEnclosingElement", String::new(), false); ROOT.with_borrow(|r| r.clone()).ok_or_else(Error::empty) }
+        fn GetEnclosingElement(&self) -> Result<IRawElementProviderSimple> { log("range.GetEnclosingElement", String::new(), false); ELEM.with_borrow(|r| r.clone()).ok_or_else(Error::empty) }
         fn GetText(&self, max: i32) -> Result<BSTR> {
             let (a, b) = (self.a.get(), self.b.get()); let s = DOC.with_borrow(|d| d.s(a, if max >= 0 { b.min(a + max as usize) } else { b }));
             log("range.GetText", format!("{{{a},{}}} max {max} {s:?}", b - a), false); Ok(BSTR::from(s))
@@ -260,7 +302,9 @@ mod win {
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_SIZE => { DOC.with_borrow_mut(|d| { d.w = (lp.0 & 0xffff) as i32; d.h = ((lp.0 >> 16) & 0xffff) as i32; if d.cw > 0 { d.relayout() } }); log("RESIZE", String::new(), true); LRESULT(0) }
-            WM_SETFOCUS | WM_KILLFOCUS => { log(if msg == WM_SETFOCUS { "FOCUS" } else { "BLUR" }, String::new(), true); redraw(); LRESULT(0) }
+            WM_SETFOCUS | WM_KILLFOCUS => { log(if msg == WM_SETFOCUS { "FOCUS" } else { "BLUR" }, String::new(), true);
+                if msg == WM_SETFOCUS && child_tree() { let e = ELEM.with_borrow(|e| e.clone()); if let Some(e) = e { let _ = UiaRaiseAutomationEvent(&e, UIA_AutomationFocusChangedEventId); } }
+                redraw(); LRESULT(0) }
             WM_MOUSEWHEEL => { let dz = ((wp.0 >> 16) & 0xffff) as i16 as i32; let s = DOC.with_borrow_mut(|d| { let max = (d.lines.len() as i32 * d.lh + 2 * d.pad - d.h).max(0); d.scroll = (d.scroll - dz * d.lh * 3 / 120).clamp(0, max); d.scroll }); log("SCROLL", format!("{s}"), false); redraw(); LRESULT(0) }
             WM_LBUTTONDOWN => { let _ = SetFocus(Some(hwnd)); let (x, y) = ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32); let shift = wp.0 & 4 != 0; let o = DOC.with_borrow_mut(|d| { let o = d.hit(x, y); d.caret = o; if !shift { d.anchor = o } o }); log("CLICK", format!("{o}"), true); notify(false); redraw(); LRESULT(0) }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -322,9 +366,10 @@ mod win {
         let hdc = GetDC(Some(hwnd)); let old = SelectObject(hdc, font.into()); let mut tm = TEXTMETRICW::default(); let _ = GetTextMetricsW(hdc, &mut tm); SelectObject(hdc, old); ReleaseDC(Some(hwnd), hdc);
         let mut rc = RECT::default(); let _ = GetClientRect(hwnd, &mut rc);
         DOC.with_borrow_mut(|d| { d.hwnd = hwnd.0 as isize; d.font = font.0 as isize; d.cw = tm.tmAveCharWidth; d.lh = tm.tmHeight + tm.tmExternalLeading + 4; d.pad = 24 * dpi / 96; d.w = rc.right; d.h = rc.bottom; d.relayout(); });
-        ROOT.set(Some(Root.into()));
+        let text_el: IRawElementProviderSimple = Root.into();
+        if child_tree() { ELEM.set(Some(Leaf { inner: text_el }.into())); ROOT.set(Some(Frame.into())); } else { ELEM.set(Some(text_el.clone())); ROOT.set(Some(text_el)); }
         let (n, cw, lh) = DOC.with_borrow(|d| (d.len(), d.cw, d.lh));
-        log("START", format!("{n} UTF-16 units; dpi {dpi}; cell {cw}x{lh}; control type {}; withheld {:?}", if std::env::var("S9_CT").as_deref() == Ok("edit") { "Edit" } else { "Document" }, std::env::var("S9_OFF").unwrap_or_default()), true);
+        log("START", format!("{n} UTF-16 units; dpi {dpi}; cell {cw}x{lh}; control type {}; tree {}; withheld {:?}", if std::env::var("S9_CT").as_deref() == Ok("edit") { "Edit" } else { "Document" }, if child_tree() { "child" } else { "window" }, std::env::var("S9_OFF").unwrap_or_default()), true);
         if let Some(s) = arg("--seconds").and_then(|v| v.parse::<u32>().ok()) { SetTimer(Some(hwnd), 1, s * 1000, None); }
         let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetForegroundWindow(hwnd); let _ = SetFocus(Some(hwnd));
         let mut msg = MSG::default();
