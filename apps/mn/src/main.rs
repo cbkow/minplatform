@@ -34,6 +34,7 @@ mod paint;
 mod sidebar;
 mod toolbar;
 mod footer;
+mod colours;
 #[cfg(target_os = "macos")]
 mod text_element;
 
@@ -85,7 +86,10 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { /// the tree's context menu and the row it was opened on (None: the empty part of the sidebar)
+struct App { /// the colour palette (row 301) and the last Background colour (Shift+Cmd+H applies it)
+    pal: colours::Colours, last_bg: String, /// MN_PALETTE=type|background|picker: the palette is opened by the app itself, for a screenshot
+    show_pal: Option<String>,
+    /// the tree's context menu and the row it was opened on (None: the empty part of the sidebar)
     ctx: min_ui::menu::Menu, ctx_for: Option<BlockId>,
     /// commands to run at the loop's next idle step
     later: Vec<menu::Cmd>, foot: footer::Footer, /// the footer's height, physical px
@@ -106,7 +110,7 @@ fn sample() -> Doc {
     fn mark(d: &mut Doc, id: BlockId, marks: &[(&str, Mark)]) { let text = d.get(id).unwrap().text.clone(); let mut s = Spans::new(); for (word, m) in marks { if let Some(at) = text.find(word) { s.put(at, at + word.len(), m.clone()); } } d.set_spans(id, s).unwrap(); }
     add(&mut d, None, Kind::Heading { level: 1 }, "Review notes — second pass");
     let p = add(&mut d, None, Kind::Paragraph, "The grade on the wide shot holds up well against the reference. Bold, italic, inline code, a link, struck text, underlined text, a colour and a highlight all sit in this paragraph so that each can be seen once in running text that is long enough to wrap.");
-    mark(&mut d, p, &[("Bold", Mark::Bold), ("italic", Mark::Italic), ("inline code", Mark::Code), ("a link", Mark::Link("https://example.com".into())), ("struck text", Mark::Strike), ("underlined text", Mark::Underline), ("a colour", Mark::Color("#F2994A".into())), ("a highlight", Mark::Highlight("#5B4B00".into()))]);
+    mark(&mut d, p, &[("Bold", Mark::Bold), ("italic", Mark::Italic), ("inline code", Mark::Code), ("a link", Mark::Link("https://example.com".into())), ("struck text", Mark::Strike), ("underlined text", Mark::Underline), ("a colour", Mark::Color("orange".into())), ("a highlight", Mark::Highlight("yellow".into()))]);
     add(&mut d, None, Kind::Heading { level: 2 }, "What is left");
     add(&mut d, None, Kind::Bullet { depth: 0 }, "Titles sit inside the safe area on every format");
     add(&mut d, None, Kind::Bullet { depth: 1 }, "except the vertical cut, which needs a second look");
@@ -157,7 +161,7 @@ impl App {
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -205,6 +209,7 @@ impl App {
             sb.paint_tooltip(scene, &mut g.fonts, view, now); }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
+        self.pal.paint(scene, &mut g.fonts, paint::page(), now);
         if self.foot.tick(now) { g.window.request_redraw(); }
         if self.bar.tick(now) { g.window.request_redraw(); }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
@@ -384,6 +389,27 @@ impl App {
         self.saving = Some(Saving { attempt: 0, expect, to: Some(path), merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
     }
+    /// A chip of the toolbar was pressed: the palette opens under it for that role.
+    fn open_colours(&mut self, role: mn_doc::MarkKind, tool: toolbar::Tool) {
+        let Some(g) = self.gpu.as_mut() else { return };
+        let st = self.ed.state(); let current = if role == mn_doc::MarkKind::Color { st.color } else { st.highlight };
+        let customs = self.store.as_ref().map(|x| x.col.palette()).unwrap_or_default();
+        let (w, h) = g.presenter.size();
+        self.pal.open(role, self.bar.rect_of(tool), customs, current, &mut g.fonts, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), g.window.scale_factor());
+    }
+    /// What the palette answered: a colour for its role, a colour to add to the collection, one to remove from it.
+    fn colour_out(&mut self, out: colours::Out) {
+        use colours::Out as O;
+        let now = self.now_ms(); let role = self.pal.role;
+        let pick = |me: &mut App, v: Option<String>| { me.pal.close(); if let (mn_doc::MarkKind::Highlight, Some(c)) = (role, &v) { me.last_bg = c.clone(); }
+            let d = me.ed.set_colour(role, v.as_deref(), now).unwrap_or(Dirty::Nothing); me.apply(d); };
+        match out {
+            O::None | O::Redraw => {}
+            O::Pick(v) => pick(self, v),
+            O::Add(hex) => { if let Some(st) = self.store.as_mut() { match st.col.palette_add(&hex) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("palette: {e}") } } pick(self, Some(hex)); }
+            O::Remove(hex) => if let (Some(st), Some(g)) = (self.store.as_mut(), self.gpu.as_mut()) { match st.col.palette_remove(&hex) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("palette: {e}") } self.pal.set_customs(st.col.palette(), &mut g.fonts); },
+        }
+    }
     /// A right press: over the tree it opens the context menu (row 300) on the row under it, which is selected.
     fn context(&mut self, x: f64, y: f64) {
         if self.confirm.is_some() { return }
@@ -417,7 +443,7 @@ impl App {
         let now = self.now_ms();
         let block = |me: &mut App, b: B| { let d = me.ed.set_block_kind(b, now).unwrap_or(Dirty::Nothing); me.apply(d); };
         match tool {
-            T::Bold => self.menu_cmd(M::Bold), T::Italic => self.menu_cmd(M::Italic), T::Underline => self.menu_cmd(M::Underline), T::Strike => self.menu_cmd(M::Strike), T::Code => self.menu_cmd(M::Code), T::Highlight => self.menu_cmd(M::Highlight), T::ClearFormat => self.menu_cmd(M::ClearFormat),
+            T::Bold => self.menu_cmd(M::Bold), T::Italic => self.menu_cmd(M::Italic), T::Underline => self.menu_cmd(M::Underline), T::Strike => self.menu_cmd(M::Strike), T::Code => self.menu_cmd(M::Code), T::Highlight => self.open_colours(mn_doc::MarkKind::Highlight, tool), T::Color => self.open_colours(mn_doc::MarkKind::Color, tool), T::ClearFormat => self.menu_cmd(M::ClearFormat),
             T::Paragraph => block(self, B::Paragraph), T::Bullet => block(self, B::Bullet), T::Numbered => block(self, B::Numbered), T::Task => block(self, B::Task), T::Quote => block(self, B::Quote), T::CodeBlock => block(self, B::Code),
             // Heading steps through the first three levels and back to a paragraph
             T::Heading => { let next = match self.ed.state().kind { Some(Kind::Heading { level }) if level < 3 => B::Heading(level + 1), Some(Kind::Heading { .. }) => B::Paragraph, _ => B::Heading(1) }; block(self, next) }
@@ -566,6 +592,8 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
+        // the colour palette: while it is open every event is its own
+        if self.pal.is_open() { if let Some(g) = self.gpu.as_mut() { let out = self.pal.event(&e, &mut g.fonts, now); self.colour_out(out); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // the tree's context menu is over everything but a dialog: while it is open the event is its own
         if self.ctx.is_open() { let (chosen, _, _) = self.ctx.event(&e); if let Some(i) = chosen { self.ctx_pick(i); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // no collection: the page's two buttons
@@ -602,6 +630,8 @@ impl App {
                 Key::Named(NamedKey::ArrowLeft) => K::Named(N::Left), Key::Named(NamedKey::ArrowRight) => K::Named(N::Right), Key::Named(NamedKey::ArrowUp) => K::Named(N::Up), Key::Named(NamedKey::ArrowDown) => K::Named(N::Down), Key::Named(NamedKey::Home) => K::Named(N::Home), Key::Named(NamedKey::End) => K::Named(N::End),
                 Key::Character(c) => K::Char(c.to_string()), _ => K::Char(String::new()) };
             min_ui::KeyEvent { key: k, text: text.map(|t| t.to_string()), shift, cmd } };
+        // the palette: Escape closes it; the picker's hex field takes the keys while it has them; nothing reaches the note
+        if self.pal.is_open() { if let Some(g) = self.gpu.as_mut() { if matches!(key, Key::Named(NamedKey::Escape)) { self.pal.close(); } else if self.pal.typing() { self.pal.key(&ui_key(), &mut g.fonts); } g.window.request_redraw(); } return }
         if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
@@ -634,7 +664,7 @@ impl App {
             Key::Named(NamedKey::Tab) => match self.ed.indent(shift, now).unwrap_or(None) { Some(d) => d, None => return },
             // formatting by command (row 289; the Qt app's keys): with a selection it toggles, with a caret it arms
             Key::Character(c) if cmd && shift && c.to_lowercase() == "x" => self.ed.toggle_mark(Mark::Strike, now).unwrap_or(Dirty::Nothing),
-            Key::Character(c) if cmd && shift && c.to_lowercase() == "h" => self.ed.toggle_mark(Mark::Highlight("#5B4B00".into()), now).unwrap_or(Dirty::Nothing),
+            Key::Character(c) if cmd && shift && c.to_lowercase() == "h" => self.ed.toggle_mark(Mark::Highlight(self.last_bg.clone()), now).unwrap_or(Dirty::Nothing),
             Key::Character(c) if cmd && matches!(c.to_lowercase().as_str(), "b" | "i" | "u" | "e" | "\\") => match c.to_lowercase().as_str() {
                 "b" => self.ed.toggle_mark(Mark::Bold, now), "i" => self.ed.toggle_mark(Mark::Italic, now), "u" => self.ed.toggle_mark(Mark::Underline, now), "e" => self.ed.toggle_mark(Mark::Code, now), _ => self.ed.clear_formatting(now) }.unwrap_or(Dirty::Nothing),
             Key::Character(c) if cmd => match c.to_lowercase().as_str() {
@@ -738,6 +768,10 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        if self.show_pal.is_some() && self.bar.rect_of(toolbar::Tool::Color).width() > 1.0 { let what = self.show_pal.take().unwrap();
+            if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
+            if what == "picker" { if let Some(g) = self.gpu.as_mut() { self.pal.show_picker(&mut g.fonts); } }
+            if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
@@ -785,7 +819,7 @@ impl ApplicationHandler for App {
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Secondary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Secondary } };
-                if self.ctx.is_open() { self.chrome_pointer(e); } else if state == ElementState::Pressed { self.context(position.x, position.y); }
+                if self.ctx.is_open() || self.pal.is_open() { self.chrome_pointer(e); } else if state == ElementState::Pressed { self.context(position.x, position.y); }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
@@ -925,7 +959,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }

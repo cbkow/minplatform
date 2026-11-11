@@ -85,6 +85,16 @@ pub fn hex(s: &str) -> Option<Color> {
     match h.len() { 3 => Some(Color::from_rgb8((((n >> 8) & 15) * 17) as u8, (((n >> 4) & 15) * 17) as u8, ((n & 15) * 17) as u8)), 6 => Some(Color::from_rgb8((n >> 16) as u8, (n >> 8) as u8, n as u8)), 8 => Some(Color::from_rgba8((n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, n as u8)), _ => None }
 }
 
+/// The named colours (canon row 301): a note stores the NAME, the theme says what it looks like. These are the dark
+/// theme's, taken from the Qt app's presets so that its users find their colours again.
+pub const NAMED: [(&str, &str); 8] = [("red", "#FF5768"), ("orange", "#FFA23A"), ("yellow", "#FFEC59"), ("green", "#86E36B"), ("teal", "#00CDAC"), ("blue", "#00A5E3"), ("purple", "#9D8DF1"), ("pink", "#FF60A8")];
+/// A stored colour of either spelling: a name of [`NAMED`] or a hex.
+pub fn colour(s: &str) -> Option<Color> { NAMED.iter().find(|(n, _)| *n == s).and_then(|(_, h)| hex(h)).or_else(|| hex(s)) }
+/// A colour BEHIND text (a highlight, a fill) is drawn as a tint — this much of it over the page — so that the text
+/// on it is drawn exactly as it would be without it.
+pub const TINT: f32 = 0.35;
+pub fn tint(s: &str) -> Option<Color> { colour(s).map(|c| c.with_alpha(TINT)) }
+
 fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>)> {
     let v: serde_json::Value = serde_json::from_str(descriptor).ok()?;
     let (w, h) = (v.get("w")?.as_f64()? as f32, v.get("h")?.as_f64()? as f32);
@@ -183,7 +193,7 @@ impl NoteLayout {
                 Mark::Strike => builder.push(StyleProperty::Strikethrough(true), r),
                 Mark::Underline => builder.push(StyleProperty::Underline(true), r),
                 Mark::Link(_) => { builder.push(StyleProperty::Underline(true), r.clone()); builder.push(StyleProperty::Brush(Brush::Solid(st.link)), r) }
-                Mark::Color(c) => { if let Some(c) = hex(c) { builder.push(StyleProperty::Brush(Brush::Solid(c)), r) } }
+                Mark::Color(c) => { if let Some(c) = colour(c) { builder.push(StyleProperty::Brush(Brush::Solid(c)), r) } }
                 // a highlight and a chip are drawn behind the text by the painter: they move nothing
                 Mark::Highlight(_) | Mark::Choice(_) => {}
             }

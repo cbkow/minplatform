@@ -26,7 +26,8 @@ impl BlockType {
 }
 /// What is "on" where the caret or the selection is.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct State { pub kind: Option<Kind>, pub marks: Vec<mn_doc::MarkKind>, pub can_undo: bool, pub can_redo: bool }
+pub struct State { pub kind: Option<Kind>, pub marks: Vec<mn_doc::MarkKind>, pub can_undo: bool, pub can_redo: bool, /// the text's colour and the colour behind it where typing would go (a name or a hex; None: the default)
+    pub color: Option<String>, pub highlight: Option<String> }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move { Left, Right, Up, Down, LineStart, LineEnd, WordLeft, WordRight, DocStart, DocEnd }
@@ -305,6 +306,23 @@ impl Editor {
         let all = !ranges.is_empty() && ranges.iter().all(|(id, s, e)| self.doc.get(*id).is_some_and(|blk| blk.spans.covers(*s, *e, &mark)));
         self.format(ranges, |sp, s, e| if all { sp.remove(s, e, mark.kind()) } else { sp.put(s, e, mark.clone()) }, now_ms)
     }
+    /// A colour for the text (`MarkKind::Color`) or behind it (`MarkKind::Highlight`): `Some` sets it, `None` takes
+    /// it away (the role's default). With a selection it goes over all of it; with a caret it is armed for what is
+    /// typed next. The other role is never touched.
+    pub fn set_colour(&mut self, kind: mn_doc::MarkKind, value: Option<&str>, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let make = |v: &str| if kind == mn_doc::MarkKind::Color { Mark::Color(v.to_string()) } else { Mark::Highlight(v.to_string()) };
+        let Some((a, z)) = self.ordered() else { return Ok(Dirty::Nothing) };
+        if a == z { self.armed.retain(|(m, _)| m.kind() != kind); self.armed.push(match value { Some(v) => (make(v), true), None => (make(""), false) }); return Ok(Dirty::Nothing) }
+        let ranges = self.text_ranges(a, z);
+        self.format(ranges, |sp, s, e| match value { Some(v) => sp.put(s, e, make(v)), None => sp.remove(s, e, kind) }, now_ms)
+    }
+    /// The colour in effect for a role where typing would go (a caret: armed, else the run it is in; a selection: at its start).
+    fn colour_at(&self, kind: mn_doc::MarkKind) -> Option<String> {
+        let (a, z) = self.ordered()?;
+        if a == z { if let Some((m, on)) = self.armed.iter().find(|(m, _)| m.kind() == kind) { return if *on { m.name().1.map(str::to_string) } else { None } } }
+        let blk = self.doc.get(a.block)?;
+        blk.spans.as_slice().iter().find(|sp| sp.mark.kind() == kind && if a == z { sp.start < a.at && sp.end >= a.at } else { sp.start <= a.at && sp.end > a.at }).and_then(|sp| sp.mark.name().1.map(str::to_string))
+    }
     /// Cmd+\: every mark but choice chips leaves the selection.
     pub fn clear_formatting(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {
         let Some((a, z)) = self.ordered() else { return Ok(Dirty::Nothing) }; if a == z { self.armed.clear(); return Ok(Dirty::Nothing) }
@@ -358,6 +376,7 @@ impl Editor {
     pub fn state(&self) -> State {
         let mut st = State { can_undo: self.history.can_undo(), can_redo: self.history.can_redo(), ..State::default() };
         let Some((a, z)) = self.ordered() else { return st };
+        st.color = self.colour_at(mn_doc::MarkKind::Color); st.highlight = self.colour_at(mn_doc::MarkKind::Highlight);
         st.kind = self.doc.get(self.sel.unwrap().focus.block).map(|b| b.kind.clone());
         let kinds = [mn_doc::MarkKind::Bold, mn_doc::MarkKind::Italic, mn_doc::MarkKind::Underline, mn_doc::MarkKind::Strike, mn_doc::MarkKind::Code, mn_doc::MarkKind::Highlight];
         if a == z {
@@ -660,5 +679,23 @@ mod tests {
         // what follows is not text (the Columns block), so a paragraph is made for the caret too
         assert_eq!((kids.len(), t.e.doc.get(kids[at + 1]).unwrap().kind.clone(), t.e.doc.get(kids[at + 2]).unwrap().kind.clone(), t.e.selection().unwrap().focus.block), (n + 2, Kind::Divider, Kind::Paragraph, kids[at + 2]));
         assert!(t.e.state().can_undo);
+    }
+    #[test]
+    fn a_colour_is_set_per_role_and_default_takes_only_that_role_away() {
+        use mn_doc::{Mark, MarkKind};
+        let mut d = Doc::new(); let b = BlockId::new(); d.insert(None, 0, b, Kind::Paragraph, "one two three").unwrap();
+        let mut e = Editor::new(d);
+        e.set_selection(Some(Selection { anchor: Pos { block: b, at: 4 }, focus: Pos { block: b, at: 7 } }));
+        e.set_colour(MarkKind::Color, Some("red"), 1).unwrap(); e.set_colour(MarkKind::Highlight, Some("#112233"), 2000).unwrap();
+        let has = |e: &Editor, m: Mark| e.doc.get(b).unwrap().spans.covers(4, 7, &m);
+        assert!(has(&e, Mark::Color("red".into())) && has(&e, Mark::Highlight("#112233".into())));
+        let st = e.state(); assert_eq!((st.color.as_deref(), st.highlight.as_deref()), (Some("red"), Some("#112233")));
+        // Default on one role leaves the other
+        e.set_colour(MarkKind::Highlight, None, 4000).unwrap();
+        assert!(has(&e, Mark::Color("red".into())) && !e.doc.get(b).unwrap().spans.as_slice().iter().any(|s| s.mark.kind() == MarkKind::Highlight));
+        // a caret: armed for what is typed, and reported before anything is typed
+        e.set_selection(Some(Selection { anchor: Pos { block: b, at: 13 }, focus: Pos { block: b, at: 13 } }));
+        e.set_colour(MarkKind::Color, Some("blue"), 6000).unwrap(); assert_eq!(e.state().color.as_deref(), Some("blue"));
+        e.insert("!", 6001).unwrap(); assert!(e.doc.get(b).unwrap().spans.covers(13, 14, &Mark::Color("blue".into())));
     }
 }

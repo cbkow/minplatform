@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS note_blocks (
   created INTEGER, modified INTEGER
 );
 CREATE INDEX IF NOT EXISTS note_blocks_tree ON note_blocks(doc, parent, rank);
+CREATE TABLE IF NOT EXISTS palette (color TEXT PRIMARY KEY, pos INTEGER NOT NULL);
 ";
 
 #[derive(Debug)]
@@ -141,6 +142,15 @@ impl Collection {
         Ok(t.unwrap_or_default().lines().next().unwrap_or("").trim().chars().take(80).collect())
     }
     pub fn rename(&self, id: BlockId, title: &str) -> Result<(), Error> { self.db.execute("UPDATE documents SET title = ?2, modified = ?3 WHERE id = ?1", params![id.to_string(), title, now_ms()])?; Ok(()) }
+    /// The collection's custom colours (canon row 301), in the order they were added: "#rrggbb". A file made before
+    /// the table existed (or opened read-only without it) has none.
+    pub fn palette(&self) -> Vec<String> {
+        let Ok(mut s) = self.db.prepare("SELECT color FROM palette ORDER BY pos, rowid") else { return vec![] };
+        s.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(Result::ok).collect()).unwrap_or_default()
+    }
+    /// Adds a custom colour at the end (one already there stays where it is).
+    pub fn palette_add(&self, color: &str) -> Result<(), Error> { self.db.execute("INSERT OR IGNORE INTO palette (color, pos) VALUES (?1, (SELECT COALESCE(MAX(pos), 0) + 1 FROM palette))", [color.to_lowercase()])?; Ok(()) }
+    pub fn palette_remove(&self, color: &str) -> Result<(), Error> { self.db.execute("DELETE FROM palette WHERE color = ?1", [color.to_lowercase()])?; Ok(()) }
     /// Removes an entry with everything under it.
     pub fn remove(&self, id: BlockId) -> Result<(), Error> { self.db.execute("DELETE FROM documents WHERE id = ?1", [id.to_string()])?; Ok(()) }
 
@@ -277,6 +287,9 @@ impl Collection {
         }
         tx.commit()?;
         for (id, doc) in std::mem::take(&mut self.pending) { self.save_note(id, &doc)?; }
+        // custom colours: theirs are added to mine (a colour removed on one side comes back if the other still has it —
+        // a swatch is cheap to remove again, a lost one is not cheap to find)
+        for c in theirs.palette() { self.palette_add(&c)?; }
         report.tree.sort_by_key(|n| format!("{n:?}")); report.tree.dedup(); report.changed.sort();
         Ok(report)
     }
@@ -477,5 +490,17 @@ mod tests {
         let e = mine.save_merged(old_print, |tmp| my.publish(tmp).map_err(std::io::Error::other)).unwrap_err();
         assert_eq!((e.kind(), std::fs::read_dir(d.join("share")).unwrap().count(), std::fs::read(&file).unwrap()), (std::io::ErrorKind::Interrupted, 1, bytes));
         drop((c, my, their)); s.close().unwrap(); mine.close().unwrap(); other.close().unwrap(); std::fs::remove_dir_all(d).unwrap();
+    }
+    #[test]
+    fn the_palette_keeps_its_order_ignores_repeats_and_is_empty_without_its_table() {
+        let dir = std::env::temp_dir().join(format!("mn-pal-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.mnd"); let _ = std::fs::remove_file(&p);
+        let c = Collection::open(&p).unwrap();
+        assert!(c.palette().is_empty());
+        c.palette_add("#AA0000").unwrap(); c.palette_add("#00bb00").unwrap(); c.palette_add("#aa0000").unwrap();
+        assert_eq!(c.palette(), vec!["#aa0000", "#00bb00"]);
+        c.palette_remove("#AA0000").unwrap(); assert_eq!(c.palette(), vec!["#00bb00"]);
+        c.db.execute_batch("DROP TABLE palette;").unwrap(); assert!(c.palette().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

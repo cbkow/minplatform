@@ -13,12 +13,13 @@ use vello::Scene;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Paragraph, Heading, Bullet, Numbered, Task, Quote, CodeBlock, Outdent, Indent,
-    Bold, Italic, Underline, Strike, Code, Highlight, Color, Link, ClearFormat,
+    Bold, Italic, Underline, Strike, Code, /// the two colour chips: Type (the text's colour) and Background (behind it)
+    Color, Highlight, Link, ClearFormat,
     Table, Columns, Divider, Image, File, Chip,
 }
 impl Tool {
     /// Built: the button does something today.
-    fn built(self) -> bool { !matches!(self, Tool::Color | Tool::Link | Tool::Table | Tool::Columns | Tool::Image | Tool::File | Tool::Chip) }
+    fn built(self) -> bool { !matches!(self, Tool::Link | Tool::Table | Tool::Columns | Tool::Image | Tool::File | Tool::Chip) }
     /// (icon, a label when there is no icon, the command's name, its key).
     fn face(self) -> (&'static str, Option<&'static str>, &'static str, &'static str) {
         match self {
@@ -26,7 +27,7 @@ impl Tool {
             Tool::Task => ("list-checks", None, "Task list", ""), Tool::Quote => ("quotes", None, "Quote", ""), Tool::CodeBlock => ("code-block", None, "Code block", ""), Tool::Outdent => ("text-outdent", None, "Outdent", "Shift+Tab"), Tool::Indent => ("text-indent", None, "Indent", "Tab"),
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
-            Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Highlight", "Shift+H"), Tool::Color => ("palette", None, "Text colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
+            Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("text-a-underline", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
             Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture or video", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
@@ -44,18 +45,19 @@ impl Tool {
 pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool }
 
 pub struct Toolbar { groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
-    right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64 }
+    right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64, /// the colours in effect at the caret for the two chips (Type, Background)
+    chips: [Option<peniko::Color>; 2] }
 
 impl Toolbar {
     pub fn new() -> Toolbar {
         use Tool::*;
         let sets: Vec<Vec<Tool>> = vec![
             vec![Paragraph, Heading, Bullet, Numbered, Task, Quote, CodeBlock], vec![Outdent, Indent],
-            vec![Bold, Italic, Underline, Strike, Code, Highlight, Color, Link, ClearFormat],
+            vec![Bold, Italic, Underline, Strike, Code, Color, Highlight, Link, ClearFormat],
             vec![Table, Columns, Divider, Image, File, Chip],
         ];
         let groups = sets.iter().map(|set| ActionGroup::new(set.iter().map(|tool| { let (icon, label, _, _) = tool.face(); let mut b = ActionButton::new(icon, &tool.tooltip()).enabled(tool.built()); b.label = label.map(|l| l.to_string()); b }).collect()).compact()).collect();
-        Toolbar { groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0 }
+        Toolbar { groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -80,6 +82,7 @@ impl Toolbar {
     }
     /// Lights and enables the buttons from where the caret is and what the collection's state is.
     pub fn sync(&mut self, s: &Shown) {
+        self.chips = [s.state.color.as_deref().and_then(mn_layout::colour), s.state.highlight.as_deref().and_then(mn_layout::colour)];
         for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
             let k = s.state.kind.as_ref(); let mark = |m: MarkKind| s.state.marks.contains(&m);
             let (enabled, selected) = match tool {
@@ -89,13 +92,15 @@ impl Toolbar {
                 Tool::Quote => (s.has_note, matches!(k, Some(Kind::Quote))), Tool::CodeBlock => (s.has_note, matches!(k, Some(Kind::Code { .. }))),
                 Tool::Outdent | Tool::Indent => (s.has_note && matches!(k, Some(Kind::Bullet { .. } | Kind::Numbered { .. } | Kind::Task { .. })), false),
                 Tool::Bold => (s.has_note, mark(MarkKind::Bold)), Tool::Italic => (s.has_note, mark(MarkKind::Italic)), Tool::Underline => (s.has_note, mark(MarkKind::Underline)), Tool::Strike => (s.has_note, mark(MarkKind::Strike)),
-                Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Highlight => (s.has_note, mark(MarkKind::Highlight)),
+                Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Color | Tool::Highlight => (s.has_note, false),
                 Tool::ClearFormat | Tool::Divider => (s.has_note, false),
                 _ => (false, false),
             };
             b.enabled = enabled && tool.built(); b.selected = selected && b.enabled;
         } }
     }
+    /// Where a tool's button is (the anchor of what it opens).
+    pub fn rect_of(&self, tool: Tool) -> Rect { self.groups.iter().zip(&self.tools).find_map(|(g, set)| set.iter().position(|x| *x == tool).map(|i| g.buttons[i].rect)).unwrap_or(Rect::ZERO) }
     pub fn hit(&self, x: f64, y: f64) -> bool { !self.hidden && self.rect.contains(kurbo::Point::new(x, y)) }
     /// A pointer event: the tools pressed, and whether the event was the band's.
     pub fn event(&mut self, e: &Event, now: Instant) -> (Vec<Tool>, bool) {
@@ -114,6 +119,13 @@ impl Toolbar {
         paint::rect(scene, self.rect, t::BAND_BACKGROUND_COLOR);
         paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y1 - t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_COLOR);
         for g in &self.groups { g.paint(scene, fonts, self.scale, now); }
+        // a chip carries its role's colour as a bar under the glyph (none set: a quiet line)
+        for (tool, c) in [(Tool::Color, self.chips[0]), (Tool::Highlight, self.chips[1])] {
+            let r = self.rect_of(tool); if r.width() < 1.0 { continue }
+            let (w, h) = (14.0 * self.scale, 3.0 * self.scale);
+            let bar = kurbo::RoundedRect::new(r.center().x - w / 2.0, r.y1 - h - 2.0 * self.scale, r.center().x + w / 2.0, r.y1 - 2.0 * self.scale, h / 2.0);
+            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, c.unwrap_or(paint::color(t::DIVIDER_COLOR)), None, &bar);
+        }
     }
     pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, self.scale, bounds, now); }
 }

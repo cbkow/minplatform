@@ -94,7 +94,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     let rects = layout.range_rects(doc, b.id, sp.start, sp.end);
                     for q in rects { let q = q + kurbo::Vec2::new(ox, oy);
                         match &sp.mark {
-                            Mark::Highlight(c) => fill(scene, q, hex(c).unwrap_or(Color::from_rgb8(0x66, 0x55, 0x00))),
+                            Mark::Highlight(c) => { if let Some(c) = mn_layout::tint(c) { fill(scene, q, c) } }
                             Mark::Choice(payload) => { let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default(); let sel = v.get("v").and_then(|x| x.as_str()).unwrap_or("");
                                 let c = v.get("o").and_then(|o| o.as_array()).and_then(|o| o.iter().find(|x| x.get("id").and_then(|i| i.as_str()) == Some(sel))).and_then(|o| o.get("c")).and_then(|c| c.as_str()).and_then(hex).unwrap_or(header());
                                 scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &RoundedRect::from_rect(q.inflate(5.0 * s, 0.0), 9.0 * s)); }
