@@ -379,5 +379,34 @@ corrected by Grammarly, and the write path is again ordinary typing after a sele
 AccessKit's own Windows adapter (step 5a) is enough is the open question — if it is, Windows needs no hand-written
 element at all.
 
+### Step 5c, why Grammarly ignores the AccessKit window on Windows (hands-off, the box, 2026-11-11)
+The user clicked into the AccessKit window (step 5a's stack) a second time: "grammarly didn't show up".
+**Attach test without eyes:** the reference window opened by a task, a focus change 8 s later (the outside probe's
+start causes one), then the log is searched for `GetBoundingRectangles` on the ranges Grammarly flags. One run each.
+| Shape of the reference window (`S9_CT`, `S9_OFF`, `S9_TREE`) | Geometry asked for flagged ranges |
+|---|---|
+| Document, Text + Value + Scroll (control, twice) | yes |
+| control type Edit | yes |
+| no Scroll pattern | yes |
+| no Value pattern | yes |
+| Edit, no Scroll | yes |
+| no change / selection events | yes |
+| the text as a CHILD fragment of the window (as a toolkit's tree) — also with Edit and no Scroll | yes |
+| no class name, no automation id, framework id "AccessKit" | yes |
+| **`ITextProvider::GetVisibleRanges` returns no range** | **no** |
+| everything AccessKit's tree differs in at once (child, Edit, no Scroll, no ids, no visible range) | no |
+
+**Grammarly for Windows does not engage with a text element that reports no visible range.** AccessKit's Windows
+adapter (accesskit_windows 0.35.2, `node.rs`) answers `GetVisibleRanges` with a null array on purpose ("TBD: do we
+need this?"). That is the one difference that matters among those tested.
+The same walk Grammarly makes, replayed from outside on both windows (`s9-walk.ps1`): paragraphs and character moves
+agree; the AccessKit window differs in the visible range (none) and in `Select()` — the selection read back right
+after is empty there (the scaffold applies AccessKit's action request on its next event-loop turn, or not at all; not
+separated). The sample file is checked out with CR LF on the box and the stack passes the CRs through — ours.
+
+**Reading:** on Windows AccessKit is ONE function short of being found by Grammarly; whether its text ranges then
+carry a correction (selection set from outside, then typed characters) is untested. The choice for Windows is a
+patch to accesskit_windows (ours to carry or to send upstream) or the hand-written provider of step 5b.
+
 ## Verdict
 (pending)
