@@ -5,6 +5,7 @@
 //! saved; input methods and the desktop text element come next.
 //!   minNotes                         a built-in sample note (synthetic)
 //!   minNotes --v2 <file.mnd> [n]     page n (default 1) of a minNotes 2.0 file, converted in memory (the file is only read)
+//!   minNotes --text <file.txt>       a plain text file, one paragraph per line
 //!   --seconds N                      close after N seconds;   --shot <png>   write the window as drawn, then close
 use winit31 as winit;
 use std::{sync::Arc, time::Instant};
@@ -22,6 +23,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 mod paint;
+#[cfg(target_os = "macos")]
+mod text_element;
 
 /// The page's side margin and top / bottom padding, logical px (the Qt app: 48 and 0 — `docTopPad` 28 is defined there
 /// but unused; 28 is used here so the first line does not touch the title bar).
@@ -29,7 +32,7 @@ const MARGIN: f64 = 48.0;
 const PAD: f64 = 28.0;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts }
-struct App { ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, follow: bool, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+struct App { ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -83,6 +86,8 @@ impl App {
         // after an edit or a caret move the caret is brought into view
         if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); if top < self.scroll { self.scroll = top } else if bottom > self.scroll + h as f64 { self.scroll = bottom - h as f64 } } }
         self.scroll = self.scroll.clamp(0.0, (l.height as f64 + 2.0 * PAD * s - h as f64).max(0.0));
+        #[cfg(target_os = "macos")] if (self.scroll - self.last_scroll).abs() > 0.01 { text_element::scrolled(); }
+        self.last_scroll = self.scroll;
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
         let off = kurbo::Vec2::new(MARGIN * s, PAD * s - self.scroll);
         let scene = g.ui.scene_mut(); scene.reset();
@@ -97,9 +102,21 @@ impl App {
     }
     /// What an edit changed, taken to the layout; the caret is then followed.
     fn apply(&mut self, d: Dirty) {
+        let d_changed = d != Dirty::Nothing;
         match d { Dirty::Nothing => {}, Dirty::Structure => self.layout = None,
             Dirty::Blocks(ids) => if let (Some(l), Some(g)) = (self.layout.as_mut(), self.gpu.as_mut()) { for id in ids { l.update_block(&self.ed.doc, &mut g.fonts, id); } } }
+        let text_changed = d_changed; if text_changed { self.flat = None; }
+        #[cfg(target_os = "macos")] text_element::changed(text_changed);
         self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The layout and the flat text, current (a tool may ask between two frames).
+    fn ensure(&mut self) -> bool {
+        let Some(g) = self.gpu.as_mut() else { return false };
+        let (w, _) = g.presenter.size(); let s = g.window.scale_factor();
+        let page_w = (w as f64 - 2.0 * MARGIN * s).max(320.0 * s);
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
+        if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
+        true
     }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
@@ -130,6 +147,7 @@ impl App {
         };
         self.apply(dirty);
     }
+
     fn finish(&mut self) {
         if let (Some(path), Some(g)) = (self.shot.take(), self.gpu.as_mut()) {
             match g.presenter.capture_window() {
@@ -142,6 +160,38 @@ impl App {
         }
         let mut d = std::mem::take(&mut self.draw_ms); d.sort_by(|a, b| a.partial_cmp(b).unwrap());
         if !d.is_empty() { println!("frames {}: layout + scene + render + present, CPU ms p50 {:.2} p95 {:.2}", self.frames, d[d.len() / 2], d[(d.len() * 95 / 100).min(d.len() - 1)]); }
+    }
+}
+
+/// The note as the desktop's text element reads it (rows 276, 281): one flat UTF-16 text; rectangles in view points.
+#[cfg(target_os = "macos")]
+impl text_element::TextHost for App {
+    fn ax_text(&mut self) -> String { if !self.ensure() { return String::new() } self.flat.as_ref().unwrap().text.clone() }
+    fn ax_len16(&mut self) -> usize { if !self.ensure() { return 0 } self.flat.as_ref().unwrap().len16 }
+    fn ax_selection(&mut self) -> (usize, usize) {
+        if !self.ensure() { return (0, 0) } let f = self.flat.as_ref().unwrap();
+        let Some(s) = self.ed.selection() else { return (0, 0) };
+        let (a, b) = (f.offset16(s.anchor.block, s.anchor.at).unwrap_or(0), f.offset16(s.focus.block, s.focus.at).unwrap_or(0));
+        (a.min(b), a.max(b) - a.min(b))
+    }
+    fn ax_set_selection(&mut self, location: usize, length: usize) {
+        if !self.ensure() { return } let f = self.flat.as_ref().unwrap();
+        let pos = |o: usize| f.locate16(o).map(|(l, at)| mn_edit::Pos { block: l.block, at });
+        if let (Some(a), Some(b)) = (pos(location), pos(location + length)) { self.ed.set_selection(Some(mn_edit::Selection { anchor: a, focus: b })); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+    }
+    fn ax_substring(&mut self, location: usize, length: usize) -> String { if !self.ensure() { return String::new() } self.flat.as_ref().unwrap().slice16(location, length).to_string() }
+    fn ax_range_rect(&mut self, location: usize, length: usize) -> (f64, f64, f64, f64) {
+        if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) }
+        let (f, l) = (self.flat.as_ref().unwrap(), self.layout.as_ref().unwrap()); let s = l.scale as f64;
+        let rects = if length == 0 { f.locate16(location).and_then(|(line, at)| l.caret(&self.ed.doc, line.block, at, 1.0)).into_iter().collect() } else { l.flat_rects(&self.ed.doc, f, location, length) };
+        let Some(u) = rects.into_iter().reduce(|a: Rect, b| a.union(b)) else { return (0.0, 0.0, 0.0, 0.0) };
+        ((u.x0 + MARGIN * s) / s, (u.y0 + PAD * s - self.scroll) / s, u.width() / s, u.height() / s)
+    }
+    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (MARGIN, PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
+    fn ax_viewport(&mut self) -> (f64, f64) { self.gpu.as_ref().map(|g| { let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); (w as f64 / s, h as f64 / s) }).unwrap_or((0.0, 0.0)) }
+    fn ax_scroll_fraction(&mut self) -> f64 {
+        let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return 0.0 }; let s = g.window.scale_factor();
+        let max = (l.height as f64 + 2.0 * PAD * s - g.presenter.size().1 as f64).max(1.0); (self.scroll / max).clamp(0.0, 1.0)
     }
 }
 
@@ -164,14 +214,16 @@ impl ApplicationHandler for App {
         let i = presenter.info();
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, window.scale_factor());
         window.request_redraw();
+        #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new() }); self.t0 = Some(Instant::now());
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
-        if self.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.seconds); if Instant::now() >= dl { self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
+        if self.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.seconds); if Instant::now() >= dl { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => { self.finish(); el.exit(); }
+            WindowEvent::CloseRequested => { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); }
+            WindowEvent::Focused(true) => { #[cfg(target_os = "macos")] text_element::focused(); }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() {
                 g.presenter.resize(s.width, s.height); g.presenter.engine.set_ui_scale(g.window.scale_factor() as f32);
                 g.ui.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(g.ui.view()));
@@ -192,6 +244,7 @@ impl ApplicationHandler for App {
                     let (x, y) = self.note_point(self.pointer);
                     let double = self.last_click.is_some_and(|(t, px, py)| t.elapsed().as_millis() < 400 && (px - x).abs() < 4.0 && (py - y).abs() < 4.0);
                     if double { self.ed.point_word(l, x, y); self.last_click = None } else { self.ed.point(l, x, y, self.mods.0); self.last_click = Some((Instant::now(), x, y)); }
+                    #[cfg(target_os = "macos")] text_element::changed(false);
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
@@ -216,8 +269,12 @@ fn main() {
             println!("page {n} of {}: {} blocks; {} repairs", pages.len(), c.doc.len(), c.notes.len());
             let _ = session.close(); c.doc
         }
-        None => sample(),
+        None => match arg("--text") {
+            // a plain text file: one paragraph per line (for trying a writing tool on a text of one's own)
+            Some(path) => { let mut d = Doc::new(); for (i, line) in std::fs::read_to_string(&path).expect("--text").lines().filter(|l| !l.trim().is_empty()).enumerate() { d.insert(None, i, BlockId::new(), Kind::Paragraph, line).unwrap(); } d }
+            None => sample(),
+        },
     };
-    let app = App { ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), follow: false, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
