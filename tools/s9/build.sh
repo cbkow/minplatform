@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")/../.."
 APP=target/spikes/s9/S9Text.app; C="$APP/Contents"
 rm -rf "$APP"; mkdir -p "$C/MacOS" docs/spikes/s9/out
-swiftc -O -swift-version 5 -o "$C/MacOS/S9Text" tools/s9/main.swift -framework Cocoa
+swiftc -O -swift-version 5 -o "$C/MacOS/S9Text" tools/s9/main.swift tools/s9/writingtools.swift -framework Cocoa
 cat > "$C/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

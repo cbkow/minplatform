@@ -405,6 +405,7 @@ func generated(_ words: Int) -> String {
 // ───────────────────────────── the app
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var window: NSWindow!
+    var wt: AnyObject?
     let editor = EditorView(frame: NSRect(x: 0, y: 0, width: 860, height: 600))
     func applicationDidFinishLaunching(_ n: Notification) {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 600), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
@@ -424,6 +425,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         edit.addItem(withTitle: "Copy", action: #selector(EditorView.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(EditorView.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a")
+        // Writing Tools (S9_WT, writingtools.swift): the system's menu items under Edit, a coordinator on the view
+        let env = ProcessInfo.processInfo.environment
+        if wtMode != nil, #available(macOS 15.2, *) {
+            let wtItems = wtMenuItems(); edit.addItem(.separator()); for i in wtItems { edit.addItem(i) }
+            wt = WT(view: editor); wtLogMenu(wtItems)
+            if let what = env["S9_WT_DO"] {
+                Timer.scheduledTimer(withTimeInterval: env["S9_WT_AT"].flatMap(Double.init) ?? 3, repeats: false) { _ in
+                    let p = self.editor.paras(); let end = p.count > 2 ? NSMaxRange(p[2]) : self.editor.length
+                    self.editor.anchor = 0; self.editor.select(NSRange(location: 0, length: end), why: "WT test")
+                    if what == "show" { let ok = NSApp.sendAction(#selector(NSResponder.showWritingTools(_:)), to: nil, from: nil); Log.w("WT.do", "showWritingTools: sent \(ok)", always: true) }
+                    else if let i = wtFind(what, in: wtItems), let a = i.action { i.menu?.update(); let ok = NSApp.sendAction(a, to: i.target, from: i); Log.w("WT.do", "\"\(what)\" \(NSStringFromSelector(a)) sent \(ok) (enabled \(i.isEnabled))", always: true) }
+                    else { Log.w("WT.do", "no item \"\(what)\"", always: true) }
+                }
+            }
+        }
+        if let s = env["S9_SECONDS"].flatMap(Double.init) { Timer.scheduledTimer(withTimeInterval: s, repeats: false) { _ in NSApp.terminate(nil) } }
         editItem.submenu = edit; NSApp.mainMenu = main
         Log.w("START", "\(editor.length) UTF-16 units; withheld: \(off.sorted())", always: true)
         window.makeKeyAndOrderFront(nil); window.makeFirstResponder(editor); NSApp.activate(ignoringOtherApps: true)

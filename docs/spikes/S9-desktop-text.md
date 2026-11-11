@@ -245,8 +245,7 @@ Two traps: `.grammar` and `.correction` asked WITHOUT `.spelling` return nothing
 the grammar pass.
 **Reading:** as the guaranteed floor it is cheap enough to run per edited paragraph (1 ms) and on a whole note at
 open (0.13 s at 5,000 words, off the main thread at 50,000) — red underlines for spelling without any third party.
-It does not replace a writing tool. Apple's Writing Tools in its limited mode (`NSWritingToolsCoordinator` for a
-custom view) is NOT measured yet.
+It does not replace a writing tool. Apple's Writing Tools is step 4b.
 
 ### Step 3g, the two hands-off tests (the working window `S9_NATIVE=1 S9_SCROLLNOTE=area`, 5,016 words, 12–13 s frontmost each; 2026-11-11)
 **Which of the seven added methods Grammarly requires** (`S9_OMIT`; "attached" = it read `accessibilityValue`):
@@ -283,6 +282,37 @@ same tree, more coarsely than the wheel. `AXLayoutChanged` gets a third of that 
 dropped. In all four runs the re-measure began within a tenth of a second of the scroll's end; the 2.5 s lag of step
 3f's two runs did not recur, so that number is not stable. What the eye sees in each case was NOT judged — nobody was
 at the screen.
+
+### Step 4b, Apple's Writing Tools on the custom view (`tools/s9/writingtools.swift`, `S9_WT=limited|complete`; macOS 27.2, 2026-11-11)
+An `NSWritingToolsCoordinator` set on the reference window's view (a plain `NSView`), the system's menu items
+(`NSMenuItem.writingToolsItems`) under Edit, every delegate call logged. The window asked for Proofread by itself
+(`S9_WT_DO=Proofread`: it selects the first two paragraphs of the flawed sample and sends the menu item's action —
+`showWritingTools:` with tag 1; no input is sent). `isWritingToolsAvailable` was true and the preferred behaviour was
+granted in both modes.
+
+| Mode | What the system called | How the text changed |
+|---|---|---|
+| Limited (the panel) | `contextsFor: userSelection`, once, 0.14 s after the action. Nothing else of the delegate. | Nothing by itself (22 s, run 3). In run 2 the whole selection arrived at 14.7 s as ONE `insertText:replacementRange:{0,294}` through `NSTextInputClient` — taken to be the panel's Replace button pressed by the user, who was at the screen; not confirmed. |
+| Complete (inline) | `contextsFor`, state inactive → interactive streaming, previews and prepare / finish for the animations, then **10 `replaceRange:` calls within 2 ms, 0.8 s after the action**; afterwards bounding and underline paths for each changed range, and `selectRanges:` + a same-text `replaceRange:` as the suggestions were stepped through. | Through the delegate, one call per correction. |
+
+Both modes corrected all ten mistakes of the two paragraphs, among them every one `NSSpellChecker` missed in step 4
+("Each one are", "We was", "the deadline were", "plane prose", "should of"). The final text was right in both.
+- A range in `replaceRange:` is in the context's text AS ALREADY CHANGED by the earlier calls of the same delivery
+  ("are" was at 74, asked at 73 after "have" → "has"), so the delegate applies them in order against its live text.
+- The context given was the paragraphs holding the selection (295 units for a 294-unit selection); the limited
+  mode's replacement kept the context's trailing line break, which left one blank line too many — the replacement
+  range and the context's edges need care.
+- Limited mode needs one delegate method to answer and the ordinary input path to take the text; the other eight
+  required methods were never called. Complete mode needs geometry (paths per range) and snapshots of the drawn
+  text for its animations; the snapshots here were the view's own cached drawing, good enough for the calls to
+  complete — how the animation LOOKS on a wgpu surface is not judged (this window draws with AppKit).
+- Not tried: Rewrite and the tone actions, a long selection, the full-document scope, rich text results, the macOS 27
+  grammar presentation (`requestsGrammarResultsFor…`, `showGrammarPresentation…`), and the coordinator on winit's
+  view in the stack.
+
+**Reading:** Writing Tools is a real second writing tool for a custom-drawn editor, with no third party: the limited
+mode costs almost nothing (hand over the text, accept an insert), the complete mode is a bounded piece of work. With
+`NSSpellChecker` (step 4) it is the floor on macOS when Grammarly is absent.
 
 ## Verdict
 (pending)
