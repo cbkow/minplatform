@@ -248,5 +248,41 @@ open (0.13 s at 5,000 words, off the main thread at 50,000) — red underlines f
 It does not replace a writing tool. Apple's Writing Tools in its limited mode (`NSWritingToolsCoordinator` for a
 custom view) is NOT measured yet.
 
+### Step 3g, the two hands-off tests (the working window `S9_NATIVE=1 S9_SCROLLNOTE=area`, 5,016 words, 12–13 s frontmost each; 2026-11-11)
+**Which of the seven added methods Grammarly requires** (`S9_OMIT`; "attached" = it read `accessibilityValue`):
+| Left off | Attached | First value read | `frameForRange` calls |
+|---|---|---|---|
+| none (control) | yes | 0.94 s | 751 |
+| all seven | **no** — it polled the focused element and read nothing | never | 0 |
+| `insertionPointLineNumber` | yes | 0.09 s | 6,360 |
+| `lineForIndex:` | yes | 0.09 s | 660 |
+| `rangeForLine:` | yes | 0.09 s | 1,310 |
+| `rangeForIndex:` | yes | 0.07 s | 656 |
+| `attributedStringForRange:` | yes | 0.09 s | 4,416 |
+| `setAccessibilitySelectedText:` | yes | 0.10 s | 660 |
+| `setAccessibilityValue:` | **no** | never | 0 |
+| the six others (only `setAccessibilityValue:` kept) | yes | 0.09 s | 656 |
+
+**`setAccessibilityValue:` alone is the qualifier**: without it the element is not treated as editable text, with it
+alone Grammarly attaches. It asks `respondsToSelector:` for it among the first ten selectors, right after
+`accessibilityIsAttributeSettable:`; it never calls it (corrections arrive as selection + typed keys, step 1). The other
+six are not needed to attach — they stay declared (a text element should answer them; other tools may ask). One run
+each; the differing `frameForRange` counts are how far a checking pass got in 12 s, not a finding.
+
+**A view that scrolls WITHOUT wheel events** (`S9_AUTOSCROLL=1`: 55 steps down during second 4, back up during second 7):
+| Announced on scroll | Frame positions Grammarly read during the two scrolls | Re-measure of the flagged ranges |
+|---|---|---|
+| the scroll area + its bar's `AXValueChanged` (`area`), run 1 | 27 | starts at 8.01 s |
+| the same, run 2 | 28 | starts at 8.00 s |
+| `AXLayoutChanged` on the text (`layout`) | 9 | starts at 8.07 s |
+| nothing | 0 | starts at 7.91 s |
+
+With the scroll area Grammarly follows a self-scroll: about 13 frame reads a second while it moves (a wheel scroll gets
+one per wheel step), against none with no announcement — so keyboard paging, a dragged bar and jumps are served by the
+same tree, more coarsely than the wheel. `AXLayoutChanged` gets a third of that and is the announcement step 3e
+dropped. In all four runs the re-measure began within a tenth of a second of the scroll's end; the 2.5 s lag of step
+3f's two runs did not recur, so that number is not stable. What the eye sees in each case was NOT judged — nobody was
+at the screen.
+
 ## Verdict
 (pending)
