@@ -4,7 +4,7 @@
 //!   --file <text>      the text (default: the flawed sample);  --seconds N   close after N seconds
 //!   S9_LOG=<file>      where the log goes (default .\s9-uia.log)
 //!   S9_CT=edit         control type Edit instead of Document
-//!   S9_OFF=a,b         withhold: value, scroll, text, events
+//!   S9_OFF=a,b         withhold: value, scroll, text, events, visible (no visible range), ids (no class name / automation id)
 //!   S9_TREE=child      the text is a CHILD element of the window (a fragment under a fragment root), as a toolkit's tree has it
 #[cfg(not(windows))]
 fn main() { eprintln!("s9-uia is the Windows leg of the spike S9"); }
@@ -161,9 +161,9 @@ mod win {
             let (name, v): (&str, VARIANT) = match id {
                 UIA_ControlTypePropertyId => ("ControlType", VARIANT::from(if edit { UIA_EditControlTypeId.0 } else { UIA_DocumentControlTypeId.0 })),
                 UIA_NamePropertyId => ("Name", VARIANT::from("Editor")),
-                UIA_AutomationIdPropertyId => ("AutomationId", VARIANT::from("editor")),
-                UIA_ClassNamePropertyId => ("ClassName", VARIANT::from("S9Text")),
-                UIA_FrameworkIdPropertyId => ("FrameworkId", VARIANT::from("Win32")),
+                UIA_AutomationIdPropertyId => ("AutomationId", if off("ids") { VARIANT::default() } else { VARIANT::from("editor") }),
+                UIA_ClassNamePropertyId => ("ClassName", if off("ids") { VARIANT::default() } else { VARIANT::from("S9Text") }),
+                UIA_FrameworkIdPropertyId => ("FrameworkId", VARIANT::from(if off("ids") { "AccessKit" } else { "Win32" })),
                 UIA_IsKeyboardFocusablePropertyId => ("IsKeyboardFocusable", VARIANT::from(true)),
                 UIA_HasKeyboardFocusPropertyId => ("HasKeyboardFocus", VARIANT::from(unsafe { GetFocus().0 as isize } == DOC.with_borrow(|d| d.hwnd))),
                 UIA_IsEnabledPropertyId => ("IsEnabled", VARIANT::from(true)),
@@ -183,7 +183,7 @@ mod win {
         fn GetSelection(&self) -> Result<*mut SAFEARRAY> { let (a, b) = DOC.with_borrow(|d| d.sel()); log("text.GetSelection", format!("{{{a},{}}}", b - a), false); Ok(unknowns(vec![range(a, b).cast()?])) }
         fn GetVisibleRanges(&self) -> Result<*mut SAFEARRAY> {
             let (a, b) = DOC.with_borrow(|d| { let first = ((d.scroll - d.pad).max(0) / d.lh.max(1)) as usize; let last = (((d.scroll + d.h) / d.lh.max(1)) as usize).min(d.lines.len() - 1); (d.lines[first.min(last)].0, d.lines[last].1) });
-            log("text.GetVisibleRanges", format!("{{{a},{}}}", b - a), false); Ok(unknowns(vec![range(a, b).cast()?]))
+            log("text.GetVisibleRanges", format!("{{{a},{}}}", b - a), false); if off("visible") { return Ok(unknowns(vec![])) } Ok(unknowns(vec![range(a, b).cast()?]))
         }
         fn RangeFromChild(&self, _c: Ref<IRawElementProviderSimple>) -> Result<ITextRangeProvider> { log("text.RangeFromChild", String::new(), true); Err(E_INVALIDARG.into()) }
         fn RangeFromPoint(&self, p: &UiaPoint) -> Result<ITextRangeProvider> {
