@@ -22,7 +22,7 @@ pub fn media_info(m: &MediaItem) -> MediaInfo {
     // an audio clip (canon row 278): its duration at the audio mode's 24 fps — the item's, or a probe before the metadata arrives
     let secs = if kind == ClipMediaKind::Audio && m.duration <= 0.0 { qcv_meta::extract(&m.path).duration } else { m.duration };
     if frames <= 0 && secs > 0.0 { frames = (secs * rate.as_f64()).round() as i64; }
-    MediaInfo { id: m.id.clone(), name: m.name.clone(), path: m.path.clone(), kind, rate, duration: frames.max(0), width: w.max(0) as u32, height: h.max(0) as u32, has_audio: m.has_audio || probed_audio || kind == ClipMediaKind::Audio,
+    MediaInfo { id: m.id.clone(), name: m.name.clone(), path: m.path.clone(), kind, rate, duration: frames.max(0), width: w.max(0) as u32, height: h.max(0) as u32, has_audio: m.has_audio || m.video.audio_channels > 0 || probed_audio || kind == ClipMediaKind::Audio,   // the item's own flag is set only once it has been opened; the extractor's channel count is known from the add
         sequence_pattern: if m.media_type == MediaType::ImageSequence { std::path::Path::new(&m.image_seq.directory).join(&m.image_seq.pattern).to_string_lossy().into_owned() } else { String::new() },   // QCView opens a sequence clip from its item's directory + pattern (`startImageSequence`)
         sequence_start_frame: m.image_seq.start_frame as i64, sequence_end_frame: m.image_seq.end_frame as i64,
         // the item's EXR layer and gaps on disk travel with the clip (QCView's `startImageSequence` reads them off the item)
