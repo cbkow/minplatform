@@ -56,10 +56,28 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool, /// an edit went to the staged copy after the file being saved was made
     edited_since_stage: bool }
 /// A save under way: which try, what the document is expected to be, what a merge brought.
-struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, merged: Option<String>, started: Instant }
+struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, merged: Option<String>, /// blocks both sides changed, kept twice
+    doubled: usize, started: Instant }
 enum SaveStep { Put(Result<mn_store::share::Fingerprint, mn_store::share::PutError>), Fetched(std::io::Result<mn_store::share::Fingerprint>) }
 
-struct App { saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(BlockId, min_ui::dialog::Dialog)>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+/// What a dialog on screen is asking (row 293; the wording follows the Qt app's dialogs where it had them).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ask {
+    /// delete this entry of the tree?
+    Delete(BlockId),
+    /// closing with changes that are not in the document: Cancel / Don't Save / Save
+    Close,
+    /// changes from an earlier session were found: Continue / Discard…
+    Recovered,
+    /// …and Discard asks once more, being the one thing here that cannot be undone
+    DiscardRecovered,
+    /// a notice with one button
+    Notice,
+    /// a save did not go through: OK / Retry
+    SaveFailed,
+}
+
+struct App { saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -172,7 +190,7 @@ impl App {
         let Some(session) = st.session.as_ref() else { return };
         if self.saver.busy() { eprintln!("save: an earlier save has not come back from the document's place yet (it may be a share that does not answer). Your changes are kept on this machine."); return }
         let expect = match session.base_print() { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); return } };
-        self.saving = Some(Saving { attempt: 0, expect, merged: None, started: Instant::now() });
+        self.saving = Some(Saving { attempt: 0, expect, merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
     }
     /// Stages the collection as it stands and sends it to the document's place, expecting `saving.expect` there.
@@ -198,7 +216,12 @@ impl App {
                 if let Err(e) = session.published(&to) { eprintln!("save: the document was written, but the session could not record it: {e}"); }
                 st.unpublished = st.edited_since_stage || st.edited.is_some();
                 match &sv.merged { Some(m) => println!("saved {place} — merged with a save by someone else: {m}"), None => println!("saved {place}") }
+                let merged = sv.merged.clone(); let doubled = sv.doubled;
                 self.saving = None;
+                if std::mem::take(&mut self.close_after_save) && !self.unpublished() && doubled == 0 { self.quit = true; }
+                else if merged.is_some() { use min_ui::text_button::Variant as V;
+                    let body = if doubled > 0 { format!("Someone else saved this document while you were working. Their changes have been merged with yours. {doubled} paragraph(s) were changed by both of you: both versions are kept, the second marked, for you to choose between.") } else { "Someone else saved this document while you were working. Their changes have been merged with yours.".to_string() };
+                    self.ask(Ask::Notice, "The document was merged", &body, vec![("OK", V::Primary)]); }
             }
             // not the document we know: someone saved (or it is gone) — look at what is there
             SaveStep::Put(Err(PutError::Raced)) if sv.attempt < 3 => {
@@ -209,10 +232,12 @@ impl App {
             SaveStep::Put(Err(e)) => {
                 let why = match &e { PutError::Io(io) if io.kind() == std::io::ErrorKind::PermissionDenied => "its folder cannot be written to".to_string(), PutError::Raced => "it keeps being saved by someone else".to_string(), other => other.to_string() };
                 eprintln!("save: {place} was NOT saved — {why}. Your changes are kept on this machine."); self.saving = None;
+                self.save_failed(&format!("The document couldn\u{2019}t be written to its location: {why}."));
             }
             SaveStep::Fetched(Err(e)) => {
                 let why = if e.kind() == std::io::ErrorKind::NotFound { "it is no longer there — moved or deleted, or its drive or share is not connected".to_string() } else { format!("it cannot be reached ({e})") };
                 eprintln!("save: {place} was NOT saved — {why}. Nothing was written; your changes are kept on this machine."); self.saving = None;
+                self.save_failed(&format!("The document was not saved: {why}. Nothing was written."));
             }
             SaveStep::Fetched(Ok(print)) => {
                 // their file, on this machine now: checked by opening it, merged into the staged copy (row 285), and sent
@@ -221,18 +246,87 @@ impl App {
                     Ok(report) => {
                         sv.merged = Some(format!("{} note(s) changed here, {} with cases to look at{}", report.changed.len(), report.notes.len(), if report.tree.is_empty() { String::new() } else { format!(", tree {:?}", report.tree) }));
                         for (id, cases) in &report.notes { println!("  note {id}: {cases:?}"); }
+                        sv.doubled += report.notes.iter().flat_map(|(_, c)| c).filter(|c| matches!(c, mn_doc::Note::BothEdited { .. })).count();
                         sv.expect = Some(print);
                         for id in &report.changed { self.others.remove(id); }
                         if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); }
                         if report.changed.contains(&st.note) { if let Ok(doc) = st.col.load_note(st.note) { self.ed = Editor::new(doc); self.layout = None; self.flat = None; } }   // the history starts over after a merge
                         self.put_staged();
                     }
-                    Err(e) => { eprintln!("save: {place} was NOT saved — what is there could not be read as a collection ({e}). Nothing was written; your changes are kept on this machine."); self.saving = None; }
+                    Err(e) => { eprintln!("save: {place} was NOT saved — what is there could not be read as a collection ({e}). Nothing was written; your changes are kept on this machine."); self.saving = None;
+                        self.save_failed(&format!("Someone else saved this document, but what is there now could not be read ({e}). Nothing was written.")); }
                 }
             }
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    // ── questions and warnings (row 293)
+    fn ask(&mut self, what: Ask, title: &str, body: &str, buttons: Vec<(&str, min_ui::text_button::Variant)>) {
+        let mut d = min_ui::dialog::Dialog::new(title, body, buttons); d.show();
+        self.confirm = Some((what, d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn doc_name(&self) -> String { self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|s| s.original().file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "this document".into()) }
+    fn unpublished(&self) -> bool { self.store.as_ref().is_some_and(|st| st.unpublished || st.edited.is_some()) }
+    /// The window is asked to close. With changes that are not in the document, the Qt app's question is put first.
+    fn request_close(&mut self) {
+        use min_ui::text_button::Variant as V;
+        if self.unpublished() && self.confirm.as_ref().is_none_or(|(a, _)| *a != Ask::Close) {
+            let name = self.doc_name();
+            self.ask(Ask::Close, &format!("Save changes to \u{201c}{name}\u{201d}?"), "Your changes will be lost if you don\u{2019}t save them.", vec![("Cancel", V::Secondary), ("Don\u{2019}t Save", V::Secondary), ("Save", V::Primary)]);
+        } else if !self.unpublished() { self.quit = true; }
+    }
+    /// A dialog's button was pressed (`i`: its place in the row).
+    fn answer(&mut self, what: Ask, i: usize) {
+        use min_ui::text_button::Variant as V;
+        match (what, i) {
+            (Ask::Delete(id), 1) => self.delete_entry(id),
+            // Don't Save: the changes are given up — the session goes, the document stays as it is
+            (Ask::Close, 1) => { if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } self.quit = true; }
+            (Ask::Close, 2) => { self.close_after_save = true; self.save(); }
+            (Ask::Recovered, 1) => self.ask(Ask::DiscardRecovered, "Discard these changes?", "The changes from the earlier session will be removed from this machine. This cannot be undone.", vec![("Cancel", V::Secondary), ("Discard", V::Negative)]),
+            (Ask::DiscardRecovered, 1) => self.discard_recovered(),
+            (Ask::DiscardRecovered, _) => self.offer_recovered(),
+            (Ask::SaveFailed, 1) => self.save(),
+            _ => {}
+        }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// Work from an earlier session was found when the file was opened (a crash, or the app was stopped): it is on
+    /// screen already, and the user says whether it stays (row 272: offered back, never deleted silently).
+    fn offer_recovered(&mut self) {
+        use min_ui::text_button::Variant as V;
+        let name = self.doc_name();
+        self.ask(Ask::Recovered, "Unsaved changes were found", &format!("\u{201c}{name}\u{201d} has changes on this machine that were never saved to the document. They are from an earlier session and are shown now."), vec![("Continue with Them", V::Primary), ("Discard\u{2026}", V::Secondary)]);
+    }
+    /// The recovered changes go: the session is removed and the document is opened afresh.
+    fn discard_recovered(&mut self) {
+        let Some(st) = self.store.as_mut() else { return };
+        let Some(session) = st.session.take() else { return };
+        let path = session.original().to_path_buf(); let root = sessions_root();
+        let _ = session.close();
+        let opened = mn_store::staging::Session::open(&root, &path).and_then(|s| mn_store::Collection::open(&s.work()).map(|c| (s, c)).map_err(std::io::Error::other));
+        match opened {
+            Ok((session, col)) => {
+                fn first_note(c: &mn_store::Collection, parent: Option<BlockId>) -> Option<BlockId> { for e in c.list(parent).ok()? { if e.kind == mn_store::DocKind::Note { return Some(e.id) } if let Some(n) = first_note(c, Some(e.id)) { return Some(n) } } None }
+                let note = first_note(&col, None).unwrap_or(st.note);
+                self.ed = Editor::new(col.load_note(note).unwrap_or_default()); self.others.clear();
+                *st = Store { session: Some(session), col, note, title: String::new(), edited: None, unpublished: false, edited_since_stage: false };
+                if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); sb.selected = None; }
+                self.layout = None; self.flat = None; self.scroll = 0.0; self.recovered = false;
+                #[cfg(target_os = "macos")] text_element::changed(true);
+            }
+            Err(e) => { use min_ui::text_button::Variant as V; self.ask(Ask::Notice, "The document could not be opened again", &format!("{e}"), vec![("OK", V::Primary)]); }
+        }
+        self.title();
+    }
+    /// A save ended without the document being written.
+    fn save_failed(&mut self, why: &str) {
+        use min_ui::text_button::Variant as V;
+        self.close_after_save = false;
+        let name = self.doc_name();
+        self.ask(Ask::SaveFailed, &format!("Couldn\u{2019}t save \u{201c}{name}\u{201d}"), &format!("{why} Your changes are kept on this machine."), vec![("OK", V::Secondary), ("Retry", V::Primary)]);
+    }
+
     // ── the tree (row 290)
     /// Opens another note: the one being left goes to the staged copy first and keeps its editor (its undo history)
     /// for as long as the window is open.
@@ -266,7 +360,7 @@ impl App {
         let Some(row) = self.sidebar.as_ref().and_then(|sb| sb.row(id)) else { return };
         let body = if row.kind == mn_store::DocKind::Folder { "The folder and everything in it will be removed from the collection." } else { "The note will be removed from the collection." };
         let mut d = min_ui::dialog::Dialog::new(&format!("Delete \u{201c}{}\u{201d}?", row.title), body, vec![("Cancel", min_ui::text_button::Variant::Secondary), ("Delete", min_ui::text_button::Variant::Negative)]);
-        d.show(); self.confirm = Some((id, d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+        d.show(); self.confirm = Some((Ask::Delete(id), d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn delete_entry(&mut self, id: BlockId) {
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
@@ -292,7 +386,7 @@ impl App {
         let now = Instant::now();
         if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
             let id = *id; d.pointer(&e, &mut g.fonts); let (pressed, _) = d.event(&e, now); g.window.request_redraw();
-            if let Some(i) = pressed { self.confirm = None; if i == 1 { self.delete_entry(id); } }
+            if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -314,7 +408,7 @@ impl App {
             min_ui::KeyEvent { key: k, text: text.map(|t| t.to_string()), shift, cmd } };
         if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
-            if let Some(i) = r { self.confirm = None; if i == 1 { self.delete_entry(id); } } return
+            if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
         }
         if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) {
             if let Some(a) = sb.key(&ui_key(), &mut g.fonts) { self.act(a); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
@@ -447,12 +541,17 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        // a dialog's answer, or a save that was to be followed by closing, ended the session
+        if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return }
+        // work found from an earlier session is offered once the window is up
+        if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
             // no answer from the document's place: stop waiting (the call itself cannot be ended; its late result is dropped)
             eprintln!("save: the document's place has not answered for 20 seconds. It is treated as unreachable; your changes are kept on this machine. Whether the save went through is not known — it is looked at again at the next Save.");
             self.saver.abandon(); self.saving = None; self.title();
+            self.save_failed("The document\u{2019}s location has not answered for 20 seconds. It is not known whether the save went through; it will be looked at again at the next Save.");
         } else { el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + std::time::Duration::from_millis(40))); } }
         // autosave to the staging a second after the last edit
         if let Some(t) = self.store.as_ref().and_then(|s| s.edited) { let due = t + std::time::Duration::from_millis(1000); if Instant::now() >= due { self.autosave(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
@@ -460,7 +559,7 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); }
+            WindowEvent::CloseRequested => { self.autosave(); self.request_close(); if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); } }
             WindowEvent::Focused(true) => { #[cfg(target_os = "macos")] text_element::focused(); }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() {
                 g.presenter.resize(s.width, s.height); g.presenter.engine.set_ui_scale(g.window.scale_factor() as f32);
@@ -593,7 +692,8 @@ fn main() {
             None => sample(),
         },
     } };
+    let recovered = store.as_ref().is_some_and(|st| st.unpublished) && std::env::var_os("MN_NO_DIALOGS").is_none();
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
