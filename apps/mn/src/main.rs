@@ -98,7 +98,7 @@ impl App {
         // the sidebar takes its width off the page (it slides when it folds, so the page follows frame by frame)
         self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(h as f64, s, now)).unwrap_or(0.0);
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
         if self.frames == 0 && std::env::var_os("MN_DEMO").is_some() {
@@ -117,12 +117,12 @@ impl App {
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
         let off = kurbo::Vec2::new(self.side_w + MARGIN * s, PAD * s - self.scroll);
         let scene = g.ui.scene_mut(); scene.reset();
-        scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::PAGE, None, &view);
-        for r in self.ed.selection_rects(l) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::SELECTION, None, &(r + off)); }
+        scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &view);
+        for r in self.ed.selection_rects(l) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
         paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view);
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
-        if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &c);
+        if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
@@ -148,7 +148,7 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return false };
         let (w, _) = g.presenter.size(); let s = g.window.scale_factor();
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
         if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
         true
     }
@@ -244,6 +244,7 @@ impl App {
     fn act(&mut self, a: sidebar::Act) {
         match a { sidebar::Act::None => {}, sidebar::Act::Redraw => { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Open(id) => { if self.sidebar.as_ref().and_then(|sb| sb.row(id)).is_some_and(|r| r.kind == mn_store::DocKind::Note) { self.open_note(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            sidebar::Act::Fold(id) => { if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.toggle_fold(id); sb.set_tree(&st.col); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Renamed(id, name) => self.rename_entry(id, &name) }
     }
     /// A pointer event for whatever lies over the page. True: it was taken (the note must not act on it).
@@ -285,6 +286,7 @@ impl App {
                 Key::Named(NamedKey::Enter) => { sb.start_rename(sel, &mut g.fonts); g.window.request_redraw(); return }
                 Key::Named(NamedKey::Backspace | NamedKey::Delete) => { self.ask_delete(sel); return }
                 Key::Named(NamedKey::Escape) => { sb.focused = false; g.window.request_redraw(); return }
+                Key::Named(k @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::ArrowLeft | NamedKey::ArrowRight)) => { let n = match k { NamedKey::ArrowUp => sidebar::Nav::Up, NamedKey::ArrowDown => sidebar::Nav::Down, NamedKey::ArrowLeft => sidebar::Nav::Left, _ => sidebar::Nav::Right }; let a = sb.nav(n); self.act(a); if let Some(sb) = self.sidebar.as_mut() { sb.focused = true; } return }
                 _ => {} } } if !cmd { return } }
         }
         let Some(l) = self.layout.as_ref() else { return };
@@ -464,6 +466,9 @@ impl ApplicationHandler for App {
         }
     }
 }
+
+/// The page's metrics with the theme's colours for text and links.
+fn style() -> Style { Style { text: paint::text(), link: paint::link(), ..Style::default() } }
 
 /// Where staged sessions live on this machine (row 272: never beside the file).
 fn sessions_root() -> std::path::PathBuf {

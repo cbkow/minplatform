@@ -19,6 +19,7 @@ mn-layout = { path = "../../crates/mn-layout" }
 mn-store = { path = "../../crates/mn-store" }
 min-present = { path = "../../crates/min-present" }
 min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
 vello = { workspace = true }
 peniko = { workspace = true }
 kurbo = { workspace = true }

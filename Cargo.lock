@@ -2148,6 +2148,7 @@ dependencies = [
  "kurbo",
  "log",
  "min-present",
+ "min-theme",
  "min-ui",
  "mn-doc",
  "mn-edit",
