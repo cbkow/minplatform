@@ -2148,6 +2148,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mn-layout"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "min-ui",
+ "mn-doc",
+ "parley",
+ "peniko",
+ "serde_json",
+]
+
+[[package]]
 name = "mn-store"
 version = "0.1.0"
 dependencies = [

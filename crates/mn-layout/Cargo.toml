@@ -1,0 +1,18 @@
+[package]
+name = "mn-layout"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minNotes — where a note's blocks sit: text shaped by parley, the two containers, hit-testing and the geometry the caret, the selection and the desktop text element ask for (Phase 3 step 2)"
+
+[dependencies]
+mn-doc = { path = "../mn-doc" }
+min-ui = { path = "../min-ui" }
+parley = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+serde_json = { workspace = true }
