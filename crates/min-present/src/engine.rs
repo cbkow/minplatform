@@ -354,6 +354,9 @@ impl Engine {
     pub fn has_frame(&self) -> bool { self.shown.is_some() }
     /// Show nothing (a dual side in a gap or past its end: the background shows through).
     pub fn clear_frame(&mut self) { self.shown = None; }
+    /// Show nothing and forget the picture's place (an audio-only file — QCView's `clearSourceAState`: with no layout the
+    /// whole viewport is the plain fill, no bounds mix; guides and annotations have nothing to fit to).
+    pub fn clear_picture(&mut self) { self.shown = None; self.base = None; self.write_bg_uniform(); }
     /// Review (canon row 228, fix 6): the shown frame kept as it is while its source moves on — a GPU-imported frame (the
     /// QCBridge ring's zero-copy slot, which the host rewrites) is copied into textures the engine owns and re-bound; CPU
     /// planes are already the engine's and hold until the next `show`. The picture stays FLOAT and goes through the chain,

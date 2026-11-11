@@ -845,7 +845,10 @@ impl App {
     fn open_source_layer(&mut self, src: Source, path: &str, layer: &str) -> bool {
         if self.gpu.is_none() { return false }
         let t = Instant::now();
-        match Transport::open(&src, TransportOptions { seq_layer: layer.to_string(), ..self.transport_options() }) {
+        // an audio file (QCView's extension lists decide, canon row 277): the audio-only transport — no picture, the wall clock
+        let audio = matches!(src, Source::File(_)) && qcv_project::extensions::kind_for_path(path) == qcv_project::extensions::Kind::Audio;
+        let opts = TransportOptions { seq_layer: layer.to_string(), ..self.transport_options() };
+        match if audio { Transport::open_audio(path, opts) } else { Transport::open(&src, opts) } {
             Ok(p) => { self.pl_editor = None; self.adopt(p, src.display(), path, t); true }
             Err(e) => { println!("open {path}: {e}"); false }
         }
@@ -859,12 +862,15 @@ impl App {
         if self.o.autoplay { p.play(); }   // QCView opens PAUSED (the waveform probe and the thumbnail strip run before the first play); `--play` is the harness's flag
         println!("opened {label} — {}  (open took {:.0} ms)", describe(&p), t.elapsed().as_secs_f32() * 1000.0);
         let g = self.gpu.as_mut().unwrap();
-        self.source_label = label; self.source_path = path.to_string(); g.thumbs.on_open(&p); g.presenter.engine.set_geometry(Default::default()); g.presenter.engine.set_transfer_override(Default::default()); g.inspector.set_transfer(Default::default());
+        self.source_label = label; self.source_path = path.to_string(); g.thumbs.on_open(&p); g.presenter.engine.set_geometry(Default::default()); if p.is_audio_only() { g.presenter.engine.clear_picture(); }   // the previous clip's last frame goes (QCView `clearSourceAState`)
+        g.presenter.engine.set_transfer_override(Default::default()); g.inspector.set_transfer(Default::default());
         // QCView: both metadata requests at add; keyed by the media id when the file is in the project (the manager caches the result), else by path
         let key = self.project.pool().iter().find(|m| m.path == path).map(|m| m.id.clone()).unwrap_or_else(|| path.to_string());
         if !path.is_empty() { self.meta.request_video_extraction(&key, path); self.meta.request_adobe_extraction(&key, path); }
+        let audio_only = p.is_audio_only();
         self.player = Some(p); self.t_open = Some(t); self.first_presented = false;
-        self.annot.load(if path.is_empty() || path.contains("://") { None } else { Some(std::path::Path::new(path)) });   // the clip's notes; undo starts over (row 215)
+        // an audio file takes no notes (QCView `annotationsAllowedForCurrentMedia`: Video, ImageSequence and LiveStream only)
+        self.annot.load(if path.is_empty() || path.contains("://") || audio_only { None } else { Some(std::path::Path::new(path)) });   // the clip's notes; undo starts over (row 215)
         g.title_shown.clear();
     }
     /// QCView `startPlaylist`: the entries resolved against the pool into a timeline, opened paused on its first clip; an

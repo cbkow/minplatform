@@ -30,6 +30,8 @@ pub const FAST_SEEK_INITIAL_SPEED: f64 = 2.0;
 pub const FAST_SEEK_MAX_SPEED: f64 = 32.0;
 pub const FAST_SEEK_ACCELERATION: f64 = 2.0;
 pub const FAST_SEEK_TICK_MS: u64 = 33;
+/// An audio-only file's timebase (QCView `loadSingleMedia(item, m_audio->duration(), 24.0, true)`: "synthetic 24 fps").
+pub const AUDIO_ONLY_FPS: u32 = 24;
 /// R cycles this ring (nearest current → next); ⇧R snaps to 1×; the setter clamps 0.25 .. 4.
 pub const REVIEW_SPEEDS: [f64; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 /// A burst of playlist seeks collapses to one `apply_playlist_seek` for the latest target.
@@ -123,7 +125,21 @@ fn drop_off_thread(s: Slot) { thread::Builder::new().name("qcv-slot-drop".into()
 pub struct Slot { pub clip: usize, pub decoder: SlotDecoder, pub scrub: Option<ScrubDecoder>, pub info: SessionInfo, pub index: Arc<FrameIndex>, pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, /// parked on its in-point with the lookahead queued (a prewarmed slot); false once it has played
     pub positioned_at_in: bool }
 impl Slot {
+    /// An audio-only file (canon row 277): no decoder, no scrub decoder — a slot of `duration × rate` frames with no picture.
+    /// The rate is the clip's (QCView's synthetic 24 fps for a single file). The cover art some files carry is NOT opened:
+    /// FFmpeg reports it as a one-frame video stream, which would make the file one frame long.
+    fn open_audio(clip_index: usize, clip: &Clip) -> Result<Slot, Error> {
+        let rate = if clip.source_rate.as_f64() > 0.0 { clip.source_rate } else { Rate::new(AUDIO_ONLY_FPS, 1) };
+        let secs = match crate::audio::chunk_reader::AudioChunkReader::open(&clip.media_path, crate::audio::RoutingMode::Auto)? { Some(r) => r.duration(), None => return Err(Error::Open("no audio stream".into())) };
+        if !(secs > 0.0) { return Err(Error::Open("the audio's duration is unknown".into())) }
+        let frames = ((secs * rate.as_f64()).round() as i32).max(1);
+        let info = SessionInfo { width: 0, height: 0, frame_count: frames, codec_name: String::new(), codec_short: "audio".into(), pix_fmt: String::new(), hw_accel: String::new(), source_timecode: None, drop_frame: false,
+            time_base: (rate.den as i32, rate.num as i32), frame_rate: (rate.num as i32, rate.den as i32), intra_only: true, meta: Default::default(), duration_secs: secs, tags: Default::default() };
+        let index = Arc::new(FrameIndex::new(rate.den as i32, rate.num as i32, rate.num as i32, rate.den as i32, frames, true));
+        Ok(Slot { clip: clip_index, decoder: SlotDecoder::Audio(Default::default()), scrub: None, info, index, path: clip.media_path.clone(), src_rate: rate, src_in: clip.source_in, src_out: clip.source_out, positioned_at_in: false })
+    }
     fn open(clip_index: usize, clip: &Clip, opts: &TransportOptions) -> Result<Slot, Error> {
+        if clip.media_kind == ClipMediaKind::Audio { return Slot::open_audio(clip_index, clip) }
         let src = if clip.media_kind == ClipMediaKind::ImageSequence { Source::Sequence { pattern: if clip.sequence_pattern.is_empty() { clip.media_path.clone() } else { clip.sequence_pattern.clone() }, rate: clip.source_rate, start: clip.sequence_start_frame, end: clip.sequence_end_frame, label: clip.name.clone() } } else { Source::File(clip.media_path.clone()) };
         // An image sequence min-image reads goes through QCView's sequence cache (step 2c); DPX / TGA / BMP stay on FFmpeg's image2.
         // `QCV_SEQ_FFMPEG=1` forces the image2 route (the A/B against the cache).
@@ -182,18 +198,23 @@ pub struct Transport {
 
 impl Transport {
     /// Single media: a one-clip locked timeline around the file (QCView's `loadSingleMedia`).
-    pub fn open(src: &Source, opts: TransportOptions) -> Result<Transport, Error> {
-        let probe_clip = Clip { media_path: src.path().to_string(), media_kind: if matches!(src, Source::Sequence { .. }) { ClipMediaKind::ImageSequence } else { ClipMediaKind::Video }, source_rate: match src { Source::Sequence { rate, .. } => *rate, _ => Rate::new(24, 1) }, sequence_start_frame: match src { Source::Sequence { start, .. } => *start as i64, _ => 1 }, sequence_end_frame: match src { Source::Sequence { end, .. } => *end as i64, _ => 1 }, ..Clip::empty() };
+    pub fn open(src: &Source, opts: TransportOptions) -> Result<Transport, Error> { Transport::open_kind(src, false, opts) }
+    /// An audio-only file (QCView's audio mode, canon row 277): the same one-clip timeline at 24 fps with no picture — the
+    /// wall clock runs the playhead and the audio follows it.
+    pub fn open_audio(path: &str, opts: TransportOptions) -> Result<Transport, Error> { Transport::open_kind(&Source::from_path(path, None), true, opts) }
+    fn open_kind(src: &Source, audio: bool, opts: TransportOptions) -> Result<Transport, Error> {
+        let probe_clip = Clip { media_path: src.path().to_string(), media_kind: if audio { ClipMediaKind::Audio } else if matches!(src, Source::Sequence { .. }) { ClipMediaKind::ImageSequence } else { ClipMediaKind::Video }, source_rate: match src { Source::Sequence { rate, .. } => *rate, _ => Rate::new(24, 1) }, sequence_start_frame: match src { Source::Sequence { start, .. } => *start as i64, _ => 1 }, sequence_end_frame: match src { Source::Sequence { end, .. } => *end as i64, _ => 1 }, ..Clip::empty() };
         let slot = Slot::open(0, &probe_clip, &opts)?;
         let rate = slot.info.rate(); let frames = slot.info.frame_count as i64;
         let mut editor = Editor::default();
-        editor.load_single_media(&MediaInfo { id: String::new(), name: src.display(), path: src.path().to_string(), kind: probe_clip.media_kind, rate, duration: frames, width: slot.info.width, height: slot.info.height, has_audio: false, sequence_pattern: String::new(), sequence_start_frame: probe_clip.sequence_start_frame, sequence_end_frame: probe_clip.sequence_start_frame + frames - 1, sequence_exr_layer: String::new(), sequence_missing: vec![] });
+        editor.load_single_media(&MediaInfo { id: String::new(), name: src.display(), path: src.path().to_string(), kind: probe_clip.media_kind, rate, duration: frames, width: slot.info.width, height: slot.info.height, has_audio: audio, sequence_pattern: String::new(), sequence_start_frame: probe_clip.sequence_start_frame, sequence_end_frame: probe_clip.sequence_start_frame + frames - 1, sequence_exr_layer: String::new(), sequence_missing: vec![] });
         let seq_layer = opts.seq_layer.clone();
         let mut t = Transport::from_timeline(editor.timeline, opts, false);
         if probe_clip.media_kind == ClipMediaKind::ImageSequence { t.timeline.tracks[0].clips[0].sequence_exr_layer = seq_layer; }   // the hover keys carry it
         let first = t.timeline.tracks[0].clips[0].clone();
         let mut slot = slot; slot.clip = 0; slot.src_rate = first.source_rate; slot.src_in = first.source_in; slot.src_out = first.source_out;
         t.slots.push(slot); t.active = 0;
+        if audio { t.first_landed = true; return Ok(t) }   // no picture to land: no seek gate
         // QCView's open: the decoder opens PAUSED and WindowManager ends with seekToFrame(0) — the pending seek runs whatever the
         // play state and publishes frame 0 through the seek gate; the gate captures the counts BEFORE the seek so the landing counts
         let (seeks_before, seq_before) = (t.slots[0].decoder.seeks_performed(), t.slots[0].decoder.published_seq());
@@ -300,6 +321,8 @@ impl Transport {
     pub fn modal_active(&self) -> bool { self.modal_active }
     pub fn seek_in_flight(&self) -> bool { self.seek_gate.is_some() || self.pending.is_some() || self.pending_playlist_seek.is_some() }   // a clip still opening off-thread (or the 50-ms debounce) counts
     pub fn is_playlist(&self) -> bool { self.playlist_active }
+    /// The clip under the playhead is an audio-only file: nothing is shown for it.
+    pub fn is_audio_only(&self) -> bool { self.slots[self.active].decoder.is_audio_only() }
     pub fn active_clip_index(&self) -> usize { self.slots[self.active].clip }
     pub fn prewarmed_clip(&self) -> Option<usize> { self.slots.iter().enumerate().find(|(i, _)| *i != self.active).map(|(_, s)| s.clip) }
     fn clip(&self, i: usize) -> Option<&Clip> { self.timeline.tracks.first().and_then(|t| t.clips.get(i)) }
@@ -340,6 +363,8 @@ impl Transport {
         if self.at_end() && !self.follower { self.seek_to_frame(0); }   // play from the end restarts (the timer clamps at duration); a dual side's restart is the master's
         self.timer.play(); self.slots[self.active].decoder.play();
         if std::env::var_os("QCV_AUDIO_TRACE").is_some() { self.trace_play = Some(Instant::now()); self.trace_n = 12; log::info!("trace: play() at timer {:.4}", self.timer.position()); }
+        // audio-only: there is no first picture to wait for — the audio starts with the clock (QCView: timer->play, m_audio->play)
+        if self.audio.has_audio() && self.is_audio_only() { let p = self.audio_position(); self.audio.seek(p); self.audio.play(); return }
         if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); self.audio.set_hold(true); self.audio.play(); self.audio_hold_pending = true; }
     }
     pub fn pause(&mut self) {
@@ -375,6 +400,8 @@ impl Transport {
         self.seek_to_frame(target);
     }
     fn issue_seek(&mut self, tl_frame: i64, src_frame: i32) {
+        // audio-only (QCView: `timer->seek(s)` then `m_audio->seek(s)`, playing or not): nothing lands, so no gate
+        if self.is_audio_only() { self.seek_gate = None; self.timer.seek(tl_frame as f64 / self.fps); self.slots[self.active].decoder.seek_to_frame(src_frame); let p = self.audio_position(); self.audio.seek(p); return }
         let d = &self.slots[self.active].decoder;
         self.seek_gate = Some((src_frame, d.seeks_performed(), d.published_seq(), Instant::now()));
         self.timer.seek(tl_frame as f64 / self.fps);   // immediate feedback for readouts; the landing re-seats it exactly
@@ -489,7 +516,7 @@ impl Transport {
     }
     /// The clock moves per scrub move only where QCView moves it (playlists `scrubToTimelineFrame`, image sequences `commitTime`);
     /// a single video's drag drives the scrub decoder alone and seeks the timer once, on release.
-    fn scrub_moves_clock(&self) -> bool { self.playlist_active || self.slots[self.active].decoder.as_sequence().is_some() }
+    fn scrub_moves_clock(&self) -> bool { self.playlist_active || self.slots[self.active].decoder.as_sequence().is_some() || self.is_audio_only() }   // audio-only: QCView's `commitTime` per move
     /// QCView `beginScrubAudio` / `scrubAudioMove`: the shuttle grain engine at the drag's velocity — signed source-seconds per
     /// wall second, clamped to ±32, EMA-smoothed with a dt-scaled alpha (τ = 40 ms). Speed 0 at the press: the engine's hold
     /// detection keeps it silent until the drag moves. Image sequences and clips without audio have none.
@@ -717,6 +744,8 @@ impl Transport {
         // the clip dispatch (QCView's boundary cross: the mirror sees sourceTime pass sourceOut → playlistAdvanceToClip)
         let Some((clip, src)) = self.resolve(tl.min(self.frames as i64 - 1)) else { return None };   // a gap or past the end: the picture holds
         if clip != self.slots[self.active].clip { let playing = self.timer.is_playing(); if !self.swap_to(clip, playing) { return None } }
+        // audio-only: no picture comes — the audio drift-corrects toward the clock (QCView's 33 ms pump: `m_audio->update(timer->position())`)
+        if self.is_audio_only() { if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.update(p); } return None }
         let (h, dropped) = self.slots[self.active].decoder.fetch_due(src as i32);
         self.stats.dropped += dropped;
         let h = h?;
@@ -736,6 +765,8 @@ impl Transport {
         let Some((clip, src)) = self.resolve(tl).or_else(|| { let c = self.find_non_gap_clip(0, 1)?; let k = self.clip(c)?; Some((c, k.source_in)) }) else { return };
         if clip != self.slots[self.active].clip { if !self.swap_to(clip, self.user_wants_playback) { return } }
         let a = self.active;
+        // audio-only: the audio re-seats at the wrap (QCView's pump resyncs it after the timer's native wrap)
+        if self.slots[a].decoder.is_audio_only() { if self.audio.has_audio() { let p = self.audio_position(); self.audio.seek(p); } return }
         // an image sequence wraps like QCView's frame advance (`updatePlayhead(cFrame)`, unforced): the cache's loop-seam rule
         // keeps it from being a seek — the wrapped window is already cached, and a seek's amnesty would wipe the failed ticks
         if let Some(d) = self.slots[a].decoder.as_sequence() { d.scrub_to(src as i32); self.last_shown = None; return }
@@ -774,6 +805,7 @@ impl Transport {
     pub fn hover_thumbnail(&mut self, cache: &mut crate::thumbnail_cache::TimelineThumbnailCache, tl_frame: i32, max_size: u32) -> (crate::thumbnail_cache::ThumbEntry, bool) {
         let Some((clip, src)) = self.resolve(tl_frame as i64) else { return (Default::default(), false) };
         let Some(c) = self.clip(clip) else { return (Default::default(), false) };
+        if c.media_kind == ClipMediaKind::Audio { return (Default::default(), false) }   // QCView `resolveHoverKey`: audio has no thumbnail
         if c.media_kind == ClipMediaKind::ImageSequence {
             // QCView `resolveHoverKey`'s encodeImageSeq: the key is the frame's own file at frame 0 (`?layer=` for an EXR part)
             let pattern = if c.sequence_pattern.is_empty() { c.media_path.clone() } else { c.sequence_pattern.clone() };
@@ -858,6 +890,60 @@ mod scrub_tests {
         assert_eq!(l.first(), Some(&("begin".to_string(), 0.0)), "the shuttle starts at speed 0 (silent until the drag moves)");
         assert!(l.iter().filter(|(k, _)| k == "target").all(|(_, v)| *v >= 0.0) && l.iter().any(|(k, v)| k == "target" && *v > 1.0), "a forward drag (~10 fps of frames per 16 ms) skims forward faster than 1x: {l:?}");
         assert_eq!(l.last().map(|(k, _)| k.as_str()), Some("end"));
+        let _ = std::fs::remove_file(p);
+    }
+    /// Records the normal pipeline's calls (an audio-only file: seek / play / pause / update).
+    struct Pipe(Arc<Mutex<Vec<(String, f64)>>>, bool);
+    impl AudioHooks for Pipe {
+        fn has_audio(&self) -> bool { true }
+        fn open(&mut self, _p: &str) -> bool { true }
+        fn play(&mut self) { self.0.lock().unwrap().push(("play".into(), 0.0)); }
+        fn pause(&mut self) { self.0.lock().unwrap().push(("pause".into(), 0.0)); }
+        fn seek(&mut self, s: f64) { self.0.lock().unwrap().push(("seek".into(), s)); }
+        fn set_hold(&mut self, _on: bool) { self.0.lock().unwrap().push(("hold".into(), 0.0)); }
+        fn update(&mut self, s: f64) { self.0.lock().unwrap().push(("update".into(), s)); }
+        fn begin_shuttle(&mut self, _p: &str, _s: f64, v: f64) { self.0.lock().unwrap().push(("begin".into(), v)); self.1 = true; }
+        fn end_shuttle(&mut self) { self.0.lock().unwrap().push(("end".into(), 0.0)); self.1 = false; }
+        fn shuttle_active(&self) -> bool { self.1 }
+    }
+    /// Canon row 277 (QCView's audio mode): an audio file opens as a 24-fps timeline with no picture; the wall clock runs
+    /// the playhead and the audio follows it; a seek moves both at once; a drag moves the clock per move; play stops at the end.
+    #[test]
+    fn an_audio_file_plays_on_the_wall_clock_with_no_picture() {
+        let p = std::env::temp_dir().join(format!("qcv-audio-{}.wav", std::process::id()));
+        let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "2", "-c:a", "pcm_s16le"]).arg(&p).status().map(|s| s.success()).unwrap_or(false);
+        if !ok { eprintln!("ffmpeg missing: skipped"); return }
+        let path = p.to_string_lossy().into_owned();
+        assert!(matches!(Transport::open(&Source::File(path.clone()), TransportOptions::default()), Err(Error::NoVideo)), "the video open still refuses it");
+        let mut t = Transport::open_audio(&path, TransportOptions { loop_enabled: false, ..Default::default() }).unwrap();
+        assert!(t.is_audio_only() && t.rate() == Rate::new(24, 1) && t.frame_count() == 48, "2 s at the synthetic 24 fps: {} frames at {:?}", t.frame_count(), t.rate());
+        assert_eq!((t.info().width, t.info().height), (0, 0));
+        let log = Arc::new(Mutex::new(vec![]));
+        t.set_audio(Box::new(Pipe(log.clone(), false)));
+        let calls = |l: &Arc<Mutex<Vec<(String, f64)>>>| std::mem::take(&mut *l.lock().unwrap());
+        // play: the audio starts with the clock — no hold (there is no first picture to release it)
+        let t0 = Instant::now();
+        t.play();
+        let c = calls(&log);
+        assert!(c.iter().any(|(k, _)| k == "play") && !c.iter().any(|(k, _)| k == "hold"), "{c:?}");
+        assert!(t.tick(t0).is_none() && t.tick(t0 + Duration::from_millis(500)).is_none(), "no picture, ever");
+        assert!((t.timer.position() - 0.5).abs() < 0.05, "the wall clock ran the playhead: {}", t.timer.position());
+        assert!(calls(&log).iter().any(|(k, v)| k == "update" && (*v - 0.5).abs() < 0.05), "the audio is fed the clock's position");
+        // a seek while playing moves the clock and the audio together, at once
+        t.seek_to_frame(36);
+        assert!(!t.seek_in_flight() && t.current_frame() == 36, "nothing to wait for: frame {}", t.current_frame());
+        assert!(calls(&log).iter().any(|(k, v)| k == "seek" && (*v - 1.5).abs() < 1e-6));
+        // loop off: play stops at the end
+        t.tick(t0 + Duration::from_millis(600)); t.tick(t0 + Duration::from_millis(1700));
+        assert!(!t.is_playing() && t.at_end(), "stopped at the end: playing {} at {}", t.is_playing(), t.timer.position());
+        assert!(calls(&log).iter().any(|(k, _)| k == "pause"));
+        // a drag: the clock follows every move and the skim audio runs; the release seeks the audio to the target
+        t.begin_scrub();
+        for f in [4, 8, 12] { t.scrub_to_frame(f); std::thread::sleep(Duration::from_millis(16)); }
+        assert!((t.timer.position() - 12.0 / 24.0).abs() < 1e-6, "the clock moves with the drag: {}", t.timer.position());
+        t.end_scrub();
+        let c = calls(&log);
+        assert!(c.iter().any(|(k, _)| k == "begin") && c.iter().any(|(k, _)| k == "end") && c.last() == Some(&("seek".to_string(), 0.5)), "{c:?}");
         let _ = std::fs::remove_file(p);
     }
 }

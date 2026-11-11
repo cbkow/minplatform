@@ -237,12 +237,12 @@ impl InspectorPanel {
             self.hero_key = key.clone(); self.hero = None; self.hero_raw = None; dirty = true;
             let (tx, rx) = std::sync::mpsc::channel(); self.hero_rx = Some(rx);
             let seq = p.decoder().as_sequence().is_some();
-            std::thread::Builder::new().name("qcv-hero".into()).spawn(move || {
+            if !p.is_audio_only() { std::thread::Builder::new().name("qcv-hero".into()).spawn(move || {
                 use qcv_player::ThumbLoader;
                 let px = if seq { qcv_player::min_image::load_thumbnail(&src, &layer, 480).ok().and_then(|img| qcv_player::thumbnail_cache::image_thumb(&img, 480)) }
                          else { let (file, r) = qcv_player::thumbnail_cache::split_range_key(&src); qcv_player::VideoThumbLoader::open_with(file, r).and_then(|mut l| l.load_thumbnail(frame, 480)) };
                 let _ = tx.send((key, px));
-            }).ok();
+            }).ok(); }
         }
         if let Some(rx) = &self.hero_rx && let Ok((k, px)) = rx.try_recv() { if k == self.hero_key { let seq = p.decoder().as_sequence().is_some(); self.hero = px.as_ref().map(|px| paint::image_rgba8(px.width, px.height, px.rgba8())); let _ = seq; self.hero_raw = px; self.hero_gen = u64::MAX; dirty = true; } self.hero_rx = None; }
         if let Some(rx) = &self.layer_rx { while let Ok((first, n, px)) = rx.try_recv() { if first == self.seq_layers.2 && let Some(px) = px { self.layer_thumbs.insert(n.clone(), paint::image_rgba8(px.width, px.height, px.rgba8())); self.layer_raw.insert(n, (px, u64::MAX)); dirty = true; } } }
@@ -280,7 +280,8 @@ impl InspectorPanel {
         let folder = pb.parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
         // ---- File ----
         let seq = p.decoder().as_sequence();
-        let mut file = vec![Item::Hero(if seq.is_some() { "film-strip" } else { "video" }), row("Name", name, false), row("Folder", folder, false)];
+        let mut file = vec![Item::Hero(if p.is_audio_only() { "music-notes" } else if seq.is_some() { "film-strip" } else { "video" }),   // QCView InspectorPanel: `music-notes` for audio, no thumbnail
+            row("Name", name, false), row("Folder", folder, false)];
         if let Some(b) = self.size_bytes { file.push(row("Size", fmt_bytes(b), true)); }
         // QCView's File card actions: Copy path · Reveal (a sequence: its first frame; Reveal off when the file is not reachable)
         let real = seq.map(|s| s.cache().frame_path(0)).unwrap_or_else(|| self.path.clone());
@@ -440,7 +441,7 @@ impl InspectorPanel {
         }
         // QCView: Video / Geometry / Color need `videoLoaded` (never for a sequence); Timecode needs a line; the sequence card needs a sequence
         let is_seq = seq.is_some();
-        for (gi, g) in self.groups.iter_mut().enumerate() { g.shown = match gi { 0 => true, 6 => !linked.is_empty(), 7 => is_seq, _ => !is_seq }; }
+        for (gi, g) in self.groups.iter_mut().enumerate() { g.shown = match gi { 0 => true, 6 => !linked.is_empty(), 7 => is_seq, 1..=3 | 5 => !is_seq && !p.is_audio_only(), _ => !is_seq }; }   // an audio file has no Video / Geometry / Color / Timecode card (QCView hides Video at width 0)
         for (g, items) in self.groups.iter_mut().zip([file, video, geometry, color, audio, tc, linked, sq]) { g.items = items; }
         for g in self.groups.iter_mut() { for it in g.items.iter_mut() { if let Item::Chips(c) = it { let sel = c.selected; for (j, b) in c.group.buttons.iter_mut().enumerate() { b.selected = j == sel; } } } }
     }

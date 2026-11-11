@@ -210,9 +210,28 @@ fn gpu_handle(g: Arc<min_present::GpuPlanes>, img: &Image, f: i32, fps: f64) -> 
     FrameHandle { frame, pts: f as i64, pts_us: if fps > 0.0 { (f as f64 / fps * 1e6) as i64 } else { 0 }, frame_no: f, keyframe: true, decode_ms: 0.0 }
 }
 
-/// A transport slot's decoder: a video stream, or an image sequence through the cache.
-pub enum SlotDecoder { Video(VideoDecoder), Sequence(SequenceDecoder) }
-macro_rules! both { ($s:expr, $d:ident => $e:expr) => { match $s { SlotDecoder::Video($d) => $e, SlotDecoder::Sequence($d) => $e } } }
+/// An audio-only file's place in a slot (canon row 277; QCView parks its VideoDecoder in Errored and runs the wall clock):
+/// it never has a picture — the transport's timer is the clock and the audio player follows it. It keeps the play state
+/// and the last sought frame so the slot answers like the others.
+#[derive(Default)]
+pub struct AudioOnly { playing: std::sync::atomic::AtomicBool, frame: std::sync::atomic::AtomicI32, seeks: std::sync::atomic::AtomicU32 }
+impl AudioOnly {
+    pub fn play(&self) { self.playing.store(true, std::sync::atomic::Ordering::Relaxed) }
+    pub fn pause(&self) { self.playing.store(false, std::sync::atomic::Ordering::Relaxed) }
+    pub fn is_playing(&self) -> bool { self.playing.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn state(&self) -> State { State::Decoding }
+    pub fn seek_to_frame(&self, f: i32) { self.frame.store(f, std::sync::atomic::Ordering::Relaxed); self.seeks.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    pub fn seeks_performed(&self) -> u32 { self.seeks.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn published_seq(&self) -> u64 { 0 }
+    pub fn current_frame(&self) -> i32 { self.frame.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn fetch_front(&self) -> Option<FrameHandle> { None }
+    pub fn fetch_due(&self, _f: i32) -> (Option<FrameHandle>, u32) { (None, 0) }
+    pub fn fetch_latest(&self) -> Option<FrameHandle> { None }
+}
+
+/// A transport slot's decoder: a video stream, an image sequence through the cache, or an audio-only file (no picture).
+pub enum SlotDecoder { Video(VideoDecoder), Sequence(SequenceDecoder), Audio(AudioOnly) }
+macro_rules! both { ($s:expr, $d:ident => $e:expr) => { match $s { SlotDecoder::Video($d) => $e, SlotDecoder::Sequence($d) => $e, SlotDecoder::Audio($d) => $e } } }
 impl SlotDecoder {
     pub fn play(&self) { both!(self, d => d.play()) }
     pub fn pause(&self) { both!(self, d => d.pause()) }
@@ -226,17 +245,19 @@ impl SlotDecoder {
     pub fn fetch_due(&self, f: i32) -> (Option<FrameHandle>, u32) { both!(self, d => d.fetch_due(f)) }
     pub fn fetch_latest(&self) -> Option<FrameHandle> { both!(self, d => d.fetch_latest()) }
     /// A scrub move with no scrub decoder: the video seeks, the sequence's playhead follows.
-    pub fn scrub_to(&self, f: i32) { match self { SlotDecoder::Video(d) => d.seek_to_frame(f), SlotDecoder::Sequence(d) => d.scrub_to(f) } }
-    pub fn frame_index(&self) -> Option<&Arc<FrameIndex>> { match self { SlotDecoder::Video(d) => d.frame_index(), SlotDecoder::Sequence(d) => Some(d.frame_index()) } }
-    pub fn front_is_external(&self) -> bool { match self { SlotDecoder::Video(d) => d.front_is_external(), SlotDecoder::Sequence(_) => false } }
-    pub fn queued(&self) -> usize { match self { SlotDecoder::Video(d) => d.queued(), SlotDecoder::Sequence(_) => 0 } }
+    pub fn scrub_to(&self, f: i32) { match self { SlotDecoder::Video(d) => d.seek_to_frame(f), SlotDecoder::Sequence(d) => d.scrub_to(f), SlotDecoder::Audio(d) => d.seek_to_frame(f) } }
+    pub fn frame_index(&self) -> Option<&Arc<FrameIndex>> { match self { SlotDecoder::Video(d) => d.frame_index(), SlotDecoder::Sequence(d) => Some(d.frame_index()), SlotDecoder::Audio(_) => None } }
+    pub fn front_is_external(&self) -> bool { match self { SlotDecoder::Video(d) => d.front_is_external(), _ => false } }
+    pub fn queued(&self) -> usize { match self { SlotDecoder::Video(d) => d.queued(), _ => 0 } }
     pub fn set_playback_speed(&self, s: f64) { if let SlotDecoder::Video(d) = self { d.set_playback_speed(s) } }
     pub fn set_range_override(&self, r: RangeOverride) { if let SlotDecoder::Video(d) = self { d.set_range_override(r) } }
     pub fn set_read_ahead_range(&self, first: i32, last: i32) { if let SlotDecoder::Video(d) = self { d.set_read_ahead_range(first, last) } }
-    pub fn decode_error_count(&self) -> u32 { match self { SlotDecoder::Video(d) => d.decode_error_count(), SlotDecoder::Sequence(d) => d.cache.failed_count() as u32 } }
-    pub fn last_decode_error(&self) -> String { match self { SlotDecoder::Video(d) => d.last_decode_error(), SlotDecoder::Sequence(d) => d.cache.failed_frames().first().map(|f| format!("frame {f} failed")).unwrap_or_default() } }
+    pub fn decode_error_count(&self) -> u32 { match self { SlotDecoder::Video(d) => d.decode_error_count(), SlotDecoder::Sequence(d) => d.cache.failed_count() as u32, SlotDecoder::Audio(_) => 0 } }
+    pub fn last_decode_error(&self) -> String { match self { SlotDecoder::Video(d) => d.last_decode_error(), SlotDecoder::Sequence(d) => d.cache.failed_frames().first().map(|f| format!("frame {f} failed")).unwrap_or_default(), SlotDecoder::Audio(_) => String::new() } }
     pub fn as_video(&self) -> Option<&VideoDecoder> { match self { SlotDecoder::Video(d) => Some(d), _ => None } }
     pub fn as_sequence(&self) -> Option<&SequenceDecoder> { match self { SlotDecoder::Sequence(d) => Some(d), _ => None } }
+    /// An audio-only file: no picture, ever.
+    pub fn is_audio_only(&self) -> bool { matches!(self, SlotDecoder::Audio(_)) }
 }
 
 #[cfg(test)]
