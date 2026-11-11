@@ -4600,3 +4600,8 @@ msgstr "LUT esportata con gamma video: %1"
 msgctxt "ViewportOverlay"
 msgid "That live source is already on the other side"
 msgstr "Quella sorgente live è già sull'altro lato"
+
+#. drafted 2026-11-11, unreviewed
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265"
+msgstr "Scrub hardware per h264/h265"

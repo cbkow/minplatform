@@ -4592,3 +4592,8 @@ msgstr "LUT 已导出（含视频伽马）：%1"
 msgctxt "ViewportOverlay"
 msgid "That live source is already on the other side"
 msgstr "该实时源已在另一侧"
+
+#. drafted 2026-11-11, unreviewed
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265"
+msgstr "h264/h265 硬件搓擦"

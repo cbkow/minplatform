@@ -4592,3 +4592,8 @@ msgstr "비디오 감마를 포함해 LUT 내보냄: %1"
 msgctxt "ViewportOverlay"
 msgid "That live source is already on the other side"
 msgstr "해당 라이브 소스는 이미 반대쪽에 있습니다"
+
+#. drafted 2026-11-11, unreviewed
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265"
+msgstr "h264/h265 하드웨어 스크럽"

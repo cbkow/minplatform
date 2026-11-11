@@ -4608,3 +4608,8 @@ msgstr "LUT експортовано з відеогамою: %1"
 msgctxt "ViewportOverlay"
 msgid "That live source is already on the other side"
 msgstr "Це джерело наживо вже на іншому боці"
+
+#. drafted 2026-11-11, unreviewed
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265"
+msgstr "Апаратний скраб для h264/h265"

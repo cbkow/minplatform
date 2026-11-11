@@ -4592,3 +4592,8 @@ msgstr "ビデオガンマ付きでLUTを書き出しました: %1"
 msgctxt "ViewportOverlay"
 msgid "That live source is already on the other side"
 msgstr "そのライブソースはすでに反対側にあります"
+
+#. drafted 2026-11-11, unreviewed
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265"
+msgstr "h264/h265のハードウェアスクラブ"

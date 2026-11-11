@@ -4608,3 +4608,8 @@ msgstr "Wyeksportowano LUT z gammą wideo: %1"
 msgctxt "ViewportOverlay"
 msgid "That live source is already on the other side"
 msgstr "To źródło na żywo jest już po drugiej stronie"
+
+#. drafted 2026-11-11, unreviewed
+msgctxt "LeftRail"
+msgid "Hardware scrub for h264/h265"
+msgstr "Sprzętowy scrub h264/h265"

@@ -70,7 +70,7 @@ impl SettingsPanel {
                 threads,
                 hw,
                 num(k::SCRUB_CACHE_MB, "Scrub cache size (MB)", "Decoded frames kept near the playhead while scrubbing; applies on the next open.", true, 128, 4096, 128),
-                sw(k::HW_SCRUB_INTER, "Hardware scrub for h264/h265 (experimental)", "GPU decode while scrubbing h264/h265; applies on the next open.", true),
+                sw(k::HW_SCRUB_INTER, "Hardware scrub for h264/h265", "GPU decode while scrubbing h264/h265; applies on the next open.", true),
             ] },
             Group { title: tr("Interface"), header: Rect::ZERO, rows: vec![
                 pick(k::LANGUAGE, "Language", "Language of the interface. System default follows the OS setting. Applies at once.", true, LANG_NAMES, LANG_CODES),
