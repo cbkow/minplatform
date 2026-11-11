@@ -77,6 +77,8 @@ impl Sidebar {
     fn row_at(&self, x: f64, y: f64) -> Option<usize> { let c = self.rail.content_rect(); if !c.contains(kurbo::Point::new(x, y)) { return None } let i = ((y - c.y0 + self.rail.scroll) / (ROW * self.scale)).floor(); (i >= 0.0 && (i as usize) < self.rows.len()).then_some(i as usize) }
     /// The row under a window point (the context menu's target).
     pub fn id_at(&self, x: f64, y: f64) -> Option<BlockId> { self.row_at(x, y).map(|i| self.rows[i].id) }
+    /// The pointer is over the name being edited (the I-beam's place in the tree).
+    pub fn over_field(&self, x: f64, y: f64) -> bool { self.rename.as_ref().is_some_and(|(_, f)| f.hit(x, y)) }
     pub fn renaming(&self) -> bool { self.rename.is_some() }
     pub fn start_rename(&mut self, id: BlockId, fonts: &mut Fonts) {
         let Some(r) = self.row(id) else { return }; let text = if r.named { r.title.clone() } else { String::new() };

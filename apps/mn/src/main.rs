@@ -86,7 +86,9 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { /// the colour palette (row 301) and the last Background colour (Shift+Cmd+H applies it)
+struct App { /// the pointer's shape as last set, and whether it is hidden (it hides while text is typed, until it moves)
+    cursor: winit::cursor::CursorIcon, cursor_hidden: bool,
+    /// the colour palette (row 301) and the last Background colour (Shift+Cmd+H applies it)
     pal: colours::Colours, last_bg: String, /// MN_PALETTE=type|background|picker: the palette is opened by the app itself, for a screenshot
     show_pal: Option<String>,
     /// the tree's context menu and the row it was opened on (None: the empty part of the sidebar)
@@ -388,6 +390,22 @@ impl App {
         let expect = mn_store::share::fingerprint_if_present(&path).ok().flatten();
         self.saving = Some(Saving { attempt: 0, expect, to: Some(path), merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
+    }
+    /// The pointer's shape for where it is (row 302): the I-beam over the page and over a name being edited, the
+    /// resize arrows on the sidebar's edge (kept while it is dragged), the arrow over everything else.
+    fn set_cursor(&mut self) {
+        use winit::cursor::CursorIcon as C;
+        let Some(g) = self.gpu.as_ref() else { return };
+        let (x, y) = self.pointer; let (w, h) = g.presenter.size();
+        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open();
+        let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
+            else if over_ui || self.blank { C::Default }
+            else if self.sidebar.as_ref().is_some_and(|sb| sb.over_field(x, y)) { C::Text }
+            else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(x, y)) || self.bar.hit(x, y) || self.foot.hit(x, y) { C::Default }
+            else if x >= self.side_w && x < w as f64 && y >= self.top && y < h as f64 - self.bottom { C::Text }
+            else { C::Default };
+        if want != self.cursor { self.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
+        if self.cursor_hidden { self.cursor_hidden = false; g.window.set_cursor_visible(true); }
     }
     /// A chip of the toolbar was pressed: the palette opens under it for that role.
     fn open_colours(&mut self, role: mn_doc::MarkKind, tool: toolbar::Tool) {
@@ -811,10 +829,12 @@ impl ApplicationHandler for App {
                 self.scroll -= match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 };
                 g.window.request_redraw();
             },
-            WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
-                if !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y }) { return }
+                let taken = !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y });
+                self.set_cursor();
+                if taken { return }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
@@ -824,7 +844,7 @@ impl ApplicationHandler for App {
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
-                if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { return }
+                if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
                 self.pressed = state == ElementState::Pressed;
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() {
                     let (x, y) = self.note_point(self.pointer);
@@ -843,7 +863,10 @@ impl ApplicationHandler for App {
                     if fate == KeyFate::Replaced { self.accent_popup = false; return }
                     if !self.mods.1 && fate == KeyFate::Swallowed && (event.repeat || self.accent_popup) { self.accent_popup = true; return }
                     self.accent_popup = false; }
-                let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
+                let text = event.text.as_ref().map(|t| t.to_string());
+                // typing into the note hides the pointer until it moves again
+                if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
+                self.key(&event.logical_key, text.as_deref()); }
             WindowEvent::Ime(e) => {
                 if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.renaming() { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None }; if let Some(ev) = ev { sb.ime(&ev, &mut g.fonts); g.window.request_redraw(); } return } }
                 let now = self.now_ms(); let d = match e {
@@ -959,7 +982,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
