@@ -6,7 +6,9 @@
 //! across blocks, columns and table cells. Every edit goes through `mn_doc::change` — one history, and a typed burst
 //! is one undo step (row 275).
 use kurbo::Rect;
-use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Rank, Spans};
+use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Mark, Rank, Spans};
+
+mod markdown;
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
 
@@ -36,6 +38,9 @@ pub struct Editor {
     /// the selection before and after each undo step, alongside the history's steps
     marks: Vec<(Option<Selection>, Option<Selection>)>,
     redo_marks: Vec<(Option<Selection>, Option<Selection>)>,
+    /// Marks switched on (true) or off (false) for the next typed run, with no selection (Cmd+B and then typing);
+    /// forgotten when the caret moves.
+    armed: Vec<(Mark, bool)>,
 }
 
 /// Changes built one after another, each against the document as the ones before it leave it.
@@ -52,9 +57,9 @@ fn next_char(s: &str, at: usize) -> usize { s[at..].chars().next().map(|c| at + 
 fn paragraph(parent: Option<BlockId>, text: &str) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind: Kind::Paragraph, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] } }
 
 impl Editor {
-    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![] } }
+    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![] } }
     pub fn selection(&self) -> Option<Selection> { self.sel }
-    pub fn set_selection(&mut self, s: Option<Selection>) { self.sel = s.map(|s| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }); self.goal_x = None; self.upstream = false; }
+    pub fn set_selection(&mut self, s: Option<Selection>) { self.sel = s.map(|s| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }); self.goal_x = None; self.upstream = false; self.armed.clear(); }
     /// A position made legal: on a character boundary, inside the block, and never inside a chip.
     fn valid(&self, p: Pos) -> Pos {
         let Some(b) = self.doc.get(p.block) else { return p };
@@ -75,7 +80,7 @@ impl Editor {
         let Some((block, at)) = layout.hit(&self.doc, x, y) else { return };
         let p = self.valid(Pos { block, at });
         self.sel = Some(match (extend, self.sel) { (true, Some(s)) => Selection { anchor: s.anchor, focus: p }, _ => Selection::caret(p) });
-        self.goal_x = None; self.upstream = false;
+        self.goal_x = None; self.upstream = false; self.armed.clear();
     }
     /// The word under a point (a double click).
     pub fn point_word(&mut self, layout: &NoteLayout, x: f64, y: f64) {
@@ -90,6 +95,7 @@ impl Editor {
     // ── moving
     pub fn move_caret(&mut self, layout: &NoteLayout, m: Move, extend: bool) {
         let Some(s) = self.sel else { return };
+        self.armed.clear();
         // without Shift, Left / Right on a range go to that end of it
         if !extend && !s.is_caret() && matches!(m, Move::Left | Move::Right) { let (a, b) = self.ordered().unwrap(); self.sel = Some(Selection::caret(if m == Move::Left { a } else { b })); self.goal_x = None; return }
         let from = s.focus; let l = leaves(&self.doc);
@@ -189,10 +195,13 @@ impl Editor {
         Ok(if structural { Dirty::Structure } else { Dirty::Blocks(ids) })
     }
     /// Typed or pasted text replaces the selection. In a block without text it starts a paragraph beside it. A line
-    /// break inside the text splits the block (stays a line break in a code block).
+    /// break inside the text splits the block (stays a line break in a code block). Armed marks (Cmd+B with no
+    /// selection) apply to what is typed; a typed Markdown marker that completes a pattern converts it (as a step of its
+    /// own, so one undo gives the typed characters back).
     pub fn insert(&mut self, text: &str, now_ms: u64) -> Result<Dirty, ChangeError> {
         let mut b = self.batch();
         let Some(mut p) = self.delete_selection(&mut b)? else { return Ok(Dirty::Nothing) };
+        let armed = std::mem::take(&mut self.armed);
         for (n, line) in text.replace("\r\n", "\n").replace('\r', "\n").split('\n').enumerate() {
             let blk = b.scratch.get(p.block).ok_or(mn_doc::TreeError::UnknownBlock(p.block))?.clone();
             if !blk.kind.is_text() {
@@ -201,13 +210,79 @@ impl Editor {
             }
             if n > 0 {
                 if matches!(blk.kind, Kind::Code { .. }) { b.edit(p.block, p.at, 0, "\n")?; p.at += 1; }
+                else if let Some(done) = markdown::on_enter(&mut b, p)? { p = done; }
                 else { let (c, new) = Change::split(&b.scratch, p.block, p.at)?; for x in c { b.push(x)?; } p = Pos { block: new, at: 0 }; }
             }
             let at = b.scratch.get(p.block).map(|x| x.spans.snap_out_of_chip(p.at)).unwrap_or(p.at);
-            if !line.is_empty() { b.edit(p.block, at, 0, line)?; }
+            if !line.is_empty() {
+                let mut c = Change::edit(&b.scratch, p.block, at, 0, line)?;
+                // the armed marks ride in the same change, so a typed run stays one undo step
+                if let Change::Text { new_spans, .. } = &mut c { if !matches!(b.scratch.get(p.block).map(|x| &x.kind), Some(Kind::Code { .. })) { for (m, on) in &armed { if *on { new_spans.put(at, at + line.len(), m.clone()) } else { new_spans.remove(at, at + line.len(), m.kind()) } } } }
+                b.push(c)?;
+            }
             p = Pos { block: p.block, at: at + line.len() };
         }
-        self.commit(b, Some(p), now_ms)
+        let typed_one = text.chars().count() == 1;
+        let d = self.commit(b, Some(p), now_ms)?;
+        self.armed = armed;   // still armed while the run goes on
+        // Markdown as you type: only a single typed character can complete a pattern (never a paste)
+        if typed_one { if let Some(d2) = self.markdown(text, now_ms)? { return Ok(match (d, d2) { (Dirty::Structure, _) | (_, Dirty::Structure) => Dirty::Structure, (Dirty::Blocks(mut a), Dirty::Blocks(x)) => { a.extend(x); a.dedup(); Dirty::Blocks(a) } (a, Dirty::Nothing) => a, (Dirty::Nothing, x) => x }) } }
+        Ok(d)
+    }
+    fn markdown(&mut self, typed: &str, now_ms: u64) -> Result<Option<Dirty>, ChangeError> {
+        let Some(s) = self.sel.filter(|s| s.is_caret()) else { return Ok(None) };
+        let mut b = self.batch();
+        let Some(after) = markdown::on_char(&mut b, s.focus, typed)? else { return Ok(None) };
+        let armed = std::mem::take(&mut self.armed);
+        // far enough in time from the typing that the two never join: the conversion is its own undo step
+        let d = self.commit(b, Some(after), now_ms + mn_doc::change::JOIN_MS + 1)?; self.armed = armed;
+        Ok(Some(d))
+    }
+    /// Cmd+B and its kin. With a selection: the mark goes ON over all of it unless it already covers all of it, then
+    /// OFF (one decision for the whole selection, across blocks). With a caret: the mark is armed for what is typed next.
+    pub fn toggle_mark(&mut self, mark: Mark, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((a, z)) = self.ordered() else { return Ok(Dirty::Nothing) };
+        if a == z {
+            let here = self.doc.get(a.block).map(|blk| a.at > 0 && blk.spans.covers(prev_char(&blk.text, a.at), a.at, &mark) && blk.spans.covers(a.at, next_char(&blk.text, a.at).max(a.at + 1), &mark)).unwrap_or(false);
+            match self.armed.iter().position(|(m, _)| m.kind() == mark.kind()) { Some(i) => { self.armed.remove(i); } None => self.armed.push((mark, !here)) }
+            return Ok(Dirty::Nothing)
+        }
+        let ranges = self.text_ranges(a, z);
+        let all = !ranges.is_empty() && ranges.iter().all(|(id, s, e)| self.doc.get(*id).is_some_and(|blk| blk.spans.covers(*s, *e, &mark)));
+        self.format(ranges, |sp, s, e| if all { sp.remove(s, e, mark.kind()) } else { sp.put(s, e, mark.clone()) }, now_ms)
+    }
+    /// Cmd+\: every mark but choice chips leaves the selection.
+    pub fn clear_formatting(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((a, z)) = self.ordered() else { return Ok(Dirty::Nothing) }; if a == z { self.armed.clear(); return Ok(Dirty::Nothing) }
+        let ranges = self.text_ranges(a, z); self.format(ranges, |sp, s, e| sp.clear(s, e), now_ms)
+    }
+    /// The selected stretch of every text block in the selection that takes formatting (not code blocks).
+    fn text_ranges(&self, a: Pos, z: Pos) -> Vec<(BlockId, usize, usize)> {
+        let l = leaves(&self.doc); let (Some(i), Some(j)) = (l.iter().position(|x| *x == a.block), l.iter().position(|x| *x == z.block)) else { return vec![] };
+        l[i..=j].iter().filter_map(|id| { let blk = self.doc.get(*id)?; if !blk.kind.is_text() || matches!(blk.kind, Kind::Code { .. }) { return None } let (s, e) = (if *id == a.block { a.at } else { 0 }, if *id == z.block { z.at } else { blk.text.len() }); (e > s).then_some((*id, s, e)) }).collect()
+    }
+    fn format(&mut self, ranges: Vec<(BlockId, usize, usize)>, f: impl Fn(&mut Spans, usize, usize), now_ms: u64) -> Result<Dirty, ChangeError> {
+        let mut b = self.batch();
+        for (id, s, e) in ranges { let old = b.scratch.get(id).unwrap().spans.clone(); let mut new = old.clone(); f(&mut new, s, e); if new != old { b.push(Change::Format { id, old, new })?; } }
+        let keep = self.sel; let d = self.commit(b, None, now_ms)?; self.sel = keep;
+        if let Some(m) = self.marks.last_mut() { if d != Dirty::Nothing { m.1 = keep; } }
+        Ok(d)
+    }
+    /// Tab / Shift+Tab: the list items in the selection go one level in or out (0…8). False when there was no list item
+    /// (the caller may then give the key another meaning).
+    pub fn indent(&mut self, out: bool, now_ms: u64) -> Result<Option<Dirty>, ChangeError> {
+        let Some((a, z)) = self.ordered() else { return Ok(None) };
+        let l = leaves(&self.doc); let (Some(i), Some(j)) = (l.iter().position(|x| *x == a.block), l.iter().position(|x| *x == z.block)) else { return Ok(None) };
+        let mut b = self.batch(); let mut any = false;
+        for id in &l[i..=j] {
+            let old = self.doc.get(*id).unwrap().kind.clone();
+            let step = |d: u8| if out { d.saturating_sub(1) } else { (d + 1).min(8) };
+            let new = match &old { Kind::Bullet { depth } => Kind::Bullet { depth: step(*depth) }, Kind::Numbered { depth } => Kind::Numbered { depth: step(*depth) }, Kind::Task { depth, state } => Kind::Task { depth: step(*depth), state: *state }, _ => continue };
+            any = true; if new != old { b.push(Change::Kind { id: *id, old, new })?; }
+        }
+        if !any { return Ok(None) }
+        let keep = self.sel; let d = self.commit(b, None, now_ms)?; self.sel = keep; if let Some(m) = self.marks.last_mut() { if d != Dirty::Nothing { m.1 = keep; } }
+        Ok(Some(d))
     }
     /// Enter.
     pub fn enter(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> { self.insert("\n", now_ms) }
@@ -362,5 +437,80 @@ mod tests {
         let w = t.l.caret(&t.e.doc, t.ids[1], LONG.find("wide").unwrap() + 2, 1.0).unwrap();
         t.e.point_word(&t.l, w.x0, w.center().y);
         assert_eq!(t.e.selected_text().trim(), "wide");
+    }
+
+    // ── row 289: formatting by command and by Markdown
+    fn blank() -> T { let mut d = Doc::new(); let ids = vec![add(&mut d, None, Kind::Paragraph, "")]; let mut f = Fonts::new(); let l = NoteLayout::build(&d, &mut f, &Style::default(), 400.0, 1.0); let mut t = T { e: Editor::new(d), f, l, ids, now: 0 }; t.at(0, 0); t }
+    impl T {
+        /// Typed one character at a time, 20 ms apart (a run).
+        fn keys(&mut self, s: &str) { self.now += 1000; for ch in s.chars() { self.now += 20; let d = if ch == '\n' { self.e.enter(self.now) } else { self.e.insert(&ch.to_string(), self.now) }.unwrap(); self.relay(d); } }
+        fn cur(&self) -> &Block { self.e.doc.get(self.e.selection().unwrap().focus.block).unwrap() }
+        fn marks(&self) -> Vec<(usize, usize, Mark)> { self.cur().spans.as_slice().iter().map(|s| (s.start, s.end, s.mark.clone())).collect() }
+    }
+    #[test]
+    fn inline_markdown_converts_on_its_closing_marker_and_one_undo_gives_the_characters_back() {
+        let mut t = blank();
+        t.keys("a **bold** b");
+        assert_eq!((t.cur().text.as_str(), t.marks()), ("a bold b", vec![(2, 6, Mark::Bold)]));
+        t.keys(" *it* `co de` ~~gone~~ _em_ __strong__");
+        assert_eq!(t.cur().text, "a bold b it co de gone em strong");
+        let kinds: Vec<Mark> = t.marks().into_iter().map(|m| m.2).collect();
+        assert_eq!(kinds, [Mark::Bold, Mark::Bold, Mark::Italic, Mark::Italic, Mark::Code, Mark::Strike]);
+        t.keys(" [site](https://example.com)");
+        assert!(t.cur().text.ends_with(" site") && t.marks().iter().any(|m| m.2 == Mark::Link("https://example.com".into()) && m.1 - m.0 == 4));
+        // one undo: the link is literal Markdown again; the caret after it
+        t.e.undo().unwrap(); assert!(t.cur().text.ends_with("[site](https://example.com)"));
+        // what must NOT convert: a lone or spaced asterisk, snake_case, a marker inside inline code, anything in a code block
+        let mut t = blank(); t.keys("2 * 3 * 4 and a*b snake_case_name x_ y_");
+        assert_eq!((t.cur().text.as_str(), t.marks()), ("2 * 3 * 4 and a*b snake_case_name x_ y_", vec![]));
+        let mut t = blank(); t.keys("`a*b` c*"); assert_eq!(t.cur().text, "a*b c*");
+        let mut t = blank(); t.keys("```\n**no**"); assert_eq!((&t.cur().kind, t.cur().text.as_str()), (&Kind::Code { lang: String::new() }, "**no**"));
+    }
+    #[test]
+    fn block_prefixes_convert_on_their_space_and_lists_behave() {
+        for (typed, kind) in [("# ", Kind::Heading { level: 1 }), ("### ", Kind::Heading { level: 3 }), ("> ", Kind::Quote), ("- ", Kind::Bullet { depth: 0 }), ("* ", Kind::Bullet { depth: 0 }), ("12. ", Kind::Numbered { depth: 0 }), ("[] ", Kind::Task { depth: 0, state: 0 }), ("- [x] ", Kind::Task { depth: 0, state: 2 }), ("- [/] ", Kind::Task { depth: 0, state: 1 })] {
+            let mut t = blank(); t.keys(typed); t.keys("x");
+            assert_eq!((&t.cur().kind, t.cur().text.as_str()), (&kind, "x"), "{typed:?}");
+        }
+        // not in the middle of a line, and one undo gives the prefix back
+        let mut t = blank(); t.keys("a # b"); assert_eq!((&t.cur().kind, t.cur().text.as_str()), (&Kind::Paragraph, "a # b"));
+        let mut t = blank(); t.keys("# "); t.e.undo().unwrap(); assert_eq!((&t.cur().kind, t.cur().text.as_str()), (&Kind::Paragraph, "# "));
+        // a list: Enter continues it, Tab nests, Enter on an empty item steps out and then leaves the list
+        let mut t = blank(); t.keys("- one\ntwo"); assert_eq!((&t.cur().kind, t.e.doc.children(None).len()), (&Kind::Bullet { depth: 0 }, 2));
+        t.now += 1000; let d = t.e.indent(false, t.now).unwrap().unwrap(); t.relay(d); assert_eq!(t.cur().kind, Kind::Bullet { depth: 1 });
+        t.keys("\n"); assert_eq!((&t.cur().kind, t.cur().text.as_str()), (&Kind::Bullet { depth: 1 }, ""));
+        t.keys("\n"); assert_eq!(t.cur().kind, Kind::Bullet { depth: 0 });
+        t.keys("\n"); assert_eq!((&t.cur().kind, t.e.doc.children(None).len()), (&Kind::Paragraph, 3));
+        assert_eq!(t.e.indent(false, t.now).unwrap(), None);                                            // Tab in a paragraph is not an indent
+        // Enter after ```lang makes a code block; after --- a divider with a paragraph to go on in
+        let mut t = blank(); t.keys("```rust\nlet x;"); assert_eq!((&t.cur().kind, t.cur().text.as_str(), t.e.doc.children(None).len()), (&Kind::Code { lang: "rust".into() }, "let x;", 1));
+        let mut t = blank(); t.keys("---\nnext");
+        let kinds: Vec<Kind> = t.e.doc.children(None).iter().map(|c| t.e.doc.get(*c).unwrap().kind.clone()).collect();
+        assert_eq!((kinds, t.cur().text.as_str()), (vec![Kind::Divider, Kind::Paragraph], "next"));
+    }
+    #[test]
+    fn a_command_toggles_a_mark_over_the_selection_or_arms_it_for_typing() {
+        let mut t = setup();
+        // across two blocks: on over all of it; again: off
+        t.e.set_selection(Some(Selection { anchor: Pos { block: t.ids[0], at: 2 }, focus: Pos { block: t.ids[1], at: 9 } }));
+        let d = t.e.toggle_mark(Mark::Bold, 1000).unwrap(); assert!(matches!(d, Dirty::Blocks(ref v) if v.len() == 2)); t.relay(d);
+        let covered = |t: &T| (t.e.doc.get(t.ids[0]).unwrap().spans.covers(2, 5, &Mark::Bold), t.e.doc.get(t.ids[1]).unwrap().spans.covers(0, 9, &Mark::Bold));
+        assert_eq!(covered(&t), (true, true));
+        assert_eq!(t.e.selection().unwrap().focus, Pos { block: t.ids[1], at: 9 });                    // the selection stays
+        // partly covered → on over all; fully covered → off
+        t.e.set_selection(Some(Selection { anchor: Pos { block: t.ids[1], at: 5 }, focus: Pos { block: t.ids[1], at: 20 } }));
+        let d = t.e.toggle_mark(Mark::Bold, 2000).unwrap(); t.relay(d); assert!(t.e.doc.get(t.ids[1]).unwrap().spans.covers(0, 20, &Mark::Bold));
+        let d = t.e.toggle_mark(Mark::Bold, 3000).unwrap(); t.relay(d); assert!(!t.e.doc.get(t.ids[1]).unwrap().spans.covers(5, 6, &Mark::Bold) && t.e.doc.get(t.ids[1]).unwrap().spans.covers(0, 5, &Mark::Bold));
+        t.e.set_selection(Some(Selection { anchor: Pos { block: t.ids[0], at: 0 }, focus: Pos { block: t.ids[1], at: 30 } }));
+        let d = t.e.clear_formatting(4000).unwrap(); t.relay(d); assert!(t.e.doc.get(t.ids[0]).unwrap().spans.is_empty() && t.e.doc.get(t.ids[1]).unwrap().spans.is_empty());
+        t.e.undo().unwrap(); assert!(t.e.doc.get(t.ids[1]).unwrap().spans.covers(0, 5, &Mark::Bold));
+        // armed: Cmd+B, Cmd+I, type — the run is bold italic and ONE undo step; moving the caret disarms
+        let mut t = blank(); t.keys("plain ");
+        t.e.toggle_mark(Mark::Bold, t.now).unwrap(); t.e.toggle_mark(Mark::Italic, t.now).unwrap();
+        let steps = t.e.history.steps(); t.keys("loud");
+        assert_eq!((t.cur().text.as_str(), t.marks(), t.e.history.steps()), ("plain loud", vec![(6, 10, Mark::Bold), (6, 10, Mark::Italic)], steps + 1));
+        t.e.toggle_mark(Mark::Bold, t.now).unwrap(); t.keys("er");                                      // Cmd+B again inside the run: off for what follows
+        assert_eq!(t.marks(), vec![(6, 10, Mark::Bold), (6, 12, Mark::Italic)]);
+        t.mv(Move::Left, false); t.mv(Move::Right, false); t.keys("!"); assert_eq!(t.marks(), vec![(6, 10, Mark::Bold), (6, 12, Mark::Italic)]);
     }
 }

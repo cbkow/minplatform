@@ -1,7 +1,9 @@
 //! minNotes on the platform — step 2 (canon rows 286, 287): ONE note, laid out by `mn-layout`, drawn into the UI layer
 //! over QCView's presenter (the window surface the embedded player will draw its HDR picture into), edited through
 //! `mn-edit`: click, drag and double-click select; the arrows (Alt = by word, Cmd / Ctrl = line and note ends, Shift
-//! extends), typing, Enter, Backspace / Delete, undo / redo, select all, and plain-text cut / copy / paste. Nothing is
+//! extends), typing, Enter, Backspace / Delete, undo / redo, select all, and plain-text cut / copy / paste;
+//! formatting by command (Cmd / Ctrl+B I U E, Shift+X strike, Shift+H highlight, \\ clear) and by Markdown as it is
+//! typed (row 289); Tab / Shift+Tab nest list items. Nothing is
 //! saved; input methods and the desktop text element come next.
 //!   minNotes <file.mnd>              a collection (rows 271, 272): opened through a private staged copy; its first note
 //!                                    (or `--note <title>`) is edited. Edits are autosaved to the staging only; Cmd / Ctrl+S
@@ -174,6 +176,12 @@ impl App {
             Key::Named(NamedKey::Enter) => self.ed.enter(now).unwrap_or(Dirty::Nothing),
             Key::Named(NamedKey::Backspace) => self.ed.delete(false, now).unwrap_or(Dirty::Nothing),
             Key::Named(NamedKey::Delete) => self.ed.delete(true, now).unwrap_or(Dirty::Nothing),
+            Key::Named(NamedKey::Tab) => match self.ed.indent(shift, now).unwrap_or(None) { Some(d) => d, None => return },
+            // formatting by command (row 289; the Qt app's keys): with a selection it toggles, with a caret it arms
+            Key::Character(c) if cmd && shift && c.to_lowercase() == "x" => self.ed.toggle_mark(Mark::Strike, now).unwrap_or(Dirty::Nothing),
+            Key::Character(c) if cmd && shift && c.to_lowercase() == "h" => self.ed.toggle_mark(Mark::Highlight("#5B4B00".into()), now).unwrap_or(Dirty::Nothing),
+            Key::Character(c) if cmd && matches!(c.to_lowercase().as_str(), "b" | "i" | "u" | "e" | "\\") => match c.to_lowercase().as_str() {
+                "b" => self.ed.toggle_mark(Mark::Bold, now), "i" => self.ed.toggle_mark(Mark::Italic, now), "u" => self.ed.toggle_mark(Mark::Underline, now), "e" => self.ed.toggle_mark(Mark::Code, now), _ => self.ed.clear_formatting(now) }.unwrap_or(Dirty::Nothing),
             Key::Character(c) if cmd => match c.to_lowercase().as_str() {
                 "a" => { self.ed.select_all(); Dirty::Nothing }
                 "s" => { self.save(); return }
