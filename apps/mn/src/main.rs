@@ -84,7 +84,7 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { bar: toolbar::Toolbar, /// the band spans the window (the sidebar starts below it) rather than only the page
+struct App { pointer_here: bool, bar: toolbar::Toolbar, /// the band spans the window (the sidebar starts below it) rather than only the page
     bar_wide: bool, /// the page's top: the band's height, physical px
     top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
     blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
@@ -505,12 +505,14 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
+        // the floating carets (the band's, the sidebar's) show while the pointer is in the window: a frame is owed when that changes
+        let here = !matches!(e, min_ui::Event::Leave);
+        if here != self.pointer_here { self.pointer_here = here; if let Some(sb) = self.sidebar.as_mut() { sb.rail.set_pointer_present(here, now); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         let on_rail_tab = !self.bar_wide && self.sidebar.is_some() && e.pos().is_some_and(|(x, y)| { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (m, sz) = (min_theme::tokens::SPACING_75 as f64 * s, min_theme::tokens::COMPONENT_HEIGHT_75 as f64 * s); x >= self.side_w + m && x <= self.side_w + m + sz && y >= m && y <= m + sz });
         let (tools, on_bar) = if on_rail_tab { self.bar.event(&min_ui::Event::Move { x: -1.0, y: -1.0 }, now) } else { self.bar.event(&e, now) };
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
         // the rail's floating tab (the caret that reopens a folded sidebar, as in QCView) shows while the pointer is in the window
-        sb.rail.set_pointer_present(!matches!(e, min_ui::Event::Leave), now);
         let (a, taken) = sb.event(&e, &mut g.fonts, now);
         if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; }
         self.act(a); taken
@@ -668,7 +670,9 @@ impl ApplicationHandler for App {
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if let Some(at) = self.bar.next_change(Instant::now()) { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
-        #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); } }
+        #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
+            // a command changes what is shown, and no window event follows it to ask for the frame
+            if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(t) = self.geom_moved { let due = t + std::time::Duration::from_millis(150); if Instant::now() >= due { self.geom_moved = None; #[cfg(target_os = "macos")] text_element::relaid(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
         // a dialog's answer, or a save that was to be followed by closing, ended the session
         if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return }
@@ -846,7 +850,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { pointer_here: false, bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
