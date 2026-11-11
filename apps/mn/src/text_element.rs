@@ -44,6 +44,8 @@ thread_local! {
     static AREA: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
     static BAR: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
     static BELOW: Cell<*const AnyClass> = const { Cell::new(std::ptr::null()) };
+    // something stands over the note (a dialog, a name being edited): the text is not the focused element and gives no geometry
+    static OBSCURED: Cell<bool> = const { Cell::new(false) };
     // what the system's text input did with the key being handled (see `key_fate`)
     static INSERTED: Cell<bool> = const { Cell::new(false) };
     static COMMAND: Cell<bool> = const { Cell::new(false) };
@@ -88,7 +90,8 @@ unsafe extern "C-unwind" fn sel_range(_: &AnyObject, _: Sel) -> NSRange { let (l
 unsafe extern "C-unwind" fn sel_text(_: &AnyObject, _: Sel) -> *mut NSString { let s = host().map(|h| { let (l, n) = h.ax_selection(); h.ax_substring(l, n) }).unwrap_or_default(); log("selectedText", String::new()); nsstr(&s) }
 unsafe extern "C-unwind" fn set_sel_range(_: &AnyObject, _: Sel, r: NSRange) { log("setSelectedTextRange", format!("{{{},{}}}", r.location, r.length)); if let Some(h) = host() { h.ax_set_selection(r.location, r.length); } }
 unsafe extern "C-unwind" fn string_for(_: &AnyObject, _: Sel, r: NSRange) -> *mut NSString { log("stringForRange", String::new()); nsstr(&host().map(|h| h.ax_substring(r.location, r.length)).unwrap_or_default()) }
-unsafe extern "C-unwind" fn frame_for(_: &AnyObject, _: Sel, r: NSRange) -> NSRect { log("frameForRange", format!("{{{},{}}}", r.location, r.length)); host().map(|h| to_screen(h.ax_range_rect(r.location, r.length))).unwrap_or(ZERO) }
+unsafe extern "C-unwind" fn focused_now(_: &AnyObject, _: Sel) -> Bool { Bool::new(!OBSCURED.get()) }
+unsafe extern "C-unwind" fn frame_for(_: &AnyObject, _: Sel, r: NSRange) -> NSRect { log("frameForRange", format!("{{{},{}}}", r.location, r.length)); if OBSCURED.get() { return ZERO } host().map(|h| to_screen(h.ax_range_rect(r.location, r.length))).unwrap_or(ZERO) }
 unsafe extern "C-unwind" fn visible_range(_: &AnyObject, _: Sel) -> NSRange { NSRange::new(0, host().map(|h| h.ax_len16()).unwrap_or(0)) }
 // Declared because a text element answers them; the note reads as one "line" until a screen reader's needs are taken up.
 unsafe extern "C-unwind" fn zero(_: &AnyObject, _: Sel) -> isize { 0 }
@@ -115,7 +118,7 @@ unsafe extern "C-unwind" fn v_children(this: &AnyObject, _: Sel) -> *mut AnyObje
     unsafe { let below: *mut AnyObject = msg_send![super(this, &*BELOW.get()), accessibilityChildren];
         if below.is_null() { msg_send![objc2::class!(NSArray), arrayWithObject: AREA.get()] } else { msg_send![below, arrayByAddingObject: AREA.get()] } }
 }
-unsafe extern "C-unwind" fn v_focus(_: &AnyObject, _: Sel) -> *mut AnyObject { log("view.focusedUIElement", String::new()); TEXT.get() }
+unsafe extern "C-unwind" fn v_focus(_: &AnyObject, _: Sel) -> *mut AnyObject { log("view.focusedUIElement", String::new()); if OBSCURED.get() { return std::ptr::null_mut() } TEXT.get() }
 unsafe extern "C-unwind" fn v_hit(_: &AnyObject, _: Sel, _p: NSPoint) -> *mut AnyObject { TEXT.get() }
 
 // ── the view's text input: winit forwards a key to the app whatever the system's text input made of it. Two of the
@@ -176,7 +179,7 @@ pub fn install(host: *mut dyn TextHost, view: *mut AnyObject) {
             b.add_method(sel!(accessibilityTopLevelUIElement), window as unsafe extern "C-unwind" fn(_, _) -> _);
         };
         let mut b = element(c"MinNotesTextElement"); common(&mut b);
-        b.add_method(sel!(isAccessibilityFocused), yes as unsafe extern "C-unwind" fn(_, _) -> _);
+        b.add_method(sel!(isAccessibilityFocused), focused_now as unsafe extern "C-unwind" fn(_, _) -> _);
         b.add_method(sel!(accessibilityRole), role as unsafe extern "C-unwind" fn(_, _) -> _);
         b.add_method(sel!(accessibilityLabel), label as unsafe extern "C-unwind" fn(_, _) -> _);
         b.add_method(sel!(accessibilityFrame), frame as unsafe extern "C-unwind" fn(_, _) -> _);
@@ -230,5 +233,17 @@ fn post(element: *mut AnyObject, name: &NSString) { if !element.is_null() { unsa
 pub fn changed(text: bool) { if text { post(TEXT.get(), ns_string!("AXValueChanged")); } post(TEXT.get(), ns_string!("AXSelectedTextChanged")); }
 /// The view scrolled: only the scroll bar says so (what a native scroll view does).
 pub fn scrolled() { post(BAR.get(), ns_string!("AXValueChanged")); }
-/// The window took focus: name the text as the focused element.
-pub fn focused() { post(TEXT.get(), ns_string!("AXFocusedUIElementChanged")); }
+/// The window took focus: name the text as the focused element (unless something stands over the note).
+pub fn focused() { if !OBSCURED.get() { post(TEXT.get(), ns_string!("AXFocusedUIElementChanged")); } }
+/// Something stands over the note (a dialog, a name being edited in the tree) or has gone again. While it does, the text
+/// is not the focused element and answers no geometry — a writing tool takes its underlines away instead of drawing
+/// them over the dialog.
+pub fn set_obscured(on: bool) {
+    if OBSCURED.replace(on) == on { return }
+    if on { let window: *mut AnyObject = unsafe { msg_send![VIEW.get(), window] }; post(window, ns_string!("AXFocusedUIElementChanged")); post(TEXT.get(), ns_string!("AXLayoutChanged")); }
+    else { post(TEXT.get(), ns_string!("AXFocusedUIElementChanged")); post(TEXT.get(), ns_string!("AXLayoutChanged")); }
+}
+/// The note sits elsewhere or is shaped differently WITHOUT having scrolled or been edited: the sidebar's width changed,
+/// the window was resized or moved. (A scroll is told by the scroll bar alone — spike S9; this is the other case, where
+/// every range's rectangle has to be asked again.)
+pub fn relaid() { let t = TEXT.get(); post(t, ns_string!("AXMoved")); post(t, ns_string!("AXResized")); post(t, ns_string!("AXLayoutChanged")); }
