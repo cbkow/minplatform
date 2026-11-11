@@ -944,6 +944,8 @@ impl App {
                     Err(e) => { println!("show: {e} — reopening in software"); reopen = true; }
                 }
             }
+            // an audio clip under the playhead (a playlist's cut into one, row 278): the background shows, never the previous clip's last frame
+            if p.is_audio_only() && g.presenter.engine.has_frame() { g.presenter.engine.clear_picture(); shown_new = true; g.ui_dirty = true; }
         }
         if let (Some(d), Some(ed)) = (self.dual.as_mut(), g.presenter.engine.dual_mut()) {
             let t_tick = Instant::now();
@@ -1756,15 +1758,14 @@ impl App {
         let clips = ed.timeline.tracks.first().map(|t| t.clips.len()).unwrap_or(0);
         Some(clip_bar::ClipBar::insert_index(&ed.timeline, f, Some(tol), &g.scrubber, &st, scale).unwrap_or((clips, g.scrubber.x_of_frame(ed.timeline.duration, &st, scale))))
     }
-    /// QCView's playlist drop: each item (already in the project) inserted at successive indices from the drop edge; audio is
-    /// refused (`createPlaylist` / `insertClipAtIndex` rule).
+    /// QCView's playlist drop: each item (already in the project) inserted at successive indices from the drop edge.
     fn playlist_insert(&mut self, media_ids: &[String], x: f64) {
         let Some((idx, _)) = self.playlist_drop_index(x) else { return };
         self.playlist_insert_at(media_ids, idx);
     }
-    /// Insert the media ids at clip-array index `idx` (one undoable insert each, in order; audio / playlists / dual views refused).
+    /// Insert the media ids at clip-array index `idx` (one undoable insert each, in order; playlists / dual views refused — audio is a clip like any other, row 278).
     fn playlist_insert_at(&mut self, media_ids: &[String], mut idx: usize) {
-        let infos: Vec<_> = media_ids.iter().filter_map(|id| self.project.item(id)).filter(|m| { let ok = !matches!(m.media_type, qcv_project::MediaType::Audio | qcv_project::MediaType::Playlist | qcv_project::MediaType::DualPair); if !ok { log::info!("playlist drop: '{}' refused (audio / playlist / dual view)", m.name); } ok }).map(playlist::media_info).collect();
+        let infos: Vec<_> = media_ids.iter().filter_map(|id| self.project.item(id)).filter(|m| { let ok = !matches!(m.media_type, qcv_project::MediaType::Playlist | qcv_project::MediaType::DualPair); if !ok { log::info!("playlist drop: '{}' refused (playlist / dual view)", m.name); } ok }).map(playlist::media_info).collect();
         let Some(ed) = self.pl_editor.as_mut() else { return };
         let mut n = 0;
         for info in &infos { if ed.insert_clip_at_index(clip_bar::TRACK, idx, info, Default::default()).is_some() { idx += 1; n += 1; } }

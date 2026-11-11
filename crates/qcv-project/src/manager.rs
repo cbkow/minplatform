@@ -212,7 +212,6 @@ impl ProjectManager {
         for p in paths {
             let (id, pr) = self.add_media_file(p); probes.extend(pr);
             let Some(id) = id else { continue };
-            if self.item(&id).is_some_and(|m| m.media_type == MediaType::Audio) { log::warn!("createPlaylist: audio media not allowed in playlists — skipping '{p}'"); continue }
             item.playlist.items.push(PlaylistEntry { media_id: id, range: InOutRange::default() });
         }
         let id = item.id.clone();

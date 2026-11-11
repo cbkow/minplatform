@@ -156,9 +156,9 @@ impl ProjectPanel {
         let ns: Vec<String> = self.groups.iter().filter(|g| !matches!(g.kind, MediaType::Playlist | MediaType::DualPair)).flat_map(|g| g.rows.iter().map(|r| r.id.clone())).collect();
         self.last_selected = ns.last().cloned(); let changed = ns != self.selected; self.selected = ns; changed
     }
-    /// QCView `playlistablePathsFromSelection`: Videos, Images, Image Sequences in bin order (Audio is refused by createPlaylist).
+    /// QCView `playlistablePathsFromSelection`: Videos, Images, Image Sequences in bin order — and Audio (canon row 278; QCView's createPlaylist refused it).
     fn playlistable_selection(&self) -> Vec<String> {
-        self.groups.iter().flat_map(|g| g.rows.iter()).filter(|r| matches!(r.media_type, MediaType::Video | MediaType::Image | MediaType::ImageSequence) && self.selected.contains(&r.id)).map(|r| r.id.clone()).collect()
+        self.groups.iter().flat_map(|g| g.rows.iter()).filter(|r| matches!(r.media_type, MediaType::Video | MediaType::Audio | MediaType::Image | MediaType::ImageSequence) && self.selected.contains(&r.id)).map(|r| r.id.clone()).collect()
     }
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         let hh = Section::height(scale);
@@ -418,7 +418,7 @@ mod tests {
         pp.menu.close();
         pp.event(&Event::Down { x: cx, y: cy, button: Button::Secondary }, now, false, false, &mut f, B, 1.0);
         assert_eq!(pp.selected, vec![c], "outside replaces");
-        assert!(matches!(&pp.menu.items[0], MenuItem::Action { enabled: false, .. }), "audio alone cannot make a playlist");
+        assert!(matches!(&pp.menu.items[0], MenuItem::Action { enabled: true, .. }), "audio alone makes a playlist too (row 278)");
     }
     #[test]
     fn the_drag_carries_the_selection_in_bin_order_and_never_a_playlist() {

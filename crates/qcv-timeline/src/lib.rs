@@ -382,7 +382,7 @@ impl Editor {
     }
     /// Drop-to-add at a clip-array index (past the end appends); the track re-flows contiguously. Returns the new id.
     pub fn insert_clip_at_index(&mut self, track: &str, at_index: usize, m: &MediaInfo, trim: InOutRange) -> Option<String> {
-        if !self.editable(track) || m.path.is_empty() || m.kind == ClipMediaKind::Audio { return None }   // audio media is not allowed in playlists
+        if !self.editable(track) || m.path.is_empty() { return None }   // audio clips are allowed (canon row 278; QCView refused them)
         let mut c = Clip { id: fresh_id(), name: m.name.clone(), source_in: trim.in_point.unwrap_or(0).max(0), source_out: trim.out_point.unwrap_or(m.duration), media_kind: m.kind, media_path: m.path.clone(), media_item_id: m.id.clone(), source_rate: if m.rate.num > 0 { m.rate } else { self.timeline.rate }, source_width: m.width, source_height: m.height, source_duration: m.duration, has_audio: m.has_audio, sequence_pattern: m.sequence_pattern.clone(), sequence_start_frame: m.sequence_start_frame, sequence_end_frame: m.sequence_end_frame, sequence_exr_layer: m.sequence_exr_layer.clone(), sequence_missing: m.sequence_missing.clone(), ..Clip::empty() };
         c.duration = c.source_len_at(self.timeline.rate);
         if c.duration <= 0 { return None }

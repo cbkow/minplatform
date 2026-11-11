@@ -194,6 +194,8 @@ pub struct Transport {
     trace_play: Option<Instant>, trace_n: u32,
     /// dual view (row 211): a SIDE — its clock never integrates; the dual's master puts the playhead (`follow`)
     follower: bool, follow_frame: i64,
+    /// the file the audio player has open: the ACTIVE clip's (QCView: the audio follows `sourcePathChanged` at every clip change)
+    audio_path: String,
 }
 
 impl Transport {
@@ -230,7 +232,8 @@ impl Transport {
         let clip = t.timeline.tracks[0].clips[first].clone();
         let slot = Slot::open(first, &clip, &t.opts)?;
         slot.decoder.seek_to_frame(clip.source_in as i32);
-        t.seek_gate = Some((clip.source_in as i32, slot.decoder.seeks_performed(), slot.decoder.published_seq(), Instant::now()));
+        if slot.decoder.is_audio_only() { t.first_landed = true; }   // an audio clip first: no picture to land
+        else { t.seek_gate = Some((clip.source_in as i32, slot.decoder.seeks_performed(), slot.decoder.published_seq(), Instant::now())); }
         t.slots.push(slot); t.active = 0;
         t.timer.seek(clip.start as f64 / t.fps);
         t.ensure_prewarm();
@@ -245,7 +248,7 @@ impl Transport {
             review_speed: 1.0, in_point: -1, out_point: -1, user_wants_playback: false,
             fast: None, modal_active: false, modal_was_playing: false, scrubbing: None, scrub_pos: None, skim: None, seek_gate: None,
             playlist_active: playlist, pending_playlist_seek: None, resume_after_playlist_seek: false,
-            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false, trace_play: None, trace_n: 0, follower: false, follow_frame: 0 }
+            stats: Stats::default(), last_shown: None, refreshes_on_current: 0, current: None, first_landed: false, audio_hold_pending: false, trace_play: None, trace_n: 0, follower: false, follow_frame: 0, audio_path: String::new() }
     }
     /// The timeline changed under us (an edit): durations re-seat; the active clip index is re-found by id order.
     pub fn set_timeline(&mut self, timeline: Timeline) {
@@ -440,6 +443,7 @@ impl Transport {
             self.pending = None;
             self.last_shown = None; self.seek_gate = None;
             if autoplay { self.slots[self.active].decoder.play(); }
+            self.audio_follows_clip();
             self.ensure_prewarm();
             return true
         }
@@ -468,6 +472,7 @@ impl Transport {
             After::AtIn => {}
         }
         if p.autoplay { self.slots[self.active].decoder.play(); }
+        self.audio_follows_clip();
         log::info!("Transport: clip {} opened off the UI thread", p.clip);
         self.ensure_prewarm();
     }
@@ -579,7 +584,19 @@ impl Transport {
     pub fn set_audio(&mut self, mut audio: Box<dyn AudioHooks>) {
         let path = self.path().to_string();
         if !path.is_empty() { audio.open(&path); }
-        self.audio = audio;
+        self.audio = audio; self.audio_path = path;
+    }
+    /// The active clip changed (a playlist's cut, a seek or a drag into another clip): the audio player opens THAT clip's
+    /// file — QCView's `playlistAdvanceToClip` reopens it through `sourcePathChanged`. The port had opened the first clip's
+    /// file once and played it under every clip (found 2026-11-11). A clip with no audio stream leaves the player silent.
+    /// Synchronous, as QCView's: a few ms on a local disk.
+    fn audio_follows_clip(&mut self) {
+        let path = self.slots[self.active].path.clone();
+        if path == self.audio_path { return }
+        self.audio_path = path.clone();
+        self.audio.open(&path);
+        self.audio_hold_pending = false;
+        if self.audio.has_audio() { self.audio.set_tempo(self.review_speed); let p = self.audio_position(); self.audio.seek(p); if self.timer.is_playing() && self.scrubbing.is_none() && self.fast.is_none() { self.audio.play(); } }
     }
 
     // ---- review speed ---------------------------------------------------------------------------------------------
@@ -705,6 +722,7 @@ impl Transport {
         if let Some((sec, at)) = self.pending_playlist_seek { if now - at >= Duration::from_millis(PLAYLIST_SEEK_DEBOUNCE_MS) { self.pending_playlist_seek = None; self.apply_playlist_seek(sec); } }
         self.pump_prewarm();
         self.pump_pending();
+        if self.is_audio_only() { self.seek_gate = None; }   // nothing lands on an audio clip (a loop wrap or a swap may have armed the gate)
         // a seek in flight: the integrator holds; the sought frame re-seats the clock when it lands
         if let Some((target, seeks_before, seq_before, issued)) = self.seek_gate {
             let a = self.active;
@@ -745,7 +763,7 @@ impl Transport {
         let Some((clip, src)) = self.resolve(tl.min(self.frames as i64 - 1)) else { return None };   // a gap or past the end: the picture holds
         if clip != self.slots[self.active].clip { let playing = self.timer.is_playing(); if !self.swap_to(clip, playing) { return None } }
         // audio-only: no picture comes — the audio drift-corrects toward the clock (QCView's 33 ms pump: `m_audio->update(timer->position())`)
-        if self.is_audio_only() { if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.update(p); } return None }
+        if self.is_audio_only() { self.current = None; self.last_shown = None; if self.audio.has_audio() && self.is_playing() { let p = self.audio_position(); self.audio.update(p); } return None }
         let (h, dropped) = self.slots[self.active].decoder.fetch_due(src as i32);
         self.stats.dropped += dropped;
         let h = h?;
@@ -945,5 +963,34 @@ mod scrub_tests {
         let c = calls(&log);
         assert!(c.iter().any(|(k, _)| k == "begin") && c.iter().any(|(k, _)| k == "end") && c.last() == Some(&("seek".to_string(), 0.5)), "{c:?}");
         let _ = std::fs::remove_file(p);
+    }
+    /// The audio follows the ACTIVE clip (QCView reopens it at every `playlistAdvanceToClip`); the port had opened the first
+    /// clip's file once and played it under every clip. An audio file is a clip like any other (canon row 278).
+    #[test]
+    fn a_playlists_audio_follows_the_active_clip() {
+        struct Opens(Arc<Mutex<Vec<String>>>);
+        impl AudioHooks for Opens { fn has_audio(&self) -> bool { true } fn open(&mut self, p: &str) -> bool { self.0.lock().unwrap().push(p.to_string()); true } }
+        let dir = std::env::temp_dir();
+        let (v, a) = (dir.join(format!("qcv-plv-{}.mov", std::process::id())), dir.join(format!("qcv-pla-{}.wav", std::process::id())));
+        let ff = |args: &[&str], out: &std::path::Path| std::process::Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"]).args(args).arg(out).status().map(|s| s.success()).unwrap_or(false);
+        if !ff(&["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "1", "-c:v", "mjpeg", "-c:a", "pcm_s16le"], &v) || !ff(&["-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "2", "-c:a", "pcm_s16le"], &a) { eprintln!("ffmpeg missing: skipped"); return }
+        let (vp, ap) = (v.to_string_lossy().into_owned(), a.to_string_lossy().into_owned());
+        // video (24 frames) then the audio file (2 s = 48 frames at 24 fps): the editor takes an audio clip
+        let mut ed = Editor::default();
+        let info = |path: &str, kind, frames| MediaInfo { id: String::new(), name: path.to_string(), path: path.to_string(), kind, rate: Rate::new(24, 1), duration: frames, width: 0, height: 0, has_audio: true, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), sequence_missing: vec![] };
+        ed.load_playlist("t", &[info(&vp, ClipMediaKind::Video, 24), info(&ap, ClipMediaKind::Audio, 48)], &[], Rate::new(24, 1), 0, (0, 0), "");
+        assert_eq!(ed.timeline.duration, 72, "the audio clip is in the timeline");
+        let mut t = Transport::open_playlist(ed.timeline.clone(), TransportOptions { scrub: None, ..Default::default() }).unwrap();
+        let log = Arc::new(Mutex::new(vec![]));
+        t.set_audio(Box::new(Opens(log.clone())));
+        assert_eq!(*log.lock().unwrap(), vec![vp.clone()], "the first clip's file at the open");
+        t.seek_to_frame(40);   // into the audio clip
+        let t0 = Instant::now();
+        while t.active_clip_index() != 1 && t0.elapsed() < Duration::from_secs(5) { t.tick(Instant::now()); std::thread::sleep(Duration::from_millis(5)); }
+        assert_eq!(t.active_clip_index(), 1);
+        assert!(t.is_audio_only() && t.tick(Instant::now()).is_none() && t.current().is_none(), "an audio clip shows nothing");
+        assert_eq!(log.lock().unwrap().last(), Some(&ap), "the audio player opened the audio clip's file");
+        assert!(!t.seek_in_flight() || { t.tick(Instant::now()); !t.seek_in_flight() }, "no landing is awaited on an audio clip");
+        let _ = std::fs::remove_file(v); let _ = std::fs::remove_file(a);
     }
 }
