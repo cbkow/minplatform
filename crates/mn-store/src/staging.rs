@@ -14,6 +14,16 @@ impl Stamp {
     pub fn of(path: &Path) -> io::Result<Stamp> { let m = fs::metadata(path)?; Ok(Stamp { size: m.len(), mtime_ns: m.modified()?.duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) }) }
 }
 
+/// What a look at the original's place found. Only `Missing` and `Unreachable` say nothing can be published: on a share,
+/// "not there" is as often a dropped mount as a deleted file (UFB's lesson: an error or an absence must never be read
+/// as "gone", and must never cause a write).
+#[derive(Debug)]
+pub enum Original { /// what we last read or wrote
+    Same, /// someone else's file is there now
+    Changed, /// nothing is at the path (deleted, moved — or the share is not mounted)
+    Missing, /// the path could not be asked (the share does not answer, access is refused)
+    Unreachable(io::Error) }
+
 #[derive(Debug)]
 pub struct Session { original: PathBuf, dir: PathBuf, stamp: Option<Stamp>, _lock: File }
 
@@ -34,9 +44,18 @@ fn read_origin(dir: &Path) -> Option<(PathBuf, Option<Stamp>)> {
 }
 
 impl Session {
-    /// Opens `original` into a new session folder under `root`. A file that does not exist yet (a new collection)
-    /// starts with no work and no base copy.
-    pub fn open(root: &Path, original: &Path) -> io::Result<Session> {
+    /// Opens an EXISTING file into a new session folder under `root`. A path with nothing at it is an error, never a
+    /// new collection: on a share a missing file is as likely a missing mount, and treating it as new would let the
+    /// next Save put an empty collection where the real one belongs. A new collection is made with [`Session::create`].
+    pub fn open(root: &Path, original: &Path) -> io::Result<Session> { fs::metadata(original)?; Session::start(root, original) }
+    /// Starts a NEW collection at `original`: nothing may be there yet, and its folder must exist.
+    pub fn create(root: &Path, original: &Path) -> io::Result<Session> {
+        match fs::metadata(original) { Ok(_) => return Err(io::Error::new(io::ErrorKind::AlreadyExists, "a file is already there")), Err(e) if e.kind() == io::ErrorKind::NotFound => {}, Err(e) => return Err(e) }
+        let parent = original.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        if !fs::metadata(parent)?.is_dir() { return Err(io::Error::new(io::ErrorKind::NotFound, "the folder is not there")) }
+        Session::start(root, original)
+    }
+    fn start(root: &Path, original: &Path) -> io::Result<Session> {
         let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
         fs::create_dir_all(&dir)?;
         let lock = File::create(dir.join("lock"))?; lock.try_lock().map_err(io::Error::other)?;
@@ -61,8 +80,17 @@ impl Session {
     pub fn work(&self) -> PathBuf { self.dir.join("work.mnd") }
     /// The file as it was when opened or last saved; None for a collection never saved.
     pub fn base(&self) -> Option<PathBuf> { let p = self.dir.join("base.mnd"); p.exists().then_some(p) }
-    /// True when the original is no longer what we last read or wrote (someone else saved, or it is gone or new).
-    pub fn original_changed(&self) -> bool { Stamp::of(&self.original).ok() != self.stamp }
+    /// Looks at the original's place (one `stat`).
+    pub fn probe(&self) -> Original {
+        match (Stamp::of(&self.original), self.stamp) {
+            (Ok(now), Some(seen)) => if now == seen { Original::Same } else { Original::Changed },
+            (Ok(_), None) => Original::Changed,                                                   // a file appeared where our new collection is to go
+            (Err(e), seen) if e.kind() == io::ErrorKind::NotFound => if seen.is_none() { Original::Same } else { Original::Missing },   // a collection never published has nothing there
+            (Err(e), _) => Original::Unreachable(e),
+        }
+    }
+    /// True when someone else's file is at the original's place.
+    pub fn original_changed(&self) -> bool { matches!(self.probe(), Original::Changed) }
     /// The original has changed under us: copies it, as it is now, into the session as `theirs.mnd` and returns the
     /// copy with the stamp it was taken at (which [`Session::save_merged`] checks before it replaces the original).
     pub fn fetch_theirs(&self) -> io::Result<(PathBuf, Stamp)> {
@@ -155,11 +183,18 @@ mod tests {
     fn an_outside_save_is_seen_and_the_base_still_holds_what_we_opened() {
         let d = scratch("outside"); let file = d.join("share/notes.mnd"); put(&file, "ours").unwrap();
         let s = Session::open(&d.join("staging"), &file).unwrap();
+        assert!(matches!(s.probe(), Original::Same));
         put(&file, "theirs, longer").unwrap();
-        assert!(s.original_changed());
+        assert!(s.original_changed() && matches!(s.probe(), Original::Changed));
         assert_eq!(fs::read_to_string(s.base().unwrap()).unwrap(), "ours");
+        // gone is NOT "changed" and not "new": it is its own answer, on which nothing is published
         fs::remove_file(&file).unwrap();
-        assert!(s.original_changed());                                    // gone counts as changed
+        assert!(!s.original_changed() && matches!(s.probe(), Original::Missing));
+        // a path that cannot be asked at all (here: a file where a folder should be) is unreachable, not missing
+        let odd = Session { original: d.join("staging").join("lock-not-a-dir").join("x.mnd"), dir: d.join("staging"), stamp: s.stamp, _lock: File::create(d.join("probe.lock")).unwrap() };
+        put(&d.join("staging").join("lock-not-a-dir"), "a file").unwrap();
+        assert!(matches!(odd.probe(), Original::Unreachable(_)), "{:?}", odd.probe());
+        std::mem::forget(odd);
         s.close().unwrap(); fs::remove_dir_all(d).unwrap();
     }
     #[test]
@@ -185,8 +220,13 @@ mod tests {
     #[test]
     fn a_new_collection_has_no_base_until_its_first_save() {
         let d = scratch("new"); let file = d.join("share/new.mnd");
-        let mut s = Session::open(&d.join("staging"), &file).unwrap();
-        assert!(s.base().is_none() && !s.original_changed());
+        // opening a path with nothing at it is refused — a new collection is asked for by name
+        assert_eq!(Session::open(&d.join("staging"), &file).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(Session::create(&d.join("staging"), &d.join("no-such-folder/new.mnd")).unwrap_err().kind(), io::ErrorKind::NotFound);
+        let mut s = Session::create(&d.join("staging"), &file).unwrap();
+        assert!(s.base().is_none() && !s.original_changed() && matches!(s.probe(), Original::Same));
+        put(&d.join("share/other.mnd"), "x").unwrap();
+        assert_eq!(Session::create(&d.join("staging"), &d.join("share/other.mnd")).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         let moved = d.join("share/renamed.mnd");
         s.save_as(&moved, |tmp| put(tmp, "first")).unwrap();
         assert_eq!((s.original(), fs::read_to_string(s.base().unwrap()).unwrap(), file.exists()), (moved.as_path(), "first".into(), false));

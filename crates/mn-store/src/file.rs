@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn a_collection_is_published_through_staging_and_reopens() {
         let d = scratch("publish"); let file = d.join("share/notes.mnd");
-        let mut s = Session::open(&d.join("staging"), &file).unwrap();
+        let mut s = Session::create(&d.join("staging"), &file).unwrap();
         let mut c = Collection::open(&s.work()).unwrap();
         let note = c.create(None, DocKind::Note, "Note").unwrap(); let doc = sample(); c.save_note(note, &doc).unwrap();
         assert!(!file.exists());                                                              // nothing at the real place until Save
@@ -436,7 +436,7 @@ mod tests {
         let d = scratch("merge"); let file = d.join("share/notes.mnd");
         // the file both open: one folder, two notes
         let (folder, n1, n2, ids) = {
-            let mut s = Session::open(&d.join("staging"), &file).unwrap(); let mut c = Collection::open(&s.work()).unwrap();
+            let mut s = Session::create(&d.join("staging"), &file).unwrap(); let mut c = Collection::open(&s.work()).unwrap();
             let folder = c.create(None, DocKind::Folder, "Project").unwrap();
             let (n1, n2) = (c.create(Some(folder), DocKind::Note, "One").unwrap(), c.create(Some(folder), DocKind::Note, "Two").unwrap());
             let mut doc = Doc::new(); let ids: Vec<BlockId> = (0..3).map(|_| BlockId::new()).collect();

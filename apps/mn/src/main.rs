@@ -7,8 +7,9 @@
 //! saved; input methods and the desktop text element come next.
 //!   minNotes <file.mnd>              a collection (rows 271, 272): opened through a private staged copy; its first note
 //!                                    (or `--note <title>`) is edited. Edits are autosaved to the staging only; Cmd / Ctrl+S
-//!                                    publishes — merging first if someone else saved meanwhile. A file that does not exist
-//!                                    is a new collection with one note. Work a crash left behind is taken up again.
+//!                                    publishes — merging first if someone else saved meanwhile. Work a crash left behind
+//!                                    is taken up again. `--new` starts a new collection at a path where nothing is yet
+//!                                    (a missing file is otherwise an error: on a share it may be a missing mount).
 //!   minNotes                         a built-in sample note (synthetic), not saved anywhere
 //!   minNotes --v2 <file.mnd> [n]     page n (default 1) of a minNotes 2.0 file, converted in memory (the file is only read)
 //!   minNotes --text <file.txt>       a plain text file, one paragraph per line
@@ -162,7 +163,14 @@ impl App {
         let Some(st) = self.store.as_mut() else { println!("save: this note has no file"); return };
         let Some(session) = st.session.as_mut() else { return };
         for attempt in 0..3 {
-            let result = if session.original_changed() && session.original().exists() {
+            // what is at the document's place decides; "missing" and "unreachable" never lead to a write (row 291, UFB's lesson)
+            let probe = session.probe();
+            match &probe {
+                mn_store::staging::Original::Missing => { eprintln!("save: the document is no longer at {} — it was moved or deleted, or its drive or share is not connected. Nothing was written; your changes are kept on this machine.", session.original().display()); break }
+                mn_store::staging::Original::Unreachable(e) => { eprintln!("save: the document cannot be reached ({e}). Nothing was written; your changes are kept on this machine."); break }
+                _ => {}
+            }
+            let result = if matches!(probe, mn_store::staging::Original::Changed) {
                 let (theirs, stamp) = match session.fetch_theirs() { Ok(x) => x, Err(e) => { eprintln!("save: {e}"); return } };
                 match st.col.merge_from(session.base().as_deref(), &theirs) {
                     Ok(report) => {
@@ -497,7 +505,11 @@ fn main() {
         let root = sessions_root();
         // work a crash (or a close without Save) left behind for this file is taken up again — nothing typed is dropped
         let left = staging::leftovers(&root).into_iter().find(|l| l.original == path);
-        let session = match &left { Some(l) => { println!("recovered work: unsaved changes from an earlier session of {} are taken up again", path.display()); staging::Session::resume(l).expect("staging") } None => staging::Session::open(&root, &path).expect("staging") };
+        let session = match &left { Some(l) => { println!("recovered work: unsaved changes from an earlier session of {} are taken up again", path.display()); staging::Session::resume(l).expect("staging") } None => {
+                // a path with nothing at it is NOT quietly a new collection (on a share it may be a missing mount): `--new` asks for one
+                let r = if args.iter().any(|a| a == "--new") { staging::Session::create(&root, &path) } else { staging::Session::open(&root, &path) };
+                r.unwrap_or_else(|e| { eprintln!("{}: {e}{}", path.display(), if e.kind() == std::io::ErrorKind::NotFound { " — nothing is at this path (is its drive or share connected?). To start a new collection there, add --new." } else { "" }); std::process::exit(2) })
+            } };
         let mut col = Collection::open(&session.work()).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
         fn notes(c: &Collection, parent: Option<BlockId>, out: &mut Vec<mn_store::Entry>) { for e in c.list(parent).unwrap_or_default() { if e.kind == DocKind::Note { out.push(e.clone()); } notes(c, Some(e.id), out); } }
         let mut all = vec![]; notes(&col, None, &mut all);
