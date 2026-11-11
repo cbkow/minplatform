@@ -18,10 +18,11 @@ struct U {
   rot: f32,              // display rotation, quarter turns CW; the sampler inverse-rotates (QCView's rotatedSrcUv)
   off: vec2<f32>,        // NDC offset of the fit: the content rect inside the viewport (stage 4's bands take the rest)
   pad1: vec2<f32>,       // x = the extended-linear output's gain (Windows scRGB: SDR white ÷ 80 nits; 0 = none), y = the Video emulation (row 246)
-  bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, —
+  bg: vec4<f32>,         // stage 0 (background.wgsl): mode, bounds-mix strength, checker tile px, the dual seam's x (< 0 = none)
   media: vec4<f32>,      // the media rect in viewport px (x, y, w, h; y down)
   vp: vec4<f32>,         // the viewport size in px
   aids: vec4<f32>,       // the viewer aids (screen pass only): gain, 1/gamma, channel (0 RGB 1 R 2 G 3 B 4 A 5 Y), active
+  media_b: vec4<f32>,    // stage 0, dual view: B's media rect in viewport px (zero size = none); bg.w = the seam's x (< 0 = none)
 };
 // Levels in code values (QCView yuv_planar.h): limited Y = (code − 16K)/(219K), C = (code − 128K)/(224K); full Y = code/fullMax, C = (code − mid)/fullMax.
 fn levels(yc: f32, uc: f32, vc: f32) -> vec3<f32> {

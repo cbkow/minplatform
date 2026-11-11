@@ -9,7 +9,9 @@ struct U { fit: [f32; 2], code_max: f32, level_k: f32, full_max: f32, chroma_mid
     /// stage 0, the background (row 153): mode / bounds-mix strength / checker tile px; the media rect in px (y down); the viewport size
     bg: [f32; 4], media: [f32; 4], vp: [f32; 4],
     /// the viewer aids (canon row 204): gain = 2^exposure, 1 / gamma, channel (0 RGB · 1 R · 2 G · 3 B · 4 A · 5 Y), active
-    aids: [f32; 4] }
+    aids: [f32; 4],
+    /// stage 0 in dual view: B's media rect in px (zero = none); `bg[3]` is the seam's x (Split wipe: A counts left of it, B from it; < 0 = no seam)
+    media_b: [f32; 4] }
 
 /// What a colour chain consumes and produces: linear BT.709 working RGB, or display-encoded RGB with a transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -544,13 +546,15 @@ impl Engine {
     fn write_bg_uniform(&self) {
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
         let m = self.bg_mode as usize;
+        // dual view: the footprint is the two pictures' own rects per compare mode (QCView's `insideMedia`), not this engine's
+        let (media, media_b, seam) = match self.dual.as_ref() { Some(d) => d.media_rects(), None => (self.media_rect_px(), [0.0; 4], -1.0) };
         self.queue.write_buffer(&self.bg_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0,
-            bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, 0.0], media: self.media_rect_px(), vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0] }));
+            bg: [self.bg_mode as f32, self.bg_mix[m], 32.0 * self.ui_scale, seam], media, vp: [self.viewport.0 as f32, self.viewport.1 as f32, 0.0, 0.0], media_b }));
     }
     fn write_overlay_uniform(&self) {
         // the UI never passes through "encoded": a PQ-master-on-PQ-surface passthrough still PQ-encodes the UI's linear light
         let out = if self.display.out == OutMode::Encoded { OutMode::Pq } else { self.display.out };
-        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.overlay_ubuf, 0, bytemuck::bytes_of(&U { fit: [1.0, 1.0], off: [0.0, 0.0], pad1: [self.out_gain, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: 0.0, src_primaries: 0.0, out_mode: out.sel(), white: self.display.white, is_rgb: 0.0, rgb_expand: 0.0, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] }));
     }
     #[cfg(windows)]
     /// The `ID3D12Device` for a D3D12VA decoder context (one reference added for the caller).
@@ -626,7 +630,7 @@ impl Engine {
         let meta = self.effective_meta(b.meta);
         let (trc, _, prim) = meta.selectors();
         let l = b.levels;
-        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] };
+        let u = |fit: [f32; 2], off: [f32; 2], out: OutMode| U { fit, off, pad1: [0.0, 0.0], aids: [1.0, 1.0, 0.0, 0.0], code_max: l.code_max, level_k: l.level_k, full_max: l.full_max, chroma_mid: l.chroma_mid, full_range: l.full_range as u8 as f32, kr: l.kr, kb: l.kb, src_transfer: trc, src_primaries: prim, out_mode: out.sel(), white: self.display.white, is_rgb: l.is_rgb as u8 as f32, rgb_expand: l.rgb_expand as u8 as f32, rot: 0.0, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] };
         // a PQ master on a PQ surface passes through encoded — bit-exact, no EOTF round trip
         let display_out = if self.display.out == OutMode::Pq && meta.transfer == Transfer::Pq { OutMode::Encoded } else { self.display.out };
         let chain_in = match self.color_pass.as_ref().map(|c| c.input()) { Some(Space::Encoded(_)) => OutMode::Encoded, _ => OutMode::Linear };
@@ -643,7 +647,7 @@ impl Engine {
         let in_trc = match self.color_pass.as_ref().map(|c| c.output()) { Some(Space::Encoded(t)) => ColorMeta { transfer: t, ..Default::default() }.selectors().0, _ => 4.0 };
         let blit_out = if display_out == OutMode::Encoded { OutMode::Pq } else { display_out };
         let rotq = self.rotation_quarters() as f32;
-        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, if self.video_emu { 1.0 } else { 0.0 }], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4] }));
+        self.queue.write_buffer(&self.blit_ubuf, 0, bytemuck::bytes_of(&U { fit: self.fit(), off: self.offset(), pad1: [self.out_gain, if self.video_emu { 1.0 } else { 0.0 }], aids: self.aids.gpu(), code_max: 1.0, level_k: 1.0, full_max: 1.0, chroma_mid: 0.0, full_range: 1.0, kr: 0.2126, kb: 0.0722, src_transfer: in_trc, src_primaries: 0.0, out_mode: blit_out.sel(), white: self.display.white, is_rgb: 1.0, rgb_expand: 0.0, rot: rotq, bg: [0.0; 4], media: [0.0; 4], vp: [0.0; 4], media_b: [0.0; 4] }));
     }
     fn binds(&self, variant: Variant, views: &[wgpu::TextureView]) -> Vec<wgpu::BindGroup> {
         let (layout, ub) = (&self.layouts[variant as usize], 1 + variant.textures());
@@ -676,6 +680,7 @@ impl Engine {
     }
     fn encode_video(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
         // stage 0: the background over the whole viewport (clears it); the picture passes load and blend over it
+        if self.dual.is_some() { self.write_bg_uniform(); }   // the sides' frames, the mode and the seam move the footprint with no call into this engine
         { let mut p = pass(enc, "stage 0 background", target); p.set_pipeline(&self.bg_pipeline); p.set_bind_group(0, &self.bg_bind, &[]); p.draw(0..6, 0..1); }
         // dual view (row 150 / 173): the two side engines draw the pictures; this engine keeps the window's own layers
         if let Some(mut d) = self.dual.take() { d.encode(enc, target); self.dual = Some(d); return }
@@ -1274,6 +1279,34 @@ mod tests {
         assert_eq!((c.w, c.h), (64, 32)); assert_eq!(c.regions[0].rect, [0, 0, 16, 32]); assert_eq!(c.regions[1].rect, [16, 0, 48, 32]);
         // the screen's layout is back afterwards
         assert_eq!(e.dual().unwrap().a.viewport, (300, 100));
+    }
+    #[test]
+    fn the_background_follows_both_pictures_in_dual_view() {
+        // QCView's `insideMedia` per layout mode: the bounds fill (#161616, DarkGray strength 1) starts outside EACH side's own
+        // fit — side by side each in its half, the wipe A left of the seam and B from it — never outside A's alone.
+        use crate::dual::CompareMode;
+        let Ok(mut e) = Engine::headless(wgpu::TextureFormat::Rgba16Float) else { eprintln!("no GPU — skipped"); return };
+        e.set_display(DisplayMode { out: OutMode::Linear, white: 100.0 });
+        let lin = |c: f32| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+        let (fill, bounds) = (lin(31.0 / 255.0), lin(22.0 / 255.0));
+        e.set_background(1);
+        e.set_dual(true);
+        // A 16×16 and B 8×16, each opaque in its left half and transparent in its right (the fill shows through, inside the media)
+        { let d = e.dual_mut().unwrap(); d.a.show(&alpha_frame(16, 16)).unwrap(); d.b.show(&alpha_frame(8, 16)).unwrap(); }
+        let near = |a: f32, b: f32| (a - b).abs() < 2e-3;
+        // side by side in 64×16: A at x 8..24 of the left half, B at x 44..52 of the right
+        e.dual_mut().unwrap().mode = CompareMode::SideBySide; e.relayout_dual();
+        let out = e.render_offscreen(64, 16).unwrap();
+        let px = |x: usize| out[(8 * 64 + x) * 4];
+        assert!(near(px(20), fill) && near(px(50), fill), "under each picture's transparent half: the fill — A {} B {} (want {fill})", px(20), px(50));
+        for x in [2, 28, 36, 42, 54, 61] { assert!(near(px(x), bounds), "outside both pictures at x {x}: the bounds colour — {} (want {bounds})", px(x)); }
+        // the wipe at 50 % in 16×16: A fills the window, B is at x 4..12; right of the seam (x 8) only B's rect counts
+        { let d = e.dual_mut().unwrap(); d.mode = CompareMode::Split; d.seam = 0.5; } e.relayout_dual();
+        let out = e.render_offscreen(16, 16).unwrap();
+        let px = |x: usize| out[(8 * 16 + x) * 4];
+        assert!(px(7) > 0.05, "left of the seam: A's picture (the ramp's brighter end) — {}", px(7));
+        assert!(near(px(10), fill), "right of the seam inside B (its transparent half): the fill — {} (want {fill})", px(10));
+        assert!(near(px(14), bounds), "right of the seam outside B, though inside A's rect: the bounds colour — {} (want {bounds})", px(14));
     }
     #[test]
     fn dual_view_composes_the_four_modes() {

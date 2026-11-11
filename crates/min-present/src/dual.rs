@@ -53,6 +53,19 @@ impl Dual {
             _ => { for e in [&mut self.a, &mut self.b] { e.set_viewport(viewport.0, viewport.1); e.set_content_rect(Some(c)); } }
         }
     }
+    /// The background's footprint (QCView's `insideMedia` per layout mode): A's and B's media rects in viewport px (zero =
+    /// that side shows nothing) and the wipe's seam x (< 0 = none: the two rects' union counts).
+    pub(crate) fn media_rects(&self) -> ([f32; 4], [f32; 4], f32) {
+        // Difference renders the sides into content-sized textures: their rects are relative to the content rect
+        let (ox, oy) = if self.mode == CompareMode::Difference { (self.content.0 as f32, self.content.1 as f32) } else { (0.0, 0.0) };
+        let rect = |e: &Engine| e.picture_placement().map(|(r, ..)| [r[0] as f32 + ox, r[1] as f32 + oy, r[2] as f32, r[3] as f32]).unwrap_or([0.0; 4]);
+        let (x, _, w, _) = self.content;
+        match self.mode {
+            CompareMode::Single => (rect(&self.a), [0.0; 4], -1.0),
+            CompareMode::Split => (rect(&self.a), rect(&self.b), (self.seam_x().round() as u32).clamp(x, x + w) as f32),
+            _ => (rect(&self.a), rect(&self.b), -1.0),
+        }
+    }
     /// The seam's x in viewport px (Split wipe), for the shell's handle.
     pub fn seam_x(&self) -> f64 { self.content.0 as f64 + self.seam.clamp(0.0, 1.0) as f64 * self.content.2 as f64 }
     pub(crate) fn encode(&mut self, enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
