@@ -14,11 +14,14 @@ use mn_doc::{Block, BlockId, ColumnSpec, Doc, FlatText, Kind, Mark};
 use parley::{Affinity, Alignment, AlignmentOptions, Cursor, FontFamily, FontFamilyName, FontStyle, FontWeight, Layout, LineHeight, Selection, StyleProperty};
 use peniko::{Brush, Color};
 
-/// The metrics, in LOGICAL pixels (multiplied by the scale at layout). The defaults are placeholders until
-/// `docs/phase3/step2-layout-spec.md` (the Qt app's numbers) and the user's eye settle them.
+/// The metrics, in LOGICAL pixels (multiplied by the scale at layout). The defaults are the Qt app's numbers
+/// (`docs/phase3/step2-layout-spec.md` §1–§9) — a starting point, not a ruling: how the page looks is settled when it
+/// can be seen. The Qt app pads every block 6 px above and below with no margins between; here that is a gap of 12.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style {
     pub body: f32,
+    /// 500 in the Qt app; the bundled Geist has 400 and 700 only, so this shapes as 400 until a Medium face is added
+    pub body_weight: f32,
     /// line height as a multiple of the font size
     pub line_height: f32,
     /// font sizes of heading levels 1…6
@@ -34,6 +37,8 @@ pub struct Style {
     /// indent per list depth, and the room the marker takes left of the text
     pub list_indent: f32,
     pub marker: f32,
+    /// the room left of a NUMBERED item's text (the number is right-aligned in it)
+    pub marker_numbered: f32,
     /// a quote's bar + gap, left of its text
     pub quote_inset: f32,
     /// padding inside a code block, all sides
@@ -47,6 +52,8 @@ pub struct Style {
     pub table_col_min: f32,
     pub table_col_max: f32,
     pub table_col_default: f32,
+    /// what an automatic column adds to its widest line
+    pub table_col_extra: f32,
     /// the box of a media item that has no picture size (a file, audio, a bookmark)
     pub media_chip: f32,
     pub text: Color,
@@ -54,8 +61,8 @@ pub struct Style {
 }
 impl Default for Style {
     fn default() -> Self {
-        Style { body: 16.0, line_height: 1.35, heading: [30.0, 24.0, 20.0, 18.0, 16.0, 16.0], heading_weight: 700.0, code: 14.0, block_gap: 10.0, list_gap: 4.0, heading_above: 10.0, list_indent: 24.0, marker: 24.0,
-            quote_inset: 16.0, code_pad: 12.0, divider: 17.0, column_gutter: 24.0, cell_pad: 8.0, table_col_min: 48.0, table_col_max: 360.0, table_col_default: 160.0, media_chip: 56.0,
+        Style { body: 14.0, body_weight: 500.0, line_height: 1.35, heading: [33.0, 28.0, 24.0, 20.0, 18.0, 16.0], heading_weight: 300.0, code: 13.0, block_gap: 12.0, list_gap: 12.0, heading_above: 0.0, list_indent: 24.0, marker: 22.0, marker_numbered: 34.0,
+            quote_inset: 22.0, code_pad: 12.0, divider: 30.0, column_gutter: 24.0, cell_pad: 8.0, table_col_min: 48.0, table_col_max: 360.0, table_col_default: 160.0, table_col_extra: 22.0, media_chip: 56.0,
             text: Color::from_rgb8(0xEB, 0xEB, 0xEB), link: Color::from_rgb8(0x4D, 0xA3, 0xFF) }
     }
 }
@@ -137,7 +144,7 @@ impl NoteLayout {
             if let Some(w) = columns.get(i).and_then(|c| c.width) { return self.px(w as f32) }
             let mut widest: f32 = 0.0;
             for row in rows { if let Some(cell) = doc.children(Some(*row)).get(i) { for c in doc.children(Some(*cell)) { if let Some(b) = doc.get(*c).filter(|b| b.kind.is_text() && !b.text.is_empty()) { let (l, dx, _, _) = self.shape(fonts, b, None); widest = widest.max(l.full_width() + dx); } } } }
-            if widest == 0.0 { self.px(self.style.table_col_default) } else { (widest + 2.0 * self.px(self.style.cell_pad)).ceil().clamp(self.px(self.style.table_col_min), self.px(self.style.table_col_max)) }
+            if widest == 0.0 { self.px(self.style.table_col_default) } else { (widest + self.px(self.style.table_col_extra)).round().clamp(self.px(self.style.table_col_min), self.px(self.style.table_col_max)) }
         }).collect()
     }
 
@@ -145,9 +152,10 @@ impl NoteLayout {
     /// the box's height.
     fn shape(&self, fonts: &mut Fonts, b: &Block, width: Option<f32>) -> (Layout<Brush>, f32, f32, f32) {
         let st = &self.style;
-        let (size, weight, family) = match &b.kind { Kind::Heading { level } => (st.heading[(*level as usize).clamp(1, 6) - 1], st.heading_weight, Family::Sans), Kind::Code { .. } => (st.code, 400.0, Family::Mono), _ => (st.body, 400.0, Family::Sans) };
+        let (size, weight, family) = match &b.kind { Kind::Heading { level } => (st.heading[(*level as usize).clamp(1, 6) - 1], st.heading_weight, Family::Sans), Kind::Code { .. } => (st.code, 400.0, Family::Mono), _ => (st.body, st.body_weight, Family::Sans) };
         let (dx, pad) = match &b.kind {
-            Kind::Bullet { depth } | Kind::Numbered { depth } | Kind::Task { depth, .. } => (self.px(st.list_indent * *depth as f32 + st.marker), 0.0),
+            Kind::Bullet { depth } | Kind::Task { depth, .. } => (self.px(st.list_indent * *depth as f32 + st.marker), 0.0),
+            Kind::Numbered { depth } => (self.px(st.list_indent * *depth as f32 + st.marker_numbered), 0.0),
             Kind::Quote => (self.px(st.quote_inset), 0.0),
             Kind::Code { .. } => (self.px(st.code_pad), self.px(st.code_pad)),
             _ => (0.0, 0.0),
@@ -328,9 +336,7 @@ mod tests {
         assert!(l.rect(&s.doc, s.h).unwrap().height() > line && l.rect(&s.doc, s.p).unwrap().height() > line * 1.5);
         let narrow = lay(&s.doc, &mut f, 300.0);
         assert!(narrow.rect(&s.doc, s.p).unwrap().height() > l.rect(&s.doc, s.p).unwrap().height() && narrow.height > l.height);
-        // list items sit closer together than paragraphs, and a nested item's text starts further right
-        let gap = |a, b| l.rect(&s.doc, b).unwrap().y0 - l.rect(&s.doc, a).unwrap().y1;
-        assert!(gap(s.b0, s.b1) < gap(s.p, s.b0));
+        // a nested item's text starts further right
         assert!(l.caret(&s.doc, s.b1, 0, 1.0).unwrap().x0 > l.caret(&s.doc, s.b0, 0, 1.0).unwrap().x0 && l.caret(&s.doc, s.b0, 0, 1.0).unwrap().x0 > 0.0);
         // a picture keeps its shape; a divider and an empty paragraph have a height
         let m = l.rect(&s.doc, s.media).unwrap(); assert!((m.width() - 400.0).abs() < 0.01 && (m.height() - 300.0).abs() < 0.01);
