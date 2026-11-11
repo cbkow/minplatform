@@ -326,6 +326,14 @@ re-derived from the text before the burst. **NOT yet re-tried by the user.**
 The user's own sentence (27 keys, gaps under 300 ms) became one step — a real editor breaks at words; not this
 spike's question.
 
+### Step 3i, key to picture at 50,000 words with Grammarly attached (the stack, `S9_NATIVE=1 S9_SCROLLNOTE=area`; the user typing; 2026-11-11)
+The same session as step 3h (about 9 minutes, 951 blocks, 275k UTF-16 units, a third of the sentences flagged):
+**key → present p50 2.51 ms, p95 3.12 ms (n = 209 keys)**; edit + relayout per key p50 160 µs, p95 234 µs; frame (scene
++ render + present, CPU side) p50 1.38 ms, p95 2.18 ms, max 3.54 ms — while Grammarly made 1,415,872 `frameForRange`
+calls. Pass bar 4 (16.7 ms p95) is met with a wide margin. The figure is from the key event's arrival to the
+`present` call, not to photons.
+How scrolling looked to the user at this size was not reported.
+
 ### Step 5a, Windows: the stack as it is, read from outside (the box, Grammarly installed 2026-11-11; `S9_ALL_LINES=1`)
 `spikes/s3-text` builds unchanged on Windows; AccessKit's adapter answers UI Automation. A PowerShell probe through
 `System.Windows.Automation` in the desktop session (no input): the window's one descendant is a focused `Edit`
