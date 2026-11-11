@@ -4,7 +4,8 @@
 //!   --file <text>      the text (default: the flawed sample);  --seconds N   close after N seconds
 //!   S9_LOG=<file>      where the log goes (default .\s9-uia.log)
 //!   S9_CT=edit         control type Edit instead of Document
-//!   S9_OFF=a,b         withhold: value, scroll, text, events, visible (no visible range), ids (no class name / automation id)
+//!   S9_OFF=a,b         withhold: value, scroll, text, events, visible (no visible range), ids (no class name / automation id),
+//!                      scrollevent (no property-changed event when the view scrolls)
 //!   S9_TREE=child      the text is a CHILD element of the window (a fragment under a fragment root), as a toolkit's tree has it
 #[cfg(not(windows))]
 fn main() { eprintln!("s9-uia is the Windows leg of the spike S9"); }
@@ -305,7 +306,12 @@ mod win {
             WM_SETFOCUS | WM_KILLFOCUS => { log(if msg == WM_SETFOCUS { "FOCUS" } else { "BLUR" }, String::new(), true);
                 if msg == WM_SETFOCUS && child_tree() { let e = ELEM.with_borrow(|e| e.clone()); if let Some(e) = e { let _ = UiaRaiseAutomationEvent(&e, UIA_AutomationFocusChangedEventId); } }
                 redraw(); LRESULT(0) }
-            WM_MOUSEWHEEL => { let dz = ((wp.0 >> 16) & 0xffff) as i16 as i32; let s = DOC.with_borrow_mut(|d| { let max = (d.lines.len() as i32 * d.lh + 2 * d.pad - d.h).max(0); d.scroll = (d.scroll - dz * d.lh * 3 / 120).clamp(0, max); d.scroll }); log("SCROLL", format!("{s}"), false); redraw(); LRESULT(0) }
+            WM_MOUSEWHEEL => { let dz = ((wp.0 >> 16) & 0xffff) as i16 as i32;
+                let (s, old, new) = DOC.with_borrow_mut(|d| { let max = (d.lines.len() as i32 * d.lh + 2 * d.pad - d.h).max(0); let old = d.scroll; d.scroll = (d.scroll - dz * d.lh * 3 / 120).clamp(0, max); (d.scroll, 100.0 * old as f64 / max.max(1) as f64, 100.0 * d.scroll as f64 / max.max(1) as f64) });
+                log("SCROLL", format!("{s}"), false);
+                // what a native scrolling control does: the Scroll pattern's percent changes
+                if !off("scrollevent") && !off("scroll") { let e = ELEM.with_borrow(|e| e.clone()); if let Some(e) = e { if UiaClientsAreListening().as_bool() { let _ = UiaRaiseAutomationPropertyChangedEvent(&e, UIA_ScrollVerticalScrollPercentPropertyId, &VARIANT::from(old), &VARIANT::from(new)); } } }
+                redraw(); LRESULT(0) }
             WM_LBUTTONDOWN => { let _ = SetFocus(Some(hwnd)); let (x, y) = ((lp.0 & 0xffff) as i16 as i32, ((lp.0 >> 16) & 0xffff) as i16 as i32); let shift = wp.0 & 4 != 0; let o = DOC.with_borrow_mut(|d| { let o = d.hit(x, y); d.caret = o; if !shift { d.anchor = o } o }); log("CLICK", format!("{o}"), true); notify(false); redraw(); LRESULT(0) }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
                 let (shift, ctrl) = (GetKeyState(VK_SHIFT.0 as i32) < 0, GetKeyState(VK_CONTROL.0 as i32) < 0);
