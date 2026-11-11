@@ -120,6 +120,25 @@ impl Doc {
         self.blocks.get_mut(&id).unwrap().parent = parent;
         Ok(())
     }
+    /// Puts back a subtree that [`Doc::remove`] returned (the top block first, every block with its `children` list as
+    /// it was): the top block becomes child `index` of its recorded parent.
+    pub fn insert_tree(&mut self, index: usize, blocks: &[Block]) -> Result<(), TreeError> {
+        let Some(top) = blocks.first() else { return Ok(()) };
+        for b in blocks { if self.blocks.contains_key(&b.id) { return Err(TreeError::DuplicateId(b.id)) } }
+        self.check(top.parent, &top.kind, top.id)?;
+        let list = self.children_mut(top.parent)?;
+        if index > list.len() { return Err(TreeError::IndexPastEnd) }
+        list.insert(index, top.id);
+        for b in blocks { self.blocks.insert(b.id, b.clone()); }
+        Ok(())
+    }
+    pub fn index_of(&self, id: BlockId) -> Option<usize> { let p = self.blocks.get(&id)?.parent; self.children(p).iter().position(|c| *c == id) }
+    pub fn set_kind(&mut self, id: BlockId, kind: Kind) -> Result<(), TreeError> {
+        let b = self.blocks.get(&id).ok_or(TreeError::UnknownBlock(id))?;
+        // a kind change stays within leaves that hold text: it never makes or unmakes a container or a media block
+        if !(b.kind.is_text() && kind.is_text()) { return Err(TreeError::NotAllowed { parent: b.parent, child: id }) }
+        self.blocks.get_mut(&id).unwrap().kind = kind; Ok(())
+    }
     pub fn set_text(&mut self, id: BlockId, text: impl Into<String>) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.text = text.into(); Ok(()) }
     /// Every block in document order (a parent before its children).
     pub fn walk(&self) -> Vec<&Block> {
