@@ -14,7 +14,8 @@ publicly shown it working in an AccessKit application (research, 2026-11-10).
 2. Underlines sit within **2 px** of their words, and still do after a scroll and after a window resize.
 3. **20 accepted suggestions in a row** replace exactly the intended range: **0** misplaced, undo restores each.
 4. With Grammarly attached, key → picture stays within **one 60 Hz frame (16.7 ms)** p95 on a **50,000-word** document.
-5. VoiceOver reads by character, word and line and follows the caret.
+5. VoiceOver reads by character, word and line and follows the caret. **DROPPED by the user, 2026-11-11** ("I am not worried about voice over"): not a
+   condition of the verdict; Narrator on the Windows leg goes with it.
 Windows (Narrator, the same four with UI Automation) is a second leg, when Grammarly is installed on the box.
 
 **Fail =** the widget never appears, or corrections land at the wrong offset, in our stack AND in the hand-written
@@ -407,6 +408,15 @@ separated). The sample file is checked out with CR LF on the box and the stack p
 **Reading:** on Windows AccessKit is ONE function short of being found by Grammarly; whether its text ranges then
 carry a correction (selection set from outside, then typed characters) is untested. The choice for Windows is a
 patch to accesskit_windows (ours to carry or to send upstream) or the hand-written provider of step 5b.
+
+### Step 5d, AccessKit with the one function patched (the box, hands-off, 2026-11-11)
+`docs/spikes/s9/accesskit_windows-0.35.2-visible-ranges.patch`: `GetVisibleRanges` returns the document range (and
+three calls are logged to `S9_AK_LOG`). Built on the box only, through `cargo build --config <file with
+[patch.crates-io]>` against a patched copy of the crate — the repository's manifest and lock are untouched.
+The attach test of step 5c on the AccessKit stack: with the patch switched off (`S9_AK_VISIBLE=0`) 5
+`GetBoundingRectangles` calls in the run, with it on **49** — Grammarly engages. One run each.
+Whether a correction lands through AccessKit's ranges (a `Select()` that becomes an action request, then typed
+characters) needs the user's hands.
 
 ## Verdict
 (pending)
