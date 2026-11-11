@@ -188,5 +188,46 @@ switches were not separated: both are what the native view does, and both are ad
 at 50,000 words were measured with the still frame and are to be re-read with the moving one.
 **Consequence for the shape:** the whole note as ONE field holds on a realistic note. Proposed to the user as the ruling.
 
+### Step 3f, the hand-written element INSIDE the stack (`spikes/s3-text`, `S9_NATIVE=1`; `src/native_ax.rs`; 2026-11-11)
+**How it joins.** winit owns the NSView; AccessKit's subclassing adapter has put a dynamic subclass on it that answers
+`accessibilityChildren`, `accessibilityFocusedUIElement` and `accessibilityHitTest:`. One more dynamic subclass goes
+on top of AccessKit's: its three methods add our element to AccessKit's children and answer focus and hit-test with
+it. No patch to winit or to AccessKit. The element is an `NSAccessibilityElement` subclass built at run time; it
+answers from the document as one flat UTF-16 text over the blocks (block start offsets; geometry from parley's
+cursor boxes); AccessKit keeps the window node. From outside (`axcheck`, 5,016 words): reads 70 of 70, selections 68
+of 70 (the two across paragraphs — the scaffold's selection lives in one block), as fast as the Swift reference.
+
+**What it took before Grammarly would use it — three things the reference window had without our knowing:**
+1. **The whole text protocol must be DECLARED, not only the calls a tool makes.** With only value, selection (get /
+   set), selected text, string / frame for range and the frame, Grammarly polled the focused element (1,607 times in
+   one session) and never read its value. With `insertionPointLineNumber`, `lineForIndex:`, `rangeForLine:`,
+   `rangeForIndex:`, `attributedStringForRange:`, `setSelectedText:` and `setValue:` also present it attached within
+   two seconds. Which of the seven it looks for is NOT isolated (`S9_OMIT=<selector,…>` leaves single ones off).
+   Announcing the element on window focus, the element's parent (the view or the window) and where its frame starts
+   made no difference.
+2. **The S3 scaffold pulled the view back to the caret on every draw**, so a scroll could not leave it — ours, fixed
+   (follow the caret only after it moved).
+3. **A scroll area around the text.** With the element directly under the window the user saw the underlines trail
+   again ("the lag is back"), although the log shows correct service: the frame read within milliseconds of nearly
+   every wheel step, the frame exactly on the drawn text (first character against the frame's top: 0 px), a full
+   re-measure in 45 ms (the reference: 43 ms). With the text inside an `AXScrollArea` element (its frame the
+   viewport; children the text and an `AXScrollBar` that posts `AXValueChanged` at every scroll step — the tree an
+   `NSScrollView` shows) the user: "better"; the frame was read at every wheel step (29 of 29, 25 of 25, 19 of 19),
+   and four corrections landed on the intended ranges. Grammarly never read the bar's value and read the area's frame
+   once. WHY the scroll area matters is not established — the logs of the two runs differ little; the evidence is
+   the user's eye, once each way.
+
+**A view that scrolls WITHOUT a wheel event** (the app scrolling itself, 55 steps in a second; `S9_AUTOSCROLL=1`):
+Grammarly read the frame 0–3 times during the scroll whatever was announced (nothing, `AXMoved` on the text,
+`AXValueChanged` on a bar without a scroll area); it re-measured by itself within about 2.5 s after the scroll ended
+in two runs of three. `AXLayoutChanged` and the scroll-area tree were not measured this way (the first lost focus
+twice). So wheel scrolling is followed because Grammarly watches the wheel; keyboard paging, a dragged scroll bar and
+jumps are followed late unless a selection or value change accompanies them. Open.
+
+**Reading:** the route of the leaning works — a hand-written text element beside AccessKit, in the real window, serves
+Grammarly: attach, underline, 14 corrections accepted by the user in this step, all on the intended ranges, undo not
+re-tested. What the element must be is now a list: the full text protocol declared; a flat UTF-16 text; the frame of
+the whole document moving with the scroll; a scroll area and scroll bar around it; no layout notification on scroll.
+
 ## Verdict
 (pending)

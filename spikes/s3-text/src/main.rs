@@ -3,6 +3,7 @@
 //! control: parley relayouts the whole buffer per edit). `--lines N` generates the document, `--probe N` types N keys internally
 //! and prints per-key / frame / undo costs, injected keys report key→present. Verdict: docs/spikes/S3-text.md.
 mod ax;
+#[cfg(target_os = "macos")] mod native_ax;
 use std::{num::NonZeroUsize, sync::Arc, time::Instant};
 use accesskit_winit::{Adapter, Event as AkEvent, WindowEvent as AkWindowEvent};
 use parley::{FontContext, LayoutContext, PlainEditor, PositionedLayoutItem, StyleProperty};
@@ -25,6 +26,8 @@ struct App {
     blocks: Vec<Block>, focus: usize, scroll: f32, single: bool,
     shift: bool, cmd: bool, cursor: (f64, f64), clipboard: Option<arboard::Clipboard>,
     undo: Vec<Op>, redo: Vec<Op>, doc_value: String, doc_dirty: bool,
+    /// S9 step 3f (`S9_NATIVE=1`): the flat UTF-16 view of the document — where each block starts (+ the total), and what to tell the desktop after this event
+    u16_starts: Vec<usize>, native: bool, note: Option<bool>, follow: bool,
     proxy: Option<winit::event_loop::EventLoopProxy<AkEvent>>, ax_refs: Vec<ax::LineRef>,
     seconds: f32, t0: Instant, probe: u32, probe_done: bool,
     key_recv: Option<Instant>, key_present_ms: Vec<f32>, frame_ms: Vec<f32>, draw_ms: Vec<f32>, ax_us: Vec<f32>, per_key_us: Vec<f32>, undo_us: Vec<f32>, frames: u32,
@@ -66,7 +69,13 @@ impl App {
         let t = Instant::now();
         self.reflow(size.width as f32 - 2.0 * PAD as f32 * scale, scale);
         println!("initial layout of {} blocks: {:.1} ms", self.blocks.len(), t.elapsed().as_secs_f32() * 1000.0);
-        self.focus = self.blocks.len() / 2;
+        self.focus = if self.native { 0 } else { self.blocks.len() / 2 };
+        #[cfg(target_os = "macos")]
+        if self.native {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(RawWindowHandle::AppKit(h)) = window.window_handle().map(|h| h.as_raw()) { native_ax::install(self as *mut App, h.ns_view.as_ptr().cast(), std::env::var("S9_LOG").ok()); }
+        }
+        window.request_redraw();
         self.ctx = Some(Ctx { window, surface, renderer, scene: Scene::new(), adapter });
         self.push_ax();
     }
@@ -86,8 +95,11 @@ impl App {
             let mut sfx = sfx; while !before.is_char_boundary(before.len() - sfx) || !after.is_char_boundary(after.len() - sfx) { sfx -= 1; }
             self.undo.push(Op { block, at: p, removed: before[p..before.len() - sfx].to_string(), inserted: after[p..after.len() - sfx].to_string() });
             self.redo.clear();
-        }
+            #[cfg(target_os = "macos")] if self.native { native_ax::log("EDIT", format!("block {block} byte {p}: {:?} → {:?}", &before[p..before.len() - sfx], &after[p..after.len() - sfx]), true); }
+            self.note = Some(true);
+        } else if self.note.is_none() { self.note = Some(false); }
         self.restack(block);
+        self.follow = true;
         self.doc_dirty = true;
     }
     fn restack(&mut self, from: usize) {
@@ -130,8 +142,67 @@ impl App {
         true
     }
 
+    // ---------- S9 step 3f: the document as one flat UTF-16 text (blocks joined by "\n") ----------
+    fn sync_doc(&mut self) {
+        if !self.doc_dirty && !self.u16_starts.is_empty() { return }
+        let mut v = String::with_capacity(self.doc_value.len().max(1024)); let mut st = Vec::with_capacity(self.blocks.len() + 1); let mut n = 0usize;
+        for (i, b) in self.blocks.iter().enumerate() { if i > 0 { v.push('\n'); n += 1; } st.push(n); let t = b.editor.raw_text(); n += t.encode_utf16().count(); v.push_str(t); }
+        st.push(n); self.doc_value = v; self.u16_starts = st; self.doc_dirty = false;
+    }
+    fn nx_len16(&self) -> usize { self.u16_starts.last().copied().unwrap_or(0) }
+    /// A flat UTF-16 offset → (block, byte in the block). The joiner after a block belongs to that block's end.
+    fn locate(&mut self, o: usize) -> (usize, usize) {
+        self.sync_doc();
+        let n = self.blocks.len(); let i = self.u16_starts[..n].partition_point(|s| *s <= o).saturating_sub(1);
+        let local = o - self.u16_starts[i].min(o); let t = self.blocks[i].editor.raw_text();
+        let mut u = 0usize; for (bi, ch) in t.char_indices() { if u >= local { return (i, bi) } u += ch.len_utf16(); }
+        (i, t.len())
+    }
+    fn flat16(&mut self, block: usize, byte: usize) -> usize { self.sync_doc(); let t = self.blocks[block].editor.raw_text(); self.u16_starts[block] + t[..byte.min(t.len())].encode_utf16().count() }
+    fn nx_sel16(&mut self) -> (usize, usize) { let f = self.focus; let s = self.blocks[f].editor.raw_selection(); let (a, b) = (s.anchor().index(), s.focus().index()); let (lo, hi) = (self.flat16(f, a.min(b)), self.flat16(f, a.max(b))); (lo, hi - lo) }
+    fn nx_sub16(&mut self, loc: usize, len: usize) -> String { self.sync_doc(); let u: Vec<u16> = self.doc_value.encode_utf16().skip(loc).take(len).collect(); String::from_utf16_lossy(&u) }
+    /// A selection set from outside (the path a writing tool's correction takes). The scaffold's selection lives in ONE block.
+    fn nx_set_sel16(&mut self, loc: usize, len: usize) {
+        let (b1, a) = self.locate(loc); let (b2, mut f) = self.locate(loc + len);
+        if b2 != b1 { f = self.blocks[b1].editor.raw_text().len(); println!("S9 native: a selection across blocks {b1}..{b2} was cut to block {b1}"); }
+        self.focus = b1; self.follow = true;
+        { let bl = &mut self.blocks[b1]; let mut d = bl.editor.driver(&mut self.font_cx, &mut self.layout_cx); d.move_to_byte(a); d.extend_selection_to_byte(f); }
+        #[cfg(target_os = "macos")] native_ax::note(false);
+        if let Some(c) = &self.ctx { c.window.request_redraw(); }
+    }
+    /// The caret's box at a byte of a block, in document px (x, top, bottom).
+    fn caret_box(&mut self, block: usize, byte: usize, aff: parley::Affinity) -> (f64, f64, f64) {
+        let b = &mut self.blocks[block]; let y = b.y as f64; let l = b.editor.layout(&mut self.font_cx, &mut self.layout_cx);
+        let g = parley::Cursor::from_byte_index(l, byte, aff).geometry(l, 1.0); (g.x0, y + g.y0, y + g.y1)
+    }
+    /// Document px → the view's points (x, y, w, h), top-left origin.
+    fn to_view(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64, f64, f64) {
+        let scale = self.ctx.as_ref().map(|c| c.window.scale_factor()).unwrap_or(1.0);
+        ((PAD * scale + x0) / scale, (PAD * scale + y0 - self.scroll as f64) / scale, (x1 - x0) / scale, (y1 - y0) / scale)
+    }
+    fn doc_width(&self) -> f64 { self.ctx.as_ref().map(|c| c.window.inner_size().width as f64 - 2.0 * PAD * c.window.scale_factor()).unwrap_or(0.0) }
+    /// The box of a UTF-16 range: on one line, from its first character to its last; over several, the full width of those lines.
+    fn nx_rect16(&mut self, loc: usize, len: usize) -> (f64, f64, f64, f64) {
+        let total = self.nx_len16().max({ self.sync_doc(); self.nx_len16() }); let loc = loc.min(total); let end = (loc + len).min(total);
+        let (b1, a) = self.locate(loc);
+        let s = self.caret_box(b1, a, parley::Affinity::Downstream);
+        if end == loc { return self.to_view(s.0, s.1, s.0 + 1.0, s.2) }
+        let (mut b2, mut f) = self.locate(end);
+        if f == 0 && b2 > b1 { b2 -= 1; f = self.blocks[b2].editor.raw_text().len(); }   // the range ends on a joiner: the box stops at that block's end
+        let e = self.caret_box(b2, f, parley::Affinity::Upstream);
+        if b1 == b2 && (s.1 - e.1).abs() < 0.5 { self.to_view(s.0.min(e.0), s.1, s.0.max(e.0), s.2) } else { let w = self.doc_width(); self.to_view(0.0, s.1, w, e.2) }
+    }
+    /// The WHOLE document's frame, moving with the scroll (what an NSTextView reports — spike step 3e).
+    fn nx_doc_frame(&self) -> (f64, f64, f64, f64) { let h = self.blocks.last().map(|b| (b.y + b.height) as f64).unwrap_or(0.0); self.to_view(0.0, 0.0, self.doc_width(), h) }
+
     // ---------- accessibility ----------
     fn push_ax(&mut self) {
+        if self.native {   // the text is served by our own element; AccessKit keeps the window (and, in the product, the rest of the interface)
+            if let Some(v) = self.note.take() { self.sync_doc(); #[cfg(target_os = "macos")] native_ax::note(v); }
+            let Some(c) = self.ctx.as_mut() else { return };
+            c.adapter.update_if_active(|| { let mut root = accesskit::Node::new(accesskit::Role::Window); root.set_label("S3 text"); accesskit::TreeUpdate { nodes: vec![(ax::ROOT, root)], tree: Some(accesskit::TreeInfo::new(ax::ROOT)), tree_id: accesskit::TreeId::ROOT, focus: ax::ROOT } });
+            return
+        }
         let Some(c) = self.ctx.as_mut() else { return };
         let t = Instant::now();
         let scale = c.window.scale_factor(); let size = c.window.inner_size();
@@ -139,7 +210,7 @@ impl App {
         let focus = self.focus; let sel = self.blocks[focus].editor.raw_selection().clone();
         let (fc, lc) = (&mut self.font_cx, &mut self.layout_cx);
         // only the blocks in view (+ the focused one) become text runs; the whole-document value is cached and rebuilt on edits
-        if self.doc_dirty { let mut v = String::with_capacity(self.doc_value.len().max(1024)); for (i, b) in self.blocks.iter().enumerate() { if i > 0 { v.push('\n'); } v.push_str(b.editor.raw_text()); } self.doc_value = v; self.doc_dirty = false; }
+        if self.doc_dirty { let mut v = String::with_capacity(self.doc_value.len().max(1024)); for (i, b) in self.blocks.iter().enumerate() { if i > 0 { v.push('\n'); } v.push_str(b.editor.raw_text()); } self.doc_value = v; self.doc_dirty = false; self.u16_starts.clear(); }
         let (vy0, vy1) = (self.scroll - PAD as f32 * scale as f32, self.scroll + size.height as f32);
         let mut texts: Vec<(usize, String)> = vec![];
         let mut views = vec![];
@@ -163,7 +234,8 @@ impl App {
         let scale = c.window.scale_factor();
         let (w, h) = (c.surface.config.width, c.surface.config.height);
         // keep the caret in view
-        if let Some(cb) = self.blocks[self.focus].editor.cursor_geometry(1.0) {
+        // (S9: only after the caret moved — the S3 scaffold pulled the view back to the caret on EVERY draw, so a scroll could not leave it)
+        if let Some(cb) = self.blocks[self.focus].editor.cursor_geometry(1.0).filter(|_| !self.native || std::mem::take(&mut self.follow)) {
             let top = self.blocks[self.focus].y + cb.y0 as f32; let bottom = self.blocks[self.focus].y + cb.y1 as f32;
             let view_h = h as f32 - 2.0 * PAD as f32 * scale as f32;
             if bottom - self.scroll > view_h { self.scroll = bottom - view_h; } if top - self.scroll < 0.0 { self.scroll = top; }
@@ -247,8 +319,14 @@ impl ApplicationHandler<AkEvent> for App {
         let mut redraw = true;
         match event {
             WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::Focused(true) => { #[cfg(target_os = "macos")] if self.native { native_ax::note_focus(); } }
             WindowEvent::Resized(s) => if let Some(c) = self.ctx.as_mut() { self.rc.resize_surface(&mut c.surface, s.width.max(1), s.height.max(1)); let sc = c.window.scale_factor() as f32; self.reflow(s.width as f32 - 2.0 * PAD as f32 * sc, sc); },
             WindowEvent::RedrawRequested => {
+                if self.native && std::env::var_os("S9_AUTOSCROLL").is_some() {   // the app scrolls ITSELF (no input events), as a flick's momentum: down during 4–5 s, back up during 7–8 s
+                    let t = self.t0.elapsed().as_secs_f32(); let dir = if (4.0..5.0).contains(&t) { 1.0 } else if (7.0..8.0).contains(&t) { -1.0 } else { 0.0 };
+                    if dir != 0.0 { let max = self.blocks.last().map(|b| b.y + b.height).unwrap_or(0.0); self.scroll = (self.scroll + dir * 90.0).clamp(0.0, max); #[cfg(target_os = "macos")] { native_ax::log("SCROLL", format!("{}", self.scroll as i64), true); native_ax::note_scroll(); } }
+                    if t < 9.0 { if let Some(c) = &self.ctx { c.window.request_redraw(); } }
+                }
                 self.draw(); redraw = false;
                 if self.probe > 0 && !self.probe_done && self.frames > 5 { self.run_probe(); self.push_ax(); }
                 if self.seconds > 0.0 && self.t0.elapsed().as_secs_f32() > self.seconds { el.exit(); return }
@@ -256,13 +334,14 @@ impl ApplicationHandler<AkEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => { self.shift = m.state().shift_key(); self.cmd = m.state().super_key(); redraw = false; }
             WindowEvent::CursorMoved { position, .. } => { self.cursor = (position.x, position.y); redraw = false; }
-            WindowEvent::MouseWheel { delta, .. } => { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y * 40.0, MouseScrollDelta::PixelDelta(p) => p.y as f32 }; let max = self.blocks.last().map(|b| b.y + b.height).unwrap_or(0.0); self.scroll = (self.scroll - dy).clamp(0.0, max.max(0.0)); }
+            WindowEvent::MouseWheel { delta, .. } => { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y * 40.0, MouseScrollDelta::PixelDelta(p) => p.y as f32 }; let max = self.blocks.last().map(|b| b.y + b.height).unwrap_or(0.0); self.scroll = (self.scroll - dy).clamp(0.0, max.max(0.0)); #[cfg(target_os = "macos")] if self.native { native_ax::log("SCROLL", format!("{}", self.scroll as i64), true); native_ax::note_scroll(); } }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let scale = self.ctx.as_ref().map(|c| c.window.scale_factor()).unwrap_or(1.0);
                 let (x, y) = ((self.cursor.0 - PAD * scale) as f32, (self.cursor.1 - PAD * scale) as f32 + self.scroll);
                 if let Some(bi) = self.blocks.iter().position(|b| y >= b.y && y < b.y + b.height + 8.0) { self.focus = bi; }
                 let by = self.blocks[self.focus].y; let shift = self.shift;
                 { let b = &mut self.blocks[self.focus]; let mut d = b.editor.driver(&mut self.font_cx, &mut self.layout_cx); if shift { d.extend_selection_to_point(x, y - by) } else { d.move_to_point(x, y - by) } }
+                if self.note.is_none() { self.note = Some(false); }
             }
             WindowEvent::Ime(ime) => {
                 println!("ime: {ime:?}");
@@ -291,7 +370,7 @@ impl ApplicationHandler<AkEvent> for App {
                     Key::Named(NamedKey::Delete) => self.apply(f, |d| d.delete()),
                     Key::Named(NamedKey::Enter) => self.split(),
                     Key::Character(c) if cmd => match c.as_str() {
-                        "z" => self.undo_one(shift),
+                        "z" => { self.undo_one(shift); self.doc_dirty = true; self.note = Some(true); }
                         "c" | "x" => { if let Some(t) = self.blocks[f].editor.selected_text().map(|s| s.to_string()) { if let Some(cb) = self.clipboard.as_mut() { cb.set_text(t).ok(); } if c == "x" { self.apply(f, |d| d.delete_selection()); } } }
                         "v" => { if let Some(t) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) { self.apply(f, |d| d.insert_or_replace_selection(&t)); } }
                         "a" => { let end = self.blocks[f].editor.raw_text().len(); self.apply(f, |d| { d.move_to_byte(0); d.extend_selection_to_byte(end); }) }
@@ -318,11 +397,12 @@ fn main() {
     let el = EventLoop::<AkEvent>::with_user_event().build().unwrap();
     let proxy = el.create_proxy();
     let mut app = App { rc: RenderContext::new(), ctx: None, font_cx: FontContext::new(), layout_cx: LayoutContext::new(), blocks: vec![], focus: 0, scroll: 0.0, single: has("--single"),
-        shift: false, cmd: false, cursor: (0.0, 0.0), clipboard: arboard::Clipboard::new().ok(), undo: vec![], redo: vec![], doc_value: String::new(), doc_dirty: true, proxy: Some(proxy), ax_refs: vec![],
+        shift: false, cmd: false, cursor: (0.0, 0.0), clipboard: arboard::Clipboard::new().ok(), undo: vec![], redo: vec![], doc_value: String::new(), doc_dirty: true, u16_starts: vec![], native: std::env::var_os("S9_NATIVE").is_some(), note: None, follow: true, proxy: Some(proxy), ax_refs: vec![],
         seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), t0: Instant::now(), probe: arg("--probe").and_then(|v| v.parse().ok()).unwrap_or(0), probe_done: false,
         key_recv: None, key_present_ms: vec![], frame_ms: vec![], draw_ms: vec![], ax_us: vec![], per_key_us: vec![], undo_us: vec![], frames: 0 };
     app.load(&text);
     el.run_app(&mut app).unwrap();
+    #[cfg(target_os = "macos")] native_ax::summary();
     let (mut kp, mut fm, mut dm, mut au, mut pk) = (app.key_present_ms.clone(), app.frame_ms.clone(), app.draw_ms.clone(), app.ax_us.clone(), app.per_key_us.clone());
     println!("frames {}: frame ms (scene + render + present, CPU) p50 {:.2} p95 {:.2} max {:.2}; scene build ms p50 {:.2} p95 {:.2}; key→present ms p50 {:.2} p95 {:.2} (n={}); per-key µs (all keys) p50 {:.0} p95 {:.0}; accesskit tree µs p50 {:.0} p95 {:.0} max {:.0}; undo depth {}",
         app.frames, pct(&mut fm, 50.0), pct(&mut fm, 95.0), pct(&mut fm, 100.0), pct(&mut dm, 50.0), pct(&mut dm, 95.0), pct(&mut kp, 50.0), pct(&mut kp, 95.0), kp.len(), pct(&mut pk, 50.0), pct(&mut pk, 95.0), pct(&mut au, 50.0), pct(&mut au, 95.0), pct(&mut au, 100.0), app.undo.len());
