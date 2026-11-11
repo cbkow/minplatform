@@ -60,7 +60,10 @@ impl Sidebar {
     /// A pointer event. `true` in the second place: the event was the sidebar's (the note must not act on it).
     pub fn event(&mut self, e: &Event, fonts: &mut Fonts, now: Instant) -> (Act, bool) {
         let r = self.rail.event(e, now);
-        if r.consumed || self.rail.is_dragging() { return (Act::Redraw, true) }
+        // the rail reports EVERY event inside it as consumed (its panel routes the rest): only its own parts — the
+        // fold arrow and tab, the splitter, the scrollbar — are taken here; the rows get what is left
+        let own = r.toggled || r.width_changed || self.rail.is_dragging() || self.rail.splitter_hovered() || self.rail.scrollbar_hovered() || e.pos().is_some_and(|(x, y)| self.rail.over_control(x, y, now));
+        if own { return (Act::Redraw, true) }
         let Some((x, y)) = e.pos() else { let had = self.hover.take().is_some(); return (if had || r.dirty { Act::Redraw } else { Act::None }, false) };
         let inside = self.rail.hit(x, y);
         if let Some((id, f)) = self.rename.as_mut() {
