@@ -162,6 +162,7 @@ impl App {
         self.autosave();
         let Some(st) = self.store.as_mut() else { println!("save: this note has no file"); return };
         let Some(session) = st.session.as_mut() else { return };
+        let mut raced = false;   // the document's date said "unchanged" but its content did not: merge after all
         for attempt in 0..3 {
             // what is at the document's place decides; "missing" and "unreachable" never lead to a write (row 291, UFB's lesson)
             let probe = session.probe();
@@ -170,7 +171,7 @@ impl App {
                 mn_store::staging::Original::Unreachable(e) => { eprintln!("save: the document cannot be reached ({e}). Nothing was written; your changes are kept on this machine."); break }
                 _ => {}
             }
-            let result = if matches!(probe, mn_store::staging::Original::Changed) {
+            let result = if matches!(probe, mn_store::staging::Original::Changed) || raced {
                 let (theirs, stamp) = match session.fetch_theirs() { Ok(x) => x, Err(e) => { eprintln!("save: {e}"); return } };
                 match st.col.merge_from(session.base().as_deref(), &theirs) {
                     Ok(report) => {
@@ -186,7 +187,7 @@ impl App {
             } else { let col = &st.col; session.save(|tmp| col.publish(tmp).map_err(std::io::Error::other)) };
             match result {
                 Ok(()) => { st.unpublished = false; println!("saved {}", session.original().display()); break }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted && attempt < 2 => continue,   // saved again under us: merge again
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted && attempt < 2 => { raced = true; continue }   // saved by someone else under us: merge (again)
                 Err(e) => { eprintln!("save: {e} — the file is untouched"); break }
             }
         }

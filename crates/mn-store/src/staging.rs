@@ -93,37 +93,39 @@ impl Session {
     pub fn original_changed(&self) -> bool { matches!(self.probe(), Original::Changed) }
     /// The original has changed under us: copies it, as it is now, into the session as `theirs.mnd` and returns the
     /// copy with the stamp it was taken at (which [`Session::save_merged`] checks before it replaces the original).
-    pub fn fetch_theirs(&self) -> io::Result<(PathBuf, Stamp)> {
-        let stamp = Stamp::of(&self.original)?; let to = self.dir.join("theirs.mnd");
-        fs::copy(&self.original, &to)?;
-        Ok((to, stamp))
+    /// The fingerprint of the file as opened or last published (None for a collection never published): what the
+    /// document has to be for a publish to go ahead.
+    pub fn base_print(&self) -> io::Result<Option<crate::share::Fingerprint>> { match self.base() { Some(b) => crate::share::fingerprint(&b).map(Some), None => Ok(None) } }
+    /// Someone else's file is at the document's place: copies it, as it is now, into the session as `theirs.mnd`, and
+    /// returns the copy with its fingerprint (which [`Session::save_merged`] expects the document to still have).
+    pub fn fetch_theirs(&self) -> io::Result<(PathBuf, crate::share::Fingerprint)> {
+        let to = self.dir.join("theirs.mnd"); let print = crate::share::fetch(&self.original, &to)?; Ok((to, print))
     }
-    /// Publishes a MERGED file: as [`Session::save`], but only if the original is still what `theirs` was copied
-    /// from — if it has changed again, nothing is written and the error kind is `Interrupted`: fetch and merge again.
-    pub fn save_merged(&mut self, theirs: Stamp, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+    /// Publishes a MERGED file: as [`Session::save`], but the document must still be the one `theirs` was copied from —
+    /// if it was saved again, nothing is written and the error kind is `Interrupted`: fetch and merge again.
+    pub fn save_merged(&mut self, theirs: crate::share::Fingerprint, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
         let to = self.original.clone();
-        self.save_as_checked(&to, Some(theirs), produce)?;
+        self.publish(&to, Some(theirs), produce)?;
         let _ = fs::remove_file(self.dir.join("theirs.mnd")); Ok(())
     }
-    /// Publishes: `produce` writes the complete new file to the path it is given (a temporary file BESIDE the
-    /// original, so the rename stays on one volume); it is flushed to disk and renamed over the original, and becomes
-    /// the new base. On any error the original is untouched and the temporary file is removed.
-    pub fn save(&mut self, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> { let to = self.original.clone(); self.save_as(&to, produce) }
-    /// The same at a new place, which becomes this session's original.
-    pub fn save_as(&mut self, to: &Path, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> { self.save_as_checked(to, None, produce) }
-    fn save_as_checked(&mut self, to: &Path, expect: Option<Stamp>, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
-        let name = to.file_name().ok_or_else(|| io::Error::other("no file name"))?.to_string_lossy().into_owned();
-        let tmp = to.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    /// Publishes: `produce` writes the complete new file to the path it is given — a file IN THE SESSION, on this
+    /// machine (no database writes at the document's place); that file then becomes the document by
+    /// [`crate::share::put`], which requires the document to still be the one this session opened or last published
+    /// (`Interrupted` if it is not: someone else saved — fetch, merge, [`Session::save_merged`]). On any error the
+    /// document is untouched.
+    pub fn save(&mut self, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> { let (to, expect) = (self.original.clone(), self.base_print()?); self.publish(&to, expect, produce) }
+    /// The same at a new place (nothing may be there), which becomes this session's original.
+    pub fn save_as(&mut self, to: &Path, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> { self.publish(to, None, produce) }
+    fn publish(&mut self, to: &Path, expect: Option<crate::share::Fingerprint>, produce: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+        let staged = self.dir.join("publish.mnd"); let _ = fs::remove_file(&staged);
         let result = (|| {
-            produce(&tmp)?;
-            File::options().write(true).open(&tmp)?.sync_all()?;
-            fs::copy(&tmp, self.dir.join("base.new"))?;
-            if let Some(e) = expect { if Stamp::of(to).ok() != Some(e) { return Err(io::Error::new(io::ErrorKind::Interrupted, "the original changed again")) } }
-            fs::rename(&tmp, to)?;
-            fs::rename(self.dir.join("base.new"), self.dir.join("base.mnd"))
+            produce(&staged)?;
+            File::options().write(true).open(&staged)?.sync_all()?;
+            crate::share::put(&staged, to, expect).map_err(|e| match e { crate::share::PutError::Raced => io::Error::new(io::ErrorKind::Interrupted, e.to_string()), crate::share::PutError::Unverified => io::Error::new(io::ErrorKind::InvalidData, e.to_string()), crate::share::PutError::Io(e) => e })?;
+            fs::rename(&staged, self.dir.join("base.mnd"))
         })();
-        if result.is_err() { let _ = fs::remove_file(&tmp); let _ = fs::remove_file(self.dir.join("base.new")); return result }
-        self.original = to.to_path_buf(); self.stamp = Stamp::of(to).ok();
+        if result.is_err() { let _ = fs::remove_file(&staged); return result }
+        self.original = to.to_path_buf(); self.stamp = Stamp::of(to).ok();   // the stamp is a hint only: a share may still answer with the old one
         write_origin(&self.dir, &self.original, self.stamp)
     }
     /// A clean close: the session folder goes. (Dropping a session WITHOUT this leaves it as a leftover — which is

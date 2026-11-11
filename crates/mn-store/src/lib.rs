@@ -4,6 +4,7 @@
 pub mod codec;
 pub mod file;
 pub mod old;
+pub mod share;
 pub mod staging;
 
 pub use file::{Collection, DocKind, Entry, Error};

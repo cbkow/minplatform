@@ -305,7 +305,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use mn_doc::{inline::Mark, ColumnKind, ColumnSpec, Kind, Spans};
-    use crate::staging::{Session, Stamp};
+    use crate::staging::Session;
     fn scratch(name: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("mn-store-{name}-{}", BlockId::new())); std::fs::create_dir_all(d.join("share")).unwrap(); std::fs::create_dir_all(d.join("staging")).unwrap(); d }
     /// A note with every kind of block, formatting over a non-BMP character, and both containers.
     fn sample() -> Doc {
@@ -471,15 +471,11 @@ mod tests {
         assert_eq!(report.tree, [TreeNote::KeptOverDelete(n2)]);
         assert_eq!((report.notes.len(), report.notes[0].0, report.changed.contains(&n1) && report.changed.contains(&n3)), (1, n1, true));
         let _ = n4;
-        // a save that would overwrite a THIRD save is refused, and nothing is written
-        let before = std::fs::read(&file).unwrap();
-        let (_, old_stamp) = mine.fetch_theirs().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(&file, &before).unwrap();                                              // someone saves again (same bytes, a new time)
-        if Stamp::of(&file).unwrap() != old_stamp {
-            let e = mine.save_merged(old_stamp, |tmp| my.publish(tmp).map_err(std::io::Error::other)).unwrap_err();
-            assert_eq!((e.kind(), std::fs::read_dir(d.join("share")).unwrap().count()), (std::io::ErrorKind::Interrupted, 1));
-        }
+        // a save that would overwrite a THIRD save is refused, and nothing is written — told by content, not by date
+        let (_, old_print) = mine.fetch_theirs().unwrap();
+        let mut bytes = std::fs::read(&file).unwrap(); let n = bytes.len(); bytes[n - 1] ^= 1; std::fs::write(&file, &bytes).unwrap();   // someone saves again: same size, same second
+        let e = mine.save_merged(old_print, |tmp| my.publish(tmp).map_err(std::io::Error::other)).unwrap_err();
+        assert_eq!((e.kind(), std::fs::read_dir(d.join("share")).unwrap().count(), std::fs::read(&file).unwrap()), (std::io::ErrorKind::Interrupted, 1, bytes));
         drop((c, my, their)); s.close().unwrap(); mine.close().unwrap(); other.close().unwrap(); std::fs::remove_dir_all(d).unwrap();
     }
 }
