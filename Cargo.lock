@@ -2140,6 +2140,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "mn"
+version = "0.0.1"
+dependencies = [
+ "env_logger",
+ "kurbo",
+ "log",
+ "min-present",
+ "min-ui",
+ "mn-doc",
+ "mn-layout",
+ "mn-store",
+ "parley",
+ "peniko",
+ "png 0.17.16",
+ "raw-window-handle",
+ "serde_json",
+ "vello",
+ "wgpu",
+ "winit 0.31.0-beta.4",
+]
+
+[[package]]
 name = "mn-doc"
 version = "0.1.0"
 dependencies = [

@@ -79,6 +79,12 @@ pub struct Box { pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub part: Part 
 
 pub struct NoteLayout { boxes: HashMap<BlockId, Box>, pub width: f32, pub height: f32, pub scale: f32, pub style: Style }
 
+/// `#rgb`, `#rrggbb` or `#rrggbbaa` (the colours the file stores).
+pub fn hex(s: &str) -> Option<Color> {
+    let h = s.strip_prefix('#')?; let n = u32::from_str_radix(h, 16).ok()?;
+    match h.len() { 3 => Some(Color::from_rgb8((((n >> 8) & 15) * 17) as u8, (((n >> 4) & 15) * 17) as u8, ((n & 15) * 17) as u8)), 6 => Some(Color::from_rgb8((n >> 16) as u8, (n >> 8) as u8, n as u8)), 8 => Some(Color::from_rgba8((n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, n as u8)), _ => None }
+}
+
 fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>)> {
     let v: serde_json::Value = serde_json::from_str(descriptor).ok()?;
     let (w, h) = (v.get("w")?.as_f64()? as f32, v.get("h")?.as_f64()? as f32);
@@ -177,8 +183,9 @@ impl NoteLayout {
                 Mark::Strike => builder.push(StyleProperty::Strikethrough(true), r),
                 Mark::Underline => builder.push(StyleProperty::Underline(true), r),
                 Mark::Link(_) => { builder.push(StyleProperty::Underline(true), r.clone()); builder.push(StyleProperty::Brush(Brush::Solid(st.link)), r) }
-                // a colour is paint, not geometry; a highlight and a chip are drawn behind the text by the painter
-                Mark::Color(_) | Mark::Highlight(_) | Mark::Choice(_) => {}
+                Mark::Color(c) => { if let Some(c) = hex(c) { builder.push(StyleProperty::Brush(Brush::Solid(c)), r) } }
+                // a highlight and a chip are drawn behind the text by the painter: they move nothing
+                Mark::Highlight(_) | Mark::Choice(_) => {}
             }
         }
         let mut layout = builder.build(&b.text);
