@@ -122,7 +122,9 @@ impl DualTransport {
     }
     /// QCView `masterFps` = the higher clocked side's (24 with none); length = the longer side in seconds × that rate.
     fn retime(&mut self, keep_sec: f64) {
-        let rates: Vec<Rate> = self.sides.iter().flatten().map(|t| t.rate()).collect();
+        // an audio side's 24 fps is nominal: a picture side's rate is the master's whenever there is one (row 278)
+        let pictures: Vec<Rate> = self.sides.iter().flatten().filter(|t| !t.is_audio_only()).map(|t| t.rate()).collect();
+        let rates: Vec<Rate> = if pictures.is_empty() { self.sides.iter().flatten().map(|t| t.rate()).collect() } else { pictures };
         let rate = rates.iter().copied().fold(None, |m: Option<Rate>, r| Some(match m { Some(m) if m.as_f64() >= r.as_f64() => m, _ => r })).unwrap_or(Rate::new(24, 1));
         let dur = self.sides.iter().flatten().map(|t| t.frame_count() as f64 / t.rate().as_f64().max(1e-9)).fold(0.0, f64::max);
         let old_fps = self.fps;
@@ -365,6 +367,8 @@ impl DualTransport {
             // the side's audio: its mute, or silence where it has no picture (a gap, past its end — QCView mutes a side in a gap)
             let g = if self.muted[i] || !t.has_picture_at(sf) { 0.0 } else { 1.0 };
             if g != self.gains[i] { t.audio.set_side_gain(g); self.gains[i] = g; }
+            // an audio side never has a picture: Blank once (whatever the side showed before goes), its sound plays on
+            if t.is_audio_only() { if !self.blank[i] { self.blank[i] = true; out[i] = SideUpdate::Blank; } continue }
             if self.edit_scrub.is_some_and(|(e, _)| e == i) { if new { self.blank[i] = false; out[i] = SideUpdate::New; } continue }
             if !t.has_picture_at(sf) { if !self.blank[i] { self.blank[i] = true; out[i] = SideUpdate::Blank; } continue }
             if new || (self.blank[i] && t.current().is_some()) { self.blank[i] = false; out[i] = SideUpdate::New; }
@@ -409,6 +413,26 @@ mod tests {
         d.set_side(Side::B, Some(media_info(&a).unwrap())).unwrap();
         assert!(!d.is_live(Side::B) && d.side(Side::B).is_some() && d.frame_count() == 24);
         let _ = std::fs::remove_file(a);
+    }
+    /// Canon row 278: an audio file is a dual side — no picture (Blank once, whatever the side showed before), its sound on,
+    /// and its nominal 24 fps never sets the master's rate while the other side has a picture.
+    #[test]
+    fn an_audio_file_is_a_side_with_no_picture() {
+        let Some(v) = clip("av", "30", 1.0) else { eprintln!("ffmpeg missing: skipped"); return };
+        let w = std::env::temp_dir().join(format!("qcv-dual-{}-a.wav", std::process::id()));
+        if !std::process::Command::new("ffmpeg").args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=sample_rate=48000", "-t", "2", "-c:a", "pcm_s16le"]).arg(&w).status().map(|s| s.success()).unwrap_or(false) { return }
+        let wp = w.to_string_lossy().into_owned();
+        let audio = MediaInfo { id: "w".into(), name: "a.wav".into(), path: wp.clone(), kind: ClipMediaKind::Audio, rate: Rate::new(24, 1), duration: 48, width: 0, height: 0, has_audio: true, sequence_pattern: String::new(), sequence_start_frame: 1, sequence_end_frame: 1, sequence_exr_layer: String::new(), sequence_missing: vec![] };
+        let mut d = DualTransport::open(Some(media_info(&v).unwrap()), Some(audio.clone()), TransportOptions { scrub: None, loop_enabled: false, ..Default::default() }).unwrap();
+        assert!(d.side(Side::B).is_some_and(|t| t.is_audio_only()));
+        assert_eq!((d.rate(), d.frame_count()), (Rate::new(30, 1), 60), "the picture's rate, the longer side's length (2 s)");
+        let mut blanks = 0;
+        for _ in 0..40 { let u = d.tick(Instant::now()); assert_ne!(u[1], SideUpdate::New, "an audio side never shows a frame"); if u[1] == SideUpdate::Blank { blanks += 1; } std::thread::sleep(Duration::from_millis(5)); }
+        assert_eq!(blanks, 1, "Blank is reported once");
+        // audio on both sides: the nominal 24 fps is all there is
+        d.set_side(Side::A, Some(audio)).unwrap();
+        assert_eq!((d.rate(), d.frame_count()), (Rate::new(24, 1), 48));
+        let _ = std::fs::remove_file(v); let _ = std::fs::remove_file(w);
     }
     #[test]
     fn two_rates_share_one_clock_and_the_shorter_side_blanks() {

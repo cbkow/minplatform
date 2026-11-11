@@ -223,7 +223,7 @@ impl App {
         if item.media_type == qcv_project::MediaType::DualPair { self.load_dual_view(id); return }
         // in dual (QCView `loadRequested`): a video / sequence becomes A in place; anything else falls back to the single view
         if self.dual.is_some() {
-            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::ImageSequence | qcv_project::MediaType::LiveStream) {
+            if matches!(item.media_type, qcv_project::MediaType::Video | qcv_project::MediaType::Audio | qcv_project::MediaType::ImageSequence | qcv_project::MediaType::LiveStream) {
                 let ok = self.set_dual_side(qcv_player::Side::A, id);
                 self.project.set_load_failed(id, !ok);
                 if ok { self.project.set_active_item(id); self.loaded_item = id.to_string(); if let Some(g) = self.gpu.as_mut() { g.ui_dirty = true; } }
@@ -393,6 +393,8 @@ impl App {
         let m = self.project.item(id)?;
         match m.media_type {
             qcv_project::MediaType::Video => qcv_player::dual::media_info(&m.path).ok().map(|mut i| { i.id = id.to_string(); i.name = m.name.clone(); i }),
+            // an audio file is a dual side too (canon row 278; QCView refused it): no picture, its sound under the side's speaker pill
+            qcv_project::MediaType::Audio => { let i = playlist::media_info(m); (i.duration > 0).then_some(i) }
             qcv_project::MediaType::ImageSequence => {
                 let q = &m.image_seq;
                 let pattern = std::path::Path::new(&q.directory).join(&q.pattern).to_string_lossy().into_owned();
@@ -495,7 +497,7 @@ impl App {
         if let Some(l) = back { if let Some(item) = self.project.item(&id).cloned() { self.project.set_active_item(&id); self.adopt_live(l, &item); return } }
         if !id.is_empty() { self.load_item(&id); if let Some(p) = self.player.as_mut() { let f = (sec * p.rate().as_f64()).round() as i32; p.seek_to_frame(f); } }
     }
-    /// QCView `setBSource` (in place here — row 211 c): audio-only refused.
+    /// QCView `setBSource` (in place here — row 211 c). Audio is taken (row 278; QCView refused it).
     fn set_b_source(&mut self, id: &str) -> bool {
         if self.dual_media(id).is_none() && self.live_media(id).is_none() { self.toast(trv("Couldn't load that file as Source B"), min_ui::ToastKind::Notice); return false }
         if self.dual.is_some() {
@@ -955,7 +957,8 @@ impl App {
                 let eng = if i == 0 { &mut ed.a } else { &mut ed.b };
                 match u[i] {
                     qcv_player::SideUpdate::New => if let Some(h) = d.side(side).and_then(|t| t.current()) { match eng.show(&h.frame) { Ok(()) => shown_new = true, Err(e) => println!("dual {side:?}: show: {e}") } },
-                    qcv_player::SideUpdate::Blank => { eng.clear_frame(); shown_new = true; }
+                    // an audio side (row 278) has no picture and no place: the background shows there, with no bounds of its own
+                    qcv_player::SideUpdate::Blank => { if d.side(side).is_some_and(|t| t.is_audio_only()) { eng.clear_picture(); } else { eng.clear_frame(); } shown_new = true; }
                     qcv_player::SideUpdate::Same => {}
                 }
             }
