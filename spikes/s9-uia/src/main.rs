@@ -346,6 +346,9 @@ mod win {
                 let _ = EndPaint(hwnd, &ps); LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
+            // timer 2, once, 3 s after launch: announce focus again. A window opened by a scheduled task gets its focus before
+            // a tool is watching; Grammarly then reads the text once and never measures (seen twice).
+            WM_TIMER if wp.0 == 2 => { let _ = KillTimer(Some(hwnd), 2); let e = ELEM.with_borrow(|e| e.clone()); if let Some(e) = e { let r = UiaRaiseAutomationEvent(&e, UIA_AutomationFocusChangedEventId); log("REFOCUS", format!("focus-changed event raised: {}", r.is_ok()), true); } LRESULT(0) }
             WM_TIMER => { let _ = DestroyWindow(hwnd); LRESULT(0) }
             WM_DESTROY => { let t = DOC.with_borrow(|d| d.s(0, d.len())); log("QUIT", format!("final text: {t}"), true); LOG.with_borrow_mut(|l| if let Some(l) = l.as_mut() { let _ = writeln!(l.out, "{t}"); }); summary(); ROOT.with_borrow_mut(|r| { if let Some(r) = r.take() { let _ = UiaReturnRawElementProvider(hwnd, WPARAM(0), LPARAM(0), None::<&IRawElementProviderSimple>); let _ = UiaDisconnectProvider(&r); } }); PostQuitMessage(0); LRESULT(0) }
             // anything a tool might send an edit control: the EM_ range, WM_SETTEXT / GETTEXT, cut / copy / clear / undo, IME
@@ -377,6 +380,7 @@ mod win {
         let (n, cw, lh) = DOC.with_borrow(|d| (d.len(), d.cw, d.lh));
         log("START", format!("{n} UTF-16 units; dpi {dpi}; cell {cw}x{lh}; control type {}; tree {}; withheld {:?}", if std::env::var("S9_CT").as_deref() == Ok("edit") { "Edit" } else { "Document" }, if child_tree() { "child" } else { "window" }, std::env::var("S9_OFF").unwrap_or_default()), true);
         if let Some(s) = arg("--seconds").and_then(|v| v.parse::<u32>().ok()) { SetTimer(Some(hwnd), 1, s * 1000, None); }
+        if std::env::var("S9_REFOCUS").as_deref() != Ok("0") { SetTimer(Some(hwnd), 2, 3000, None); }
         let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetForegroundWindow(hwnd); let _ = SetFocus(Some(hwnd));
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() { let _ = TranslateMessage(&msg); DispatchMessageW(&msg); }
