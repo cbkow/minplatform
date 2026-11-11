@@ -135,6 +135,11 @@ impl Collection {
         let rows: Vec<(String, String, String)> = s.query_map([parent.map(|p| p.to_string())], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
         rows.into_iter().map(|(id, kind, title)| Ok(Entry { id: id_of(&id)?, parent, kind: DocKind::parse(&kind), title })).collect()
     }
+    /// The first line of a note's first block (what an unnamed note is called by), or "" when it has none.
+    pub fn first_line(&self, note: BlockId) -> Result<String, Error> {
+        let t: Option<String> = self.db.query_row("SELECT text FROM note_blocks WHERE doc = ?1 AND parent IS NULL AND kind NOT IN ('media', 'divider', 'columns', 'table') ORDER BY rank, rowid LIMIT 1", [note.to_string()], |r| r.get(0)).optional()?;
+        Ok(t.unwrap_or_default().lines().next().unwrap_or("").trim().chars().take(80).collect())
+    }
     pub fn rename(&self, id: BlockId, title: &str) -> Result<(), Error> { self.db.execute("UPDATE documents SET title = ?2, modified = ?3 WHERE id = ?1", params![id.to_string(), title, now_ms()])?; Ok(()) }
     /// Removes an entry with everything under it.
     pub fn remove(&self, id: BlockId) -> Result<(), Error> { self.db.execute("DELETE FROM documents WHERE id = ?1", [id.to_string()])?; Ok(()) }

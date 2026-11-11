@@ -29,6 +29,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 mod paint;
+mod sidebar;
 #[cfg(target_os = "macos")]
 mod text_element;
 
@@ -53,7 +54,7 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
 /// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool }
 
-struct App { store: Option<Store>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+struct App { store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(BlockId, min_ui::dialog::Dialog)>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -92,8 +93,10 @@ impl App {
     fn redraw(&mut self) {
         let Some(g) = self.gpu.as_mut() else { return };
         let t = Instant::now();
-        let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
-        let page_w = (w as f64 - 2.0 * MARGIN * s).max(320.0 * s);
+        let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let now = Instant::now();
+        // the sidebar takes its width off the page (it slides when it folds, so the page follows frame by frame)
+        self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(h as f64, s, now)).unwrap_or(0.0);
+        let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -111,7 +114,7 @@ impl App {
         #[cfg(target_os = "macos")] if (self.scroll - self.last_scroll).abs() > 0.01 { text_element::scrolled(); }
         self.last_scroll = self.scroll;
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
-        let off = kurbo::Vec2::new(MARGIN * s, PAD * s - self.scroll);
+        let off = kurbo::Vec2::new(self.side_w + MARGIN * s, PAD * s - self.scroll);
         let scene = g.ui.scene_mut(); scene.reset();
         scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::PAGE, None, &view);
         for r in self.ed.selection_rects(l) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::SELECTION, None, &(r + off)); }
@@ -121,6 +124,9 @@ impl App {
         if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
+        // over the page: the sidebar, then a question being asked
+        if let Some(sb) = self.sidebar.as_mut() { sb.paint(scene, &mut g.fonts, self.store.as_ref().map(|st| st.note), now); if sb.rail.animating(now) { g.window.request_redraw(); } }
+        if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
         g.presenter.draw(|| window.pre_present_notify());
@@ -140,14 +146,15 @@ impl App {
     fn ensure(&mut self) -> bool {
         let Some(g) = self.gpu.as_mut() else { return false };
         let (w, _) = g.presenter.size(); let s = g.window.scale_factor();
-        let page_w = (w as f64 - 2.0 * MARGIN * s).max(320.0 * s);
+        let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
         if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
         true
     }
     /// The note as it stands goes into the staged work copy (autosave never touches the real file — row 272).
     fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
-        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("autosave: {e}") } } } self.title(); }
+        if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("autosave: {e}") }
+            if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } self.title(); }
     /// Save: the staged copy is published over the original by rename; if someone else saved meanwhile, their file is
     /// merged in first (row 285) and the note on screen is replaced by the merged one.
     fn save(&mut self) {
@@ -161,6 +168,8 @@ impl App {
                     Ok(report) => {
                         println!("save: merged with a save by someone else — {} note(s) changed here; tree {:?}; {} note(s) with reported cases", report.changed.len(), report.tree, report.notes.len());
                         for (id, cases) in &report.notes { println!("  note {id}: {cases:?}"); }
+                        for id in &report.changed { self.others.remove(id); }
+                        if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); }
                         if report.changed.contains(&st.note) { if let Ok(doc) = st.col.load_note(st.note) { self.ed = Editor::new(doc); self.layout = None; self.flat = None; } }   // the history starts over after a merge
                     }
                     Err(e) => { eprintln!("save: the merge failed, nothing was written: {e}"); return }
@@ -175,12 +184,100 @@ impl App {
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
-    fn title(&self) { if let (Some(g), Some(st)) = (&self.gpu, &self.store) { g.window.set_title(&format!("{}{} — minNotes", st.title, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
+    // ── the tree (row 290)
+    /// Opens another note: the one being left goes to the staged copy first and keeps its editor (its undo history)
+    /// for as long as the window is open.
+    fn open_note(&mut self, id: BlockId) {
+        let Some(st) = self.store.as_mut() else { return }; if st.note == id { return }
+        if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
+        st.edited.get_or_insert_with(Instant::now); self.autosave();
+        let Some(st) = self.store.as_mut() else { return };
+        let next = match self.others.remove(&id) { Some(e) => e, None => match st.col.load_note(id) { Ok(d) => Editor::new(d), Err(e) => { eprintln!("open: {e}"); return } } };
+        let old = std::mem::replace(&mut self.ed, next); self.others.insert(st.note, old);
+        st.note = id; self.layout = None; self.flat = None; self.scroll = 0.0; self.follow = false;
+        #[cfg(target_os = "macos")] text_element::changed(true);
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// Cmd+N / Cmd+Shift+N: a note or a folder beside the selected entry (inside it, when that is a folder).
+    fn new_entry(&mut self, kind: mn_store::DocKind) {
+        let (Some(st), Some(sb), Some(g)) = (self.store.as_mut(), self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
+        let parent = sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
+        let id = match st.col.create(parent, kind, if kind == mn_store::DocKind::Folder { "New folder" } else { "" }) { Ok(id) => id, Err(e) => { eprintln!("new: {e}"); return } };
+        if kind == mn_store::DocKind::Note { let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); let _ = st.col.save_note(id, &d); }
+        st.unpublished = true; sb.set_tree(&st.col); sb.selected = Some(id);
+        if kind == mn_store::DocKind::Folder { sb.start_rename(id, &mut g.fonts); g.window.request_redraw(); } else { sb.focused = false; self.open_note(id); self.ed.select_all(); }
+    }
+    fn rename_entry(&mut self, id: BlockId, name: &str) {
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        if st.col.rename(id, name).is_ok() { st.unpublished = true; sb.set_tree(&st.col); }
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// Asks before deleting (the entry leaves the file at the next publish).
+    fn ask_delete(&mut self, id: BlockId) {
+        let Some(row) = self.sidebar.as_ref().and_then(|sb| sb.row(id)) else { return };
+        let body = if row.kind == mn_store::DocKind::Folder { "The folder and everything in it will be removed from the collection." } else { "The note will be removed from the collection." };
+        let mut d = min_ui::dialog::Dialog::new(&format!("Delete \u{201c}{}\u{201d}?", row.title), body, vec![("Cancel", min_ui::text_button::Variant::Secondary), ("Delete", min_ui::text_button::Variant::Negative)]);
+        d.show(); self.confirm = Some((id, d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn delete_entry(&mut self, id: BlockId) {
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        if let Err(e) = st.col.remove(id) { eprintln!("delete: {e}"); return }
+        st.unpublished = true; sb.set_tree(&st.col); sb.selected = None; self.others.retain(|k, _| sb.row(*k).is_some());
+        // the open note went with it: another one opens, or a new one is made
+        if sb.row(st.note).is_none() {
+            let next = sb.rows.iter().find(|r| r.kind == mn_store::DocKind::Note).map(|r| r.id);
+            self.others.remove(&st.note);
+            match next { Some(n) => { let gone = st.note; self.open_note(n); self.others.remove(&gone); }
+                None => { st.note = BlockId::new(); self.new_entry(mn_store::DocKind::Note); } }
+        }
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn act(&mut self, a: sidebar::Act) {
+        match a { sidebar::Act::None => {}, sidebar::Act::Redraw => { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            sidebar::Act::Open(id) => { if self.sidebar.as_ref().and_then(|sb| sb.row(id)).is_some_and(|r| r.kind == mn_store::DocKind::Note) { self.open_note(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            sidebar::Act::Renamed(id, name) => self.rename_entry(id, &name) }
+    }
+    /// A pointer event for whatever lies over the page. True: it was taken (the note must not act on it).
+    fn chrome_pointer(&mut self, e: min_ui::Event) -> bool {
+        let now = Instant::now();
+        if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
+            let id = *id; d.pointer(&e, &mut g.fonts); let (pressed, _) = d.event(&e, now); g.window.request_redraw();
+            if let Some(i) = pressed { self.confirm = None; if i == 1 { self.delete_entry(id); } }
+            return true
+        }
+        let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
+        let (a, taken) = sb.event(&e, &mut g.fonts, now);
+        if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; }
+        self.act(a); taken
+    }
+    fn title(&self) { if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{} — minNotes", name, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
-    fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - MARGIN * s, p.1 - PAD * s + self.scroll) }
+    fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        // what lies over the page takes keys first: a question, a name being edited, then the tree when it has the focus
+        let ui_key = || { use min_ui::{Key as K, Named as N};
+            let k = match key { Key::Named(NamedKey::Escape) => K::Named(N::Escape), Key::Named(NamedKey::Enter) => K::Named(N::Enter), Key::Named(NamedKey::Tab) => K::Named(N::Tab), Key::Named(NamedKey::Backspace) => K::Named(N::Backspace), Key::Named(NamedKey::Delete) => K::Named(N::Delete),
+                Key::Named(NamedKey::ArrowLeft) => K::Named(N::Left), Key::Named(NamedKey::ArrowRight) => K::Named(N::Right), Key::Named(NamedKey::ArrowUp) => K::Named(N::Up), Key::Named(NamedKey::ArrowDown) => K::Named(N::Down), Key::Named(NamedKey::Home) => K::Named(N::Home), Key::Named(NamedKey::End) => K::Named(N::End),
+                Key::Character(c) => K::Char(c.to_string()), _ => K::Char(String::new()) };
+            min_ui::KeyEvent { key: k, text: text.map(|t| t.to_string()), shift, cmd } };
+        if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
+            let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
+            if let Some(i) = r { self.confirm = None; if i == 1 { self.delete_entry(id); } } return
+        }
+        if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) {
+            if let Some(a) = sb.key(&ui_key(), &mut g.fonts) { self.act(a); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+            if cmd { if let Key::Character(c) = key { match c.to_lowercase().as_str() {
+                "1" => { sb.rail.toggle(Instant::now()); g.window.request_redraw(); return }
+                "n" => { self.new_entry(if shift { mn_store::DocKind::Folder } else { mn_store::DocKind::Note }); return }
+                _ => {} } } }
+            if sb.focused { if let Some(sel) = sb.selected { match key {
+                Key::Named(NamedKey::Enter) => { sb.start_rename(sel, &mut g.fonts); g.window.request_redraw(); return }
+                Key::Named(NamedKey::Backspace | NamedKey::Delete) => { self.ask_delete(sel); return }
+                Key::Named(NamedKey::Escape) => { sb.focused = false; g.window.request_redraw(); return }
+                _ => {} } } if !cmd { return } }
+        }
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
         let dirty = match key {
@@ -255,9 +352,9 @@ impl text_element::TextHost for App {
         let (f, l) = (self.flat.as_ref().unwrap(), self.layout.as_ref().unwrap()); let s = l.scale as f64;
         let rects = if length == 0 { f.locate16(location).and_then(|(line, at)| l.caret(&self.ed.doc, line.block, at, 1.0)).into_iter().collect() } else { l.flat_rects(&self.ed.doc, f, location, length) };
         let Some(u) = rects.into_iter().reduce(|a: Rect, b| a.union(b)) else { return (0.0, 0.0, 0.0, 0.0) };
-        ((u.x0 + MARGIN * s) / s, (u.y0 + PAD * s - self.scroll) / s, u.width() / s, u.height() / s)
+        ((u.x0 + self.side_w + MARGIN * s) / s, (u.y0 + PAD * s - self.scroll) / s, u.width() / s, u.height() / s)
     }
-    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (MARGIN, PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
+    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (self.side_w / s + MARGIN, PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
     fn ax_viewport(&mut self) -> (f64, f64) { self.gpu.as_ref().map(|g| { let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); (w as f64 / s, h as f64 / s) }).unwrap_or((0.0, 0.0)) }
     fn replace_before_caret(&mut self, text: &str) {
         let now = self.now_ms(); if !self.ensure() { return }
@@ -312,14 +409,19 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
+                if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
                 self.scroll -= match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 };
                 g.window.request_redraw();
             },
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
+                if !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.pressed { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
-                self.pointer = (position.x, position.y); self.pressed = state == ElementState::Pressed;
+                self.pointer = (position.x, position.y);
+                let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
+                if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { return }
+                self.pressed = state == ElementState::Pressed;
                 if self.pressed { if let Some(l) = self.layout.as_ref() {
                     let (x, y) = self.note_point(self.pointer);
                     let double = self.last_click.is_some_and(|(t, px, py)| t.elapsed().as_millis() < 400 && (px - x).abs() < 4.0 && (py - y).abs() < 4.0);
@@ -338,7 +440,9 @@ impl ApplicationHandler for App {
                     if !self.mods.1 && fate == KeyFate::Swallowed && (event.repeat || self.accent_popup) { self.accent_popup = true; return }
                     self.accent_popup = false; }
                 let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
-            WindowEvent::Ime(e) => { let now = self.now_ms(); let d = match e {
+            WindowEvent::Ime(e) => {
+                if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.renaming() { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None }; if let Some(ev) = ev { sb.ime(&ev, &mut g.fonts); g.window.request_redraw(); } return } }
+                let now = self.now_ms(); let d = match e {
                     winit::event::Ime::Preedit(text, cursor) => self.ed.set_preedit(&text, cursor, now).unwrap_or(Dirty::Nothing),
                     winit::event::Ime::Commit(text) => self.ed.commit_preedit(&text, now).unwrap_or(Dirty::Nothing),
                     _ => return };
@@ -367,8 +471,25 @@ fn main() {
     objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(true, objc2_foundation::ns_string!("ApplePressAndHoldEnabled"));
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
+    // `--make-sample <file.mnd>`: writes a small synthetic collection (folders, notes, a canvas entry) and exits
+    if let Some(path) = arg("--make-sample") {
+        use mn_store::{Collection, DocKind};
+        let path = std::path::PathBuf::from(path); let _ = std::fs::remove_file(&path);
+        let mut c = Collection::open(&path).expect("sample");
+        let project = c.create(None, DocKind::Folder, "Closing sequence").unwrap();
+        let n = c.create(Some(project), DocKind::Note, "Review notes").unwrap(); c.save_note(n, &sample()).unwrap();
+        let para = |t: &str| { let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, t).unwrap(); d };
+        let n = c.create(Some(project), DocKind::Note, "").unwrap(); c.save_note(n, &para("A note without a name is called by its first line")).unwrap();
+        let sub = c.create(Some(project), DocKind::Folder, "Deliveries").unwrap();
+        let n = c.create(Some(sub), DocKind::Note, "Formats and safe areas").unwrap(); c.save_note(n, &para("16:9, 9:16 and 1:1.")).unwrap();
+        c.create(Some(project), DocKind::Canvas, "Storyboard").unwrap();
+        let n = c.create(None, DocKind::Note, "Scratch").unwrap(); c.save_note(n, &para("")).unwrap();
+        let tmp = path.with_extension("publish"); c.publish(&tmp).expect("publish"); drop(c);
+        for ext in ["mnd-wal", "mnd-shm"] { let _ = std::fs::remove_file(path.with_extension(ext)); }
+        std::fs::rename(&tmp, &path).expect("sample"); println!("wrote {}", path.display()); return
+    }
     // a collection: the first argument that is not an option or an option's value
-    let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note"];
+    let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample"];
     let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
     let mut store = None;
     let opened = file.map(|path| {
@@ -404,6 +525,7 @@ fn main() {
             None => sample(),
         },
     } };
-    let app = App { store, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
+    let app = App { store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
