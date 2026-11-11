@@ -3,7 +3,11 @@
 //! `mn-edit`: click, drag and double-click select; the arrows (Alt = by word, Cmd / Ctrl = line and note ends, Shift
 //! extends), typing, Enter, Backspace / Delete, undo / redo, select all, and plain-text cut / copy / paste. Nothing is
 //! saved; input methods and the desktop text element come next.
-//!   minNotes                         a built-in sample note (synthetic)
+//!   minNotes <file.mnd>              a collection (rows 271, 272): opened through a private staged copy; its first note
+//!                                    (or `--note <title>`) is edited. Edits are autosaved to the staging only; Cmd / Ctrl+S
+//!                                    publishes — merging first if someone else saved meanwhile. A file that does not exist
+//!                                    is a new collection with one note. Work a crash left behind is taken up again.
+//!   minNotes                         a built-in sample note (synthetic), not saved anywhere
 //!   minNotes --v2 <file.mnd> [n]     page n (default 1) of a minNotes 2.0 file, converted in memory (the file is only read)
 //!   minNotes --text <file.txt>       a plain text file, one paragraph per line
 //!   --seconds N                      close after N seconds;   --shot <png>   write the window as drawn, then close
@@ -32,7 +36,10 @@ const MARGIN: f64 = 48.0;
 const PAD: f64 = 28.0;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts }
-struct App { ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+/// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
+struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool }
+
+struct App { store: Option<Store>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -77,10 +84,11 @@ impl App {
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
         if self.frames == 0 && std::env::var_os("MN_DEMO").is_some() {
-            let top: Vec<BlockId> = self.ed.doc.children(None).to_vec();
-            if top.len() > 3 { use mn_edit::{Pos, Selection};
-                self.ed.set_selection(Some(Selection::caret(Pos { block: top[1], at: 0 }))); let _ = self.ed.insert("Typed by the demo. ", 0); self.layout.as_mut().unwrap().update_block(&self.ed.doc, &mut g.fonts, top[1]);
-                self.ed.set_selection(Some(Selection { anchor: Pos { block: top[0], at: 7 }, focus: Pos { block: top[3], at: 10 } })); }
+            let top: Vec<BlockId> = self.ed.doc.children(None).to_vec(); use mn_edit::{Pos, Selection};
+            if let Some(target) = top.get(1).or(top.first()).copied() {
+                self.ed.set_selection(Some(Selection::caret(Pos { block: target, at: 0 }))); let _ = self.ed.insert("Typed by the demo. ", 0); self.layout.as_mut().unwrap().update_block(&self.ed.doc, &mut g.fonts, target);
+                if let Some(st) = self.store.as_mut() { st.edited = Some(Instant::now()); }
+                if top.len() > 3 { self.ed.set_selection(Some(Selection { anchor: Pos { block: top[0], at: 7 }, focus: Pos { block: top[3], at: 10 } })); } }
         }
         let l = self.layout.as_ref().unwrap();
         // after an edit or a caret move the caret is brought into view
@@ -103,6 +111,7 @@ impl App {
     /// What an edit changed, taken to the layout; the caret is then followed.
     fn apply(&mut self, d: Dirty) {
         let d_changed = d != Dirty::Nothing;
+        if d_changed { if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } } }
         match d { Dirty::Nothing => {}, Dirty::Structure => self.layout = None,
             Dirty::Blocks(ids) => if let (Some(l), Some(g)) = (self.layout.as_mut(), self.gpu.as_mut()) { for id in ids { l.update_block(&self.ed.doc, &mut g.fonts, id); } } }
         let text_changed = d_changed; if text_changed { self.flat = None; }
@@ -118,6 +127,36 @@ impl App {
         if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
         true
     }
+    /// The note as it stands goes into the staged work copy (autosave never touches the real file — row 272).
+    fn autosave(&mut self) { if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => st.unpublished = true, Err(e) => eprintln!("autosave: {e}") } } } self.title(); }
+    /// Save: the staged copy is published over the original by rename; if someone else saved meanwhile, their file is
+    /// merged in first (row 285) and the note on screen is replaced by the merged one.
+    fn save(&mut self) {
+        self.autosave();
+        let Some(st) = self.store.as_mut() else { println!("save: this note has no file"); return };
+        let Some(session) = st.session.as_mut() else { return };
+        for attempt in 0..3 {
+            let result = if session.original_changed() && session.original().exists() {
+                let (theirs, stamp) = match session.fetch_theirs() { Ok(x) => x, Err(e) => { eprintln!("save: {e}"); return } };
+                match st.col.merge_from(session.base().as_deref(), &theirs) {
+                    Ok(report) => {
+                        println!("save: merged with a save by someone else — {} note(s) changed here; tree {:?}; {} note(s) with reported cases", report.changed.len(), report.tree, report.notes.len());
+                        for (id, cases) in &report.notes { println!("  note {id}: {cases:?}"); }
+                        if report.changed.contains(&st.note) { if let Ok(doc) = st.col.load_note(st.note) { self.ed = Editor::new(doc); self.layout = None; self.flat = None; } }   // the history starts over after a merge
+                    }
+                    Err(e) => { eprintln!("save: the merge failed, nothing was written: {e}"); return }
+                }
+                let col = &st.col; session.save_merged(stamp, |tmp| col.publish(tmp).map_err(std::io::Error::other))
+            } else { let col = &st.col; session.save(|tmp| col.publish(tmp).map_err(std::io::Error::other)) };
+            match result {
+                Ok(()) => { st.unpublished = false; println!("saved {}", session.original().display()); break }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted && attempt < 2 => continue,   // saved again under us: merge again
+                Err(e) => { eprintln!("save: {e} — the file is untouched"); break }
+            }
+        }
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn title(&self) { if let (Some(g), Some(st)) = (&self.gpu, &self.store) { g.window.set_title(&format!("{}{} — minNotes", st.title, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - MARGIN * s, p.1 - PAD * s + self.scroll) }
@@ -137,6 +176,7 @@ impl App {
             Key::Named(NamedKey::Delete) => self.ed.delete(true, now).unwrap_or(Dirty::Nothing),
             Key::Character(c) if cmd => match c.to_lowercase().as_str() {
                 "a" => { self.ed.select_all(); Dirty::Nothing }
+                "s" => { self.save(); return }
                 "z" => if shift { self.ed.redo() } else { self.ed.undo() }.unwrap_or(Dirty::Nothing),
                 "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
                 "v" => match self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) { Some(t) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), None => Dirty::Nothing },
@@ -149,6 +189,11 @@ impl App {
     }
 
     fn finish(&mut self) {
+        self.autosave();
+        if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
+        // a session with nothing unpublished is cleaned up; one WITH unpublished work is left where it is, to be taken up
+        // again at the next open of the file (nothing typed is dropped by closing the window)
+        if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { println!("closed with unsaved changes: they are kept and will be taken up again when the file is next opened"); drop(s) } else { let _ = s.close(); } } }
         if let (Some(path), Some(g)) = (self.shot.take(), self.gpu.as_mut()) {
             match g.presenter.capture_window() {
                 Some((px, w, h)) => { let oetf = |v: f32| { let v = v.clamp(0.0, 1.0); if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 } };
@@ -215,9 +260,11 @@ impl ApplicationHandler for App {
         println!("presenter: {} ({}) → {:?} {:?} colour space {:?}; scale {}", i.adapter, i.backend, i.output, i.format, i.color_space, window.scale_factor());
         window.request_redraw();
         #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new() }); self.t0 = Some(Instant::now());
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new() }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        // autosave to the staging a second after the last edit
+        if let Some(t) = self.store.as_ref().and_then(|s| s.edited) { let due = t + std::time::Duration::from_millis(1000); if Instant::now() >= due { self.autosave(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
         if self.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.seconds); if Instant::now() >= dl { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -254,11 +301,38 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Where staged sessions live on this machine (row 272: never beside the file).
+fn sessions_root() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("MN_SESSIONS_DIR") { return p.into() }
+    let base = if cfg!(target_os = "macos") { std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support")) } else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from) } else { std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).or(std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))) };
+    base.unwrap_or_else(std::env::temp_dir).join("minNotes").join("sessions")
+}
+
 fn main() {
     env_logger::init();
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
-    let doc = match arg("--v2") {
+    // a collection: the first argument that is not an option or an option's value
+    let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note"];
+    let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
+    let mut store = None;
+    let opened = file.map(|path| {
+        use mn_store::{staging, Collection, DocKind};
+        let root = sessions_root();
+        // work a crash (or a close without Save) left behind for this file is taken up again — nothing typed is dropped
+        let left = staging::leftovers(&root).into_iter().find(|l| l.original == path);
+        let session = match &left { Some(l) => { println!("recovered work: unsaved changes from an earlier session of {} are taken up again", path.display()); staging::Session::resume(l).expect("staging") } None => staging::Session::open(&root, &path).expect("staging") };
+        let mut col = Collection::open(&session.work()).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+        fn notes(c: &Collection, parent: Option<BlockId>, out: &mut Vec<mn_store::Entry>) { for e in c.list(parent).unwrap_or_default() { if e.kind == DocKind::Note { out.push(e.clone()); } notes(c, Some(e.id), out); } }
+        let mut all = vec![]; notes(&col, None, &mut all);
+        let entry = match arg("--note") { Some(t) => all.iter().find(|e| e.title == t).cloned(), None => all.first().cloned() };
+        let (note, title) = match entry { Some(e) => (e.id, e.title), None => { let id = col.create(None, DocKind::Note, "Untitled").expect("new note"); let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); col.save_note(id, &d).expect("new note"); (id, "Untitled".to_string()) } };
+        let doc = col.load_note(note).expect("note");
+        println!("opened {} — note {:?}: {} blocks; first text: {:?}", path.display(), title, doc.len(), doc.walk().iter().find(|b| b.kind.is_text()).map(|b| b.text.chars().take(60).collect::<String>()).unwrap_or_default());
+        store = Some(Store { session: Some(session), col, note, title, edited: None, unpublished: left.is_some() });
+        doc
+    });
+    let doc = if let Some(d) = opened { d } else { match arg("--v2") {
         Some(path) => {
             // the file is copied into a private session first and only the copy is read (row 272)
             let root = std::env::temp_dir().join("minnotes-step2-staging");
@@ -274,7 +348,7 @@ fn main() {
             Some(path) => { let mut d = Doc::new(); for (i, line) in std::fs::read_to_string(&path).expect("--text").lines().filter(|l| !l.trim().is_empty()).enumerate() { d.insert(None, i, BlockId::new(), Kind::Paragraph, line).unwrap(); } d }
             None => sample(),
         },
-    };
-    let app = App { ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    } };
+    let app = App { store, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
