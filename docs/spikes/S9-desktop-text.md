@@ -314,5 +314,26 @@ Both modes corrected all ten mistakes of the two paragraphs, among them every on
 mode costs almost nothing (hand over the text, accept an insert), the complete mode is a bounded piece of work. With
 `NSSpellChecker` (step 4) it is the floor on macOS when Grammarly is absent.
 
+### Step 3h, undo of a typed burst in the stack (`S9_COALESCE`, default 300 ms; the user, 50,000 words, 2026-11-11)
+Across the earlier logs the chunks of one correction arrive 1–86 ms apart; a person's keys 36–230 ms apart. Time
+alone does not tell them apart, and need not: a pure insert at the caret the previous edit left, within the window,
+joins that edit's undo step — the rule ordinary typing wants anyway.
+First build (joining by the diffed position of each edit): the user accepted 8 corrections on the 50,000-word text,
+all 8 on the intended ranges; ⌘Z took 5 back in one step and 3 in two or three. The misses were ours: the edit's
+position was derived by diffing the text, and an insert that repeats its neighbour (" version" typed before
+" against") diffs one character late, so it did not look contiguous. Second build: the step is keyed on the caret and
+re-derived from the text before the burst. **NOT yet re-tried by the user.**
+The user's own sentence (27 keys, gaps under 300 ms) became one step — a real editor breaks at words; not this
+spike's question.
+
+### Step 5a, Windows: the stack as it is, read from outside (the box, Grammarly installed 2026-11-11; `S9_ALL_LINES=1`)
+`spikes/s3-text` builds unchanged on Windows; AccessKit's adapter answers UI Automation. A PowerShell probe through
+`System.Windows.Automation` in the desktop session (no input): the window's one descendant is a focused `Edit`
+"Editor", framework "AccessKit", with `TextPattern` and `ValuePattern` (not read-only); the document range returns the
+whole text; 20 of 20 six-character reads at offsets match; a five-character range returns one rectangle; selection is
+"Single" with one range. `GetVisibleRanges` returns none.
+**Not known yet:** whether Grammarly attaches, where its underlines sit, and how a correction arrives on Windows —
+needs the user at the box. Nothing logs Grammarly's calls there yet (the reference-window step is not built).
+
 ## Verdict
 (pending)
