@@ -1,0 +1,13 @@
+[package]
+name = "mn-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minNotes — the collection file: staging, save, the base copy (canon rows 272, 283)"
+
+[dependencies]
+mn-doc = { path = "../mn-doc" }

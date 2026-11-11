@@ -1,0 +1,13 @@
+[package]
+name = "mn-doc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minNotes — the document: a tree of blocks, the flat text view, changes and merge (canon rows 273, 281, 283)"
+
+[dependencies]
+uuid = { workspace = true }

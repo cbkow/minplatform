@@ -10,8 +10,10 @@
   `handoff-2026-11-09.md` (how to run things) and the canon `docs/rust-wgpu-port.md` (rows are the rulings, each dated;
   the newest are at the end of the last Decisions table).
 - **Phase 3 (minNotes) has opened** (2026-11-10): a rethink, not a port — the Qt app is read for purpose and frozen
-  contracts, and "QCView's behaviour wins ties" below does NOT apply to it (row 268). Nothing is built. Read
-  `docs/phase3/handoff-2026-11-10.md` (rulings 268–274, what is proposed, the spike S9 on exposing text to Grammarly).
+  contracts, and "QCView's behaviour wins ties" below does NOT apply to it (row 268). The spike S9 has its verdict
+  (2026-11-11: Grammarly is served by a hand-written text element per platform beside AccessKit, row 281). **Step 1,
+  the document core with no interface, is under way** (row 283: `crates/mn-doc`, `crates/mn-store`). Read
+  `docs/phase3/handoff-2026-11-10.md` — its LAST addenda are where things stand — and rows 268–283.
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a

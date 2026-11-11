@@ -2108,6 +2108,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mn-doc"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
+name = "mn-store"
+version = "0.1.0"
+dependencies = [
+ "mn-doc",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
