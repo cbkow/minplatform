@@ -18,6 +18,7 @@ pub fn selection() -> Color { c(t::FIELD_SELECTION_COLOR) }
 pub fn caret() -> Color { c(t::FIELD_CARET_COLOR) }
 pub fn text() -> Color { c(t::NEUTRAL_CONTENT_COLOR_DEFAULT) }
 pub fn link() -> Color { c(t::ACCENT_CONTENT_COLOR_DEFAULT) }
+pub fn subdued() -> Color { dim() }
 fn dim() -> Color { c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) }
 fn line() -> Color { c(t::DIVIDER_COLOR) }
 fn panel() -> Color { c(t::BACKGROUND_LAYER_2_COLOR) }

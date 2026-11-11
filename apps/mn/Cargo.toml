@@ -33,7 +33,10 @@ env_logger = { workspace = true }
 log = { workspace = true }
 mn-edit = { path = "../../crates/mn-edit" }
 arboard = { workspace = true }
+rfd = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSRange", "NSUserDefaults", "objc2-core-foundation"] }
+muda = { version = "0.21", default-features = false }
+objc2-app-kit = { workspace = true, features = ["NSWindow", "NSResponder", "NSApplication"] }

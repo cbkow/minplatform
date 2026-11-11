@@ -29,6 +29,7 @@ use mn_edit::{Dirty, Editor, Move};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+mod menu;
 mod paint;
 mod sidebar;
 #[cfg(target_os = "macos")]
@@ -56,7 +57,8 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool, /// an edit went to the staged copy after the file being saved was made
     edited_since_stage: bool }
 /// A save under way: which try, what the document is expected to be, what a merge brought.
-struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, merged: Option<String>, /// blocks both sides changed, kept twice
+struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, /// Save As: the new place
+    to: Option<std::path::PathBuf>, merged: Option<String>, /// blocks both sides changed, kept twice
     doubled: usize, started: Instant }
 enum SaveStep { Put(Result<mn_store::share::Fingerprint, mn_store::share::PutError>), Fetched(std::io::Result<mn_store::share::Fingerprint>) }
 
@@ -77,7 +79,13 @@ enum Ask {
     SaveFailed,
 }
 
-struct App { saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
+/// What the collection is being closed for.
+#[derive(Clone, Debug, PartialEq)]
+enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
+
+struct App { saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
+    blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
+    after_close: Option<Pending>, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
     told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
@@ -144,11 +152,17 @@ impl App {
         let off = kurbo::Vec2::new(self.side_w + MARGIN * s, PAD * s - self.scroll);
         let scene = g.ui.scene_mut(); scene.reset();
         scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &view);
-        for r in self.ed.selection_rects(l) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
-        paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view);
+        if self.blank {
+            // no collection: the window says what to do (the theme's subdued text, centred)
+            let lines = [("No collection is open", 18.0, paint::text()), (if cfg!(target_os = "macos") { "Open\u{2026} (\u{2318}O) or New Collection\u{2026} (\u{2325}\u{2318}N) in the File menu" } else { "Open\u{2026} (Ctrl+O) or New Collection\u{2026} (Ctrl+Alt+N)" }, 13.0, paint::subdued())];
+            let mut y = h as f64 / 2.0 - 30.0 * s;
+            for (text, size, color) in lines { let t = g.fonts.layout(text, min_ui::Family::Sans, (size * s) as f32, 400.0, color); min_ui::fonts::draw_layout(scene, &t, kurbo::Affine::translate(((w as f64 - t.width() as f64) / 2.0, y))); y += t.height() as f64 + 8.0 * s; }
+        }
+        for r in self.ed.selection_rects(l) { if self.blank { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
+        if !self.blank { paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view); }
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
-        if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
+        if !self.blank && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
@@ -194,7 +208,7 @@ impl App {
         let Some(session) = st.session.as_ref() else { return };
         if self.saver.busy() { eprintln!("save: an earlier save has not come back from the document's place yet (it may be a share that does not answer). Your changes are kept on this machine."); return }
         let expect = match session.base_print() { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); return } };
-        self.saving = Some(Saving { attempt: 0, expect, merged: None, doubled: 0, started: Instant::now() });
+        self.saving = Some(Saving { attempt: 0, expect, to: None, merged: None, doubled: 0, started: Instant::now() });
         self.put_staged();
     }
     /// Stages the collection as it stands and sends it to the document's place, expecting `saving.expect` there.
@@ -204,7 +218,7 @@ impl App {
         let col = &st.col;
         let staged = match session.stage_publish(|tmp| col.publish(tmp).map_err(std::io::Error::other)) { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); self.saving = None; return } };
         st.edited_since_stage = false;
-        let (to, expect) = (session.original().to_path_buf(), sv.expect);
+        let (to, expect) = (sv.to.clone().unwrap_or_else(|| session.original().to_path_buf()), sv.expect);
         self.saver.start(move || SaveStep::Put(mn_store::share::put(&staged, &to, expect)));
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -216,19 +230,20 @@ impl App {
         let place = session.original().display().to_string();
         match step {
             SaveStep::Put(Ok(_)) => {
-                let to = session.original().to_path_buf();
+                let to = sv.to.clone().unwrap_or_else(|| session.original().to_path_buf());
+                if sv.to.is_some() { recent_add(&to); }
                 if let Err(e) = session.published(&to) { eprintln!("save: the document was written, but the session could not record it: {e}"); }
                 st.unpublished = st.edited_since_stage || st.edited.is_some();
                 match &sv.merged { Some(m) => println!("saved {place} — merged with a save by someone else: {m}"), None => println!("saved {place}") }
                 let merged = sv.merged.clone(); let doubled = sv.doubled;
                 self.saving = None;
-                if std::mem::take(&mut self.close_after_save) && !self.unpublished() && doubled == 0 { self.quit = true; }
+                if std::mem::take(&mut self.close_after_save) && !self.unpublished() && doubled == 0 { self.proceed(); }
                 else if merged.is_some() { use min_ui::text_button::Variant as V;
                     let body = if doubled > 0 { format!("Someone else saved this document while you were working. Their changes have been merged with yours. {doubled} paragraph(s) were changed by both of you: both versions are kept, the second marked, for you to choose between.") } else { "Someone else saved this document while you were working. Their changes have been merged with yours.".to_string() };
                     self.ask(Ask::Notice, "The document was merged", &body, vec![("OK", V::Primary)]); }
             }
             // not the document we know: someone saved (or it is gone) — look at what is there
-            SaveStep::Put(Err(PutError::Raced)) if sv.attempt < 3 => {
+            SaveStep::Put(Err(PutError::Raced)) if sv.attempt < 3 && sv.to.is_none() => {
                 sv.attempt += 1;
                 let (from, to) = (session.original().to_path_buf(), session.theirs_path());
                 self.saver.start(move || SaveStep::Fetched(mn_store::share::fetch(&from, &to)));
@@ -271,13 +286,78 @@ impl App {
     }
     fn doc_name(&self) -> String { self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|s| s.original().file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "this document".into()) }
     fn unpublished(&self) -> bool { self.store.as_ref().is_some_and(|st| st.unpublished || st.edited.is_some()) }
-    /// The window is asked to close. With changes that are not in the document, the Qt app's question is put first.
-    fn request_close(&mut self) {
+    /// The collection is to be closed — for quitting, for another collection, or just closed. With changes that are not
+    /// in the document, the Qt app's question is put first.
+    fn request_close(&mut self, what: Pending) {
         use min_ui::text_button::Variant as V;
-        if self.unpublished() && self.confirm.as_ref().is_none_or(|(a, _)| *a != Ask::Close) {
+        if self.confirm.as_ref().is_some_and(|(a, _)| *a == Ask::Close) { return }
+        self.after_close = Some(what);
+        if self.unpublished() {
             let name = self.doc_name();
             self.ask(Ask::Close, &format!("Save changes to \u{201c}{name}\u{201d}?"), "Your changes will be lost if you don\u{2019}t save them.", vec![("Cancel", V::Secondary), ("Don\u{2019}t Save", V::Secondary), ("Save", V::Primary)]);
-        } else if !self.unpublished() { self.quit = true; }
+        } else { self.proceed(); }
+    }
+    /// Nothing stands in the way of closing the collection any more: do what it was closed for.
+    fn proceed(&mut self) {
+        match self.after_close.take() {
+            None => {}
+            Some(Pending::Quit) => self.quit = true,
+            Some(Pending::Close) => self.end_session(),
+            Some(Pending::Open(p)) => { self.end_session(); self.open_collection(&p, false); }
+            Some(Pending::New(p)) => { self.end_session(); self.open_collection(&p, true); self.save(); }   // a new collection is written at once: its file exists from the start
+        }
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The collection leaves the window: a session with nothing unpublished is removed; the window is blank.
+    fn end_session(&mut self) {
+        self.autosave();
+        if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
+        self.store = None; self.sidebar = None; self.others.clear(); self.ed = Editor::new(Doc::new()); self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = true; self.side_w = 0.0;
+        #[cfg(target_os = "macos")] text_element::changed(true);
+    }
+    /// Opens (or, with `create`, starts) a collection in this window. A failure is said in a dialog.
+    fn open_collection(&mut self, path: &std::path::Path, create: bool) {
+        match open_store(path, create, None) {
+            Ok((store, doc, recovered)) => {
+                let mut sb = sidebar::Sidebar::new(); sb.set_tree(&store.col);
+                self.store = Some(store); self.sidebar = Some(sb); self.ed = Editor::new(doc); self.others.clear();
+                self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = false; self.recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
+                recent_add(path); self.sync_recent();
+                #[cfg(target_os = "macos")] text_element::changed(true);
+            }
+            Err(e) => { use min_ui::text_button::Variant as V; let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); self.ask(Ask::Notice, &format!("Couldn\u{2019}t open \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
+        }
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn sync_recent(&mut self) { #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_mut() { m.set_recent(&recent_list()); } }
+    /// Save As: the collection is published at a place the user picks, which becomes its document.
+    fn save_as(&mut self) {
+        if self.saving.is_some() || self.store.is_none() { return }
+        let Some(path) = rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name(self.doc_name()).save_file() else { return };
+        self.autosave();
+        // the system's dialog has asked about replacing a file that is there: that file is what is expected
+        let expect = mn_store::share::fingerprint_if_present(&path).ok().flatten();
+        self.saving = Some(Saving { attempt: 0, expect, to: Some(path), merged: None, doubled: 0, started: Instant::now() });
+        self.put_staged();
+    }
+    /// A command of the menu bar (row 296).
+    fn menu_cmd(&mut self, c: menu::Cmd) {
+        use menu::Cmd as M;
+        if self.confirm.is_some() && c != M::Quit { return }
+        let pick = || rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).pick_file();
+        match c {
+            M::Quit => self.request_close(Pending::Quit),
+            M::CloseCollection => if self.store.is_some() { self.request_close(Pending::Close) },
+            M::Open => if let Some(p) = pick() { self.request_close(Pending::Open(p)) },
+            M::OpenRecent(p) => self.request_close(Pending::Open(p.into())),
+            M::ClearRecent => { recent_clear(); self.sync_recent(); }
+            M::NewCollection => if let Some(p) = rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name("Untitled.mnd").save_file() {
+                // the system's dialog has asked about replacing: a new collection starts where nothing is, so an old file is moved aside by name, never deleted
+                if p.exists() { let aside = p.with_extension(format!("replaced-{}.mnd", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))); let _ = std::fs::rename(&p, aside); }
+                self.request_close(Pending::New(p)) },
+            M::SaveAs => self.save_as(),
+            other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
+        }
     }
     /// A dialog's button was pressed (`i`: its place in the row).
     fn answer(&mut self, what: Ask, i: usize) {
@@ -285,7 +365,8 @@ impl App {
         match (what, i) {
             (Ask::Delete(id), 1) => self.delete_entry(id),
             // Don't Save: the changes are given up — the session goes, the document stays as it is
-            (Ask::Close, 1) => { if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } self.quit = true; }
+            (Ask::Close, 1) => { if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } self.proceed(); }
+            (Ask::Close, 0) => { self.after_close = None; }
             (Ask::Close, 2) => { self.close_after_save = true; self.save(); }
             (Ask::Recovered, 1) => self.ask(Ask::DiscardRecovered, "Discard these changes?", "The changes from the earlier session will be removed from this machine. This cannot be undone.", vec![("Cancel", V::Secondary), ("Discard", V::Negative)]),
             (Ask::DiscardRecovered, 1) => self.discard_recovered(),
@@ -398,12 +479,16 @@ impl App {
         if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; }
         self.act(a); taken
     }
-    fn title(&self) { if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{}{} — minNotes", name, if self.saving.is_some() { " — saving…" } else { "" }, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
+    fn title(&self) { if let (Some(g), None) = (&self.gpu, &self.store) { g.window.set_title("minNotes"); }
+        if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{}{} — minNotes", name, if self.saving.is_some() { " — saving…" } else { "" }, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        // where there is no native menu to take them, the file commands' keys are run here
+        if cmd && cfg!(not(target_os = "macos")) { if let Key::Character(c) = key { let m = match (c.to_lowercase().as_str(), shift, alt) { ("o", false, false) => Some(menu::Cmd::Open), ("w", false, false) => Some(menu::Cmd::CloseCollection), ("q", false, false) => Some(menu::Cmd::Quit), ("s", true, false) => Some(menu::Cmd::SaveAs), ("n", false, true) => Some(menu::Cmd::NewCollection), _ => None }; if let Some(m) = m { self.menu_cmd(m); return } } }
+        if self.blank { return }
         // what lies over the page takes keys first: a question, a name being edited, then the tree when it has the focus
         let ui_key = || { use min_ui::{Key as K, Named as N};
             let k = match key { Key::Named(NamedKey::Escape) => K::Named(N::Escape), Key::Named(NamedKey::Enter) => K::Named(N::Enter), Key::Named(NamedKey::Tab) => K::Named(N::Tab), Key::Named(NamedKey::Backspace) => K::Named(N::Backspace), Key::Named(NamedKey::Delete) => K::Named(N::Delete),
@@ -542,9 +627,11 @@ impl ApplicationHandler for App {
         #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
         // the request is REFUSED (silently) unless every capability asked for comes with its first value: the caret's area
         ime(window.as_ref().as_ref(), Some(Rect::new(0.0, 0.0, 1.0, 1.0)), true);
+        #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); }
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        #[cfg(target_os = "macos")] while let Ok(ev) = muda::MenuEvent::receiver().try_recv() { if let Some(c) = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)) { self.menu_cmd(c); } }
         if let Some(t) = self.geom_moved { let due = t + std::time::Duration::from_millis(150); if Instant::now() >= due { self.geom_moved = None; #[cfg(target_os = "macos")] text_element::relaid(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
         // a dialog's answer, or a save that was to be followed by closing, ended the session
         if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return }
@@ -564,7 +651,7 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => { self.autosave(); self.request_close(); if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); } }
+            WindowEvent::CloseRequested => { self.autosave(); self.request_close(Pending::Quit); if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); } }
             WindowEvent::Focused(true) => { #[cfg(target_os = "macos")] text_element::focused(); }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() {
                 g.presenter.resize(s.width, s.height); g.presenter.engine.set_ui_scale(g.window.scale_factor() as f32);
@@ -582,13 +669,13 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y }) { return }
-                if self.pressed { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
+                if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { return }
                 self.pressed = state == ElementState::Pressed;
-                if self.pressed { if let Some(l) = self.layout.as_ref() {
+                if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() {
                     let (x, y) = self.note_point(self.pointer);
                     let double = self.last_click.is_some_and(|(t, px, py)| t.elapsed().as_millis() < 400 && (px - x).abs() < 4.0 && (py - y).abs() < 4.0);
                     if double { self.ed.point_word(l, x, y); self.last_click = None } else { self.ed.point(l, x, y, self.mods.0); self.last_click = Some((Instant::now(), x, y)); }
@@ -621,6 +708,37 @@ impl ApplicationHandler for App {
         }
     }
 }
+
+/// Opens a collection through a staged session (rows 272, 288): the store, the note to show, and whether work from an
+/// earlier session was found and taken up. `create`: nothing is at the path yet and a new collection starts there.
+fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) -> Result<(Store, Doc, bool), String> {
+    use mn_store::{staging, Collection, DocKind};
+    let root = sessions_root();
+    let left = staging::leftovers(&root).into_iter().find(|l| l.original == path);
+    let session = match &left {
+        Some(l) => { println!("recovered work: unsaved changes from an earlier session of {} are taken up again", path.display()); staging::Session::resume(l).map_err(|e| e.to_string())? }
+        // a path with nothing at it is NOT quietly a new collection (on a share it may be a missing mount)
+        None => if create { staging::Session::create(&root, path) } else { staging::Session::open(&root, path) }.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "Nothing is at this place. Is its drive or share connected? (A new collection is made with New Collection\u{2026}, or --new.)".to_string() } else { e.to_string() })?,
+    };
+    let mut col = Collection::open(&session.work()).map_err(|e| e.to_string())?;
+    fn notes(c: &Collection, parent: Option<BlockId>, out: &mut Vec<mn_store::Entry>) { for e in c.list(parent).unwrap_or_default() { if e.kind == DocKind::Note { out.push(e.clone()); } notes(c, Some(e.id), out); } }
+    let mut all = vec![]; notes(&col, None, &mut all);
+    let entry = match note_title { Some(t) => all.iter().find(|e| e.title == t).cloned(), None => all.first().cloned() };
+    let (note, title) = match entry { Some(e) => (e.id, e.title), None => { let id = col.create(None, DocKind::Note, "").map_err(|e| e.to_string())?; let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); col.save_note(id, &d).map_err(|e| e.to_string())?; (id, String::new()) } };
+    let doc = col.load_note(note).map_err(|e| e.to_string())?;
+    println!("opened {} — note {:?}: {} blocks; first text: {:?}", path.display(), title, doc.len(), doc.walk().iter().find(|b| b.kind.is_text()).map(|b| b.text.chars().take(60).collect::<String>()).unwrap_or_default());
+    Ok((Store { session: Some(session), col, note, title, edited: None, unpublished: left.is_some() || create, edited_since_stage: false }, doc, left.is_some()))
+}
+
+/// The collections opened lately, newest first (a plain list beside the sessions; ten at most).
+fn recent_file() -> std::path::PathBuf { sessions_root().parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir).join("recent.txt") }
+fn recent_list() -> Vec<String> { std::fs::read_to_string(recent_file()).map(|s| s.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect()).unwrap_or_default() }
+fn recent_add(path: &std::path::Path) {
+    if std::env::var_os("MN_SESSIONS_DIR").is_some() { return }   // scripted runs leave the user's list alone
+    let p = path.to_string_lossy().into_owned(); let mut l = recent_list(); l.retain(|x| *x != p); l.insert(0, p); l.truncate(10);
+    let f = recent_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(f, l.join("\n"));
+}
+fn recent_clear() { let _ = std::fs::remove_file(recent_file()); }
 
 /// The page's metrics with the theme's colours for text and links.
 fn style() -> Style { Style { text: paint::text(), link: paint::link(), ..Style::default() } }
@@ -660,27 +778,13 @@ fn main() {
     // a collection: the first argument that is not an option or an option's value
     let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample"];
     let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
-    let mut store = None;
+    let mut store = None; let mut recovered = false;
     let opened = file.map(|path| {
-        use mn_store::{staging, Collection, DocKind};
-        let root = sessions_root();
-        // work a crash (or a close without Save) left behind for this file is taken up again — nothing typed is dropped
-        let left = staging::leftovers(&root).into_iter().find(|l| l.original == path);
-        let session = match &left { Some(l) => { println!("recovered work: unsaved changes from an earlier session of {} are taken up again", path.display()); staging::Session::resume(l).expect("staging") } None => {
-                // a path with nothing at it is NOT quietly a new collection (on a share it may be a missing mount): `--new` asks for one
-                let r = if args.iter().any(|a| a == "--new") { staging::Session::create(&root, &path) } else { staging::Session::open(&root, &path) };
-                r.unwrap_or_else(|e| { eprintln!("{}: {e}{}", path.display(), if e.kind() == std::io::ErrorKind::NotFound { " — nothing is at this path (is its drive or share connected?). To start a new collection there, add --new." } else { "" }); std::process::exit(2) })
-            } };
-        let mut col = Collection::open(&session.work()).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
-        fn notes(c: &Collection, parent: Option<BlockId>, out: &mut Vec<mn_store::Entry>) { for e in c.list(parent).unwrap_or_default() { if e.kind == DocKind::Note { out.push(e.clone()); } notes(c, Some(e.id), out); } }
-        let mut all = vec![]; notes(&col, None, &mut all);
-        let entry = match arg("--note") { Some(t) => all.iter().find(|e| e.title == t).cloned(), None => all.first().cloned() };
-        let (note, title) = match entry { Some(e) => (e.id, e.title), None => { let id = col.create(None, DocKind::Note, "Untitled").expect("new note"); let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); col.save_note(id, &d).expect("new note"); (id, "Untitled".to_string()) } };
-        let doc = col.load_note(note).expect("note");
-        println!("opened {} — note {:?}: {} blocks; first text: {:?}", path.display(), title, doc.len(), doc.walk().iter().find(|b| b.kind.is_text()).map(|b| b.text.chars().take(60).collect::<String>()).unwrap_or_default());
-        store = Some(Store { session: Some(session), col, note, title, edited: None, unpublished: left.is_some(), edited_since_stage: false });
-        doc
+        let (st, doc, rec) = open_store(&path, args.iter().any(|a| a == "--new"), arg("--note")).unwrap_or_else(|e| { eprintln!("{}: {e}", path.display()); std::process::exit(2) });
+        recent_add(&path); store = Some(st); recovered = rec; doc
     });
+    // with nothing to open the window is blank; `--sample` shows the built-in note
+    let blank = opened.is_none() && arg("--v2").is_none() && arg("--text").is_none() && !args.iter().any(|a| a == "--sample");
     let doc = if let Some(d) = opened { d } else { match arg("--v2") {
         Some(path) => {
             // the file is copied into a private session first and only the copy is read (row 272)
@@ -695,11 +799,12 @@ fn main() {
         None => match arg("--text") {
             // a plain text file: one paragraph per line (for trying a writing tool on a text of one's own)
             Some(path) => { let mut d = Doc::new(); for (i, line) in std::fs::read_to_string(&path).expect("--text").lines().filter(|l| !l.trim().is_empty()).enumerate() { d.insert(None, i, BlockId::new(), Kind::Paragraph, line).unwrap(); } d }
-            None => sample(),
+            None => if blank { Doc::new() } else { sample() },
         },
     } };
-    let recovered = store.as_ref().is_some_and(|st| st.unpublished) && std::env::var_os("MN_NO_DIALOGS").is_none();
+    let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
+    #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }
