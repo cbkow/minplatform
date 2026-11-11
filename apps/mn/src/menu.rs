@@ -40,7 +40,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
             item("Inline Code", sc('e'), Cmd::Code), item("Highlight", sc_shift('h'), Cmd::Highlight), Node::Sep,
             item("Clear Formatting", sc('\\'), Cmd::ClearFormat),
         ]),
-        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), Node::Sep, item("Toolbar Across the Window / Over the Page", None, Cmd::ToolbarWide)]),
+        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
     ]
 }
 
