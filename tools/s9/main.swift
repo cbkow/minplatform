@@ -7,6 +7,8 @@
 //                     attributedStringForRange, frameForRange, rangeForLine, lineForIndex, rangeForPosition,
 //                     rangeForIndex, styleRangeForIndex, insertionPointLineNumber, notifications)
 //   S9_MODE=blocks    every paragraph is its OWN text element (the view is a group; the element holding the caret is focused)
+//   S9_FRAME=full     the element's frame is the whole document's, moving with the scroll (as an NSTextView's), not the visible part
+//   S9_SCROLLNOTE=off no AXLayoutChanged when the view scrolls (an NSTextView posts none)
 //   S9_WORDS=N        a generated document of about N words instead of the sample;  S9_FILE=<path> a text file instead
 import Cocoa
 
@@ -39,6 +41,10 @@ final class Log {
 }
 let off: Set<String> = Set((ProcessInfo.processInfo.environment["S9_OFF"] ?? "").split(separator: ",").map(String.init))
 let blocksMode = ProcessInfo.processInfo.environment["S9_MODE"] == "blocks"
+// What an NSTextView does (measured with axwatch.swift on TextEdit): its frame is the WHOLE document's and moves as the
+// view scrolls, and a scroll posts nothing on the text area (only the scroll bar's AXValueChanged, which AppKit sends).
+let fullFrame = ProcessInfo.processInfo.environment["S9_FRAME"] == "full"
+let quietScroll = ProcessInfo.processInfo.environment["S9_SCROLLNOTE"] == "off"
 let offscreenZero = ProcessInfo.processInfo.environment["S9_OFFSCREEN"] == "zero"
 func R(_ r: NSRange) -> String { r.location == NSNotFound ? "{NotFound,\(r.length)}" : "{\(r.location),\(r.length)}" }
 
@@ -368,7 +374,7 @@ final class EditorView: NSView, NSTextInputClient {
     override func accessibilityStyleRange(for index: Int) -> NSRange { if off.contains("styleRangeForIndex") { return NSRange(location: NSNotFound, length: 0) }; Log.w("ax.styleRangeForIndex", "\(index)"); return NSRange(location: 0, length: length) }
     override func accessibilitySharedTextUIElements() -> [Any]? { Log.w("ax.sharedTextUIElements", always: true); return [self] }
     override func accessibilitySharedCharacterRange() -> NSRange { Log.w("ax.sharedCharacterRange", always: true); return NSRange(location: 0, length: length) }
-    override func accessibilityFrame() -> NSRect { let f = screen(visibleRect); Log.w("ax.frame", "(\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))×\(Int(f.height)))"); return f }
+    override func accessibilityFrame() -> NSRect { let f = screen(fullFrame ? bounds : visibleRect); Log.w("ax.frame", "(\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))×\(Int(f.height)))"); return f }
     override func accessibilityPerformPress() -> Bool { Log.w("ax.performPress", always: true); return false }
     override func accessibilityPerformShowMenu() -> Bool { Log.w("ax.performShowMenu", always: true); return false }
 }
@@ -406,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let scroll = NSScrollView(frame: window.contentView!.bounds); scroll.autoresizingMask = [.width, .height]; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         scroll.documentView = editor; window.contentView!.addSubview(scroll)
         scroll.contentView.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: nil) { _ in Log.w("SCROLL", "\(Int(scroll.contentView.bounds.minY))"); self.editor.note(.layoutChanged) }
+        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: nil) { _ in Log.w("SCROLL", "\(Int(scroll.contentView.bounds.minY))"); if !quietScroll { self.editor.note(.layoutChanged) } }
         let w = ProcessInfo.processInfo.environment["S9_WORDS"].flatMap(Int.init)
         let f = ProcessInfo.processInfo.environment["S9_FILE"].flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
         editor.setText(f ?? w.map(generated) ?? sample)

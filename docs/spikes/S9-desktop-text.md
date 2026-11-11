@@ -150,5 +150,43 @@ S9_FILE=<that file>` (no `S9_MODE`). The user scrolls and says whether Grammarly
 counts after each scroll. If it holds: one field for the whole note, split only when a note is enormous. Then the
 middle shape (one field per run of text between media blocks) if it does not.
 
+### Step 3d, the whole note as one field on a realistic text (the reference window, 5,016 words, no `S9_MODE`; 2026-11-11)
+The user, 110 s, 7 scrolls, 7 corrections accepted by hand (all 7 on the intended range, two of them typed in two
+chunks): "it lags, but maybe this is just how it has to be".
+The log: 65,758 `frameForRange` calls, but in PASSES — one pass over every flagged range of the note is about 460
+calls and is answered in about 40 ms. While the view scrolls Grammarly makes a pass every 0.1–0.45 s; its last pass
+comes **0.50–0.52 s after the scroll stops** on six of the seven scrolls (0.93 s on the seventh), whether the scroll
+cost 2,300 calls or 10,500.
+**Reading:** at this size the lag is Grammarly's own cadence (a settle timer of about half a second), not the number
+of round trips and not our answers. The field shape cannot shorten it. This window has no blocks at all (one flat
+text), so none of the lag is the block model's.
+**Control, owed by the user:** the same text in TextEdit (`NSTextView`). Same trail there = Grammarly's behaviour
+everywhere, and the whole-note shape stands. Tighter there = a native text view tells Grammarly something we do not
+(a scroll or layout notification); find it in the reference window.
+
+**The control (the user, TextEdit, the same text):** clearly tighter there. So the trail was ours.
+
+### Step 3e, what an `NSTextView` tells the outside while it scrolls, and the same from our window (2026-11-11)
+`tools/s9/axwatch.swift` — an outside watcher: every accessibility notification of the application, and the attributes
+a tool could poll (the text area's frame, its visible range, the scroll bar's value, the bounds of range {0,1}). It
+sends no input; `--drive` steps the vertical scroll bar's `AXValue`. Forty steps on each window:
+| | TextEdit (`NSTextView`) | The reference window as built on 2026-11-10 |
+|---|---|---|
+| The text area's frame | the WHOLE document (656×4979); its position moves at every step | the visible part (843×600); never changes |
+| Notifications | `AXValueChanged` on the scroll bar, nothing on the text | the same, plus `AXLayoutChanged` on the text area at every step |
+
+Two switches make the reference window behave as the text view does: `S9_FRAME=full` (frame = the document view's
+bounds on screen) and `S9_SCROLLNOTE=off` (no `AXLayoutChanged` on scroll). **The user, both on, the same 5,016-word
+text: "this is much better."** The log: Grammarly reads `accessibilityFrame` once per scroll event (9 of 9, 7 of 7,
+15 of 15, 25 of 26) and now sees it move; `frameForRange` falls to 450–2,700 calls per scroll (2,300–15,000 before),
+and a checking pass still comes about 0.5 s after the scroll stops — no longer what the eye waits for. Three more
+corrections, all on the intended range.
+**Reading:** Grammarly follows a scroll by the MOVEMENT OF THE ELEMENT'S FRAME and slides its underlines; where the
+frame stands still it can only re-measure every flagged range. The element must report the frame of the whole
+document, in screen coordinates, moving with the scroll — and must not announce a scroll as a layout change. (The two
+switches were not separated: both are what the native view does, and both are adopted.) Step 3b's seconds of catch-up
+at 50,000 words were measured with the still frame and are to be re-read with the moving one.
+**Consequence for the shape:** the whole note as ONE field holds on a realistic note. Proposed to the user as the ruling.
+
 ## Verdict
 (pending)
