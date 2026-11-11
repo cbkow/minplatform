@@ -21,7 +21,7 @@ Windows (Narrator, the same four with UI Automation) is a second leg, when Gramm
 **Fail =** the widget never appears, or corrections land at the wrong offset, in our stack AND in the hand-written
 adapter. Then: one element per block; and if that fails too, the OS spellcheckers called by the app are the guaranteed path.
 
-**Time box:** one week from 2026-11-10. **Status: step 1 started 2026-11-10 (macOS; Grammarly Desktop 1.207.0).**
+**Time box:** one week from 2026-11-10. **Status: VERDICT 2026-11-11 — PASS by a hand-written text element (end of this file).**
 
 ## Steps
 1. **A native reference window, not our toolkit** (`tools/s9/`, Swift): a custom `NSView` (NOT `NSTextView` — TextKit is
@@ -441,5 +441,47 @@ after that event (257 in the run). The editor should announce focus itself rathe
 through edits and scrolling on the first serious try; the AccessKit route is found only after a patch and then stops
 after the first edit.
 
-## Verdict
-(pending)
+### Step 3j, the undo re-test (the Mac, the stack, the second build of step 3h; the user; 2026-11-11)
+Five corrections accepted, one of them typed in two chunks ("We compared each" + " version" — the case that failed
+before): it joined into one step. Five ⌘Z, each took one whole correction back, in order. 5 of 5.
+
+## Verdict (2026-11-11, day 2 of the week's time box): PASS — by a hand-written text element, not through AccessKit
+**Answer to the question.** A custom-drawn editor serves Grammarly Desktop on macOS and on Windows when the document's
+text is ONE element written directly against the platform's text protocol over a flat UTF-16 text (block start
+offsets mapping back to the blocks), placed beside AccessKit's tree, which keeps the rest of the interface. Through
+AccessKit alone it does not hold on either platform: on macOS it was O(document) per query and needed four fixes of
+ours before a correction landed; on Windows it is not found at all (no visible range), and with that patched it
+stops being measured after the first edit.
+
+**Against the pass bar.**
+| # | Bar | Result |
+|---|---|---|
+| 1 | The tool attaches within 2 s of focus | Met by the log: macOS first value read 0.07–0.94 s after launch; Windows geometry requests 0.5 s after the focus event. The widget's appearance was not timed by eye. |
+| 2 | Underlines within 2 px, also after scroll and resize | NOT measured in pixels. The element's frame sat 0 px from the drawn text in the log; the user judged placement and scrolling good on both platforms ("as fast as other apps" at 50,000 words). A window RESIZE was never tried. |
+| 3 | 20 accepted in a row on the intended range, undo restores each | Corrections: macOS in the stack 27 of 27 (steps 3f, 3h, 3j), Windows reference window 23 of 23. Undo: macOS 5 of 5 after the fix of step 3h; Windows not tried. |
+| 4 | Key → picture p95 ≤ 16.7 ms at 50,000 words with the tool attached | 3.1 ms (macOS). Not measured on Windows. |
+| 5 | VoiceOver | Dropped by the user, 2026-11-11. |
+
+**What the text element must be (the findings the editor is built on).**
+- Both: flat UTF-16 offsets; a selection set from outside honoured exactly before the typed text arrives; the write
+  path is ORDINARY TYPING — a key event may carry up to 16 units (macOS) or the text comes one unit per event at
+  0.3 ms (Windows); a typed burst joins one undo step (a pure insert at the caret the last edit left, within 300 ms).
+- macOS (`NSAccessibilityElement` beside AccessKit's subclass of winit's view): `setAccessibilityValue:` declared
+  (the qualifier), value, selected range get / set, selected text, string and frame for range; the frame of the
+  WHOLE document moving with the scroll; no layout notification on scroll; the element inside a scroll area with a
+  scroll bar that posts value-changed.
+- Windows (a UI Automation provider): the Text pattern with `GetVisibleRanges` answering (the qualifier there),
+  paragraph and character moves, `GetBoundingRectangles` (nothing for off-screen ranges), `Select`; a focus-changed
+  event raised by the element itself; control type, Scroll and Value patterns, ids and tree position do not matter.
+- One field per note (row 276) holds at 50,000 words on macOS.
+
+**The floor without a third party (macOS):** `NSSpellChecker` (1 ms a paragraph: spelling, thin grammar) and Apple's
+Writing Tools on the custom view (step 4b; the limited mode costs one delegate method).
+
+**Carried into the build, not settled here:** a window resize; Windows — undo, 50,000 words, whether the scroll
+event is needed, `ISpellChecker`; Writing Tools on winit's view and its animations over a wgpu surface; a selection
+that crosses blocks (the scaffold's lives in one block); rich text spans; an IME composing while a tool is attached;
+why the macOS scroll area matters; offering the `GetVisibleRanges` patch to AccessKit upstream.
+
+**The spikes die here:** `tools/s9/`, `spikes/s9-uia`, the S9 switches in `spikes/s3-text` and
+`docs/spikes/s9/accesskit_windows-0.35.2-visible-ranges.patch` are evidence, not code to grow.
