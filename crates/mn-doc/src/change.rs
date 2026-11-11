@@ -49,6 +49,37 @@ impl Change {
         let mut new_spans = b.spans.clone(); new_spans.edit(at, removed, inserted.len());
         Ok(Change::Text { id, at, removed: gone.to_string(), inserted: inserted.to_string(), old_spans: b.spans.clone(), new_spans })
     }
+    /// Enter in a text block (spec §1.7): the text after byte `at` moves to a NEW block directly below. The new block is
+    /// a paragraph, except that a list item continues its list at the same depth (a task starts unticked); formatting
+    /// across the split point is on both sides; a split point inside a chip moves to the chip's end. Returns the
+    /// changes (one undo step) and the new block's id.
+    pub fn split(doc: &Doc, id: BlockId, at: usize) -> Result<(Vec<Change>, BlockId), ChangeError> {
+        let b = doc.get(id).ok_or(TreeError::UnknownBlock(id))?;
+        if !b.kind.is_text() { return Err(TreeError::NotAllowed { parent: b.parent, child: id }.into()) }
+        let mut at = b.spans.snap_out_of_chip(at.min(b.text.len()));
+        while !b.text.is_char_boundary(at) { at -= 1; }
+        let mut left = b.spans.clone(); let right = left.split(at);
+        let kind = match &b.kind { Kind::Bullet { depth } => Kind::Bullet { depth: *depth }, Kind::Numbered { depth } => Kind::Numbered { depth: *depth }, Kind::Task { depth, .. } => Kind::Task { depth: *depth, state: 0 }, _ => Kind::Paragraph };
+        let new = BlockId::new();
+        let index = doc.index_of(id).ok_or(TreeError::UnknownBlock(id))? + 1;
+        Ok((vec![
+            Change::Text { id, at, removed: b.text[at..].to_string(), inserted: String::new(), old_spans: b.spans.clone(), new_spans: left },
+            Change::Insert { index, blocks: vec![Block { id: new, parent: b.parent, rank: b.rank.clone(), kind, text: b.text[at..].to_string(), spans: right, conflict: None, children: vec![] }] },
+        ], new))
+    }
+    /// Backspace at the start of `second` / Delete at the end of `first` (spec §1.7): `second`'s text joins `first`,
+    /// which keeps its id and kind; `second` goes. Both must be text blocks in the same list (the editor selects a media
+    /// block or a divider instead of joining it). Formatting comes along, except into a code block.
+    pub fn join(doc: &Doc, first: BlockId, second: BlockId) -> Result<Vec<Change>, ChangeError> {
+        let (a, b) = (doc.get(first).ok_or(TreeError::UnknownBlock(first))?, doc.get(second).ok_or(TreeError::UnknownBlock(second))?);
+        if !a.kind.is_text() || !b.kind.is_text() || a.parent != b.parent { return Err(TreeError::NotAllowed { parent: a.parent, child: second }.into()) }
+        let mut spans = a.spans.clone();
+        if !matches!(a.kind, Kind::Code { .. }) { spans.append(a.text.len(), &b.spans); }
+        Ok(vec![
+            Change::Text { id: first, at: a.text.len(), removed: String::new(), inserted: b.text.clone(), old_spans: a.spans.clone(), new_spans: spans },
+            Change::removal(doc, second)?,
+        ])
+    }
     /// Records the removal of `id` with its subtree, as the document stands now.
     pub fn removal(doc: &Doc, id: BlockId) -> Result<Change, ChangeError> {
         let index = doc.index_of(id).ok_or(TreeError::UnknownBlock(id))?;
@@ -238,5 +269,34 @@ mod tests {
         h.undo(&mut d).unwrap(); h.undo(&mut d).unwrap();
         assert_eq!((d.get(a).unwrap().text.as_str(), &d.get(a).unwrap().spans), ("We was in a hurry", &s));
         assert!(Change::edit(&d, a, 1, 99, "").is_err());
+    }
+    #[test]
+    fn a_split_and_a_join_undo_each_other_and_carry_formatting() {
+        use crate::inline::Mark;
+        let mut d = Doc::new(); let (a, tail) = (BlockId::new(), BlockId::new());
+        d.insert(None, 0, a, Kind::Task { depth: 2, state: 2 }, "buy bold milk").unwrap(); d.insert(None, 1, tail, Kind::Paragraph, "tail").unwrap();
+        let mut s = Spans::new(); s.put(4, 8, Mark::Bold); s.put(2, 6, Mark::Choice("{}".into())); d.set_spans(a, s.clone()).unwrap();
+        let before = d.clone(); let mut h = History::new();
+        // a split point inside the chip (bytes 2..6) moves to its end, 6 — inside the bold run 4..8
+        let (changes, new) = Change::split(&d, a, 5).unwrap();
+        h.commit(&mut d, changes, 0).unwrap();
+        assert_eq!(d.children(None), &[a, new, tail]);
+        let (l, r) = (d.get(a).unwrap(), d.get(new).unwrap());
+        assert_eq!((l.text.as_str(), r.text.as_str(), &r.kind), ("buy bo", "ld milk", &Kind::Task { depth: 2, state: 0 }));       // the list continues, unticked
+        assert!(l.spans.covers(4, 6, &Mark::Bold) && l.spans.chip_at(2).is_some() && r.spans.covers(0, 2, &Mark::Bold));
+        let joined = Change::join(&d, a, new).unwrap();
+        h.commit(&mut d, joined, 1000).unwrap();
+        assert_eq!(d, before);                                                                                                 // the bold run is one span again
+        h.undo(&mut d).unwrap(); assert_eq!(d.children(None).len(), 3);
+        h.undo(&mut d).unwrap(); assert_eq!(d, before);
+        // a heading's remainder is a paragraph; a divider neither splits nor joins; joining into code drops formatting
+        let (hd, dv, code) = (BlockId::new(), BlockId::new(), BlockId::new());
+        d.insert(None, 0, hd, Kind::Heading { level: 2 }, "Title rest").unwrap(); d.insert(None, 1, dv, Kind::Divider, "").unwrap(); d.insert(None, 2, code, Kind::Code { lang: String::new() }, "x").unwrap();
+        let (c, n) = Change::split(&d, hd, 5).unwrap(); h.commit(&mut d, c, 2000).unwrap();
+        assert_eq!((&d.get(n).unwrap().kind, d.get(n).unwrap().text.as_str()), (&Kind::Paragraph, " rest"));
+        assert!(Change::split(&d, dv, 0).is_err() && Change::join(&d, n, dv).is_err());
+        d.move_to(a, None, 4).unwrap();
+        let j = Change::join(&d, code, a).unwrap(); h.commit(&mut d, j, 3000).unwrap();
+        assert_eq!((d.get(code).unwrap().text.as_str(), d.get(code).unwrap().spans.is_empty()), ("xbuy bold milk", true));
     }
 }

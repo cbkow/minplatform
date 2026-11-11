@@ -71,6 +71,26 @@ fn moved(base: &[BlockId], list: &[BlockId]) -> HashSet<BlockId> {
     list.iter().filter(|x| !kept.contains(*x)).copied().collect()
 }
 
+/// Rule 4 for one list: the order is mine; what THEY added or moved (and I did not move) goes after the item it follows
+/// on their side; at a shared place, the items only I have come first. `mine` and `theirs` are the list's surviving
+/// members on each side, `base` the list as it was.
+pub fn merge_order(base: &[BlockId], mine: Vec<BlockId>, theirs: Vec<BlockId>, mine_only: impl Fn(BlockId) -> bool) -> Vec<BlockId> {
+    let (mm, tm) = (moved(base, &mine), moved(base, &theirs));
+    let replace: HashSet<BlockId> = theirs.iter().filter(|x| tm.contains(*x) && !mm.contains(*x)).copied().collect();
+    let mut out: Vec<BlockId> = mine.into_iter().filter(|x| !replace.contains(x)).collect();
+    let mut after: Option<BlockId> = None;
+    for x in theirs {
+        if !out.contains(&x) {
+            let mut at = after.and_then(|a| out.iter().position(|y| *y == a)).map(|i| i + 1).unwrap_or(0);
+            // only a NEW item of theirs yields to mine; one the list already had returns to its place
+            if !base.contains(&x) { while at < out.len() && mine_only(out[at]) { at += 1; } }
+            out.insert(at, x);
+        }
+        after = Some(x);
+    }
+    out
+}
+
 pub fn merge(base: &Doc, mine: &Doc, theirs: &Doc) -> Merged {
     let mut notes = Vec::new();
     let (mut m, mut t) = (Side { doc: mine, base, memo: HashMap::new() }, Side { doc: theirs, base, memo: HashMap::new() });
@@ -124,18 +144,7 @@ pub fn merge(base: &Doc, mine: &Doc, theirs: &Doc) -> Merged {
     let order = |p: Option<BlockId>| -> Vec<BlockId> {
         let here = |d: &Doc| -> Vec<BlockId> { d.children(p).iter().filter(|c| alive.contains(*c) && parent.get(*c) == Some(&p) && !strays.contains(*c)).copied().collect() };
         let (ml, tl, bl) = (here(mine), here(theirs), base.children(p));
-        let (mm, tm) = (moved(bl, &ml), moved(bl, &tl));
-        let replace: HashSet<BlockId> = tl.iter().filter(|x| tm.contains(*x) && !mm.contains(*x)).copied().collect();
-        let mut out: Vec<BlockId> = ml.into_iter().filter(|x| !replace.contains(x)).collect();
-        let mut after: Option<BlockId> = None;
-        for x in tl {
-            if !out.contains(&x) { let at = after.and_then(|a| out.iter().position(|y| *y == a)).map(|i| i + 1).unwrap_or(0);
-                // mine first: step over blocks I added at this same place
-                let mut at = at; while at < out.len() && base.get(out[at]).is_none() && theirs.get(out[at]).is_none() { at += 1; }
-                out.insert(at, x); }
-            after = Some(x);
-        }
-        out
+        merge_order(bl, ml, tl, |x| base.get(x).is_none() && theirs.get(x).is_none())
     };
 
     // build, top down

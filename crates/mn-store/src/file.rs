@@ -51,7 +51,26 @@ impl DocKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry { pub id: BlockId, pub parent: Option<BlockId>, pub kind: DocKind, pub title: String }
 
-pub struct Collection { db: Connection }
+pub struct Collection { db: Connection, pending: Vec<(BlockId, Doc)> }
+
+/// What a merge on save could not simply join.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct MergeReport {
+    pub tree: Vec<TreeNote>,
+    /// Per note: the cases its blocks' merge reported.
+    pub notes: Vec<(BlockId, Vec<mn_doc::Note>)>,
+    /// The notes whose content here changed through the merge (an open editor has to reload them).
+    pub changed: Vec<BlockId>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeNote {
+    /// Both gave it a different title: mine stands.
+    RenamedByBoth(BlockId),
+    /// Both moved it to a different folder: it is where mine put it.
+    MovedByBoth(BlockId),
+    /// One side removed it, the other changed it: it stays.
+    KeptOverDelete(BlockId),
+}
 
 fn now_ms() -> i64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) }
 fn id_of(s: &str) -> Result<BlockId, Error> { BlockId::parse(s).ok_or_else(|| Error::Corrupt(format!("not an id: {s:?}"))) }
@@ -72,9 +91,19 @@ impl Collection {
         }
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         db.execute_batch(DDL)?;
-        let c = Collection { db };
+        let c = Collection { db, pending: vec![] };
         if !existed { c.stamp()?; }
         Ok(c)
+    }
+    /// Opens a staged copy for reading only (the base, or someone else's saved file during a merge).
+    pub fn open_read(path: &Path) -> Result<Collection, Error> {
+        let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|_| Error::Gate(Gate::NotMinNotes))?;
+        match old::marks(&db).ok_or(Error::Gate(Gate::NotMinNotes))? {
+            (f, v) if f == FORMAT && v == SCHEMA => Ok(Collection { db, pending: vec![] }),
+            (f, v) if f == FORMAT && v > SCHEMA => Err(Error::Gate(Gate::Newer)),
+            (_, v) if v > 0 => Err(Error::Gate(Gate::Earlier)),
+            _ => Err(Error::Gate(Gate::NotMinNotes)),
+        }
     }
     /// Writes the format mark; `created` is set once, `modified` every time.
     fn stamp(&self) -> Result<(), Error> {
@@ -162,6 +191,91 @@ impl Collection {
     /// (created, modified) of a block, in ms since the epoch.
     pub fn block_times(&self, id: BlockId) -> Result<Option<(i64, i64)>, Error> { Ok(self.db.query_row("SELECT created, modified FROM note_blocks WHERE id = ?1", [id.to_string()], |r| Ok((r.get(0)?, r.get(1)?))).optional()?) }
 
+    /// Every entry of the tree, each list in order.
+    fn entries(&self) -> Result<Vec<Entry>, Error> {
+        let mut s = self.db.prepare("SELECT id, parent, kind, title FROM documents ORDER BY rank, rowid")?;
+        let rows: Vec<(String, Option<String>, String, String)> = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+        rows.into_iter().map(|(id, parent, kind, title)| Ok(Entry { id: id_of(&id)?, parent: match parent { Some(p) => Some(id_of(&p)?), None => None }, kind: DocKind::parse(&kind), title })).collect()
+    }
+
+    /// The merge on save (rows 272, 285): this collection is MINE (the staged work copy); `base` is the file as it was
+    /// opened (None: it did not exist), `theirs` a staged copy of what is at the original's place now. The tree of
+    /// documents is merged by the rules of row 285 — a title is content, a folder is a parent — and every note by
+    /// [`mn_doc::merge`]. The result is written into this collection; the report says what could not simply be joined.
+    /// (A canvas has no content here yet: its entry merges, nothing more.)
+    pub fn merge_from(&mut self, base: Option<&Path>, theirs: &Path) -> Result<MergeReport, Error> {
+        use std::collections::{HashMap, HashSet};
+        let base = match base { Some(p) => Some(Collection::open_read(p)?), None => None };
+        let theirs = Collection::open_read(theirs)?;
+        let index = |v: Vec<Entry>| -> (Vec<BlockId>, HashMap<BlockId, Entry>) { (v.iter().map(|e| e.id).collect(), v.into_iter().map(|e| (e.id, e)).collect()) };
+        let (b_order, b) = index(match &base { Some(c) => c.entries()?, None => vec![] });
+        let (m_order, m) = index(self.entries()?);
+        let (t_order, t) = index(theirs.entries()?);
+        let note = |c: Option<&Collection>, e: Option<&Entry>| -> Result<Doc, Error> { match (c, e) { (Some(c), Some(e)) if e.kind == DocKind::Note => c.load_note(e.id), _ => Ok(Doc::new()) } };
+        let mut report = MergeReport::default();
+
+        // who survives: deleted on one side and untouched on the other (its title, its folder, its blocks) is gone
+        let mut alive: HashSet<BlockId> = HashSet::new();
+        for id in m_order.iter().chain(&t_order) {
+            let keep = match (m.get(id), t.get(id), b.get(id)) {
+                (Some(_), Some(_), _) | (_, _, None) => true,
+                (Some(e), None, Some(o)) => { let touched = e != o || note(Some(self), Some(e))? != note(base.as_ref(), Some(o))?; if touched { report.tree.push(TreeNote::KeptOverDelete(*id)); } touched }
+                (None, Some(e), Some(o)) => { let touched = e != o || note(Some(&theirs), Some(e))? != note(base.as_ref(), Some(o))?; if touched { report.tree.push(TreeNote::KeptOverDelete(*id)); } touched }
+                (None, None, _) => false,
+            };
+            if keep { alive.insert(*id); }
+        }
+        // title and folder: the side's that changed it; mine where both did
+        let mut merged: HashMap<BlockId, Entry> = HashMap::new();
+        for id in &alive {
+            let e = match (m.get(id), t.get(id)) {
+                (Some(a), Some(c)) => {
+                    let o = b.get(id);
+                    let title = if o.is_none_or(|o| o.title != a.title) { if o.is_none_or(|o| o.title != c.title) && a.title != c.title { report.tree.push(TreeNote::RenamedByBoth(*id)); } a.title.clone() } else { c.title.clone() };
+                    let parent = if o.is_none_or(|o| o.parent != a.parent) { if o.is_none_or(|o| o.parent != c.parent) && a.parent != c.parent { report.tree.push(TreeNote::MovedByBoth(*id)); } a.parent } else { c.parent };
+                    Entry { id: *id, parent, kind: a.kind, title }
+                }
+                (Some(a), None) => a.clone(), (None, Some(c)) => c.clone(), _ => continue,
+            };
+            merged.insert(*id, e);
+        }
+        for e in merged.values_mut() { if e.parent.is_some_and(|p| !alive.contains(&p)) { e.parent = None; } }
+        // the notes: three-way where both sides have one; theirs where only they do
+        for id in &alive {
+            let e = &merged[id]; if e.kind != DocKind::Note { continue }
+            match (m.get(id), t.get(id)) {
+                (Some(a), Some(c)) => {
+                    let (mine, theirs_doc) = (self.load_note(a.id)?, theirs.load_note(c.id)?);
+                    if mine == theirs_doc { continue }
+                    let r = mn_doc::merge(&note(base.as_ref(), b.get(id))?, &mine, &theirs_doc);
+                    if !r.notes.is_empty() { report.notes.push((*id, r.notes)); }
+                    if r.doc != mine { report.changed.push(*id); self.pending.push((*id, r.doc)); }
+                }
+                (None, Some(c)) => { report.changed.push(*id); self.pending.push((*id, theirs.load_note(c.id)?)); }
+                _ => {}
+            }
+        }
+        // write the tree: each list in merged order, with fresh ranks
+        let mut parents: Vec<Option<BlockId>> = vec![None]; parents.extend(alive.iter().map(|x| Some(*x)));
+        let tx = self.db.transaction()?; let now = now_ms();
+        for id in m_order.iter().filter(|x| !alive.contains(*x)) { tx.execute("DELETE FROM documents WHERE id = ?1", [id.to_string()])?; }
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON;")?;
+        for p in parents {
+            let list = |order: &[BlockId]| -> Vec<BlockId> { order.iter().filter(|x| alive.contains(*x) && merged[*x].parent == p).copied().collect() };
+            let base_list: Vec<BlockId> = b_order.iter().filter(|x| b[*x].parent == p).copied().collect();
+            let order = mn_doc::merge_order(&base_list, list(&m_order), list(&t_order), |x| !b.contains_key(&x) && !t.contains_key(&x));
+            for (id, rank) in order.iter().zip(mn_doc::rank::spread(order.len())) {
+                let e = &merged[id];
+                tx.execute("INSERT INTO documents (id, parent, rank, kind, title, created, modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                            ON CONFLICT(id) DO UPDATE SET parent = ?2, rank = ?3, title = ?5", params![id.to_string(), e.parent.map(|x| x.to_string()), rank.as_str(), e.kind.name(), e.title, now])?;
+            }
+        }
+        tx.commit()?;
+        for (id, doc) in std::mem::take(&mut self.pending) { self.save_note(id, &doc)?; }
+        report.tree.sort_by_key(|n| format!("{n:?}")); report.tree.dedup(); report.changed.sort();
+        Ok(report)
+    }
+
     /// Converts a 2.0 file (a STAGED copy of it) into this collection: one note per page, under a folder named
     /// `title` (row 283, ruling 5: pages only — the canvas comes with the canvas step). Returns the notes made and what
     /// the conversion had to repair, per page.
@@ -186,7 +300,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use mn_doc::{inline::Mark, ColumnKind, ColumnSpec, Kind, Spans};
-    use crate::staging::Session;
+    use crate::staging::{Session, Stamp};
     fn scratch(name: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("mn-store-{name}-{}", BlockId::new())); std::fs::create_dir_all(d.join("share")).unwrap(); std::fs::create_dir_all(d.join("staging")).unwrap(); d }
     /// A note with every kind of block, formatting over a non-BMP character, and both containers.
     fn sample() -> Doc {
@@ -309,5 +423,58 @@ mod tests {
         assert_eq!(c2.load_note(note).unwrap(), doc);
         assert_eq!(std::fs::read(s2.base().unwrap()).unwrap(), std::fs::read(&file).unwrap());
         drop(c2); s2.close().unwrap(); std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// Rows 272 + 285 end to end: two people open one file; one saves; the other's save merges.
+    #[test]
+    fn a_save_over_someone_elses_save_merges_notes_and_the_tree() {
+        let d = scratch("merge"); let file = d.join("share/notes.mnd");
+        // the file both open: one folder, two notes
+        let (folder, n1, n2, ids) = {
+            let mut s = Session::open(&d.join("staging"), &file).unwrap(); let mut c = Collection::open(&s.work()).unwrap();
+            let folder = c.create(None, DocKind::Folder, "Project").unwrap();
+            let (n1, n2) = (c.create(Some(folder), DocKind::Note, "One").unwrap(), c.create(Some(folder), DocKind::Note, "Two").unwrap());
+            let mut doc = Doc::new(); let ids: Vec<BlockId> = (0..3).map(|_| BlockId::new()).collect();
+            for (i, t) in ["first", "second", "third"].iter().enumerate() { doc.insert(None, i, ids[i], Kind::Paragraph, *t).unwrap(); }
+            c.save_note(n1, &doc).unwrap(); c.save_note(n2, &Doc::new()).unwrap();
+            s.save(|tmp| c.publish(tmp).map_err(std::io::Error::other)).unwrap(); drop(c); s.close().unwrap();
+            (folder, n1, n2, ids)
+        };
+        let mut mine = Session::open(&d.join("staging"), &file).unwrap(); let mut my = Collection::open(&mine.work()).unwrap();
+        let mut other = Session::open(&d.join("staging"), &file).unwrap(); let mut their = Collection::open(&other.work()).unwrap();
+        // they: edit the first and second paragraphs of One, rename Two, add a note, and save
+        let mut doc = their.load_note(n1).unwrap(); doc.set_text(ids[0], "first, theirs").unwrap(); doc.set_text(ids[1], "second, theirs").unwrap(); their.save_note(n1, &doc).unwrap();
+        their.rename(n2, "Two, renamed").unwrap(); let n3 = their.create(Some(folder), DocKind::Note, "Three").unwrap();
+        let mut d3 = Doc::new(); d3.insert(None, 0, BlockId::new(), Kind::Paragraph, "their new note").unwrap(); their.save_note(n3, &d3).unwrap();
+        other.save(|tmp| their.publish(tmp).map_err(std::io::Error::other)).unwrap();
+        // me: edit the second and third paragraphs of One, delete Two (which they renamed), add a note of my own
+        let mut doc = my.load_note(n1).unwrap(); doc.set_text(ids[1], "second, mine").unwrap(); doc.set_text(ids[2], "third, mine").unwrap(); my.save_note(n1, &doc).unwrap();
+        my.remove(n2).unwrap(); let n4 = my.create(Some(folder), DocKind::Note, "Four").unwrap();
+        // my save: the original changed → fetch, merge, publish
+        assert!(mine.original_changed());
+        let (theirs_copy, stamp) = mine.fetch_theirs().unwrap();
+        let report = my.merge_from(mine.base().as_deref(), &theirs_copy).unwrap();
+        mine.save_merged(stamp, |tmp| my.publish(tmp).map_err(std::io::Error::other)).unwrap();
+        assert!(!mine.original_changed());
+        // what is published
+        let s = Session::open(&d.join("staging"), &file).unwrap(); let c = Collection::open(&s.work()).unwrap();
+        assert_eq!(c.list(Some(folder)).unwrap().iter().map(|e| e.title.as_str()).collect::<Vec<_>>(), ["One", "Two, renamed", "Four", "Three"]);
+        let one = c.load_note(n1).unwrap();
+        assert_eq!(one.walk().iter().map(|b| b.text.as_str()).collect::<Vec<_>>(), ["first, theirs", "second, mine", "second, theirs", "third, mine"]);
+        assert_eq!(one.get(one.children(None)[2]).unwrap().conflict, Some(ids[1]));
+        assert_eq!(c.load_note(n3).unwrap(), d3);
+        assert_eq!(report.tree, [TreeNote::KeptOverDelete(n2)]);
+        assert_eq!((report.notes.len(), report.notes[0].0, report.changed.contains(&n1) && report.changed.contains(&n3)), (1, n1, true));
+        let _ = n4;
+        // a save that would overwrite a THIRD save is refused, and nothing is written
+        let before = std::fs::read(&file).unwrap();
+        let (_, old_stamp) = mine.fetch_theirs().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&file, &before).unwrap();                                              // someone saves again (same bytes, a new time)
+        if Stamp::of(&file).unwrap() != old_stamp {
+            let e = mine.save_merged(old_stamp, |tmp| my.publish(tmp).map_err(std::io::Error::other)).unwrap_err();
+            assert_eq!((e.kind(), std::fs::read_dir(d.join("share")).unwrap().count()), (std::io::ErrorKind::Interrupted, 1));
+        }
+        drop((c, my, their)); s.close().unwrap(); mine.close().unwrap(); other.close().unwrap(); std::fs::remove_dir_all(d).unwrap();
     }
 }

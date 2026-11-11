@@ -17,7 +17,7 @@ pub mod tree;
 pub use change::{Change, ChangeError, History};
 pub use flat::FlatText;
 pub use id::BlockId;
-pub use merge::{merge, Merged, Note};
+pub use merge::{merge, merge_order, Merged, Note};
 pub use rank::Rank;
 pub use inline::{Mark, MarkKind, Span, Spans};
 pub use tree::{Block, ChoiceOption, ColumnKind, ColumnSpec, Doc, Kind, TreeError};
