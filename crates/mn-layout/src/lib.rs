@@ -257,9 +257,12 @@ impl NoteLayout {
     }
     /// The caret's rectangle at byte `at` of a block (`width` physical px wide). For a block without text: its left
     /// edge (0) or its right edge (anything else), as tall as the block.
-    pub fn caret(&self, doc: &Doc, id: BlockId, at: usize, width: f32) -> Option<Rect> {
+    pub fn caret(&self, doc: &Doc, id: BlockId, at: usize, width: f32) -> Option<Rect> { self.caret_side(doc, id, at, width, false) }
+    /// As [`NoteLayout::caret`]; `upstream` puts a caret that stands exactly at a soft wrap at the END of the upper line
+    /// (where End leaves it) instead of the start of the lower one.
+    pub fn caret_side(&self, doc: &Doc, id: BlockId, at: usize, width: f32, upstream: bool) -> Option<Rect> {
         match self.text_origin(doc, id) {
-            Some((layout, ox, oy)) => { let g = Cursor::from_byte_index(layout, at, Affinity::Downstream).geometry(layout, width); Some(Rect::new(ox + g.x0, oy + g.y0, ox + g.x1, oy + g.y1)) }
+            Some((layout, ox, oy)) => { let g = Cursor::from_byte_index(layout, at, if upstream { Affinity::Upstream } else { Affinity::Downstream }).geometry(layout, width); Some(Rect::new(ox + g.x0, oy + g.y0, ox + g.x1, oy + g.y1)) }
             None => { let r = self.rect(doc, id)?; let x = if at == 0 { r.x0 } else { r.x1 }; Some(Rect::new(x, r.y0, x + width as f64, r.y1)) }
         }
     }

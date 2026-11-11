@@ -1,0 +1,19 @@
+[package]
+name = "mn-edit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minNotes — the editor of one note without its window: caret and selection across blocks, movement by the layout, typing and deleting as recorded changes, undo with its selection (Phase 3 step 2)"
+
+[dependencies]
+mn-doc = { path = "../mn-doc" }
+mn-layout = { path = "../mn-layout" }
+parley = { workspace = true }
+kurbo = { workspace = true }
+
+[dev-dependencies]
+min-ui = { path = "../min-ui" }

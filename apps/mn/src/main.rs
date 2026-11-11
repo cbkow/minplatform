@@ -1,6 +1,8 @@
 //! minNotes on the platform — step 2 (canon rows 286, 287): ONE note, laid out by `mn-layout`, drawn into the UI layer
-//! over QCView's presenter (the window surface the embedded player will draw its HDR picture into). Read-only: the
-//! wheel scrolls, the window resizes; the caret, typing and the desktop text element come next.
+//! over QCView's presenter (the window surface the embedded player will draw its HDR picture into), edited through
+//! `mn-edit`: click, drag and double-click select; the arrows (Alt = by word, Cmd / Ctrl = line and note ends, Shift
+//! extends), typing, Enter, Backspace / Delete, undo / redo, select all, and plain-text cut / copy / paste. Nothing is
+//! saved; input methods and the desktop text element come next.
 //!   minNotes                         a built-in sample note (synthetic)
 //!   minNotes --v2 <file.mnd> [n]     page n (default 1) of a minNotes 2.0 file, converted in memory (the file is only read)
 //!   --seconds N                      close after N seconds;   --shot <png>   write the window as drawn, then close
@@ -13,7 +15,9 @@ use mn_doc::{BlockId, ChoiceOption, ColumnKind, ColumnSpec, Doc, Kind, Mark, Spa
 use mn_layout::{NoteLayout, Style};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{MouseScrollDelta, WindowEvent};
+use winit::event::{ButtonSource, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+use mn_edit::{Dirty, Editor, Move};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -25,7 +29,7 @@ const MARGIN: f64 = 48.0;
 const PAD: f64 = 28.0;
 
 struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts }
-struct App { doc: Doc, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+struct App { ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, follow: bool, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -66,17 +70,65 @@ impl App {
         let t = Instant::now();
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
         let page_w = (w as f64 - 2.0 * MARGIN * s).max(320.0 * s);
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &Style::default(), page_w as f32, s as f32)); }
+        // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
+        // from the heading into the first list item
+        if self.frames == 0 && std::env::var_os("MN_DEMO").is_some() {
+            let top: Vec<BlockId> = self.ed.doc.children(None).to_vec();
+            if top.len() > 3 { use mn_edit::{Pos, Selection};
+                self.ed.set_selection(Some(Selection::caret(Pos { block: top[1], at: 0 }))); let _ = self.ed.insert("Typed by the demo. ", 0); self.layout.as_mut().unwrap().update_block(&self.ed.doc, &mut g.fonts, top[1]);
+                self.ed.set_selection(Some(Selection { anchor: Pos { block: top[0], at: 7 }, focus: Pos { block: top[3], at: 10 } })); }
+        }
         let l = self.layout.as_ref().unwrap();
+        // after an edit or a caret move the caret is brought into view
+        if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); if top < self.scroll { self.scroll = top } else if bottom > self.scroll + h as f64 { self.scroll = bottom - h as f64 } } }
         self.scroll = self.scroll.clamp(0.0, (l.height as f64 + 2.0 * PAD * s - h as f64).max(0.0));
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
+        let off = kurbo::Vec2::new(MARGIN * s, PAD * s - self.scroll);
         let scene = g.ui.scene_mut(); scene.reset();
         scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::PAGE, None, &view);
-        paint::note(scene, &self.doc, l, &mut g.fonts, MARGIN * s, PAD * s - self.scroll, view);
+        for r in self.ed.selection_rects(l) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::SELECTION, None, &(r + off)); }
+        paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view);
+        if self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &(c + off)); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
         g.presenter.draw(|| window.pre_present_notify());
         self.frames += 1; self.draw_ms.push(t.elapsed().as_secs_f32() * 1000.0);
+    }
+    /// What an edit changed, taken to the layout; the caret is then followed.
+    fn apply(&mut self, d: Dirty) {
+        match d { Dirty::Nothing => {}, Dirty::Structure => self.layout = None,
+            Dirty::Blocks(ids) => if let (Some(l), Some(g)) = (self.layout.as_mut(), self.gpu.as_mut()) { for id in ids { l.update_block(&self.ed.doc, &mut g.fonts, id); } } }
+        self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
+    /// A window point in the note's coordinates.
+    fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - MARGIN * s, p.1 - PAD * s + self.scroll) }
+    fn key(&mut self, key: &Key, text: Option<&str>) {
+        let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        let Some(l) = self.layout.as_ref() else { return };
+        let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
+        let dirty = match key {
+            Key::Named(NamedKey::ArrowLeft) => { self.ed.move_caret(l, mv(Move::Left, Move::WordLeft, Move::LineStart), shift); Dirty::Nothing }
+            Key::Named(NamedKey::ArrowRight) => { self.ed.move_caret(l, mv(Move::Right, Move::WordRight, Move::LineEnd), shift); Dirty::Nothing }
+            Key::Named(NamedKey::ArrowUp) => { self.ed.move_caret(l, mv(Move::Up, Move::Up, Move::DocStart), shift); Dirty::Nothing }
+            Key::Named(NamedKey::ArrowDown) => { self.ed.move_caret(l, mv(Move::Down, Move::Down, Move::DocEnd), shift); Dirty::Nothing }
+            Key::Named(NamedKey::Home) => { self.ed.move_caret(l, if cmd { Move::DocStart } else { Move::LineStart }, shift); Dirty::Nothing }
+            Key::Named(NamedKey::End) => { self.ed.move_caret(l, if cmd { Move::DocEnd } else { Move::LineEnd }, shift); Dirty::Nothing }
+            Key::Named(NamedKey::Enter) => self.ed.enter(now).unwrap_or(Dirty::Nothing),
+            Key::Named(NamedKey::Backspace) => self.ed.delete(false, now).unwrap_or(Dirty::Nothing),
+            Key::Named(NamedKey::Delete) => self.ed.delete(true, now).unwrap_or(Dirty::Nothing),
+            Key::Character(c) if cmd => match c.to_lowercase().as_str() {
+                "a" => { self.ed.select_all(); Dirty::Nothing }
+                "z" => if shift { self.ed.redo() } else { self.ed.undo() }.unwrap_or(Dirty::Nothing),
+                "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
+                "v" => match self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) { Some(t) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), None => Dirty::Nothing },
+                _ => return,
+            },
+            // typed text — one key event may carry several characters (a writing tool's correction, the spike S9)
+            _ => match text.filter(|t| !cmd && !t.chars().any(|c| c.is_control())) { Some(t) => self.ed.insert(t, now).unwrap_or(Dirty::Nothing), None => return },
+        };
+        self.apply(dirty);
     }
     fn finish(&mut self) {
         if let (Some(path), Some(g)) = (self.shot.take(), self.gpu.as_mut()) {
@@ -131,6 +183,18 @@ impl ApplicationHandler for App {
                 self.scroll -= match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 };
                 g.window.request_redraw();
             },
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
+            WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
+                if self.pressed { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
+            WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
+                self.pointer = (position.x, position.y); self.pressed = state == ElementState::Pressed;
+                if self.pressed { if let Some(l) = self.layout.as_ref() {
+                    let (x, y) = self.note_point(self.pointer);
+                    let double = self.last_click.is_some_and(|(t, px, py)| t.elapsed().as_millis() < 400 && (px - x).abs() < 4.0 && (py - y).abs() < 4.0);
+                    if double { self.ed.point_word(l, x, y); self.last_click = None } else { self.ed.point(l, x, y, self.mods.0); self.last_click = Some((Instant::now(), x, y)); }
+                    if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { let text = event.text.as_ref().map(|t| t.to_string()); self.key(&event.logical_key, text.as_deref()); }
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
@@ -154,6 +218,6 @@ fn main() {
         }
         None => sample(),
     };
-    let app = App { doc, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), follow: false, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     EventLoop::new().unwrap().run_app(app).unwrap();
 }

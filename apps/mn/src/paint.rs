@@ -9,6 +9,7 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 pub const PAGE: Color = Color::from_rgb8(0x1E, 0x1E, 0x1E);
+pub const SELECTION: Color = Color::from_rgb8(0x1F, 0x4E, 0x8C);
 const TEXT: Color = Color::from_rgb8(0xEB, 0xEB, 0xEB);
 const DIM: Color = Color::from_rgb8(0x8A, 0x8A, 0x8A);
 const LINE: Color = Color::from_rgb8(0x3A, 0x3A, 0x3A);

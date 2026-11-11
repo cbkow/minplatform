@@ -2143,12 +2143,14 @@ dependencies = [
 name = "mn"
 version = "0.0.1"
 dependencies = [
+ "arboard",
  "env_logger",
  "kurbo",
  "log",
  "min-present",
  "min-ui",
  "mn-doc",
+ "mn-edit",
  "mn-layout",
  "mn-store",
  "parley",
@@ -2167,6 +2169,17 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "uuid",
+]
+
+[[package]]
+name = "mn-edit"
+version = "0.1.0"
+dependencies = [
+ "kurbo",
+ "min-ui",
+ "mn-doc",
+ "mn-layout",
+ "parley",
 ]
 
 [[package]]

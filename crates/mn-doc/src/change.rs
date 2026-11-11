@@ -143,7 +143,8 @@ impl History {
     /// Applies `changes` as ONE undo step and records it. `now_ms` is any clock that only moves forward.
     /// A step that is a single pure insert of text exactly where the previous step's last insert ended, in the same
     /// block and within [`JOIN_MS`], joins that step instead of starting a new one.
-    pub fn commit(&mut self, doc: &mut Doc, changes: Vec<Change>, now_ms: u64) -> Result<(), ChangeError> {
+    /// Returns whether the step JOINED the previous one (true) or is a step of its own.
+    pub fn commit(&mut self, doc: &mut Doc, changes: Vec<Change>, now_ms: u64) -> Result<bool, ChangeError> {
         for (i, c) in changes.iter().enumerate() {
             if let Err(e) = doc.apply(c) { for done in changes[..i].iter().rev() { let _ = doc.apply(&done.inverse()); } return Err(e) }
         }
@@ -153,13 +154,13 @@ impl History {
             if let Some(Step { changes: prev, at_ms }) = self.undo.last_mut() {
                 if let Some(Change::Text { id: pid, at: pat, inserted: pins, new_spans: pspans, .. }) = prev.last_mut() {
                     if removed.is_empty() && pid == id && *pat + pins.len() == *at && now_ms.saturating_sub(*at_ms) < JOIN_MS {
-                        pins.push_str(inserted); *pspans = new_spans.clone(); *at_ms = now_ms; return Ok(())
+                        pins.push_str(inserted); *pspans = new_spans.clone(); *at_ms = now_ms; return Ok(true)
                     }
                 }
             }
         }
         if !changes.is_empty() { self.undo.push(Step { changes, at_ms: now_ms }); }
-        Ok(())
+        Ok(false)
     }
     /// Takes the last step back; false when there is none.
     pub fn undo(&mut self, doc: &mut Doc) -> Result<bool, ChangeError> {
