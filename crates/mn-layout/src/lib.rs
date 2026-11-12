@@ -163,7 +163,7 @@ impl NoteLayout {
                 let (bw, bh) = match media_size(descriptor).map(|(mw, mh, dw, pdf, strip)| if self.turned.contains(&id) { (mh, mw, dw, pdf, strip) } else { (mw, mh, dw, pdf, strip) }) { Some((mw, mh, dw, pdf, strip)) => { let shown = dw.map(|d| self.px(d)).unwrap_or(if pdf { w } else { self.px(mw) }).min(w).max(1.0); (shown, shown * mh / mw + self.px(strip) + if self.noted.contains(&id) { self.px(VIDEO_NOTES) } else { 0.0 }) } None => (w, self.px(self.style.media_chip)) };
                 self.boxes.insert(id, Box { x, y: 0.0, w: bw, h: bh, part: Part::Media }); return
             }
-            _ => { let (layout, dx, dy, h) = self.shape(fonts, b, Some(w)); self.boxes.insert(id, Box { x, y: 0.0, w, h, part: Part::Text { layout, dx, dy } }); return }
+            _ => { let (layout, dx, dy, h) = self.shape(fonts, b, Some(w), Self::align_of(doc, b)); self.boxes.insert(id, Box { x, y: 0.0, w, h, part: Part::Text { layout, dx, dy } }); return }
         };
         self.boxes.insert(id, Box { x, y: 0.0, w, h: 0.0, part }); self.stack(doc, Some(id));
     }
@@ -175,14 +175,22 @@ impl NoteLayout {
         (0..n).map(|i| {
             if let Some(w) = columns.get(i).and_then(|c| c.width) { return self.px(w as f32) }
             let mut widest: f32 = 0.0;
-            for row in rows { if let Some(cell) = doc.children(Some(*row)).get(i) { for c in doc.children(Some(*cell)) { if let Some(b) = doc.get(*c).filter(|b| b.kind.is_text() && !b.text.is_empty()) { let (l, dx, _, _) = self.shape(fonts, b, None); widest = widest.max(l.full_width() + dx); } } } }
+            for row in rows { if let Some(cell) = doc.children(Some(*row)).get(i) { for c in doc.children(Some(*cell)) { if let Some(b) = doc.get(*c).filter(|b| b.kind.is_text() && !b.text.is_empty()) { let (l, dx, _, _) = self.shape(fonts, b, None, 0); widest = widest.max(l.full_width() + dx); } } } }
             if widest == 0.0 { self.px(self.style.table_col_default) } else { (widest + self.px(self.style.table_col_extra)).round().clamp(self.px(self.style.table_col_min), self.px(self.style.table_col_max)) }
         }).collect()
     }
 
     /// Shapes a text block for `width` (None: unwrapped). Returns the layout, the text's origin inside the box and
     /// the box's height.
-    fn shape(&self, fonts: &mut Fonts, b: &Block, width: Option<f32>) -> (Layout<Brush>, f32, f32, f32) {
+    /// How a block's lines are set in its width: its table column's alignment when it is in a cell (0 left, 1 centre, 2
+    /// right; row 317), else left.
+    fn align_of(doc: &Doc, b: &Block) -> u8 {
+        let Some(cell) = b.parent.and_then(|p| doc.get(p)).filter(|c| matches!(c.kind, Kind::Cell { .. })) else { return 0 };
+        let Some(row) = cell.parent.and_then(|r| doc.get(r)) else { return 0 };
+        let i = row.children.iter().position(|c| *c == cell.id).unwrap_or(0);
+        match row.parent.and_then(|t| doc.get(t)).map(|t| &t.kind) { Some(Kind::Table { columns, .. }) => columns.get(i).map(|c| c.align).unwrap_or(0), _ => 0 }
+    }
+    fn shape(&self, fonts: &mut Fonts, b: &Block, width: Option<f32>, align: u8) -> (Layout<Brush>, f32, f32, f32) {
         let st = &self.style;
         let (size, weight, family) = match &b.kind { Kind::Heading { level } => (st.heading[(*level as usize).clamp(1, 6) - 1], st.heading_weight, Family::Sans), Kind::Code { .. } => (st.code, 400.0, Family::Mono), _ => (st.body, st.body_weight, Family::Sans) };
         let (dx, pad) = match &b.kind {
@@ -216,7 +224,7 @@ impl NoteLayout {
         }
         let mut layout = builder.build(&b.text);
         layout.break_all_lines(width.map(|w| (w - dx - pad).max(1.0)));
-        layout.align(Alignment::Start, AlignmentOptions::default());
+        layout.align(match align { 1 => Alignment::Center, 2 => Alignment::End, _ => Alignment::Start }, AlignmentOptions::default());
         // an empty block is still one line tall
         let h = layout.height().max(self.px(size) * st.line_height) + 2.0 * pad;
         (layout, dx, pad, h)
@@ -262,7 +270,7 @@ impl NoteLayout {
     pub fn update_block(&mut self, doc: &Doc, fonts: &mut Fonts, id: BlockId) {
         let (Some(b), Some(w)) = (doc.get(id), self.boxes.get(&id).map(|b| b.w)) else { return };
         if !b.kind.is_text() { return }
-        let (layout, dx, dy, h) = self.shape(fonts, b, Some(w));
+        let (layout, dx, dy, h) = self.shape(fonts, b, Some(w), Self::align_of(doc, b));
         let bx = self.boxes.get_mut(&id).unwrap();
         let grew = (bx.h - h).abs() > 0.01; bx.h = h; bx.part = Part::Text { layout, dx, dy };
         if !grew { return }

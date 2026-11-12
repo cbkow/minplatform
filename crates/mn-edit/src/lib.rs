@@ -840,6 +840,38 @@ mod tests {
         e.undo().unwrap(); e.undo().unwrap(); assert_eq!(e.doc.children(None)[0], a, "one undo per making");
     }
     #[test]
+    fn rows_and_columns_are_added_removed_moved_and_copied_and_the_columns_settings_follow() {
+        let mut d = Doc::new(); let e0 = add(&mut d, None, Kind::Paragraph, "");
+        let mut e = Editor::new(d); e.set_selection(Some(Selection::caret(Pos { block: e0, at: 0 })));
+        e.insert_table(2, 2, 1_000).unwrap(); let table = e.doc.children(None)[0];
+        // a1 b1 / a2 b2
+        for (i, w) in ["a1", "b1", "a2", "b2"].iter().enumerate() { e.insert(w, 2_000 + i as u64 * 2_000).unwrap(); if i < 3 { e.tab_cell(false, 2_500 + i as u64 * 2_000).unwrap(); } }
+        let grid = |e: &Editor| -> Vec<Vec<String>> { e.doc.children(Some(table)).iter().map(|r| e.doc.children(Some(*r)).iter().map(|c| e.doc.children(Some(*c)).iter().map(|b| e.doc.get(*b).unwrap().text.clone()).collect::<Vec<_>>().join("|")).collect()).collect() };
+        let spec = |e: &Editor| e.table_spec(table).unwrap();
+        assert_eq!(grid(&e), [["a1", "b1"], ["a2", "b2"]]); assert_eq!(e.table_pos(), Some((table, 1, 1)));
+        // the caret's column is set right; a column goes in left of it and the setting stays with ITS column
+        e.table_column(|c| c.align = 2, 20_000).unwrap();
+        e.table_insert(true, false, 21_000).unwrap(); assert_eq!(grid(&e), [["a1", "", "b1"], ["a2", "", "b2"]]);
+        assert_eq!(spec(&e).1.iter().map(|c| c.align).collect::<Vec<_>>(), [0, 0, 2]); assert_eq!(e.table_pos(), Some((table, 1, 1)), "the caret is in the new column, its row");
+        e.insert("n", 22_000).unwrap();
+        // the column moves right: its cells and its settings swap places with the next
+        e.table_move(true, true, 23_000).unwrap(); assert_eq!(grid(&e), [["a1", "b1", ""], ["a2", "b2", "n"]]); assert_eq!(spec(&e).1.iter().map(|c| c.align).collect::<Vec<_>>(), [0, 2, 0]); assert_eq!(e.table_pos(), Some((table, 1, 2)));
+        // a row above, a copy of a row, a row moved up
+        e.table_insert(false, false, 24_000).unwrap(); assert_eq!(grid(&e), [["a1", "b1", ""], ["", "", ""], ["a2", "b2", "n"]]); assert_eq!(e.table_pos(), Some((table, 1, 2)));
+        e.table_remove(false, 25_000).unwrap(); assert_eq!(grid(&e), [["a1", "b1", ""], ["a2", "b2", "n"]]); assert_eq!(e.table_pos(), Some((table, 1, 2)));
+        e.table_duplicate(false, 26_000).unwrap(); assert_eq!(grid(&e), [["a1", "b1", ""], ["a2", "b2", "n"], ["a2", "b2", "n"]]); assert_eq!(e.table_pos(), Some((table, 2, 2)));
+        e.insert("!", 27_000).unwrap(); e.table_move(false, false, 28_000).unwrap(); assert_eq!(grid(&e)[1], ["a2", "b2", "!n"]); assert_eq!(e.table_pos(), Some((table, 1, 2)));
+        // a copy of a column carries its settings; the header is switched off and on; removing the header row counts it down
+        e.table_duplicate(true, 29_000).unwrap(); assert_eq!(grid(&e)[1], ["a2", "b2", "!n", "!n"]); assert_eq!(spec(&e).1.len(), 4);
+        assert_eq!(spec(&e).0, 1); e.table_header(30_000).unwrap(); assert_eq!(spec(&e).0, 0); e.table_header(31_000).unwrap(); assert_eq!(spec(&e).0, 1);
+        e.table_remove(true, 32_000).unwrap(); assert_eq!(grid(&e)[1], ["a2", "b2", "!n"]);
+        // the last row and the last column stay
+        e.table_remove(false, 33_000).unwrap(); e.table_remove(false, 34_000).unwrap(); assert_eq!(grid(&e).len(), 1); assert_eq!(e.table_remove(false, 35_000).unwrap(), Dirty::Nothing);
+        e.table_remove(true, 36_000).unwrap(); e.table_remove(true, 37_000).unwrap(); assert_eq!(grid(&e)[0].len(), 1); assert_eq!(e.table_remove(true, 38_000).unwrap(), Dirty::Nothing);
+        // every step undoes by itself
+        e.undo().unwrap(); assert_eq!(grid(&e)[0].len(), 2);
+    }
+    #[test]
     fn blocks_from_another_note_are_appended_as_one_step_and_the_stamp_tells_edits_from_undo() {
         let mut a = Doc::new(); let x = add(&mut a, None, Kind::Bullet { depth: 0 }, "X"); add(&mut a, None, Kind::Bullet { depth: 1 }, "x1"); add(&mut a, None, Kind::Paragraph, "stay");
         let mut src = Editor::new(a); src.set_selection(Some(Selection::caret(Pos { block: x, at: 0 }))); src.toggle_blocks();

@@ -94,4 +94,115 @@ impl Editor {
         let caret = firsts.get(if last_cell { 0 } else { col }).or(firsts.first()).copied();
         self.commit(b, caret.map(|c| Pos { block: c, at: 0 }), now_ms + mn_doc::change::JOIN_MS + 1)
     }
+
+    // -- structure (row 317, stage 2): each of these is one undo step and leaves the caret in a cell
+
+    /// Where the caret is in a table: (the table, its row's place, its column's place).
+    pub fn table_pos(&self) -> Option<(BlockId, usize, usize)> {
+        let (table, row, cell) = self.cell_of(self.sel?.focus.block)?;
+        Some((table, self.doc.children(Some(table)).iter().position(|r| *r == row)?, self.doc.children(Some(row)).iter().position(|c| *c == cell)?))
+    }
+    /// A table's header rows and its columns' settings, one per column there is (padded with defaults).
+    pub fn table_spec(&self, table: BlockId) -> Option<(u8, Vec<ColumnSpec>)> {
+        let Kind::Table { header_rows, columns } = &self.doc.get(table)?.kind else { return None };
+        let n = self.doc.children(Some(table)).iter().map(|r| self.doc.children(Some(*r)).len()).max().unwrap_or(0).max(columns.len());
+        let mut c = columns.clone(); c.resize(n, ColumnSpec::default()); Some((*header_rows, c))
+    }
+    fn first_in(&self, cell: BlockId) -> Option<Pos> { let mut id = *self.doc.children(Some(cell)).first()?; while let Some(n) = self.doc.get(id).and_then(|b| b.children.first().copied()) { id = n; } Some(Pos { block: id, at: 0 }) }
+    /// The caret's blocks under fresh identities (a row or a cell with all it holds), its top under `parent`.
+    fn copy_of(&self, id: BlockId, parent: Option<BlockId>) -> Result<Vec<Block>, ChangeError> {
+        let Change::Remove { blocks, .. } = Change::removal(&self.doc, id)? else { return Ok(vec![]) };
+        let ids: std::collections::HashMap<BlockId, BlockId> = blocks.iter().map(|x| (x.id, BlockId::new())).collect();
+        let mut out: Vec<Block> = blocks.iter().map(|x| { let mut n = x.clone(); n.id = ids[&x.id]; n.parent = x.parent.and_then(|q| ids.get(&q).copied()); n.children = x.children.iter().map(|c| ids[c]).collect(); n.conflict = None; n }).collect();
+        if let Some(top) = out.first_mut() { top.parent = parent; top.rank = Rank::first(); }
+        Ok(out)
+    }
+    fn settle(&mut self, b: crate::Batch, caret: Option<Pos>, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let keep = self.sel; let d = self.commit(b, caret, now_ms + mn_doc::change::JOIN_MS + 1)?;
+        if caret.is_none() { self.sel = keep.and_then(|s| self.live(s)); if let Some(m) = self.marks.last_mut() { m.1 = self.sel; } }
+        Ok(d)
+    }
+    /// A row above or below the caret's row, or a column left or right of its column (`column`); `after` = below /
+    /// right. The caret goes into the new row's or column's cell beside the one it was in.
+    pub fn table_insert(&mut self, column: bool, after: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((table, r, c)) = self.table_pos() else { return Ok(Dirty::Nothing) }; let Some((head, mut cols)) = self.table_spec(table) else { return Ok(Dirty::Nothing) };
+        let rows = self.doc.children(Some(table)).to_vec(); let mut b = self.batch(); let mut caret = None;
+        if column {
+            if cols.len() >= 40 { return Ok(Dirty::Nothing) }
+            let at = c + after as usize;
+            for (i, row) in rows.iter().enumerate() { let mut cell = bare(Kind::cell(), Some(*row)); let p = paragraph(Some(cell.id), ""); cell.children.push(p.id); if i == r { caret = Some(Pos { block: p.id, at: 0 }); }
+                let n = self.doc.children(Some(*row)).len(); b.push(Change::Insert { index: at.min(n), blocks: vec![cell, p] })?; }
+            let old = self.doc.get(table).unwrap().kind.clone(); cols.insert(at.min(cols.len()), ColumnSpec::default()); b.push(Change::Kind { id: table, old, new: Kind::Table { header_rows: head, columns: cols } })?;
+        } else {
+            let (tree, firsts) = row_tree(table, self.doc.children(Some(rows[r])).len().max(1)); caret = firsts.get(c).or(firsts.first()).map(|f| Pos { block: *f, at: 0 });
+            b.push(Change::Insert { index: r + after as usize, blocks: tree })?;
+            // a row put in above the header rows' last stays a body row: the header keeps its count unless it is put in among them
+        }
+        self.settle(b, caret, now_ms)
+    }
+    /// The caret's row or column goes. The last row and the last column stay (the table goes as a block). The caret
+    /// lands in the cell that takes the place.
+    pub fn table_remove(&mut self, column: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((table, r, c)) = self.table_pos() else { return Ok(Dirty::Nothing) }; let Some((head, mut cols)) = self.table_spec(table) else { return Ok(Dirty::Nothing) };
+        let rows = self.doc.children(Some(table)).to_vec(); let mut b = self.batch();
+        let caret_cell = if column {
+            if cols.len() <= 1 { return Ok(Dirty::Nothing) }
+            for row in &rows { if let Some(cell) = self.doc.children(Some(*row)).get(c) { let ch = Change::removal(&b.scratch, *cell)?; b.push(ch)?; } }
+            let old = self.doc.get(table).unwrap().kind.clone(); cols.remove(c); b.push(Change::Kind { id: table, old, new: Kind::Table { header_rows: head, columns: cols } })?;
+            let left = self.doc.children(Some(rows[r])); left.get(c + 1).or(c.checked_sub(1).and_then(|i| left.get(i))).copied()
+        } else {
+            if rows.len() <= 1 { return Ok(Dirty::Nothing) }
+            let ch = Change::removal(&b.scratch, rows[r])?; b.push(ch)?;
+            if (r as u8) < head { let old = self.doc.get(table).unwrap().kind.clone(); b.push(Change::Kind { id: table, old, new: Kind::Table { header_rows: head - 1, columns: cols } })?; }
+            let to = rows.get(r + 1).or(r.checked_sub(1).and_then(|i| rows.get(i))).copied();
+            to.and_then(|row| self.doc.children(Some(row)).get(c).or(self.doc.children(Some(row)).last()).copied())
+        };
+        let caret = caret_cell.and_then(|cell| self.first_in(cell));
+        self.settle(b, caret, now_ms)
+    }
+    /// The caret's row moves up / down, or its column left / right (`forward` = down / right), the caret with it.
+    pub fn table_move(&mut self, column: bool, forward: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((table, r, c)) = self.table_pos() else { return Ok(Dirty::Nothing) }; let Some((head, mut cols)) = self.table_spec(table) else { return Ok(Dirty::Nothing) };
+        let rows = self.doc.children(Some(table)).to_vec(); let mut b = self.batch();
+        if column {
+            let to = if forward { c + 1 } else { match c.checked_sub(1) { Some(t) => t, None => return Ok(Dirty::Nothing) } }; if to >= cols.len() { return Ok(Dirty::Nothing) }
+            for row in &rows { let cells = self.doc.children(Some(*row)); if let (Some(cell), true) = (cells.get(c), to < cells.len()) { b.push(Change::Move { id: *cell, from: (Some(*row), c), to: (Some(*row), to) })?; } }
+            let old = self.doc.get(table).unwrap().kind.clone(); cols.swap(c, to); b.push(Change::Kind { id: table, old, new: Kind::Table { header_rows: head, columns: cols } })?;
+        } else {
+            let to = if forward { r + 1 } else { match r.checked_sub(1) { Some(t) => t, None => return Ok(Dirty::Nothing) } }; if to >= rows.len() { return Ok(Dirty::Nothing) }
+            b.push(Change::Move { id: rows[r], from: (Some(table), r), to: (Some(table), to) })?;
+        }
+        self.settle(b, None, now_ms)
+    }
+    /// A copy of the caret's row below it, or of its column to its right; the caret goes into the copy.
+    pub fn table_duplicate(&mut self, column: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((table, r, c)) = self.table_pos() else { return Ok(Dirty::Nothing) }; let Some((head, mut cols)) = self.table_spec(table) else { return Ok(Dirty::Nothing) };
+        let rows = self.doc.children(Some(table)).to_vec(); let mut b = self.batch(); let mut caret = None;
+        if column {
+            if cols.len() >= 40 { return Ok(Dirty::Nothing) }
+            for (i, row) in rows.iter().enumerate() { if let Some(cell) = self.doc.children(Some(*row)).get(c) { let tree = self.copy_of(*cell, Some(*row))?; if i == r { caret = tree.iter().find(|x| !x.kind.is_container()).map(|x| Pos { block: x.id, at: 0 }); } b.push(Change::Insert { index: c + 1, blocks: tree })?; } }
+            let old = self.doc.get(table).unwrap().kind.clone(); let spec = cols[c].clone(); cols.insert(c + 1, spec); b.push(Change::Kind { id: table, old, new: Kind::Table { header_rows: head, columns: cols } })?;
+        } else {
+            let tree = self.copy_of(rows[r], Some(table))?;
+            // the copy's cell under the caret's: the c-th cell of the copied row
+            let cell = tree.first().and_then(|row| row.children.get(c).copied()); caret = cell.and_then(|cell| tree.iter().find(|x| x.parent == Some(cell) ).map(|x| Pos { block: x.id, at: 0 }));
+            b.push(Change::Insert { index: r + 1, blocks: tree })?;
+        }
+        self.settle(b, caret, now_ms)
+    }
+    /// The table's first row is a header, or is not (a table may have none).
+    pub fn table_header(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((table, _, _)) = self.table_pos() else { return Ok(Dirty::Nothing) }; let Some((head, cols)) = self.table_spec(table) else { return Ok(Dirty::Nothing) };
+        let old = self.doc.get(table).unwrap().kind.clone(); let mut b = self.batch();
+        b.push(Change::Kind { id: table, old, new: Kind::Table { header_rows: if head > 0 { 0 } else { 1 }, columns: cols } })?;
+        self.settle(b, None, now_ms)
+    }
+    /// A setting of the caret's column changes (its alignment, its width back to automatic ...).
+    pub fn table_column(&mut self, f: impl FnOnce(&mut ColumnSpec), now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((table, _, c)) = self.table_pos() else { return Ok(Dirty::Nothing) }; let Some((head, mut cols)) = self.table_spec(table) else { return Ok(Dirty::Nothing) };
+        let Some(spec) = cols.get_mut(c) else { return Ok(Dirty::Nothing) }; f(spec);
+        let old = self.doc.get(table).unwrap().kind.clone(); let new = Kind::Table { header_rows: head, columns: cols }; if old == new { return Ok(Dirty::Nothing) }
+        let mut b = self.batch(); b.push(Change::Kind { id: table, old, new })?;
+        self.settle(b, None, now_ms)
+    }
 }

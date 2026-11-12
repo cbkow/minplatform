@@ -69,7 +69,22 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool, /// an edit went to the staged copy after the file being saved was made
     edited_since_stage: bool }
 /// The handle's place for an editor and its layout (`off`: the page's origin in the window).
+/// What stands around the table the caret is in (row 317, ruling 6: only that table has them, and nothing comes or goes
+/// with the pointer): a handle beside the caret's row and one above its column (their menus), a strip under the table
+/// and one at its right (a row, a column, at the end), and the columns' right borders (dragged to set a width).
+struct TableUi { table: BlockId, row: Rect, col: Rect, add_row: Rect, add_col: Rect, borders: Vec<(usize, f64)>, y: (f64, f64) }
+fn table_ui(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<TableUi> {
+    let (table, r, c) = ed.table_pos()?; let rows = ed.doc.children(Some(table)); let cells = ed.doc.children(Some(*rows.get(r)?));
+    let (t, rr, cr) = (l.rect(&ed.doc, table)? + off, l.rect(&ed.doc, rows[r])? + off, l.rect(&ed.doc, *cells.get(c)?)? + off);
+    let h = 18.0 * s;
+    Some(TableUi { table, row: Rect::new(t.x0 - h - 3.0 * s, rr.center().y - h / 2.0, t.x0 - 3.0 * s, rr.center().y + h / 2.0), // the column's handle sits ON the table's top edge (above it the block before would be in its way)
+        col: Rect::new(cr.center().x - 12.0 * s, t.y0 - 7.0 * s, cr.center().x + 12.0 * s, t.y0 + 7.0 * s),
+        add_row: Rect::new(t.x0, t.y1 + 3.0 * s, t.x1, t.y1 + 15.0 * s), add_col: Rect::new(t.x1 + 3.0 * s, t.y0, t.x1 + 15.0 * s, t.y1),
+        borders: cells.iter().enumerate().filter_map(|(i, cell)| l.rect(&ed.doc, *cell).map(|q| (i, q.x1 + off.x))).collect(), y: (t.y0, t.y1) })
+}
 fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<Rect> {
+    // in a table's cell the row's and the column's handles stand instead (blocks are still picked with Escape)
+    if !ed.in_blocks() && ed.table_pos().is_some() { return None }
     let id = ed.handle_block()?; let r = l.rect(&ed.doc, id)?;
     let line = if ed.doc.get(id).is_some_and(|b| b.kind.is_container()) { None } else { l.caret(&ed.doc, id, 0, 1.0) }.unwrap_or(Rect::new(r.x0, r.y0, r.x0, r.y0 + 24.0 * s));
     let (cy, sz) = (line.center().y, 20.0 * s);
@@ -99,6 +114,9 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// last clean frame captured (key, pixels, size), the palette is open for the pen, the field a note's words are typed
     /// in, what the toolbar shows of the current video, the offscreen layer annotated pictures are composed on, and the
     /// pictures being written (each tells its path when it is on disk)
+    /// a table's menu is open (true: its column's, false: its row's); a column's border being dragged (the table, the
+    /// column, where the pointer took hold, the width then, the table's kind before)
+    tmenu: Option<bool>, col_drag: Option<(BlockId, usize, f64, f64, Kind)>,
     tool: Option<qcv_annotate::Tool>, pen: Option<[f32; 4]>, pen_w: Option<f32>, drawing: bool, annot_due: Option<(String, Instant)>, clean: Option<(String, Arc<Vec<u8>>, (u32, u32))>, pal_pen: bool,
     note_field: Option<(BlockId, String, min_ui::TextField)>, /// the last press on a note's small picture (a second one soon after opens its words)
     thumb_click: Option<(Instant, BlockId, usize)>, vshown: Option<toolbar::VideoShown>, thumb_layer: Option<UiLayer>, written: Vec<std::sync::mpsc::Receiver<std::path::PathBuf>>, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
@@ -314,6 +332,13 @@ impl App {
         if let Some((_, line)) = &self.files.drag { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent(), None, &kurbo::RoundedRect::from_rect(*line + off, s)); }
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
+        // the caret's table: its row's and its column's handles, and the strips that add a row and a column at the end
+        if let Some(ui) = (!self.blank).then(|| table_ui(&self.ed, l, s, off)).flatten() {
+            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(ui.col, 7.0 * s));
+            for (r, icon) in [(ui.row, "dots-six-vertical"), (ui.col, "dots-six")] { if let Some(i) = g.fonts.icon(icon, (16.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
+            for r in [ui.add_row, ui.add_col] { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(r, 3.0 * s));
+                if let Some(i) = g.fonts.icon("plus", (10.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
+        }
         // the handle beside the caret's block; while it is dragged, the line where the blocks would land and how many they are
         if let Some(hr) = (!self.blank).then(|| handle_rect_in(&self.ed, l, s, off)).flatten() {
             let dragging = self.grab.as_ref().is_some_and(|x| x.dragging);
@@ -542,9 +567,12 @@ impl App {
         let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open();
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
+            else if self.files.col_drag.is_some() { C::ColResize }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
             else if let Some((_, _, left, top)) = self.corner_at(x, y) { if left == top { C::NwseResize } else { C::NeswResize } }
+            else if self.table_ui().is_some_and(|ui| y >= ui.y.0 && y <= ui.y.1 && ui.borders.iter().any(|(_, bx)| (bx - x).abs() <= 4.0 * g.window.scale_factor())) { C::ColResize }
+            else if self.table_ui().is_some_and(|ui| { let p = kurbo::Point::new(x, y); ui.row.contains(p) || ui.col.contains(p) || ui.add_row.contains(p) || ui.add_col.contains(p) }) { C::Default }
             else if self.grab.is_some() || self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(x, y))) { C::Grab }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.over_field(x, y)) { C::Text }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(x, y)) || self.bar.hit(x, y) || self.foot.hit(x, y) { C::Default }
@@ -669,6 +697,17 @@ impl App {
     /// An item of the context menu was chosen (its place among the items, separators counted).
     fn ctx_pick(&mut self, i: usize) {
         let label = match self.ctx.items.get(i) { Some(min_ui::menu::MenuItem::Action { label, .. }) => label.clone(), _ => return };
+        // a table's row or column menu (row 317)
+        if self.files.tmenu.take().is_some() { let now = self.now_ms(); self.follow = true; let label = label.trim_start_matches("\u{2713} ");
+            let d = match label {
+                "Insert Row Above" => self.ed.table_insert(false, false, now), "Insert Row Below" => self.ed.table_insert(false, true, now), "Move Row Up" => self.ed.table_move(false, false, now), "Move Row Down" => self.ed.table_move(false, true, now),
+                "Duplicate Row" => self.ed.table_duplicate(false, now), "Delete Row" => self.ed.table_remove(false, now), "No Header Row" | "First Row Is a Header" => self.ed.table_header(now),
+                "Insert Column Left" => self.ed.table_insert(true, false, now), "Insert Column Right" => self.ed.table_insert(true, true, now), "Move Column Left" => self.ed.table_move(true, false, now), "Move Column Right" => self.ed.table_move(true, true, now),
+                "Duplicate Column" => self.ed.table_duplicate(true, now), "Delete Column" => self.ed.table_remove(true, now),
+                "Align Left" => self.ed.table_column(|c| c.align = 0, now), "Align Centre" => self.ed.table_column(|c| c.align = 1, now), "Align Right" => self.ed.table_column(|c| c.align = 2, now), "Automatic Width" => self.ed.table_column(|c| c.width = None, now),
+                _ => return }.unwrap_or(Dirty::Nothing);
+            // a column's setting moves nothing in the tree but everything in the picture
+            self.apply(d); self.layout = None; return }
         if self.ctx_blocks {
             // the second menu: the collection's notes; the one chosen takes the blocks
             if !self.ctx_notes.is_empty() { let copy = self.ctx_for.is_some(); let mut k = 0; let mut to = None;
@@ -1009,6 +1048,27 @@ impl App {
         self.files.pdf = None;
         if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn table_ui(&self) -> Option<TableUi> {
+        if self.blank || self.confirm.is_some() { return None }
+        let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        table_ui(&self.ed, l, s, kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll))
+    }
+    /// The menu of the caret's row (`column` false) or column opens at a window point.
+    fn table_menu(&mut self, column: bool, x: f64, y: f64) {
+        use min_ui::menu::MenuItem as I;
+        let Some((table, r, c)) = self.ed.table_pos() else { return }; let Some((head, cols)) = self.ed.table_spec(table) else { return }; let rows = self.ed.doc.children(Some(table)).len();
+        let items = if column { let a = cols.get(c).map(|x| x.align).unwrap_or(0);
+            vec![I::action("Insert Column Left", true), I::action("Insert Column Right", true), I::Separator, I::action("Move Column Left", c > 0), I::action("Move Column Right", c + 1 < cols.len()), I::action("Duplicate Column", true), I::Separator,
+                I::action(if a == 0 { "\u{2713} Align Left" } else { "Align Left" }, true), I::action(if a == 1 { "\u{2713} Align Centre" } else { "Align Centre" }, true), I::action(if a == 2 { "\u{2713} Align Right" } else { "Align Right" }, true),
+                I::action("Automatic Width", cols.get(c).is_some_and(|x| x.width.is_some())), I::Separator, I::action("Delete Column", cols.len() > 1)] }
+        else { vec![I::action("Insert Row Above", true), I::action("Insert Row Below", true), I::Separator, I::action("Move Row Up", r > 0), I::action("Move Row Down", r + 1 < rows), I::action("Duplicate Row", true), I::Separator,
+                I::action(if head > 0 { "No Header Row" } else { "First Row Is a Header" }, true), I::Separator, I::action("Delete Row", rows > 1)] };
+        let Some(g) = self.gpu.as_mut() else { return }; let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
+        self.files.tmenu = Some(column); self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear();
+        self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
+        #[cfg(target_os = "macos")] text_element::changed(false);
+        g.window.request_redraw();
     }
     /// The picture that is current - the caret is on it, or it is the one selected block - with its box in the window.
     fn picture(&self) -> Option<(BlockId, Rect)> {
@@ -1469,7 +1529,9 @@ impl ApplicationHandler for App {
                 let _ = self.ed.insert("\nA table made in place:\n", t); let _ = self.ed.insert_table(3, 3, t + 2000);
                 for (i, w) in ["Shot", "Status", "Note", "010", "ok", "hold the grade", "020", "redo"].iter().enumerate() { let _ = self.ed.insert(w, t + 3000 + i as u64 * 2000); let _ = self.ed.tab_cell(false, t + 3500 + i as u64 * 2000); }
                 let _ = self.ed.insert("a second line in the cell\nand a paragraph below it", t + 30_000); for _ in 0..2 { let _ = self.ed.tab_cell(false, t + 31_000); }
-                self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000);
+                // MN_TABLE=2: the caret stays in the table (its handles show); a column is set right and given a width, a row is moved up
+                if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
+                else { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000); }
                 self.apply(Dirty::Structure); }
             // MN_SEEK=<frame>: the note's first video block goes to that frame, paused (as a click on a note's picture would)
             if let Some(f) = std::env::var("MN_SEEK").ok().and_then(|v| v.parse::<i32>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); self.video_seek(id, f); if std::env::var_os("MN_DRAW").is_some() { self.arm(qcv_annotate::Tool::Arrow); } } }
@@ -1622,6 +1684,10 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
+                if let Some((table, col, from, w0, before)) = self.files.col_drag.clone() { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+                    if let Kind::Table { header_rows, mut columns } = before { if columns.len() <= col { columns.resize(col + 1, Default::default()); } columns[col].width = Some((w0 + (position.x - from) / s).round().clamp(48.0, 4000.0) as u32);
+                        let _ = self.ed.doc.set_kind(table, Kind::Table { header_rows, columns }); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+                    return }
                 if self.player.as_ref().is_some_and(|p| p.scrub) { self.video_scrub(position.x); return }
                 if self.files.drawing { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.motion(geo.to_norm(position.x, position.y), &cur, &geo, true)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 if let Some((id, true)) = self.files.pdf.as_ref().map(|x| (x.id, x.drag)) { if let Some(at) = self.pdf_char(id, position.x, position.y) { if let Some(sel) = self.files.pdf.as_mut() { if sel.b != at { sel.b = at; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } } return }
@@ -1703,6 +1769,26 @@ impl ApplicationHandler for App {
                     let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
                     let lane = self.ed.doc.get(id).and_then(|b| b.parent).and_then(|p| self.layout.as_ref().and_then(|l| l.rect(&self.ed.doc, p))).map(|p| p.width()).or(self.layout.as_ref().map(|l| l.width as f64)).unwrap_or(r.width());
                     if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { self.files.resize = Some(Resize { id, before: descriptor, from_x: position.x, width: r.width() / s, max: lane / s, left }); self.set_cursor(); return } } }
+                // the caret's table (row 317): a column's border is dragged to set its width; the row's and the column's handles
+                // open their menus; the strips under and beside it add a row, a column, at the end
+                if state == ElementState::Released { if let Some((table, _, _, _, before)) = self.files.col_drag.take() {
+                    let now = self.ed.doc.get(table).map(|b| b.kind.clone()); let _ = self.ed.doc.set_kind(table, before.clone());
+                    if let Some(new) = now.filter(|n| *n != before) { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(table, new)], t).unwrap_or(Dirty::Nothing); self.apply(d); }
+                    self.layout = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+                if state == ElementState::Pressed { if let Some(ui) = self.table_ui() { let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+                    if position.y >= ui.y.0 && position.y <= ui.y.1 { if let Some((col, _)) = ui.borders.iter().find(|(_, bx)| (bx - position.x).abs() <= 4.0 * s) {
+                        if let (Some(Kind::Table { .. }), Some(l)) = (self.ed.doc.get(ui.table).map(|b| b.kind.clone()), self.layout.as_ref()) { let before = self.ed.doc.get(ui.table).unwrap().kind.clone();
+                            let w = self.ed.doc.children(Some(ui.table)).first().and_then(|r| self.ed.doc.children(Some(*r)).get(*col)).and_then(|c| l.rect(&self.ed.doc, *c)).map(|q| q.width() / s).unwrap_or(160.0);
+                            self.files.col_drag = Some((ui.table, *col, position.x, w, before)); self.set_cursor(); return } } }
+                    if ui.row.contains(pt) { self.table_menu(false, position.x, position.y); return }
+                    if ui.col.contains(pt) { self.table_menu(true, position.x, position.y); return }
+                    if ui.add_row.contains(pt) || ui.add_col.contains(pt) { let column = ui.add_col.contains(pt); let now = self.now_ms();
+                        // the caret goes to the table's last row (its last column) first: the new one follows it
+                        if let Some((table, r, c)) = self.ed.table_pos() { let rows = self.ed.doc.children(Some(table)).to_vec(); let row = if column { rows.get(r) } else { rows.last() }.copied();
+                            let cell = row.and_then(|row| { let cells = self.ed.doc.children(Some(row)); if column { cells.last() } else { cells.get(c).or(cells.last()) }.copied() });
+                            let leaf = cell.and_then(|cell| self.ed.doc.children(Some(cell)).first().copied()); if let Some(leaf) = leaf { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: leaf, at: 0 }))); } }
+                        self.follow = true; let d = self.ed.table_insert(column, true, now).unwrap_or(Dirty::Nothing); self.apply(d); return }
+                } }
                 // the handle: a press and release selects the block; a drag moves the blocks to where the line shows
                 if state == ElementState::Pressed && self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(position.x, position.y))) { self.grab = Some(Grab { from: self.pointer, dragging: false, drop: None, to_note: None }); self.set_cursor(); return }
                 if state == ElementState::Released { if let Some(gr) = self.grab.take() {
