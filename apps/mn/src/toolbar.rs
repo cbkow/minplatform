@@ -93,7 +93,7 @@ impl Toolbar {
                 Tool::Outdent | Tool::Indent => (s.has_note && matches!(k, Some(Kind::Bullet { .. } | Kind::Numbered { .. } | Kind::Task { .. })), false),
                 Tool::Bold => (s.has_note, mark(MarkKind::Bold)), Tool::Italic => (s.has_note, mark(MarkKind::Italic)), Tool::Underline => (s.has_note, mark(MarkKind::Underline)), Tool::Strike => (s.has_note, mark(MarkKind::Strike)),
                 Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Color | Tool::Highlight => (s.has_note, false),
-                Tool::ClearFormat | Tool::Divider => (s.has_note, false),
+                Tool::ClearFormat | Tool::Divider | Tool::Image => (s.has_note, false),
                 _ => (false, false),
             };
             b.enabled = enabled && tool.built(); b.selected = selected && b.enabled;
