@@ -62,7 +62,8 @@ impl Dialog {
     /// Centre in `bounds`; the body wraps to the dialog's width.
     pub fn layout(&mut self, fonts: &mut Fonts, bounds: Rect, scale: f64) {
         let w = t::DIALOG_WIDTH_S as f64 * scale; let pad = t::DIALOG_PADDING as f64 * scale; let gap = t::SPACING_200 as f64 * scale;
-        let title = fonts.layout(&self.title, Family::Sans, t::DIALOG_TITLE_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE);
+        // the title wraps to the dialog's width like the body (a document's name in it can be any length - minNotes, 2026-11-11)
+        let title = fonts.layout_width(&self.title, Family::Sans, t::DIALOG_TITLE_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, peniko::Color::WHITE, Some((w - 2.0 * pad) as f32));
         let body = fonts.layout_width(&self.body, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, peniko::Color::WHITE, Some((w - 2.0 * pad) as f32));
         let bh = t::BUTTON_HEIGHT_M as f64 * scale;   // the dialog's buttons stay size M
         let has_body = !self.body.is_empty();
@@ -93,7 +94,7 @@ impl Dialog {
         for sh in t::POPOVER_SHADOW { scene.draw_blurred_rounded_rect(Affine::translate((sh.x as f64 * scale, sh.y as f64 * scale)), self.rect.inflate(sh.spread as f64 * scale, sh.spread as f64 * scale), paint::color(sh.color), r, (sh.blur as f64 * scale / 2.0).max(0.1)); }
         scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(t::DIALOG_BACKGROUND_COLOR), None, &RoundedRect::from_rect(self.rect, r));
         let pad = t::DIALOG_PADDING as f64 * scale; let gap = t::SPACING_200 as f64 * scale;
-        let title = fonts.layout(&self.title, Family::Sans, t::DIALOG_TITLE_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
+        let title = fonts.layout_width(&self.title, Family::Sans, t::DIALOG_TITLE_SIZE * scale as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), Some((self.rect.width() - 2.0 * pad) as f32));
         crate::fonts::draw_layout(scene, &title, Affine::translate((self.rect.x0 + pad, self.rect.y0 + pad)));
         let body = fonts.layout_width(&self.body, Family::Sans, t::DIALOG_BODY_SIZE * scale as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DIALOG_BODY_COLOR), Some((self.rect.width() - 2.0 * pad) as f32));
         crate::fonts::draw_layout(scene, &body, Affine::translate((self.rect.x0 + pad, self.rect.y0 + pad + title.height() as f64 + gap)));

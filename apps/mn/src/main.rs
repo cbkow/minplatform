@@ -382,7 +382,13 @@ impl App {
         let mut d = min_ui::dialog::Dialog::new(title, body, buttons); d.show();
         self.confirm = Some((what, d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
-    fn doc_name(&self) -> String { self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|s| s.original().file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "this document".into()) }
+    /// The document's file name for a dialog: a very long one is shortened in the middle (its start and its end, with
+    /// the extension, are what tell documents apart); the dialog's title wraps what is left.
+    fn doc_name(&self) -> String {
+        let name = self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|s| s.original().file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "this document".into());
+        let c: Vec<char> = name.chars().collect();
+        if c.len() <= 60 { name } else { format!("{}\u{2026}{}", c[..36].iter().collect::<String>(), c[c.len() - 20..].iter().collect::<String>()) }
+    }
     fn unpublished(&self) -> bool { self.store.as_ref().is_some_and(|st| st.unpublished || st.edited.is_some()) }
     /// The collection is to be closed — for quitting, for another collection, or just closed. With changes that are not
     /// in the document, the Qt app's question is put first.
@@ -978,6 +984,7 @@ impl ApplicationHandler for App {
             // MN_DRAG=x,y (window px): as if the handle were being dragged with the pointer there
             if let Some((x, y)) = std::env::var("MN_DRAG").ok().and_then(|v| { let mut p = v.split(',').map(|n| n.trim().parse::<f64>().ok()); Some((p.next()??, p.next()??)) }) { self.pointer = (x, y); let (nx, ny) = self.note_point(self.pointer); let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, nx, ny)); self.grab = Some(Grab { from: (0.0, 0.0), dragging: true, drop, to_note: None }); }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if std::env::var_os("MN_ASK_CLOSE").is_some() && self.confirm.is_none() && !self.blank && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(st) = self.store.as_mut() { st.unpublished = true; } self.request_close(Pending::Close); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.show_pal.is_some() && self.bar.rect_of(toolbar::Tool::Color).width() > 1.0 { let what = self.show_pal.take().unwrap();
             if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
             if what == "picker" { if let Some(g) = self.gpu.as_mut() { self.pal.show_picker(&mut g.fonts); } }
