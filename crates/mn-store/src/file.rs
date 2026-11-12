@@ -146,6 +146,17 @@ impl Collection {
         self.db.execute("INSERT INTO documents (id, parent, rank, kind, title, created, modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)", params![id.to_string(), parent.map(|p| p.to_string()), rank.as_str(), kind.name(), title, t])?;
         Ok(id)
     }
+    /// One entry of the tree by its id (None: there is none - it was deleted).
+    pub fn entry(&self, id: BlockId) -> Result<Option<Entry>, Error> {
+        Ok(self.db.query_row("SELECT parent, kind, title FROM documents WHERE id = ?1", [id.to_string()], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional()?
+            .map(|(parent, kind, title)| Entry { id, parent: parent.and_then(|p| BlockId::parse(&p)), kind: DocKind::parse(&kind), title }))
+    }
+    /// An entry goes under another parent (None: the top), after what is there.
+    pub fn reparent(&self, id: BlockId, parent: Option<BlockId>) -> Result<(), Error> {
+        let last: Option<String> = self.db.query_row("SELECT rank FROM documents WHERE parent IS ?1 ORDER BY rank DESC LIMIT 1", [parent.map(|p| p.to_string())], |r| r.get(0)).optional()?;
+        let rank = match last.as_deref().and_then(|r| Rank::parse(r).ok()) { Some(r) => r.after(), None => Rank::first() };
+        self.db.execute("UPDATE documents SET parent = ?2, rank = ?3, modified = ?4 WHERE id = ?1", params![id.to_string(), parent.map(|p| p.to_string()), rank.as_str(), now_ms()])?; Ok(())
+    }
     /// A canvas's content (empty for a canvas nothing was put on, and in a file from before canvases had any).
     pub fn load_canvas(&self, canvas: BlockId) -> Result<Canvas, Error> {
         let has: bool = self.db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'canvas_elements'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)?; if !has { return Ok(Canvas::default()) }

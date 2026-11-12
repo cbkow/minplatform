@@ -37,6 +37,8 @@ pub struct Sidebar {
     /// the header: a search field for the collection (shown, not built yet), new note, new folder
     head: ActionGroup, search: Rect, tooltips: Tooltips,
     /// the search field (row 321), and - while something is typed in it - what was found (in place of the tree); `scanning`: notes are still being read
+    /// a note's row opens at the RELEASE, not the press (a canvas is open: the row may be dragged onto it); the row pressed
+    pub defer_open: bool, pub pressed_row: Option<BlockId>,
     pub query: TextField, pub results: Option<Vec<crate::search::Found>>, pub scanning: bool, rhover: Option<(usize, Option<usize>)>,
     hover: Option<usize>, rename: Option<(BlockId, TextField)>, last_down: Option<(Instant, BlockId)>, scale: f64,
 }
@@ -46,16 +48,17 @@ impl Sidebar {
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
         let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("bounding-box", "New canvas"), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
         let mut query = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); query.placeholder = "Search".into();
-        Sidebar { query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
+        Sidebar { defer_open: false, pressed_row: None, query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
     pub fn set_tree(&mut self, col: &Collection) {
         fn walk(col: &Collection, parent: Option<BlockId>, depth: usize, folded: &HashSet<BlockId>, out: &mut Vec<Row>) {
             for e in col.list(parent).unwrap_or_default() {
-                let kids = col.list(Some(e.id)).map(|k| !k.is_empty()).unwrap_or(false);
+                // only a folder shows what is under it (a canvas's own notes are the canvas's: they are not rows)
+                let kids = e.kind == DocKind::Folder && col.list(Some(e.id)).map(|k| !k.is_empty()).unwrap_or(false);
                 // a note without a name of its own is called by its first line (row 290)
                 let (title, named) = if !e.title.is_empty() { (e.title.clone(), true) } else { let t = if e.kind == DocKind::Note { col.first_line(e.id).unwrap_or_default() } else { String::new() }; (if t.is_empty() { "Untitled".to_string() } else { t }, false) };
                 out.push(Row { id: e.id, parent, depth, kind: e.kind, title, named, has_children: kids });
-                if !folded.contains(&e.id) { walk(col, Some(e.id), depth + 1, folded, out); }
+                if e.kind == DocKind::Folder && !folded.contains(&e.id) { walk(col, Some(e.id), depth + 1, folded, out); }
             }
         }
         let mut rows = vec![]; walk(col, None, 0, &self.folded, &mut rows); self.rows = rows;
@@ -151,8 +154,10 @@ impl Sidebar {
                 self.last_down = Some((now, id)); self.selected = Some(id);
                 if double { self.start_rename(id, fonts); return (Act::Redraw, true) }
                 // the row selects; a note is also opened by it
-                match kind { DocKind::Note | DocKind::Canvas => (Act::Open(id), true), _ => (Act::Redraw, true) }
+                match kind { DocKind::Note if self.defer_open => { self.pressed_row = Some(id); (Act::Redraw, true) } DocKind::Note | DocKind::Canvas => (Act::Open(id), true), _ => (Act::Redraw, true) }
             }
+            // a deferred open: the release on the row that was pressed
+            Event::Up { button: Button::Primary, .. } => match (self.pressed_row.take(), at.map(|i| self.rows[i].id)) { (Some(p), Some(id)) if p == id => (Act::Open(id), true), _ => (Act::None, true) },
             _ => (Act::None, true),
         }
     }

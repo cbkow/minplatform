@@ -35,6 +35,10 @@ pub struct Canvas {
     edit: Option<(BlockId, TextArea)>, back: Option<(f64, f64, f64)>,
     /// Space is held (a drag pans), the hand tool is on
     pub space: bool, pub hand: bool, last_click: Option<(Instant, Option<BlockId>)>,
+    /// a note card's content height (the canvas's units), as last drawn: the card is no taller than what it holds
+    fit_h: std::collections::HashMap<BlockId, f64>,
+    /// asked for by a gesture, for the window to do: a note card is to be entered (its text edited in place); a note is to be made at this point of the sheet
+    pub entered: Option<BlockId>, pub want_note: Option<Point>,
     zoom_out: ActionButton, zoom_pc: ActionButton, zoom_in: ActionButton, zoom_fit: ActionButton, b_hand: ActionButton,
 }
 
@@ -45,7 +49,7 @@ impl Canvas {
     pub fn new(id: BlockId, c: mn_store::Canvas) -> Canvas {
         let mut pc = ActionButton::new("", "Zoom to 100 %").size_s(); pc.label = Some("100 %".into());
         Canvas { id, els: c.elements, sel: vec![], cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
-            space: false, hand: false, last_click: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)") }
+            space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)") }
     }
     /// As the collection keeps it.
     pub fn stored(&self) -> mn_store::Canvas { mn_store::Canvas { elements: self.els.clone(), camera: (!self.fit).then_some(self.cam) } }
@@ -61,7 +65,16 @@ impl Canvas {
     fn k(&self) -> f64 { self.cam.2 * self.scale }
     fn to_screen(&self, p: Point) -> Point { let m = self.rect.center(); Point::new(m.x + (p.x - self.cam.0) * self.k(), m.y + (p.y - self.cam.1) * self.k()) }
     pub fn to_world(&self, x: f64, y: f64) -> Point { let m = self.rect.center(); Point::new(self.cam.0 + (x - m.x) / self.k(), self.cam.1 + (y - m.y) / self.k()) }
-    fn on_screen(&self, e: &Element) -> Rect { let a = self.to_screen(Point::new(e.x, e.y)); Rect::new(a.x, a.y, a.x + e.w * self.k(), a.y + e.h * self.k()) }
+    fn on_screen(&self, e: &Element) -> Rect { let a = self.to_screen(Point::new(e.x, e.y)); let h = if e.kind == "note" { self.fit_h.get(&e.id).map(|f| f.min(e.h)).unwrap_or(e.h) } else { e.h }; Rect::new(a.x, a.y, a.x + e.w * self.k(), a.y + h * self.k()) }
+    /// An element's box in the window.
+    pub fn rect_of(&self, id: BlockId) -> Option<Rect> { self.get(id).map(|e| self.on_screen(e)) }
+    /// A note card's content is this tall (the canvas's units).
+    pub fn set_fit(&mut self, id: BlockId, h: f64) { self.fit_h.insert(id, h); }
+    /// The camera goes to a card at 100 %: its top in view, centred across (a note's text is edited at its own size).
+    pub fn focus(&mut self, id: BlockId) { let Some(e) = self.get(id).cloned() else { return }; let (vw, vh) = (self.rect.width() / self.scale, self.rect.height() / self.scale); if self.back.is_none() { self.back = Some(self.cam); }
+        let h = self.fit_h.get(&id).map(|f| f.min(e.h)).unwrap_or(e.h); self.cam = (e.x + e.w / 2.0, if h + 64.0 <= vh { e.y + h / 2.0 } else { e.y - 32.0 + vh / 2.0 }, 1.0); let _ = vw; self.fit = false; self.sel = vec![id]; }
+    /// A note of the collection is put on the canvas as a card, its centre at a window point (None: the view's centre).
+    pub fn add_note(&mut self, note: BlockId, at: Option<(f64, f64)>) -> BlockId { self.edit_end(true); self.step(); let id = self.add("note", note.to_string(), 560.0, 640.0, at, 0); if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { if at.is_some() { e.y += 320.0 - 40.0; } } id }
     fn bounds(&self, ids: Option<&[BlockId]>) -> Option<Rect> { self.els.iter().filter(|e| ids.is_none_or(|i| i.contains(&e.id))).map(|e| Rect::new(e.x, e.y, e.x + e.w, e.y + e.h)).reduce(|a, b| a.union(b)) }
     /// The camera shows `r` (the canvas's units) whole, with a margin.
     fn show(&mut self, r: Rect) { let (w, h) = (self.rect.width() / self.scale, self.rect.height() / self.scale); if w < 1.0 || h < 1.0 { return }
@@ -167,11 +180,11 @@ impl Canvas {
                 let hit = self.at(x, y);
                 let twice = self.last_click.is_some_and(|(t0, h)| h == hit && t0.elapsed().as_millis() < 420); self.last_click = if twice { None } else { Some((now, hit)) };
                 match hit {
-                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), _ => self.open(id) } }
+                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => { self.sel = vec![id]; self.entered = Some(id); } _ => self.open(id) } }
                     Some(id) => { if shift { if let Some(i) = self.sel.iter().position(|s| *s == id) { self.sel.remove(i); } else { self.sel.push(id); } } else if !self.sel.contains(&id) { self.sel = vec![id]; }
                         self.act = Some(Act::Move { from: w, orig: self.els.iter().filter(|e| self.sel.contains(&e.id)).map(|e| (e.id, e.x, e.y)).collect(), moved: false }); }
                     // twice on the empty sheet: a text card there, ready to be typed in
-                    None if twice => { self.step(); let id = self.add("text", String::new(), 260.0, 120.0, Some((x, y)), 0); self.edit_begin(id, fonts); }
+                    None if twice => { self.want_note = Some(w); }
                     None => { if !shift { self.sel.clear(); } self.act = Some(Act::Marquee { from: w, to: w, add: shift }); }
                 }
                 true }
@@ -201,7 +214,7 @@ impl Canvas {
     /// Escape: the words being typed are kept and the field closes; else the camera goes back; else nothing stays selected.
     pub fn escape(&mut self) { if self.edit.is_some() { self.edit_end(true); } else if let Some(c) = self.back.take() { self.cam = c; } else { self.sel.clear(); } self.act = None; }
     /// Return: the one selected card is opened (a text card: typed in).
-    pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some(_) => self.open(id), None => {} } } }
+    pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => self.entered = Some(id), Some(_) => self.open(id), None => {} } } }
     /// A key for the text card being typed in. True: it was the card's.
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> bool {
         let Some((_, f)) = self.edit.as_mut() else { return false };
@@ -212,18 +225,22 @@ impl Canvas {
     // -- the picture
 
     /// Painted into `rect` (window px). True: something is still arriving or moving - draw again.
-    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, rect: Rect, s: f64) -> bool {
+    /// `live`: the note card whose text the window itself draws (it is being edited); `note`: draws a note card's
+    /// content into its box (the box, the units' size on screen, far out) and says how tall the content is (units) and whether to draw again.
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, rect: Rect, s: f64, live: Option<BlockId>, note: &mut dyn FnMut(&mut Scene, &mut Fonts, &mut Media, &Element, Rect, f64, bool) -> (f64, bool)) -> bool {
         let first = self.rect.width() < 1.0; self.rect = rect; self.scale = s; if self.fit && (first || self.act.is_none()) && self.edit.is_none() { self.fit_all(); }
         let now = Instant::now(); let mut again = false; let k = self.k();
         scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
         let (panel, line, text, dim, accent) = (c(t::BACKGROUND_LAYER_2_COLOR), c(t::DIVIDER_COLOR), c(t::NEUTRAL_CONTENT_COLOR_DEFAULT), c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT), c(t::ACCENT_BACKGROUND_COLOR_DEFAULT));
-        let mut order: Vec<usize> = (0..self.els.len()).collect(); order.sort_by_key(|i| self.els[*i].z);
+        let mut order: Vec<usize> = (0..self.els.len()).collect(); order.sort_by_key(|i| self.els[*i].z); let mut fits: Vec<(BlockId, f64)> = vec![];
         for i in order { let e = &self.els[i]; let r = self.on_screen(e); if r.intersect(rect).area() <= 0.0 { continue }
             let far = self.cam.2 < FAR || r.width() < 28.0 * s; let round = RoundedRect::from_rect(r, (6.0 * k).min(8.0 * s));
             let words = |scene: &mut Scene, fonts: &mut Fonts, head: &str, more: &str| { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if far { return }
                 let a = fonts.layout_fit(head, Family::Sans, (13.0 * k).clamp(6.0, 40.0) as f32, 400.0, text, (r.width() - 20.0 * k).max(8.0)); draw_layout(scene, &a, Affine::translate((r.x0 + 10.0 * k, r.y0 + 8.0 * k)));
                 if !more.is_empty() && r.height() > 44.0 * k { let b = fonts.layout_fit(more, Family::Sans, (11.0 * k).clamp(5.0, 34.0) as f32, 400.0, dim, (r.width() - 20.0 * k).max(8.0)); draw_layout(scene, &b, Affine::translate((r.x0 + 10.0 * k, r.y0 + 10.0 * k + a.height() as f64))); } };
             match e.kind.as_str() {
+                "note" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if live == Some(e.id) { continue }
+                    let (h, more) = note(scene, fonts, media, e, r, k, far); again |= more; if h > 0.0 { fits.push((e.id, h)); } }
                 "text" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round);
                     if self.edit.as_ref().is_some_and(|(id, _)| *id == e.id) || far { continue }
                     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &r);
@@ -241,6 +258,7 @@ impl Canvas {
                     } }
             }
         }
+        for (id, h) in fits { self.fit_h.insert(id, h); }
         // the selection: an outline a card, the corners of the one card; the marquee
         for id in &self.sel { if let Some(e) = self.get(*id) { scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &self.on_screen(e).inflate(1.0 * s, 1.0 * s)); } }
         if self.edit.is_none() { if let Some((_, hs)) = self.handles() { for (h, ..) in hs { scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR), None, &h); scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &h); } } }
