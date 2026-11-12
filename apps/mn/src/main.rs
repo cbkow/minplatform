@@ -86,7 +86,12 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { /// the pointer's shape as last set, and whether it is hidden (it hides while text is typed, until it moves)
+struct App { /// MN_BLOCKS: a block selection was made by the app itself, for a screenshot
+    shown_blocks: bool,
+    /// copied blocks, with the plain text that went to the system's clipboard beside them: a paste gives the blocks back while the clipboard still holds that text (row 304; stage E gives them a format of their own)
+    block_clip: Option<(String, mn_edit::Clip)>, /// Control is down (Ctrl+Cmd+Up / Down move blocks)
+    ctrl: bool,
+    /// the pointer's shape as last set, and whether it is hidden (it hides while text is typed, until it moves)
     cursor: winit::cursor::CursorIcon, cursor_hidden: bool,
     /// the colour palette (row 301) and the last Background colour (Shift+Cmd+H applies it)
     pal: colours::Colours, last_bg: String, /// MN_PALETTE=type|background|picker: the palette is opened by the app itself, for a screenshot
@@ -195,11 +200,13 @@ impl App {
             let mut x = (w as f64 - sizes.iter().map(|z| z.0).sum::<f64>() - gap) / 2.0;
             for (b, (bw, bh)) in self.splash.iter_mut().zip(sizes) { b.rect = kurbo::Rect::new(x, y, x + bw, y + bh); b.paint(scene, &mut g.fonts, s, now); x += bw + gap; if b.animating(now) { g.window.request_redraw(); } }
         }
-        for r in self.ed.selection_rects(l) { if self.blank { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
+        let picked = self.ed.block_selection();
+        for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
+        for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
         if !self.blank { paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view); }
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
-        if !self.blank && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
+        if !self.blank && picked.is_empty() && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
@@ -669,7 +676,22 @@ impl App {
         }
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
+        let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
         let dirty = match key {
+            // whole blocks (row 304): Escape selects the caret's block and gives the caret back; Ctrl+Cmd+Up / Down move
+            // the selected blocks (the caret's block when none are); with blocks selected Up / Down step, Shift grows,
+            // Enter returns to the text, Backspace removes, and typing does nothing
+            Key::Named(NamedKey::Escape) => { self.ed.toggle_blocks(); Dirty::Nothing }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if ctrl && cmd => { self.follow = true; self.ed.move_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), now).unwrap_or(Dirty::Nothing) }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if blocks && !cmd && !alt => { self.ed.step_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), shift); self.follow = true; Dirty::Nothing }
+            Key::Named(NamedKey::Enter) if blocks => { self.ed.toggle_blocks(); Dirty::Nothing }
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) if blocks => self.ed.delete_blocks(now).unwrap_or(Dirty::Nothing),
+            Key::Character(c) if blocks && cmd && !shift && matches!(c.to_lowercase().as_str(), "a" | "c" | "x") => {
+                if c.to_lowercase() == "a" { self.ed.select_all_blocks(); Dirty::Nothing } else {
+                    let text = self.ed.selected_text();
+                    if let Some(clip) = self.ed.copy_blocks() { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(text.clone()); } self.block_clip = Some((text, clip)); }
+                    if c.to_lowercase() == "x" { self.ed.delete_blocks(now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } } }
+            Key::Character(_) if blocks && !cmd => return,
             Key::Named(NamedKey::ArrowLeft) => { self.ed.move_caret(l, mv(Move::Left, Move::WordLeft, Move::LineStart), shift); Dirty::Nothing }
             Key::Named(NamedKey::ArrowRight) => { self.ed.move_caret(l, mv(Move::Right, Move::WordRight, Move::LineEnd), shift); Dirty::Nothing }
             Key::Named(NamedKey::ArrowUp) => { self.ed.move_caret(l, mv(Move::Up, Move::Up, Move::DocStart), shift); Dirty::Nothing }
@@ -689,8 +711,12 @@ impl App {
                 "a" => { self.ed.select_all(); Dirty::Nothing }
                 "s" => { self.save(); return }
                 "z" => if shift { self.ed.redo() } else { self.ed.undo() }.unwrap_or(Dirty::Nothing),
-                "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
-                "v" => match self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) { Some(t) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), None => Dirty::Nothing },
+                "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
+                "v" => match self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
+                    // the clipboard still holds what a copy of blocks put there: the blocks come back, after the caret's block
+                    Some(t) if self.block_clip.as_ref().is_some_and(|(text, _)| *text == t) => { let clip = self.block_clip.as_ref().unwrap().1.clone(); self.follow = true;
+                        match self.ed.paste_blocks(&clip, now) { Ok((d, refused)) => { if refused > 0 { eprintln!("paste: {refused} block(s) cannot go there and were left out"); } d } Err(_) => Dirty::Nothing } }
+                    Some(t) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), None => Dirty::Nothing },
                 _ => return,
             },
             // typed text — one key event may carry several characters (a writing tool's correction, the spike S9)
@@ -786,6 +812,7 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        if std::env::var_os("MN_BLOCKS").is_some() && !self.blank && !self.ed.in_blocks() && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(id) = self.ed.doc.walk().iter().find(|b| !b.kind.is_container()).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); } self.ed.toggle_blocks(); self.ed.step_blocks(true, false); self.ed.step_blocks(true, false); self.ed.step_blocks(true, true); self.ed.step_blocks(true, true); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.show_pal.is_some() && self.bar.rect_of(toolbar::Tool::Color).width() > 1.0 { let what = self.show_pal.take().unwrap();
             if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
             if what == "picker" { if let Some(g) = self.gpu.as_mut() { self.pal.show_picker(&mut g.fonts); } }
@@ -830,7 +857,7 @@ impl ApplicationHandler for App {
                 g.window.request_redraw();
             },
             WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
-            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 let taken = !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y });
                 self.set_cursor();
@@ -982,7 +1009,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }

@@ -9,6 +9,8 @@ use kurbo::Rect;
 use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Mark, Rank, Spans};
 
 mod markdown;
+mod blocks;
+pub use blocks::Clip;
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
 
@@ -55,6 +57,9 @@ pub struct Editor {
     /// An input method is composing: its text stands in the block (so it is laid out and drawn in place) but is NOT in
     /// the history — the block as it was is kept here and put back when the composition ends or changes.
     preedit: Option<Preedit>,
+    /// Whole blocks are selected (see `blocks.rs`): the two ends of a run of siblings, as chosen (anchor, focus). The
+    /// text selection spans the run while this holds; any ordinary caret move or edit ends it.
+    blocks: Option<(BlockId, BlockId)>,
 }
 struct Preedit { block: BlockId, at: usize, len: usize, text: String, spans: Spans }
 
@@ -72,9 +77,9 @@ fn next_char(s: &str, at: usize) -> usize { s[at..].chars().next().map(|c| at + 
 fn paragraph(parent: Option<BlockId>, text: &str) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind: Kind::Paragraph, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] } }
 
 impl Editor {
-    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None } }
+    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None } }
     pub fn selection(&self) -> Option<Selection> { self.sel }
-    pub fn set_selection(&mut self, s: Option<Selection>) { self.sel = s.map(|s| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }); self.goal_x = None; self.upstream = false; self.armed.clear(); }
+    pub fn set_selection(&mut self, s: Option<Selection>) { self.sel = s.map(|s| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }); self.goal_x = None; self.upstream = false; self.armed.clear(); self.blocks = None; }
     /// A position made legal: on a character boundary, inside the block, and never inside a chip.
     fn valid(&self, p: Pos) -> Pos {
         let Some(b) = self.doc.get(p.block) else { return p };
@@ -132,11 +137,13 @@ impl Editor {
         if self.preedit.is_some() { return }   // the input method owns the caret until it ends
         let Some((block, at)) = layout.hit(&self.doc, x, y) else { return };
         let p = self.valid(Pos { block, at });
+        self.blocks = None;
         self.sel = Some(match (extend, self.sel) { (true, Some(s)) => Selection { anchor: s.anchor, focus: p }, _ => Selection::caret(p) });
         self.goal_x = None; self.upstream = false; self.armed.clear();
     }
     /// The word under a point (a double click).
     pub fn point_word(&mut self, layout: &NoteLayout, x: f64, y: f64) {
+        self.blocks = None;
         let Some((block, at)) = layout.hit(&self.doc, x, y) else { return };
         let (Some(b), Some(Part::Text { layout: l, .. })) = (self.doc.get(block), layout.get(block).map(|b| &b.part)) else { self.sel = Some(Selection { anchor: Pos { block, at: 0 }, focus: Pos { block, at: 1 } }); return };
         let c = Cursor::from_byte_index(l, at.min(b.text.len()), Affinity::Downstream);
@@ -147,6 +154,7 @@ impl Editor {
 
     // ── moving
     pub fn move_caret(&mut self, layout: &NoteLayout, m: Move, extend: bool) {
+        self.blocks = None;
         if self.preedit.is_some() { return }
         let Some(s) = self.sel else { return };
         self.armed.clear();
@@ -180,6 +188,7 @@ impl Editor {
         if !keep_goal { self.goal_x = None; }
     }
     pub fn select_all(&mut self) {
+        self.blocks = None;
         let l = leaves(&self.doc);
         if let (Some(a), Some(z)) = (l.first(), l.last()) { self.sel = Some(Selection { anchor: Pos { block: *a, at: 0 }, focus: Pos { block: *z, at: end_of(self.doc.get(*z).unwrap()) } }); }
     }
@@ -242,7 +251,7 @@ impl Editor {
         if b.changes.is_empty() { if let Some(p) = after { self.sel = Some(Selection::caret(self.valid(p))); } return Ok(Dirty::Nothing) }
         let structural = b.changes.iter().any(|c| matches!(c, Change::Insert { .. } | Change::Remove { .. } | Change::Move { .. }));
         let mut ids: Vec<BlockId> = b.changes.iter().filter_map(|c| match c { Change::Text { id, .. } | Change::Format { id, .. } | Change::Kind { id, .. } => Some(*id), _ => None }).collect(); ids.dedup();
-        let before = self.sel;
+        let before = self.sel; self.blocks = None;
         let joined = self.history.commit(&mut self.doc, b.changes, now_ms)?;
         self.sel = after.map(|p| Selection::caret(self.valid(p))); self.goal_x = None; self.upstream = false; self.redo_marks.clear();
         if joined { if let Some(m) = self.marks.last_mut() { m.1 = self.sel; } } else { self.marks.push((before, self.sel)); }
@@ -439,11 +448,13 @@ impl Editor {
     pub fn undo(&mut self) -> Result<Dirty, ChangeError> {
         if self.end_preedit().is_some() { return Ok(Dirty::Structure) }
         if !self.history.undo(&mut self.doc)? { return Ok(Dirty::Nothing) }
+        self.blocks = None;
         let m = self.marks.pop().unwrap_or((None, None)); self.sel = m.0.and_then(|s| self.live(s)); self.redo_marks.push(m); self.goal_x = None; Ok(Dirty::Structure)
     }
     pub fn redo(&mut self) -> Result<Dirty, ChangeError> {
         if self.end_preedit().is_some() { return Ok(Dirty::Structure) }
         if !self.history.redo(&mut self.doc)? { return Ok(Dirty::Nothing) }
+        self.blocks = None;
         let m = self.redo_marks.pop().unwrap_or((None, None)); self.sel = m.1.and_then(|s| self.live(s)); self.marks.push(m); self.goal_x = None; Ok(Dirty::Structure)
     }
     fn live(&self, s: Selection) -> Option<Selection> { (self.doc.get(s.anchor.block).is_some() && self.doc.get(s.focus.block).is_some()).then(|| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }) }
@@ -697,5 +708,39 @@ mod tests {
         e.set_selection(Some(Selection { anchor: Pos { block: b, at: 13 }, focus: Pos { block: b, at: 13 } }));
         e.set_colour(MarkKind::Color, Some("blue"), 6000).unwrap(); assert_eq!(e.state().color.as_deref(), Some("blue"));
         e.insert("!", 6001).unwrap(); assert!(e.doc.get(b).unwrap().spans.covers(13, 14, &Mark::Color("blue".into())));
+    }
+    #[test]
+    fn whole_blocks_are_selected_moved_with_their_children_cut_and_pasted() {
+        let mut d = Doc::new();
+        let ids: Vec<BlockId> = [(Kind::Paragraph, "intro"), (Kind::Bullet { depth: 0 }, "A"), (Kind::Bullet { depth: 1 }, "a1"), (Kind::Bullet { depth: 1 }, "a2"), (Kind::Bullet { depth: 0 }, "B"), (Kind::Bullet { depth: 1 }, "b1"), (Kind::Paragraph, "end")]
+            .into_iter().map(|(k, t)| add(&mut d, None, k, t)).collect();
+        let mut e = Editor::new(d);
+        let order = |e: &Editor| e.doc.children(None).iter().map(|id| e.doc.get(*id).unwrap().text.clone()).collect::<Vec<_>>().join(" ");
+        // Escape on "A": the item and its children are the selection; the text selection spans them
+        e.set_selection(Some(Selection::caret(Pos { block: ids[1], at: 0 })));
+        assert!(e.toggle_blocks()); assert_eq!(e.block_selection(), vec![ids[1], ids[2], ids[3]]); assert_eq!(e.selected_text(), "A\na1\na2");
+        // down: A with its children steps over B WITH b1, as one undo step
+        e.move_blocks(true, 1000).unwrap(); assert_eq!(order(&e), "intro B b1 A a1 a2 end"); assert!(e.in_blocks());
+        e.undo().unwrap(); assert_eq!(order(&e), "intro A a1 a2 B b1 end");
+        // a child moves among its parent's children, and down past the last becomes the next item's first child
+        e.set_selection(Some(Selection::caret(Pos { block: ids[2], at: 1 })));
+        e.move_blocks(true, 3000).unwrap(); assert_eq!(order(&e), "intro A a2 a1 B b1 end");
+        assert_eq!(e.selection().unwrap().focus, Pos { block: ids[2], at: 1 }, "a caret stays in its block");
+        e.move_blocks(true, 5000).unwrap(); assert_eq!(order(&e), "intro A a2 B a1 b1 end");
+        // up: "end" steps over B and its children, not in between them
+        e.set_selection(Some(Selection::caret(Pos { block: ids[6], at: 0 })));
+        e.move_blocks(false, 7000).unwrap(); assert_eq!(order(&e), "intro A a2 end B a1 b1");
+        // Shift+Down grows the selection by whole units; cut = copy + delete in one step; paste gives fresh identities
+        e.set_selection(Some(Selection::caret(Pos { block: ids[1], at: 0 }))); e.toggle_blocks(); e.step_blocks(true, true);
+        assert_eq!(e.block_selection(), vec![ids[1], ids[3], ids[6]]);
+        let clip = e.copy_blocks().unwrap(); assert_eq!(clip.len(), 3);
+        e.delete_blocks(9000).unwrap(); assert_eq!(order(&e), "intro B a1 b1"); assert_eq!(e.selection().unwrap().focus, Pos { block: ids[4], at: 0 });
+        e.set_selection(Some(Selection::caret(Pos { block: ids[0], at: 2 })));
+        let (_, refused) = e.paste_blocks(&clip, 11000).unwrap(); assert_eq!(refused, 0);
+        assert_eq!(order(&e), "intro A a2 end B a1 b1"); assert_eq!(e.block_selection().len(), 3);
+        assert!(e.block_selection().iter().all(|id| !ids.contains(id)), "pasted blocks are new blocks");
+        e.undo().unwrap(); assert_eq!(order(&e), "intro B a1 b1");
+        // Escape again: back to a caret
+        e.set_selection(Some(Selection::caret(Pos { block: ids[0], at: 2 }))); assert!(e.toggle_blocks()); assert!(!e.toggle_blocks()); assert!(e.selection().unwrap().is_caret());
     }
 }
