@@ -83,10 +83,14 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
 enum Paste { Rich, Plain, Markdown }
 /// A picture being resized by a corner (row 312): its record before, where the pointer took hold, and the width then.
 struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, left: bool }
+/// The ONE video that plays (rows 287, 316): its block, the family's player open on its file, whether its line is being
+/// dragged, whether a frame of it has reached the presenter (until then its poster stays), and until when frames are
+/// drawn although it does not play (a seek's picture arrives a little after it was asked).
+struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool, awake: Instant }
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
-struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
+struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
 /// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
@@ -150,7 +154,9 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
     blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
     after_close: Option<Pending>, /// the pictures of the page (decoded off this thread)
-    media: media::Media, /// the colour stage of videos' stills
+    media: media::Media, /// the video that plays, if one does
+    player: Option<Player>, /// the decoder's hardware device (asked for once)
+    hw: Option<Option<qcv_player::HwDevice>>, /// the colour stage of videos' stills
     poster: video::Poster, files: Files, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
     told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
@@ -231,8 +237,28 @@ impl App {
         self.last_scroll = self.scroll;
         let view = Rect::new(0.0, 0.0, w as f64, h as f64);
         let off = kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll);
+        // the video that plays (rows 287, 316): the player is asked for the frame that is due and the presenter shows it
+        // UNDER this layer, where the page is left open; a block that left the view (or the note) stops being the one
+        let (mut hole, mut live): (Option<Rect>, Option<(BlockId, i32, bool, bool)>) = (None, None);
+        if let Some(p) = self.player.as_mut() {
+            let pic = self.ed.doc.get(p.id).filter(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).and_then(|_| l.rect(&self.ed.doc, p.id)).map(|r| r + off).map(|r| Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::VIDEO_STRIP as f64 * s));
+            match pic.filter(|r| !self.blank && r.y1 > self.top && r.y0 < h as f64 - self.bottom) {
+                None => self.files.vstop = true,
+                Some(r) => {
+                    match p.t.tick(now) { Some(f) => { if g.presenter.engine.show(&f.frame).is_ok() { p.shown = true; } } None => p.t.idle_refresh() }
+                    g.presenter.engine.set_place(Some([r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32]));
+                    if p.shown { hole = Some(r); }
+                    live = Some((p.id, p.t.current_frame(), p.t.is_playing(), p.shown));
+                    if p.t.is_playing() || p.scrub || !p.shown || now < p.awake { g.window.request_redraw(); }
+                }
+            }
+        }
         let scene = g.ui.scene_mut(); scene.reset();
-        scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &view);
+        // the page's ground, left open where the video plays
+        match hole.map(|r| r.intersect(view)).filter(|r| r.width() > 0.0 && r.height() > 0.0) {
+            None => scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &view),
+            Some(r) => for part in [Rect::new(view.x0, view.y0, view.x1, r.y0), Rect::new(view.x0, r.y1, view.x1, view.y1), Rect::new(view.x0, r.y0, r.x0, r.y1), Rect::new(r.x1, r.y0, view.x1, r.y1)] { if part.width() > 0.0 && part.height() > 0.0 { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &part); } },
+        }
         if self.blank {
             // no collection: the window says what to do (the theme's subdued text, centred)
             let lines = [("No collection is open", 18.0, paint::text()), (if cfg!(target_os = "macos") { "New Collection\u{2026} (\u{2325}\u{2318}N) or Open\u{2026} (\u{2318}O)" } else { "New Collection\u{2026} (Ctrl+Alt+N) or Open\u{2026} (Ctrl+O)" }, 13.0, paint::subdued())];
@@ -249,7 +275,7 @@ impl App {
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
         { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
         let mut turned = vec![];
-        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, off.x, off.y, view) { g.window.request_redraw(); }
+        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, live, off.x, off.y, view) { g.window.request_redraw(); }
         // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
         for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
         // text selected on a PDF's page: washed over where it is
@@ -708,6 +734,75 @@ impl App {
             }
         }
     }
+    /// A video block's boxes in the window: its picture, its strip, and its record.
+    fn video_boxes(&self, id: BlockId) -> Option<(BlockId, Rect, Rect, String)> {
+        let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) else { return None };
+        if serde_json::from_str::<serde_json::Value>(descriptor).ok()?.get("kind").and_then(|k| k.as_str()) != Some("video") { return None }
+        let r = l.rect(&self.ed.doc, id)? + kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll); let cut = r.y1 - mn_layout::VIDEO_STRIP as f64 * s;
+        Some((id, Rect::new(r.x0, r.y0, r.x1, cut), Rect::new(r.x0, cut, r.x1, r.y1), descriptor.clone()))
+    }
+    fn video_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
+        if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
+        self.video_boxes(id)
+    }
+    /// The frame a video block stands on goes into its record (not a step of the history).
+    fn video_keep(&mut self, id: BlockId, frame: i32) {
+        let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) else { return };
+        let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) else { return };
+        if v.get("frame").and_then(|f| f.as_i64()).unwrap_or(0) == frame as i64 { return }
+        v.insert("frame".into(), serde_json::json!(frame));
+        let _ = self.ed.doc.set_kind(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() });
+        if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
+    }
+    /// The playing video stops being the playing one: its block keeps the frame it stood on and shows a poster again.
+    fn video_stop(&mut self) {
+        let Some(p) = self.player.take() else { return };
+        let (id, frame) = (p.id, p.t.current_frame()); drop(p);
+        self.video_keep(id, frame);
+        if let Some(g) = self.gpu.as_mut() { g.presenter.engine.clear_picture(); g.presenter.engine.set_place(None); g.window.request_redraw(); }
+    }
+    /// A video block becomes the one that plays: the player opens on its file at the frame the block stands on. Any
+    /// other stops first (one plays at a time). False: the file could not be opened (said in the footer).
+    fn video_start(&mut self, id: BlockId, play: bool) -> bool {
+        if self.player.as_ref().is_some_and(|p| p.id == id) { return true }
+        self.video_stop();
+        let Some((_, _, _, d)) = self.video_boxes(id) else { return false };
+        let frame = serde_json::from_str::<serde_json::Value>(&d).ok().and_then(|v| v.get("frame").and_then(|f| f.as_i64())).unwrap_or(0) as i32;
+        let until = Instant::now() + std::time::Duration::from_secs(6);
+        let Some(path) = self.media.locate(&d).filter(|p| p.is_file()) else { self.notice = Some(("The video's file was not found".into(), until)); return false };
+        let Some(g) = self.gpu.as_ref() else { return false };
+        let hw = self.hw.get_or_insert_with(|| { #[cfg(windows)] let dev = g.presenter.engine.dx12_device_raw(); #[cfg(not(windows))] let dev = None; qcv_player::HwDevice::platform(dev) }).clone();
+        let opts = qcv_player::TransportOptions { hw, loop_enabled: true, scrub: Some(qcv_player::ScrubOptions { budget_bytes: 256 << 20, ..Default::default() }), uploader: Some(g.presenter.engine.uploader()), ..Default::default() };
+        match qcv_player::Transport::open(&qcv_player::Source::from_path(&path.to_string_lossy(), None), opts) {
+            Ok(mut t) => {
+                if std::env::var_os("MN_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => t.set_audio(Box::new(a)), Err(e) => eprintln!("video: no sound ({e})") } }
+                if frame > 0 { t.seek_to_frame(frame); }
+                if play { t.play(); }
+                self.player = Some(Player { id, t, scrub: false, shown: false, awake: Instant::now() + std::time::Duration::from_millis(800) });
+                g.window.request_redraw(); true
+            }
+            Err(e) => { self.notice = Some((format!("The video could not be opened \u{2014} {e}"), until)); false }
+        }
+    }
+    /// Play or pause a video block (it becomes the playing one when it is not).
+    fn video_toggle(&mut self, id: BlockId) {
+       
+        if self.player.as_ref().is_none_or(|p| p.id != id) { self.video_start(id, true); return }
+        let mut keep = None;
+        if let Some(p) = self.player.as_mut() { if p.t.is_playing() { p.t.pause(); keep = Some(p.t.current_frame()); } else { p.t.play(); } p.awake = Instant::now() + std::time::Duration::from_millis(800); }
+        if let Some(f) = keep { self.video_keep(id, f); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The playing video's line is dragged to a window x.
+    fn video_scrub(&mut self, x: f64) {
+       
+        let Some(id) = self.player.as_ref().map(|p| p.id) else { return }; let Some((_, _, strip, _)) = self.video_boxes(id) else { return };
+        let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s);
+        if let Some(p) = self.player.as_mut() { let n = p.t.frame_count().max(1); let f = (((x - track.x0) / track.width().max(1.0)).clamp(0.0, 1.0) * (n - 1) as f64).round() as i32; p.t.scrub_to_frame(f); p.awake = Instant::now() + std::time::Duration::from_millis(800); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
     /// The PDF block under a window point: its id, its page's box and its strip's box in the window, and its record.
     fn pdf_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
         if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
@@ -996,6 +1091,8 @@ impl App {
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
+        // Space with a video block current plays / pauses it in place (row 316)
+        if matches!(key, Key::Character(c) if c == " ") && !cmd && !alt && self.ed.run_len() == 1 { if let Some(id) = self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some()) { self.video_toggle(id); return } }
         // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
         if let Some(sel) = &self.files.pdf {
             match key { Key::Character(c) if cmd && !shift && c.to_lowercase() == "c" => { if let Some(t) = self.pdf_boxes(sel.id).and_then(|b| self.media.page_text(&b.3)) { let words = t.words(sel.a, sel.b); if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(words); } self.block_clip = None; } return }
@@ -1182,10 +1279,12 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
+            // MN_PLAY=1: the note's first video block plays (as a click on it would)
+            if std::env::var_os("MN_PLAY").is_some() { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { let ok = self.video_start(id, true); println!("play: started {ok}"); } }
             // MN_RESIZE=<width>: the note's first picture is made current and resized to that width as a corner drag would (one undo step), then undone and redone
             if let Some(w) = std::env::var("MN_RESIZE").ok().and_then(|v| v.parse::<f64>().ok()) { use mn_edit::{Pos, Selection};
                 if let Some((id, before)) = self.ed.doc.walk().iter().find_map(|b| match &b.kind { Kind::Media { descriptor } if !descriptor.contains("\"kind\"") => Some((b.id, descriptor.clone())), _ => None }) {
@@ -1225,6 +1324,7 @@ impl ApplicationHandler for App {
           if self.media.poll(&mut |px, meta| poster.convert(dev.as_ref().map(|d| (&d.0, &d.1)), px, meta)) { if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         for m in self.media.mail() { self.media_mail(m); }
         if let Some(id) = self.files.pdf_test { if let Some(t) = self.pdf_boxes(id).and_then(|b| self.media.page_text(&b.3)) { self.files.pdf_test = None; if !t.chars.is_empty() { println!("pdf: {} characters on the page, {} of text in words", t.chars.len(), t.words(0, t.chars.len() - 1).len()); self.files.pdf = Some(PdfSel { id, a: 0, b: t.chars.len() - 1, drag: false }); } else { println!("pdf: no text on the page"); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if std::mem::take(&mut self.files.vstop) { self.video_stop(); }
         if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
@@ -1293,6 +1393,7 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
+                if self.player.as_ref().is_some_and(|p| p.scrub) { self.video_scrub(position.x); return }
                 if let Some((id, true)) = self.files.pdf.as_ref().map(|x| (x.id, x.drag)) { if let Some(at) = self.pdf_char(id, position.x, position.y) { if let Some(sel) = self.files.pdf.as_mut() { if sel.b != at { sel.b = at; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } } return }
                 // the handle is held: past a few pixels it is a drag, and the place the blocks would land follows the pointer
                 if self.grab.is_some() {
@@ -1318,6 +1419,14 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
+                // a video block (row 316): a click on its picture or its play button plays / pauses; its line is dragged to scrub
+                if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
+                if state == ElementState::Pressed { if let Some((id, pic, strip, _)) = self.video_under(position.x, position.y) {
+                    let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
+                    let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s);
+                    if pic.contains(pt) { self.video_toggle(id); return }
+                    if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(position.x); } return }
+                    if strip.contains(pt) { self.video_toggle(id); return } } }
                 // a PDF block (row 315): its strip turns the page; a drag on its page selects text
                 if state == ElementState::Released { if let Some(sel) = self.files.pdf.as_mut().filter(|x| x.drag) { sel.drag = false; if sel.a == sel.b { self.files.pdf = None; } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if state == ElementState::Pressed { let had = self.files.pdf.take().is_some();
@@ -1521,7 +1630,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives

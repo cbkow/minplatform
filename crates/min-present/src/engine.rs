@@ -193,6 +193,9 @@ pub struct Engine {
     video: (u32, u32), viewport: (u32, u32), display: DisplayMode, base: Option<Base>,
     /// Where the video fits inside the viewport (physical px; `None` = the whole viewport): the shell's bands take the rest.
     content: Option<(u32, u32, u32, u32)>,
+    /// the picture's place when the host puts it itself (a block of a scrolled page): a rectangle in surface px that may
+    /// lie partly or wholly OUTSIDE the surface - the surface's edge cuts it; None = the content rectangle's fit
+    place: Option<[f32; 4]>,
     planar_tex: Vec<wgpu::Texture>,
     shown: Option<Shown>, held: VecDeque<Held>, /// uploaded-ahead planes recently bound (kept while the GPU may still sample them)
     gpu_held: VecDeque<std::sync::Arc<crate::frame::GpuPlanes>>, /// the CPU plane textures are what `shown` binds
@@ -258,6 +261,15 @@ pub fn fit_in(video: (u32, u32), viewport: (u32, u32), content: Option<(u32, u32
     (scale, off)
 }
 
+/// [`fit_in`] for a rectangle given in signed, fractional surface px (it may lie outside the surface).
+pub fn fit_in_place(video: (u32, u32), viewport: (u32, u32), place: [f32; 4]) -> ([f32; 2], [f32; 2]) {
+    let (vw, vh) = (video.0.max(1) as f32, video.1.max(1) as f32);
+    let (ww, wh) = (viewport.0.max(1) as f32, viewport.1.max(1) as f32);
+    let (cx, cy, cw, ch) = (place[0], place[1], place[2].max(1.0), place[3].max(1.0));
+    let s = if vw / vh > cw / ch { [1.0, (cw / ch) / (vw / vh)] } else { [(vw / vh) / (cw / ch), 1.0] };
+    ([s[0] * cw / ww, s[1] * ch / wh], [(cx + cw / 2.0) / ww * 2.0 - 1.0, 1.0 - (cy + ch / 2.0) / wh * 2.0])
+}
+
 /// The features the presenter wants when it can have them: 16-bit norm planes, f32-filterable LUTs (stage 2), timestamps, passthrough shaders (OCIO).
 pub(crate) fn wanted_features() -> wgpu::Features { wgpu::Features::TEXTURE_FORMAT_16BIT_NORM | wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::PASSTHROUGH_SHADERS }
 pub(crate) fn request(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), Error> {
@@ -310,7 +322,7 @@ impl Engine {
         if let Ok(env) = std::env::var("QCV_BOUNDS_MIX") { let parts: Vec<f32> = env.split(',').filter_map(|p| p.trim().parse().ok()).map(|v: f32| v.clamp(0.0, 1.0)).collect(); if parts.len() == 1 { bg_mix = [parts[0]; 4]; } else { for (i, v) in parts.iter().take(4).enumerate() { bg_mix[i] = *v; } } log::info!("background: QCV_BOUNDS_MIX override → {bg_mix:?}"); }
         let imports = Imports::new(&device, &queue);
         let e = Engine { device, queue, target_format, sampler, layouts, blit_layout, targets, inters, blit_target, ubufs, blit_ubuf, overlay_pipeline, overlay_ubuf, overlay: None, bg_pipeline, bg_ubuf, bg_bind, bg_mode: 0, bg_mix, ui_scale: 1.0, aids: ViewerAids::default(), video_emu: false, out_gain: 1.0, scope: None, scope_view: None, side_tints: ([0.30, 0.85, 1.0], [1.0, 0.62, 0.25]), dual: None, geometry: Geometry::default(), transfer_override: TransferChoice::Auto,
-            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, last_shown_at: None, standalone: false };
+            video: (0, 0), viewport: (1, 1), display: DisplayMode::default(), base: None, content: None, place: None, planar_tex: vec![], shown: None, held: VecDeque::new(), gpu_held: VecDeque::new(), planar_bound: false, color_pass: None, inter: None, imports, imports_n: 0, last_show_ms: 0.0, frames_shown: 0, last_shown_at: None, standalone: false };
         e.write_overlay_uniform(); e.write_bg_uniform();
         e
     }
@@ -344,6 +356,11 @@ impl Engine {
         self.dual = Some(d);
     }
     pub fn content_rect(&self) -> Option<(u32, u32, u32, u32)> { self.content }
+    /// The picture is placed by the host: letterbox-fitted in `r` = (x, y, w, h) surface px, where x and y may be negative
+    /// and the rectangle may reach past the surface (minNotes: a video block of a page that scrolls - a block partly out
+    /// of view is CUT by the surface's edge, where a content rectangle clamped to the surface would shrink the picture).
+    /// None gives the placing back to the content rectangle. QCView does not use it.
+    pub fn set_place(&mut self, r: Option<[f32; 4]>) { if self.place != r { self.place = r; self.write_uniforms(); } }
     pub fn video_size(&self) -> (u32, u32) { self.video }
     pub fn set_display(&mut self, d: DisplayMode) { self.display = d; self.write_uniforms(); self.relayout_dual(); }
     pub fn display(&self) -> DisplayMode { self.display }
@@ -625,8 +642,8 @@ impl Engine {
         let changed = self.base != Some(b);
         if changed { self.base = Some(b); self.write_uniforms(); }
     }
-    fn fit(&self) -> [f32; 2] { fit_in(self.display_dims(), self.viewport, self.content).0 }
-    fn offset(&self) -> [f32; 2] { fit_in(self.display_dims(), self.viewport, self.content).1 }
+    fn fit(&self) -> [f32; 2] { match self.place { Some(p) => fit_in_place(self.display_dims(), self.viewport, p).0, None => fit_in(self.display_dims(), self.viewport, self.content).0 } }
+    fn offset(&self) -> [f32; 2] { match self.place { Some(p) => fit_in_place(self.display_dims(), self.viewport, p).1, None => fit_in(self.display_dims(), self.viewport, self.content).1 } }
     fn write_uniforms(&self) {
         self.write_overlay_uniform(); self.write_bg_uniform();
         let Some(b) = self.base else { return };
@@ -971,6 +988,15 @@ mod tests {
         e.set_scope(None); e.set_viewer_aids(ViewerAids::default());
     }
 
+    #[test]
+    fn a_place_outside_the_surface_keeps_the_pictures_size() {
+        // the same rectangle as a content rect gives the same fit
+        assert_eq!(fit_in_place((1920, 1080), (1000, 800), [100.0, 50.0, 640.0, 360.0]), fit_in((1920, 1080), (1000, 800), Some((100, 50, 640, 360))));
+        // scrolled half out of the top: the same size, its centre above the middle of where it was - nothing is rescaled
+        let (inside, o1) = fit_in_place((1920, 1080), (1000, 800), [100.0, 50.0, 640.0, 360.0]);
+        let (out, o2) = fit_in_place((1920, 1080), (1000, 800), [100.0, -180.0, 640.0, 360.0]);
+        assert_eq!(inside, out); assert_eq!(o1[0], o2[0]); assert!((o2[1] - 1.0).abs() < 1e-6, "its centre is on the surface's top edge: {o2:?}");
+    }
     #[test]
     fn fit_in_places_the_video_inside_the_content_rect() {
         let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;

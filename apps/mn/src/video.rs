@@ -30,6 +30,10 @@ pub fn still(path: &Path, frame: i32, max: u32) -> Result<(ThumbPixels, ColorMet
 /// A length as a poster's badge shows it: `0:08`, `12:40`, `1:02:03`.
 pub fn length(dur_ms: f64) -> String { let s = (dur_ms / 1000.0).round().max(0.0) as u64; if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) } }
 
+/// A frame as the counter shows it: HH:MM:SS:FF, never drop-frame, at the rate rounded to whole frames, counted from
+/// the file's first frame (QCView's note key and the Qt app's counter).
+pub fn timecode(frame: i64, fps: f64) -> String { let r = (fps.round() as i64).max(1); let f = frame.max(0); let s = f / r; format!("{:02}:{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60, f % r) }
+
 /// The poster's colour stage, on the window's thread (it draws on the GPU and reads back: once per poster).
 #[derive(Default)]
 pub struct Poster { engine: Option<Engine> }
@@ -63,6 +67,7 @@ mod tests {
     #[test]
     fn extensions_and_lengths() {
         assert!(is_video(Path::new("/a/Shot.MOV")) && is_video(Path::new("b.mp4")) && !is_video(Path::new("c.gif")) && !is_video(Path::new("d.pdf")));
+        assert_eq!(timecode(0, 23.976), "00:00:00:00"); assert_eq!(timecode(49, 23.976), "00:00:02:01"); assert_eq!(timecode(90_000, 25.0), "01:00:00:00");
         assert_eq!(length(8342.0), "0:08"); assert_eq!(length(760_000.0), "12:40"); assert_eq!(length(3_723_000.0), "1:02:03");
         assert!(probe(Path::new("/nowhere/at/all.mov")).is_err());
     }

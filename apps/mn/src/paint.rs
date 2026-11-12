@@ -29,6 +29,12 @@ fn conflict() -> Color { c(t::NOTICE_VISUAL_COLOR) }
 
 fn fill(scene: &mut Scene, r: Rect, c: Color) { scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r); }
 
+/// The parts of a video block's strip: the play button's box and the line to scrub on (the counter sits between).
+pub fn video_strip(strip: Rect, s: f64) -> (Rect, Rect) {
+    let play = Rect::new(strip.x0, strip.y0, strip.x0 + 34.0 * s, strip.y1); let x0 = strip.x0 + 34.0 * s + 96.0 * s;
+    (play, Rect::new(x0.min(strip.x1 - 12.0 * s), strip.center().y - s, strip.x1 - 12.0 * s, strip.center().y + s))
+}
+
 /// A long path keeps its two ends (the file's name is at the far one).
 fn middle(t: &str, max: usize) -> String {
     let n = t.chars().count(); if n <= max || max < 8 { return t.to_string() }
@@ -53,7 +59,7 @@ fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
 
 /// Paints the note with its top-left at (`ox`, `oy`) physical px; blocks wholly outside `view` are skipped. True: a
 /// picture is still fading in - another frame is wanted.
-pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, ox: f64, oy: f64, view: Rect) -> bool {
+pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, live: Option<(BlockId, i32, bool, bool)>, ox: f64, oy: f64, view: Rect) -> bool {
     let s = layout.scale as f64; let st = layout.style.clone(); let mut animating = false;
     for b in doc.walk() {
         let Some(r) = layout.rect(doc, b.id) else { continue };
@@ -66,7 +72,23 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                 // a PDF: its page, and under it a strip with the page's number among the pages, previous and next
                 let rec: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
                 let pdf = rec.get("kind").and_then(|k| k.as_str()) == Some("pdf");
-                let whole = r; let r = if pdf { Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::PDF_STRIP as f64 * s) } else { r };
+                let video = rec.get("kind").and_then(|k| k.as_str()) == Some("video");
+                let whole = r; let r = if pdf { Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::PDF_STRIP as f64 * s) } else if video { Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::VIDEO_STRIP as f64 * s) } else { r };
+                // a video: under its picture a strip - play or pause, the frame it stands on as a timecode, the line to scrub
+                // on. The video that is PLAYING is not painted here: the presenter shows it under this layer, through the
+                // place left open (row 287); its strip follows the player
+                let me = live.filter(|x| x.0 == b.id);
+                if video {
+                    let (frames, fps) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0));
+                    let (at, playing) = match me { Some((_, f, p, _)) => (f as i64, p), None => (rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0), false) };
+                    let strip = Rect::new(whole.x0, r.y1, whole.x1, whole.y1); let (play, track) = video_strip(strip, s);
+                    if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
+                    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Sans, (12.0 * s) as f32, 400.0, dim()); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
+                    if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
+                        fill(scene, track, line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
+                        scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
+                }
+                if me.is_some_and(|x| x.3) { continue }
                 if pdf {
                     let (page, pages) = (rec.get("page").and_then(|p| p.as_u64()).unwrap_or(0) + 1, rec.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).max(1));
                     let t = fonts.layout(&format!("{} / {pages}", page.min(pages)), Family::Sans, (12.0 * s) as f32, 400.0, dim()); let (cx, cy) = (whole.center().x, (r.y1 + whole.y1) / 2.0);

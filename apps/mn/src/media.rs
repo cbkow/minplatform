@@ -141,6 +141,8 @@ impl Media {
             let _ = tx.send(Mail::Relinked { records, problem }); wake();
         });
     }
+    /// Where a block's file is on this machine (None: its record names none that can be looked for).
+    pub fn locate(&self, descriptor: &str) -> Option<PathBuf> { let v: serde_json::Value = serde_json::from_str(descriptor).ok()?; self.places.locate(v.get("src")?).ok() }
     /// The characters of the page a PDF block shows, once its page has been drawn (None: not yet, or none to read).
     pub fn page_text(&self, descriptor: &str) -> Option<Arc<crate::pdf::PageText>> {
         let v: serde_json::Value = serde_json::from_str(descriptor).ok()?;
