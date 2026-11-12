@@ -63,7 +63,13 @@ pub enum Mail {
     Relinked { records: Vec<(mn_doc::BlockId, String)>, problem: Option<String> },
 }
 
+/// What is known of a file chip's file (row 320): where it is (None: its place cannot be worked out), whether it is there, its size, a folder.
+#[derive(Clone, Debug, Default)]
+pub struct FileState { pub path: Option<PathBuf>, pub found: bool, pub size: Option<u64>, pub dir: bool }
+
 pub struct Media {
+    /// file chips' files, looked at again every few seconds
+    files: HashMap<String, (std::time::Instant, FileState)>,
     entries: HashMap<String, Entry>, queue: Arc<Queue>, done: mpsc::Receiver<(String, u32, Outcome)>,
     places: Places, budget: usize, total: usize, frame: u64,
     mail_tx: mpsc::Sender<Mail>, mail: mpsc::Receiver<Mail>, wake: Arc<dyn Fn() + Send + Sync>,
@@ -93,7 +99,7 @@ impl Media {
         }
         let mappings = std::fs::read_to_string(settings.join("mappings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let budget = std::env::var("MN_MEDIA_BUDGET_MB").ok().and_then(|v| v.parse::<usize>().ok()).map(|mb| mb << 20).unwrap_or(BUDGET);
-        Media { entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake, notes: HashMap::new(), notes_tx: ntx, notes_rx: nrx, fetching: HashMap::new(), fetch_tx: ftx, fetched: frx, again: Default::default(), slots: Arc::new((Mutex::new(0), Condvar::new())) }
+        Media { files: HashMap::new(), entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake, notes: HashMap::new(), notes_tx: ntx, notes_rx: nrx, fetching: HashMap::new(), fetch_tx: ftx, fetched: frx, again: Default::default(), slots: Arc::new((Mutex::new(0), Condvar::new())) }
     }
     /// The folder the collection's file is in (`.minnotes/` is beside it) and where this session keeps added files
     /// until a save. A change of folder forgets every picture.
@@ -208,6 +214,20 @@ impl Media {
             { *slots.0.lock().unwrap() -= 1; slots.1.notify_one(); }
             let _ = tx.send((src, got)); wake();
         });
+    }
+    /// A file chip's file: looked for on disk at most every four seconds.
+    pub fn file_state(&mut self, descriptor: &str) -> FileState {
+        let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default(); let Some(src) = v.get("src") else { return FileState::default() }; let key = src.to_string();
+        if let Some((t, st)) = self.files.get(&key) { if t.elapsed().as_secs() < 4 { return st.clone() } }
+        let path = self.places.locate(src).ok(); let meta = path.as_ref().and_then(|p| std::fs::metadata(p).ok());
+        let st = FileState { found: meta.is_some(), size: meta.as_ref().filter(|m| m.is_file()).map(|m| m.len()), dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(v.get("dir").and_then(|d| d.as_bool()).unwrap_or(false)), path };
+        self.files.insert(key, (std::time::Instant::now(), st.clone())); st
+    }
+    /// The record of a file chip that points at `path` (a chip located again).
+    pub fn file_record(&self, path: &Path) -> String {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut v = serde_json::json!({ "kind": "file", "src": self.places.reference(path), "name": name, "ext": path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default() });
+        if path.is_dir() { v["dir"] = serde_json::json!(true); } v.to_string()
     }
     /// A picture's record names a file that is not there (or cannot be looked for).
     pub fn is_missing(&self, descriptor: &str) -> bool {
@@ -394,7 +414,8 @@ impl Places {
     /// Any dropped file as a block record: a picture `min-image` reads is a picture; anything else is a file chip,
     /// referenced where it is (videos, PDFs and the preview formats get records of their own with their steps).
     fn record(&self, path: &Path) -> Result<String, String> {
-        if path.is_dir() { return Err("folders are not taken yet".into()) }
+        // a folder: a chip that points at it (never copied)
+        if path.is_dir() { return Ok(serde_json::json!({ "kind": "file", "dir": true, "src": self.reference(path), "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), "ext": "" }).to_string()) }
         if !path.is_file() { return Err("it is not there".into()) }
         if readable(path) { return self.picture(path).map(|v| v.to_string()) }
         if let Some(format) = preview_format(path) { return self.preview(path, format).map(|v| v.to_string()) }

@@ -26,7 +26,7 @@ pub struct VideoShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// the 
     pub on_note: bool, pub addressed: bool }
 impl Tool {
     /// Built: the button does something today.
-    fn built(self) -> bool { !matches!(self, Tool::File | Tool::Chip) }
+    fn built(self) -> bool { !matches!(self, Tool::Chip) }
     /// (icon, a label when there is no icon, the command's name, its key).
     fn face(self) -> (&'static str, Option<&'static str>, &'static str, &'static str) {
         match self {
@@ -120,7 +120,7 @@ impl Toolbar {
                 Tool::Outdent | Tool::Indent => (s.has_note && matches!(k, Some(Kind::Bullet { .. } | Kind::Numbered { .. } | Kind::Task { .. })), false),
                 Tool::Bold => (s.has_note, mark(MarkKind::Bold)), Tool::Italic => (s.has_note, mark(MarkKind::Italic)), Tool::Underline => (s.has_note, mark(MarkKind::Underline)), Tool::Strike => (s.has_note, mark(MarkKind::Strike)),
                 Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Color | Tool::Highlight => (s.has_note, false),
-                Tool::ClearFormat | Tool::Divider | Tool::Image => (s.has_note, false),
+                Tool::ClearFormat | Tool::Divider | Tool::Image | Tool::File => (s.has_note, false),
                 // a link: never in a code block
                 Tool::Link => (s.has_note && !matches!(k, Some(Kind::Code { .. })), mark(MarkKind::Link)),
                 // a cell holds no table and no columns

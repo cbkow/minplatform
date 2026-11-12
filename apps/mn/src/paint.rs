@@ -70,6 +70,8 @@ fn middle(t: &str, max: usize) -> String {
 
 /// The number a numbered item shows: it counts the numbered items above it at its depth, through deeper items, until
 /// anything else (or a shallower item) breaks the list.
+/// A file's size in words.
+fn bytes(n: u64) -> String { let n = n as f64; if n < 1024.0 { format!("{n} bytes") } else if n < 1048576.0 { format!("{:.0} KB", n / 1024.0) } else if n < 1073741824.0 { format!("{:.1} MB", n / 1048576.0) } else { format!("{:.2} GB", n / 1073741824.0) } }
 /// A check cell's box, from its paragraph's text origin (window px).
 pub fn check_box(tx: f64, ty: f64, s: f64) -> Rect { Rect::new(tx, ty + 3.0 * s, tx + 14.0 * s, ty + 17.0 * s) }
 /// The three states of a check: to do (an outline), doing (a bar), done (filled and ticked) - a task item's box.
@@ -219,6 +221,21 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     View::Loading => if !pdf { scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_) },
                     View::Missing { name, looked } => words(scene, fonts, "Not found", &name, &looked),
                     View::Failed { name, why } => words(scene, fonts, "Cannot be shown", &name, &why),
+                    // a file chip (row 320): an icon by the kind of file, its name, its size - or that it is missing
+                    View::Other if rec.get("kind").and_then(|k| k.as_str()) == Some("file") => {
+                        let st = media.file_state(descriptor); let chip = Rect::new(r.x0, r.y0 + 4.0 * s, r.x0 + r.width().min(440.0 * s), r.y1 - 4.0 * s);
+                        scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(chip, 6.0 * s));
+                        let ext = rec.get("ext").and_then(|k| k.as_str()).unwrap_or(""); let name = rec.get("name").and_then(|k| k.as_str()).unwrap_or("");
+                        let slug = if st.dir { "folder-simple" } else { match ext { "zip" | "rar" | "7z" | "tar" | "gz" | "dmg" => "file-archive", "wav" | "mp3" | "aif" | "aiff" | "flac" | "m4a" | "ogg" => "file-audio", "txt" | "md" | "rtf" | "doc" | "docx" | "pages" | "odt" => "file-text", "xls" | "xlsx" | "csv" | "numbers" | "ods" => "file-xls", "ppt" | "pptx" | "key" => "file-ppt",
+                            "rs" | "py" | "js" | "ts" | "json" | "xml" | "html" | "css" | "c" | "cpp" | "h" | "sh" | "toml" | "yaml" | "yml" => "file-code", _ => "file" } };
+                        let tone = if st.found { text() } else { dim() };
+                        if let Some(g) = fonts.icon(slug, (22.0 * s) as f32, tone).or_else(|| fonts.icon("file", (22.0 * s) as f32, tone)) { draw_layout(scene, &g, Affine::translate((chip.x0 + 12.0 * s, chip.center().y - g.height() as f64 / 2.0))); }
+                        let tx = chip.x0 + 44.0 * s; let l = fonts.layout_fit(name, Family::Sans, (14.0 * s) as f32, 400.0, tone, chip.x1 - tx - 12.0 * s);
+                        draw_layout(scene, &l, Affine::translate((tx, chip.y0 + 6.0 * s)));
+                        let under = if !st.found { if st.path.is_some() { "Missing".to_string() } else { "Missing \u{2014} its volume is not mapped on this machine".to_string() } } else if st.dir { "Folder".to_string() } else { match st.size { Some(n) => format!("{}{}", bytes(n), if ext.is_empty() { String::new() } else { format!(" \u{00b7} {}", ext.to_uppercase()) }), None => ext.to_uppercase() } };
+                        let l = fonts.layout_fit(&under, Family::Sans, (12.0 * s) as f32, 400.0, if st.found { dim() } else { conflict() }, chip.x1 - tx - 12.0 * s);
+                        draw_layout(scene, &l, Affine::translate((tx, chip.y0 + 26.0 * s)));
+                    }
                     View::Other => {
                         scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_);
                         let v = &rec;

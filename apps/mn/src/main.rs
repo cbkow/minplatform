@@ -131,7 +131,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// a choice cell's picker (row 317, stage 3), and the timecode paragraph the caret was last in (it settles when left)
     picker: Option<choice::ChoicePicker>, tc_last: Option<BlockId>,
     /// a link's editor (row 320), and the link a context menu was opened on
-    link: Option<linkedit::LinkEdit>, lmenu: Option<String>, /// a space was typed: the word before it becomes a link if it is an address
+    link: Option<linkedit::LinkEdit>, lmenu: Option<String>, /// the last press on a file chip (a second one soon after opens the file)
+    chip_click: Option<(Instant, BlockId)>, /// a space was typed: the word before it becomes a link if it is an address
     autolink: bool,
     tscroll: std::collections::HashMap<BlockId, f32>,
     /// their bars (min-ui's overlay scrollbar, along the bottom, always shown)
@@ -714,6 +715,10 @@ impl App {
             let lost = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if self.media.is_missing(descriptor));
             self.files.locate = lost.then_some(hit);
             let items = if lost { let mut v = vec![I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } else { items };
+            // a file chip (row 320): its file is opened, shown in its folder, its path copied, pointed at again
+            let chip = (self.ed.block_selection().len() == 1).then(|| match self.ed.doc.get(hit).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if descriptor.contains("\"kind\":\"file\"") => Some(descriptor.clone()), _ => None }).flatten();
+            let items = if let Some(d) = &chip { let st = self.media.file_state(d); self.files.locate = Some(hit);
+                let mut v = vec![I::action("Open", st.found), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, st.found), I::action("Copy Path", st.path.is_some()), I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } else { items };
             // a picture given a width of its own can go back to its own size
             let sized = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if descriptor.contains("\"dw\""));
             if sized { self.files.locate = Some(hit); }
@@ -782,6 +787,16 @@ impl App {
                 if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { if let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) {
                     v.remove("dw"); let t = self.now_ms(); let d = self.ed.set_kinds(vec![(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() })], t).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; } }
                 return }
+            // a file chip's own rows
+            if let Some((id, d)) = self.files.locate.and_then(|id| match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if descriptor.contains("\"kind\":\"file\"") => Some((id, descriptor.clone())), _ => None }) {
+                match label.as_str() {
+                    "Open" => { self.files.locate = None; self.file_open(&d, false); return }
+                    "Reveal in Finder" | "Show in Explorer" => { self.files.locate = None; self.file_open(&d, true); return }
+                    "Copy Path" => { self.files.locate = None; if let (Some(p), Some(cb)) = (self.media.file_state(&d).path, self.clipboard.as_mut()) { let _ = cb.set_text(p.to_string_lossy().into_owned()); self.block_clip = None; } return }
+                    l if l.starts_with("Locate File") => { self.files.locate = None;
+                        if let Some(file) = rfd::FileDialog::new().set_title("Locate File").pick_file() { let rec = self.media.file_record(&file); let t = self.now_ms(); let dd = self.ed.set_kinds(vec![(id, Kind::Media { descriptor: rec })], t).unwrap_or(Dirty::Nothing); self.apply(dd); self.layout = None; }
+                        return }
+                    _ => {} } }
             if label.starts_with("Locate File") {
                 let Some(id) = self.files.locate.take() else { return };
                 if let Some(file) = rfd::FileDialog::new().set_title("Locate File").pick_file() {
@@ -838,6 +853,8 @@ impl App {
                         _ => {} } }
                 if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             // pictures (and any other file, as a chip) chosen in the system's dialog go in after the caret's block (at the note's end when there is no caret)
+            // files of any kind, as chips that point at them (a picture, a video, a PDF chosen here still becomes its own block)
+            T::File => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Files").pick_files() { self.add_files(paths, at); } },
             T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
             _ => {}
         }
@@ -1131,6 +1148,18 @@ impl App {
             linkedit::Out::Done { url, text } => { self.files.link = None; self.ed.set_link(&url, Some(&text), now) } };
         let d = d.unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.follow = true; self.apply(d); }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The file chip under a window point: its block and its record.
+    fn file_chip_under(&self, x: f64, y: f64) -> Option<(BlockId, String)> {
+        if self.blank || y < self.top || x < self.side_w { return None } let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y));
+        let (id, _) = l.hit(&self.ed.doc, nx, ny)?; let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) else { return None };
+        (descriptor.contains("\"kind\":\"file\"") && l.rect(&self.ed.doc, id)?.contains(kurbo::Point::new(nx, ny))).then(|| (id, descriptor.clone()))
+    }
+    /// A file chip's file is opened in its own application (`reveal`: shown in its folder); a missing one is said.
+    fn file_open(&mut self, descriptor: &str, reveal: bool) {
+        let st = self.media.file_state(descriptor);
+        match st.path.filter(|_| st.found) { Some(p) => if reveal { open::reveal(&p) } else { open::file(&p) },
+            None => { self.notice = Some(("The file is missing \u{2014} right-click it to locate it".to_string(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
     }
     /// The link under a window point: its address.
     fn link_under(&self, x: f64, y: f64) -> Option<String> {
@@ -1958,6 +1987,10 @@ impl ApplicationHandler for App {
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
                 if self.files.link.is_some() { let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { return } } }
+                // a second press on a file chip opens its file (row 320); the first selects it, as any block
+                if state == ElementState::Pressed && self.files.tool.is_none() { match self.file_chip_under(position.x, position.y) {
+                    Some((id, d)) => { let twice = self.files.chip_click.is_some_and(|(t, b)| b == id && t.elapsed().as_millis() < 450); self.files.chip_click = if twice { None } else { Some((Instant::now(), id)) }; if twice { self.file_open(&d, false); return } }
+                    None => self.files.chip_click = None } }
                 // Cmd + click on a link opens it (a plain click places the caret)
                 if state == ElementState::Pressed && self.mods.1 && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
                 if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }
