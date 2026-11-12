@@ -42,6 +42,8 @@ resvg = "0.45"
 ureq = "3"
 # PDF pages and their text (spike S10; behind apps/mn/src/pdf.rs)
 hayro = "0.9"
+# video: the family's decoder and player (QCView's), row 316
+qcv-player = { path = "../../crates/qcv-player" }
 base64 = "0.22"
 min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"

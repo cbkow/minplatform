@@ -42,8 +42,10 @@ struct Entry { state: State, name: String, /// the width asked of the decoder la
 
 struct Job { key: String, path: PathBuf, w: u32, h: u32, /// a preview's original (row 313): where it is, and its size and time when the preview was made
     orig: Option<(PathBuf, u64, f64)>, /// a PDF's page (row 315): the file is a PDF and this page of it is wanted
-    page: Option<usize> }
-enum Outcome { Pic { rgba: Vec<u8>, w: u32, h: u32, whole: bool }, Missing, Failed(String) }
+    page: Option<usize>, /// a video's frame (row 316): the file is a video and a still of this frame is wanted
+    still: Option<i32> }
+enum Outcome { Pic { rgba: Vec<u8>, w: u32, h: u32, whole: bool }, /// a video's frame as the decoder gives it: its colour is finished on the window's thread
+    Still(qcv_player::thumbnail_cache::ThumbPixels, min_present::ColorMeta), Missing, Failed(String) }
 struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar }
 
 /// Where files are: the collection's folder, this session's waiting place for added files, the path mappings.
@@ -177,9 +179,11 @@ impl Media {
     /// A frame begins (what is shown in it is kept when the budget is met).
     pub fn begin_frame(&mut self) { self.frame += 1; }
     /// Takes what the workers finished. True: something arrived, draw again.
-    pub fn poll(&mut self) -> bool {
+    pub fn poll(&mut self, finish: &mut dyn FnMut(&qcv_player::thumbnail_cache::ThumbPixels, &min_present::ColorMeta) -> (Vec<u8>, u32, u32)) -> bool {
         let mut any = false;
         while let Ok((key, w, out)) = self.done.try_recv() {
+            // a video's still: its colour is finished here (the GPU's pipeline), then it is a picture like any other
+            let out = match out { Outcome::Still(px, meta) => { let (rgba, w, h) = finish(&px, &meta); Outcome::Pic { rgba, w, h, whole: false } } other => other };
             let Some(e) = self.entries.get_mut(&key) else { continue };   // forgotten meanwhile
             if e.asked != w { continue }                                   // a larger one was asked since
             any = true;
@@ -191,6 +195,7 @@ impl Media {
                     let bytes = rgba.len(); self.total += bytes; e.whole = whole;
                     e.state = State::Ready(Pic { brush: min_ui::paint::image_rgba8(w, h, rgba), w, h, bytes, arrived });
                 }
+                Outcome::Still(..) => {}
                 Outcome::Missing => e.state = State::Missing(String::new()),
                 Outcome::Failed(why) => e.state = State::Failed(why),
             }
@@ -210,16 +215,18 @@ impl Media {
         let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
         // a PDF's page is a picture of its own: one per page of the file
         let page = (v.get("kind").and_then(|k| k.as_str()) == Some("pdf")).then(|| v.get("page").and_then(|p| p.as_u64()).unwrap_or(0) as usize);
-        if v.get("kind").is_some() && page.is_none() { return View::Other }
+        // a video at rest is a still of the frame it stands on (its first, until it has been played)
+        let still = (v.get("kind").and_then(|k| k.as_str()) == Some("video")).then(|| v.get("frame").and_then(|p| p.as_i64()).unwrap_or(0) as i32);
+        if v.get("kind").is_some() && page.is_none() && still.is_none() { return View::Other }
         let Some(src) = v.get("src") else { return View::Other };
-        let key = match page { Some(p) => format!("{src}#{p}"), None => src.to_string() };
+        let key = match (page, still) { (Some(p), _) => format!("{src}#{p}"), (_, Some(f)) => format!("{src}@{f}"), _ => src.to_string() };
         // a preview (row 313): `src` is the picture made of the original, `preview` says where the original is
         let pv = v.get("preview");
         let orig = pv.and_then(|p| Some((self.places.locate(p.get("src")?).ok()?, p.get("size").and_then(|x| x.as_f64()).unwrap_or(0.0) as u64, p.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0))));
         let pill = pv.and_then(|p| p.get("format")).and_then(|f| f.as_str()).map(str::to_string);
         let (w, h) = { let (w, h) = (w.ceil().max(1.0), h.ceil().max(1.0)); let k = (LONGEST as f64 / w.max(h)).min(1.0); (((w * k) as u32).max(1), ((h * k) as u32).max(1)) };
         // named by an address: shown as loading while it is fetched; the record is replaced when it arrives
-        if let Some(addr) = src.as_str().filter(|s| remote(s) && page.is_none()) {
+        if let Some(addr) = src.as_str().filter(|s| remote(s) && page.is_none() && still.is_none()) {
             if self.places.staged.is_none() { return View::Missing { name: String::new(), looked: "on the web; a collection with a file is needed to keep it".into() } }
             let addr = addr.to_string(); self.fetch(&addr);
             let e = self.entries.entry(key).or_insert(Entry { state: State::Loading, name: short(&addr), asked: 0, whole: false, used: self.frame }); e.used = self.frame;
@@ -228,14 +235,14 @@ impl Media {
         if !self.entries.contains_key(&key) {
             let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string);
             let (state, name, asked) = match self.places.locate(src) {
-                Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h, orig.clone(), page); (State::Loading, name, w) }
+                Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h, orig.clone(), page, still); (State::Loading, name, w) }
                 Err(why) => (State::Missing(why), name.unwrap_or_default(), 0),
             };
             self.entries.insert(key.clone(), Entry { state, name, asked, whole: false, used: self.frame });
         }
         // shown larger than what is held (a wider window, a denser screen): the same file again, larger
         let again = { let e = &self.entries[&key]; matches!(&e.state, State::Ready(_)) && !e.whole && w > e.asked + e.asked / 8 };
-        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h, orig, page); self.entries.get_mut(&key).unwrap().asked = w; } }
+        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h, orig, page, still); self.entries.get_mut(&key).unwrap().asked = w; } }
         let looked = match &self.entries[&key].state { State::Missing(why) if why.is_empty() => self.places.locate(src).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), State::Missing(why) => why.clone(), _ => String::new() };
         let e = self.entries.get_mut(&key).unwrap(); e.used = self.frame;
         match &e.state {
@@ -245,8 +252,8 @@ impl Media {
             State::Failed(why) => View::Failed { name: e.name.clone(), why: why.clone() },
         }
     }
-    fn ask(&self, key: &str, path: PathBuf, w: u32, h: u32, orig: Option<(PathBuf, u64, f64)>, page: Option<usize>) {
-        let mut j = self.queue.jobs.lock().unwrap(); j.retain(|x| x.key != key); j.push_back(Job { key: key.to_string(), path, w, h, orig, page }); self.queue.more.notify_one();
+    fn ask(&self, key: &str, path: PathBuf, w: u32, h: u32, orig: Option<(PathBuf, u64, f64)>, page: Option<usize>, still: Option<i32>) {
+        let mut j = self.queue.jobs.lock().unwrap(); j.retain(|x| x.key != key); j.push_back(Job { key: key.to_string(), path, w, h, orig, page, still }); self.queue.more.notify_one();
     }
     /// Bytes of decoded pictures held, and how many (for a scripted look).
     pub fn held(&self) -> (usize, usize) { (self.total, self.entries.values().filter(|e| matches!(e.state, State::Ready(_))).count()) }
@@ -353,6 +360,11 @@ impl Places {
         if !path.is_file() { return Err("it is not there".into()) }
         if readable(path) { return self.picture(path).map(|v| v.to_string()) }
         if let Some(format) = preview_format(path) { return self.preview(path, format).map(|v| v.to_string()) }
+        // a video: the Qt app's record - referenced where it is, its coded size, its length, frames and rate
+        if crate::video::is_video(path) {
+            let p = crate::video::probe(path)?;
+            return Ok(serde_json::json!({ "kind": "video", "src": self.reference(path), "w": p.w, "h": p.h, "durMs": p.dur_ms, "frames": p.frames, "fps": p.fps, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() }).to_string())
+        }
         // a PDF: the Qt app's record - referenced where it is, its first page's size in points, its pages
         if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
             let (pages, w, h) = crate::pdf::info(path)?;
@@ -493,6 +505,11 @@ fn system(path: &Path, max: u32) -> Result<Rendered, String> { crate::imageio::l
 /// covers, it is rendered again (once per machine and version of the file: the result is kept in the cache) and
 /// sent in the stored picture's place. False: nobody listens any more.
 fn work(job: &Job, send: &mut dyn FnMut(Outcome) -> bool) -> bool {
+    // a video's still: the frame, reduced by the decoder to about the size asked
+    if let Some(f) = job.still {
+        if !job.path.is_file() { return send(Outcome::Missing) }
+        return send(match crate::video::still(&job.path, f, job.w.max(job.h)) { Ok((px, meta)) => Outcome::Still(px, meta), Err(why) => Outcome::Failed(why) })
+    }
     // a PDF's page: drawn at the width asked; its characters are read once and kept for selection
     if let Some(p) = job.page {
         if !job.path.is_file() { return send(Outcome::Missing) }
@@ -688,11 +705,11 @@ mod tests {
         // shown: the stored picture is enough while the original is as it was
         let orig = |r: &serde_json::Value| Some((psd.clone(), r["preview"]["size"].as_f64().unwrap() as u64, r["preview"]["mtime"].as_f64().unwrap()));
         let run = |job: &Job| { let mut got = vec![]; work(job, &mut |o| { got.push(o); true }); got };
-        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 2, h: 1, orig: orig(&rec), page: None });
+        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 2, h: 1, orig: orig(&rec), page: None, still: None });
         assert!(matches!(got.as_slice(), [Outcome::Pic { w: 2, h: 1, .. }]));
         // the original changed (another size): the stored picture first, then the original's - and it is kept in the cache
         let mut other = crate::psd::tests::file(false, false, 8, true); let n = other.len(); other[n - 16..n - 8].fill(0); other.extend_from_slice(&[0; 2]); std::fs::write(&psd, &other).unwrap();
-        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 4, h: 2, orig: orig(&rec), page: None });
+        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 4, h: 2, orig: orig(&rec), page: None, still: None });
         assert_eq!(got.len(), 2, "the stored picture, then the original"); assert!(matches!(&got[1], Outcome::Pic { w: 4, h: 2, whole: true, .. }));
         assert_eq!(std::fs::read_dir(cache_dir()).unwrap().count(), 1);
         // an SVG: its own size in the record, a large drawing kept
@@ -729,7 +746,7 @@ mod tests {
         assert_eq!((rec["kind"].as_str(), rec["pages"].as_u64(), rec["w"].as_u64(), rec["h"].as_u64(), rec["src"].as_str()), (Some("pdf"), Some(1), Some(200), Some(100), pdf.to_str()));
         assert!(!dir.join("media").exists(), "a PDF is referenced where it is: nothing is copied");
         // its page through the worker: drawn at the width asked, and its characters kept for selection
-        let mut got = vec![]; work(&Job { key: "pdf-test-key#0".into(), path: pdf.clone(), w: 300, h: 150, orig: None, page: Some(0) }, &mut |o| { got.push(o); true });
+        let mut got = vec![]; work(&Job { key: "pdf-test-key#0".into(), path: pdf.clone(), w: 300, h: 150, orig: None, page: Some(0), still: None }, &mut |o| { got.push(o); true });
         assert!(matches!(got.as_slice(), [Outcome::Pic { w: 300, h: 150, whole: false, .. }]));
         assert_eq!(TEXTS.lock().unwrap().get("pdf-test-key#0").map(|t| t.words(0, 9)), Some("Hello page".to_string()));
         let rec: serde_json::Value = serde_json::from_str(&places.record(&ai).unwrap()).unwrap();

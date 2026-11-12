@@ -92,6 +92,13 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         let (x, y) = ((r.x0 + (r.width() - dw) / 2.0).round(), (r.y0 + (r.height() - dh) / 2.0).round());
                         if fade < 1.0 { if !pdf { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(1.0 - fade), None, &box_); } animating = true; }
                         min_ui::paint::image(scene, &brush.clone().with_alpha(fade), Rect::new(x, y, x + dw, y + dh));
+                        // a video at rest: its length, small, in the picture's lower right corner
+                        if let Some(ms) = rec.get("kind").and_then(|k| k.as_str()).filter(|k| *k == "video").and_then(|_| rec.get("durMs")).and_then(|d| d.as_f64()) {
+                            let t = fonts.layout(&crate::video::length(ms), Family::Sans, (11.0 * s) as f32, 600.0, Color::WHITE); let icon = fonts.icon("play", (11.0 * s) as f32, Color::WHITE); let iw = icon.as_ref().map(|i| i.width() as f64 + 5.0 * s).unwrap_or(0.0);
+                            let q = Rect::new(x + dw - 8.0 * s - t.width() as f64 - iw - 14.0 * s, y + dh - 8.0 * s - t.height() as f64 - 6.0 * s, x + dw - 8.0 * s, y + dh - 8.0 * s);
+                            if q.x0 > x && q.y0 > y { scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK.multiply_alpha(0.6 * fade), None, &RoundedRect::from_rect(q, 4.0 * s));
+                                if let Some(i) = &icon { draw_layout(scene, i, Affine::translate((q.x0 + 7.0 * s, q.center().y - i.height() as f64 / 2.0))); }
+                                draw_layout(scene, &t, Affine::translate((q.x0 + 7.0 * s + iw, q.y0 + 3.0 * s))); } }
                         // a picture made of another file (a Photoshop file, an SVG ...) says which, small, in its corner
                         if let Some(p) = pill { let t = fonts.layout(&p, Family::Sans, (10.5 * s) as f32, 600.0, text());
                             let q = Rect::new(x + 8.0 * s, y + dh - 8.0 * s - t.height() as f64 - 4.0 * s, x + 8.0 * s + t.width() as f64 + 12.0 * s, y + dh - 8.0 * s);

@@ -2507,6 +2507,7 @@ dependencies = [
  "parley",
  "peniko",
  "png 0.17.16",
+ "qcv-player",
  "raw-window-handle",
  "resvg",
  "rfd",
