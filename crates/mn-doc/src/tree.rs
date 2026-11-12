@@ -205,8 +205,9 @@ impl Doc {
     pub fn set_kind(&mut self, id: BlockId, kind: Kind) -> Result<(), TreeError> {
         let b = self.blocks.get(&id).ok_or(TreeError::UnknownBlock(id))?;
         // a kind change stays within leaves that hold text, or changes a container's own attributes (a column's width,
-        // a table's columns, a colour): it never makes or unmakes a container or a media block
-        if !((b.kind.is_text() && kind.is_text()) || (b.kind.is_container() && std::mem::discriminant(&b.kind) == std::mem::discriminant(&kind))) { return Err(TreeError::NotAllowed { parent: b.parent, child: id }) }
+        // a table's columns, a colour): it never makes or unmakes a container or a media block. A media block's own record may change (its width, the
+        // file it points at).
+        if !((b.kind.is_text() && kind.is_text()) || ((b.kind.is_container() || matches!(b.kind, Kind::Media { .. })) && std::mem::discriminant(&b.kind) == std::mem::discriminant(&kind))) { return Err(TreeError::NotAllowed { parent: b.parent, child: id }) }
         self.blocks.get_mut(&id).unwrap().kind = kind; Ok(())
     }
     pub fn set_text(&mut self, id: BlockId, text: impl Into<String>) -> Result<(), TreeError> { self.blocks.get_mut(&id).ok_or(TreeError::UnknownBlock(id))?.text = text.into(); Ok(()) }

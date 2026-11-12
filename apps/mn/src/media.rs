@@ -43,16 +43,29 @@ struct Job { key: String, path: PathBuf, w: u32, h: u32 }
 enum Outcome { Pic { rgba: Vec<u8>, w: u32, h: u32, whole: bool }, Missing, Failed(String) }
 struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar }
 
+/// Where files are: the collection's folder, this session's waiting place for added files, the path mappings.
+#[derive(Clone, Default)]
+pub struct Places { base: Option<PathBuf>, staged: Option<PathBuf>, mappings: Vec<min_paths::map::Mapping> }
+
+/// What came back from file work asked of the helpers.
+pub enum Mail {
+    /// Dropped / chosen files as block records, in order; what could not be taken, in words.
+    Added { token: u64, records: Vec<String>, refused: Vec<String> },
+    /// Pictures pointed at their files again: each block with its new record.
+    Relinked { records: Vec<(mn_doc::BlockId, String)>, problem: Option<String> },
+}
+
 pub struct Media {
     entries: HashMap<String, Entry>, queue: Arc<Queue>, done: mpsc::Receiver<(String, u32, Outcome)>,
-    base: Option<PathBuf>, mappings: Vec<min_paths::map::Mapping>, budget: usize, total: usize, frame: u64,
+    places: Places, budget: usize, total: usize, frame: u64,
+    mail_tx: mpsc::Sender<Mail>, mail: mpsc::Receiver<Mail>, wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Media {
     /// `wake` is called from a worker when a picture is ready (it must make the window poll and redraw).
     pub fn new(settings: &Path, wake: impl Fn() + Send + Sync + 'static) -> Media {
         let queue = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), more: Condvar::new() });
-        let (tx, done) = mpsc::channel(); let wake = Arc::new(wake);
+        let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel();
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
         for i in 0..n {
             let (q, tx, wake) = (queue.clone(), tx.clone(), wake.clone());
@@ -66,12 +79,53 @@ impl Media {
         }
         let mappings = std::fs::read_to_string(settings.join("mappings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let budget = std::env::var("MN_MEDIA_BUDGET_MB").ok().and_then(|v| v.parse::<usize>().ok()).map(|mb| mb << 20).unwrap_or(BUDGET);
-        Media { entries: HashMap::new(), queue, done, base: None, mappings, budget, total: 0, frame: 0 }
+        Media { entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake }
     }
-    /// The folder the collection's file is in (`.minnotes/` is beside it). A change forgets every picture.
-    pub fn set_base(&mut self, base: Option<&Path>) {
-        if self.base.as_deref() == base { return }
-        self.base = base.map(|p| p.to_path_buf()); self.entries.clear(); self.total = 0; self.queue.jobs.lock().unwrap().clear();
+    /// The folder the collection's file is in (`.minnotes/` is beside it) and where this session keeps added files
+    /// until a save. A change of folder forgets every picture.
+    pub fn set_base(&mut self, base: Option<&Path>, staged: Option<PathBuf>) {
+        self.places.staged = staged;
+        if self.places.base.as_deref() == base { return }
+        self.places.base = base.map(|p| p.to_path_buf()); self.entries.clear(); self.total = 0; self.queue.jobs.lock().unwrap().clear();
+    }
+    /// Files to become blocks (a drop, the toolbar's button): looked at, copied or referenced, off this thread; the
+    /// records come back as [`Mail::Added`] with `token`.
+    pub fn add(&self, token: u64, paths: Vec<PathBuf>) {
+        let (places, tx, wake) = (self.places.clone(), self.mail_tx.clone(), self.wake.clone());
+        let _ = std::thread::Builder::new().name("mn-media-add".into()).spawn(move || {
+            let (mut records, mut refused) = (vec![], vec![]);
+            for p in paths { match places.record(&p) { Ok(r) => records.push(r), Err(why) => refused.push(format!("{}: {why}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())) } }
+            let _ = tx.send(Mail::Added { token, records, refused }); wake();
+        });
+    }
+    /// A picture that was not found is pointed at `file`; the note's other pictures that are not found either and
+    /// have a file of their name in the same folder follow. `blocks`: the note's media blocks with their records.
+    pub fn relink(&self, blocks: Vec<(mn_doc::BlockId, String)>, chosen: mn_doc::BlockId, file: PathBuf) {
+        let (places, tx, wake) = (self.places.clone(), self.mail_tx.clone(), self.wake.clone());
+        let _ = std::thread::Builder::new().name("mn-media-relink".into()).spawn(move || {
+            let folder = file.parent().map(|p| p.to_path_buf()).unwrap_or_default(); let (mut records, mut problem) = (vec![], None);
+            for (id, rec) in blocks {
+                let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&rec) else { continue };
+                if v.contains_key("kind") { continue }
+                let to = if id == chosen { file.clone() } else {
+                    if v.get("src").is_some_and(|s| places.locate(s).is_ok_and(|p| p.is_file())) { continue }
+                    let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string).or_else(|| v.get("src").and_then(|s| s.as_str()).and_then(|s| s.rsplit(['/', '\\']).next().map(str::to_string))).unwrap_or_default();
+                    let c = folder.join(&name); if name.is_empty() || !c.is_file() { continue } c };
+                match places.picture(&to) {
+                    Ok(serde_json::Value::Object(new)) => { for k in ["src", "w", "h", "name"] { if let Some(x) = new.get(k) { v.insert(k.to_string(), x.clone()); } } v.remove("preview"); records.push((id, serde_json::Value::Object(v).to_string())); }
+                    Ok(_) => {}
+                    Err(why) => if id == chosen { problem = Some(why) },
+                }
+            }
+            let _ = tx.send(Mail::Relinked { records, problem }); wake();
+        });
+    }
+    /// What the helpers sent back.
+    pub fn mail(&mut self) -> Vec<Mail> { self.mail.try_iter().collect() }
+    /// A picture's record names a file that is not there (or cannot be looked for).
+    pub fn is_missing(&self, descriptor: &str) -> bool {
+        let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
+        v.get("kind").is_none() && v.get("src").is_some_and(|s| matches!(self.entries.get(&s.to_string()).map(|e| &e.state), Some(State::Missing(_))))
     }
     /// A frame begins (what is shown in it is kept when the budget is met).
     pub fn begin_frame(&mut self) { self.frame += 1; }
@@ -104,24 +158,6 @@ impl Media {
         old.sort();
         for (_, k, bytes) in old { if self.total <= self.budget { break } self.entries.remove(&k); self.total -= bytes; }
     }
-    /// Where a descriptor's `src` is on this machine. Err: why it cannot be looked for.
-    fn locate(&self, src: &serde_json::Value) -> Result<PathBuf, String> {
-        use min_paths::map::{resolve_ref, Ref};
-        let os = min_paths::Os::current();
-        let r = match src {
-            serde_json::Value::Object(o) => Ref::Vol { vol: o.get("vol").and_then(|v| v.as_str()).unwrap_or("").to_string(), rel: o.get("rel").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default() },
-            serde_json::Value::String(s) if s.is_empty() => return Err("the block names no file".into()),
-            serde_json::Value::String(s) if s.starts_with("http://") || s.starts_with("https://") => return Err(format!("on the web, not fetched: {s}")),
-            serde_json::Value::String(s) if s.starts_with(".minnotes/") => return match &self.base { Some(b) => Ok(b.join(s)), None => Err("the collection has no folder yet".into()) },
-            serde_json::Value::String(s) => Ref::Abs(s.clone()),
-            _ => return Err("the block names no file".into()),
-        };
-        match (&r, resolve_ref(&r, os, &self.mappings)) {
-            (_, Some(p)) if !p.is_empty() => Ok(PathBuf::from(p)),
-            (Ref::Vol { vol, rel }, _) => Err(format!("on a volume this machine has no path for ({vol}): {}", rel.join("/"))),
-            (Ref::Abs(s), _) => Ok(PathBuf::from(s)),
-        }
-    }
     /// The picture of a block for a box of `w` x `h` physical pixels; asks for it (or for a larger one) when needed.
     pub fn view(&mut self, descriptor: &str, w: f64, h: f64) -> View<'_> {
         let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
@@ -131,7 +167,7 @@ impl Media {
         let (w, h) = { let (w, h) = (w.ceil().max(1.0), h.ceil().max(1.0)); let k = (LONGEST as f64 / w.max(h)).min(1.0); (((w * k) as u32).max(1), ((h * k) as u32).max(1)) };
         if !self.entries.contains_key(&key) {
             let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string);
-            let (state, name, asked) = match self.locate(src) {
+            let (state, name, asked) = match self.places.locate(src) {
                 Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h); (State::Loading, name, w) }
                 Err(why) => (State::Missing(why), name.unwrap_or_default(), 0),
             };
@@ -139,8 +175,8 @@ impl Media {
         }
         // shown larger than what is held (a wider window, a denser screen): the same file again, larger
         let again = { let e = &self.entries[&key]; matches!(&e.state, State::Ready(_)) && !e.whole && w > e.asked + e.asked / 8 };
-        if again { if let Ok(path) = self.locate(src) { self.ask(&key, path, w, h); self.entries.get_mut(&key).unwrap().asked = w; } }
-        let looked = match &self.entries[&key].state { State::Missing(why) if why.is_empty() => self.locate(src).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), State::Missing(why) => why.clone(), _ => String::new() };
+        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h); self.entries.get_mut(&key).unwrap().asked = w; } }
+        let looked = match &self.entries[&key].state { State::Missing(why) if why.is_empty() => self.places.locate(src).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), State::Missing(why) => why.clone(), _ => String::new() };
         let e = self.entries.get_mut(&key).unwrap(); e.used = self.frame;
         match &e.state {
             State::Loading => View::Loading,
@@ -154,6 +190,96 @@ impl Media {
     }
     /// Bytes of decoded pictures held, and how many (for a scripted look).
     pub fn held(&self) -> (usize, usize) { (self.total, self.entries.values().filter(|e| matches!(e.state, State::Ready(_))).count()) }
+}
+
+impl Places {
+    /// Where a descriptor's `src` is on this machine. Err: why it cannot be looked for.
+    pub fn locate(&self, src: &serde_json::Value) -> Result<PathBuf, String> {
+        use min_paths::map::{resolve_ref, Ref};
+        let os = min_paths::Os::current();
+        let r = match src {
+            serde_json::Value::Object(o) => Ref::Vol { vol: o.get("vol").and_then(|v| v.as_str()).unwrap_or("").to_string(), rel: o.get("rel").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default() },
+            serde_json::Value::String(s) if s.is_empty() => return Err("the block names no file".into()),
+            serde_json::Value::String(s) if s.starts_with("http://") || s.starts_with("https://") => return Err(format!("on the web, not fetched: {s}")),
+            serde_json::Value::String(s) if s.starts_with(".minnotes/") => return match (&self.staged, &self.base) {
+                // added since the last save: still on this machine
+                (Some(st), _) if st.join(&s[10..]).is_file() => Ok(st.join(&s[10..])),
+                (_, Some(b)) => Ok(b.join(s)), _ => Err("the collection has no folder yet".into()) },
+            serde_json::Value::String(s) => Ref::Abs(s.clone()),
+            _ => return Err("the block names no file".into()),
+        };
+        match (&r, resolve_ref(&r, os, &self.mappings)) {
+            (_, Some(p)) if !p.is_empty() => Ok(PathBuf::from(p)),
+            (Ref::Vol { vol, rel }, _) => Err(format!("on a volume this machine has no path for ({vol}): {}", rel.join("/"))),
+            (Ref::Abs(s), _) => Ok(PathBuf::from(s)),
+        }
+    }
+    /// How `path` is named in a record when the file stays where it is: under a mapped volume, or as it is.
+    fn reference(&self, path: &Path) -> serde_json::Value {
+        use min_paths::map::{to_ref, Ref};
+        match to_ref(&path.to_string_lossy(), min_paths::Os::current(), &self.mappings) { Ref::Vol { vol, rel } => serde_json::json!({ "vol": vol, "rel": rel }), Ref::Abs(s) => serde_json::Value::String(s) }
+    }
+    /// The Qt app's rule (spec §3): a picture on a network share stays there and is referenced; any other is COPIED
+    /// into the collection - here into the session's waiting place, to go beside the document at the next save. The
+    /// copy is named after the file with eight digits of its content's hash, so the same picture is kept once.
+    fn keep(&self, path: &Path) -> Result<serde_json::Value, String> {
+        use std::io::{Read, Write};
+        let p = path.to_string_lossy();
+        if min_paths::classify::is_network_source(&p) && !min_paths::classify::is_volatile_source(&p, &[]) { return Ok(self.reference(path)) }
+        let dir = self.staged.as_ref().ok_or("the collection has no file yet: save it first")?;
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(format!(".adding-{}-{:?}.tmp", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let done = (|| -> std::io::Result<()> {
+            let (mut from, mut to) = (std::fs::File::open(path)?, std::fs::File::create(&tmp)?); let mut buf = vec![0u8; 1 << 20];
+            loop { let n = from.read(&mut buf)?; if n == 0 { break } for b in &buf[..n] { hash = (hash ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3); } to.write_all(&buf[..n])?; }
+            to.sync_all()
+        })();
+        if let Err(e) = done { let _ = std::fs::remove_file(&tmp); return Err(e.to_string()) }
+        let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "img".into());
+        let name = format!("{}-{:08x}.{ext}", if stem.is_empty() { "picture" } else { &stem }, (hash >> 32) as u32 ^ hash as u32);
+        let at = dir.join(&name);
+        // the same content under the same name is there already (in this session, or beside the document)
+        let there = at.is_file() || self.base.as_ref().is_some_and(|b| b.join(".minnotes").join(&name).is_file());
+        if there { let _ = std::fs::remove_file(&tmp); } else { std::fs::rename(&tmp, &at).map_err(|e| e.to_string())?; }
+        Ok(serde_json::Value::String(format!(".minnotes/{name}")))
+    }
+    /// A picture file as a block record: its size as it is SEEN (a JPEG lying on its side is measured upright).
+    fn picture(&self, path: &Path) -> Result<serde_json::Value, String> {
+        let p = path.to_string_lossy();
+        let (w, h) = min_image::dimensions(&p, "").map_err(|e| e.to_string())?;
+        let (w, h) = if orientation(path) >= 5 { (h, w) } else { (w, h) };
+        Ok(serde_json::json!({ "src": self.keep(path)?, "w": w, "h": h, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() }))
+    }
+    /// Any dropped file as a block record: a picture `min-image` reads is a picture; anything else is a file chip,
+    /// referenced where it is (videos, PDFs and the preview formats get records of their own with their steps).
+    fn record(&self, path: &Path) -> Result<String, String> {
+        if path.is_dir() { return Err("folders are not taken yet".into()) }
+        if !path.is_file() { return Err("it is not there".into()) }
+        if min_image::Format::of(&path.to_string_lossy()).is_some() { return self.picture(path).map(|v| v.to_string()) }
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        Ok(serde_json::json!({ "kind": "file", "src": self.reference(path), "name": name, "ext": path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default() }).to_string())
+    }
+}
+
+/// A save's first half (runs on the save's helper thread): the files added in this session go beside the document,
+/// into `side` (its `.minnotes/`), each written under a temporary name and renamed; one already there with the same
+/// size is left. `also`: another folder of such files to carry along (Save As to a new place).
+pub fn publish(staged: &Path, side: &Path, also: Option<&Path>) -> std::io::Result<()> {
+    for from in [Some(staged), also].into_iter().flatten() {
+        let Ok(list) = std::fs::read_dir(from) else { continue };
+        for e in list.flatten() {
+            let (p, name) = (e.path(), e.file_name()); let Ok(m) = e.metadata() else { continue };
+            if !m.is_file() || name.to_string_lossy().ends_with(".tmp") { continue }
+            let to = side.join(&name);
+            if std::fs::metadata(&to).is_ok_and(|t| t.len() == m.len()) { continue }
+            std::fs::create_dir_all(side)?;
+            let tmp = side.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+            if let Err(e) = std::fs::copy(&p, &tmp).and_then(|_| std::fs::rename(&tmp, &to)) { let _ = std::fs::remove_file(&tmp); return Err(e) }
+        }
+    }
+    Ok(())
 }
 
 // ── the worker's side

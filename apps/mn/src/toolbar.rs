@@ -19,7 +19,7 @@ pub enum Tool {
 }
 impl Tool {
     /// Built: the button does something today.
-    fn built(self) -> bool { !matches!(self, Tool::Link | Tool::Table | Tool::Columns | Tool::Image | Tool::File | Tool::Chip) }
+    fn built(self) -> bool { !matches!(self, Tool::Link | Tool::Table | Tool::Columns | Tool::File | Tool::Chip) }
     /// (icon, a label when there is no icon, the command's name, its key).
     fn face(self) -> (&'static str, Option<&'static str>, &'static str, &'static str) {
         match self {
@@ -28,7 +28,7 @@ impl Tool {
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("text-a-underline", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
-            Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture or video", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
+            Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
     fn tooltip(self) -> String {

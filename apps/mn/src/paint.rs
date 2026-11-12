@@ -53,7 +53,7 @@ fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
 
 /// Paints the note with its top-left at (`ox`, `oy`) physical px; blocks wholly outside `view` are skipped. True: a
 /// picture is still fading in - another frame is wanted.
-pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, ox: f64, oy: f64, view: Rect) -> bool {
+pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, ox: f64, oy: f64, view: Rect) -> bool {
     let s = layout.scale as f64; let st = layout.style.clone(); let mut animating = false;
     for b in doc.walk() {
         let Some(r) = layout.rect(doc, b.id) else { continue };
@@ -75,6 +75,8 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     View::Ready { brush, w, h, fade } => {
                         // the whole picture inside its box, centred (the box has its shape, but for a picture the
                         // file stores lying on its side), on whole pixels
+                        // lying on its side in a box of the stored shape (a record the Qt app wrote): the caller lays the box out upright
+                        { let (ba, pa) = (r.width() / r.height(), w as f64 / h as f64); if (ba * pa - 1.0).abs() < 0.04 && (ba / pa - 1.0).abs() > 0.04 { turned.push(b.id); } }
                         let k = (r.width() / w as f64).min(r.height() / h as f64); let (dw, dh) = ((w as f64 * k).round(), (h as f64 * k).round());
                         let (x, y) = ((r.x0 + (r.width() - dw) / 2.0).round(), (r.y0 + (r.height() - dh) / 2.0).round());
                         if fade < 1.0 { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(1.0 - fade), None, &box_); animating = true; }

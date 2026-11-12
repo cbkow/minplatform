@@ -211,6 +211,54 @@ impl Editor {
         let ly = if rects.is_empty() { frame.y0 } else if index == 0 { rects[0].y0 - 3.0 * s } else if index >= rects.len() { rects[rects.len() - 1].y1 + 3.0 * s } else { (rects[index - 1].y1 + rects[index].y0) / 2.0 };
         Some((d.clone(), Rect::new(frame.x0 + d.depth.unwrap_or(0) as f64 * indent, ly - s, frame.x1, ly + s)))
     }
+    /// Where something from OUTSIDE the note (dropped files) would land at a point of the page, with the line that
+    /// shows it: between the blocks nearest the pointer, inside a column or a cell when it is over one.
+    pub fn insert_at(&self, layout: &NoteLayout, x: f64, y: f64) -> Option<(Drop, Rect)> {
+        let s = layout.scale as f64; let edge = 6.0 * s;
+        let mut parent: Option<BlockId> = None;
+        let (index, rects) = loop {
+            let kids = self.doc.children(parent).to_vec();
+            let rects: Vec<Rect> = kids.iter().filter_map(|id| layout.rect(&self.doc, *id)).collect();
+            if kids.is_empty() || rects.len() != kids.len() { break (0, rects) }
+            let across = matches!(parent.and_then(|p| self.doc.get(p)).map(|b| &b.kind), Some(Kind::Columns | Kind::Row { .. }));
+            let dist = |r: &Rect| if across { if x < r.x0 { r.x0 - x } else if x > r.x1 { x - r.x1 } else { 0.0 } } else if y < r.y0 { r.y0 - y } else if y > r.y1 { y - r.y1 } else { 0.0 };
+            let k = (0..kids.len()).min_by(|a, b| dist(&rects[*a]).total_cmp(&dist(&rects[*b]))).unwrap();
+            let (id, r) = (kids[k], rects[k]);
+            if across { parent = Some(id); continue }
+            match self.doc.get(id).map(|b| &b.kind) {
+                Some(Kind::Columns | Kind::Table { .. }) if y > r.y0 + edge && y < r.y1 - edge => { parent = Some(id); continue }
+                Some(Kind::Row { .. }) => { parent = Some(id); continue }
+                _ => break (if y < r.center().y { k } else { k + 1 }, rects),
+            }
+        };
+        let frame = match parent { None => Rect::new(0.0, 0.0, layout.width as f64, layout.height as f64), Some(p) => layout.rect(&self.doc, p)? };
+        let ly = if rects.is_empty() { frame.y0 } else if index == 0 { rects[0].y0 - 3.0 * s } else if index >= rects.len() { rects[rects.len() - 1].y1 + 3.0 * s } else { (rects[index - 1].y1 + rects[index].y0) / 2.0 };
+        Some((Drop { parent, index, depth: None }, Rect::new(frame.x0, ly - s, frame.x1, ly + s)))
+    }
+    /// The place right after the caret's block (a toolbar's insert).
+    pub fn after_caret(&self) -> Option<Drop> { let (p, _, j) = self.run()?; Some(Drop { parent: p, index: j + 1, depth: None }) }
+    /// New blocks (leaves: pictures, files) go in at `d`, in order, as one undo step, and end up selected. A place
+    /// that is no longer there (the note changed meanwhile) becomes the end of the note.
+    pub fn insert_blocks(&mut self, d: &Drop, kinds: Vec<Kind>, now_ms: u64) -> Result<Dirty, ChangeError> {
+        if self.preedit.is_some() || kinds.is_empty() { return Ok(Dirty::Nothing) }
+        let (parent, index) = if d.parent.is_none_or(|p| self.doc.get(p).is_some()) && d.index <= self.doc.children(d.parent).len() { (d.parent, d.index) } else { (None, self.doc.children(None).len()) };
+        let mut b = self.batch(); let mut ids = vec![];
+        for (i, kind) in kinds.into_iter().enumerate() { let id = BlockId::new(); ids.push(id);
+            b.push(Change::Insert { index: index + i, blocks: vec![Block { id, parent, rank: Rank::first(), kind, text: String::new(), spans: Default::default(), conflict: None, children: vec![] }] })?; }
+        let dirty = self.commit(b, None, now_ms + mn_doc::change::JOIN_MS + 1)?;
+        self.blocks = Some((ids[0], *ids.last().unwrap())); self.span_blocks();
+        if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
+        Ok(dirty)
+    }
+    /// Blocks get new kinds (a picture's record pointing at its file again), as one undo step.
+    pub fn set_kinds(&mut self, kinds: Vec<(BlockId, Kind)>, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let mut b = self.batch();
+        for (id, new) in kinds { let Some(old) = self.doc.get(id).map(|x| x.kind.clone()) else { continue }; if old != new { b.push(Change::Kind { id, old, new })?; } }
+        let (keep, blocks) = (self.sel, self.blocks);
+        let dirty = self.commit(b, None, now_ms + mn_doc::change::JOIN_MS + 1)?;
+        self.sel = keep; self.blocks = blocks; if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
+        Ok(dirty)
+    }
     /// A copy of the run right after it (the caret's block with its children when no blocks are selected), as one undo
     /// step; the copies end up selected.
     pub fn duplicate_blocks(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {

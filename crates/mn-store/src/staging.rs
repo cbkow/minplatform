@@ -76,6 +76,9 @@ impl Session {
         Ok(Session { original, dir: left.dir.clone(), stamp, _lock: lock })
     }
     pub fn original(&self) -> &Path { &self.original }
+    /// Where files added to the collection (dropped pictures) wait on this machine until a save puts them beside the
+    /// document (rows 293, 310): the document's place is touched only at open and at a save.
+    pub fn media_dir(&self) -> PathBuf { self.dir.join("media") }
     /// The copy the database runs on.
     pub fn work(&self) -> PathBuf { self.dir.join("work.mnd") }
     /// The file as it was when opened or last saved; None for a collection never saved.

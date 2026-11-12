@@ -26,7 +26,8 @@ use winit::dpi::LogicalSize;
 use winit::event::{ButtonSource, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use mn_edit::{Dirty, Editor, Move};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, AsyncRequestSerial, ControlFlow, DndAction, EventLoop};
+use winit::data_transfer::TypeHint;
 use winit::window::{Window, WindowAttributes, WindowId};
 
 mod menu;
@@ -71,6 +72,10 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
     let gap = if r.x0 < 1.0 { 15.0 * s } else { 2.0 * s };
     Some(Rect::new(r.x0 - gap - sz, cy - sz / 2.0, r.x0 - gap, cy + sz / 2.0) + off)
 }
+/// Files coming in from outside (row 310): a drag over the page, drops being fetched and looked at, a picture being
+/// pointed at its file again; and the pictures found to be stored on their side.
+#[derive(Default)]
+struct Files { drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, tested: bool, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
 /// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
@@ -134,7 +139,7 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
     blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
     after_close: Option<Pending>, /// the pictures of the page (decoded off this thread)
-    media: media::Media, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
+    media: media::Media, files: Files, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
     told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
@@ -196,7 +201,7 @@ impl App {
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
         #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_turned(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone())); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
         if self.frames == 0 && std::env::var_os("MN_DEMO").is_some() {
@@ -230,8 +235,13 @@ impl App {
         let picked = self.ed.block_selection();
         for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
-        self.media.begin_frame(); self.media.set_base(self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|x| x.original().parent()));
-        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, off.x, off.y, view) { g.window.request_redraw(); }
+        { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
+        let mut turned = vec![];
+        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, off.x, off.y, view) { g.window.request_redraw(); }
+        // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
+        for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
+        // files dragged over the page: the line where they would land
+        if let Some((_, line)) = &self.files.drag { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent(), None, &kurbo::RoundedRect::from_rect(*line + off, s)); }
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
         // the handle beside the caret's block; while it is dragged, the line where the blocks would land and how many they are
@@ -285,7 +295,7 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return false };
         let (w, _) = g.presenter.size(); let s = g.window.scale_factor();
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32)); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_turned(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone())); }
         if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
         true
     }
@@ -317,7 +327,13 @@ impl App {
         let staged = match session.stage_publish(|tmp| col.publish(tmp).map_err(std::io::Error::other)) { Ok(p) => p, Err(e) => { eprintln!("save: {e}"); self.saving = None; return } };
         st.edited_since_stage = false;
         let (to, expect) = (sv.to.clone().unwrap_or_else(|| session.original().to_path_buf()), sv.expect);
-        self.saver.start(move || SaveStep::Put(mn_store::share::put(&staged, &to, expect)));
+        // the files added since the last save go beside the document FIRST, so the document never names a file that is
+        // not there; a Save As to another folder carries the old folder's files along
+        let (added, old_side) = (session.media_dir(), session.original().parent().map(|p| p.join(".minnotes")));
+        self.saver.start(move || {
+            if let Some(side) = to.parent().map(|p| p.join(".minnotes")) { let also = old_side.filter(|o| *o != side);
+                if let Err(e) = media::publish(&added, &side, also.as_deref()) { return SaveStep::Put(Err(mn_store::share::PutError::Io(e))) } }
+            SaveStep::Put(mn_store::share::put(&staged, &to, expect)) });
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// A step of the save came back from the helper thread.
@@ -544,6 +560,10 @@ impl App {
             let items = vec![I::with_shortcut("Cut", true, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", true, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", true, &k("\u{2318}V", "Ctrl+V")), I::Separator,
                 I::with_shortcut("Duplicate", true, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", true, "\u{232b}"), I::Separator,
                 I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", "")), I::Separator, I::action("Move to Note\u{2026}", true), I::action("Copy to Note\u{2026}", true)];
+            // a picture whose file was not found can be pointed at it again
+            let lost = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if self.media.is_missing(descriptor));
+            self.files.locate = lost.then_some(hit);
+            let items = if lost { let mut v = vec![I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } else { items };
             let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
             self.ctx_blocks = true; self.ctx_for = None; self.ctx_notes.clear();
             self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
@@ -584,6 +604,12 @@ impl App {
                 let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
                 self.ctx.open_at(notes.iter().map(|x| min_ui::menu::MenuItem::action(&x.1, true)).collect(), &mut g.fonts, self.pointer.0, self.pointer.1, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
                 g.window.request_redraw(); return }
+            if label.starts_with("Locate File") {
+                let Some(id) = self.files.locate.take() else { return };
+                if let Some(file) = rfd::FileDialog::new().set_title("Locate File").pick_file() {
+                    let blocks = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
+                    self.media.relink(blocks, id, file); }
+                return }
             let now = self.now_ms(); self.follow = true;
             let d = match label.as_str() {
                 "Cut" => { self.menu_cmd(menu::Cmd::Cut); return } "Copy" => { self.menu_cmd(menu::Cmd::Copy); return } "Paste" => { self.menu_cmd(menu::Cmd::Paste); return }
@@ -610,8 +636,40 @@ impl App {
             T::Heading => { let next = match self.ed.state().kind { Some(Kind::Heading { level }) if level < 3 => B::Heading(level + 1), Some(Kind::Heading { .. }) => B::Paragraph, _ => B::Heading(1) }; block(self, next) }
             T::Indent | T::Outdent => { let d = self.ed.indent(tool == T::Outdent, now).ok().flatten().unwrap_or(Dirty::Nothing); self.apply(d); }
             T::Divider => { let d = self.ed.insert_divider(now).unwrap_or(Dirty::Nothing); self.apply(d); }
+            // pictures (and any other file, as a chip) chosen in the system's dialog go in after the caret's block
+            T::Image => if let (Some(at), true) = (self.ed.after_caret(), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
             _ => {}
         }
+    }
+    /// Dropped files that the helpers turned into records become blocks where they were dropped (one undo step); a
+    /// relink's records replace the blocks' own. What could not be done is said in the footer's notice.
+    fn media_mail(&mut self, m: media::Mail) {
+        let now = self.now_ms(); let until = Instant::now() + std::time::Duration::from_secs(6);
+        match m {
+            media::Mail::Added { token, records, refused } => {
+                let Some(at) = self.files.pending.remove(&token) else { return };
+                if !refused.is_empty() { eprintln!("drop: {}", refused.join("; ")); self.notice = Some((if refused.len() == 1 { format!("Not added \u{2014} {}", refused[0]) } else { format!("{} files were not added \u{2014} {}", refused.len(), refused[0]) }, until)); }
+                if records.is_empty() { self.apply(Dirty::Nothing); return }
+                let kinds = records.into_iter().map(|descriptor| Kind::Media { descriptor }).collect();
+                match self.ed.insert_blocks(&at, kinds, now) { Ok(d) => { self.follow = true; self.apply(d) } Err(e) => eprintln!("drop: {e:?}") }
+            }
+            media::Mail::Relinked { records, problem } => {
+                if let Some(why) = problem { self.notice = Some((format!("Not linked \u{2014} {why}"), until)); }
+                let n = records.len(); if n == 0 { self.apply(Dirty::Nothing); return }
+                let kinds = records.into_iter().map(|(id, descriptor)| (id, Kind::Media { descriptor })).collect();
+                match self.ed.set_kinds(kinds, now) { Ok(d) => { self.notice = Some((if n == 1 { "Linked 1 picture".to_string() } else { format!("Linked {n} pictures \u{2014} the others were found in the same folder") }, until)); self.apply(d); self.layout = None; } Err(e) => eprintln!("relink: {e:?}") }
+            }
+        }
+    }
+    /// Files go to the helpers to become blocks at `at`.
+    fn add_files(&mut self, paths: Vec<std::path::PathBuf>, at: mn_edit::Drop) {
+        if paths.is_empty() || self.blank { return }
+        self.files.token += 1; self.files.pending.insert(self.files.token, at); self.media.add(self.files.token, paths);
+    }
+    /// The page's drop place under a window point (None: over the bars, the sidebar, a dialog, or no note).
+    fn file_drop_at(&self, x: f64, y: f64) -> Option<(mn_edit::Drop, Rect)> {
+        if self.blank || self.confirm.is_some() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        let (nx, ny) = self.note_point((x, y)); self.ed.insert_at(self.layout.as_ref()?, nx, ny)
     }
     /// A command of the menu bar (row 296).
     fn menu_cmd(&mut self, c: menu::Cmd) {
@@ -971,6 +1029,13 @@ impl ApplicationHandler for App {
         if let Some(t0) = self.t0.filter(|t| t.elapsed().as_millis() < 1500) { let now = Instant::now(); let at = *self.warm_at.get_or_insert(t0 + std::time::Duration::from_millis(250));
             if now >= at { self.warm_at = Some(now + std::time::Duration::from_millis(250)); if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
+        // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
+        // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
+            if let Ok(v) = std::env::var("MN_ADD") { self.add_files(v.split(',').map(Into::into).collect(), mn_edit::Drop { parent: None, index: 1, depth: None }); }
+            if let Ok(v) = std::env::var("MN_RELINK") { let blocks: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
+                match blocks.iter().find(|(_, d)| self.media.is_missing(d)).map(|x| x.0) { Some(id) => self.media.relink(blocks, id, v.into()), None => println!("relink: no picture is missing") } } }
         // MN_MOVE_TEST=<a note's name>: the app moves the open note's first block to that note, undoes and redoes it,
         // and prints the two notes' block counts after each (a scripted check of row 307; nothing is typed or clicked)
         if let (Ok(name), false, true) = (std::env::var("MN_MOVE_TEST"), self.shown_blocks, self.layout.is_some() && !self.blank) { self.shown_blocks = true;
@@ -995,6 +1060,8 @@ impl ApplicationHandler for App {
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         // a picture came from the decoders
         if self.media.poll() { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        for m in self.media.mail() { self.media_mail(m); }
+        if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
@@ -1036,6 +1103,29 @@ impl ApplicationHandler for App {
                 g.window.request_redraw();
             },
             WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            // files dragged in from outside (row 310): a line shows where they would land; over anything but the page they are refused
+            WindowEvent::DragEntered { id: tid, position } => {
+                let files = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false);
+                self.files.drag = if files { position.and_then(|p| self.file_drop_at(p.x, p.y)) } else { None };
+                el.set_valid_dnd_actions(tid, if files && (position.is_none() || self.files.drag.is_some()) { &[DndAction::Copy] } else { &[] }).ok();
+                if let Some(g) = &self.gpu { g.window.request_redraw(); }
+            }
+            WindowEvent::DragPosition { id: tid, position, .. } => {
+                let files = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false);
+                let at = if files { self.file_drop_at(position.x, position.y) } else { None };
+                el.set_valid_dnd_actions(tid, if at.is_some() { &[DndAction::Copy] } else { &[] }).ok();
+                if at != self.files.drag { self.files.drag = at; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            }
+            WindowEvent::DragLeft { .. } => { self.files.drag = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            WindowEvent::DragDropped { id: tid, .. } => {
+                if let Some((at, _)) = self.files.drag.take() { if let Ok(serial) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.files.fetches.insert(serial, at); } }
+                if let Some(g) = &self.gpu { g.window.request_redraw(); }
+            }
+            WindowEvent::DataTransferReceived { serial, value, .. } => {
+                if let Some(at) = self.files.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() {
+                    let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| if u.starts_with("file:") { min_paths::url::file_url_to_path(u) } else if u.contains("://") { None } else { Some(u.to_string()) }).map(Into::into).collect();
+                    self.add_files(paths, at); } }
+            }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 // the handle is held: past a few pixels it is a drag, and the place the blocks would land follows the pointer
@@ -1203,7 +1293,7 @@ fn main() {
             add(Kind::Heading { level: 1 }, "Pictures");
             add(Kind::Paragraph, "Wider than the page: it is shown at the page's width.");
             add(pic(r#"{"h":1350,"name":"wide.png","src":".minnotes/wide.png","w":2400}"#), "");
-            add(Kind::Paragraph, "Stored on its side by the camera, shown upright (the red edge is its top). The box still has the old shape.");
+            add(Kind::Paragraph, "Stored on its side by the camera, shown upright (the red edge is its top); its record has the size as stored, and the box is upright all the same.");
             add(pic(r#"{"h":400,"name":"turned.jpg","src":".minnotes/turned.jpg","w":600}"#), "");
             add(Kind::Paragraph, "With clear parts, at a width of its own:");
             add(pic(r#"{"dw":240,"h":200,"name":"clear.png","src":".minnotes/clear.png","w":320}"#), "");
@@ -1249,7 +1339,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
