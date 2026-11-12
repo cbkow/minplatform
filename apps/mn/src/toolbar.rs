@@ -26,7 +26,7 @@ pub struct VideoShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// the 
     pub on_note: bool, pub addressed: bool }
 impl Tool {
     /// Built: the button does something today.
-    fn built(self) -> bool { !matches!(self, Tool::Link | Tool::Table | Tool::Columns | Tool::File | Tool::Chip) }
+    fn built(self) -> bool { !matches!(self, Tool::Link | Tool::File | Tool::Chip) }
     /// (icon, a label when there is no icon, the command's name, its key).
     fn face(self) -> (&'static str, Option<&'static str>, &'static str, &'static str) {
         match self {
@@ -39,7 +39,7 @@ impl Tool {
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
             Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
             Tool::NoteText => ("chat-text", None, "Write a note on this frame", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
-            Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
+            Tool::Table => ("table", None, "Table (Tab: the next cell; \u{2318}\u{21b5}: a row below)", ""), Tool::Columns => ("columns", None, "Columns \u{2014} a column beside this block (again: one more)", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
     fn tooltip(self) -> String {
@@ -53,7 +53,8 @@ impl Tool {
 }
 
 /// What the band needs to know to light and enable its buttons.
-pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool, pub video: Option<VideoShown> }
+pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool, /// the caret is in a table's cell
+    pub in_cell: bool, pub video: Option<VideoShown> }
 
 pub struct Toolbar { /// the set that is not shown now (the text's while a video block is current, else the video's)
     other: (Vec<ActionGroup>, Vec<Vec<Tool>>, usize), video: Option<VideoShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
@@ -120,6 +121,8 @@ impl Toolbar {
                 Tool::Bold => (s.has_note, mark(MarkKind::Bold)), Tool::Italic => (s.has_note, mark(MarkKind::Italic)), Tool::Underline => (s.has_note, mark(MarkKind::Underline)), Tool::Strike => (s.has_note, mark(MarkKind::Strike)),
                 Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Color | Tool::Highlight => (s.has_note, false),
                 Tool::ClearFormat | Tool::Divider | Tool::Image => (s.has_note, false),
+                // a cell holds no table and no columns
+                Tool::Table | Tool::Columns => (s.has_note && !s.in_cell, false),
                 _ => (false, false),
             };
             b.enabled = enabled && tool.built(); b.selected = selected && b.enabled;

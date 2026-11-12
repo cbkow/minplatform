@@ -216,7 +216,7 @@ impl App {
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
         self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
-        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, has_note: !self.blank, video: self.files.vshown }) { g.window.request_redraw(); }
+        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown }) { g.window.request_redraw(); }
             let unsaved = self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some());
             // the readout: a save under way, a save that failed, what is not in the document yet, else the last outcome
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
@@ -724,6 +724,9 @@ impl App {
             T::Heading => { let next = match self.ed.state().kind { Some(Kind::Heading { level }) if level < 3 => B::Heading(level + 1), Some(Kind::Heading { .. }) => B::Paragraph, _ => B::Heading(1) }; block(self, next) }
             T::Indent | T::Outdent => { let d = self.ed.indent(tool == T::Outdent, now).ok().flatten().unwrap_or(Dirty::Nothing); self.apply(d); }
             T::Divider => { let d = self.ed.insert_divider(now).unwrap_or(Dirty::Nothing); self.apply(d); }
+            // a table of three rows and three columns, its first row a header; a column beside the caret's block (row 317)
+            T::Table => { let d = self.ed.insert_table(3, 3, now).unwrap_or(Dirty::Nothing); self.apply(d); }
+            T::Columns => { let d = self.ed.insert_columns(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             // a video block's set (rows 301, 316): the drawing tools arm and put down; the pen; the frame's note
             T::DrawSelect => self.arm(qcv_annotate::Tool::Select), T::DrawPen => self.arm(qcv_annotate::Tool::Freehand), T::DrawRect => self.arm(qcv_annotate::Tool::Rectangle), T::DrawOval => self.arm(qcv_annotate::Tool::Oval),
             T::DrawArrow => self.arm(qcv_annotate::Tool::Arrow), T::DrawLine => self.arm(qcv_annotate::Tool::Line), T::DrawErase => self.arm(qcv_annotate::Tool::Eraser),
@@ -1331,10 +1334,13 @@ impl App {
             Key::Named(NamedKey::ArrowDown) => { self.ed.move_caret(l, mv(Move::Down, Move::Down, Move::DocEnd), shift); Dirty::Nothing }
             Key::Named(NamedKey::Home) => { self.ed.move_caret(l, if cmd { Move::DocStart } else { Move::LineStart }, shift); Dirty::Nothing }
             Key::Named(NamedKey::End) => { self.ed.move_caret(l, if cmd { Move::DocEnd } else { Move::LineEnd }, shift); Dirty::Nothing }
+            // Cmd+Enter in a table: a row below the caret's
+            Key::Named(NamedKey::Enter) if cmd && self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()) => { self.follow = true; self.ed.add_row_below(now).unwrap_or(Dirty::Nothing) }
             Key::Named(NamedKey::Enter) => self.ed.enter(now).unwrap_or(Dirty::Nothing),
             Key::Named(NamedKey::Backspace) => self.ed.delete(false, now).unwrap_or(Dirty::Nothing),
             Key::Named(NamedKey::Delete) => self.ed.delete(true, now).unwrap_or(Dirty::Nothing),
-            Key::Named(NamedKey::Tab) => match self.ed.indent(shift, now).unwrap_or(None) { Some(d) => d, None => return },
+            // in a table Tab is the cells' (the next one, a new row past the last); elsewhere the list's
+            Key::Named(NamedKey::Tab) => match self.ed.tab_cell(shift, now).unwrap_or(None) { Some(d) => { self.follow = true; d } None => match self.ed.indent(shift, now).unwrap_or(None) { Some(d) => d, None => return } },
             // formatting by command (row 289; the Qt app's keys): with a selection it toggles, with a caret it arms
             Key::Character(c) if cmd && shift && c.to_lowercase() == "x" => self.ed.toggle_mark(Mark::Strike, now).unwrap_or(Dirty::Nothing),
             Key::Character(c) if cmd && shift && c.to_lowercase() == "h" => self.ed.toggle_mark(Mark::Highlight(self.last_bg.clone()), now).unwrap_or(Dirty::Nothing),
@@ -1454,10 +1460,17 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
+            // MN_TABLE=1: at the note's end a table is made and filled by typing and Tab, a row added, and columns made beside a paragraph (as the toolbar and the keys would)
+            if std::env::var_os("MN_TABLE").is_some() { if let Some(first) = self.ed.doc.children(None).first().copied() { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: first, at: 0 }))); } self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let t = self.now_ms();
+                let _ = self.ed.insert("\nA table made in place:\n", t); let _ = self.ed.insert_table(3, 3, t + 2000);
+                for (i, w) in ["Shot", "Status", "Note", "010", "ok", "hold the grade", "020", "redo"].iter().enumerate() { let _ = self.ed.insert(w, t + 3000 + i as u64 * 2000); let _ = self.ed.tab_cell(false, t + 3500 + i as u64 * 2000); }
+                let _ = self.ed.insert("a second line in the cell\nand a paragraph below it", t + 30_000); for _ in 0..2 { let _ = self.ed.tab_cell(false, t + 31_000); }
+                self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000);
+                self.apply(Dirty::Structure); }
             // MN_SEEK=<frame>: the note's first video block goes to that frame, paused (as a click on a note's picture would)
             if let Some(f) = std::env::var("MN_SEEK").ok().and_then(|v| v.parse::<i32>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); self.video_seek(id, f); if std::env::var_os("MN_DRAW").is_some() { self.arm(qcv_annotate::Tool::Arrow); } } }
             // MN_PLAY=1: the note's first video block plays (as a click on it would)

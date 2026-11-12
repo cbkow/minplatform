@@ -10,6 +10,7 @@ use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Mark, Rank
 
 mod markdown;
 mod blocks;
+mod table;
 pub use blocks::{Clip, Drop};
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
@@ -802,6 +803,41 @@ mod tests {
         let empty = { let id = BlockId::new(); let n = e.doc.children(None).len(); e.doc.insert(None, n, id, Kind::Paragraph, "").unwrap(); id };
         at(&mut e, empty, 0); e.paste_fragment(&vec![vec![bold]], 40_000).unwrap();
         assert_eq!(e.doc.get(empty).unwrap().kind, Kind::Heading { level: 1 }); assert_eq!(e.doc.get(empty).unwrap().text, "A");
+    }
+    #[test]
+    fn a_table_and_columns_are_made_in_place_and_tab_walks_the_cells() {
+        let mut d = Doc::new(); let a = add(&mut d, None, Kind::Paragraph, "Above"); let e0 = add(&mut d, None, Kind::Paragraph, "");
+        let mut e = Editor::new(d);
+        let at = |e: &mut Editor, block: BlockId, at: usize| e.set_selection(Some(Selection::caret(Pos { block, at })));
+        // a table in the place of an empty paragraph: 3 x 2, its first row a header, the caret in its first cell
+        at(&mut e, e0, 0); e.insert_table(3, 2, 1_000).unwrap();
+        let top = e.doc.children(None).to_vec(); assert_eq!(top.len(), 3, "the text above, the table, a paragraph to get below it"); let table = top[1];
+        assert!(matches!(&e.doc.get(table).unwrap().kind, Kind::Table { header_rows: 1, columns } if columns.len() == 2));
+        let cells = |e: &Editor| -> Vec<BlockId> { e.doc.children(Some(table)).iter().flat_map(|r| e.doc.children(Some(*r)).to_vec()).collect() };
+        assert_eq!((e.doc.children(Some(table)).len(), cells(&e).len()), (3, 6));
+        let here = |e: &Editor| { let f = e.selection().unwrap().focus; let (_, _, c) = e.cell_of(f.block).expect("in a cell"); cells(e).iter().position(|x| *x == c).unwrap() };
+        assert_eq!(here(&e), 0);
+        // typing in a cell is ordinary typing; Tab goes on, Shift+Tab back, to the END of what the cell holds
+        e.insert("Shot", 2_000).unwrap(); e.tab_cell(false, 3_000).unwrap(); assert_eq!(here(&e), 1); e.insert("Note", 4_000).unwrap();
+        e.tab_cell(true, 5_000).unwrap(); assert_eq!(here(&e), 0); assert_eq!(e.selection().unwrap().focus.at, 4);
+        assert_eq!(e.tab_cell(true, 5_500).unwrap(), Some(Dirty::Nothing), "the first cell: Shift+Tab stays");
+        // past the last cell a row is added; Cmd+Enter's row goes below the caret's row, the caret into the same column
+        for _ in 0..5 { e.tab_cell(false, 6_000).unwrap(); } assert_eq!(here(&e), 5);
+        e.tab_cell(false, 7_000).unwrap(); assert_eq!((e.doc.children(Some(table)).len(), here(&e)), (4, 6));
+        e.tab_cell(false, 8_000).unwrap(); assert_eq!(here(&e), 7); e.add_row_below(9_000).unwrap(); assert_eq!((e.doc.children(Some(table)).len(), here(&e)), (5, 8), "the last cell of the last row: the new row's first cell");
+        let in_fourth = e.doc.children(Some(cells(&e)[3])).first().copied().unwrap(); at(&mut e, in_fourth, 0); e.add_row_below(10_000).unwrap(); assert_eq!((e.doc.children(Some(table)).len(), here(&e)), (6, 5), "under the cell it was in");
+        e.undo().unwrap(); assert_eq!(e.doc.children(Some(table)).len(), 5);
+        // no table in a cell, no columns in a cell; outside a table Tab is not the table's
+        assert_eq!(e.insert_table(2, 2, 11_000).unwrap(), Dirty::Nothing); assert_eq!(e.insert_columns(11_500).unwrap(), Dirty::Nothing);
+        at(&mut e, a, 5); assert_eq!(e.tab_cell(false, 12_000).unwrap(), None);
+        // columns: the caret's block becomes the first of two, the caret goes into the second; again there: a third
+        e.insert_columns(13_000).unwrap();
+        let cols = e.doc.children(None)[0]; assert_eq!(e.doc.get(cols).unwrap().kind, Kind::Columns);
+        let cs = e.doc.children(Some(cols)).to_vec(); assert_eq!(cs.len(), 2); assert_eq!(e.doc.children(Some(cs[0])), &[a]);
+        let f = e.selection().unwrap().focus; assert_eq!(e.doc.get(f.block).unwrap().parent, Some(cs[1]));
+        e.insert_columns(14_000).unwrap(); let cs = e.doc.children(Some(cols)).to_vec(); assert_eq!(cs.len(), 3);
+        assert!(cs.iter().all(|c| matches!(e.doc.get(*c).unwrap().kind, Kind::Column { width } if (width - 1.0 / 3.0).abs() < 1e-6)));
+        e.undo().unwrap(); e.undo().unwrap(); assert_eq!(e.doc.children(None)[0], a, "one undo per making");
     }
     #[test]
     fn blocks_from_another_note_are_appended_as_one_step_and_the_stamp_tells_edits_from_undo() {
