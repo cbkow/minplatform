@@ -25,6 +25,8 @@ impl LinkEdit {
         LinkEdit { anchor, pop: Popover::new(""), url: u, text: field("Text", text, fonts), remove, open: TextButton::new("Open", Variant::Secondary).size_s(), done: TextButton::new("Done", Variant::Primary).size_s(), scale: 1.0 }
     }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.pop.hit(x, y) }
+    /// The field the keys go to (a paste, a copy).
+    pub fn field(&mut self) -> &mut TextField { if self.url.focused { &mut self.url } else { &mut self.text } }
     pub fn animating(&self, now: Instant) -> bool { self.remove.animating(now) || self.open.animating(now) || self.done.animating(now) }
     /// Placed under `anchor` (window px) within `bounds`.
     pub fn layout(&mut self, fonts: &mut Fonts, anchor: Rect, bounds: Rect, s: f64) {

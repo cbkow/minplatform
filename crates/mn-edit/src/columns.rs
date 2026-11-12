@@ -70,6 +70,18 @@ impl Editor {
         if !matches!(self.plan_beside(id, at), Ok(Some(_))) { return None }
         Some((d, Rect::new(lx - s, r.y0, lx + s, r.y1)))
     }
+    /// The way out of a table or of columns that are the note's first or last block (the user 2026-11-12): the caret
+    /// could go no further up / down, so a paragraph is made before / after the container and the caret goes into it.
+    /// Nothing when the caret is not in such a container, or there is a block to go to.
+    pub fn exit_container(&mut self, down: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some(s) = self.sel.filter(|s| s.is_caret()) else { return Ok(Dirty::Nothing) }; if self.blocks.is_some() || self.preedit.is_some() { return Ok(Dirty::Nothing) }
+        let mut top = s.focus.block; while let Some(p) = self.doc.get(top).and_then(|b| b.parent) { top = p; }
+        if top == s.focus.block || !self.doc.get(top).is_some_and(|b| matches!(b.kind, Kind::Table { .. } | Kind::Columns)) { return Ok(Dirty::Nothing) }
+        let sibs = self.doc.children(None); let Some(i) = sibs.iter().position(|x| *x == top) else { return Ok(Dirty::Nothing) };
+        if (down && i + 1 != sibs.len()) || (!down && i != 0) { return Ok(Dirty::Nothing) }
+        let para = paragraph(None, ""); let id = para.id; let mut b = self.batch(); b.push(Change::Insert { index: if down { i + 1 } else { 0 }, blocks: vec![para] })?;
+        self.commit(b, Some(Pos { block: id, at: 0 }), now_ms + mn_doc::change::JOIN_MS + 1)
+    }
     /// Backspace in the one empty paragraph a column holds: the column goes (the caret to the end of the column before
     /// it, or the start of the one after). None: not that case.
     pub(crate) fn column_backspace(&mut self, now_ms: u64) -> Result<Option<Dirty>, ChangeError> {
@@ -109,5 +121,11 @@ mod tests {
         // Backspace in a column's one empty paragraph: the column goes
         e.set_selection(Some(Selection::caret(Pos { block: ids[3], at: 0 }))); e.delete(true, 33_000).unwrap(); assert_eq!(e.doc.get(ids[3]).unwrap().text, "");
         e.delete(false, 41_000).unwrap(); assert_eq!(shape(&e), "b a c"); assert_eq!(e.selection().unwrap().focus, Pos { block: ids[2], at: 1 });
+        // the way out of a table that is the note's last (and then its first) block: a paragraph is made beyond it
+        e.set_selection(Some(Selection::caret(Pos { block: ids[2], at: 1 }))); assert_eq!(e.exit_container(true, 49_000).unwrap(), Dirty::Nothing, "an ordinary block");
+        e.insert("\n", 50_000).unwrap(); e.insert_table(2, 2, 57_000).unwrap(); let n = e.doc.children(None).len(); let last = *e.doc.children(None).last().unwrap();
+        let c = Change::removal(&e.doc, last).unwrap(); let mut b = e.batch(); b.push(c).unwrap(); let keep = e.selection().map(|s| s.focus); e.commit(b, keep, 65_000).unwrap(); assert_eq!(e.doc.children(None).len(), n - 1);
+        assert_ne!(e.exit_container(true, 73_000).unwrap(), Dirty::Nothing); assert_eq!(e.doc.children(None).len(), n); let f = e.selection().unwrap().focus; assert_eq!(Some(&f.block), e.doc.children(None).last()); assert_eq!(e.doc.get(f.block).unwrap().kind, Kind::Paragraph);
+        assert_eq!(e.exit_container(true, 81_000).unwrap(), Dirty::Nothing);
     }
 }

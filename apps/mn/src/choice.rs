@@ -45,6 +45,8 @@ impl ChoicePicker {
     pub fn editing(mut self) -> ChoicePicker { self.to_edit(); self }
     fn to_edit(&mut self) { self.edit = true; self.field.clear(); self.field.placeholder.clear(); self.field.focused = false; self.hover = None; }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.pop.hit(x, y) }
+    /// The field the keys go to (a paste, a copy), when it has them.
+    pub fn field(&mut self) -> Option<&mut TextField> { self.field.focused.then_some(&mut self.field) }
     pub fn animating(&self, now: Instant) -> bool { self.edit && (self.add.animating(now) || self.cancel.animating(now) || self.done.animating(now) || self.tools.iter().flatten().any(|b| b.animating(now))) }
     fn filter(&self) -> String { self.field.text().trim().to_lowercase() }
     /// The rows of the list, in order (the picker's face).

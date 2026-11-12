@@ -1589,6 +1589,15 @@ impl App {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
         }
+        // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
+        if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {
+            let pasted = if c == "v" { self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) } else { None };
+            let field: Option<&mut min_ui::TextField> = if let Some(p) = self.files.link.as_mut() { Some(p.field()) } else if let Some(p) = self.files.picker.as_mut() { p.field() } else if let Some((_, _, f)) = self.files.note_field.as_mut() { Some(f) } else { None };
+            if let (Some(f), Some(g)) = (field, self.gpu.as_mut()) {
+                let copied = if c == "v" { if let Some(t) = &pasted { f.paste(t, &mut g.fonts); } None } else { f.copy(c == "x", &mut g.fonts) };
+                if let (Some(t), Some(cb)) = (copied, self.clipboard.as_mut()) { let _ = cb.set_text(t); self.block_clip = None; }
+                g.window.request_redraw(); return }
+            if self.files.link.is_some() || self.files.picker.is_some() || self.files.note_field.is_some() { return } } } }
         // a note's words being typed take the keys: Enter keeps them, Escape gives them up
         if self.files.note_field.is_some() { let r = match (self.files.note_field.as_mut(), self.gpu.as_mut()) { (Some((_, _, f)), Some(g)) => Some(f.key(&ui_key(), &mut g.fonts)), _ => None };
             match r { Some(min_ui::FieldResponse::Accepted) => self.note_words_end(true), Some(min_ui::FieldResponse::Cancelled) => self.note_words_end(false), _ => {} }
@@ -1659,8 +1668,9 @@ impl App {
             Key::Character(_) if blocks && !cmd => return,
             Key::Named(NamedKey::ArrowLeft) => { self.ed.move_caret(l, mv(Move::Left, Move::WordLeft, Move::LineStart), shift); Dirty::Nothing }
             Key::Named(NamedKey::ArrowRight) => { self.ed.move_caret(l, mv(Move::Right, Move::WordRight, Move::LineEnd), shift); Dirty::Nothing }
-            Key::Named(NamedKey::ArrowUp) => { self.ed.move_caret(l, mv(Move::Up, Move::Up, Move::DocStart), shift); Dirty::Nothing }
-            Key::Named(NamedKey::ArrowDown) => { self.ed.move_caret(l, mv(Move::Down, Move::Down, Move::DocEnd), shift); Dirty::Nothing }
+            // Up / Down that can go no further in a table or in columns at the note's very start / end: a paragraph is made beyond it (the way out)
+            Key::Named(NamedKey::ArrowUp) => { let was = self.ed.selection(); self.ed.move_caret(l, mv(Move::Up, Move::Up, Move::DocStart), shift); if !shift && self.ed.selection() == was { self.follow = true; self.ed.exit_container(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
+            Key::Named(NamedKey::ArrowDown) => { let was = self.ed.selection(); self.ed.move_caret(l, mv(Move::Down, Move::Down, Move::DocEnd), shift); if !shift && self.ed.selection() == was { self.follow = true; self.ed.exit_container(true, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
             Key::Named(NamedKey::Home) => { self.ed.move_caret(l, if cmd { Move::DocStart } else { Move::LineStart }, shift); Dirty::Nothing }
             Key::Named(NamedKey::End) => { self.ed.move_caret(l, if cmd { Move::DocEnd } else { Move::LineEnd }, shift); Dirty::Nothing }
             // Cmd+Enter in a table: a row below the caret's

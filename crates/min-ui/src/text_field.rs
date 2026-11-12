@@ -150,6 +150,20 @@ impl TextField {
     }
     /// S3's key table for one line: arrows / Home / End with Shift selection, Backspace / Delete, ⌘A, typed text; Enter and
     /// Escape are reported, not consumed by the text.
+    /// Text from the clipboard goes in at the caret, over the selection (one line: line breaks become spaces). The
+    /// window owns the clipboard, so a paste is the caller's: it reads the text and hands it here.
+    pub fn paste(&mut self, text: &str, fonts: &mut Fonts) -> FieldResponse {
+        if !self.focused { return FieldResponse::None }
+        let clean: String = text.trim_matches(['\n', '\r']).chars().map(|c| if c == '\n' || c == '\t' { ' ' } else { c }).filter(|c| !c.is_control()).collect(); if clean.is_empty() { return FieldResponse::None }
+        if self.secret.is_some() { self.secret_edit(fonts, &clean, 0, 0); return FieldResponse::Changed }
+        let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.insert_or_replace_selection(&clean); drop(d); self.follow_caret(fonts); FieldResponse::Changed
+    }
+    /// The selected text, for a copy (none of a secret field's). `cut`: it is removed too.
+    pub fn copy(&mut self, cut: bool, fonts: &mut Fonts) -> Option<String> {
+        if !self.focused || self.secret.is_some() { return None } let t = self.editor.selected_text().filter(|t| !t.is_empty())?.to_string();
+        if cut { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.delete_selection(); drop(d); self.follow_caret(fonts); }
+        Some(t)
+    }
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> FieldResponse {
         if !self.focused { return FieldResponse::None }
         if self.secret.is_some() {
