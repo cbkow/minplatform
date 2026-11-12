@@ -64,7 +64,10 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
     let id = ed.handle_block()?; let r = l.rect(&ed.doc, id)?;
     let line = if ed.doc.get(id).is_some_and(|b| b.kind.is_container()) { None } else { l.caret(&ed.doc, id, 0, 1.0) }.unwrap_or(Rect::new(r.x0, r.y0, r.x0, r.y0 + 24.0 * s));
     let (cy, sz) = (line.center().y, 20.0 * s);
-    Some(Rect::new(r.x0 - 6.0 * s - sz, cy - sz / 2.0, r.x0 - 6.0 * s, cy + sz / 2.0) + off)
+    // at the page's left edge the handle stands well clear of the text: a writing tool draws its own marks close beside a
+    // line (the user 2026-11-11); inside a column there is only the gutter, so it stays close there
+    let gap = if r.x0 < 1.0 { 24.0 * s } else { 2.0 * s };
+    Some(Rect::new(r.x0 - gap - sz, cy - sz / 2.0, r.x0 - gap, cy + sz / 2.0) + off)
 }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)> }
 /// A save under way: which try, what the document is expected to be, what a merge brought.
