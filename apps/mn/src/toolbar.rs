@@ -34,7 +34,7 @@ impl Tool {
             Tool::Task => ("list-checks", None, "Task list", ""), Tool::Quote => ("quotes", None, "Quote", ""), Tool::CodeBlock => ("code-block", None, "Code block", ""), Tool::Outdent => ("text-outdent", None, "Outdent", "Shift+Tab"), Tool::Indent => ("text-indent", None, "Indent", "Tab"),
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
-            Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("text-a-underline", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
+            Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
             Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
             Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
@@ -146,15 +146,22 @@ impl Toolbar {
         paint::rect(scene, self.rect, t::BAND_BACKGROUND_COLOR);
         paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y1 - t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_COLOR);
         for g in &self.groups { g.paint(scene, fonts, self.scale, now); }
-        // a chip carries its role's colour as a bar under the glyph (none set: a quiet line)
-        // the drawing colour is a swatch: a disc of the colour itself
-        if let Some(v) = self.video { let r = self.rect_of(Tool::PenColor); if r.width() > 1.0 { let c = kurbo::Circle::new(r.center(), 8.0 * self.scale);
-            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, v.pen, None, &c); scene.stroke(&kurbo::Stroke::new(self.scale), kurbo::Affine::IDENTITY, paint::color(t::DIVIDER_COLOR), None, &c); } }
-        for (tool, c) in [(Tool::Color, self.chips[0]), (Tool::Highlight, self.chips[1])] {
-            let r = self.rect_of(tool); if r.width() < 1.0 { continue }
-            let (w, h) = (14.0 * self.scale, 3.0 * self.scale);
-            let bar = kurbo::RoundedRect::new(r.center().x - w / 2.0, r.y1 - h - 2.0 * self.scale, r.center().x + w / 2.0, r.y1 - 2.0 * self.scale, h / 2.0);
-            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, c.unwrap_or(paint::color(t::DIVIDER_COLOR)), None, &bar);
+        // the two colours of the text are SWATCHES, as the drawing colour is (the user 2026-11-12): Type is a disc of the
+        // type's colour with the letter A on it (the default: the text's own colour); Background is a disc of the colour
+        // behind the text - an empty ring when there is none
+        if self.video.is_none() {
+            let (text, page, edge) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::BACKGROUND_BASE_COLOR), paint::color(t::DIVIDER_COLOR));
+            let lit = self.groups.iter().zip(&self.tools).any(|(g, set)| set.iter().zip(&g.buttons).any(|(tool, b)| *tool == Tool::Color && b.enabled));
+            let dim = |c: peniko::Color| if lit { c } else { c.multiply_alpha(0.35) };
+            let r = self.rect_of(Tool::Color); if r.width() > 1.0 { let fill = self.chips[0].unwrap_or(text); let disc = kurbo::Circle::new(r.center(), 9.0 * self.scale);
+                scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, dim(fill), None, &disc);
+                // the letter is dark on a light colour and light on a dark one
+                let x = fill.to_rgba8(); let light = (x.r as f32 * 0.299 + x.g as f32 * 0.587 + x.b as f32 * 0.114) > 150.0;
+                let a = fonts.layout("A", min_ui::Family::Sans, (11.0 * self.scale) as f32, 700.0, dim(if light { peniko::Color::BLACK } else { peniko::Color::WHITE }));
+                min_ui::fonts::draw_layout(scene, &a, kurbo::Affine::translate((r.center().x - a.width() as f64 / 2.0, r.center().y - a.height() as f64 / 2.0))); }
+            let r = self.rect_of(Tool::Highlight); if r.width() > 1.0 { let disc = kurbo::Circle::new(r.center(), 9.0 * self.scale);
+                match self.chips[1] { Some(c) => scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, dim(c), None, &disc), None => scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, dim(page), None, &disc) }
+                scene.stroke(&kurbo::Stroke::new(1.5 * self.scale), kurbo::Affine::IDENTITY, dim(if self.chips[1].is_some() { edge } else { text.multiply_alpha(0.7) }), None, &disc); }
         }
     }
     pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, self.scale, bounds, now); }
