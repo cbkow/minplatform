@@ -66,7 +66,7 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
     let (cy, sz) = (line.center().y, 20.0 * s);
     // at the page's left edge the handle stands well clear of the text: a writing tool draws its own marks close beside a
     // line (the user 2026-11-11); inside a column there is only the gutter, so it stays close there
-    let gap = if r.x0 < 1.0 { 24.0 * s } else { 2.0 * s };
+    let gap = if r.x0 < 1.0 { 15.0 * s } else { 2.0 * s };
     Some(Rect::new(r.x0 - gap - sz, cy - sz / 2.0, r.x0 - gap, cy + sz / 2.0) + off)
 }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)> }
