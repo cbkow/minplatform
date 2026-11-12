@@ -41,7 +41,8 @@ struct Entry { state: State, name: String, /// the width asked of the decoder la
     whole: bool, used: u64 }
 
 struct Job { key: String, path: PathBuf, w: u32, h: u32, /// a preview's original (row 313): where it is, and its size and time when the preview was made
-    orig: Option<(PathBuf, u64, f64)> }
+    orig: Option<(PathBuf, u64, f64)>, /// a PDF's page (row 315): the file is a PDF and this page of it is wanted
+    page: Option<usize> }
 enum Outcome { Pic { rgba: Vec<u8>, w: u32, h: u32, whole: bool }, Missing, Failed(String) }
 struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar }
 
@@ -138,6 +139,12 @@ impl Media {
             let _ = tx.send(Mail::Relinked { records, problem }); wake();
         });
     }
+    /// The characters of the page a PDF block shows, once its page has been drawn (None: not yet, or none to read).
+    pub fn page_text(&self, descriptor: &str) -> Option<Arc<crate::pdf::PageText>> {
+        let v: serde_json::Value = serde_json::from_str(descriptor).ok()?;
+        if v.get("kind").and_then(|k| k.as_str()) != Some("pdf") { return None }
+        TEXTS.lock().unwrap().get(&format!("{}#{}", v.get("src")?, v.get("page").and_then(|p| p.as_u64()).unwrap_or(0))).cloned()
+    }
     /// What the helpers sent back.
     pub fn mail(&mut self) -> Vec<Mail> {
         let mut out: Vec<Mail> = self.mail.try_iter().collect();
@@ -201,16 +208,18 @@ impl Media {
     /// The picture of a block for a box of `w` x `h` physical pixels; asks for it (or for a larger one) when needed.
     pub fn view(&mut self, descriptor: &str, w: f64, h: f64) -> View<'_> {
         let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
-        if v.get("kind").is_some() { return View::Other }
+        // a PDF's page is a picture of its own: one per page of the file
+        let page = (v.get("kind").and_then(|k| k.as_str()) == Some("pdf")).then(|| v.get("page").and_then(|p| p.as_u64()).unwrap_or(0) as usize);
+        if v.get("kind").is_some() && page.is_none() { return View::Other }
         let Some(src) = v.get("src") else { return View::Other };
-        let key = src.to_string();
+        let key = match page { Some(p) => format!("{src}#{p}"), None => src.to_string() };
         // a preview (row 313): `src` is the picture made of the original, `preview` says where the original is
         let pv = v.get("preview");
         let orig = pv.and_then(|p| Some((self.places.locate(p.get("src")?).ok()?, p.get("size").and_then(|x| x.as_f64()).unwrap_or(0.0) as u64, p.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0))));
         let pill = pv.and_then(|p| p.get("format")).and_then(|f| f.as_str()).map(str::to_string);
         let (w, h) = { let (w, h) = (w.ceil().max(1.0), h.ceil().max(1.0)); let k = (LONGEST as f64 / w.max(h)).min(1.0); (((w * k) as u32).max(1), ((h * k) as u32).max(1)) };
         // named by an address: shown as loading while it is fetched; the record is replaced when it arrives
-        if let Some(addr) = src.as_str().filter(|s| remote(s)) {
+        if let Some(addr) = src.as_str().filter(|s| remote(s) && page.is_none()) {
             if self.places.staged.is_none() { return View::Missing { name: String::new(), looked: "on the web; a collection with a file is needed to keep it".into() } }
             let addr = addr.to_string(); self.fetch(&addr);
             let e = self.entries.entry(key).or_insert(Entry { state: State::Loading, name: short(&addr), asked: 0, whole: false, used: self.frame }); e.used = self.frame;
@@ -219,14 +228,14 @@ impl Media {
         if !self.entries.contains_key(&key) {
             let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string);
             let (state, name, asked) = match self.places.locate(src) {
-                Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h, orig.clone()); (State::Loading, name, w) }
+                Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h, orig.clone(), page); (State::Loading, name, w) }
                 Err(why) => (State::Missing(why), name.unwrap_or_default(), 0),
             };
             self.entries.insert(key.clone(), Entry { state, name, asked, whole: false, used: self.frame });
         }
         // shown larger than what is held (a wider window, a denser screen): the same file again, larger
         let again = { let e = &self.entries[&key]; matches!(&e.state, State::Ready(_)) && !e.whole && w > e.asked + e.asked / 8 };
-        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h, orig); self.entries.get_mut(&key).unwrap().asked = w; } }
+        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h, orig, page); self.entries.get_mut(&key).unwrap().asked = w; } }
         let looked = match &self.entries[&key].state { State::Missing(why) if why.is_empty() => self.places.locate(src).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), State::Missing(why) => why.clone(), _ => String::new() };
         let e = self.entries.get_mut(&key).unwrap(); e.used = self.frame;
         match &e.state {
@@ -236,8 +245,8 @@ impl Media {
             State::Failed(why) => View::Failed { name: e.name.clone(), why: why.clone() },
         }
     }
-    fn ask(&self, key: &str, path: PathBuf, w: u32, h: u32, orig: Option<(PathBuf, u64, f64)>) {
-        let mut j = self.queue.jobs.lock().unwrap(); j.retain(|x| x.key != key); j.push_back(Job { key: key.to_string(), path, w, h, orig }); self.queue.more.notify_one();
+    fn ask(&self, key: &str, path: PathBuf, w: u32, h: u32, orig: Option<(PathBuf, u64, f64)>, page: Option<usize>) {
+        let mut j = self.queue.jobs.lock().unwrap(); j.retain(|x| x.key != key); j.push_back(Job { key: key.to_string(), path, w, h, orig, page }); self.queue.more.notify_one();
     }
     /// Bytes of decoded pictures held, and how many (for a scripted look).
     pub fn held(&self) -> (usize, usize) { (self.total, self.entries.values().filter(|e| matches!(e.state, State::Ready(_))).count()) }
@@ -344,6 +353,11 @@ impl Places {
         if !path.is_file() { return Err("it is not there".into()) }
         if readable(path) { return self.picture(path).map(|v| v.to_string()) }
         if let Some(format) = preview_format(path) { return self.preview(path, format).map(|v| v.to_string()) }
+        // a PDF: the Qt app's record - referenced where it is, its first page's size in points, its pages
+        if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+            let (pages, w, h) = crate::pdf::info(path)?;
+            return Ok(serde_json::json!({ "kind": "pdf", "src": self.reference(path), "w": w.round() as u32, "h": h.round() as u32, "pages": pages, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() }).to_string())
+        }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         Ok(serde_json::json!({ "kind": "file", "src": self.reference(path), "name": name, "ext": path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default() }).to_string())
     }
@@ -409,6 +423,8 @@ fn fetched(places: &Places, addr: &str) -> Result<String, String> {
     rec.map(|mut v| { if let Some(o) = v.as_object_mut() { o.remove("preview"); } v.to_string() })
 }
 
+/// PDF pages' characters, by the page's key (read on the helpers, looked up by the window).
+static TEXTS: std::sync::LazyLock<Mutex<HashMap<String, Arc<crate::pdf::PageText>>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 /// The longer side of the picture kept with the collection for a preview (the Qt app's figure).
 const STORED: u32 = 2048;
 /// Rendered originals kept on this machine (bytes) unless `MN_PREVIEW_CACHE_MB` says otherwise.
@@ -434,7 +450,7 @@ fn trim_cache() {
 /// The format of a file whose picture is made of it (None: not one of them).
 pub fn preview_format(path: &Path) -> Option<&'static str> {
     Some(match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-        "psd" => "PSD", "psb" => "PSB", "svg" => "SVG", "heic" | "heif" | "hif" => "HEIC",
+        "psd" => "PSD", "psb" => "PSB", "svg" => "SVG", "ai" => "AI", "heic" | "heif" | "hif" => "HEIC",
         "dng" | "cr2" | "cr3" | "nef" | "arw" | "raf" | "orf" | "rw2" | "pef" | "srw" => "RAW", _ => return None })
 }
 pub struct Rendered { pub rgba: Vec<u8>, pub w: u32, pub h: u32, /// a vector file's own size
@@ -444,6 +460,8 @@ fn render(path: &Path, max: u32) -> Result<Rendered, String> {
     match preview_format(path) {
         Some("PSD" | "PSB") => crate::psd::load(path, max).map(|f| Rendered { rgba: f.rgba, w: f.w, h: f.h, nominal: None }),
         Some("SVG") => svg(path, max),
+        // an Illustrator file carries a PDF of itself: its first artboard, flat
+        Some("AI") => { let (_, w, h) = crate::pdf::info(path)?; let width = if w >= h { max } else { ((max as f32 * w / h).round() as u32).max(1) }; crate::pdf::page(path, 0, width).map(|(rgba, w, h)| Rendered { rgba, w, h, nominal: None }) }
         Some(f) => system(path, max).map_err(|e| if e.is_empty() { format!("{f} files are not read on this system yet") } else { e }),
         None => Err("not a format a picture is made of".into()),
     }
@@ -475,6 +493,13 @@ fn system(path: &Path, max: u32) -> Result<Rendered, String> { crate::imageio::l
 /// covers, it is rendered again (once per machine and version of the file: the result is kept in the cache) and
 /// sent in the stored picture's place. False: nobody listens any more.
 fn work(job: &Job, send: &mut dyn FnMut(Outcome) -> bool) -> bool {
+    // a PDF's page: drawn at the width asked; its characters are read once and kept for selection
+    if let Some(p) = job.page {
+        if !job.path.is_file() { return send(Outcome::Missing) }
+        let ok = send(match crate::pdf::page(&job.path, p, job.w) { Ok((rgba, w, h)) => Outcome::Pic { rgba, w, h, whole: false }, Err(why) => Outcome::Failed(why) });
+        if ok && !TEXTS.lock().unwrap().contains_key(&job.key) { if let Ok(t) = crate::pdf::text(&job.path, p) { let mut all = TEXTS.lock().unwrap(); if all.len() > 64 { all.clear(); } all.insert(job.key.clone(), Arc::new(t)); } }
+        return ok
+    }
     let first = decode(&job.path, job.w, job.h);
     let Some((orig, size, mtime)) = &job.orig else { return send(first) };
     let (shown, covered) = match &first { Outcome::Pic { whole, .. } => (true, !*whole), _ => (false, false) };
@@ -663,11 +688,11 @@ mod tests {
         // shown: the stored picture is enough while the original is as it was
         let orig = |r: &serde_json::Value| Some((psd.clone(), r["preview"]["size"].as_f64().unwrap() as u64, r["preview"]["mtime"].as_f64().unwrap()));
         let run = |job: &Job| { let mut got = vec![]; work(job, &mut |o| { got.push(o); true }); got };
-        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 2, h: 1, orig: orig(&rec) });
+        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 2, h: 1, orig: orig(&rec), page: None });
         assert!(matches!(got.as_slice(), [Outcome::Pic { w: 2, h: 1, .. }]));
         // the original changed (another size): the stored picture first, then the original's - and it is kept in the cache
         let mut other = crate::psd::tests::file(false, false, 8, true); let n = other.len(); other[n - 16..n - 8].fill(0); other.extend_from_slice(&[0; 2]); std::fs::write(&psd, &other).unwrap();
-        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 4, h: 2, orig: orig(&rec) });
+        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 4, h: 2, orig: orig(&rec), page: None });
         assert_eq!(got.len(), 2, "the stored picture, then the original"); assert!(matches!(&got[1], Outcome::Pic { w: 4, h: 2, whole: true, .. }));
         assert_eq!(std::fs::read_dir(cache_dir()).unwrap().count(), 1);
         // an SVG: its own size in the record, a large drawing kept
@@ -693,6 +718,23 @@ mod tests {
         assert!(fetched(&places, "data:image/png;base64,aGVsbG8=").is_err_and(|e| e.contains("not a picture")));
         assert!(remote("https://example.com/a.png") && remote("data:image/png;base64,xx") && !remote(".minnotes/a.png") && !remote("/Volumes/x/a.png"));
         assert_eq!(sniff(b"\x89PNG\r\n"), Some("png")); assert_eq!(sniff(b"<?xml version='1.0'?><svg xmlns='x'/>"), Some("svg")); assert_eq!(sniff(b"<html>"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn a_pdf_is_a_block_of_its_own_and_an_illustrator_file_a_flat_preview() {
+        let dir = std::env::temp_dir().join(format!("mn-pdfrec-test-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let places = Places { base: None, staged: Some(dir.join("media")), mappings: vec![] };
+        let (pdf, ai) = (dir.join("deck.pdf"), dir.join("icon.ai")); std::fs::write(&pdf, crate::pdf::tests::sample()).unwrap(); std::fs::write(&ai, crate::pdf::tests::sample()).unwrap();
+        let rec: serde_json::Value = serde_json::from_str(&places.record(&pdf).unwrap()).unwrap();
+        assert_eq!((rec["kind"].as_str(), rec["pages"].as_u64(), rec["w"].as_u64(), rec["h"].as_u64(), rec["src"].as_str()), (Some("pdf"), Some(1), Some(200), Some(100), pdf.to_str()));
+        assert!(!dir.join("media").exists(), "a PDF is referenced where it is: nothing is copied");
+        // its page through the worker: drawn at the width asked, and its characters kept for selection
+        let mut got = vec![]; work(&Job { key: "pdf-test-key#0".into(), path: pdf.clone(), w: 300, h: 150, orig: None, page: Some(0) }, &mut |o| { got.push(o); true });
+        assert!(matches!(got.as_slice(), [Outcome::Pic { w: 300, h: 150, whole: false, .. }]));
+        assert_eq!(TEXTS.lock().unwrap().get("pdf-test-key#0").map(|t| t.words(0, 9)), Some("Hello page".to_string()));
+        let rec: serde_json::Value = serde_json::from_str(&places.record(&ai).unwrap()).unwrap();
+        assert_eq!((rec["preview"]["format"].as_str(), rec["w"].as_u64(), rec["h"].as_u64(), rec.get("kind")), (Some("AI"), Some(2048), Some(1024), None));
+        assert!(places.locate(&rec["src"]).unwrap().is_file());
         let _ = std::fs::remove_dir_all(dir);
     }
     /// Run by hand with an address in `MN_TEST_URL` (`cargo test -p mn --release -- --ignored from_the_web --nocapture`).

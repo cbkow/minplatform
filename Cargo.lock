@@ -2484,6 +2484,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "env_logger",
+ "hayro",
  "image",
  "kurbo 0.13.1",
  "log",

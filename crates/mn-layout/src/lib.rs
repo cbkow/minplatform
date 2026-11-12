@@ -95,10 +95,14 @@ pub fn colour(s: &str) -> Option<Color> { NAMED.iter().find(|(n, _)| *n == s).an
 pub const TINT: f32 = 0.35;
 pub fn tint(s: &str) -> Option<Color> { colour(s).map(|c| c.with_alpha(TINT)) }
 
-fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>)> {
+/// The height of the strip under a PDF's page (the page readout, previous and next), page px.
+pub const PDF_STRIP: f32 = 36.0;
+/// A media record's own size, its width on the page when it has one, and whether it is a PDF (its page takes the
+/// width of its place, and a strip sits under it).
+fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>, bool)> {
     let v: serde_json::Value = serde_json::from_str(descriptor).ok()?;
     let (w, h) = (v.get("w")?.as_f64()? as f32, v.get("h")?.as_f64()? as f32);
-    (w > 0.0 && h > 0.0).then_some((w, h, v.get("dw").and_then(|d| d.as_f64()).map(|d| d as f32)))
+    (w > 0.0 && h > 0.0).then_some((w, h, v.get("dw").and_then(|d| d.as_f64()).map(|d| d as f32), v.get("kind").and_then(|k| k.as_str()) == Some("pdf")))
 }
 
 impl NoteLayout {
@@ -147,7 +151,7 @@ impl NoteLayout {
             Kind::Row { .. } | Kind::Cell { .. } => return,   // placed by their table
             Kind::Divider => { self.boxes.insert(id, Box { x, y: 0.0, w, h: self.px(self.style.divider), part: Part::Divider }); return }
             Kind::Media { descriptor } => {
-                let (bw, bh) = match media_size(descriptor).map(|(mw, mh, dw)| if self.turned.contains(&id) { (mh, mw, dw) } else { (mw, mh, dw) }) { Some((mw, mh, dw)) => { let shown = dw.map(|d| self.px(d)).unwrap_or(self.px(mw)).min(w).max(1.0); (shown, shown * mh / mw) } None => (w, self.px(self.style.media_chip)) };
+                let (bw, bh) = match media_size(descriptor).map(|(mw, mh, dw, pdf)| if self.turned.contains(&id) { (mh, mw, dw, pdf) } else { (mw, mh, dw, pdf) }) { Some((mw, mh, dw, pdf)) => { let shown = dw.map(|d| self.px(d)).unwrap_or(if pdf { w } else { self.px(mw) }).min(w).max(1.0); (shown, shown * mh / mw + if pdf { self.px(PDF_STRIP) } else { 0.0 }) } None => (w, self.px(self.style.media_chip)) };
                 self.boxes.insert(id, Box { x, y: 0.0, w: bw, h: bh, part: Part::Media }); return
             }
             _ => { let (layout, dx, dy, h) = self.shape(fonts, b, Some(w)); self.boxes.insert(id, Box { x, y: 0.0, w, h, part: Part::Text { layout, dx, dy } }); return }

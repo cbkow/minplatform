@@ -40,6 +40,7 @@ mod clip;
 mod media;
 mod psd;
 mod paste;
+mod pdf;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
 mod text_element;
@@ -81,8 +82,10 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
 enum Paste { Rich, Plain, Markdown }
 /// A picture being resized by a corner (row 312): its record before, where the pointer took hold, and the width then.
 struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, left: bool }
+/// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
+struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
-struct Files { resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, tested: bool, turned: std::collections::HashSet<BlockId> }
+struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
 /// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
@@ -247,6 +250,10 @@ impl App {
         if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, off.x, off.y, view) { g.window.request_redraw(); }
         // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
         for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
+        // text selected on a PDF's page: washed over where it is
+        if let Some(sel) = &self.files.pdf { if let Some(Kind::Media { descriptor }) = self.ed.doc.get(sel.id).map(|b| &b.kind) { if let (Some(t), Some(r)) = (self.media.page_text(descriptor), l.rect(&self.ed.doc, sel.id)) {
+            let r = r + off; let k = r.width() / t.w.max(1.0) as f64;
+            for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // the current picture: an outline, and a handle at each corner to resize it by
         let current = (!self.blank && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
             .filter(|id| matches!(self.ed.doc.get(*id).map(|b| &b.kind), Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\""))).and_then(|id| l.rect(&self.ed.doc, id)).map(|r| r + off);
@@ -699,6 +706,37 @@ impl App {
             }
         }
     }
+    /// The PDF block under a window point: its id, its page's box and its strip's box in the window, and its record.
+    fn pdf_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
+        if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
+        self.pdf_boxes(id)
+    }
+    fn pdf_boxes(&self, id: BlockId) -> Option<(BlockId, Rect, Rect, String)> {
+        let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) else { return None };
+        if serde_json::from_str::<serde_json::Value>(descriptor).ok()?.get("kind").and_then(|k| k.as_str()) != Some("pdf") { return None }
+        let r = l.rect(&self.ed.doc, id)? + kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll); let cut = r.y1 - mn_layout::PDF_STRIP as f64 * s;
+        Some((id, Rect::new(r.x0, r.y0, r.x1, cut), Rect::new(r.x0, cut, r.x1, r.y1), descriptor.clone()))
+    }
+    /// The character of a PDF block's page under a window point (the nearest when the point is beside the text).
+    fn pdf_char(&self, id: BlockId, x: f64, y: f64) -> Option<usize> {
+        let (_, page, _, d) = self.pdf_boxes(id)?; let t = self.media.page_text(&d)?; if t.chars.is_empty() || page.width() <= 0.0 { return None }
+        let k = t.w as f64 / page.width(); t.at(((x - page.x0) * k) as f32, ((y - page.y0) * k) as f32)
+    }
+    /// A PDF block shows another page. The page is the block's own (kept in its record) but turning it is not a step
+    /// of the history.
+    fn pdf_turn(&mut self, id: BlockId, by: i64) {
+        let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) else { return };
+        let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) else { return };
+        let pages = v.get("pages").and_then(|p| p.as_i64()).unwrap_or(1).max(1); let now = v.get("page").and_then(|p| p.as_i64()).unwrap_or(0);
+        let to = (now + by).clamp(0, pages - 1); if to == now { return }
+        v.insert("page".into(), serde_json::json!(to));
+        let _ = self.ed.doc.set_kind(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() });
+        self.files.pdf = None;
+        if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
     /// The picture that is current - the caret is on it, or it is the one selected block - with its box in the window.
     fn picture(&self) -> Option<(BlockId, Rect)> {
         if self.blank || self.grab.as_ref().is_some_and(|g| g.dragging) || self.ed.run_len() != 1 { return None }
@@ -956,6 +994,15 @@ impl App {
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
+        // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
+        if let Some(sel) = &self.files.pdf {
+            match key { Key::Character(c) if cmd && !shift && c.to_lowercase() == "c" => { if let Some(t) = self.pdf_boxes(sel.id).and_then(|b| self.media.page_text(&b.3)) { let words = t.words(sel.a, sel.b); if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(words); } self.block_clip = None; } return }
+                Key::Named(NamedKey::Escape) => { self.files.pdf = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Meta) => {}
+                Key::Character(c) if cmd && c.to_lowercase() == "a" => {}
+                _ => { self.files.pdf = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
+        if let Key::Character(c) = key { if cmd && !shift && c.to_lowercase() == "a" && self.ed.run_len() == 1 { if let Some(id) = self.ed.handle_block() { if let Some(t) = self.pdf_boxes(id).and_then(|b| self.media.page_text(&b.3)).filter(|t| !t.chars.is_empty()) {
+            self.files.pdf = Some(PdfSel { id, a: 0, b: t.chars.len() - 1, drag: false }); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } } }
         if self.grab.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.grab = None; if let Some(sb) = self.sidebar.as_mut() { sb.drop_row = None; } self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         if self.ctx.is_open() { if matches!(key, Key::Named(NamedKey::Escape)) { self.ctx.close(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         // where there is no native menu to take them, the file commands' keys are run here
@@ -1133,8 +1180,10 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
+            // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
+            if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
             // MN_RESIZE=<width>: the note's first picture is made current and resized to that width as a corner drag would (one undo step), then undone and redone
             if let Some(w) = std::env::var("MN_RESIZE").ok().and_then(|v| v.parse::<f64>().ok()) { use mn_edit::{Pos, Selection};
                 if let Some((id, before)) = self.ed.doc.walk().iter().find_map(|b| match &b.kind { Kind::Media { descriptor } if !descriptor.contains("\"kind\"") => Some((b.id, descriptor.clone())), _ => None }) {
@@ -1172,6 +1221,7 @@ impl ApplicationHandler for App {
         // a picture came from the decoders
         if self.media.poll() { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for m in self.media.mail() { self.media_mail(m); }
+        if let Some(id) = self.files.pdf_test { if let Some(t) = self.pdf_boxes(id).and_then(|b| self.media.page_text(&b.3)) { self.files.pdf_test = None; if !t.chars.is_empty() { println!("pdf: {} characters on the page, {} of text in words", t.chars.len(), t.words(0, t.chars.len() - 1).len()); self.files.pdf = Some(PdfSel { id, a: 0, b: t.chars.len() - 1, drag: false }); } else { println!("pdf: no text on the page"); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
@@ -1240,6 +1290,7 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
+                if let Some((id, true)) = self.files.pdf.as_ref().map(|x| (x.id, x.drag)) { if let Some(at) = self.pdf_char(id, position.x, position.y) { if let Some(sel) = self.files.pdf.as_mut() { if sel.b != at { sel.b = at; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } } return }
                 // the handle is held: past a few pixels it is a drag, and the place the blocks would land follows the pointer
                 if self.grab.is_some() {
                     let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (x, y) = self.note_point(self.pointer);
@@ -1264,6 +1315,16 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
+                // a PDF block (row 315): its strip turns the page; a drag on its page selects text
+                if state == ElementState::Released { if let Some(sel) = self.files.pdf.as_mut().filter(|x| x.drag) { sel.drag = false; if sel.a == sel.b { self.files.pdf = None; } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+                if state == ElementState::Pressed { let had = self.files.pdf.take().is_some();
+                    if let Some((id, page, strip, _)) = self.pdf_under(position.x, position.y) {
+                        if strip.contains(kurbo::Point::new(position.x, position.y)) { self.pdf_turn(id, if position.x < strip.center().x { -1 } else { 1 }); return }
+                        if page.contains(kurbo::Point::new(position.x, position.y)) { if let Some(at) = self.pdf_char(id, position.x, position.y) {
+                            // the block becomes the current one, then the drag is the page's
+                            let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
+                            self.files.pdf = Some(PdfSel { id, a: at, b: at, drag: true }); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
+                    if had { if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
                 // a corner of the current picture: the drag resizes it (row 312)
                 if state == ElementState::Released && self.files.resize.is_some() { self.resize_end(true); return }
                 if state == ElementState::Pressed { if let Some((id, r, left, _)) = self.corner_at(position.x, position.y) {

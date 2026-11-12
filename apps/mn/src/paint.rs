@@ -63,7 +63,18 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
         match (&b.kind, layout.get(b.id).map(|x| &x.part)) {
             (Kind::Divider, _) => { let y = ((r.y0 + r.y1) / 2.0).round(); fill(scene, Rect::new(r.x0, y, r.x1, y + s.max(1.0)), line()); }
             (Kind::Media { descriptor }, _) => {
-                let box_ = RoundedRect::from_rect(r, 6.0 * s);
+                // a PDF: its page, and under it a strip with the page's number among the pages, previous and next
+                let rec: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
+                let pdf = rec.get("kind").and_then(|k| k.as_str()) == Some("pdf");
+                let whole = r; let r = if pdf { Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::PDF_STRIP as f64 * s) } else { r };
+                if pdf {
+                    let (page, pages) = (rec.get("page").and_then(|p| p.as_u64()).unwrap_or(0) + 1, rec.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).max(1));
+                    let t = fonts.layout(&format!("{} / {pages}", page.min(pages)), Family::Sans, (12.0 * s) as f32, 400.0, dim()); let (cx, cy) = (whole.center().x, (r.y1 + whole.y1) / 2.0);
+                    draw_layout(scene, &t, Affine::translate((cx - t.width() as f64 / 2.0, cy - t.height() as f64 / 2.0)));
+                    for (name, dx, on) in [("caret-left", -1.0, page > 1), ("caret-right", 1.0, page < pages)] { if let Some(i) = fonts.icon(name, (16.0 * s) as f32, if on { text() } else { line() }) { draw_layout(scene, &i, Affine::translate((cx + dx * (t.width() as f64 / 2.0 + 22.0 * s) - i.width() as f64 / 2.0, cy - i.height() as f64 / 2.0))); } }
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &r);
+                }
+                let box_ = RoundedRect::from_rect(r, if pdf { 0.0 } else { 6.0 * s });
                 // a state in words: the file's name, and under it where it was looked for or why it was not read
                 let words = |scene: &mut Scene, fonts: &mut Fonts, head: &str, name: &str, more: &str| {
                     scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_);
@@ -79,24 +90,25 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         { let (ba, pa) = (r.width() / r.height(), w as f64 / h as f64); if (ba * pa - 1.0).abs() < 0.04 && (ba / pa - 1.0).abs() > 0.04 { turned.push(b.id); } }
                         let k = (r.width() / w as f64).min(r.height() / h as f64); let (dw, dh) = ((w as f64 * k).round(), (h as f64 * k).round());
                         let (x, y) = ((r.x0 + (r.width() - dw) / 2.0).round(), (r.y0 + (r.height() - dh) / 2.0).round());
-                        if fade < 1.0 { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(1.0 - fade), None, &box_); animating = true; }
+                        if fade < 1.0 { if !pdf { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(1.0 - fade), None, &box_); } animating = true; }
                         min_ui::paint::image(scene, &brush.clone().with_alpha(fade), Rect::new(x, y, x + dw, y + dh));
                         // a picture made of another file (a Photoshop file, an SVG ...) says which, small, in its corner
                         if let Some(p) = pill { let t = fonts.layout(&p, Family::Sans, (10.5 * s) as f32, 600.0, text());
                             let q = Rect::new(x + 8.0 * s, y + dh - 8.0 * s - t.height() as f64 - 4.0 * s, x + 8.0 * s + t.width() as f64 + 12.0 * s, y + dh - 8.0 * s);
                             if q.y0 > y && q.x1 < x + dw { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(0.85 * fade), None, &RoundedRect::from_rect(q, 4.0 * s)); draw_layout(scene, &t, Affine::translate((q.x0 + 6.0 * s, q.y0 + 2.0 * s))); } }
                     }
-                    View::Loading => scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_),
+                    View::Loading => if !pdf { scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_) },
                     View::Missing { name, looked } => words(scene, fonts, "Not found", &name, &looked),
                     View::Failed { name, why } => words(scene, fonts, "Cannot be shown", &name, &why),
                     View::Other => {
                         scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_);
-                        let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
+                        let v = &rec;
                         let label = format!("{} \u{2014} {}", v.get("kind").and_then(|k| k.as_str()).unwrap_or("image"), v.get("name").and_then(|k| k.as_str()).or(v.get("src").and_then(|k| k.as_str())).unwrap_or(""));
                         let l = fonts.layout_fit(&label, Family::Sans, (12.0 * s) as f32, 400.0, dim(), r.width() - 24.0 * s);
                         draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + 10.0 * s)));
                     }
                 }
+                if pdf { scene.stroke(&Stroke::new(s.max(1.0)), Affine::IDENTITY, line(), None, &r); }
             }
             (Kind::Table { header_rows, .. }, _) => {
                 for (i, row) in doc.children(Some(b.id)).iter().enumerate() {

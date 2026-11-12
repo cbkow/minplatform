@@ -40,6 +40,8 @@ image = { version = "0.25", default-features = false, features = ["gif", "webp"]
 resvg = "0.45"
 # pictures named by pasted web content are fetched and kept with the collection (row 314)
 ureq = "3"
+# PDF pages and their text (spike S10; behind apps/mn/src/pdf.rs)
+hayro = "0.9"
 base64 = "0.22"
 min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"
