@@ -680,6 +680,17 @@ impl App {
                 let kinds = records.into_iter().map(|descriptor| Kind::Media { descriptor }).collect();
                 match self.ed.insert_blocks(&at, kinds, now) { Ok(d) => { self.follow = true; self.apply(d) } Err(e) => eprintln!("drop: {e:?}") }
             }
+            // a picture named by an address has arrived: the blocks that name it point at the kept copy instead. Not a
+            // step of the history (nobody did it); a redo that brings the address back is answered the same way
+            media::Mail::Fetched { src, record } => {
+                let Ok(serde_json::Value::Object(new)) = serde_json::from_str::<serde_json::Value>(&record) else { return };
+                let hits: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => { let mut v = serde_json::from_str::<serde_json::Value>(descriptor).ok()?; let o = v.as_object_mut()?;
+                    if o.get("src").and_then(|s| s.as_str()) != Some(src.as_str()) { return None } for k in ["src", "w", "h", "name"] { if let Some(x) = new.get(k) { o.insert(k.to_string(), x.clone()); } } Some((b.id, v.to_string())) } _ => None }).collect();
+                if hits.is_empty() { return }
+                for (id, descriptor) in hits { let _ = self.ed.doc.set_kind(id, Kind::Media { descriptor }); }
+                if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
+                self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); }
+            }
             media::Mail::Relinked { records, problem } => {
                 if let Some(why) = problem { self.notice = Some((format!("Not linked \u{2014} {why}"), until)); }
                 let n = records.len(); if n == 0 { self.apply(Dirty::Nothing); return }
@@ -749,9 +760,13 @@ impl App {
         // files: only real ones (the helper also offers lines of text that look like paths - those stay text)
         if self.store.is_some() { if let Ok(paths) = min_paths::clipboard::paste_paths() { let as_text = text.as_deref().is_some_and(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).eq(paths.iter().map(String::as_str)));
             if !paths.is_empty() && !as_text && paths.iter().all(|p| std::path::Path::new(p).exists()) { self.add_files(paths.into_iter().map(Into::into).collect(), at); return Dirty::Nothing } } }
-        if let Some(c) = html.as_deref().map(paste::from_html).filter(|c| !c.is_empty()) { return frag(self, c) }
-        if self.store.is_some() { if let Some(img) = self.clipboard.as_mut().and_then(|cb| cb.get_image().ok()) { if img.width > 0 && img.height > 0 {
-            self.files.token += 1; self.files.pending.insert(self.files.token, at); self.media.add_pixels(self.files.token, img.bytes.into_owned(), img.width as u32, img.height as u32); return Dirty::Nothing } } }
+        let pixels = |me: &mut App| -> bool { if me.store.is_none() { return false } match me.clipboard.as_mut().and_then(|cb| cb.get_image().ok()).filter(|i| i.width > 0 && i.height > 0) {
+            Some(img) => { me.files.token += 1; me.files.pending.insert(me.files.token, at.clone()); me.media.add_pixels(me.files.token, img.bytes.into_owned(), img.width as u32, img.height as u32); true } None => false } };
+        if let Some(c) = html.as_deref().map(paste::from_html).filter(|c| !c.is_empty()) {
+            // a browser's Copy Image: the page's markup for one picture, and its pixels - the pixels are here already
+            if c.len() == 1 && c[0].len() == 1 && matches!(c[0][0].kind, Kind::Media { .. }) && pixels(self) { return Dirty::Nothing }
+            return frag(self, c) }
+        if pixels(self) { return Dirty::Nothing }
         text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing)
     }
     /// Files go to the helpers to become blocks at `at`.

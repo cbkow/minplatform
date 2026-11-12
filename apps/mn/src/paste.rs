@@ -140,6 +140,20 @@ impl Reader {
     fn push(&mut self, tree: Vec<Block>) { if let Some(s) = self.sinks.last_mut() { s.push(tree); } }
     fn open(&mut self, name: &str, at: &[(String, String)]) {
         match name {
+            // a picture: a block of its own, named by its address - it is fetched and kept when it is shown (row 314).
+            // Very small ones are symbols in the text (an emoji drawn as a picture): their words stand in, or nothing
+            "img" => {
+                let get = |k: &str| at.iter().find(|a| a.0 == k).map(|a| a.1.trim().to_string()).filter(|v| !v.is_empty());
+                let num = |k: &str| get(k).and_then(|v| v.trim_end_matches("px").parse::<f64>().ok()).filter(|v| *v > 0.0);
+                let Some(src) = get("src").or_else(|| get("data-src")) else { return };
+                let src = if let Some(r) = src.strip_prefix("//") { format!("https://{r}") } else { src };
+                if !crate::media::remote(&src) { return }
+                let (w, h) = (num("width"), num("height"));
+                if w.is_some_and(|w| w <= 32.0) && h.is_some_and(|h| h <= 32.0) { if let Some(alt) = get("alt").filter(|a| a.chars().count() <= 8) { self.text(&alt); } return }
+                self.flush();
+                let (w, h) = match (w, h) { (Some(w), Some(h)) => (w.round() as u32, h.round() as u32), _ => (480, 300) };
+                self.push(vec![block(Kind::Media { descriptor: serde_json::json!({ "src": src, "w": w, "h": h }).to_string() }, String::new(), Spans::new())]);
+            }
             "br" => { if self.cur.kind.is_some() && !self.cur.text.is_empty() { self.cur.text.push('\n'); } }
             "hr" => { self.flush(); self.push(vec![block(Kind::Divider, String::new(), Spans::new())]); }
             "p" | "div" | "section" | "article" | "header" | "footer" | "main" | "aside" | "nav" | "figure" | "figcaption" | "dl" | "dt" | "dd" | "address" | "center" | "body" | "html" | "caption" | "details" | "summary" => {
@@ -258,13 +272,28 @@ fn inline(src: &str) -> (String, Spans) {
     let (mut out, mut spans) = (String::new(), Spans::new()); walk(src, &mut out, &mut spans, &[]); (out, spans)
 }
 
+/// Pictures in Markdown (`![words](address "title")`) are taken out of the text: each follows its paragraph as a
+/// block, when its address can be fetched from (a file's path has no place to be looked for from here).
+fn images(s: &str) -> (String, Vec<String>) {
+    let (mut out, mut found, mut rest) = (String::new(), vec![], s);
+    while let Some(i) = rest.find("![") {
+        let Some((j, k)) = rest[i..].find("](").and_then(|j| rest[i + j + 2..].find(')').map(|k| (i + j, k))) else { break };
+        out.push_str(&rest[..i]);
+        let addr = rest[j + 2..j + 2 + k].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']).to_string();
+        if crate::media::remote(&addr) { found.push(addr); rest = &rest[j + 2 + k + 1..]; if out.ends_with(' ') && rest.starts_with(' ') { rest = &rest[1..]; } continue }
+        out.push_str(&rest[i + 2..j]); rest = &rest[j + 2 + k + 1..];
+    }
+    out.push_str(rest); (out, found)
+}
+
 /// Markdown source as blocks: headings, quotes, lists (nested by their indent; task boxes), fenced code, rules,
 /// paragraphs (lines of one paragraph are joined by a space; two spaces or a backslash at a line's end keep the break).
 pub fn from_markdown(text: &str) -> Clip {
     let mut out: Clip = vec![]; let mut para: Vec<String> = vec![]; let mut indents: Vec<usize> = vec![];
     let flush = |out: &mut Clip, para: &mut Vec<String>, kind: Kind| { if para.is_empty() { return }
         let mut joined = String::new(); for (i, l) in para.iter().enumerate() { let hard = l.ends_with("  ") || l.ends_with('\\'); joined.push_str(l.trim_end().trim_end_matches('\\')); if i + 1 < para.len() { joined.push(if hard { '\n' } else { ' ' }); } }
-        para.clear(); let (t, s) = inline(joined.trim()); if !t.is_empty() { out.push(vec![block(kind, t, s)]); } };
+        para.clear(); let (joined, pictures) = images(&joined); let (t, s) = inline(joined.trim()); if !t.is_empty() { out.push(vec![block(kind, t, s)]); }
+        for src in pictures { out.push(vec![block(Kind::Media { descriptor: serde_json::json!({ "src": src, "w": 480, "h": 300 }).to_string() }, String::new(), Spans::new())]); } };
     let mut lines = text.lines().map(|l| l.replace('\t', "    ")).peekable();
     while let Some(line) = lines.next() {
         let t = line.trim_start(); let indent = line.len() - t.len();
@@ -318,6 +347,13 @@ mod tests {
         // a bare run of text, and what a Windows browser marks as the fragment
         assert_eq!(kinds(&from_html("<html><body>before<!--StartFragment--><span>just <i>this</i></span><!--EndFragment-->after</body></html>")), [(Kind::Paragraph, "just this")]);
         assert!(from_html("<img src='x.png'>  ").is_empty());
+        // pictures: blocks of their own, named by their address; a tiny one is a symbol and its words stand in
+        let c = from_html("<p>Before <img src=\"https://example.com/a/pic.png?x=1\" width=\"640\" height=\"360\"> after <img src='https://example.com/e.png' width=16 height=16 alt=':)'></p><img src='//example.com/b.jpg'>");
+        assert_eq!(c.len(), 4); assert_eq!(c[0][0].text, "Before"); assert_eq!(c[2][0].text, "after :)");
+        assert!(matches!(&c[1][0].kind, Kind::Media { descriptor } if descriptor.contains("https://example.com/a/pic.png?x=1") && descriptor.contains("\"w\":640")));
+        assert!(matches!(&c[3][0].kind, Kind::Media { descriptor } if descriptor.contains("https://example.com/b.jpg") && descriptor.contains("\"h\":300")));
+        let c = from_markdown("Text ![a chart](https://example.com/chart.png \"t\") goes on, ![local](./x.png) too.");
+        assert_eq!(c.len(), 2); assert_eq!(c[0][0].text, "Text goes on, local too."); assert!(matches!(&c[1][0].kind, Kind::Media { descriptor } if descriptor.contains("chart.png")));
     }
     #[test]
     fn a_table_of_data_is_a_table_and_a_table_of_one_column_is_its_content() {

@@ -53,6 +53,9 @@ pub struct Places { base: Option<PathBuf>, staged: Option<PathBuf>, mappings: Ve
 pub enum Mail {
     /// Dropped / chosen files as block records, in order; what could not be taken, in words.
     Added { token: u64, records: Vec<String>, refused: Vec<String> },
+    /// A picture named by an address (pasted web content, row 314) was fetched and is kept with the collection: every
+    /// block whose record still names `src` takes these fields in its place.
+    Fetched { src: String, record: String },
     /// Pictures pointed at their files again: each block with its new record.
     Relinked { records: Vec<(mn_doc::BlockId, String)>, problem: Option<String> },
 }
@@ -61,13 +64,15 @@ pub struct Media {
     entries: HashMap<String, Entry>, queue: Arc<Queue>, done: mpsc::Receiver<(String, u32, Outcome)>,
     places: Places, budget: usize, total: usize, frame: u64,
     mail_tx: mpsc::Sender<Mail>, mail: mpsc::Receiver<Mail>, wake: Arc<dyn Fn() + Send + Sync>,
+    /// addresses being fetched or fetched (their record), failures as they come back, and those to be told again
+    fetching: HashMap<String, Option<String>>, fetch_tx: mpsc::Sender<(String, Result<String, String>)>, fetched: mpsc::Receiver<(String, Result<String, String>)>, again: std::collections::HashSet<String>, slots: Arc<(Mutex<usize>, Condvar)>,
 }
 
 impl Media {
     /// `wake` is called from a worker when a picture is ready (it must make the window poll and redraw).
     pub fn new(settings: &Path, wake: impl Fn() + Send + Sync + 'static) -> Media {
         let queue = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), more: Condvar::new() });
-        let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel();
+        let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel(); let (ftx, frx) = mpsc::channel();
         std::thread::spawn(trim_cache);
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
         for i in 0..n {
@@ -83,7 +88,7 @@ impl Media {
         }
         let mappings = std::fs::read_to_string(settings.join("mappings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let budget = std::env::var("MN_MEDIA_BUDGET_MB").ok().and_then(|v| v.parse::<usize>().ok()).map(|mb| mb << 20).unwrap_or(BUDGET);
-        Media { entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake }
+        Media { entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake, fetching: HashMap::new(), fetch_tx: ftx, fetched: frx, again: Default::default(), slots: Arc::new((Mutex::new(0), Condvar::new())) }
     }
     /// The folder the collection's file is in (`.minnotes/` is beside it) and where this session keeps added files
     /// until a save. A change of folder forgets every picture.
@@ -134,7 +139,29 @@ impl Media {
         });
     }
     /// What the helpers sent back.
-    pub fn mail(&mut self) -> Vec<Mail> { self.mail.try_iter().collect() }
+    pub fn mail(&mut self) -> Vec<Mail> {
+        let mut out: Vec<Mail> = self.mail.try_iter().collect();
+        for (src, got) in self.fetched.try_iter().collect::<Vec<_>>() { match got {
+            Ok(record) => { self.fetching.insert(src.clone(), Some(record.clone())); out.push(Mail::Fetched { src, record }); }
+            Err(why) => { if let Some(e) = self.entries.get_mut(&serde_json::Value::String(src.clone()).to_string()) { e.state = State::Failed(why); } }
+        } }
+        // a record that names an address already fetched (a redo, another note): told again
+        for src in std::mem::take(&mut self.again) { if let Some(Some(record)) = self.fetching.get(&src) { out.push(Mail::Fetched { src, record: record.clone() }); } }
+        out
+    }
+    /// A picture named by an address is fetched (three at a time), kept with the collection, and reported as
+    /// [`Mail::Fetched`]; asked once per address.
+    fn fetch(&mut self, src: &str) {
+        match self.fetching.get(src) { Some(Some(_)) => { self.again.insert(src.to_string()); return } Some(None) => return, None => {} }
+        self.fetching.insert(src.to_string(), None);
+        let (places, tx, wake, slots, src) = (self.places.clone(), self.fetch_tx.clone(), self.wake.clone(), self.slots.clone(), src.to_string());
+        let _ = std::thread::Builder::new().name("mn-media-fetch".into()).spawn(move || {
+            { let mut n = slots.0.lock().unwrap(); while *n >= 3 { n = slots.1.wait(n).unwrap(); } *n += 1; }
+            let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetched(&places, &src))).unwrap_or_else(|_| Err("the fetch stopped".into()));
+            { *slots.0.lock().unwrap() -= 1; slots.1.notify_one(); }
+            let _ = tx.send((src, got)); wake();
+        });
+    }
     /// A picture's record names a file that is not there (or cannot be looked for).
     pub fn is_missing(&self, descriptor: &str) -> bool {
         let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
@@ -182,6 +209,13 @@ impl Media {
         let orig = pv.and_then(|p| Some((self.places.locate(p.get("src")?).ok()?, p.get("size").and_then(|x| x.as_f64()).unwrap_or(0.0) as u64, p.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0))));
         let pill = pv.and_then(|p| p.get("format")).and_then(|f| f.as_str()).map(str::to_string);
         let (w, h) = { let (w, h) = (w.ceil().max(1.0), h.ceil().max(1.0)); let k = (LONGEST as f64 / w.max(h)).min(1.0); (((w * k) as u32).max(1), ((h * k) as u32).max(1)) };
+        // named by an address: shown as loading while it is fetched; the record is replaced when it arrives
+        if let Some(addr) = src.as_str().filter(|s| remote(s)) {
+            if self.places.staged.is_none() { return View::Missing { name: String::new(), looked: "on the web; a collection with a file is needed to keep it".into() } }
+            let addr = addr.to_string(); self.fetch(&addr);
+            let e = self.entries.entry(key).or_insert(Entry { state: State::Loading, name: short(&addr), asked: 0, whole: false, used: self.frame }); e.used = self.frame;
+            return match &e.state { State::Failed(why) => View::Failed { name: e.name.clone(), why: why.clone() }, _ => View::Loading }
+        }
         if !self.entries.contains_key(&key) {
             let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string);
             let (state, name, asked) = match self.places.locate(src) {
@@ -288,6 +322,14 @@ impl Places {
         Ok(serde_json::json!({ "src": src, "w": w, "h": h, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             "preview": { "src": self.reference(path), "format": format, "mtime": mtime_ms(&m), "size": m.len() as f64 } }))
     }
+    /// As [`Self::picture`], for a file that will not stay (a fetched one): always copied.
+    fn picture_copied(&self, path: &Path) -> Result<serde_json::Value, String> {
+        let (w, h) = size_of(path)?; let (w, h) = if orientation(path) >= 5 { (h, w) } else { (w, h) };
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "img".into());
+        Ok(serde_json::json!({ "src": self.keep_bytes(&stem, &ext, &bytes)?, "w": w, "h": h, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() }))
+    }
     /// A picture file as a block record: its size as it is SEEN (a JPEG lying on its side is measured upright).
     fn picture(&self, path: &Path) -> Result<serde_json::Value, String> {
         let p = path.to_string_lossy();
@@ -327,6 +369,45 @@ pub fn publish(staged: &Path, side: &Path, also: Option<&Path>) -> std::io::Resu
 }
 
 // ── the worker's side
+
+/// A `src` that is an address to fetch from, not a file of this machine or the collection.
+pub fn remote(s: &str) -> bool { s.starts_with("http://") || s.starts_with("https://") || s.starts_with("data:image/") }
+/// An address in few words (for a state shown in the box).
+fn short(addr: &str) -> String { if addr.starts_with("data:") { "an embedded picture".into() } else { addr.split(['?', '#']).next().unwrap_or(addr).chars().take(80).collect() } }
+/// What a picture's first bytes say it is.
+fn sniff(b: &[u8]) -> Option<&'static str> {
+    let text = || { let head = String::from_utf8_lossy(&b[..b.len().min(512)]).to_ascii_lowercase(); head.contains("<svg") };
+    Some(if b.starts_with(b"\x89PNG") { "png" } else if b.starts_with(&[0xff, 0xd8]) { "jpg" } else if b.starts_with(b"GIF8") { "gif" } else if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" { "webp" }
+        else if b.starts_with(b"BM") { "bmp" } else if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") { "tif" } else if b.starts_with(b"8BPS") { "psd" }
+        else if b.len() > 12 && &b[4..8] == b"ftyp" { if &b[8..12] == b"avif" { "avif" } else { "heic" } } else if text() { "svg" } else { return None })
+}
+/// The picture an address names, kept with the collection as a dropped file of it would be: its record.
+fn fetched(places: &Places, addr: &str) -> Result<String, String> {
+    const MOST: u64 = 64 << 20;
+    let (bytes, name): (Vec<u8>, String) = if let Some(rest) = addr.strip_prefix("data:") {
+        let (head, data) = rest.split_once(',').ok_or("the embedded picture is not complete")?;
+        let bytes = if head.ends_with(";base64") { use base64::Engine; base64::engine::general_purpose::STANDARD.decode(data.trim().replace(['\n', '\r', ' '], "")).map_err(|e| e.to_string())? } else { min_paths::url::percent_decode(data).into_bytes() };
+        (bytes, "pasted".into())
+    } else {
+        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(30))).build().into();
+        let mut resp = agent.get(addr).header("User-Agent", "minNotes").header("Accept", "image/*,*/*;q=0.5").call().map_err(|e| e.to_string())?;
+        let bytes = resp.body_mut().with_config().limit(MOST).read_to_vec().map_err(|e| e.to_string())?;
+        let last = addr.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("");
+        (bytes, min_paths::url::percent_decode(last))
+    };
+    let ext = sniff(&bytes).ok_or("what came back is not a picture")?;
+    if ext == "avif" { return Err("AVIF pictures are not read yet".into()) }
+    let stem: String = std::path::Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "picture".into()).chars().filter(|c| !matches!(c, '/' | '\\' | ':')).take(60).collect();
+    // through a file of its own, so that it is measured, copied (or previewed) exactly as a dropped file is
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = cache_dir().join(format!("fetch-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let tmp = dir.join(format!("{stem}.{ext}"));
+    let rec = std::fs::write(&tmp, &bytes).map_err(|e| e.to_string()).and_then(|_| if readable(&tmp) { places.picture_copied(&tmp) } else if let Some(f) = preview_format(&tmp) { places.preview(&tmp, f) } else { Err(format!("{} pictures are not read yet", ext.to_uppercase())) });
+    let _ = std::fs::remove_dir_all(&dir);
+    // a preview of a fetched file has no original that stays: it is a plain picture
+    rec.map(|mut v| { if let Some(o) = v.as_object_mut() { o.remove("preview"); } v.to_string() })
+}
 
 /// The longer side of the picture kept with the collection for a preview (the Qt app's figure).
 const STORED: u32 = 2048;
@@ -599,6 +680,29 @@ mod tests {
         let n = std::fs::read_dir(dir.join("media")).unwrap().count(); let _ = places.record(&svg).unwrap(); assert_eq!(std::fs::read_dir(dir.join("media")).unwrap().count(), n);
         unsafe { std::env::remove_var("MN_SESSIONS_DIR"); }
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn an_embedded_picture_is_kept_with_the_collection_and_what_is_not_a_picture_is_refused() {
+        let dir = std::env::temp_dir().join(format!("mn-fetch-test-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let places = Places { base: None, staged: Some(dir.join("media")), mappings: vec![] };
+        // the one red pixel, as a browser embeds it
+        let rec: serde_json::Value = serde_json::from_str(&fetched(&places, "data:image/gif;base64,R0lGODlhAQABAIAAAP8AAAAAACwAAAAAAQABAAACAkQBADs=").unwrap()).unwrap();
+        assert_eq!((rec["w"].as_u64(), rec["h"].as_u64()), (Some(1), Some(1))); assert!(rec.get("preview").is_none());
+        let kept = places.locate(&rec["src"]).unwrap(); assert!(kept.is_file() && kept.extension().unwrap() == "gif");
+        assert!(matches!(decode(&kept, 4, 4), Outcome::Pic { w: 1, h: 1, .. }));
+        assert!(fetched(&places, "data:image/png;base64,aGVsbG8=").is_err_and(|e| e.contains("not a picture")));
+        assert!(remote("https://example.com/a.png") && remote("data:image/png;base64,xx") && !remote(".minnotes/a.png") && !remote("/Volumes/x/a.png"));
+        assert_eq!(sniff(b"\x89PNG\r\n"), Some("png")); assert_eq!(sniff(b"<?xml version='1.0'?><svg xmlns='x'/>"), Some("svg")); assert_eq!(sniff(b"<html>"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    /// Run by hand with an address in `MN_TEST_URL` (`cargo test -p mn --release -- --ignored from_the_web --nocapture`).
+    #[test]
+    #[ignore]
+    fn a_picture_is_fetched_from_the_web() {
+        let Ok(url) = std::env::var("MN_TEST_URL") else { return };
+        let dir = std::env::temp_dir().join(format!("mn-web-test-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+        let rec = fetched(&Places { base: None, staged: Some(dir.join("media")), mappings: vec![] }, &url); println!("{rec:?}");
+        assert!(rec.is_ok()); let _ = std::fs::remove_dir_all(dir);
     }
     #[cfg(target_os = "macos")]
     #[test]
