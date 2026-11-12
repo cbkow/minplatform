@@ -38,6 +38,8 @@ mod footer;
 mod colours;
 mod clip;
 mod media;
+mod psd;
+#[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
 mod text_element;
 

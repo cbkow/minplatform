@@ -26,7 +26,8 @@ pub enum View<'a> {
     Other,
     Loading,
     /// The picture and how far its fade has come (0..1).
-    Ready { brush: &'a peniko::ImageBrush, w: u32, h: u32, fade: f32 },
+    Ready { brush: &'a peniko::ImageBrush, w: u32, h: u32, fade: f32, /// a preview's format, shown small on it
+        pill: Option<String> },
     /// The file is not there: its name, and where it was looked for (or why it could not be looked for).
     Missing { name: String, looked: String },
     /// The file is there and could not be read.
@@ -39,7 +40,8 @@ struct Entry { state: State, name: String, /// the width asked of the decoder la
     asked: u32, /// the file has no more pixels than the picture held
     whole: bool, used: u64 }
 
-struct Job { key: String, path: PathBuf, w: u32, h: u32 }
+struct Job { key: String, path: PathBuf, w: u32, h: u32, /// a preview's original (row 313): where it is, and its size and time when the preview was made
+    orig: Option<(PathBuf, u64, f64)> }
 enum Outcome { Pic { rgba: Vec<u8>, w: u32, h: u32, whole: bool }, Missing, Failed(String) }
 struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar }
 
@@ -66,15 +68,17 @@ impl Media {
     pub fn new(settings: &Path, wake: impl Fn() + Send + Sync + 'static) -> Media {
         let queue = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), more: Condvar::new() });
         let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel();
+        std::thread::spawn(trim_cache);
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
         for i in 0..n {
             let (q, tx, wake) = (queue.clone(), tx.clone(), wake.clone());
             let _ = std::thread::Builder::new().name(format!("mn-media-{i}")).spawn(move || loop {
                 // the newest request first: it is what is on screen now
                 let job = { let mut j = q.jobs.lock().unwrap(); loop { if let Some(x) = j.pop_back() { break x } j = q.more.wait(j).unwrap(); } };
-                let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(&job.path, job.w, job.h))).unwrap_or_else(|_| Outcome::Failed("the decoder stopped".into()));
-                if tx.send((job.key, job.w, out)).is_err() { return }
-                wake();
+                // a preview answers twice: the stored picture at once, then (when it is worth it) the original, sharper
+                let mut send = |out: Outcome| { let ok = tx.send((job.key.clone(), job.w, out)).is_ok(); wake(); ok };
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&job, &mut send))).unwrap_or_else(|_| send(Outcome::Failed("the decoder stopped".into())));
+                if !ok { return }
             });
         }
         let mappings = std::fs::read_to_string(settings.join("mappings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -111,8 +115,8 @@ impl Media {
                     if v.get("src").is_some_and(|s| places.locate(s).is_ok_and(|p| p.is_file())) { continue }
                     let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string).or_else(|| v.get("src").and_then(|s| s.as_str()).and_then(|s| s.rsplit(['/', '\\']).next().map(str::to_string))).unwrap_or_default();
                     let c = folder.join(&name); if name.is_empty() || !c.is_file() { continue } c };
-                match places.picture(&to) {
-                    Ok(serde_json::Value::Object(new)) => { for k in ["src", "w", "h", "name"] { if let Some(x) = new.get(k) { v.insert(k.to_string(), x.clone()); } } v.remove("preview"); records.push((id, serde_json::Value::Object(v).to_string())); }
+                match if let Some(f) = preview_format(&to) { places.preview(&to, f) } else { places.picture(&to) } {
+                    Ok(serde_json::Value::Object(new)) => { for k in ["src", "w", "h", "name", "preview"] { if let Some(x) = new.get(k) { v.insert(k.to_string(), x.clone()); } } if !new.contains_key("preview") { v.remove("preview"); } records.push((id, serde_json::Value::Object(v).to_string())); }
                     Ok(_) => {}
                     Err(why) => if id == chosen { problem = Some(why) },
                 }
@@ -164,29 +168,33 @@ impl Media {
         if v.get("kind").is_some() { return View::Other }
         let Some(src) = v.get("src") else { return View::Other };
         let key = src.to_string();
+        // a preview (row 313): `src` is the picture made of the original, `preview` says where the original is
+        let pv = v.get("preview");
+        let orig = pv.and_then(|p| Some((self.places.locate(p.get("src")?).ok()?, p.get("size").and_then(|x| x.as_f64()).unwrap_or(0.0) as u64, p.get("mtime").and_then(|x| x.as_f64()).unwrap_or(0.0))));
+        let pill = pv.and_then(|p| p.get("format")).and_then(|f| f.as_str()).map(str::to_string);
         let (w, h) = { let (w, h) = (w.ceil().max(1.0), h.ceil().max(1.0)); let k = (LONGEST as f64 / w.max(h)).min(1.0); (((w * k) as u32).max(1), ((h * k) as u32).max(1)) };
         if !self.entries.contains_key(&key) {
             let name = v.get("name").and_then(|n| n.as_str()).map(str::to_string);
             let (state, name, asked) = match self.places.locate(src) {
-                Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h); (State::Loading, name, w) }
+                Ok(path) => { let name = name.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.ask(&key, path, w, h, orig.clone()); (State::Loading, name, w) }
                 Err(why) => (State::Missing(why), name.unwrap_or_default(), 0),
             };
             self.entries.insert(key.clone(), Entry { state, name, asked, whole: false, used: self.frame });
         }
         // shown larger than what is held (a wider window, a denser screen): the same file again, larger
         let again = { let e = &self.entries[&key]; matches!(&e.state, State::Ready(_)) && !e.whole && w > e.asked + e.asked / 8 };
-        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h); self.entries.get_mut(&key).unwrap().asked = w; } }
+        if again { if let Ok(path) = self.places.locate(src) { self.ask(&key, path, w, h, orig); self.entries.get_mut(&key).unwrap().asked = w; } }
         let looked = match &self.entries[&key].state { State::Missing(why) if why.is_empty() => self.places.locate(src).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), State::Missing(why) => why.clone(), _ => String::new() };
         let e = self.entries.get_mut(&key).unwrap(); e.used = self.frame;
         match &e.state {
             State::Loading => View::Loading,
-            State::Ready(p) => View::Ready { brush: &p.brush, w: p.w, h: p.h, fade: (p.arrived.elapsed().as_millis() as f32 / FADE_MS as f32).min(1.0) },
+            State::Ready(p) => View::Ready { brush: &p.brush, w: p.w, h: p.h, fade: (p.arrived.elapsed().as_millis() as f32 / FADE_MS as f32).min(1.0), pill },
             State::Missing(_) => View::Missing { name: e.name.clone(), looked },
             State::Failed(why) => View::Failed { name: e.name.clone(), why: why.clone() },
         }
     }
-    fn ask(&self, key: &str, path: PathBuf, w: u32, h: u32) {
-        let mut j = self.queue.jobs.lock().unwrap(); j.retain(|x| x.key != key); j.push_back(Job { key: key.to_string(), path, w, h }); self.queue.more.notify_one();
+    fn ask(&self, key: &str, path: PathBuf, w: u32, h: u32, orig: Option<(PathBuf, u64, f64)>) {
+        let mut j = self.queue.jobs.lock().unwrap(); j.retain(|x| x.key != key); j.push_back(Job { key: key.to_string(), path, w, h, orig }); self.queue.more.notify_one();
     }
     /// Bytes of decoded pictures held, and how many (for a scripted look).
     pub fn held(&self) -> (usize, usize) { (self.total, self.entries.values().filter(|e| matches!(e.state, State::Ready(_))).count()) }
@@ -238,12 +246,34 @@ impl Places {
         if let Err(e) = done { let _ = std::fs::remove_file(&tmp); return Err(e.to_string()) }
         let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();
         let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "img".into());
-        let name = format!("{}-{:08x}.{ext}", if stem.is_empty() { "picture" } else { &stem }, (hash >> 32) as u32 ^ hash as u32);
+        self.settle(dir, &tmp, &stem, &ext, hash)
+    }
+    /// A file written under a temporary name in the waiting place takes its lasting name; when the same content is
+    /// there already (in this session, or beside the document) the new copy is dropped.
+    fn settle(&self, dir: &Path, tmp: &Path, stem: &str, ext: &str, hash: u64) -> Result<serde_json::Value, String> {
+        let name = format!("{}-{:08x}.{ext}", if stem.is_empty() { "picture" } else { stem }, (hash >> 32) as u32 ^ hash as u32);
         let at = dir.join(&name);
-        // the same content under the same name is there already (in this session, or beside the document)
         let there = at.is_file() || self.base.as_ref().is_some_and(|b| b.join(".minnotes").join(&name).is_file());
-        if there { let _ = std::fs::remove_file(&tmp); } else { std::fs::rename(&tmp, &at).map_err(|e| e.to_string())?; }
+        if there { let _ = std::fs::remove_file(tmp); } else { std::fs::rename(tmp, &at).map_err(|e| e.to_string())?; }
         Ok(serde_json::Value::String(format!(".minnotes/{name}")))
+    }
+    /// A file whose picture is MADE of it (a Photoshop file, an SVG, a camera's HEIC or RAW; row 313), as the Qt app's
+    /// preview record: `src` = a PNG of it (its longer side at most 2048) kept with the collection, so the picture
+    /// shows wherever the collection is opened; `preview` = the original, always referenced where it is, with its
+    /// size and time. An SVG's `w` / `h` are its own nominal size; the others' are the PNG's.
+    fn preview(&self, path: &Path, format: &str) -> Result<serde_json::Value, String> {
+        let r = render(path, STORED)?;
+        let png = min_image::write::png_rgba8_bytes(&r.rgba, r.w, r.h)?;
+        let dir = self.staged.as_ref().ok_or("the collection has no file yet: save it first")?;
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(format!(".adding-{}-{:?}.tmp", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
+        std::fs::write(&tmp, &png).map_err(|e| e.to_string())?;
+        let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();
+        let src = self.settle(dir, &tmp, &stem, "png", fnv(&png))?;
+        let m = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        let (w, h) = r.nominal.unwrap_or((r.w, r.h));
+        Ok(serde_json::json!({ "src": src, "w": w, "h": h, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            "preview": { "src": self.reference(path), "format": format, "mtime": mtime_ms(&m), "size": m.len() as f64 } }))
     }
     /// A picture file as a block record: its size as it is SEEN (a JPEG lying on its side is measured upright).
     fn picture(&self, path: &Path) -> Result<serde_json::Value, String> {
@@ -258,6 +288,7 @@ impl Places {
         if path.is_dir() { return Err("folders are not taken yet".into()) }
         if !path.is_file() { return Err("it is not there".into()) }
         if readable(path) { return self.picture(path).map(|v| v.to_string()) }
+        if let Some(format) = preview_format(path) { return self.preview(path, format).map(|v| v.to_string()) }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         Ok(serde_json::json!({ "kind": "file", "src": self.reference(path), "name": name, "ext": path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default() }).to_string())
     }
@@ -283,6 +314,90 @@ pub fn publish(staged: &Path, side: &Path, also: Option<&Path>) -> std::io::Resu
 }
 
 // ── the worker's side
+
+/// The longer side of the picture kept with the collection for a preview (the Qt app's figure).
+const STORED: u32 = 2048;
+/// Rendered originals kept on this machine (bytes) unless `MN_PREVIEW_CACHE_MB` says otherwise.
+const CACHE: u64 = 5 << 30;
+
+fn fnv(bytes: &[u8]) -> u64 { let mut h = 0xcbf2_9ce4_8422_2325u64; for b in bytes { h = (h ^ *b as u64).wrapping_mul(0x0000_0100_0000_01b3); } h }
+fn mtime_ms(m: &std::fs::Metadata) -> f64 { m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as f64).unwrap_or(0.0) }
+/// Where rendered originals are kept on this machine (scripted runs keep theirs beside their sessions).
+fn cache_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("MN_SESSIONS_DIR") { return PathBuf::from(p).join("preview-cache") }
+    let base = if cfg!(target_os = "macos") { std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches")) } else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(PathBuf::from) } else { std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or(std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))) };
+    base.unwrap_or_else(std::env::temp_dir).join("minNotes").join("previews")
+}
+/// Over the budget, the files used longest ago go (a file's time is set when it is used).
+fn trim_cache() {
+    let budget = std::env::var("MN_PREVIEW_CACHE_MB").ok().and_then(|v| v.parse::<u64>().ok()).map(|mb| mb << 20).unwrap_or(CACHE);
+    let Ok(list) = std::fs::read_dir(cache_dir()) else { return };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = list.flatten().filter_map(|e| { let m = e.metadata().ok()?; m.is_file().then(|| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), e.path())) }).collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum(); files.sort();
+    for (_, len, p) in files { if total <= budget { break } if std::fs::remove_file(&p).is_ok() { total -= len; } }
+}
+
+/// The format of a file whose picture is made of it (None: not one of them).
+pub fn preview_format(path: &Path) -> Option<&'static str> {
+    Some(match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "psd" => "PSD", "psb" => "PSB", "svg" => "SVG", "heic" | "heif" | "hif" => "HEIC",
+        "dng" | "cr2" | "cr3" | "nef" | "arw" | "raf" | "orf" | "rw2" | "pef" | "srw" => "RAW", _ => return None })
+}
+pub struct Rendered { pub rgba: Vec<u8>, pub w: u32, pub h: u32, /// a vector file's own size
+    pub nominal: Option<(u32, u32)> }
+/// The picture of such a file, its longer side at most `max`.
+fn render(path: &Path, max: u32) -> Result<Rendered, String> {
+    match preview_format(path) {
+        Some("PSD" | "PSB") => crate::psd::load(path, max).map(|f| Rendered { rgba: f.rgba, w: f.w, h: f.h, nominal: None }),
+        Some("SVG") => svg(path, max),
+        Some(f) => system(path, max).map_err(|e| if e.is_empty() { format!("{f} files are not read on this system yet") } else { e }),
+        None => Err("not a format a picture is made of".into()),
+    }
+}
+/// An SVG drawn to pixels with its longer side `max` (it has no pixels of its own to run out of).
+fn svg(path: &Path, max: u32) -> Result<Rendered, String> {
+    use resvg::{tiny_skia, usvg};
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut opt = usvg::Options::default(); opt.fontdb_mut().load_system_fonts();
+    opt.resources_dir = path.parent().map(|p| p.to_path_buf());
+    let tree = usvg::Tree::from_data(&data, &opt).map_err(|e| e.to_string())?;
+    let (nw, nh) = (tree.size().width() as f64, tree.size().height() as f64); let long = nw.max(nh).max(1.0);
+    let k = max as f64 / long;
+    let (w, h) = (((nw * k).round() as u32).max(1), ((nh * k).round() as u32).max(1));
+    let mut pm = tiny_skia::Pixmap::new(w, h).ok_or("the SVG is too large to draw")?;
+    resvg::render(&tree, tiny_skia::Transform::from_scale((w as f64 / nw) as f32, (h as f64 / nh) as f32), &mut pm.as_mut());
+    // the drawing's colour is multiplied by its alpha: divided out
+    let mut rgba = pm.take(); for px in rgba.chunks_exact_mut(4) { let a = px[3] as u32; if a > 0 && a < 255 { for c in &mut px[..3] { *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8; } } }
+    Ok(Rendered { rgba, w, h, nominal: Some(((nw.round() as u32).max(1), (nh.round() as u32).max(1))) })
+}
+/// The system's own decoders (HEIC, camera RAW). An empty error: this system has none wired yet.
+#[cfg(not(target_os = "macos"))]
+fn system(_path: &Path, _max: u32) -> Result<Rendered, String> { Err(String::new()) }
+#[cfg(target_os = "macos")]
+fn system(path: &Path, max: u32) -> Result<Rendered, String> { crate::imageio::load(path, max).map(|(rgba, w, h)| Rendered { rgba, w, h, nominal: None }) }
+
+/// One request. A plain picture: decoded and sent. A preview: the stored picture is sent at once; then the ORIGINAL
+/// is looked at - when it has changed since the preview was made, or the box is larger than the stored picture
+/// covers, it is rendered again (once per machine and version of the file: the result is kept in the cache) and
+/// sent in the stored picture's place. False: nobody listens any more.
+fn work(job: &Job, send: &mut dyn FnMut(Outcome) -> bool) -> bool {
+    let first = decode(&job.path, job.w, job.h);
+    let Some((orig, size, mtime)) = &job.orig else { return send(first) };
+    let (shown, covered) = match &first { Outcome::Pic { whole, .. } => (true, !*whole), _ => (false, false) };
+    let Ok(m) = std::fs::metadata(orig) else { return send(first) };   // the original is away: the stored picture is what there is
+    let changed = m.len() != *size || (mtime_ms(&m) - *mtime).abs() > 1500.0;
+    if shown && covered && !changed { return send(first) }
+    let failed = match first { Outcome::Pic { rgba, w, h, .. } => { if !send(Outcome::Pic { rgba, w, h, whole: false }) { return false } None } other => Some(other) };
+    let long = if job.w.max(job.h) <= STORED { STORED } else { LONGEST };
+    let at = cache_dir().join(format!("{:016x}-{long}.png", fnv(format!("{}|{}|{}", orig.display(), m.len(), mtime_ms(&m)).as_bytes())));
+    let got = if at.is_file() { let _ = std::fs::File::options().write(true).open(&at).and_then(|f| f.set_modified(std::time::SystemTime::now())); min_image::load(&at.to_string_lossy(), "", 2).map(|i| rgba8(&i)).map_err(|e| e.to_string()) }
+        else { render(orig, long).map(|r| { if let Ok(png) = min_image::write::png_rgba8_bytes(&r.rgba, r.w, r.h) { let _ = std::fs::create_dir_all(cache_dir()); let tmp = at.with_extension(format!("{}.tmp", std::process::id())); if std::fs::write(&tmp, png).and_then(|_| std::fs::rename(&tmp, &at)).is_err() { let _ = std::fs::remove_file(&tmp); } } (r.rgba, r.w, r.h) }) };
+    match got {
+        Ok((mut rgba, mut w, mut h)) => { let whole = long == LONGEST || w.max(h) < long; if w > job.w && h > job.h { let (tw, th) = fit(w, h, job.w, job.h); rgba = shrink(&rgba, w, h, tw, th); w = tw; h = th; } send(Outcome::Pic { rgba, w, h, whole }) }
+        // the original would not render: the stored picture stays; with none, that is said
+        Err(why) => match failed { Some(Outcome::Missing) | None => if shown { true } else { send(Outcome::Failed(why)) }, Some(other) => send(other) },
+    }
+}
 
 fn decode(path: &Path, want_w: u32, want_h: u32) -> Outcome {
     if !path.is_file() { return Outcome::Missing }
@@ -438,6 +553,49 @@ mod tests {
         match decode(&g, 10, 10) { Outcome::Pic { rgba, w, h, whole } => { assert_eq!((w, h, whole), (1, 1, true)); assert_eq!(rgba, [255, 0, 0, 255]); } _ => panic!("the GIF was not read") }
         assert!(matches!(decode(&h, 10, 10), Outcome::Failed(why) if why == "HEIC files are not read yet"));
         assert!(matches!(decode(&dir.join("gone.png"), 10, 10), Outcome::Missing));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn a_photoshop_file_and_an_svg_become_previews_kept_with_the_collection_and_the_original_is_rendered_again_when_it_changed() {
+        let dir = std::env::temp_dir().join(format!("mn-preview-test-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the test's own process; the cache goes beside the test's files
+        unsafe { std::env::set_var("MN_SESSIONS_DIR", dir.join("sessions")); }
+        let places = Places { base: None, staged: Some(dir.join("media")), mappings: vec![] };
+        let psd = dir.join("layout v4.psd"); std::fs::write(&psd, crate::psd::tests::file(false, true, 8, true)).unwrap();
+        let rec: serde_json::Value = serde_json::from_str(&places.record(&psd).unwrap()).unwrap();
+        assert_eq!((rec["w"].as_u64(), rec["h"].as_u64(), rec["name"].as_str(), rec["preview"]["format"].as_str()), (Some(4), Some(2), Some("layout v4.psd"), Some("PSD")));
+        assert_eq!(rec["preview"]["src"].as_str(), psd.to_str()); assert!(rec["preview"]["size"].as_f64().unwrap() > 0.0);
+        let stored = places.locate(&rec["src"]).unwrap(); assert!(stored.is_file() && stored.file_name().unwrap().to_string_lossy().starts_with("layout-v4-"));
+        // shown: the stored picture is enough while the original is as it was
+        let orig = |r: &serde_json::Value| Some((psd.clone(), r["preview"]["size"].as_f64().unwrap() as u64, r["preview"]["mtime"].as_f64().unwrap()));
+        let run = |job: &Job| { let mut got = vec![]; work(job, &mut |o| { got.push(o); true }); got };
+        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 2, h: 1, orig: orig(&rec) });
+        assert!(matches!(got.as_slice(), [Outcome::Pic { w: 2, h: 1, .. }]));
+        // the original changed (another size): the stored picture first, then the original's - and it is kept in the cache
+        let mut other = crate::psd::tests::file(false, false, 8, true); let n = other.len(); other[n - 16..n - 8].fill(0); other.extend_from_slice(&[0; 2]); std::fs::write(&psd, &other).unwrap();
+        let got = run(&Job { key: "k".into(), path: stored.clone(), w: 4, h: 2, orig: orig(&rec) });
+        assert_eq!(got.len(), 2, "the stored picture, then the original"); assert!(matches!(&got[1], Outcome::Pic { w: 4, h: 2, whole: true, .. }));
+        assert_eq!(std::fs::read_dir(cache_dir()).unwrap().count(), 1);
+        // an SVG: its own size in the record, a large drawing kept
+        let svg = dir.join("mark.svg"); std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##).unwrap();
+        let rec: serde_json::Value = serde_json::from_str(&places.record(&svg).unwrap()).unwrap();
+        assert_eq!((rec["w"].as_u64(), rec["h"].as_u64(), rec["preview"]["format"].as_str()), (Some(20), Some(10), Some("SVG")));
+        let r = render(&svg, 200).unwrap(); assert_eq!((r.w, r.h), (200, 100)); assert_eq!(&r.rgba[..4], &[255, 0, 0, 255]); assert_eq!(r.rgba[(150 * 4) + 3], 0, "the right half is clear");
+        // a file no decoder takes says so; the same goes into the waiting place only once
+        assert!(places.record(&dir.join("nothing.psd")).is_err());
+        let n = std::fs::read_dir(dir.join("media")).unwrap().count(); let _ = places.record(&svg).unwrap(); assert_eq!(std::fs::read_dir(dir.join("media")).unwrap().count(), n);
+        unsafe { std::env::remove_var("MN_SESSIONS_DIR"); }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_decodes_a_heic() {
+        // made by the system's own tool from a PNG written here; where the tool is missing the test has nothing to say
+        let dir = std::env::temp_dir().join(format!("mn-heic-test-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+        let (png, heic) = (dir.join("a.png"), dir.join("a.heic")); let rgb: Vec<u8> = (0..64 * 32).flat_map(|i| if i % 64 < 32 { [220u8, 30, 30] } else { [30, 30, 220] }).collect();
+        min_image::write::png8(&png.to_string_lossy(), &rgb, 64, 32).unwrap();
+        let made = std::process::Command::new("sips").args(["-s", "format", "heic"]).arg(&png).arg("--out").arg(&heic).output().is_ok_and(|o| o.status.success()) && heic.is_file();
+        if made { let r = render(&heic, 32).unwrap(); assert_eq!((r.w, r.h), (32, 16)); let (l, rt) = (&r.rgba[(8 * 32 + 4) * 4..][..3], &r.rgba[(8 * 32 + 28) * 4..][..3]); assert!(l[0] > 150 && l[2] < 100 && rt[2] > 150 && rt[0] < 100, "{l:?} {rt:?}"); }
         let _ = std::fs::remove_dir_all(dir);
     }
     #[test]

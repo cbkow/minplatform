@@ -72,7 +72,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     if !more.is_empty() && r.height() > 52.0 * s { let more = &middle(more, ((r.width() - 24.0 * s) / (6.6 * s)) as usize); let l = fonts.layout_fit(more, Family::Sans, (12.0 * s) as f32, 400.0, dim(), r.width() - 24.0 * s); draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + 14.0 * s + a.height() as f64))); }
                 };
                 match media.view(descriptor, r.width(), r.height()) {
-                    View::Ready { brush, w, h, fade } => {
+                    View::Ready { brush, w, h, fade, pill } => {
                         // the whole picture inside its box, centred (the box has its shape, but for a picture the
                         // file stores lying on its side), on whole pixels
                         // lying on its side in a box of the stored shape (a record the Qt app wrote): the caller lays the box out upright
@@ -81,6 +81,10 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         let (x, y) = ((r.x0 + (r.width() - dw) / 2.0).round(), (r.y0 + (r.height() - dh) / 2.0).round());
                         if fade < 1.0 { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(1.0 - fade), None, &box_); animating = true; }
                         min_ui::paint::image(scene, &brush.clone().with_alpha(fade), Rect::new(x, y, x + dw, y + dh));
+                        // a picture made of another file (a Photoshop file, an SVG ...) says which, small, in its corner
+                        if let Some(p) = pill { let t = fonts.layout(&p, Family::Sans, (10.5 * s) as f32, 600.0, text());
+                            let q = Rect::new(x + 8.0 * s, y + dh - 8.0 * s - t.height() as f64 - 4.0 * s, x + 8.0 * s + t.width() as f64 + 12.0 * s, y + dh - 8.0 * s);
+                            if q.y0 > y && q.x1 < x + dw { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(0.85 * fade), None, &RoundedRect::from_rect(q, 4.0 * s)); draw_layout(scene, &t, Affine::translate((q.x0 + 6.0 * s, q.y0 + 2.0 * s))); } }
                     }
                     View::Loading => scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_),
                     View::Missing { name, looked } => words(scene, fonts, "Not found", &name, &looked),
