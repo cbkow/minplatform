@@ -74,8 +74,10 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
 }
 /// Files coming in from outside (row 310): a drag over the page, drops being fetched and looked at, a picture being
 /// pointed at its file again; and the pictures found to be stored on their side.
+/// A picture being resized by a corner (row 312): its record before, where the pointer took hold, and the width then.
+struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, left: bool }
 #[derive(Default)]
-struct Files { drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, tested: bool, turned: std::collections::HashSet<BlockId> }
+struct Files { resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, tested: bool, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
 /// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
@@ -240,6 +242,15 @@ impl App {
         if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, off.x, off.y, view) { g.window.request_redraw(); }
         // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
         for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
+        // the current picture: an outline, and a handle at each corner to resize it by
+        let current = (!self.blank && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
+            .filter(|id| matches!(self.ed.doc.get(*id).map(|b| &b.kind), Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\""))).and_then(|id| l.rect(&self.ed.doc, id)).map(|r| r + off);
+        if let Some(r) = current {
+            let r = Rect::new(r.x0.round(), r.y0.round(), r.x1.round(), r.y1.round());
+            scene.stroke(&kurbo::Stroke::new(1.5 * s), kurbo::Affine::IDENTITY, paint::accent(), None, &r);
+            for (cx, cy) in [(r.x0, r.y0), (r.x1, r.y0), (r.x0, r.y1), (r.x1, r.y1)] { let h = Rect::new(cx - 4.5 * s, cy - 4.5 * s, cx + 4.5 * s, cy + 4.5 * s);
+                scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &h.inflate(1.5 * s, 1.5 * s)); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent(), None, &h); }
+        }
         // files dragged over the page: the line where they would land
         if let Some((_, line)) = &self.files.drag { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent(), None, &kurbo::RoundedRect::from_rect(*line + off, s)); }
         // a composition is underlined where it stands
@@ -471,8 +482,10 @@ impl App {
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
         let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open();
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
+            else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
+            else if let Some((_, _, left, top)) = self.corner_at(x, y) { if left == top { C::NwseResize } else { C::NeswResize } }
             else if self.grab.is_some() || self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(x, y))) { C::Grab }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.over_field(x, y)) { C::Text }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(x, y)) || self.bar.hit(x, y) || self.foot.hit(x, y) { C::Default }
@@ -564,6 +577,10 @@ impl App {
             let lost = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if self.media.is_missing(descriptor));
             self.files.locate = lost.then_some(hit);
             let items = if lost { let mut v = vec![I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } else { items };
+            // a picture given a width of its own can go back to its own size
+            let sized = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if descriptor.contains("\"dw\""));
+            if sized { self.files.locate = Some(hit); }
+            let items = if sized { let mut v = vec![I::action("Original Size", true), I::Separator]; v.extend(items); v } else { items };
             let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
             self.ctx_blocks = true; self.ctx_for = None; self.ctx_notes.clear();
             self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
@@ -604,6 +621,11 @@ impl App {
                 let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
                 self.ctx.open_at(notes.iter().map(|x| min_ui::menu::MenuItem::action(&x.1, true)).collect(), &mut g.fonts, self.pointer.0, self.pointer.1, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
                 g.window.request_redraw(); return }
+            if label == "Original Size" {
+                let Some(id) = self.files.locate.take() else { return };
+                if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { if let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) {
+                    v.remove("dw"); let t = self.now_ms(); let d = self.ed.set_kinds(vec![(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() })], t).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; } }
+                return }
             if label.starts_with("Locate File") {
                 let Some(id) = self.files.locate.take() else { return };
                 if let Some(file) = rfd::FileDialog::new().set_title("Locate File").pick_file() {
@@ -660,6 +682,41 @@ impl App {
                 match self.ed.set_kinds(kinds, now) { Ok(d) => { self.notice = Some((if n == 1 { "Linked 1 picture".to_string() } else { format!("Linked {n} pictures \u{2014} the others were found in the same folder") }, until)); self.apply(d); self.layout = None; } Err(e) => eprintln!("relink: {e:?}") }
             }
         }
+    }
+    /// The picture that is current - the caret is on it, or it is the one selected block - with its box in the window.
+    fn picture(&self) -> Option<(BlockId, Rect)> {
+        if self.blank || self.grab.as_ref().is_some_and(|g| g.dragging) || self.ed.run_len() != 1 { return None }
+        let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        let id = self.ed.handle_block()?;
+        match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\"") => {} _ => return None }
+        Some((id, l.rect(&self.ed.doc, id)? + kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll)))
+    }
+    /// The corner of the current picture under a window point: (the picture, its box, a left corner, a top corner).
+    fn corner_at(&self, x: f64, y: f64) -> Option<(BlockId, Rect, bool, bool)> {
+        let (id, r) = self.picture()?; let s = self.gpu.as_ref()?.window.scale_factor(); let near = 9.0 * s;
+        if y < self.top || self.bar.hit(x, y) || self.foot.hit(x, y) { return None }
+        for (cx, cy, left, top) in [(r.x0, r.y0, true, true), (r.x1, r.y0, false, true), (r.x0, r.y1, true, false), (r.x1, r.y1, false, false)] { if (x - cx).abs() <= near && (y - cy).abs() <= near { return Some((id, r, left, top)) } }
+        None
+    }
+    /// The picture being resized follows the pointer: its width in the record (`dw`, page px) between 80 and the
+    /// width of the place it is in; the box keeps its left edge. Not a step of the history until the release.
+    fn resize_to(&mut self, x: f64) {
+        let Some(rz) = self.files.resize.as_ref() else { return }; let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+        let d = (x - rz.from_x) / s * if rz.left { -1.0 } else { 1.0 };
+        let w = (rz.width + d).clamp(80.0f64.min(rz.max), rz.max).round();
+        let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&rz.before) else { return };
+        v.insert("dw".into(), serde_json::json!(w as u32));
+        let _ = self.ed.doc.set_kind(rz.id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() });
+        self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The resize ends: the record goes back to what it was and the new one is committed as ONE undo step (`keep`),
+    /// or it is given up (Escape).
+    fn resize_end(&mut self, keep: bool) {
+        let Some(rz) = self.files.resize.take() else { return };
+        let now = self.ed.doc.get(rz.id).map(|b| b.kind.clone());
+        let _ = self.ed.doc.set_kind(rz.id, Kind::Media { descriptor: rz.before.clone() }); self.layout = None;
+        if let (true, Some(new)) = (keep, now) { if new != (Kind::Media { descriptor: rz.before }) { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(rz.id, new)], t).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; } }
+        self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// Files go to the helpers to become blocks at `at`.
     fn add_files(&mut self, paths: Vec<std::path::PathBuf>, at: mn_edit::Drop) {
@@ -846,6 +903,7 @@ impl App {
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - self.top - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
         if self.grab.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.grab = None; if let Some(sb) = self.sidebar.as_mut() { sb.drop_row = None; } self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         if self.ctx.is_open() { if matches!(key, Key::Named(NamedKey::Escape)) { self.ctx.close(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         // where there is no native menu to take them, the file commands' keys are run here
@@ -1031,8 +1089,17 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
+            // MN_RESIZE=<width>: the note's first picture is made current and resized to that width as a corner drag would (one undo step), then undone and redone
+            if let Some(w) = std::env::var("MN_RESIZE").ok().and_then(|v| v.parse::<f64>().ok()) { use mn_edit::{Pos, Selection};
+                if let Some((id, before)) = self.ed.doc.walk().iter().find_map(|b| match &b.kind { Kind::Media { descriptor } if !descriptor.contains("\"kind\"") => Some((b.id, descriptor.clone())), _ => None }) {
+                    self.ed.set_selection(Some(Selection::caret(Pos { block: id, at: 0 })));
+                    let dw = |me: &App| me.ed.doc.get(id).and_then(|b| match &b.kind { Kind::Media { descriptor } => serde_json::from_str::<serde_json::Value>(descriptor).ok().and_then(|v| v.get("dw").and_then(|d| d.as_f64())), _ => None });
+                    self.files.resize = Some(Resize { id, before, from_x: 0.0, width: 0.0, max: 2000.0, left: false }); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+                    self.resize_to(w * s); let live = dw(self); self.resize_end(true); let kept = dw(self);
+                    let d = self.ed.undo().unwrap_or(Dirty::Nothing); self.apply(d); let undone = dw(self); let d = self.ed.redo().unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None;
+                    println!("resize: while dragged {live:?}, kept {kept:?}, after undo {undone:?}, after redo {:?}", dw(self)); } }
             if let Ok(v) = std::env::var("MN_ADD") { self.add_files(v.split(',').map(Into::into).collect(), mn_edit::Drop { parent: None, index: 1, depth: None }); }
             if let Ok(v) = std::env::var("MN_RELINK") { let blocks: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
                 match blocks.iter().find(|(_, d)| self.media.is_missing(d)).map(|x| x.0) { Some(id) => self.media.relink(blocks, id, v.into()), None => println!("relink: no picture is missing") } } }
@@ -1128,6 +1195,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
+                if self.files.resize.is_some() { self.resize_to(position.x); return }
                 // the handle is held: past a few pixels it is a drag, and the place the blocks would land follows the pointer
                 if self.grab.is_some() {
                     let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (x, y) = self.note_point(self.pointer);
@@ -1152,6 +1220,12 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
+                // a corner of the current picture: the drag resizes it (row 312)
+                if state == ElementState::Released && self.files.resize.is_some() { self.resize_end(true); return }
+                if state == ElementState::Pressed { if let Some((id, r, left, _)) = self.corner_at(position.x, position.y) {
+                    let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+                    let lane = self.ed.doc.get(id).and_then(|b| b.parent).and_then(|p| self.layout.as_ref().and_then(|l| l.rect(&self.ed.doc, p))).map(|p| p.width()).or(self.layout.as_ref().map(|l| l.width as f64)).unwrap_or(r.width());
+                    if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { self.files.resize = Some(Resize { id, before: descriptor, from_x: position.x, width: r.width() / s, max: lane / s, left }); self.set_cursor(); return } } }
                 // the handle: a press and release selects the block; a drag moves the blocks to where the line shows
                 if state == ElementState::Pressed && self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(position.x, position.y))) { self.grab = Some(Grab { from: self.pointer, dragging: false, drop: None, to_note: None }); self.set_cursor(); return }
                 if state == ElementState::Released { if let Some(gr) = self.grab.take() {
