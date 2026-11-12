@@ -1,0 +1,18 @@
+[package]
+name = "qcv-annotate"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform — annotations in the picture (canon rows 210 / 214 / 215): the tools, the pointer's gestures, undo, the sidecar's merge-on-save and the strokes' paint. QCView's module, moved here unchanged (2026-11-12) so that minNotes draws and writes notes with the same code (row 316)."
+
+[dependencies]
+qcv-notes = { path = "../qcv-notes" }
+kurbo = { workspace = true }
+vello = { workspace = true }
+peniko = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }

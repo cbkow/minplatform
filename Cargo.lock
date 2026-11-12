@@ -3669,6 +3669,7 @@ dependencies = [
  "parley",
  "peniko",
  "png 0.17.16",
+ "qcv-annotate",
  "qcv-color",
  "qcv-meta",
  "qcv-notes",
@@ -3685,6 +3686,18 @@ dependencies = [
  "windows",
  "winit 0.31.0-beta.4",
  "winresource",
+]
+
+[[package]]
+name = "qcv-annotate"
+version = "0.0.1"
+dependencies = [
+ "kurbo 0.13.1",
+ "log",
+ "peniko",
+ "qcv-notes",
+ "serde_json",
+ "vello",
 ]
 
 [[package]]

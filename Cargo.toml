@@ -2,7 +2,7 @@
 # The workspace owns every ecosystem pin (docs/rust-wgpu-port.md §21, row 117): members use `{ workspace = true }`.
 [workspace]
 resolver = "2"
-members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/qcv-mxf", "crates/qcv-project", "crates/qcv-notes", "crates/min-theme", "crates/min-settings", "crates/min-i18n", "crates/qcv-color", "crates/min-ui", "crates/min-present", "crates/min-ffmpeg", "crates/min-image", "crates/qcv-player", "crates/qcv-ring", "crates/mn-doc", "crates/mn-store", "crates/mn-layout", "crates/mn-edit", "apps/qcv", "apps/mn", "spikes/s1-present", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window", "spikes/s9-uia", "spikes/s10-pdf"]
+members = ["crates/min-paths", "crates/min-paths-ffi", "crates/qcv-timeline", "crates/qcv-meta", "crates/qcv-mxf", "crates/qcv-project", "crates/qcv-notes", "crates/qcv-annotate", "crates/min-theme", "crates/min-settings", "crates/min-i18n", "crates/qcv-color", "crates/min-ui", "crates/min-present", "crates/min-ffmpeg", "crates/min-image", "crates/qcv-player", "crates/qcv-ring", "crates/mn-doc", "crates/mn-store", "crates/mn-layout", "crates/mn-edit", "apps/qcv", "apps/mn", "spikes/s1-present", "spikes/s3-text", "spikes/s4-ring", "spikes/s5-window", "spikes/s9-uia", "spikes/s10-pdf"]
 
 [workspace.package]
 edition = "2024"
