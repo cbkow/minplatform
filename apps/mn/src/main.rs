@@ -51,7 +51,8 @@ mod text_element;
 const MARGIN: f64 = 48.0;
 const PAD: f64 = 28.0;
 
-struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts, ime_area: Option<Rect> }
+struct Gpu { window: Arc<Box<dyn Window>>, presenter: Presenter, ui: UiLayer, fonts: Fonts, ime_area: Option<Rect>, /// text input is on (it is turned off while a video block is the current one: a held key shuttles, it must not offer accents)
+    ime_on: bool }
 
 /// Input methods on (accents by long press, dead keys, Chinese / Japanese / Korean input), with the caret's place for
 /// the candidate window (winit 0.31's request API).
@@ -799,6 +800,12 @@ impl App {
         if let Some(f) = keep { self.video_keep(id, f); }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    /// The video block that is the current one - the caret is on it or it is the one selected block - when keys are the
+    /// page's to give (no dialog, menu, palette or rename field).
+    fn video_current(&self) -> Option<BlockId> {
+        if self.blank || self.confirm.is_some() || self.ed.run_len() != 1 || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()) || self.pal.is_open() || self.ctx.is_open() { return None }
+        self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some())
+    }
     /// A key while a video block is the current one (row 316, stage 3): QCView's transport keys (`qcv_player::map_key`)
     /// act on it - the block becomes the playing one, paused, when it is not. True: the key was the video's. Kept for
     /// the page: Up / Down (they leave the block), and every key with Cmd. Not taken up here: the in and out points, the
@@ -806,9 +813,8 @@ impl App {
     fn video_key(&mut self, event: &winit::event::KeyEvent) -> bool {
         use qcv_player::Action as A;
         let (shift, cmd, alt) = self.mods;
-        if cmd || self.blank || self.confirm.is_some() || self.ed.run_len() != 1 { return false }
-        let Some(id) = self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some()) else { return false };
-        if self.sidebar.as_ref().is_some_and(|sb| sb.renaming()) || self.pal.is_open() || self.ctx.is_open() { return false }
+        if cmd { return false }
+        let Some(id) = self.video_current() else { return false };
         let key = match &event.logical_key {
             Key::Character(c) if c == " " => qcv_player::Key::Space,
             Key::Character(c) => match c.chars().next() { Some(ch) => qcv_player::Key::Char(ch), None => return false },
@@ -1304,7 +1310,7 @@ impl ApplicationHandler for App {
         ime(window.as_ref().as_ref(), Some(Rect::new(0.0, 0.0, 1.0, 1.0)), true);
         #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); }
         startup_log("text element, input method, menu ready");
-        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
+        self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None, ime_on: true }); self.t0 = Some(Instant::now()); self.title();
         startup_log("fonts loaded");
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
@@ -1365,6 +1371,10 @@ impl ApplicationHandler for App {
             println!("act: paused at {at}, three steps -> {stepped}; speed {}, muted {}, loop {}", p.t.review_speed(), p.t.audio.is_muted(), p.t.loop_enabled());
             save_player_settings((p.t.loop_enabled(), p.t.review_speed(), p.t.audio.volume(), p.t.audio.is_muted())); println!("act: kept {:?}", player_settings());
             p.t.apply(A::SeekToEnd, now); println!("act: end -> frame {} of {}", p.t.current_frame(), p.t.frame_count()); p.awake = now + std::time::Duration::from_millis(1500); } }
+        // text input is off while a video block is the current one: its keys are held to shuttle and to step, and the
+        // system's text input would answer a held letter with its accents and type the one chosen beside the video
+        { let want = self.video_current().is_none(); if let Some(g) = self.gpu.as_mut() { if g.ime_on != want { g.ime_on = want;
+            if want { ime(g.window.as_ref().as_ref(), g.ime_area.or(Some(Rect::new(0.0, 0.0, 1.0, 1.0))), true); } else if let Err(e) = g.window.request_ime_update(winit::window::ImeRequest::Disable) { log::debug!("ime: {e}"); } } } }
         if std::mem::take(&mut self.files.vstop) { self.video_stop(); }
         if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -1515,6 +1525,8 @@ impl ApplicationHandler for App {
                 // typing into the note hides the pointer until it moves again
                 if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
                 self.key(&event.logical_key, text.as_deref()); }
+            // composed text is never a video block's (its text input is off; one that still arrives is dropped)
+            WindowEvent::Ime(_) if self.video_current().is_some() => {}
             WindowEvent::Ime(e) => {
                 if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.renaming() { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None }; if let Some(ev) = ev { sb.ime(&ev, &mut g.fonts); g.window.request_redraw(); } return } }
                 let now = self.now_ms(); let d = match e {
