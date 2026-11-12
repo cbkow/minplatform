@@ -11,6 +11,7 @@ use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Mark, Rank
 mod markdown;
 mod blocks;
 mod table;
+pub mod typed;
 pub use blocks::{Clip, Drop};
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};

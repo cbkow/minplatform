@@ -2537,6 +2537,7 @@ dependencies = [
  "mn-doc",
  "mn-layout",
  "parley",
+ "serde_json",
 ]
 
 [[package]]

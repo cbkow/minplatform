@@ -14,6 +14,7 @@ mn-doc = { path = "../mn-doc" }
 mn-layout = { path = "../mn-layout" }
 parley = { workspace = true }
 kurbo = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 min-ui = { path = "../min-ui" }

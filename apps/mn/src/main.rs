@@ -42,6 +42,7 @@ mod psd;
 mod paste;
 mod pdf;
 mod video;
+mod choice;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
 mod text_element;
@@ -125,6 +126,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// a table's menu is open (true: its column's, false: its row's); a column's border being dragged (the table, the
     /// column, where the pointer took hold, the width then, the table's kind before)
     /// wide tables' sideways scrolls (kept across layouts)
+    /// a choice cell's picker (row 317, stage 3), and the timecode paragraph the caret was last in (it settles when left)
+    picker: Option<choice::ChoicePicker>, tc_last: Option<BlockId>,
     tscroll: std::collections::HashMap<BlockId, f32>,
     /// their bars (min-ui's overlay scrollbar, along the bottom, always shown)
     tbars: std::collections::HashMap<BlockId, min_ui::ScrollBar>,
@@ -146,6 +149,8 @@ enum SaveStep { Put(Result<mn_store::share::Fingerprint, mn_store::share::PutErr
 /// What a dialog on screen is asking (row 293; the wording follows the Qt app's dialogs where it had them).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Ask {
+    /// make the caret's column this kind although cells lose content (1 choice, 2 check, 3 timecode)
+    Kind(u8),
     /// delete this entry of the tree?
     Delete(BlockId),
     /// closing with changes that are not in the document: Cancel / Don't Save / Save
@@ -236,6 +241,7 @@ fn sample() -> Doc {
 
 impl App {
     fn redraw(&mut self) {
+        self.settle_timecode();
         let Some(g) = self.gpu.as_mut() else { return };
         let t = Instant::now();
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let now = Instant::now();
@@ -334,6 +340,7 @@ impl App {
             let r = r + off; let k = r.width() / t.w.max(1.0) as f64;
             for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // a note's words being typed: the field lies over the caption's place on the playing video's picture
+        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match l.rect(&self.ed.doc, p.cell) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); } None => gone = true } } if gone { self.files.picker = None; } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
@@ -351,7 +358,7 @@ impl App {
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
         // the caret's table: its row's and its column's handles, and the strips that add a row and a column at the end
-        if let Some(ui) = (!self.blank).then(|| table_ui(&self.ed, l, s, off)).flatten() {
+        if let Some(ui) = (!self.blank && self.files.picker.is_none()).then(|| table_ui(&self.ed, l, s, off)).flatten() {
             scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(ui.col, 7.0 * s));
             for (r, icon) in [(ui.row, "dots-six-vertical"), (ui.col, "dots-six")] { if let Some(i) = g.fonts.icon(icon, (16.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
             for r in [ui.add_row, ui.add_col] { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(r, 3.0 * s));
@@ -582,7 +589,7 @@ impl App {
         use winit::cursor::CursorIcon as C;
         let Some(g) = self.gpu.as_ref() else { return };
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
-        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open();
+        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y));
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() { C::ColResize }
@@ -725,6 +732,9 @@ impl App {
                 "Insert Column Left" => self.ed.table_insert(true, false, now), "Insert Column Right" => self.ed.table_insert(true, true, now), "Move Column Left" => self.ed.table_move(true, false, now), "Move Column Right" => self.ed.table_move(true, true, now),
                 "Duplicate Column" => self.ed.table_duplicate(true, now), "Delete Column" => self.ed.table_remove(true, now),
                 "Align Left" => self.ed.table_column(|c| c.align = 0, now), "Align Centre" => self.ed.table_column(|c| c.align = 1, now), "Align Right" => self.ed.table_column(|c| c.align = 2, now), "Automatic Width" => self.ed.table_column(|c| c.width = None, now),
+                "Text Column" => { self.column_kind(0, false); return } "Choice Column" => { self.column_kind(1, false); return } "Check Column" => { self.column_kind(2, false); return } "Timecode Column" => { self.column_kind(3, false); return }
+                "Edit Options\u{2026}" => { self.choice_open("", true); return }
+                l if l.ends_with(" fps") => self.ed.table_set_kind(ColumnKind::Timecode { fps: l.trim_end_matches(" fps").parse().unwrap_or(24.0) }, now),
                 _ => return }.unwrap_or(Dirty::Nothing);
             // a column's setting moves nothing in the tree but everything in the picture
             self.apply(d); self.layout = None; return }
@@ -1081,8 +1091,53 @@ impl App {
         if redraw { let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); }
         mine
     }
+    /// The caret's choice cell opens its picker (`typed` goes into its field); `edit`: on its options' editor.
+    fn choice_open(&mut self, typed: &str, edit: bool) {
+        let Some(f) = self.ed.selection().map(|x| x.focus.block) else { return }; let Some((_, _, _, cell, header, ColumnKind::Choice { options })) = mn_edit::typed::column_of(&self.ed.doc, f) else { return };
+        if header && !edit { return } let Some(g) = self.gpu.as_mut() else { return };
+        let p = choice::ChoicePicker::new(cell, options, self.ed.cell_value(cell).filter(|_| !header), typed, &mut g.fonts);
+        self.files.picker = Some(if edit { p.editing() } else { p }); g.window.request_redraw();
+    }
+    fn choice_out(&mut self, out: choice::Out) {
+        let now = self.now_ms();
+        let d = match out { choice::Out::None => return, choice::Out::Redraw => Ok(Dirty::Nothing), choice::Out::Close => { self.files.picker = None; Ok(Dirty::Nothing) }
+            choice::Out::Pick(v) => { self.files.picker = None; self.ed.cell_choose(v.as_deref(), now) }
+            choice::Out::Add(l) => { self.files.picker = None; self.ed.cell_choose_new(&l, now) }
+            choice::Out::Options(o) => { self.files.picker = None; self.ed.table_set_options(o, now) } };
+        let d = d.unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); self.layout = None; }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The caret's column becomes a kind (0 text, 1 choice, 2 check, 3 timecode); asks first when cells would lose content.
+    fn column_kind(&mut self, k: u8, sure: bool) {
+        use min_ui::text_button::Variant as V;
+        let n = if k == 0 { 0 } else { self.ed.table_kind_loss() };
+        if n > 0 && !sure { let what = ["text", "choice", "check", "timecode"][k.min(3) as usize];
+            self.ask(Ask::Kind(k), &format!("Make this a {what} column?"), &format!("{n} cell{} in this column hold{} more than one line of plain text. Each is reduced to one line; formatting, pictures, lists and extra paragraphs are removed.", if n == 1 { "" } else { "s" }, if n == 1 { "s" } else { "" }), vec![("Cancel", V::Secondary), ("Change Column", V::Negative)]); return }
+        let kind = match k { 1 => ColumnKind::Choice { options: vec![] }, 2 => ColumnKind::Check, 3 => ColumnKind::Timecode { fps: 24.0 }, _ => ColumnKind::Text };
+        let now = self.now_ms(); self.follow = true; let d = self.ed.table_set_kind(kind, now).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The caret left a timecode cell: what was typed there is written as a timecode.
+    fn settle_timecode(&mut self) {
+        let cur = self.ed.selection().map(|x| x.focus.block); if cur == self.files.tc_last { return }
+        let prev = std::mem::replace(&mut self.files.tc_last, cur.filter(|b| matches!(mn_edit::typed::typed_of(&self.ed.doc, *b), Some(t) if matches!(t.kind, ColumnKind::Timecode { .. }))));
+        if let Some(p) = prev { let now = self.now_ms(); let d = self.ed.settle_timecode(p, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
+    }
+    /// A press in a typed cell: on a check's box it goes to its next state; in a choice cell its picker opens. True: taken.
+    fn typed_click(&mut self) -> bool {
+        let (x, y) = self.note_point(self.pointer); let Some(l) = self.layout.as_ref() else { return false }; let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+        let Some((id, _)) = l.hit(&self.ed.doc, x, y) else { return false }; let Some(t) = mn_edit::typed::typed_of(&self.ed.doc, id) else { return false };
+        let (Some(cr), Some(p)) = (l.rect(&self.ed.doc, t.cell), self.ed.doc.children(Some(t.cell)).first().copied()) else { return false };
+        if !cr.contains(kurbo::Point::new(x, y)) { return false }
+        match t.kind {
+            ColumnKind::Check => { let Some(pr) = l.rect(&self.ed.doc, p) else { return false }; if x > pr.x0 + 20.0 * s { return false }
+                self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); let now = self.now_ms(); let d = self.ed.cell_check_cycle(now).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None;
+                if let Some(g) = &self.gpu { g.window.request_redraw(); } true }
+            ColumnKind::Choice { .. } => { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); self.choice_open("", false); true }
+            _ => false,
+        }
+    }
     fn table_ui(&self) -> Option<TableUi> {
-        if self.blank || self.confirm.is_some() { return None }
+        if self.blank || self.confirm.is_some() || self.files.picker.is_some() { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         table_ui(&self.ed, l, s, kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll))
     }
@@ -1093,7 +1148,12 @@ impl App {
         let items = if column { let a = cols.get(c).map(|x| x.align).unwrap_or(0);
             vec![I::action("Insert Column Left", true), I::action("Insert Column Right", true), I::Separator, I::action("Move Column Left", c > 0), I::action("Move Column Right", c + 1 < cols.len()), I::action("Duplicate Column", true), I::Separator,
                 I::action(if a == 0 { "\u{2713} Align Left" } else { "Align Left" }, true), I::action(if a == 1 { "\u{2713} Align Centre" } else { "Align Centre" }, true), I::action(if a == 2 { "\u{2713} Align Right" } else { "Align Right" }, true),
-                I::action("Automatic Width", cols.get(c).is_some_and(|x| x.width.is_some())), I::Separator, I::action("Delete Column", cols.len() > 1)] }
+                I::action("Automatic Width", cols.get(c).is_some_and(|x| x.width.is_some())), I::Separator]
+                .into_iter().chain({ let k = cols.get(c).map(|x| x.kind.clone()).unwrap_or(ColumnKind::Text); let tick = |on: bool, l: &str| I::action(&if on { format!("\u{2713} {l}") } else { l.to_string() }, true);
+                    let mut v = vec![tick(k == ColumnKind::Text, "Text Column"), tick(matches!(k, ColumnKind::Choice { .. }), "Choice Column"), tick(k == ColumnKind::Check, "Check Column"), tick(matches!(k, ColumnKind::Timecode { .. }), "Timecode Column")];
+                    if matches!(k, ColumnKind::Choice { .. }) { v.push(I::Separator); v.push(I::action("Edit Options\u{2026}", true)); }
+                    if let ColumnKind::Timecode { fps } = k { v.push(I::Separator); for r in [23.976, 24.0, 25.0, 29.97, 30.0, 60.0] { v.push(tick((fps - r).abs() < 0.005, &format!("{r} fps"))); } }
+                    v }).chain([I::Separator, I::action("Delete Column", cols.len() > 1)]).collect() }
         else { vec![I::action("Insert Row Above", true), I::action("Insert Row Below", true), I::Separator, I::action("Move Row Up", r > 0), I::action("Move Row Down", r + 1 < rows), I::action("Duplicate Row", true), I::Separator,
                 I::action(if head > 0 { "No Header Row" } else { "First Row Is a Header" }, true), I::Separator, I::action("Delete Row", rows > 1)] };
         let Some(g) = self.gpu.as_mut() else { return }; let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
@@ -1144,6 +1204,8 @@ impl App {
     fn paste(&mut self, mode: Paste) -> Dirty {
         let now = self.now_ms();
         let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+        // into a typed cell: the text becomes the cell's value (a choice's option - a new one when there is none of that name)
+        if !self.ed.in_blocks() && self.ed.typed_cell().is_some() { self.follow = true; let d = text.and_then(|t| self.ed.cell_put_text(&t, now).ok().flatten()).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.layout = None; } return d }
         let frag = |me: &mut App, c: mn_edit::Clip| { me.follow = true; match me.ed.paste_fragment(&c, now) { Ok((d, refused)) => { if refused > 0 { me.notice = Some((format!("{refused} block(s) cannot go there and were left out"), Instant::now() + std::time::Duration::from_secs(6))); } d } Err(e) => { eprintln!("paste: {e:?}"); Dirty::Nothing } } };
         match mode {
             Paste::Plain => return text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing),
@@ -1212,6 +1274,7 @@ impl App {
         use min_ui::text_button::Variant as V;
         match (what, i) {
             (Ask::Delete(id), 1) => self.delete_entry(id),
+            (Ask::Kind(k), 1) => self.column_kind(k, true),
             // Don't Save: the changes are given up — the session goes, the document stays as it is
             (Ask::Close, 1) => { self.changed.clear(); if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } self.proceed(); }
             (Ask::Close, 0) => { self.after_close = None; }
@@ -1389,6 +1452,8 @@ impl App {
         if self.files.note_field.is_some() { let r = match (self.files.note_field.as_mut(), self.gpu.as_mut()) { (Some((_, _, f)), Some(g)) => Some(f.key(&ui_key(), &mut g.fonts)), _ => None };
             match r { Some(min_ui::FieldResponse::Accepted) => self.note_words_end(true), Some(min_ui::FieldResponse::Cancelled) => self.note_words_end(false), _ => {} }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+        // a choice cell's picker takes the keys while it is open
+        if self.files.picker.is_some() { let out = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => p.key(&ui_key(), &mut g.fonts), _ => choice::Out::None }; self.choice_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) {
             if let Some(a) = sb.key(&ui_key(), &mut g.fonts) { self.act(a); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
             if cmd { if let Key::Character(c) = key { match c.to_lowercase().as_str() {
@@ -1405,6 +1470,19 @@ impl App {
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
         let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
+        // a typed cell (row 317, stage 3): a choice opens its picker (a letter goes into its field), a check goes to its
+        // next state; neither takes typing. Enter in a timecode cell writes it as a timecode.
+        if !cmd && !alt && !self.ed.in_blocks() && !self.blank { if let Some(tc) = self.ed.typed_cell() {
+            let space = matches!(key, Key::Character(c) if c.as_str() == " ");
+            match (&tc.kind, key) {
+                (ColumnKind::Choice { .. }, Key::Named(NamedKey::Enter)) => { self.choice_open("", false); return }
+                (ColumnKind::Choice { .. }, _) if space => { self.choice_open("", false); return }
+                (ColumnKind::Choice { .. }, Key::Named(NamedKey::Backspace | NamedKey::Delete)) => { let d = self.ed.cell_choose(None, now).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                (ColumnKind::Choice { .. }, Key::Character(_)) => { if let Some(t) = text.filter(|t| !t.chars().any(|c| c.is_control())) { let t = t.trim().to_string(); self.choice_open(&t, false); } return }
+                (ColumnKind::Check, Key::Named(NamedKey::Enter)) | (ColumnKind::Check, _) if space || matches!(key, Key::Named(NamedKey::Enter)) => { let d = self.ed.cell_check_cycle(now).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                (ColumnKind::Check, Key::Named(NamedKey::Backspace | NamedKey::Delete) | Key::Character(_)) => return,
+                (ColumnKind::Timecode { .. }, Key::Named(NamedKey::Enter)) => { if let Some(b) = self.ed.selection().map(|x| x.focus.block) { let d = self.ed.settle_timecode(b, now).unwrap_or(Dirty::Nothing); self.apply(d); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                _ => {} } } }
         let dirty = match key {
             // whole blocks (row 304): Escape selects the caret's block and gives the caret back; Ctrl+Cmd+Up / Down move
             // the selected blocks (the caret's block when none are); with blocks selected Up / Down step, Shift grows,
@@ -1565,6 +1643,14 @@ impl ApplicationHandler for App {
                 if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) { for i in 0..5u64 { let _ = self.ed.table_insert(true, true, t + 40_000 + i * 2000); let _ = self.ed.insert("wider", t + 40_500 + i * 2000); let _ = self.ed.table_column(|c| c.width = Some(260), t + 41_000 + i * 2000); }
                     // 4: the caret goes back to the first cell (the table scrolls back with it)
                     if std::env::var("MN_TABLE").as_deref() == Ok("4") { for _ in 0..6 { let _ = self.ed.tab_cell(true, t + 60_000); } } self.follow = true; }
+                // MN_TABLE=5|6|7: the Status column becomes a choice (its values the options), the Shot column a check (one cycled to done);
+                // 5 opens the picker on a Status cell, 6 its options' editor, 7 asks before the Note column (rich cells) becomes a timecode
+                if matches!(std::env::var("MN_TABLE").as_deref(), Ok("5") | Ok("6") | Ok("7")) { let which = std::env::var("MN_TABLE").unwrap_or_default();
+                    let _ = self.ed.table_set_kind(ColumnKind::Choice { options: vec![] }, t + 50_000); let _ = self.ed.tab_cell(true, t + 51_000); let _ = self.ed.table_set_kind(ColumnKind::Check, t + 52_000);
+                    let _ = self.ed.cell_check_cycle(t + 54_000); let _ = self.ed.cell_check_cycle(t + 56_000); let _ = self.ed.tab_cell(false, t + 57_000);
+                    self.apply(Dirty::Structure); self.follow = true;
+                    match which.as_str() { "5" => self.choice_open("", false), "6" => self.choice_open("", true), _ => { let _ = self.ed.tab_cell(false, t + 58_000); self.column_kind(3, false); } }
+                    return }
                 if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) {} else if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
                 else { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000); }
                 self.apply(Dirty::Structure); }
@@ -1747,6 +1833,7 @@ impl ApplicationHandler for App {
                 self.set_cursor();
                 if taken { return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
+                if self.files.picker.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { self.set_cursor(); return } } }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
@@ -1758,6 +1845,8 @@ impl ApplicationHandler for App {
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
                 if self.table_bar_event(e) { return }
+                if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
+                if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }
                 // a note's words being typed: a press outside the field keeps them
                 if state == ElementState::Pressed && self.files.note_field.as_ref().is_some_and(|(_, _, f)| !f.hit(position.x, position.y)) { self.note_words_end(true); }
                 if self.files.note_field.is_some() { let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } }; if let (Some((_, _, f)), Some(g)) = (self.files.note_field.as_mut(), self.gpu.as_mut()) { f.pointer(&e, &mut g.fonts); g.window.request_redraw(); } return }
@@ -1864,9 +1953,13 @@ impl ApplicationHandler for App {
                 if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
                 self.key(&event.logical_key, text.as_deref()); }
             // composed text is never a video block's (its text input is off; one that still arrives is dropped)
+            WindowEvent::Ime(e) if self.files.picker.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
+                if let (Some(ev), Some(p), Some(g)) = (ev, self.files.picker.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.note_field.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some((_, _, f)), Some(g)) = (ev, self.files.note_field.as_mut(), self.gpu.as_mut()) { f.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(_) if self.video_current().is_some() => {}
+            // a choice or a check cell takes no typing
+            WindowEvent::Ime(_) if !self.ed.in_blocks() && self.ed.typed_cell().is_some_and(|t| !matches!(t.kind, ColumnKind::Timecode { .. })) => {}
             WindowEvent::Ime(e) => {
                 if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.renaming() { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None }; if let Some(ev) = ev { sb.ime(&ev, &mut g.fonts); g.window.request_redraw(); } return } }
                 let now = self.now_ms(); let d = match e {

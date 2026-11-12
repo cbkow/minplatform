@@ -70,6 +70,15 @@ fn middle(t: &str, max: usize) -> String {
 
 /// The number a numbered item shows: it counts the numbered items above it at its depth, through deeper items, until
 /// anything else (or a shallower item) breaks the list.
+/// A check cell's box, from its paragraph's text origin (window px).
+pub fn check_box(tx: f64, ty: f64, s: f64) -> Rect { Rect::new(tx, ty + 3.0 * s, tx + 14.0 * s, ty + 17.0 * s) }
+/// The three states of a check: to do (an outline), doing (a bar), done (filled and ticked) - a task item's box.
+fn check_mark(scene: &mut Scene, bx: Rect, state: u8, s: f64) {
+    let rr = RoundedRect::from_rect(bx, 3.0 * s);
+    match state { 0 => scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, dim(), None, &rr),
+        1 => { scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent(), None, &rr); fill(scene, Rect::new(bx.x0 + 3.0 * s, bx.center().y - s, bx.x1 - 3.0 * s, bx.center().y + s), accent()); }
+        _ => { scene.fill(Fill::NonZero, Affine::IDENTITY, accent(), None, &rr); let k = kurbo::BezPath::from_vec(vec![kurbo::PathEl::MoveTo((bx.x0 + 3.0 * s, bx.center().y).into()), kurbo::PathEl::LineTo((bx.x0 + 6.0 * s, bx.y1 - 3.5 * s).into()), kurbo::PathEl::LineTo((bx.x1 - 3.0 * s, bx.y0 + 3.5 * s).into())]); scene.stroke(&Stroke::new(1.8 * s), Affine::IDENTITY, Color::WHITE, None, &k); } }
+}
 fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
     let Some(b) = doc.get(id) else { return 1 };
     let sibs = doc.children(b.parent); let at = sibs.iter().position(|x| *x == id).unwrap_or(0); let mut n = 1;
@@ -250,22 +259,31 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                     }
                     _ => {}
                 }
+                // a typed column's cell (row 317, stage 3): a check is a box in the place of its hidden label; a timecode
+                // that does not read as one is drawn dimmed; a chip takes its colour from its COLUMN's list
+                let typed = if *kind == Kind::Paragraph { mn_edit::typed::typed_of(doc, b.id) } else { None };
+                let boxed = matches!(&typed, Some(x) if x.kind == mn_doc::ColumnKind::Check);
+                if boxed { let state = match mn_edit::typed::chosen(&b.text, &b.spans).as_deref() { Some("1") => 1, Some("2") => 2, _ => 0 }; check_mark(scene, check_box(tx, ty, s), state, s); }
+                let faint = matches!(&typed, Some(x) if matches!(x.kind, mn_doc::ColumnKind::Timecode { fps } if !b.text.trim().is_empty() && mn_edit::typed::parse_timecode(&b.text, fps).is_none()));
+                let listed = |id: &str| match &typed { Some(mn_edit::typed::Typed { kind: mn_doc::ColumnKind::Choice { options }, .. }) => options.iter().find(|o| o.id == id).and_then(|o| hex(&o.color)), _ => None };
                 // behind the text: highlights and chips; over it: underlines and strike-throughs
-                for sp in b.spans.as_slice() {
+                for sp in b.spans.as_slice().iter().filter(|_| !boxed) {
                     let rects = layout.range_rects(doc, b.id, sp.start, sp.end);
                     for q in rects { let q = q + kurbo::Vec2::new(ox, oy);
                         match &sp.mark {
                             Mark::Highlight(c) => { if let Some(c) = mn_layout::tint(c) { fill(scene, q, c) } }
                             Mark::Choice(payload) => { let v: serde_json::Value = serde_json::from_str(payload).unwrap_or_default(); let sel = v.get("v").and_then(|x| x.as_str()).unwrap_or("");
                                 let c = v.get("o").and_then(|o| o.as_array()).and_then(|o| o.iter().find(|x| x.get("id").and_then(|i| i.as_str()) == Some(sel))).and_then(|o| o.get("c")).and_then(|c| c.as_str()).and_then(hex).unwrap_or(header());
-                                scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &RoundedRect::from_rect(q.inflate(5.0 * s, 0.0), 9.0 * s)); }
+                                let c = listed(sel).unwrap_or(c); scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &RoundedRect::from_rect(q.inflate(5.0 * s, 0.0), 9.0 * s)); }
                             Mark::Code => scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(q.inflate(2.0 * s, 0.0), 3.0 * s)),
                             _ => {}
                         }
                     }
                 }
-                draw_layout(scene, text, Affine::translate((tx, ty)));
-                for sp in b.spans.as_slice() {
+                if faint { scene.push_layer(Fill::NonZero, peniko::Mix::Normal, 0.45, Affine::IDENTITY, &r); }
+                if !boxed { draw_layout(scene, text, Affine::translate((tx, ty))); }
+                if faint { scene.pop_layer(); }
+                for sp in b.spans.as_slice().iter().filter(|_| !boxed) {
                     let k = sp.mark.kind(); if !matches!(k, MarkKind::Underline | MarkKind::Link | MarkKind::Strike) { continue }
                     for q in layout.range_rects(doc, b.id, sp.start, sp.end) { let q = q + kurbo::Vec2::new(ox, oy);
                         let y = if k == MarkKind::Strike { q.y0 + q.height() * 0.56 } else { q.y1 - 3.0 * s };
