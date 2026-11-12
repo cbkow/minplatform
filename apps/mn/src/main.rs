@@ -43,6 +43,8 @@ mod paste;
 mod pdf;
 mod video;
 mod choice;
+mod linkedit;
+mod open;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
 mod text_element;
@@ -128,6 +130,9 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// wide tables' sideways scrolls (kept across layouts)
     /// a choice cell's picker (row 317, stage 3), and the timecode paragraph the caret was last in (it settles when left)
     picker: Option<choice::ChoicePicker>, tc_last: Option<BlockId>,
+    /// a link's editor (row 320), and the link a context menu was opened on
+    link: Option<linkedit::LinkEdit>, lmenu: Option<String>, /// a space was typed: the word before it becomes a link if it is an address
+    autolink: bool,
     tscroll: std::collections::HashMap<BlockId, f32>,
     /// their bars (min-ui's overlay scrollbar, along the bottom, always shown)
     tbars: std::collections::HashMap<BlockId, min_ui::ScrollBar>,
@@ -343,6 +348,7 @@ impl App {
             for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // a note's words being typed: the field lies over the caption's place on the playing video's picture
         { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match l.rect(&self.ed.doc, p.cell) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; } }
+        if let Some(p) = self.files.link.as_mut() { p.layout(&mut g.fonts, p.anchor + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
@@ -591,7 +597,7 @@ impl App {
         use winit::cursor::CursorIcon as C;
         let Some(g) = self.gpu.as_ref() else { return };
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
-        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y));
+        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.link.as_ref().is_some_and(|p| p.hit(x, y));
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
@@ -599,6 +605,8 @@ impl App {
             else if self.files.tbars.values().any(|b| b.dragging() || (!over_ui && !self.blank && b.hovered())) { C::Default }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
+            // Cmd held over a link: it would open
+            else if self.mods.1 && self.link_under(x, y).is_some() { C::Pointer }
             else if self.grab.is_none() && !self.pressed && self.column_gap_at(x, y).is_some() { C::ColResize }
             else if let Some((_, _, left, top)) = self.corner_at(x, y) { if left == top { C::NwseResize } else { C::NeswResize } }
             else if self.table_ui().is_some_and(|ui| y >= ui.y.0 && y <= ui.y.1 && ui.borders.iter().any(|(_, bx)| (bx - x).abs() <= 4.0 * g.window.scale_factor())) { C::ColResize }
@@ -691,6 +699,11 @@ impl App {
             let (nx, ny) = self.note_point((x, y));
             let Some(l) = self.layout.as_ref() else { return };
             let Some((hit, _)) = l.hit(&self.ed.doc, nx, ny) else { return };
+            // on a link: the link's own menu (row 320); the caret goes into it
+            if let Some(u) = self.link_under(x, y) { self.ed.point(l, nx, ny, false); let Some(g) = self.gpu.as_mut() else { return }; let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
+                self.files.tmenu = None; self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear();
+                self.ctx.open_at(vec![I::action("Open Link", mn_edit::links::openable(&u)), I::action("Copy Link", true), I::Separator, I::action("Edit Link\u{2026}", true), I::action("Remove Link", true)], &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
+                self.files.lmenu = Some(u); g.window.request_redraw(); return }
             if !self.ed.in_block_selection(hit) { self.ed.point(l, nx, ny, false); if !self.ed.toggle_blocks() { return } }
             let Some(g) = self.gpu.as_mut() else { return };
             let mac = cfg!(target_os = "macos"); let k = |m: &str, w: &str| if mac { m.to_string() } else { w.to_string() };
@@ -727,6 +740,11 @@ impl App {
     /// An item of the context menu was chosen (its place among the items, separators counted).
     fn ctx_pick(&mut self, i: usize) {
         let label = match self.ctx.items.get(i) { Some(min_ui::menu::MenuItem::Action { label, .. }) => label.clone(), _ => return };
+        // a link's menu (row 320)
+        if let Some(u) = self.files.lmenu.take() { let now = self.now_ms();
+            match label.as_str() { "Open Link" => { open::url(&u); } "Copy Link" => { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(u); } self.block_clip = None; }
+                "Remove Link" => { let d = self.ed.remove_link(now).unwrap_or(Dirty::Nothing); self.apply(d); } _ => self.link_open() }
+            if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a table's row or column menu (row 317)
         if self.files.tmenu.take().is_some() { let now = self.now_ms(); self.follow = true; let label = label.trim_start_matches("\u{2713} ");
             let d = match label {
@@ -797,6 +815,7 @@ impl App {
             T::Indent | T::Outdent => { let d = self.ed.indent(tool == T::Outdent, now).ok().flatten().unwrap_or(Dirty::Nothing); self.apply(d); }
             T::Divider => { let d = self.ed.insert_divider(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             // a table of three rows and three columns, its first row a header; a column beside the caret's block (row 317)
+            T::Link => self.link_open(),
             T::Table => { let d = self.ed.insert_table(3, 3, now).unwrap_or(Dirty::Nothing); self.apply(d); }
             T::Columns => { let d = self.ed.insert_columns(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             // a video block's set (rows 301, 316): the drawing tools arm and put down; the pen; the frame's note
@@ -1094,6 +1113,31 @@ impl App {
         if redraw { let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); }
         mine
     }
+    /// The link's editor opens at the caret: on the link the caret is in, on the selection, or for a new link.
+    fn link_open(&mut self) {
+        if self.blank || self.ed.in_blocks() || !self.ensure() { return } let Some(l) = self.layout.as_ref() else { return };
+        if matches!(self.ed.state().kind, Some(Kind::Code { .. })) || self.ed.cell_rect().is_some() { return }
+        let here = self.ed.link_here();
+        let anchor = match &here { Some((id, s, e, ..)) => l.range_rects(&self.ed.doc, *id, *s, *e).into_iter().next(), None => self.ed.selection_rects(l).into_iter().next() }.or_else(|| self.ed.caret_rect(l, 1.0));
+        let Some(anchor) = anchor else { return }; let Some(g) = self.gpu.as_mut() else { return };
+        let (url, text) = match &here { Some((.., u, t)) => (u.clone(), t.clone()), None => { let t = self.ed.selected_text(); (String::new(), if t.contains('\n') { String::new() } else { t }) } };
+        self.files.link = Some(linkedit::LinkEdit::new(anchor, &url, &text, here.is_some(), &mut g.fonts)); g.window.request_redraw();
+    }
+    fn link_out(&mut self, out: linkedit::Out) {
+        let now = self.now_ms();
+        let d = match out { linkedit::Out::None => return, linkedit::Out::Redraw => Ok(Dirty::Nothing), linkedit::Out::Close => { self.files.link = None; Ok(Dirty::Nothing) }
+            linkedit::Out::Open(u) => { open::url(&u); Ok(Dirty::Nothing) }
+            linkedit::Out::Remove => { self.files.link = None; self.ed.remove_link(now) }
+            linkedit::Out::Done { url, text } => { self.files.link = None; self.ed.set_link(&url, Some(&text), now) } };
+        let d = d.unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.follow = true; self.apply(d); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The link under a window point: its address.
+    fn link_under(&self, x: f64, y: f64) -> Option<String> {
+        if self.blank || y < self.top || x < self.side_w { return None } let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y));
+        let (id, at) = l.hit(&self.ed.doc, nx, ny)?; let (s, e, u) = self.ed.link_span_at(id, at)?;
+        l.range_rects(&self.ed.doc, id, s, e).iter().any(|r| r.inflate(1.0, 2.0).contains(kurbo::Point::new(nx, ny))).then_some(u)
+    }
     /// The caret's choice cell opens its picker (`typed` goes into its field); `edit`: on its options' editor.
     fn choice_open(&mut self, typed: &str, edit: bool) {
         let Some(f) = self.ed.selection().map(|x| x.focus.block) else { return }; let Some((_, _, _, cell, header, ColumnKind::Choice { options })) = mn_edit::typed::column_of(&self.ed.doc, f) else { return };
@@ -1121,6 +1165,8 @@ impl App {
     }
     /// The caret left a timecode cell: what was typed there is written as a timecode.
     fn settle_timecode(&mut self) {
+        // a typed address became a word (a space after it): it is made a link, a step of its own (row 320)
+        if std::mem::take(&mut self.files.autolink) && !self.blank { let now = self.now_ms(); let d = self.ed.autolink(true, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
         let cur = self.ed.selection().map(|x| x.focus.block); if cur == self.files.tc_last { return }
         let prev = std::mem::replace(&mut self.files.tc_last, cur.filter(|b| matches!(mn_edit::typed::typed_of(&self.ed.doc, *b), Some(t) if matches!(t.kind, ColumnKind::Timecode { .. }))));
         if let Some(p) = prev { let now = self.now_ms(); let d = self.ed.settle_timecode(p, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
@@ -1233,6 +1279,8 @@ impl App {
         }
         // into a typed cell: the text becomes the cell's value (a choice's option - a new one when there is none of that name)
         if !self.ed.in_blocks() && self.ed.typed_cell().is_some() { self.follow = true; let d = text.and_then(|t| self.ed.cell_put_text(&t, now).ok().flatten()).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.layout = None; } return d }
+        // an address alone on the clipboard: over a selection it links the selection, at a caret it goes in as a link (row 320)
+        if matches!(mode, Paste::Rich) && !self.ed.in_blocks() && self.ed.cell_rect().is_none() && !matches!(self.ed.state().kind, Some(Kind::Code { .. })) { if let Some(t) = text.as_deref().map(str::trim).filter(|t| mn_edit::links::looks_like_url(t)) { self.follow = true; return self.ed.set_link(t, None, now).unwrap_or(Dirty::Nothing) } }
         let frag = |me: &mut App, c: mn_edit::Clip| { me.follow = true; match me.ed.paste_fragment(&c, now) { Ok((d, refused)) => { if refused > 0 { me.notice = Some((format!("{refused} block(s) cannot go there and were left out"), Instant::now() + std::time::Duration::from_secs(6))); } d } Err(e) => { eprintln!("paste: {e:?}"); Dirty::Nothing } } };
         match mode {
             Paste::Plain => return text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing),
@@ -1450,6 +1498,8 @@ impl App {
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - self.top - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        // Enter after a typed address: the address becomes a link first (row 320)
+        if matches!(key, Key::Named(NamedKey::Enter)) && !cmd && !self.blank && self.confirm.is_none() && self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && !self.ctx.is_open() { let d = self.ed.autolink(false, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
         // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
         if let Some(sel) = &self.files.pdf {
@@ -1481,6 +1531,8 @@ impl App {
         if self.files.note_field.is_some() { let r = match (self.files.note_field.as_mut(), self.gpu.as_mut()) { (Some((_, _, f)), Some(g)) => Some(f.key(&ui_key(), &mut g.fonts)), _ => None };
             match r { Some(min_ui::FieldResponse::Accepted) => self.note_words_end(true), Some(min_ui::FieldResponse::Cancelled) => self.note_words_end(false), _ => {} }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+        // a link's editor takes the keys while it is open
+        if self.files.link.is_some() { let out = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => p.key(&ui_key(), &mut g.fonts), _ => linkedit::Out::None }; self.link_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a choice cell's picker takes the keys while it is open
         if self.files.picker.is_some() { let out = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => p.key(&ui_key(), &mut g.fonts), _ => choice::Out::None }; self.choice_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) {
@@ -1499,6 +1551,8 @@ impl App {
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
         let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
+        // Cmd+K: the link's editor (row 320)
+        if let Key::Character(c) = key { if cmd && !shift && !alt && c.to_lowercase() == "k" { self.link_open(); return } }
         // cells of a table are selected (row 319): Delete empties them (whole rows / columns go), Cmd+C / X carry them as a
         // small table and as a spreadsheet's text, Escape lets them go; nothing is typed over them
         if !self.ed.in_blocks() && !self.blank && self.ed.cell_rect().is_some() { match key {
@@ -1566,7 +1620,7 @@ impl App {
                 _ => return,
             },
             // typed text — one key event may carry several characters (a writing tool's correction, the spike S9)
-            _ => match text.filter(|t| !cmd && !t.chars().any(|c| c.is_control())) { Some(t) => self.ed.insert(t, now).unwrap_or(Dirty::Nothing), None => return },
+            _ => match text.filter(|t| !cmd && !t.chars().any(|c| c.is_control())) { Some(t) => { if t.ends_with(' ') { self.files.autolink = true; } self.ed.insert(t, now).unwrap_or(Dirty::Nothing) } None => return },
         };
         self.apply(dirty);
     }
@@ -1670,11 +1724,16 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
             // MN_TABLE=1: at the note's end a table is made and filled by typing and Tab, a row added, and columns made beside a paragraph (as the toolbar and the keys would)
+            // MN_LINK=1: a word of the note's second block is made a link, an address is typed after it (it links at its space), and the link's editor opens on the first
+            if std::env::var_os("MN_LINK").is_some() { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) { let t = self.now_ms();
+                self.ed.set_selection(Some(mn_edit::Selection { anchor: mn_edit::Pos { block: p, at: 4 }, focus: mn_edit::Pos { block: p, at: 12 } })); let _ = self.ed.set_link("example.com/review", None, t);
+                self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); let _ = self.ed.insert("www.minnotes.app ", t + 9_000); let _ = self.ed.autolink(true, t + 9_000);
+                self.apply(Dirty::Structure); self.layout = None; self.ensure(); self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 24 }))); self.link_open(); } }
             if std::env::var_os("MN_TABLE").is_some() { if let Some(first) = self.ed.doc.children(None).first().copied() { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: first, at: 0 }))); } self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let t = self.now_ms();
                 let _ = self.ed.insert("\nA table made in place:\n", t); let _ = self.ed.insert_table(3, 3, t + 2000);
                 for (i, w) in ["Shot", "Status", "Note", "010", "ok", "hold the grade", "020", "redo"].iter().enumerate() { let _ = self.ed.insert(w, t + 3000 + i as u64 * 2000); let _ = self.ed.tab_cell(false, t + 3500 + i as u64 * 2000); }
@@ -1884,6 +1943,7 @@ impl ApplicationHandler for App {
                 self.set_cursor();
                 if taken { return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
+                if self.files.link.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { self.set_cursor(); return } } }
                 if self.files.picker.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { self.set_cursor(); return } } }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
@@ -1897,6 +1957,9 @@ impl ApplicationHandler for App {
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
+                if self.files.link.is_some() { let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { return } } }
+                // Cmd + click on a link opens it (a plain click places the caret)
+                if state == ElementState::Pressed && self.mods.1 && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
                 if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }
                 // a note's words being typed: a press outside the field keeps them
                 if state == ElementState::Pressed && self.files.note_field.as_ref().is_some_and(|(_, _, f)| !f.hit(position.x, position.y)) { self.note_words_end(true); }
@@ -2010,6 +2073,8 @@ impl ApplicationHandler for App {
                 if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
                 self.key(&event.logical_key, text.as_deref()); }
             // composed text is never a video block's (its text input is off; one that still arrives is dropped)
+            WindowEvent::Ime(e) if self.files.link.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
+                if let (Some(ev), Some(p), Some(g)) = (ev, self.files.link.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.picker.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(p), Some(g)) = (ev, self.files.picker.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.note_field.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
