@@ -87,9 +87,19 @@ fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
 /// picture is still fading in - another frame is wanted.
 pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, noted: &mut Vec<(BlockId, bool)>, live: Option<Live>, ink: Option<&qcv_annotate::Annotations>, hide_notes: bool, ox: f64, oy: f64, view: Rect) -> bool {
     let s = layout.scale as f64; let st = layout.style.clone(); let mut animating = false;
+    // a table wider than its place is seen through its place: what is inside it is clipped to it while it is painted
+    let mut clipped: Vec<BlockId> = vec![];
     for b in doc.walk() {
+        while let Some(t) = clipped.last() { let mut up = b.parent; let mut inside = false; while let Some(p) = up { if p == *t { inside = true; break } up = doc.get(p).and_then(|x| x.parent); } if inside { break } scene.pop_layer(); clipped.pop(); }
         let Some(r) = layout.rect(doc, b.id) else { continue };
         let r = r + kurbo::Vec2::new(ox, oy);
+        if let (Kind::Table { .. }, Some((full, vis, at))) = (&b.kind, layout.table_scroll(b.id)) {
+            // the bar under its rows: the part of the table that shows, within the whole
+            let bar = mn_layout::TABLE_BAR as f64 * s; let track = Rect::new(r.x0, r.y1 - bar + 4.0 * s, r.x1, r.y1 - bar + 7.0 * s);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, line(), None, &RoundedRect::from_rect(track, 1.5 * s));
+            let k = track.width() / full.max(1.0) as f64; scene.fill(Fill::NonZero, Affine::IDENTITY, dim(), None, &RoundedRect::from_rect(Rect::new(track.x0 + at as f64 * k, track.y0, track.x0 + (at + vis) as f64 * k, track.y1), 1.5 * s));
+            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &Rect::new(r.x0 - s, r.y0 - s, r.x1 + s, r.y1 - bar + s)); clipped.push(b.id);
+        }
         if r.y1 < view.y0 || r.y0 > view.y1 { continue }
         if b.conflict.is_some() { fill(scene, Rect::new(r.x0 - 10.0 * s, r.y0, r.x0 - 7.0 * s, r.y1), conflict()); }
         match (&b.kind, layout.get(b.id).map(|x| &x.part)) {
@@ -268,5 +278,6 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
             _ => {}
         }
     }
+    for _ in clipped { scene.pop_layer(); }
     animating
 }

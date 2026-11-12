@@ -77,10 +77,12 @@ fn table_ui(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<Tab
     let (table, r, c) = ed.table_pos()?; let rows = ed.doc.children(Some(table)); let cells = ed.doc.children(Some(*rows.get(r)?));
     let (t, rr, cr) = (l.rect(&ed.doc, table)? + off, l.rect(&ed.doc, rows[r])? + off, l.rect(&ed.doc, *cells.get(c)?)? + off);
     let h = 18.0 * s;
+    // in a table scrolled sideways the column's handle stands over the part of the column that shows, and only the borders in view are taken
+    let cx = ((cr.x0.max(t.x0) + cr.x1.min(t.x1)) / 2.0).clamp(t.x0 + 12.0 * s, (t.x1 - 12.0 * s).max(t.x0 + 12.0 * s));
     Some(TableUi { table, row: Rect::new(t.x0 - h - 3.0 * s, rr.center().y - h / 2.0, t.x0 - 3.0 * s, rr.center().y + h / 2.0), // the column's handle sits ON the table's top edge (above it the block before would be in its way)
-        col: Rect::new(cr.center().x - 12.0 * s, t.y0 - 7.0 * s, cr.center().x + 12.0 * s, t.y0 + 7.0 * s),
+        col: Rect::new(cx - 12.0 * s, t.y0 - 7.0 * s, cx + 12.0 * s, t.y0 + 7.0 * s),
         add_row: Rect::new(t.x0, t.y1 + 3.0 * s, t.x1, t.y1 + 15.0 * s), add_col: Rect::new(t.x1 + 3.0 * s, t.y0, t.x1 + 15.0 * s, t.y1),
-        borders: cells.iter().enumerate().filter_map(|(i, cell)| l.rect(&ed.doc, *cell).map(|q| (i, q.x1 + off.x))).collect(), y: (t.y0, t.y1) })
+        borders: cells.iter().enumerate().filter_map(|(i, cell)| l.rect(&ed.doc, *cell).map(|q| (i, q.x1 + off.x))).filter(|(_, x)| *x >= t.x0 - 1.0 && *x <= t.x1 + 1.0).collect(), y: (t.y0, t.y1) })
 }
 fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<Rect> {
     // in a table's cell the row's and the column's handles stand instead (blocks are still picked with Escape)
@@ -116,6 +118,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// pictures being written (each tells its path when it is on disk)
     /// a table's menu is open (true: its column's, false: its row's); a column's border being dragged (the table, the
     /// column, where the pointer took hold, the width then, the table's kind before)
+    /// wide tables' sideways scrolls (kept across layouts)
+    tscroll: std::collections::HashMap<BlockId, f32>,
     tmenu: Option<bool>, col_drag: Option<(BlockId, usize, f64, f64, Kind)>,
     tool: Option<qcv_annotate::Tool>, pen: Option<[f32; 4]>, pen_w: Option<f32>, drawing: bool, annot_due: Option<(String, Instant)>, clean: Option<(String, Arc<Vec<u8>>, (u32, u32))>, pal_pen: bool,
     note_field: Option<(BlockId, String, min_ui::TextField)>, /// the last press on a note's small picture (a second one soon after opens its words)
@@ -248,7 +252,7 @@ impl App {
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
         #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone())); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
         if self.frames == 0 && std::env::var_os("MN_DEMO").is_some() {
@@ -258,6 +262,11 @@ impl App {
                 if let Some(st) = self.store.as_mut() { st.edited = Some(Instant::now()); }
                 if top.len() > 3 { self.ed.set_selection(Some(Selection { anchor: Pos { block: top[0], at: 7 }, focus: Pos { block: top[3], at: 10 } })); } }
         }
+        // in a wide table the caret is brought into view sideways too (the table scrolls inside its block)
+        if self.follow { let l = self.layout.as_ref().unwrap(); if let Some(f) = self.ed.selection().map(|x| x.focus) { if let Some(t) = l.wide_table_of(&self.ed.doc, f.block) {
+            if let (Some(c), Some(tr), Some((full, vis, at))) = (self.ed.caret_rect(l, 1.0), l.rect(&self.ed.doc, t), l.table_scroll(t)) { let m = 24.0 * s;
+                let to = if c.x0 < tr.x0 + m { at as f64 - (tr.x0 + m - c.x0) } else if c.x1 > tr.x1 - m { at as f64 + (c.x1 - (tr.x1 - m)) } else { at as f64 }.clamp(0.0, (full - vis).max(0.0) as f64);
+                if (to - at as f64).abs() > 0.5 { self.files.tscroll.insert(t, to as f32); let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } } } } } }
         let l = self.layout.as_ref().unwrap();
         // after an edit or a caret move the caret is brought into view
         if std::mem::take(&mut self.follow) { if let Some(c) = self.ed.caret_rect(l, 1.0) { let (top, bottom) = (c.y0 + PAD * s - 24.0 * s, c.y1 + PAD * s + 24.0 * s); let view_h = h as f64 - self.top - self.bottom; if top < self.scroll { self.scroll = top } else if bottom > self.scroll + view_h { self.scroll = bottom - view_h } } }
@@ -390,7 +399,7 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return false };
         let (w, _) = g.presenter.size(); let s = g.window.scale_factor();
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone())); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
         true
     }
@@ -1530,7 +1539,10 @@ impl ApplicationHandler for App {
                 for (i, w) in ["Shot", "Status", "Note", "010", "ok", "hold the grade", "020", "redo"].iter().enumerate() { let _ = self.ed.insert(w, t + 3000 + i as u64 * 2000); let _ = self.ed.tab_cell(false, t + 3500 + i as u64 * 2000); }
                 let _ = self.ed.insert("a second line in the cell\nand a paragraph below it", t + 30_000); for _ in 0..2 { let _ = self.ed.tab_cell(false, t + 31_000); }
                 // MN_TABLE=2: the caret stays in the table (its handles show); a column is set right and given a width, a row is moved up
-                if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
+                if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) { for i in 0..5u64 { let _ = self.ed.table_insert(true, true, t + 40_000 + i * 2000); let _ = self.ed.insert("wider", t + 40_500 + i * 2000); let _ = self.ed.table_column(|c| c.width = Some(260), t + 41_000 + i * 2000); }
+                    // 4: the caret goes back to the first cell (the table scrolls back with it)
+                    if std::env::var("MN_TABLE").as_deref() == Ok("4") { for _ in 0..6 { let _ = self.ed.tab_cell(true, t + 60_000); } } self.follow = true; }
+                if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) {} else if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
                 else { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000); }
                 self.apply(Dirty::Structure); }
             // MN_SEEK=<frame>: the note's first video block goes to that frame, paused (as a click on a note's picture would)
@@ -1654,8 +1666,14 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
-                self.scroll -= match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 };
-                g.window.request_redraw();
+                // sideways (a trackpad's own, or the wheel with Shift) over a table wider than its place: the table scrolls inside its block
+                let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) };
+                let side = if self.mods.0 && dx == 0.0 { dy } else if dx.abs() > dy.abs() { dx } else { 0.0 };
+                if side != 0.0 { let (nx, ny) = self.note_point(self.pointer); let over = self.layout.as_ref().and_then(|l| { let (id, _) = l.hit(&self.ed.doc, nx, ny)?; let t = l.wide_table_of(&self.ed.doc, id)?; let r = l.rect(&self.ed.doc, t)?; (ny >= r.y0 && ny <= r.y1).then(|| (t, l.table_scroll(t))) });
+                    if let Some((t, Some((full, vis, at)))) = over { let to = (at as f64 - side).clamp(0.0, (full - vis).max(0.0) as f64); self.files.tscroll.insert(t, to as f32); let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); }
+                        if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+                self.scroll -= dy;
+                if let Some(g) = &self.gpu { g.window.request_redraw(); }
             },
             WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             // files dragged in from outside (row 310): a line shows where they would land; over anything but the page they are refused

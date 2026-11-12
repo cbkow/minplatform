@@ -77,7 +77,10 @@ pub enum Part {
 }
 pub struct Box { pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub part: Part }
 
-pub struct NoteLayout { boxes: HashMap<BlockId, Box>, pub width: f32, pub height: f32, pub scale: f32, pub style: Style, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId> }
+pub struct NoteLayout { boxes: HashMap<BlockId, Box>, pub width: f32, pub height: f32, pub scale: f32, pub style: Style, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId>,
+    /// tables wider than their place (row 317, ruling 8): each one's whole width, and how far it is scrolled sideways
+    /// inside its block (the host keeps the scrolls across layouts: [`NoteLayout::set_table_scrolls`])
+    wide: HashMap<BlockId, f32>, scrolls: HashMap<BlockId, f32> }
 
 /// `#rgb`, `#rrggbb` or `#rrggbbaa` (the colours the file stores).
 pub fn hex(s: &str) -> Option<Color> {
@@ -95,6 +98,8 @@ pub fn colour(s: &str) -> Option<Color> { NAMED.iter().find(|(n, _)| *n == s).an
 pub const TINT: f32 = 0.35;
 pub fn tint(s: &str) -> Option<Color> { colour(s).map(|c| c.with_alpha(TINT)) }
 
+/// The room under a wide table's rows for the bar that shows its sideways scroll, page px.
+pub const TABLE_BAR: f32 = 10.0;
 /// The height of the strip under a PDF's page (the page readout, previous and next), page px.
 pub const PDF_STRIP: f32 = 36.0;
 /// The height of the strip under a video's picture (play, the counter, the line to scrub on), page px.
@@ -120,7 +125,7 @@ impl NoteLayout {
     pub fn build_turned(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>) -> NoteLayout { Self::build_media(doc, fonts, style, width, scale, turned, Default::default()) }
     /// `noted`: video blocks whose clip has notes - a row for them is added under the strip ([`VIDEO_NOTES`]).
     pub fn build_media(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId>) -> NoteLayout {
-        let mut l = NoteLayout { boxes: HashMap::with_capacity(doc.len()), width, height: 0.0, scale, style: style.clone(), turned, noted };
+        let mut l = NoteLayout { boxes: HashMap::with_capacity(doc.len()), width, height: 0.0, scale, style: style.clone(), turned, noted, wide: HashMap::new(), scrolls: HashMap::new() };
         for id in doc.children(None) { l.assign(doc, fonts, *id, 0.0, width); }
         l.height = l.stack(doc, None);
         l
@@ -154,7 +159,11 @@ impl NoteLayout {
                     }
                     self.boxes.insert(*row, Box { x: 0.0, y: 0.0, w: cx, h: 0.0, part: Part::Container }); self.stack(doc, Some(*row));
                 }
-                self.boxes.insert(id, Box { x, y: 0.0, w: widths.iter().sum(), h: 0.0, part: Part::Container }); self.stack(doc, Some(id));
+                // a table wider than its place keeps to the place: it is scrolled sideways inside it, and has a thin bar under
+                // its rows that shows where it stands
+                let full: f32 = widths.iter().sum(); let over = full > w + 0.5;
+                self.boxes.insert(id, Box { x, y: 0.0, w: if over { w } else { full }, h: 0.0, part: Part::Container }); self.stack(doc, Some(id));
+                if over { self.wide.insert(id, full); let bar = self.px(TABLE_BAR); if let Some(b) = self.boxes.get_mut(&id) { b.h += bar; } } else { self.wide.remove(&id); }
                 return
             }
             Kind::Row { .. } | Kind::Cell { .. } => return,   // placed by their table
@@ -279,10 +288,16 @@ impl NoteLayout {
     }
 
     pub fn get(&self, id: BlockId) -> Option<&Box> { self.boxes.get(&id) }
-    /// A block's box in the note's coordinates.
+    /// The host's sideways scrolls of wide tables (kept by it across layouts), each held within what its table has.
+    pub fn set_table_scrolls(&mut self, scrolls: &HashMap<BlockId, f32>) { self.scrolls = scrolls.iter().filter_map(|(id, x)| { let full = *self.wide.get(id)?; let vis = self.boxes.get(id)?.w; Some((*id, x.clamp(0.0, (full - vis).max(0.0)))) }).collect(); }
+    /// A wide table: (its whole width, the width that shows, how far it is scrolled); None for a table that fits.
+    pub fn table_scroll(&self, id: BlockId) -> Option<(f32, f32, f32)> { let full = *self.wide.get(&id)?; Some((full, self.boxes.get(&id)?.w, self.scrolls.get(&id).copied().unwrap_or(0.0))) }
+    /// The wide table a block is in (itself excluded), if any.
+    pub fn wide_table_of(&self, doc: &Doc, id: BlockId) -> Option<BlockId> { let mut up = doc.get(id)?.parent; while let Some(p) = up { if self.wide.contains_key(&p) { return Some(p) } up = doc.get(p)?.parent; } None }
+    /// A block's box in the note's coordinates (what is inside a wide table moves with its sideways scroll).
     pub fn rect(&self, doc: &Doc, id: BlockId) -> Option<Rect> {
         let b = self.boxes.get(&id)?; let (mut x, mut y) = (b.x, b.y); let mut up = doc.get(id)?.parent;
-        while let Some(p) = up { let pb = self.boxes.get(&p)?; x += pb.x; y += pb.y; up = doc.get(p)?.parent; }
+        while let Some(p) = up { let pb = self.boxes.get(&p)?; x += pb.x - self.scrolls.get(&p).copied().unwrap_or(0.0); y += pb.y; up = doc.get(p)?.parent; }
         Some(Rect::new(x as f64, y as f64, (x + b.w) as f64, (y + b.h) as f64))
     }
     fn text_origin(&self, doc: &Doc, id: BlockId) -> Option<(&Layout<Brush>, f64, f64)> {
@@ -337,7 +352,7 @@ impl NoteLayout {
             match &b.part {
                 Part::Text { layout, dx, dy } => return Some((id, Cursor::from_point(layout, (x - bx - *dx as f64) as f32, (y - by - *dy as f64) as f32).index())),
                 Part::Media | Part::Divider => return Some((id, if x < bx + b.w as f64 / 2.0 { 0 } else { 1 })),
-                Part::Container => { if doc.children(Some(id)).is_empty() { return None } parent = Some(id); ox = bx; oy = by; }
+                Part::Container => { if doc.children(Some(id)).is_empty() { return None } parent = Some(id); ox = bx - self.scrolls.get(&id).copied().unwrap_or(0.0) as f64; oy = by; }
             }
         }
     }
