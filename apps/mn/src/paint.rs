@@ -85,7 +85,7 @@ fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
 
 /// Paints the note with its top-left at (`ox`, `oy`) physical px; blocks wholly outside `view` are skipped. True: a
 /// picture is still fading in - another frame is wanted.
-pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, noted: &mut Vec<(BlockId, bool)>, live: Option<Live>, hide_notes: bool, ox: f64, oy: f64, view: Rect) -> bool {
+pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, noted: &mut Vec<(BlockId, bool)>, live: Option<Live>, ink: Option<&qcv_annotate::Annotations>, hide_notes: bool, ox: f64, oy: f64, view: Rect) -> bool {
     let s = layout.scale as f64; let st = layout.style.clone(); let mut animating = false;
     for b in doc.walk() {
         let Some(r) = layout.rect(doc, b.id) else { continue };
@@ -149,10 +149,12 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                             if icon == "repeat" { scene.stroke(&Stroke::new(1.2 * s), Affine::IDENTITY, dim(), None, &Line::new((x + 5.0 * s, strip.center().y + 6.0 * s), (x + 6.0 * s + i.width() as f64 + 1.0 * s, strip.center().y - 6.0 * s))); } } } }
                         if (m.speed - 1.0).abs() > 0.01 { let t = fonts.layout(&format!("{}\u{d7}", if (m.speed * 10.0).fract().abs() < 0.01 { format!("{:.1}", m.speed) } else { format!("{:.2}", m.speed) }), Family::Sans, (11.0 * s) as f32, 600.0, dim()); x -= t.width() as f64; draw_layout(scene, &t, Affine::translate((x, strip.center().y - t.height() as f64 / 2.0))); } }
                 }
+                if over.is_none() && me.is_some() && ink.is_some() && video { over = Some((vec![], None, r.width() / rec.get("w").and_then(|w| w.as_f64()).unwrap_or(1920.0).max(1.0))); }
                 // a note's drawings and words over a picture (the playing video's picture is under this layer: they go on top of it)
                 let annotate = |scene: &mut Scene, fonts: &mut Fonts, over: &Option<(Vec<qcv_notes::strokes::Stroke>, Option<(bool, String, String)>, f64)>| { let Some((strokes, caption, per)) = over else { return };
                     let geo = qcv_annotate::Geo { rect: [r.x0, r.y0, r.width(), r.height()], px_per_src: *per };
-                    for st in strokes { qcv_annotate::draw(scene, st, &geo); }
+                    // the playing block's drawings come from the annotations themselves: the stroke being drawn and the selection with them
+                    match (me, ink) { (Some(m), Some(a)) => a.paint(scene, &qcv_annotate::Cur::file(m.frame, rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0)), &geo), _ => for st in strokes { qcv_annotate::draw(scene, st, &geo); } }
                     if let Some((done, key, words)) = caption { let band = Rect::new(r.x0, r.y1 - 26.0 * s, r.x1, r.y1); if band.y0 > r.y0 { fill(scene, band, Color::BLACK.multiply_alpha(0.62));
                         let mut x = band.x0 + 10.0 * s;
                         if *done { if let Some(c) = fonts.icon("check", (12.0 * s) as f32, Color::WHITE) { draw_layout(scene, &c, Affine::translate((x, band.center().y - c.height() as f64 / 2.0))); x += c.width() as f64 + 6.0 * s; } }

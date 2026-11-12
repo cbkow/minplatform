@@ -785,7 +785,7 @@ impl Engine {
     pub fn capture_with_alpha(&mut self, aids: bool) -> Result<(Vec<f32>, Vec<f32>, u32, u32), Error> {
         if self.shown.is_none() { return Err(Error::NoFrame) }
         let (w, h) = self.display_dims(); let (w, h) = (w.max(1), h.max(1));
-        let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view);
+        let saved = (self.viewport, self.content, self.out_gain, self.aids, self.scope_view); let place = self.place.take();   // a host's own placing is the screen's, never a capture's
         // the Video emulation stays as the screen has it (canon row 262, reversing row 246's "the screen only")
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; if !aids { self.aids = ViewerAids::default(); } self.scope_view = None;
         self.write_uniforms();
@@ -796,7 +796,7 @@ impl Engine {
         self.encode_picture(&mut enc, &view, None);
         self.queue.submit([enc.finish()]);
         let px = if self.target_format == wgpu::TextureFormat::Rgba16Float { readback::read_rgba16f(&self.device, &self.queue, &tex, w, h) } else { vec![] };
-        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.write_uniforms();
+        (self.viewport, self.content, self.out_gain, self.aids, self.scope_view) = saved; self.place = place; self.write_uniforms();
         if px.is_empty() { return Err(Error::NoFormat) }
         // the RGB is premultiplied (= over black); the alpha beside it
         Ok((px.chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect(), px.chunks(4).map(|c| c[3].clamp(0.0, 1.0)).collect(), w, h))
@@ -867,7 +867,7 @@ impl Engine {
     /// view → the one picture, A's).
     pub fn render_output_placed(&mut self, w: u32, h: u32, out: OutMode, white: f32) -> Result<(wgpu::Texture, Vec<Placement>), Error> {
         if self.shown.is_none() && self.dual.as_ref().is_none_or(|d| !d.a.has_frame() && !d.b.has_frame()) { return Err(Error::NoFrame) }
-        let saved = (self.viewport, self.content, self.out_gain, self.display, self.scope_view);
+        let saved = (self.viewport, self.content, self.out_gain, self.display, self.scope_view); let place = self.place.take();
         // an output carries the Video emulation the screen shows (canon row 262)
         self.viewport = (w, h); self.content = None; self.out_gain = 1.0; self.display = DisplayMode { out, white }; self.scope_view = None;
         self.write_uniforms();
@@ -885,7 +885,7 @@ impl Engine {
             Some(d) => { let mut v = vec![d.a.picture_placement()]; if d.mode == crate::dual::CompareMode::SideBySide { v.push(d.b.picture_placement()); } v.into_iter().flatten().collect() }
             None => self.picture_placement().into_iter().collect(),
         };
-        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.write_uniforms(); self.relayout_dual();
+        (self.viewport, self.content, self.out_gain, self.display, self.scope_view) = saved; self.place = place; self.write_uniforms(); self.relayout_dual();
         Ok((tex, places))
     }
     /// Render exactly what `encode` would draw into an offscreen `target_format` texture and read it back as RGBA f32

@@ -16,7 +16,14 @@ pub enum Tool {
     Bold, Italic, Underline, Strike, Code, /// the two colour chips: Type (the text's colour) and Background (behind it)
     Color, Highlight, Link, ClearFormat,
     Table, Columns, Divider, Image, File, Chip,
+    /// the second set (rows 301, 316): shown while a video block is the current one - QCView's seven tools for drawing
+    /// on the frame, the pen's colour and width, and the frame's note (add, its words, addressed, delete)
+    DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteAdd, NoteText, NoteDone, NoteDelete,
 }
+/// What the band shows of the current video block's notes (None: no video block is current - the text's tools show).
+#[derive(Clone, Copy, PartialEq)]
+pub struct VideoShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// the video stands on a note's frame; that note is addressed
+    pub on_note: bool, pub addressed: bool }
 impl Tool {
     /// Built: the button does something today.
     fn built(self) -> bool { !matches!(self, Tool::Link | Tool::Table | Tool::Columns | Tool::File | Tool::Chip) }
@@ -28,6 +35,10 @@ impl Tool {
             // the bundled set has no bold glyph: the button carries the letter
             Tool::Bold => ("", Some("B"), "Bold", "B"), Tool::Italic => ("text-italic", None, "Italic", "I"), Tool::Underline => ("text-underline", None, "Underline", "U"), Tool::Strike => ("text-strikethrough", None, "Strikethrough", "Shift+X"),
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("text-a-underline", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
+            Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
+            Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
+            Tool::PenColor => ("pen-nib", None, "Pen colour", ""), Tool::PenThinner => ("minus-circle", None, "Thinner line", ""), Tool::PenThicker => ("plus-circle", None, "Thicker line", ""),
+            Tool::NoteAdd => ("note-pencil", None, "Add a note on this frame", ""), Tool::NoteText => ("text-aa", None, "The note\u{2019}s words", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
             Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
@@ -42,9 +53,10 @@ impl Tool {
 }
 
 /// What the band needs to know to light and enable its buttons.
-pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool }
+pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool, pub video: Option<VideoShown> }
 
-pub struct Toolbar { groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
+pub struct Toolbar { /// the set that is not shown now (the text's while a video block is current, else the video's)
+    other: (Vec<ActionGroup>, Vec<Vec<Tool>>, usize), video: Option<VideoShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
     right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64, /// the colours in effect at the caret for the two chips (Type, Background)
     chips: [Option<peniko::Color>; 2] }
 
@@ -56,8 +68,10 @@ impl Toolbar {
             vec![Bold, Italic, Underline, Strike, Code, Color, Highlight, Link, ClearFormat],
             vec![Table, Columns, Divider, Image, File, Chip],
         ];
-        let groups = sets.iter().map(|set| ActionGroup::new(set.iter().map(|tool| { let (icon, label, _, _) = tool.face(); let mut b = ActionButton::new(icon, &tool.tooltip()).enabled(tool.built()); b.label = label.map(|l| l.to_string()); b }).collect()).compact()).collect();
-        Toolbar { groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
+        let make = |sets: &Vec<Vec<Tool>>| -> Vec<ActionGroup> { sets.iter().map(|set| ActionGroup::new(set.iter().map(|tool| { let (icon, label, _, _) = tool.face(); let mut b = ActionButton::new(icon, &tool.tooltip()).enabled(tool.built()); b.label = label.map(|l| l.to_string()); b }).collect()).compact()).collect() };
+        let groups = make(&sets);
+        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![NoteAdd, NoteText, NoteDone, NoteDelete]];
+        Toolbar { other: (make(&video), video.clone(), video.len()), video: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -81,7 +95,16 @@ impl Toolbar {
         self.rect.height()
     }
     /// Lights and enables the buttons from where the caret is and what the collection's state is.
-    pub fn sync(&mut self, s: &Shown) {
+    /// True: the set was swapped - it must be laid out before it is shown (the caller draws again).
+    pub fn sync(&mut self, s: &Shown) -> bool {
+        let swapped = s.video.is_some() != self.video.is_some();
+        // the set follows what is current: a video block's tools, else the text's (the caller lays the band out again)
+        if s.video.is_some() != self.video.is_some() { std::mem::swap(&mut self.groups, &mut self.other.0); std::mem::swap(&mut self.tools, &mut self.other.1); std::mem::swap(&mut self.right_from, &mut self.other.2); }
+        self.video = s.video;
+        if let Some(v) = s.video { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
+            b.enabled = match tool { Tool::NoteText | Tool::NoteDone | Tool::NoteDelete => v.on_note, Tool::NoteAdd => !v.on_note, _ => true };
+            b.selected = Some(*tool) == v.tool || (*tool == Tool::NoteDone && v.on_note && v.addressed); } }
+            return swapped }
         self.chips = [s.state.color.as_deref().and_then(mn_layout::colour), s.state.highlight.as_deref().and_then(mn_layout::colour)];
         for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
             let k = s.state.kind.as_ref(); let mark = |m: MarkKind| s.state.marks.contains(&m);
@@ -98,6 +121,7 @@ impl Toolbar {
             };
             b.enabled = enabled && tool.built(); b.selected = selected && b.enabled;
         } }
+        swapped
     }
     /// Where a tool's button is (the anchor of what it opens).
     pub fn rect_of(&self, tool: Tool) -> Rect { self.groups.iter().zip(&self.tools).find_map(|(g, set)| set.iter().position(|x| *x == tool).map(|i| g.buttons[i].rect)).unwrap_or(Rect::ZERO) }
@@ -120,7 +144,7 @@ impl Toolbar {
         paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y1 - t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_COLOR);
         for g in &self.groups { g.paint(scene, fonts, self.scale, now); }
         // a chip carries its role's colour as a bar under the glyph (none set: a quiet line)
-        for (tool, c) in [(Tool::Color, self.chips[0]), (Tool::Highlight, self.chips[1])] {
+        for (tool, c) in [(Tool::Color, self.chips[0]), (Tool::Highlight, self.chips[1]), (Tool::PenColor, self.video.map(|v| v.pen))] {
             let r = self.rect_of(tool); if r.width() < 1.0 { continue }
             let (w, h) = (14.0 * self.scale, 3.0 * self.scale);
             let bar = kurbo::RoundedRect::new(r.center().x - w / 2.0, r.y1 - h - 2.0 * self.scale, r.center().x + w / 2.0, r.y1 - 2.0 * self.scale, h / 2.0);

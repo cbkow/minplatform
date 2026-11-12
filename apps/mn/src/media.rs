@@ -155,6 +155,14 @@ impl Media {
             let _ = std::thread::Builder::new().name("mn-media-notes".into()).spawn(move || { let n = qcv_notes::io::load(&path).unwrap_or_default(); let _ = tx.send((path, n)); wake(); }); }
         e.0.clone()
     }
+    /// A clip's notes as this window just changed them (it wrote them itself: no need to wait for the next reading).
+    pub fn set_notes(&mut self, media: &Path, notes: Vec<qcv_notes::Note>) { let now = Instant::now(); self.notes.insert(media.to_path_buf(), (Arc::new(notes), now, false)); }
+    /// A picture file was written again: what is held of it is dropped (it is read anew when next shown).
+    pub fn forget_file(&mut self, path: &Path) {
+        let prefix = format!("file:{}#", path.display());
+        let gone: Vec<String> = self.entries.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+        for k in gone { if let Some(e) = self.entries.remove(&k) { if let State::Ready(p) = e.state { self.total -= p.bytes; } } }
+    }
     /// Takes the notes that were read. True: some changed - draw again.
     pub fn poll_notes(&mut self) -> bool {
         let mut any = false;
@@ -605,6 +613,8 @@ fn half(b: u16) -> f32 {
     if s == 1 { -v } else { v }
 }
 fn srgb(l: f32) -> u8 { let l = l.clamp(0.0, 1.0); let v = if l <= 0.003_130_8 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 }; (v * 255.0 + 0.5) as u8 }
+/// A decoded picture's pixels for other parts of the app (a note's clean frame read back from its PNG).
+pub fn rgba_of(img: &min_image::Image) -> (Vec<u8>, u32, u32) { rgba8(img) }
 /// The decoder's planes (G, B, R [, A]) as straight-alpha RGBA, 8 bits.
 fn rgba8(img: &min_image::Image) -> (Vec<u8>, u32, u32) {
     let (w, h, p) = (img.width as usize, img.height as usize, img.pitch as usize);
