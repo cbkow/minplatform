@@ -239,7 +239,7 @@ impl App {
         let off = kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll);
         // the video that plays (rows 287, 316): the player is asked for the frame that is due and the presenter shows it
         // UNDER this layer, where the page is left open; a block that left the view (or the note) stops being the one
-        let (mut hole, mut live): (Option<Rect>, Option<(BlockId, i32, bool, bool)>) = (None, None);
+        let (mut hole, mut live): (Option<Rect>, Option<paint::Live>) = (None, None);
         if let Some(p) = self.player.as_mut() {
             let pic = self.ed.doc.get(p.id).filter(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).and_then(|_| l.rect(&self.ed.doc, p.id)).map(|r| r + off).map(|r| Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::VIDEO_STRIP as f64 * s));
             match pic.filter(|r| !self.blank && r.y1 > self.top && r.y0 < h as f64 - self.bottom) {
@@ -248,7 +248,9 @@ impl App {
                     match p.t.tick(now) { Some(f) => { if g.presenter.engine.show(&f.frame).is_ok() { p.shown = true; } } None => p.t.idle_refresh() }
                     g.presenter.engine.set_place(Some([r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32]));
                     if p.shown { hole = Some(r); }
-                    live = Some((p.id, p.t.current_frame(), p.t.is_playing(), p.shown));
+                    live = Some(paint::Live { id: p.id, frame: p.t.current_frame(), playing: p.t.is_playing(), shown: p.shown, speed: p.t.review_speed(), muted: p.t.audio.is_muted(), looping: p.t.loop_enabled() });
+                    // held keys shuttle: the player moves on while nothing else asks for a frame
+                    if p.t.is_fast_seeking() { g.window.request_redraw(); }
                     if p.t.is_playing() || p.scrub || !p.shown || now < p.awake { g.window.request_redraw(); }
                 }
             }
@@ -778,6 +780,8 @@ impl App {
         match qcv_player::Transport::open(&qcv_player::Source::from_path(&path.to_string_lossy(), None), opts) {
             Ok(mut t) => {
                 if std::env::var_os("MN_NO_AUDIO").is_none() { match qcv_player::AudioPlayer::new() { Ok(a) => t.set_audio(Box::new(a)), Err(e) => eprintln!("video: no sound ({e})") } }
+                // loop, speed, volume and mute are the app's, remembered between launches (row 316, ruling 6)
+                let set = player_settings(); t.set_loop_enabled(set.0); t.set_review_speed(set.1); t.audio.set_volume(set.2); t.audio.set_muted(set.3);
                 if frame > 0 { t.seek_to_frame(frame); }
                 if play { t.play(); }
                 self.player = Some(Player { id, t, scrub: false, shown: false, awake: Instant::now() + std::time::Duration::from_millis(800) });
@@ -794,6 +798,38 @@ impl App {
         if let Some(p) = self.player.as_mut() { if p.t.is_playing() { p.t.pause(); keep = Some(p.t.current_frame()); } else { p.t.play(); } p.awake = Instant::now() + std::time::Duration::from_millis(800); }
         if let Some(f) = keep { self.video_keep(id, f); }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// A key while a video block is the current one (row 316, stage 3): QCView's transport keys (`qcv_player::map_key`)
+    /// act on it - the block becomes the playing one, paused, when it is not. True: the key was the video's. Kept for
+    /// the page: Up / Down (they leave the block), and every key with Cmd. Not taken up here: the in and out points, the
+    /// background, screenshots, full screen (their letters do nothing rather than type beside a video).
+    fn video_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use qcv_player::Action as A;
+        let (shift, cmd, alt) = self.mods;
+        if cmd || self.blank || self.confirm.is_some() || self.ed.run_len() != 1 { return false }
+        let Some(id) = self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some()) else { return false };
+        if self.sidebar.as_ref().is_some_and(|sb| sb.renaming()) || self.pal.is_open() || self.ctx.is_open() { return false }
+        let key = match &event.logical_key {
+            Key::Character(c) if c == " " => qcv_player::Key::Space,
+            Key::Character(c) => match c.chars().next() { Some(ch) => qcv_player::Key::Char(ch), None => return false },
+            Key::Named(NamedKey::ArrowLeft) => qcv_player::Key::Left, Key::Named(NamedKey::ArrowRight) => qcv_player::Key::Right,
+            Key::Named(NamedKey::Home) => qcv_player::Key::Home, Key::Named(NamedKey::End) => qcv_player::Key::End, _ => return false };
+        let Some(a) = qcv_player::map_key(key, qcv_player::Mods { shift, ctrl: false, alt, keypad: false }, event.state.is_pressed(), event.repeat) else { return false };
+        match a {
+            A::TogglePlayback => { self.video_toggle(id); return true }
+            A::SetInPoint | A::SetOutPoint | A::ClearInOut | A::CycleBackground | A::Screenshot | A::ScreenshotToClipboard | A::ToggleFullscreen | A::AnnotationUndo | A::AnnotationRedo => return true,
+            // a release that ends a shuttle matters only to the video that is being shuttled
+            A::ShuttleEnd if self.player.as_ref().is_none_or(|p| p.id != id) => return true,
+            _ => {}
+        }
+        if !self.video_start(id, false) { return true }
+        let mut keep = None;
+        if let Some(p) = self.player.as_mut() { let now = Instant::now(); p.t.apply(a, now); p.awake = now + std::time::Duration::from_millis(800);
+            save_player_settings((p.t.loop_enabled(), p.t.review_speed(), p.t.audio.volume(), p.t.audio.is_muted()));
+            if !p.t.is_playing() && matches!(a, A::Step(_) | A::SeekToStart | A::SeekToEnd | A::ShuttleEnd) { keep = Some(p.t.current_frame()); } }
+        if let Some(f) = keep { self.video_keep(id, f); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+        true
     }
     /// The playing video's line is dragged to a window x.
     fn video_scrub(&mut self, x: f64) {
@@ -1091,8 +1127,6 @@ impl App {
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
-        // Space with a video block current plays / pauses it in place (row 316)
-        if matches!(key, Key::Character(c) if c == " ") && !cmd && !alt && self.ed.run_len() == 1 { if let Some(id) = self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some()) { self.video_toggle(id); return } }
         // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
         if let Some(sel) = &self.files.pdf {
             match key { Key::Character(c) if cmd && !shift && c.to_lowercase() == "c" => { if let Some(t) = self.pdf_boxes(sel.id).and_then(|b| self.media.page_text(&b.3)) { let words = t.words(sel.a, sel.b); if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(words); } self.block_clip = None; } return }
@@ -1324,6 +1358,13 @@ impl ApplicationHandler for App {
           if self.media.poll(&mut |px, meta| poster.convert(dev.as_ref().map(|d| (&d.0, &d.1)), px, meta)) { if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         for m in self.media.mail() { self.media_mail(m); }
         if let Some(id) = self.files.pdf_test { if let Some(t) = self.pdf_boxes(id).and_then(|b| self.media.page_text(&b.3)) { self.files.pdf_test = None; if !t.chars.is_empty() { println!("pdf: {} characters on the page, {} of text in words", t.chars.len(), t.words(0, t.chars.len() - 1).len()); self.files.pdf = Some(PdfSel { id, a: 0, b: t.chars.len() - 1, drag: false }); } else { println!("pdf: no text on the page"); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        // MN_PLAY_ACT=1 (with MN_PLAY): once it plays, the actions QCView's keys stand for are applied and their effect printed
+        if self.frames == 150 && std::env::var_os("MN_PLAY_ACT").is_some() { if let Some(p) = self.player.as_mut() { use qcv_player::Action as A; let now = Instant::now();
+            p.t.pause(); let at = p.t.current_frame(); for _ in 0..3 { p.t.apply(A::Step(1), now); } let stepped = p.t.current_frame();
+            p.t.apply(A::CycleReviewSpeed, now); p.t.apply(A::ToggleMute, now); p.t.apply(A::ToggleLoop, now);
+            println!("act: paused at {at}, three steps -> {stepped}; speed {}, muted {}, loop {}", p.t.review_speed(), p.t.audio.is_muted(), p.t.loop_enabled());
+            save_player_settings((p.t.loop_enabled(), p.t.review_speed(), p.t.audio.volume(), p.t.audio.is_muted())); println!("act: kept {:?}", player_settings());
+            p.t.apply(A::SeekToEnd, now); println!("act: end -> frame {} of {}", p.t.current_frame(), p.t.frame_count()); p.awake = now + std::time::Duration::from_millis(1500); } }
         if std::mem::take(&mut self.files.vstop) { self.video_stop(); }
         if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -1459,6 +1500,7 @@ impl ApplicationHandler for App {
                     #[cfg(target_os = "macos")] text_element::changed(false);
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
+            WindowEvent::KeyboardInput { ref event, .. } if self.video_key(event) => {}
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 // macOS: a key the system's text input kept for itself (a held letter offering its accents, a key steering
                 // that popup) or turned into a replacement is not the app's to act on; Cmd shortcuts always are
@@ -1512,6 +1554,18 @@ fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) 
 }
 
 /// The collections opened lately, newest first (a plain list beside the sessions; ten at most).
+/// The player's settings that are the app's (row 316): loop, speed, volume, muted - a small file beside the list of
+/// recent collections. Absent or unreadable: QCView's defaults (loop on, 1x, full volume, not muted).
+fn player_file() -> std::path::PathBuf { sessions_root().parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir).join("player.json") }
+fn player_settings() -> (bool, f64, f32, bool) {
+    let v: serde_json::Value = std::fs::read_to_string(player_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    (v.get("loop").and_then(|x| x.as_bool()).unwrap_or(true), v.get("speed").and_then(|x| x.as_f64()).filter(|x| *x > 0.0).unwrap_or(1.0), v.get("volume").and_then(|x| x.as_f64()).unwrap_or(1.0).clamp(0.0, 1.0) as f32, v.get("muted").and_then(|x| x.as_bool()).unwrap_or(false))
+}
+fn save_player_settings(now: (bool, f64, f32, bool)) {
+    if player_settings() == now { return }
+    let f = player_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
+    let _ = std::fs::write(f, serde_json::json!({ "loop": now.0, "speed": now.1, "volume": now.2, "muted": now.3 }).to_string());
+}
 fn recent_file() -> std::path::PathBuf { sessions_root().parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir).join("recent.txt") }
 fn recent_list() -> Vec<String> { std::fs::read_to_string(recent_file()).map(|s| s.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect()).unwrap_or_default() }
 fn recent_add(path: &std::path::Path) {
