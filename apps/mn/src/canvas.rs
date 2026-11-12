@@ -38,10 +38,13 @@ pub struct Canvas {
     /// a note card's content height (the canvas's units), as last drawn: the card is no taller than what it holds
     fit_h: std::collections::HashMap<BlockId, f64>,
     /// asked for by a gesture, for the window to do: a note card is to be entered (its text edited in place); a note is to be made at this point of the sheet
-    pub entered: Option<BlockId>, pub want_note: Option<Point>,
+    pub entered: Option<BlockId>, pub want_note: Option<Point>, /// a file's or a link's card is to be opened by the system
+    pub opened: Option<BlockId>,
     zoom_out: ActionButton, zoom_pc: ActionButton, zoom_in: ActionButton, zoom_fit: ActionButton, b_hand: ActionButton,
 }
 
+/// A media record's kind (`file`, `pdf`, `video`; None: a picture).
+fn kind_of(e: &Element) -> Option<String> { if e.kind != "media" { return None } serde_json::from_str::<serde_json::Value>(&e.record).ok().and_then(|v| v.get("kind").and_then(|x| x.as_str()).map(str::to_string)) }
 fn name_of(e: &Element) -> String { if e.kind == "text" { e.record.lines().next().unwrap_or("").to_string() } else { serde_json::from_str::<serde_json::Value>(&e.record).ok().and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string)).unwrap_or_default() } }
 fn small(icon: &'static str, tip: &str) -> ActionButton { let mut b = ActionButton::new(icon, tip).size_s(); b.icon_size = Some(t::ICON_SIZE_SMALL); b }
 
@@ -49,7 +52,7 @@ impl Canvas {
     pub fn new(id: BlockId, c: mn_store::Canvas) -> Canvas {
         let mut pc = ActionButton::new("", "Zoom to 100 %").size_s(); pc.label = Some("100 %".into());
         Canvas { id, els: c.elements, sel: vec![], cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
-            space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)") }
+            space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)") }
     }
     /// As the collection keeps it.
     pub fn stored(&self) -> mn_store::Canvas { mn_store::Canvas { elements: self.els.clone(), camera: (!self.fit).then_some(self.cam) } }
@@ -112,6 +115,18 @@ impl Canvas {
         for (r, w, h) in sized { let id = BlockId::new(); let z = self.top_z() + 1; self.els.push(Element { id, kind: "media".into(), x: x.round(), y: (p.y - h / 2.0).round(), w, h, z, parent: None, record: r }); self.sel.push(id); x += w + gap; }
         if self.fit { self.fit_all(); }
     }
+    /// An address becomes a link card at the view's centre.
+    pub fn add_link(&mut self, url: &str) { self.edit_end(true); self.step(); self.add("link", url.to_string(), 340.0, 52.0, None, 0); }
+    /// The one selected PDF card shows the page after (or before) the one it shows. True: it did.
+    pub fn pdf_page(&mut self, forward: bool) -> bool {
+        let [id] = self.sel[..] else { return false }; let Some(e) = self.get(id).filter(|e| kind_of(e).as_deref() == Some("pdf")) else { return false };
+        let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&e.record) else { return false };
+        let (page, pages) = (v.get("page").and_then(|p| p.as_u64()).unwrap_or(0) as i64, v.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).max(1) as i64);
+        let to = (page + if forward { 1 } else { -1 }).clamp(0, pages - 1); if to == page { return true }
+        v.insert("page".into(), serde_json::json!(to)); let rec = serde_json::Value::Object(v).to_string(); self.step(); if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.record = rec; } true
+    }
+    /// The one selected card, when it is of this kind of media (`file`, `pdf`, `video`).
+    pub fn selected_media(&self, kind: &str) -> Option<&Element> { let [id] = self.sel[..] else { return None }; self.get(id).filter(|e| kind_of(e).as_deref() == Some(kind)) }
     /// Text from the clipboard becomes a text card at the view's centre.
     pub fn add_text(&mut self, text: &str) { self.edit_end(true); self.step(); let lines = text.lines().count().max(1) as f64; self.add("text", text.trim_end().to_string(), 280.0, (lines * 22.0 + 24.0).clamp(60.0, 480.0), None, 0); }
     /// A right press: the card under the pointer is selected, unless it is one of those selected already; none under it: nothing is.
@@ -180,7 +195,7 @@ impl Canvas {
                 let hit = self.at(x, y);
                 let twice = self.last_click.is_some_and(|(t0, h)| h == hit && t0.elapsed().as_millis() < 420); self.last_click = if twice { None } else { Some((now, hit)) };
                 match hit {
-                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => { self.sel = vec![id]; self.entered = Some(id); } _ => self.open(id) } }
+                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => { self.sel = vec![id]; self.entered = Some(id); } Some("link") => self.opened = Some(id), _ if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), _ => self.open(id) } }
                     Some(id) => { if shift { if let Some(i) = self.sel.iter().position(|s| *s == id) { self.sel.remove(i); } else { self.sel.push(id); } } else if !self.sel.contains(&id) { self.sel = vec![id]; }
                         self.act = Some(Act::Move { from: w, orig: self.els.iter().filter(|e| self.sel.contains(&e.id)).map(|e| (e.id, e.x, e.y)).collect(), moved: false }); }
                     // twice on the empty sheet: a text card there, ready to be typed in
@@ -214,7 +229,7 @@ impl Canvas {
     /// Escape: the words being typed are kept and the field closes; else the camera goes back; else nothing stays selected.
     pub fn escape(&mut self) { if self.edit.is_some() { self.edit_end(true); } else if let Some(c) = self.back.take() { self.cam = c; } else { self.sel.clear(); } self.act = None; }
     /// Return: the one selected card is opened (a text card: typed in).
-    pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => self.entered = Some(id), Some(_) => self.open(id), None => {} } } }
+    pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => self.entered = Some(id), Some("link") => self.opened = Some(id), Some(_) if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), Some(_) => self.open(id), None => {} } } }
     /// A key for the text card being typed in. True: it was the card's.
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> bool {
         let Some((_, f)) = self.edit.as_mut() else { return false };
@@ -239,6 +254,9 @@ impl Canvas {
                 let a = fonts.layout_fit(head, Family::Sans, (13.0 * k).clamp(6.0, 40.0) as f32, 400.0, text, (r.width() - 20.0 * k).max(8.0)); draw_layout(scene, &a, Affine::translate((r.x0 + 10.0 * k, r.y0 + 8.0 * k)));
                 if !more.is_empty() && r.height() > 44.0 * k { let b = fonts.layout_fit(more, Family::Sans, (11.0 * k).clamp(5.0, 34.0) as f32, 400.0, dim, (r.width() - 20.0 * k).max(8.0)); draw_layout(scene, &b, Affine::translate((r.x0 + 10.0 * k, r.y0 + 10.0 * k + a.height() as f64))); } };
             match e.kind.as_str() {
+                "link" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if far { continue } let link = c(t::ACCENT_CONTENT_COLOR_DEFAULT); let mut x = r.x0 + 12.0 * k;
+                    if let Some(g) = fonts.icon("link", (18.0 * k) as f32, link) { draw_layout(scene, &g, Affine::translate((x, r.center().y - g.height() as f64 / 2.0))); x += 26.0 * k; }
+                    let l = fonts.layout_fit(&e.record, Family::Sans, (13.0 * k).clamp(5.0, 44.0) as f32, 400.0, link, (r.x1 - x - 10.0 * k).max(8.0)); draw_layout(scene, &l, Affine::translate((x, r.center().y - l.height() as f64 / 2.0))); }
                 "note" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if live == Some(e.id) { continue }
                     let (h, more) = note(scene, fonts, media, e, r, k, far); again |= more; if h > 0.0 { fits.push((e.id, h)); } }
                 "text" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round);
@@ -254,6 +272,12 @@ impl Canvas {
                         Pic::Loading => { again = true; scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); }
                         Pic::Missing { name, looked } => words(scene, fonts, &format!("Not found \u{2014} {name}"), &looked),
                         Pic::Failed { name, why } => words(scene, fonts, &format!("Cannot be shown \u{2014} {name}"), &why),
+                        // a file: the chip a note has - an icon, the name, the size or that it is missing
+                        Pic::Other if kind.as_deref() == Some("file") => { let st = media.file_state(&e.record); scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); let tone = if st.found { text } else { dim };
+                            if let Some(g) = fonts.icon(if st.dir { "folder-simple" } else { "file" }, (22.0 * k) as f32, tone) { draw_layout(scene, &g, Affine::translate((r.x0 + 12.0 * k, r.center().y - g.height() as f64 / 2.0))); }
+                            let tx = r.x0 + 44.0 * k; let a = fonts.layout_fit(&name, Family::Sans, (14.0 * k).clamp(5.0, 48.0) as f32, 400.0, tone, (r.x1 - tx - 10.0 * k).max(8.0)); draw_layout(scene, &a, Affine::translate((tx, r.y0 + 8.0 * k)));
+                            let under = if !st.found { "Missing".to_string() } else if st.dir { "Folder".to_string() } else { st.size.map(|n| if n < 1048576 { format!("{:.0} KB", n as f64 / 1024.0) } else { format!("{:.1} MB", n as f64 / 1048576.0) }).unwrap_or_default() };
+                            let b = fonts.layout_fit(&under, Family::Sans, (12.0 * k).clamp(5.0, 40.0) as f32, 400.0, if st.found { dim } else { c(t::NOTICE_VISUAL_COLOR) }, (r.x1 - tx - 10.0 * k).max(8.0)); draw_layout(scene, &b, Affine::translate((tx, r.y0 + 28.0 * k))); }
                         Pic::Other => words(scene, fonts, &name, &kind.unwrap_or_default().to_uppercase()),
                     } }
             }

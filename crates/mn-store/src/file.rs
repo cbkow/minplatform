@@ -167,13 +167,21 @@ impl Collection {
         let camera = cam.and_then(|c| serde_json::from_str::<Vec<f64>>(&c).ok()).and_then(|v| (v.len() == 3 && v[2] > 0.0).then(|| (v[0], v[1], v[2])));
         Ok(Canvas { elements, camera })
     }
+    /// When each of a canvas's elements was last written.
+    fn canvas_times(&self, canvas: BlockId) -> Result<std::collections::HashMap<BlockId, i64>, Error> {
+        let has: bool = self.db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'canvas_elements'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)?; if !has { return Ok(Default::default()) }
+        let mut q = self.db.prepare("SELECT id, modified FROM canvas_elements WHERE doc = ?1")?;
+        let v = q.query_map([canvas.to_string()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))))?.filter_map(|r| r.ok()).filter_map(|(id, t)| Some((BlockId::parse(&id)?, t))).collect(); Ok(v)
+    }
     /// A canvas's content is written whole (its elements, its camera).
     pub fn save_canvas(&mut self, canvas: BlockId, c: &Canvas) -> Result<(), Error> {
         let (t, doc) = (now_ms(), canvas.to_string()); let tx = self.db.transaction()?;
-        let old: std::collections::HashMap<String, i64> = { let mut q = tx.prepare("SELECT id, created FROM canvas_elements WHERE doc = ?1")?; let v = q.query_map([&doc], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))))?.filter_map(|r| r.ok()).collect(); v };
+        let old: std::collections::HashMap<String, (i64, i64, String)> = { let mut q = tx.prepare("SELECT id, created, modified, kind || '|' || x || '|' || y || '|' || w || '|' || h || '|' || z || '|' || IFNULL(parent, '') || '|' || record FROM canvas_elements WHERE doc = ?1")?; let v = q.query_map([&doc], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<i64>>(2)?.unwrap_or(0), r.get::<_, String>(3)?))))?.filter_map(|r| r.ok()).collect(); v };
         tx.execute("DELETE FROM canvas_elements WHERE doc = ?1", [&doc])?;
         for e in &c.elements { let id = e.id.to_string();
-            tx.execute("INSERT INTO canvas_elements (id, doc, kind, x, y, w, h, z, parent, record, created, modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)", params![id, doc, e.kind, e.x, e.y, e.w, e.h, e.z, e.parent.map(|p| p.to_string()), e.record, old.get(&id).copied().unwrap_or(t), t])?; }
+            tx.execute("INSERT INTO canvas_elements (id, doc, kind, x, y, w, h, z, parent, record, created, modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)", params![id, doc, e.kind, e.x, e.y, e.w, e.h, e.z, e.parent.map(|p| p.to_string()), e.record, old.get(&id).map(|o| o.0).unwrap_or(t), t])?; }
+        // what was written unchanged keeps its time
+        for (id, (_, modified, sig)) in &old { tx.execute("UPDATE canvas_elements SET modified = ?2 WHERE id = ?1 AND doc = ?3 AND (kind || '|' || x || '|' || y || '|' || w || '|' || h || '|' || z || '|' || IFNULL(parent, '') || '|' || record) = ?4", params![id, modified, doc, sig])?; }
         tx.execute("INSERT INTO canvas_meta (doc, camera) VALUES (?1, ?2) ON CONFLICT(doc) DO UPDATE SET camera = ?2", params![doc, c.camera.map(|(x, y, z)| serde_json::json!([x, y, z]).to_string())])?;
         tx.execute("UPDATE documents SET modified = ?2 WHERE id = ?1", params![doc, t])?;
         tx.commit()?; Ok(())
@@ -338,6 +346,20 @@ impl Collection {
         // custom colours: theirs are added to mine (a colour removed on one side comes back if the other still has it —
         // a swatch is cheap to remove again, a lost one is not cheap to find)
         for c in theirs.palette() { self.palette_add(&c)?; }
+        // canvases (row 322): card by card. Theirs comes in where mine did not touch it (a card they added, moved,
+        // changed or removed); a card both changed is the one changed later; what only I changed stays mine.
+        for e in self.entries()?.into_iter().filter(|e| e.kind == DocKind::Canvas) {
+            let (mine, their) = (self.load_canvas(e.id)?, theirs.load_canvas(e.id)?); let was = match &base { Some(c) => c.load_canvas(e.id)?, None => Canvas::default() };
+            let by = |c: &Canvas| -> HashMap<BlockId, Element> { c.elements.iter().map(|x| (x.id, x.clone())).collect() }; let (bm, tm) = (by(&was), by(&their)); let mut out = by(&mine);
+            let (mt, tt) = (self.canvas_times(e.id)?, theirs.canvas_times(e.id)?);
+            for (id, t_el) in &tm { match (bm.get(id), out.get(id)) {
+                (None, None) => { out.insert(*id, t_el.clone()); }
+                (Some(b_el), me) if t_el != b_el => { let mine_changed = me.is_some_and(|x| x != b_el); if !mine_changed || tt.get(id).copied().unwrap_or(0) > mt.get(id).copied().unwrap_or(0) { out.insert(*id, t_el.clone()); } }
+                _ => {} } }
+            for (id, b_el) in &bm { if !tm.contains_key(id) && out.get(id) == Some(b_el) { out.remove(id); } }
+            let mut els: Vec<Element> = out.into_values().collect(); els.sort_by_key(|x| (x.z, x.id));
+            if els != { let mut m = mine.elements.clone(); m.sort_by_key(|x| (x.z, x.id)); m } { self.save_canvas(e.id, &Canvas { elements: els, camera: mine.camera })?; report.changed.push(e.id); }
+        }
         report.tree.sort_by_key(|n| format!("{n:?}")); report.tree.dedup(); report.changed.sort();
         Ok(report)
     }
@@ -387,6 +409,23 @@ mod tests {
         d
     }
 
+    #[test]
+    fn canvases_merge_card_by_card() {
+        let dir = std::env::temp_dir().join(format!("mn-canvas-merge-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
+        let (base_p, mine_p, their_p) = (dir.join("base.mnd"), dir.join("mine.mnd"), dir.join("theirs.mnd"));
+        let el = |x: f64, rec: &str| Element { id: BlockId::new(), kind: "text".into(), x, y: 0.0, w: 100.0, h: 50.0, z: 1, parent: None, record: rec.into() };
+        let (a, b, c) = (el(0.0, "a"), el(200.0, "b"), el(400.0, "c"));
+        let cid = { let mut col = Collection::open(&base_p).unwrap(); let cid = col.create(None, DocKind::Canvas, "Board").unwrap(); col.save_canvas(cid, &Canvas { elements: vec![a.clone(), b.clone(), c.clone()], camera: None }).unwrap(); cid };
+        std::fs::copy(&base_p, &mine_p).unwrap(); std::fs::copy(&base_p, &their_p).unwrap();
+        // here: a is moved, a new card d; there: b is moved, c is removed, a new card e
+        let d = el(600.0, "d"); let e = el(800.0, "e");
+        let mut mine = Collection::open(&mine_p).unwrap(); mine.save_canvas(cid, &Canvas { elements: vec![Element { x: 10.0, ..a.clone() }, b.clone(), c.clone(), d.clone()], camera: Some((1.0, 2.0, 0.5)) }).unwrap();
+        { let mut th = Collection::open(&their_p).unwrap(); th.save_canvas(cid, &Canvas { elements: vec![a.clone(), Element { x: 250.0, ..b.clone() }, e.clone()], camera: None }).unwrap(); }
+        let report = mine.merge_from(Some(&base_p), &their_p).unwrap(); assert!(report.changed.contains(&cid));
+        let got = mine.load_canvas(cid).unwrap(); let x = |id: BlockId| got.elements.iter().find(|q| q.id == id).map(|q| q.x);
+        assert_eq!((x(a.id), x(b.id), x(c.id), x(d.id), x(e.id)), (Some(10.0), Some(250.0), None, Some(600.0), Some(800.0))); assert_eq!(got.camera, Some((1.0, 2.0, 0.5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn a_note_round_trips_and_a_resave_touches_only_what_changed() {
         let d = scratch("roundtrip"); let path = d.join("work.mnd");

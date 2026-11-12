@@ -165,6 +165,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// find in the note (row 321): the bar, the occurrences, the current one, and what they were found for (the words, the case, the note's stamp)
     /// a canvas is open in the page's place (row 322); elements copied from a canvas; where files dragged over it would land; its context menu is open
     /// a note card of the open canvas is entered: its note is edited in place, in the card's box; pictures kept of the canvas's note cards; a note's row is being dragged from the sidebar; the notes a canvas's "Add Note" menu lists
+    /// the open canvas is to be read again (a merge changed it)
+    creload: bool,
     card: Option<Card>, cards: std::collections::HashMap<BlockId, CardPic>, row_drag: Option<(BlockId, (f64, f64), bool)>, cnotes: Vec<BlockId>,
     canvas: Option<canvas::Canvas>, cclip: Vec<mn_store::Element>, canvas_at: std::cell::Cell<Option<(f64, f64)>>, cmenu: bool,
     /// the search across the collection under way (the sidebar's field)
@@ -575,6 +577,8 @@ impl App {
                         sv.doubled += report.notes.iter().flat_map(|(_, c)| c).filter(|c| matches!(c, mn_doc::Note::BothEdited { .. })).count();
                         sv.expect = Some(print);
                         for id in &report.changed { self.others.remove(id); }
+                        // the open canvas was merged with someone else's: it is read again (its history starts over)
+                        if self.files.canvas.as_ref().is_some_and(|c| report.changed.contains(&c.id)) { self.files.creload = true; } self.files.cards.clear();
                         if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); }
                         if report.changed.contains(&st.note) { if let Ok(doc) = st.col.load_note(st.note) { self.ed = Editor::new(doc); self.layout = None; self.flat = None; } }   // the history starts over after a merge
                         self.put_staged();
@@ -817,6 +821,8 @@ impl App {
             match label.as_str() { "Cut" => { self.canvas_key(&key("x"), min_ui::KeyEvent { key: min_ui::Key::Char("x".into()), text: None, shift: false, cmd: true }); } "Copy" => { self.canvas_key(&key("c"), min_ui::KeyEvent { key: min_ui::Key::Char("c".into()), text: None, shift: false, cmd: true }); }
                 "Paste" => { self.canvas_key(&key("v"), min_ui::KeyEvent { key: min_ui::Key::Char("v".into()), text: None, shift: false, cmd: true }); } "Duplicate" => { self.canvas_key(&key("d"), min_ui::KeyEvent { key: min_ui::Key::Char("d".into()), text: None, shift: false, cmd: true }); }
                 "Delete" => { if let Some(cv) = self.files.canvas.as_mut() { cv.delete(); } } "Bring to Front" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(true); } } "Send to Back" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(false); } }
+                "Previous Page" | "Next Page" => { if let Some(cv) = self.files.canvas.as_mut() { cv.pdf_page(label == "Next Page"); } }
+                "Open File" | "Reveal in Finder" | "Show in Explorer" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_media("file")).map(|e| e.record.clone()) { self.file_open(&rec, label != "Open File"); } }
                 "Open Note" => { if let Some((_, note, _)) = self.card_note() { self.mods = was; self.open_note(note); return } }
                 "Promote to Note" => { if let (Some((_, note, true)), Some(st)) = (self.card_note(), self.store.as_mut()) { let up = self.files.canvas.as_ref().and_then(|cv| st.col.entry(cv.id).ok().flatten()).and_then(|e| e.parent); if st.col.reparent(note, up).is_ok() { st.unpublished = true; self.changed.insert(note); if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } }
                 l if l.starts_with("Add Note") => { let (Some(st), Some(g)) = (self.store.as_ref(), self.gpu.as_mut()) else { self.mods = was; return };
@@ -1619,6 +1625,7 @@ impl App {
     /// for as long as the window is open.
     /// What changed on the open canvas goes to the collection (`leaving`: its camera too, and the canvas is not being dragged on).
     fn canvas_save(&mut self, leaving: bool) {
+        if std::mem::take(&mut self.files.creload) { self.card_leave(); if let (Some(cid), Some(st)) = (self.files.canvas.as_ref().map(|c| c.id), self.store.as_ref()) { if let Ok(c) = st.col.load_canvas(cid) { self.files.canvas = Some(canvas::Canvas::new(cid, c)); self.files.cards.clear(); } } return }
         let (Some(cv), Some(st)) = (self.files.canvas.as_mut(), self.store.as_mut()) else { return }; if !cv.dirty && !leaving { return } if self.pressed && !leaving { return }
         let changed = cv.dirty; match st.col.save_canvas(cv.id, &cv.stored()) { Ok(()) => { cv.dirty = false; if changed { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(cv.id); self.title(); } } Err(e) => eprintln!("canvas: {e}") }
     }
@@ -1649,6 +1656,8 @@ impl App {
             Key::Named(NamedKey::Escape) => { cv.escape(); true }
             Key::Named(NamedKey::Enter) => { cv.enter(&mut g.fonts); true }
             Key::Named(NamedKey::Backspace | NamedKey::Delete) => { cv.delete(); true }
+            // Option + Left / Right: the selected PDF card's page before / after
+            Key::Named(NamedKey::ArrowLeft) if alt => cv.pdf_page(false), Key::Named(NamedKey::ArrowRight) if alt => cv.pdf_page(true),
             Key::Named(NamedKey::ArrowLeft) => { cv.nudge(-step, 0.0); true } Key::Named(NamedKey::ArrowRight) => { cv.nudge(step, 0.0); true }
             Key::Named(NamedKey::ArrowUp) => { cv.nudge(0.0, -step); true } Key::Named(NamedKey::ArrowDown) => { cv.nudge(0.0, step); true }
             Key::Character(c) if cmd && !alt => match c.to_lowercase().as_str() {
@@ -1659,7 +1668,7 @@ impl App {
                         let paths = if self.store.is_some() { min_paths::clipboard::paste_paths().ok().filter(|p| !p.is_empty() && p.iter().all(|x| std::path::Path::new(x).exists())) } else { None };
                         if let Some(paths) = paths { self.files.canvas_at.set(None); self.add_files(paths.into_iter().map(Into::into).collect(), Self::canvas_drop()); }
                         else if let Some(img) = self.clipboard.as_mut().and_then(|cb| cb.get_image().ok()).filter(|i| i.width > 0 && i.height > 0 && self.store.is_some()) { self.files.canvas_at.set(None); self.files.token += 1; self.files.pending.insert(self.files.token, Self::canvas_drop()); self.media.add_pixels(self.files.token, img.bytes.into_owned(), img.width as u32, img.height as u32); }
-                        else if let (Some(t), Some(cv)) = (text, self.files.canvas.as_mut()) { cv.add_text(&t); } }
+                        else if let (Some(t), Some(cv)) = (text, self.files.canvas.as_mut()) { if mn_edit::links::looks_like_url(t.trim()) { cv.add_link(&mn_edit::links::normalise_url(&t)); } else { let m = cv.rect.center(); let w = cv.to_world(m.x - 160.0, m.y - 60.0); self.canvas_note(w, &t, false); } } }
                     true }
                 "=" | "+" => { cv.zoom_by(2f64.sqrt(), m); true } "-" => { cv.zoom_by(1.0 / 2f64.sqrt(), m); true } "0" => { cv.fit_all(); true } "1" if shift => { cv.zoom_to(1.0); true }
                 "]" => { cv.restack(true); true } "[" => { cv.restack(false); true }
@@ -1684,14 +1693,23 @@ impl App {
         if let Some(st) = self.store.as_mut() { st.edited.get_or_insert_with(Instant::now); } self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None;
         self.blank = true; self.layout = None; self.scroll = 0.0; if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    /// A note of the canvas's own is made at a point of the sheet (its top left), with these lines; `enter`: and entered.
+    /// It is under the canvas in the collection, and is no row of the tree.
+    fn canvas_note(&mut self, w: kurbo::Point, text: &str, enter: bool) {
+        let Some(st) = self.store.as_mut() else { return }; let Some(cid) = self.files.canvas.as_ref().map(|c| c.id) else { return };
+        let Ok(id) = st.col.create(Some(cid), mn_store::DocKind::Note, "") else { return }; let mut d = Doc::new();
+        for (i, line) in text.lines().enumerate() { d.insert(None, i, BlockId::new(), Kind::Paragraph, line).unwrap(); } if d.children(None).is_empty() { d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); }
+        let _ = st.col.save_note(id, &d);
+        if let Some(cv) = self.files.canvas.as_mut() { let el = cv.add_note(id, None); if let Some(e) = cv.els.iter_mut().find(|e| e.id == el) { e.w = 320.0; e.h = 480.0; e.x = w.x.round(); e.y = w.y.round(); } if enter { self.card_enter(el); } }
+    }
     /// What a gesture on the canvas asked of the window: a note card to enter; a note of the canvas's own to make at a point, and enter.
     fn canvas_asks(&mut self) {
         let (enter, want) = match self.files.canvas.as_mut() { Some(cv) => (cv.entered.take(), cv.want_note.take()), None => return };
-        if let Some(w) = want { let Some(st) = self.store.as_mut() else { return }; let Some(cid) = self.files.canvas.as_ref().map(|c| c.id) else { return };
-            // it belongs to the canvas: it is under the canvas in the collection, and is no row of the tree
-            let Ok(id) = st.col.create(Some(cid), mn_store::DocKind::Note, "") else { return }; let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); let _ = st.col.save_note(id, &d);
-            if let Some(cv) = self.files.canvas.as_mut() { let m = cv.rect.center(); let el = cv.add_note(id, None); if let Some(e) = cv.els.iter_mut().find(|e| e.id == el) { e.w = 320.0; e.h = 480.0; e.x = w.x.round(); e.y = w.y.round(); } let _ = m; self.card_enter(el); } }
+        if let Some(w) = want { self.canvas_note(w, "", true); }
         if let Some(el) = enter { self.card_enter(el); }
+        // a file's card: its file in its own application; a link's: its address
+        let opened = self.files.canvas.as_mut().and_then(|cv| cv.opened.take()).and_then(|id| self.files.canvas.as_ref().and_then(|cv| cv.els.iter().find(|e| e.id == id).map(|e| (e.kind.clone(), e.record.clone()))));
+        match opened { Some((k, rec)) if k == "link" => { if !open::url(&rec) { self.notice = Some((format!("This link is not one minNotes opens: {rec}"), Instant::now() + std::time::Duration::from_secs(6))); } } Some((_, rec)) => self.file_open(&rec, false), None => {} }
     }
     /// The note of the entered card, or of the one selected note card: (the element, the note, it is the canvas's own).
     fn card_note(&self) -> Option<(BlockId, BlockId, bool)> {
@@ -2321,10 +2339,10 @@ impl ApplicationHandler for App {
                 else if state == ElementState::Pressed && self.files.card.as_ref().is_none_or(|c| !c.rect.contains(kurbo::Point::new(position.x, position.y))) && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(position.x, position.y)) && !self.bar.hit(position.x, position.y) && !self.foot.hit(position.x, position.y)) { use min_ui::menu::MenuItem as I; self.card_leave();
                     // the card under the pointer is selected (the selected ones stay when it is one of them), and the menu is theirs
                     if let Some(cv) = self.files.canvas.as_mut() { cv.pick_at(position.x, position.y); } let note = self.card_note();
-                    if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { let any = !cv.sel.is_empty(); let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let mac = cfg!(target_os = "macos"); let k = |m: &str, o: &str| if mac { m.to_string() } else { o.to_string() };
+                    if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { let any = !cv.sel.is_empty(); let (pdf, file) = (cv.selected_media("pdf").is_some(), cv.selected_media("file").is_some()); let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let mac = cfg!(target_os = "macos"); let k = |m: &str, o: &str| if mac { m.to_string() } else { o.to_string() };
                         self.files.cmenu = true; self.files.tmenu = None; self.files.lmenu = None; self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear(); self.files.canvas_at.set(Some((position.x, position.y)));
                         self.ctx.open_at(vec![I::with_shortcut("Cut", any, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", any, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", true, &k("\u{2318}V", "Ctrl+V")), I::with_shortcut("Duplicate", any, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", any, "\u{232b}"), I::Separator,
-                            I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
+                            I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
                 else if state == ElementState::Pressed { self.context(position.x, position.y); }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
