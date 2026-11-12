@@ -21,7 +21,7 @@ const SNIP: f64 = 22.0;
 
 pub struct Row { pub id: BlockId, pub parent: Option<BlockId>, pub depth: usize, pub kind: DocKind, pub title: String, pub named: bool, pub has_children: bool }
 pub enum Act { None, Redraw, /// the header's buttons
-    NewNote, NewFolder, Open(BlockId), Renamed(BlockId, String), /// fold or unfold this folder
+    NewNote, NewFolder, NewCanvas, Open(BlockId), Renamed(BlockId, String), /// fold or unfold this folder
     Fold(BlockId), /// a search result was chosen: the note, and the occurrence to go to (the word, which of its occurrences)
     Found(BlockId, Option<(String, usize)>) }
 /// The keys the tree takes while it has the focus.
@@ -44,7 +44,7 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new() -> Sidebar { let mut rail = Rail::new(Side::Left, 240.0, false); rail.settle(); rail.tab_centered = true; rail.header_extra = HEAD; rail.shortcut = if cfg!(target_os = "macos") { "⌘1" } else { "Ctrl+1" }.into();
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
-        let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
+        let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("bounding-box", "New canvas"), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
         let mut query = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); query.placeholder = "Search".into();
         Sidebar { query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
@@ -118,7 +118,7 @@ impl Sidebar {
             let over = self.head.buttons.iter().enumerate().find(|(_, b)| b.hovered()).map(|(i, b)| (i as u64, b.rect, b.tooltip.clone()))
 ;
             self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now);
-            match clicked { Some(0) => return (Act::NewNote, true), Some(_) => return (Act::NewFolder, true), None => {} }
+            match clicked { Some(0) => return (Act::NewNote, true), Some(1) => return (Act::NewCanvas, true), Some(_) => return (Act::NewFolder, true), None => {} }
             // the search field: a press in it gives it the keys; a press anywhere else takes them away
             if let Event::Down { x, y, .. } = *e { if self.search.contains(kurbo::Point::new(x, y)) { self.query.focused = true; self.focused = false; self.query.pointer(e, fonts); return (Act::Redraw, true) } else if self.query.focused { self.query.focused = false; } }
             else if self.query.focused && self.query.pointer(e, fonts) { return (Act::Redraw, true) }
@@ -151,7 +151,7 @@ impl Sidebar {
                 self.last_down = Some((now, id)); self.selected = Some(id);
                 if double { self.start_rename(id, fonts); return (Act::Redraw, true) }
                 // the row selects; a note is also opened by it
-                match kind { DocKind::Note => (Act::Open(id), true), _ => (Act::Redraw, true) }
+                match kind { DocKind::Note | DocKind::Canvas => (Act::Open(id), true), _ => (Act::Redraw, true) }
             }
             _ => (Act::None, true),
         }
@@ -219,7 +219,7 @@ impl Sidebar {
             let bg = if active { Some(t::RAIL_ROW_ACTIVE_FILL) } else if selected { Some(t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT) } else if self.hover == Some(i) { Some(t::HOVER_BACKGROUND_COLOR) } else { None };
             if let Some(c) = bg { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, c); }
             if self.drop_row == Some(row.id) { scene.stroke(&kurbo::Stroke::new(1.5 * s), Affine::IDENTITY, paint::color(t::ACCENT_BACKGROUND_COLOR_DEFAULT), None, &kurbo::RoundedRect::from_rect(r.inset(-0.75 * s), t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s)); }
-            let label = if row.kind == DocKind::Canvas || (!row.named && row.title == "Untitled") { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
+            let label = if !row.named && row.title == "Untitled" && row.kind != DocKind::Canvas { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
             let mut x = r.x0 + INDENT * row.depth as f64 * s;
             let mid = |h: f64| r.y0 + (r.height() - h) / 2.0;
             // the caret (folders with something in them), then the kind's icon, then the name

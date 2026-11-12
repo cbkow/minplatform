@@ -46,6 +46,7 @@ mod choice;
 mod linkedit;
 mod findbar;
 mod search;
+mod canvas;
 mod open;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
@@ -136,6 +137,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     picker_chip: Option<mn_edit::chips::Chip>,
     /// a link's editor (row 320), and the link a context menu was opened on
     /// find in the note (row 321): the bar, the occurrences, the current one, and what they were found for (the words, the case, the note's stamp)
+    /// a canvas is open in the page's place (row 322); elements copied from a canvas; where files dragged over it would land; its context menu is open
+    canvas: Option<canvas::Canvas>, cclip: Vec<mn_store::Element>, canvas_at: std::cell::Cell<Option<(f64, f64)>>, cmenu: bool,
     /// the search across the collection under way (the sidebar's field)
     search: Option<search::Search>,
     find: Option<findbar::FindBar>, hits: Vec<mn_edit::find::Hit>, hit_at: usize, found_for: Option<(String, bool, (u64, usize), BlockId)>,
@@ -258,6 +261,7 @@ fn sample() -> Doc {
 impl App {
     fn redraw(&mut self) {
         self.settle_timecode();
+        self.canvas_save(false);
         self.find_refresh();
         self.search_step();
         let Some(g) = self.gpu.as_mut() else { return };
@@ -270,7 +274,7 @@ impl App {
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
         self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
-        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown }) { g.window.request_redraw(); }
+        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown }) { g.window.request_redraw(); }
             let unsaved = self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some());
             // the readout: a save under way, a save that failed, what is not in the document yet, else the last outcome
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
@@ -279,7 +283,7 @@ impl App {
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { text: &text, warn, finding: self.files.find.is_some(), has_note: !self.blank, has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { text: &text, warn, finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
@@ -331,7 +335,7 @@ impl App {
             None => scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &view),
             Some(r) => for part in [Rect::new(view.x0, view.y0, view.x1, r.y0), Rect::new(view.x0, r.y1, view.x1, view.y1), Rect::new(view.x0, r.y0, r.x0, r.y1), Rect::new(r.x1, r.y0, view.x1, r.y1)] { if part.width() > 0.0 && part.height() > 0.0 { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::page(), None, &part); } },
         }
-        if self.blank {
+        if self.blank && self.files.canvas.is_none() {
             // no collection: the window says what to do (the theme's subdued text, centred)
             let lines = [("No collection is open", 18.0, paint::text()), (if cfg!(target_os = "macos") { "New Collection\u{2026} (\u{2325}\u{2318}N) or Open\u{2026} (\u{2318}O)" } else { "New Collection\u{2026} (Ctrl+Alt+N) or Open\u{2026} (Ctrl+O)" }, 13.0, paint::subdued())];
             let mut y = h as f64 / 2.0 - 50.0 * s;
@@ -351,6 +355,8 @@ impl App {
                 for r in rects { let r = r + off; if r.y1 < view.y0 || r.y0 > view.y1 { continue } if h.kind == mn_edit::find::HitKind::Block { scene.stroke(&kurbo::Stroke::new(2.0 * s), kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r.inflate(2.0 * s, 2.0 * s), 6.0 * s)); }
                     else { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r, 2.0 * s)); } } } }
         { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
+        // a canvas in the page's place (row 322)
+        if let Some(cv) = self.files.canvas.as_mut() { if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s) { g.window.request_redraw(); } }
         let (mut turned, mut noted) = (vec![], vec![]);
         if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.player.as_ref().filter(|_| !self.files.hide_notes || self.files.tool.is_some()).map(|p| &p.ann), self.files.hide_notes, off.x, off.y, view) { g.window.request_redraw(); }
         if !self.blank { let now = Instant::now(); sync_bars(&mut self.files.tbars, l, &self.ed.doc, off, s); for b in self.files.tbars.values() { if b.thumb().is_some_and(|t| t.y0 >= view.y0 && t.y1 <= view.y1) { b.paint(scene, now); } if b.animating(now) { g.window.request_redraw(); } } }
@@ -412,7 +418,7 @@ impl App {
         self.bar.paint(scene, &mut g.fonts, now); self.foot.paint(scene, &mut g.fonts, now);
         if let Some(sb) = self.sidebar.as_mut() {
             let mut changed = self.changed.clone(); if let Some(st) = self.store.as_ref() { if st.edited.is_some() { changed.insert(st.note); } }
-            sb.paint(scene, &mut g.fonts, self.store.as_ref().map(|st| st.note), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
+            sb.paint(scene, &mut g.fonts, self.files.canvas.as_ref().map(|c| c.id).or(self.store.as_ref().map(|st| st.note)), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
             sb.paint_tooltip(scene, &mut g.fonts, view, now); }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
@@ -615,7 +621,9 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
         let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.link.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.find.as_ref().is_some_and(|p| p.hit(x, y));
+        let on_canvas = !over_ui && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(x, y))) && !self.bar.hit(x, y) && !self.foot.hit(x, y);
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
+            else if on_canvas { match self.files.canvas.as_mut().map(|c| c.cursor(x, y)).unwrap_or(0) { 1 => if self.pressed { C::Grabbing } else { C::Grab }, 2 => C::NwseResize, 3 => C::NeswResize, _ => C::Default } }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
             // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
@@ -761,6 +769,14 @@ impl App {
     /// An item of the context menu was chosen (its place among the items, separators counted).
     fn ctx_pick(&mut self, i: usize) {
         let label = match self.ctx.items.get(i) { Some(min_ui::menu::MenuItem::Action { label, .. }) => label.clone(), _ => return };
+        // a canvas's menu (row 322)
+        if std::mem::take(&mut self.files.cmenu) { let key = |c: &str| Key::Character(c.into());
+            let was = self.mods; self.mods = (false, true, false);
+            match label.as_str() { "Cut" => { self.canvas_key(&key("x"), min_ui::KeyEvent { key: min_ui::Key::Char("x".into()), text: None, shift: false, cmd: true }); } "Copy" => { self.canvas_key(&key("c"), min_ui::KeyEvent { key: min_ui::Key::Char("c".into()), text: None, shift: false, cmd: true }); }
+                "Paste" => { self.canvas_key(&key("v"), min_ui::KeyEvent { key: min_ui::Key::Char("v".into()), text: None, shift: false, cmd: true }); } "Duplicate" => { self.canvas_key(&key("d"), min_ui::KeyEvent { key: min_ui::Key::Char("d".into()), text: None, shift: false, cmd: true }); }
+                "Delete" => { if let Some(cv) = self.files.canvas.as_mut() { cv.delete(); } } "Bring to Front" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(true); } } "Send to Back" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(false); } }
+                "Select All" => { if let Some(cv) = self.files.canvas.as_mut() { cv.select_all(); } } _ => { if let Some(cv) = self.files.canvas.as_mut() { cv.fit_all(); } } }
+            self.mods = was; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a link's menu (row 320)
         if let Some(u) = self.files.lmenu.take() { let now = self.now_ms();
             match label.as_str() { "Open Link" => { open::url(&u); } "Copy Link" => { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(u); } self.block_clip = None; }
@@ -871,6 +887,7 @@ impl App {
                 if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             // pictures (and any other file, as a chip) chosen in the system's dialog go in after the caret's block (at the note's end when there is no caret)
             // files of any kind, as chips that point at them (a picture, a video, a PDF chosen here still becomes its own block)
+            T::File | T::Image if self.files.canvas.is_some() => { if self.store.is_some() { if let Some(paths) = rfd::FileDialog::new().set_title("Add to the Canvas").pick_files() { self.files.canvas_at.set(None); self.add_files(paths, Self::canvas_drop()); } } }
             T::File => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Files").pick_files() { self.add_files(paths, at); } },
             T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
         }
@@ -884,6 +901,7 @@ impl App {
                 let Some(at) = self.files.pending.remove(&token) else { return };
                 if !refused.is_empty() { eprintln!("drop: {}", refused.join("; ")); self.notice = Some((if refused.len() == 1 { format!("Not added \u{2014} {}", refused[0]) } else { format!("{} files were not added \u{2014} {}", refused.len(), refused[0]) }, until)); }
                 if records.is_empty() { self.apply(Dirty::Nothing); return }
+                if at.index == usize::MAX { if let Some(cv) = self.files.canvas.as_mut() { cv.add_media(records, self.files.canvas_at.take()); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 let kinds = records.into_iter().map(|descriptor| Kind::Media { descriptor }).collect();
                 match self.ed.insert_blocks(&at, kinds, now) { Ok(d) => { self.follow = true; self.apply(d) } Err(e) => eprintln!("drop: {e:?}") }
             }
@@ -1455,17 +1473,20 @@ impl App {
     }
     /// Files go to the helpers to become blocks at `at`.
     fn add_files(&mut self, paths: Vec<std::path::PathBuf>, at: mn_edit::Drop) {
-        if paths.is_empty() || self.blank { return }
+        if paths.is_empty() || (self.blank && self.files.canvas.is_none()) { return }
         self.files.token += 1; self.files.pending.insert(self.files.token, at); self.media.add(self.files.token, paths);
     }
     /// The page's drop place under a window point (None: over the bars, the sidebar, a dialog, or no note).
     fn file_drop_at(&self, x: f64, y: f64) -> Option<(mn_edit::Drop, Rect)> {
+        // over an open canvas: the files go where the pointer is (no line is shown)
+        if self.files.canvas.is_some() { if self.confirm.is_some() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None } self.files.canvas_at.set(Some((x, y))); return Some((Self::canvas_drop(), Rect::ZERO)) }
         if self.blank || self.confirm.is_some() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
         let (nx, ny) = self.note_point((x, y)); self.ed.insert_at(self.layout.as_ref()?, nx, ny)
     }
     /// A command of the menu bar (row 296).
     fn menu_cmd(&mut self, c: menu::Cmd) {
         use menu::Cmd as M;
+        if let (Some(cv), true) = (self.files.canvas.as_mut(), matches!(c, M::Undo | M::Redo)) { if c == M::Undo { cv.undo() } else { cv.redo() } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.confirm.is_some() && c != M::Quit { return }
         let pick = || rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).pick_file();
         match c {
@@ -1545,7 +1566,55 @@ impl App {
     // ── the tree (row 290)
     /// Opens another note: the one being left goes to the staged copy first and keeps its editor (its undo history)
     /// for as long as the window is open.
+    /// What changed on the open canvas goes to the collection (`leaving`: its camera too, and the canvas is not being dragged on).
+    fn canvas_save(&mut self, leaving: bool) {
+        let (Some(cv), Some(st)) = (self.files.canvas.as_mut(), self.store.as_mut()) else { return }; if !cv.dirty && !leaving { return } if self.pressed && !leaving { return }
+        let changed = cv.dirty; match st.col.save_canvas(cv.id, &cv.stored()) { Ok(()) => { cv.dirty = false; if changed { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(cv.id); self.title(); } } Err(e) => eprintln!("canvas: {e}") }
+    }
+    /// The canvas gives the page's place back to the note.
+    fn canvas_leave(&mut self) { if self.files.canvas.is_none() { return } if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.files.canvas = None; self.blank = self.store.is_none(); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+    /// A canvas of the collection is opened in the page's place (the note stays as it is behind it).
+    fn open_canvas(&mut self, id: BlockId) {
+        if self.files.canvas.as_ref().is_some_and(|c| c.id == id) { return } self.canvas_leave();
+        let Some(st) = self.store.as_mut() else { return }; if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
+        st.edited.get_or_insert_with(Instant::now); self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None;
+        let Some(st) = self.store.as_mut() else { return };
+        match st.col.load_canvas(id) { Ok(c) => { self.files.canvas = Some(canvas::Canvas::new(id, c)); self.blank = true; } Err(e) => eprintln!("open: {e}") }
+        if let Some(sb) = self.sidebar.as_mut() { sb.selected = Some(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// Files dropped or chosen for the open canvas: the place they go to (the view's centre when no point was kept).
+    fn canvas_drop() -> mn_edit::Drop { mn_edit::Drop { parent: None, index: usize::MAX, depth: None, beside: None } }
+    /// A key on the open canvas. True: it was the canvas's.
+    fn canvas_key(&mut self, key: &Key, ui: min_ui::KeyEvent) -> bool {
+        let (shift, cmd, alt) = self.mods; let Some(g) = self.gpu.as_mut() else { return false }; let Some(cv) = self.files.canvas.as_mut() else { return false };
+        let m = (cv.rect.center().x, cv.rect.center().y);
+        if cv.editing() && !cmd { if matches!(key, Key::Named(NamedKey::Escape)) { cv.escape(); } else { cv.key(&ui, &mut g.fonts); } g.window.request_redraw(); return true }
+        let step = if shift { 10.0 } else { 1.0 };
+        let done = match key {
+            Key::Named(NamedKey::Escape) => { cv.escape(); true }
+            Key::Named(NamedKey::Enter) => { cv.enter(&mut g.fonts); true }
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) => { cv.delete(); true }
+            Key::Named(NamedKey::ArrowLeft) => { cv.nudge(-step, 0.0); true } Key::Named(NamedKey::ArrowRight) => { cv.nudge(step, 0.0); true }
+            Key::Named(NamedKey::ArrowUp) => { cv.nudge(0.0, -step); true } Key::Named(NamedKey::ArrowDown) => { cv.nudge(0.0, step); true }
+            Key::Character(c) if cmd && !alt => match c.to_lowercase().as_str() {
+                "a" => { cv.select_all(); true } "d" => { let clip = cv.copy(); cv.paste(&clip, 24.0); true }
+                "c" | "x" => { if cv.editing() { let t = cv.field().and_then(|f| Some(f.text().to_string())); if let (Some(t), Some(cb)) = (t, self.clipboard.as_mut()) { let _ = cb.set_text(t); } } else { self.files.cclip = cv.copy(); if !self.files.cclip.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(self.files.cclip.iter().filter(|e| e.kind == "text").map(|e| e.record.clone()).collect::<Vec<_>>().join("\n")); } } if c.to_lowercase() == "x" { cv.delete(); } } true }
+                "v" => { if !self.files.cclip.is_empty() { let clip = self.files.cclip.clone(); cv.paste(&clip, 24.0); self.files.cclip = cv.copy(); }
+                    else { let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).filter(|t| !t.trim().is_empty());
+                        let paths = if self.store.is_some() { min_paths::clipboard::paste_paths().ok().filter(|p| !p.is_empty() && p.iter().all(|x| std::path::Path::new(x).exists())) } else { None };
+                        if let Some(paths) = paths { self.files.canvas_at.set(None); self.add_files(paths.into_iter().map(Into::into).collect(), Self::canvas_drop()); }
+                        else if let Some(img) = self.clipboard.as_mut().and_then(|cb| cb.get_image().ok()).filter(|i| i.width > 0 && i.height > 0 && self.store.is_some()) { self.files.canvas_at.set(None); self.files.token += 1; self.files.pending.insert(self.files.token, Self::canvas_drop()); self.media.add_pixels(self.files.token, img.bytes.into_owned(), img.width as u32, img.height as u32); }
+                        else if let (Some(t), Some(cv)) = (text, self.files.canvas.as_mut()) { cv.add_text(&t); } }
+                    true }
+                "=" | "+" => { cv.zoom_by(2f64.sqrt(), m); true } "-" => { cv.zoom_by(1.0 / 2f64.sqrt(), m); true } "0" => { cv.fit_all(); true } "1" if shift => { cv.zoom_to(1.0); true }
+                "]" => { cv.restack(true); true } "[" => { cv.restack(false); true }
+                _ => false },
+            _ => false };
+        if done { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        done
+    }
     fn open_note(&mut self, id: BlockId) {
+        self.canvas_leave();
         let Some(st) = self.store.as_mut() else { return }; if st.note == id { return }
         if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
         st.edited.get_or_insert_with(Instant::now); self.autosave();
@@ -1563,7 +1632,7 @@ impl App {
         let id = match st.col.create(parent, kind, if kind == mn_store::DocKind::Folder { "New folder" } else { "" }) { Ok(id) => id, Err(e) => { eprintln!("new: {e}"); return } };
         if kind == mn_store::DocKind::Note { let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); let _ = st.col.save_note(id, &d); }
         st.unpublished = true; sb.set_tree(&st.col); sb.selected = Some(id); self.changed.insert(id);
-        if kind == mn_store::DocKind::Folder { sb.start_rename(id, &mut g.fonts); g.window.request_redraw(); } else { sb.focused = false; self.open_note(id); self.ed.select_all(); }
+        if kind == mn_store::DocKind::Folder { sb.start_rename(id, &mut g.fonts); g.window.request_redraw(); } else if kind == mn_store::DocKind::Canvas { sb.focused = false; self.open_canvas(id); } else { sb.focused = false; self.open_note(id); self.ed.select_all(); }
     }
     fn rename_entry(&mut self, id: BlockId, name: &str) {
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
@@ -1597,7 +1666,8 @@ impl App {
                 if let Some((term, ord)) = go { self.ensure(); if let Some(g) = self.gpu.as_mut() { match self.files.find.as_mut() { Some(f) => f.query.set_text_end(&term, &mut g.fonts), None => self.files.find = Some(findbar::FindBar::new(&term, &mut g.fonts)) } }
                     if let Some(f) = self.files.find.as_mut() { f.blur(); f.case = false; } self.files.found_for = None; self.find_refresh(); if !self.files.hits.is_empty() { self.files.hit_at = ord.min(self.files.hits.len() - 1); self.find_show(); } }
                 if let Some(g) = &self.gpu { g.window.request_redraw(); } }
-            sidebar::Act::Open(id) => { if self.sidebar.as_ref().and_then(|sb| sb.row(id)).is_some_and(|r| r.kind == mn_store::DocKind::Note) { self.open_note(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            sidebar::Act::NewCanvas => self.new_entry(mn_store::DocKind::Canvas),
+            sidebar::Act::Open(id) => { match self.sidebar.as_ref().and_then(|sb| sb.row(id)).map(|r| r.kind) { Some(mn_store::DocKind::Note) => self.open_note(id), Some(mn_store::DocKind::Canvas) => self.open_canvas(id), _ => {} } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Fold(id) => { if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.toggle_fold(id); sb.set_tree(&st.col); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::NewNote => self.new_entry(mn_store::DocKind::Note), sidebar::Act::NewFolder => self.new_entry(mn_store::DocKind::Folder),
             sidebar::Act::Renamed(id, name) => self.rename_entry(id, &name) }
@@ -1615,7 +1685,7 @@ impl App {
         // the tree's context menu is over everything but a dialog: while it is open the event is its own
         if self.ctx.is_open() { let (chosen, _, _) = self.ctx.event(&e); if let Some(i) = chosen { self.ctx_pick(i); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // no collection: the page's two buttons
-        if self.blank { let mut hit = None; for (i, b) in self.splash.iter_mut().enumerate() { if b.event(&e, now).0 { hit = Some(i); } }
+        if self.blank && self.files.canvas.is_none() { let mut hit = None; for (i, b) in self.splash.iter_mut().enumerate() { if b.event(&e, now).0 { hit = Some(i); } }
             if let Some(g) = &self.gpu { g.window.request_redraw(); }
             // run from the loop's idle step, as a menu command is: the file dialog is not opened inside a pointer event
             match hit { Some(0) => self.later.push(menu::Cmd::NewCollection), Some(_) => self.later.push(menu::Cmd::Open), None => {} }
@@ -1674,6 +1744,10 @@ impl App {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
         }
+        // a canvas is open (row 322): its keys, unless a field of the sidebar has them
+        if self.files.canvas.is_some() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) {
+            if self.files.canvas.as_ref().is_some_and(|c| c.editing()) && cmd && !alt { if let Key::Character(c) = key { if c.to_lowercase() == "v" { let t = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()); if let (Some(t), Some(cv), Some(g)) = (t, self.files.canvas.as_mut(), self.gpu.as_mut()) { let k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(t), shift: false, cmd: false }; cv.key(&k, &mut g.fonts); g.window.request_redraw(); } return } } }
+            if self.canvas_key(key, ui_key()) { return } }
         // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
         if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {
             let pasted = if c == "v" { self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) } else { None };
@@ -1890,7 +1964,7 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some() || std::env::var_os("MN_FIND").is_some() || std::env::var_os("MN_SEARCH").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some() || std::env::var_os("MN_FIND").is_some() || std::env::var_os("MN_SEARCH").is_some() || std::env::var_os("MN_CANVAS").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
@@ -1951,7 +2025,11 @@ impl ApplicationHandler for App {
                     self.resize_to(w * s); let live = dw(self); self.resize_end(true); let kept = dw(self);
                     let d = self.ed.undo().unwrap_or(Dirty::Nothing); self.apply(d); let undone = dw(self); let d = self.ed.redo().unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None;
                     println!("resize: while dragged {live:?}, kept {kept:?}, after undo {undone:?}, after redo {:?}", dw(self)); } }
-            if let Ok(v) = std::env::var("MN_ADD") { self.add_files(v.split(',').map(Into::into).collect(), mn_edit::Drop { parent: None, index: 1, depth: None, beside: None }); }
+            // MN_CANVAS=1: the collection's first canvas is opened (MN_ADD's files then go onto it), and a text card is put on it; 2: one more is added and selected alone
+            if std::env::var_os("MN_CANVAS").is_some() { fn first(col: &mn_store::Collection, parent: Option<BlockId>) -> Option<BlockId> { for e in col.list(parent).unwrap_or_default() { if e.kind == mn_store::DocKind::Canvas { return Some(e.id) } if let Some(id) = first(col, Some(e.id)) { return Some(id) } } None }
+                if let Some(id) = self.store.as_ref().and_then(|st| first(&st.col, None)) { self.open_canvas(id); }
+                if let Some(cv) = self.files.canvas.as_mut() { cv.add_text("A text card on the canvas.\nTyped in place; its second line."); if std::env::var("MN_CANVAS").as_deref() == Ok("2") { cv.add_text("Selected alone: the corners show"); } } }
+            if let Ok(v) = std::env::var("MN_ADD") { let at = if self.files.canvas.is_some() { self.files.canvas_at.set(None); Self::canvas_drop() } else { mn_edit::Drop { parent: None, index: 1, depth: None, beside: None } }; self.add_files(v.split(',').map(Into::into).collect(), at); }
             if let Ok(v) = std::env::var("MN_RELINK") { let blocks: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
                 match blocks.iter().find(|(_, d)| self.media.is_missing(d)).map(|x| x.0) { Some(id) => self.media.relink(blocks, id, v.into()), None => println!("relink: no picture is missing") } } }
         // MN_MOVE_TEST=<a note's name>: the app moves the open note's first block to that note, undoes and redoes it,
@@ -2059,6 +2137,10 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
+                // over an open canvas (row 322): the wheel pans, with Cmd (or Ctrl) it zooms about the pointer
+                if self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(self.pointer.0, self.pointer.1))) { let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) };
+                    let (at, zoom, side) = (self.pointer, self.mods.1 || self.ctrl, self.mods.0); if let Some(cv) = self.files.canvas.as_mut() { if zoom { cv.zoom_by(2f64.powf(dy / (240.0 * s)), at); } else if side && dx == 0.0 { cv.pan_by(dy, 0.0); } else { cv.pan_by(dx, dy); } }
+                    g.window.request_redraw(); return }
                 // sideways (a trackpad's own, or the wheel with Shift) over a table wider than its place: the table scrolls inside its block
                 let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) };
                 let side = if self.mods.0 && dx == 0.0 { dy } else if dx.abs() > dy.abs() { dx } else { 0.0 };
@@ -2120,20 +2202,34 @@ impl ApplicationHandler for App {
                 let taken = !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y });
                 self.set_cursor();
                 if taken { return }
+                if self.files.canvas.is_some() { if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if cv.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, false, false, &mut g.fonts) { g.window.request_redraw(); } } self.set_cursor(); return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.files.find.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.find_out(out); if taken { self.set_cursor(); return } } }
                 if self.files.link.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { self.set_cursor(); return } } }
                 if self.files.picker.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { self.set_cursor(); return } } }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
+            WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Middle), .. } if self.files.canvas.is_some() => { self.pointer = (position.x, position.y);
+                let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
+                if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.pointer(&e, true, false, &mut g.fonts); g.window.request_redraw(); } self.set_cursor(); }
+            WindowEvent::PinchGesture { delta, .. } if self.files.canvas.is_some() => { let at = self.pointer; if let Some(cv) = self.files.canvas.as_mut() { cv.zoom_by((1.0 + delta).clamp(0.5, 2.0), at); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Secondary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Secondary } };
-                if self.ctx.is_open() || self.pal.is_open() { self.chrome_pointer(e); } else if state == ElementState::Pressed { self.context(position.x, position.y); }
+                if self.ctx.is_open() || self.pal.is_open() { self.chrome_pointer(e); }
+                else if state == ElementState::Pressed && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(position.x, position.y)) && !self.bar.hit(position.x, position.y) && !self.foot.hit(position.x, position.y)) { use min_ui::menu::MenuItem as I;
+                    // the card under the pointer is selected (the selected ones stay when it is one of them), and the menu is theirs
+                    if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.pick_at(position.x, position.y); let any = !cv.sel.is_empty(); let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let mac = cfg!(target_os = "macos"); let k = |m: &str, o: &str| if mac { m.to_string() } else { o.to_string() };
+                        self.files.cmenu = true; self.files.tmenu = None; self.files.lmenu = None; self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear(); self.files.canvas_at.set(Some((position.x, position.y)));
+                        self.ctx.open_at(vec![I::with_shortcut("Cut", any, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", any, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", true, &k("\u{2318}V", "Ctrl+V")), I::with_shortcut("Duplicate", any, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", any, "\u{232b}"), I::Separator,
+                            I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
+                else if state == ElementState::Pressed { self.context(position.x, position.y); }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
+                // a canvas is open: the pointer is its own over the page's place (row 322)
+                if self.files.canvas.is_some() { self.pressed = state == ElementState::Pressed; let shift = self.mods.0; if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if state == ElementState::Pressed && !cv.rect.contains(kurbo::Point::new(position.x, position.y)) { return } cv.pointer(&e, false, shift, &mut g.fonts); g.window.request_redraw(); } self.set_cursor(); return }
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
                 if self.files.link.is_some() { let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { return } } }
@@ -2243,6 +2339,7 @@ impl ApplicationHandler for App {
                     #[cfg(target_os = "macos")] text_element::changed(false);
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
+            WindowEvent::KeyboardInput { ref event, .. } if self.files.canvas.as_ref().is_some_and(|c| !c.editing()) && self.confirm.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) && matches!(&event.logical_key, Key::Character(c) if c.as_str() == " ") => { if let Some(cv) = self.files.canvas.as_mut() { cv.space = event.state.is_pressed(); } self.set_cursor(); }
             WindowEvent::KeyboardInput { ref event, .. } if self.video_key(event) => {}
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 // macOS: a key the system's text input kept for itself (a held letter offering its accents, a key steering
@@ -2259,6 +2356,8 @@ impl ApplicationHandler for App {
                 if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
                 self.key(&event.logical_key, text.as_deref()); }
             // composed text is never a video block's (its text input is off; one that still arrives is dropped)
+            WindowEvent::Ime(e) if self.files.canvas.is_some() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
+                if let (Some(ev), Some(cv), Some(g)) = (ev, self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.find.as_ref().is_some_and(|f| f.focused()) && self.files.link.is_none() && self.files.picker.is_none() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 let out = match (ev, self.files.find.as_mut(), self.gpu.as_mut()) { (Some(ev), Some(p), Some(g)) => p.ime(&ev, &mut g.fonts), _ => findbar::Out::None }; self.find_out(out); }
             WindowEvent::Ime(e) if self.files.link.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };

@@ -7,5 +7,5 @@ pub mod old;
 pub mod share;
 pub mod staging;
 
-pub use file::{Collection, DocKind, Entry, Error};
+pub use file::{Collection, DocKind, Entry, Error, Canvas, Element};
 pub use old::Gate;

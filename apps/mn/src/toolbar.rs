@@ -53,7 +53,8 @@ impl Tool {
 }
 
 /// What the band needs to know to light and enable its buttons.
-pub struct Shown<'a> { pub state: &'a mn_edit::State, pub has_note: bool, /// the caret is in a table's cell
+pub struct Shown<'a> { pub state: &'a mn_edit::State, /// a canvas is open (pictures and files can be put on it)
+    pub canvas: bool, pub has_note: bool, /// the caret is in a table's cell
     pub in_cell: bool, pub video: Option<VideoShown> }
 
 pub struct Toolbar { /// the set that is not shown now (the text's while a video block is current, else the video's)
@@ -120,7 +121,7 @@ impl Toolbar {
                 Tool::Outdent | Tool::Indent => (s.has_note && matches!(k, Some(Kind::Bullet { .. } | Kind::Numbered { .. } | Kind::Task { .. })), false),
                 Tool::Bold => (s.has_note, mark(MarkKind::Bold)), Tool::Italic => (s.has_note, mark(MarkKind::Italic)), Tool::Underline => (s.has_note, mark(MarkKind::Underline)), Tool::Strike => (s.has_note, mark(MarkKind::Strike)),
                 Tool::Code => (s.has_note, mark(MarkKind::Code)), Tool::Color | Tool::Highlight => (s.has_note, false),
-                Tool::ClearFormat | Tool::Divider | Tool::Image | Tool::File => (s.has_note, false),
+                Tool::ClearFormat | Tool::Divider => (s.has_note, false), Tool::Image | Tool::File => (s.has_note || s.canvas, false),
                 // a link: never in a code block
                 Tool::Link => (s.has_note && !matches!(k, Some(Kind::Code { .. })), mark(MarkKind::Link)),
                 // a choice chip in the text: never in a code block
