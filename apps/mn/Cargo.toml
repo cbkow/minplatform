@@ -33,6 +33,8 @@ env_logger = { workspace = true }
 log = { workspace = true }
 mn-edit = { path = "../../crates/mn-edit" }
 arboard = { workspace = true }
+min-image = { path = "../../crates/min-image" }
+min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -7,6 +7,7 @@ use mn_doc::{BlockId, Doc, Kind, Mark, MarkKind};
 use mn_layout::{hex, NoteLayout, Part};
 use peniko::{Color, Fill};
 use vello::Scene;
+use crate::media::{Media, View};
 
 // The page's colours are the theme's (min-theme, as QCView's panels): the page is the base background, raised parts
 // (a code block, a media box, a table's header) are its layers, lines are dividers, the caret and the selection are the
@@ -28,6 +29,13 @@ fn conflict() -> Color { c(t::NOTICE_VISUAL_COLOR) }
 
 fn fill(scene: &mut Scene, r: Rect, c: Color) { scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r); }
 
+/// A long path keeps its two ends (the file's name is at the far one).
+fn middle(t: &str, max: usize) -> String {
+    let n = t.chars().count(); if n <= max || max < 8 { return t.to_string() }
+    let keep = max - 1; let (a, z) = (keep / 3, keep - keep / 3);
+    format!("{}\u{2026}{}", t.chars().take(a).collect::<String>(), t.chars().skip(n - z).collect::<String>())
+}
+
 /// The number a numbered item shows: it counts the numbered items above it at its depth, through deeper items, until
 /// anything else (or a shallower item) breaks the list.
 fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
@@ -43,9 +51,10 @@ fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
     n
 }
 
-/// Paints the note with its top-left at (`ox`, `oy`) physical px; blocks wholly outside `view` are skipped.
-pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, ox: f64, oy: f64, view: Rect) {
-    let s = layout.scale as f64; let st = layout.style.clone();
+/// Paints the note with its top-left at (`ox`, `oy`) physical px; blocks wholly outside `view` are skipped. True: a
+/// picture is still fading in - another frame is wanted.
+pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, ox: f64, oy: f64, view: Rect) -> bool {
+    let s = layout.scale as f64; let st = layout.style.clone(); let mut animating = false;
     for b in doc.walk() {
         let Some(r) = layout.rect(doc, b.id) else { continue };
         let r = r + kurbo::Vec2::new(ox, oy);
@@ -54,11 +63,34 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
         match (&b.kind, layout.get(b.id).map(|x| &x.part)) {
             (Kind::Divider, _) => { let y = ((r.y0 + r.y1) / 2.0).round(); fill(scene, Rect::new(r.x0, y, r.x1, y + s.max(1.0)), line()); }
             (Kind::Media { descriptor }, _) => {
-                scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(r, 6.0 * s));
-                let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
-                let label = format!("{} — {}", v.get("kind").and_then(|k| k.as_str()).unwrap_or("image"), v.get("name").and_then(|k| k.as_str()).or(v.get("src").and_then(|k| k.as_str())).unwrap_or(""));
-                let l = fonts.layout_fit(&label, Family::Sans, (12.0 * s) as f32, 400.0, dim(), r.width() - 24.0 * s);
-                draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + 10.0 * s)));
+                let box_ = RoundedRect::from_rect(r, 6.0 * s);
+                // a state in words: the file's name, and under it where it was looked for or why it was not read
+                let words = |scene: &mut Scene, fonts: &mut Fonts, head: &str, name: &str, more: &str| {
+                    scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_);
+                    let a = fonts.layout_fit(&if name.is_empty() { head.to_string() } else { format!("{head} \u{2014} {name}") }, Family::Sans, (13.0 * s) as f32, 400.0, text(), r.width() - 24.0 * s);
+                    draw_layout(scene, &a, Affine::translate((r.x0 + 12.0 * s, r.y0 + 10.0 * s)));
+                    if !more.is_empty() && r.height() > 52.0 * s { let more = &middle(more, ((r.width() - 24.0 * s) / (6.6 * s)) as usize); let l = fonts.layout_fit(more, Family::Sans, (12.0 * s) as f32, 400.0, dim(), r.width() - 24.0 * s); draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + 14.0 * s + a.height() as f64))); }
+                };
+                match media.view(descriptor, r.width(), r.height()) {
+                    View::Ready { brush, w, h, fade } => {
+                        // the whole picture inside its box, centred (the box has its shape, but for a picture the
+                        // file stores lying on its side), on whole pixels
+                        let k = (r.width() / w as f64).min(r.height() / h as f64); let (dw, dh) = ((w as f64 * k).round(), (h as f64 * k).round());
+                        let (x, y) = ((r.x0 + (r.width() - dw) / 2.0).round(), (r.y0 + (r.height() - dh) / 2.0).round());
+                        if fade < 1.0 { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(1.0 - fade), None, &box_); animating = true; }
+                        min_ui::paint::image(scene, &brush.clone().with_alpha(fade), Rect::new(x, y, x + dw, y + dh));
+                    }
+                    View::Loading => scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_),
+                    View::Missing { name, looked } => words(scene, fonts, "Not found", &name, &looked),
+                    View::Failed { name, why } => words(scene, fonts, "Cannot be shown", &name, &why),
+                    View::Other => {
+                        scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_);
+                        let v: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default();
+                        let label = format!("{} \u{2014} {}", v.get("kind").and_then(|k| k.as_str()).unwrap_or("image"), v.get("name").and_then(|k| k.as_str()).or(v.get("src").and_then(|k| k.as_str())).unwrap_or(""));
+                        let l = fonts.layout_fit(&label, Family::Sans, (12.0 * s) as f32, 400.0, dim(), r.width() - 24.0 * s);
+                        draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + 10.0 * s)));
+                    }
+                }
             }
             (Kind::Table { header_rows, .. }, _) => {
                 for (i, row) in doc.children(Some(b.id)).iter().enumerate() {
@@ -114,4 +146,5 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
             _ => {}
         }
     }
+    animating
 }

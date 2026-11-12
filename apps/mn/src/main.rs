@@ -36,6 +36,7 @@ mod toolbar;
 mod footer;
 mod colours;
 mod clip;
+mod media;
 #[cfg(target_os = "macos")]
 mod text_element;
 
@@ -132,7 +133,8 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     bar_wide: bool, /// the page's top: the band's height, physical px
     top: f64, saver: mn_store::share::Worker<SaveStep>, saving: Option<Saving>, store: Option<Store>, sidebar: Option<sidebar::Sidebar>, others: std::collections::HashMap<BlockId, Editor>, side_w: f64, confirm: Option<(Ask, min_ui::dialog::Dialog)>, quit: bool, close_after_save: bool, recovered: bool, /// no collection is open: the window says so and waits for Open / New
     blank: bool, /// what closing the collection is for (asked first when there are changes that are not in the document)
-    after_close: Option<Pending>, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
+    after_close: Option<Pending>, /// the pictures of the page (decoded off this thread)
+    media: media::Media, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
     told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
@@ -228,7 +230,8 @@ impl App {
         let picked = self.ed.block_selection();
         for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
-        if !self.blank { paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view); }
+        self.media.begin_frame(); self.media.set_base(self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|x| x.original().parent()));
+        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, off.x, off.y, view) { g.window.request_redraw(); }
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
         // the handle beside the caret's block; while it is dragged, the line where the blocks would land and how many they are
@@ -891,6 +894,7 @@ impl App {
         }
         let mut d = std::mem::take(&mut self.draw_ms); d.sort_by(|a, b| a.partial_cmp(b).unwrap());
         if !d.is_empty() { println!("frames {}: layout + scene + render + present, CPU ms p50 {:.2} p95 {:.2}", self.frames, d[d.len() / 2], d[(d.len() * 95 / 100).min(d.len() - 1)]); }
+        let (bytes, n) = self.media.held(); if n > 0 { println!("pictures held: {n}, {:.1} MB", bytes as f64 / (1 << 20) as f64); }
     }
 }
 
@@ -989,6 +993,8 @@ impl ApplicationHandler for App {
             if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
             if what == "picker" { if let Some(g) = self.gpu.as_mut() { self.pal.show_picker(&mut g.fonts); } }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        // a picture came from the decoders
+        if self.media.poll() { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
@@ -1152,6 +1158,8 @@ fn startup_log(what: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) { let _ = writeln!(f, "{ms:8.1} ms  {what}"); }
 }
 /// Menu commands as the native menu reports them, kept until the loop (woken for them) takes them.
+/// Wakes the loop from another thread (a decoded picture).
+static WAKE: std::sync::OnceLock<winit::event_loop::EventLoopProxy> = std::sync::OnceLock::new();
 #[cfg(target_os = "macos")] static MENU_EVENTS: std::sync::Mutex<Vec<muda::MenuEvent>> = std::sync::Mutex::new(Vec::new());
 
 fn main() {
@@ -1175,6 +1183,37 @@ fn main() {
         let sub = c.create(Some(project), DocKind::Folder, "Deliveries").unwrap();
         let n = c.create(Some(sub), DocKind::Note, "Formats and safe areas").unwrap(); c.save_note(n, &para("16:9, 9:16 and 1:1.")).unwrap();
         c.create(Some(project), DocKind::Canvas, "Storyboard").unwrap();
+        // pictures (row 310), made here: one larger than the page, one the file stores on its side, one with clear
+        // parts, and the states - a file that is not there, a format not read yet, a volume without a path
+        {
+            let side = path.parent().unwrap_or(std::path::Path::new(".")).join(".minnotes"); std::fs::create_dir_all(&side).expect("sample");
+            let at = |n: &str| side.join(n).to_string_lossy().into_owned();
+            let grad = |w: u32, h: u32| -> Vec<u8> { let mut v = Vec::with_capacity((w * h * 3) as usize); for y in 0..h { for x in 0..w { let band = (x * 8 / w) % 2 == (y * 6 / h) % 2; v.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, if band { 200 } else { 60 }]); } } v };
+            min_image::write::png8(&at("wide.png"), &grad(2400, 1350), 2400, 1350).expect("sample");
+            // 600 x 400 in the file, orientation 6: seen upright it is 400 x 600 with the red edge on top
+            let mut rgb = grad(600, 400); for y in 0..400usize { for x in 0..24usize { let i = (y * 600 + x) * 3; rgb[i..i + 3].copy_from_slice(&[230, 40, 40]); } }
+            let jpg = min_image::write::jpeg8_bytes(&rgb, 600, 400, 90).expect("sample");
+            let mut turned = jpg[..2].to_vec(); turned.extend_from_slice(&[0xff, 0xe1, 0, 34]); turned.extend_from_slice(b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01"); turned.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]); turned.extend_from_slice(&jpg[2..]);
+            std::fs::write(at("turned.jpg"), turned).expect("sample");
+            let mut clear = vec![0u8; 320 * 200 * 4]; for y in 0..200i32 { for x in 0..320i32 { let d = (((x - 160) * (x - 160) + (y - 100) * (y - 100)) as f32).sqrt(); if d < 90.0 { let i = ((y * 320 + x) * 4) as usize; clear[i..i + 4].copy_from_slice(&[80, 160, 240, if d < 80.0 { 255 } else { 120 }]); } } }
+            min_image::write::png_rgba8(&at("clear.png"), &clear, 320, 200).expect("sample");
+            std::fs::write(at("moving.gif"), b"GIF89a").expect("sample");
+            let mut d = Doc::new(); let mut add = |kind: Kind, text: &str| { let i = d.children(None).len(); d.insert(None, i, BlockId::new(), kind, text).unwrap(); };
+            let pic = |j: &str| Kind::Media { descriptor: j.to_string() };
+            add(Kind::Heading { level: 1 }, "Pictures");
+            add(Kind::Paragraph, "Wider than the page: it is shown at the page's width.");
+            add(pic(r#"{"h":1350,"name":"wide.png","src":".minnotes/wide.png","w":2400}"#), "");
+            add(Kind::Paragraph, "Stored on its side by the camera, shown upright (the red edge is its top). The box still has the old shape.");
+            add(pic(r#"{"h":400,"name":"turned.jpg","src":".minnotes/turned.jpg","w":600}"#), "");
+            add(Kind::Paragraph, "With clear parts, at a width of its own:");
+            add(pic(r#"{"dw":240,"h":200,"name":"clear.png","src":".minnotes/clear.png","w":320}"#), "");
+            add(Kind::Paragraph, "A file that is not there, a format not read yet, and a volume this machine has no path for:");
+            add(pic(r#"{"h":300,"name":"gone.png","src":".minnotes/gone.png","w":800}"#), "");
+            add(pic(r#"{"h":300,"name":"moving.gif","src":".minnotes/moving.gif","w":800}"#), "");
+            add(pic(r#"{"h":300,"name":"plate.exr","src":{"rel":["shots","010","plate.exr"],"vol":"a-volume"},"w":800}"#), "");
+            add(Kind::Paragraph, "Text goes on below.");
+            let n = c.create(None, DocKind::Note, "Pictures").unwrap(); c.save_note(n, &d).unwrap();
+        }
         let n = c.create(None, DocKind::Note, "Scratch").unwrap(); c.save_note(n, &para("")).unwrap();
         let tmp = path.with_extension("publish"); c.publish(&tmp).expect("publish"); drop(c);
         for ext in ["mnd-wal", "mnd-shm"] { let _ = std::fs::remove_file(path.with_extension(ext)); }
@@ -1210,10 +1249,11 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
+    let _ = WAKE.set(el.create_proxy());
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
     el.run_app(app).unwrap();
 }

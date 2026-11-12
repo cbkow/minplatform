@@ -2147,6 +2147,8 @@ dependencies = [
  "env_logger",
  "kurbo",
  "log",
+ "min-image",
+ "min-paths",
  "min-present",
  "min-theme",
  "min-ui",
