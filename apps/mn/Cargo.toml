@@ -34,6 +34,8 @@ log = { workspace = true }
 mn-edit = { path = "../../crates/mn-edit" }
 arboard = { workspace = true }
 min-image = { path = "../../crates/min-image" }
+# GIF and WebP (their first frame): formats the notes take that the family's decoder (QCView's formats) does not
+image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
 min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"
 

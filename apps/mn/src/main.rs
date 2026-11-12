@@ -1361,7 +1361,7 @@ fn main() {
             std::fs::write(at("turned.jpg"), turned).expect("sample");
             let mut clear = vec![0u8; 320 * 200 * 4]; for y in 0..200i32 { for x in 0..320i32 { let d = (((x - 160) * (x - 160) + (y - 100) * (y - 100)) as f32).sqrt(); if d < 90.0 { let i = ((y * 320 + x) * 4) as usize; clear[i..i + 4].copy_from_slice(&[80, 160, 240, if d < 80.0 { 255 } else { 120 }]); } } }
             min_image::write::png_rgba8(&at("clear.png"), &clear, 320, 200).expect("sample");
-            std::fs::write(at("moving.gif"), b"GIF89a").expect("sample");
+            std::fs::write(at("photo.heic"), b"not a picture yet").expect("sample");
             let mut d = Doc::new(); let mut add = |kind: Kind, text: &str| { let i = d.children(None).len(); d.insert(None, i, BlockId::new(), kind, text).unwrap(); };
             let pic = |j: &str| Kind::Media { descriptor: j.to_string() };
             add(Kind::Heading { level: 1 }, "Pictures");
@@ -1373,7 +1373,7 @@ fn main() {
             add(pic(r#"{"dw":240,"h":200,"name":"clear.png","src":".minnotes/clear.png","w":320}"#), "");
             add(Kind::Paragraph, "A file that is not there, a format not read yet, and a volume this machine has no path for:");
             add(pic(r#"{"h":300,"name":"gone.png","src":".minnotes/gone.png","w":800}"#), "");
-            add(pic(r#"{"h":300,"name":"moving.gif","src":".minnotes/moving.gif","w":800}"#), "");
+            add(pic(r#"{"h":300,"name":"photo.heic","src":".minnotes/photo.heic","w":800}"#), "");
             add(pic(r#"{"h":300,"name":"plate.exr","src":{"rel":["shots","010","plate.exr"],"vol":"a-volume"},"w":800}"#), "");
             add(Kind::Paragraph, "Text goes on below.");
             let n = c.create(None, DocKind::Note, "Pictures").unwrap(); c.save_note(n, &d).unwrap();

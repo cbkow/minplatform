@@ -248,7 +248,7 @@ impl Places {
     /// A picture file as a block record: its size as it is SEEN (a JPEG lying on its side is measured upright).
     fn picture(&self, path: &Path) -> Result<serde_json::Value, String> {
         let p = path.to_string_lossy();
-        let (w, h) = min_image::dimensions(&p, "").map_err(|e| e.to_string())?;
+        let (w, h) = size_of(path)?; let _ = &p;
         let (w, h) = if orientation(path) >= 5 { (h, w) } else { (w, h) };
         Ok(serde_json::json!({ "src": self.keep(path)?, "w": w, "h": h, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() }))
     }
@@ -257,7 +257,7 @@ impl Places {
     fn record(&self, path: &Path) -> Result<String, String> {
         if path.is_dir() { return Err("folders are not taken yet".into()) }
         if !path.is_file() { return Err("it is not there".into()) }
-        if min_image::Format::of(&path.to_string_lossy()).is_some() { return self.picture(path).map(|v| v.to_string()) }
+        if readable(path) { return self.picture(path).map(|v| v.to_string()) }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         Ok(serde_json::json!({ "kind": "file", "src": self.reference(path), "name": name, "ext": path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default() }).to_string())
     }
@@ -287,20 +287,31 @@ pub fn publish(staged: &Path, side: &Path, also: Option<&Path>) -> std::io::Resu
 fn decode(path: &Path, want_w: u32, want_h: u32) -> Outcome {
     if !path.is_file() { return Outcome::Missing }
     let p = path.to_string_lossy();
-    if min_image::Format::of(&p).is_none() { return Outcome::Failed(format!("{} files are not read yet", path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_else(|| "these".into()))) }
+    if !readable(path) { return Outcome::Failed(format!("{} files are not read yet", path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_else(|| "these".into()))) }
     let turn = orientation(path);
     // the box is the picture as it is seen: a picture lying on its side in the file is asked for the other way round
     let (bw, bh) = if turn >= 5 { (want_h, want_w) } else { (want_w, want_h) };
-    let full = match min_image::dimensions(&p, "") { Ok(d) => d, Err(e) => return Outcome::Failed(e.to_string()) };
-    let reduce = full.0 > bw + bw / 2 && full.1 > bh + bh / 2;
-    let img = if reduce { min_image::load_thumbnail(&p, "", bw.max(bh) * 2) } else { min_image::load(&p, "", 2) };
-    let img = match img { Ok(i) => i, Err(e) => return Outcome::Failed(e.to_string()) };
-    let (mut rgba, mut w, mut h) = rgba8(&img);
-    drop(img);
+    let full = match size_of(path) { Ok(d) => d, Err(e) => return Outcome::Failed(e) };
+    let (mut rgba, mut w, mut h) = if still(path) {
+        // a GIF or a WebP: its first frame
+        match image::open(path) { Ok(i) => { let i = i.into_rgba8(); let (w, h) = i.dimensions(); (i.into_raw(), w, h) } Err(e) => return Outcome::Failed(e.to_string()) }
+    } else {
+        let reduce = full.0 > bw + bw / 2 && full.1 > bh + bh / 2;
+        let img = if reduce { min_image::load_thumbnail(&p, "", bw.max(bh) * 2) } else { min_image::load(&p, "", 2) };
+        match img { Ok(i) => rgba8(&i), Err(e) => return Outcome::Failed(e.to_string()) }
+    };
     if w > bw && h > bh { let (tw, th) = fit(w, h, bw, bh); rgba = shrink(&rgba, w, h, tw, th); w = tw; h = th; }
     let whole = w >= full.0 && h >= full.1;
     if turn > 1 { (rgba, w, h) = oriented(&rgba, w, h, turn); }
     Outcome::Pic { rgba, w, h, whole }
+}
+/// A GIF or a WebP (read here, their first frame).
+fn still(path: &Path) -> bool { matches!(path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("gif" | "webp")) }
+/// A file that is shown as a picture today.
+fn readable(path: &Path) -> bool { still(path) || min_image::Format::of(&path.to_string_lossy()).is_some() }
+/// A picture file's size as its header gives it.
+fn size_of(path: &Path) -> Result<(u32, u32), String> {
+    if still(path) { image::image_dimensions(path).map_err(|e| e.to_string()) } else { min_image::dimensions(&path.to_string_lossy(), "").map_err(|e| e.to_string()) }
 }
 /// The size inside `bw` x `bh` that keeps the picture's shape (never larger than the picture).
 fn fit(w: u32, h: u32, bw: u32, bh: u32) -> (u32, u32) {
@@ -416,6 +427,18 @@ mod tests {
         assert_eq!(exif_orientation(&jpg), Some(6));
         assert_eq!(exif_orientation(&[0xff, 0xd8, 0xff, 0xda, 0, 2]), None);
         assert_eq!(exif_orientation(b"not a jpeg"), None);
+    }
+    #[test]
+    fn a_gif_gives_its_first_frame_and_an_unknown_format_says_so() {
+        let dir = std::env::temp_dir().join(format!("mn-media-test-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
+        // one red pixel
+        let gif: [u8; 35] = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0x80, 0, 0, 0xff, 0, 0, 0, 0, 0, 0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0, 0x3b];
+        let (g, h) = (dir.join("dot.gif"), dir.join("photo.heic")); std::fs::write(&g, gif).unwrap(); std::fs::write(&h, b"not really").unwrap();
+        assert!(readable(&g) && !readable(&h)); assert_eq!(size_of(&g), Ok((1, 1)));
+        match decode(&g, 10, 10) { Outcome::Pic { rgba, w, h, whole } => { assert_eq!((w, h, whole), (1, 1, true)); assert_eq!(rgba, [255, 0, 0, 255]); } _ => panic!("the GIF was not read") }
+        assert!(matches!(decode(&h, 10, 10), Outcome::Failed(why) if why == "HEIC files are not read yet"));
+        assert!(matches!(decode(&dir.join("gone.png"), 10, 10), Outcome::Missing));
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn linear_light_gets_the_srgb_curve_and_halves_decode() {
