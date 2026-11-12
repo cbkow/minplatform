@@ -26,6 +26,8 @@ pub enum Act { None, Redraw, /// the header's buttons
 pub enum Nav { Up, Down, Left, Right }
 
 pub struct Sidebar {
+    /// a note's row that dragged blocks would go to: outlined (row 307)
+    pub drop_row: Option<BlockId>,
     pub rail: Rail, pub rows: Vec<Row>, folded: HashSet<BlockId>, pub selected: Option<BlockId>,
     /// keys go to the tree (Enter renames, Delete deletes) rather than to the note
     pub focused: bool,
@@ -38,7 +40,7 @@ impl Sidebar {
     pub fn new() -> Sidebar { let mut rail = Rail::new(Side::Left, 240.0, false); rail.settle(); rail.tab_centered = true; rail.header_extra = HEAD; rail.shortcut = if cfg!(target_os = "macos") { "⌘1" } else { "Ctrl+1" }.into();
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
         let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
-        Sidebar { head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
+        Sidebar { drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
     pub fn set_tree(&mut self, col: &Collection) {
         fn walk(col: &Collection, parent: Option<BlockId>, depth: usize, folded: &HashSet<BlockId>, out: &mut Vec<Row>) {
@@ -168,6 +170,7 @@ impl Sidebar {
             let (active, selected) = (current == Some(row.id), self.selected == Some(row.id) && self.focused);
             let bg = if active { Some(t::RAIL_ROW_ACTIVE_FILL) } else if selected { Some(t::NEUTRAL_SELECTED_BACKGROUND_COLOR_DEFAULT) } else if self.hover == Some(i) { Some(t::HOVER_BACKGROUND_COLOR) } else { None };
             if let Some(c) = bg { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, c); }
+            if self.drop_row == Some(row.id) { scene.stroke(&kurbo::Stroke::new(1.5 * s), Affine::IDENTITY, paint::color(t::ACCENT_BACKGROUND_COLOR_DEFAULT), None, &kurbo::RoundedRect::from_rect(r.inset(-0.75 * s), t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s)); }
             let label = if row.kind == DocKind::Canvas || (!row.named && row.title == "Untitled") { t::DISABLED_CONTENT_COLOR } else if active { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
             let mut x = r.x0 + INDENT * row.depth as f64 * s;
             let mid = |h: f64| r.y0 + (r.height() - h) / 2.0;

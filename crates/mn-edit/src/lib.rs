@@ -60,6 +60,8 @@ pub struct Editor {
     /// Whole blocks are selected (see `blocks.rs`): the two ends of a run of siblings, as chosen (anchor, focus). The
     /// text selection spans the run while this holds; any ordinary caret move or edit ends it.
     blocks: Option<(BlockId, BlockId)>,
+    /// how many NEW steps this editor has recorded (undo and redo do not count): what tells that nothing was edited since
+    commits: u64,
 }
 struct Preedit { block: BlockId, at: usize, len: usize, text: String, spans: Spans }
 
@@ -77,8 +79,10 @@ fn next_char(s: &str, at: usize) -> usize { s[at..].chars().next().map(|c| at + 
 fn paragraph(parent: Option<BlockId>, text: &str) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind: Kind::Paragraph, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] } }
 
 impl Editor {
-    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None } }
+    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None, commits: 0 } }
     pub fn selection(&self) -> Option<Selection> { self.sel }
+    /// (new steps recorded so far, steps that can be undone): together they say whether the last step is still the one a caller remembers.
+    pub fn stamp(&self) -> (u64, usize) { (self.commits, self.marks.len()) }
     pub fn set_selection(&mut self, s: Option<Selection>) { self.sel = s.map(|s| Selection { anchor: self.valid(s.anchor), focus: self.valid(s.focus) }); self.goal_x = None; self.upstream = false; self.armed.clear(); self.blocks = None; }
     /// A position made legal: on a character boundary, inside the block, and never inside a chip.
     fn valid(&self, p: Pos) -> Pos {
@@ -251,7 +255,7 @@ impl Editor {
         if b.changes.is_empty() { if let Some(p) = after { self.sel = Some(Selection::caret(self.valid(p))); } return Ok(Dirty::Nothing) }
         let structural = b.changes.iter().any(|c| matches!(c, Change::Insert { .. } | Change::Remove { .. } | Change::Move { .. }));
         let mut ids: Vec<BlockId> = b.changes.iter().filter_map(|c| match c { Change::Text { id, .. } | Change::Format { id, .. } | Change::Kind { id, .. } => Some(*id), _ => None }).collect(); ids.dedup();
-        let before = self.sel; self.blocks = None;
+        let before = self.sel; self.blocks = None; self.commits += 1;
         let joined = self.history.commit(&mut self.doc, b.changes, now_ms)?;
         self.sel = after.map(|p| Selection::caret(self.valid(p))); self.goal_x = None; self.upstream = false; self.redo_marks.clear();
         if joined { if let Some(m) = self.marks.last_mut() { m.1 = self.sel; } } else { self.marks.push((before, self.sel)); }
@@ -767,5 +771,20 @@ mod tests {
         e.set_selection(Some(Selection::caret(Pos { block: ids[0], at: 0 })));
         assert_eq!(e.drop_blocks(&Drop { parent: None, index: 2, depth: None }, 7000).unwrap(), Dirty::Nothing);
         assert_eq!(e.drop_blocks(&Drop { parent: None, index: 3, depth: None }, 7000).unwrap(), Dirty::Nothing);
+    }
+    #[test]
+    fn blocks_from_another_note_are_appended_as_one_step_and_the_stamp_tells_edits_from_undo() {
+        let mut a = Doc::new(); let x = add(&mut a, None, Kind::Bullet { depth: 0 }, "X"); add(&mut a, None, Kind::Bullet { depth: 1 }, "x1"); add(&mut a, None, Kind::Paragraph, "stay");
+        let mut src = Editor::new(a); src.set_selection(Some(Selection::caret(Pos { block: x, at: 0 }))); src.toggle_blocks();
+        let clip = src.copy_blocks().unwrap(); assert_eq!(clip.len(), 2);
+        // a note with one empty paragraph is replaced; one with text gets the blocks at its end
+        let mut e = Doc::new(); add(&mut e, None, Kind::Paragraph, ""); let mut empty = Editor::new(e);
+        assert_eq!(empty.append_blocks(&clip, 10).unwrap(), 0); assert_eq!(empty.doc.children(None).len(), 2);
+        let mut d = Doc::new(); add(&mut d, None, Kind::Paragraph, "there"); let mut dest = Editor::new(d);
+        let before = dest.stamp(); dest.append_blocks(&clip, 10).unwrap();
+        let texts = |e: &Editor| e.doc.children(None).iter().map(|id| e.doc.get(*id).unwrap().text.clone()).collect::<Vec<_>>().join(" ");
+        assert_eq!(texts(&dest), "there X x1"); let after = dest.stamp(); assert_ne!(before, after);
+        dest.undo().unwrap(); assert_eq!(texts(&dest), "there"); assert_eq!(dest.stamp().0, after.0, "undo is not a new step");
+        dest.redo().unwrap(); assert_eq!(dest.stamp(), after);
     }
 }

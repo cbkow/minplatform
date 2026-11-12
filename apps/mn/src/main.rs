@@ -69,7 +69,11 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
     let gap = if r.x0 < 1.0 { 15.0 * s } else { 2.0 * s };
     Some(Rect::new(r.x0 - gap - sz, cy - sz / 2.0, r.x0 - gap, cy + sz / 2.0) + off)
 }
-struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)> }
+struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
+    to_note: Option<BlockId> }
+/// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
+/// both editors' stamps right after it (and, once undone, right after the undo, for redo).
+struct Moved { from: BlockId, to: BlockId, from_stamp: (u64, usize), to_stamp: (u64, usize), undone: bool }
 /// A save under way: which try, what the document is expected to be, what a merge brought.
 struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, /// Save As: the new place
     to: Option<std::path::PathBuf>, merged: Option<String>, /// blocks both sides changed, kept twice
@@ -98,7 +102,10 @@ enum Ask {
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
 struct App { /// the handle is held (row 305): where it was pressed, whether the pointer has moved far enough to be a drag, and where the blocks would land
-    grab: Option<Grab>,
+    grab: Option<Grab>, moved: Option<Moved>, /// a short notice in the footer (what a move did), until this time
+    notice: Option<(String, Instant)>,
+    /// the context menu lists notes to move the selected blocks to
+    ctx_notes: Vec<BlockId>,
     /// MN_BLOCKS: a block selection was made by the app itself, for a screenshot
     shown_blocks: bool,
     /// copied blocks, with the plain text that went to the system's clipboard beside them: a paste gives the blocks back while the clipboard still holds that text (row 304; stage E gives them a format of their own)
@@ -176,6 +183,7 @@ impl App {
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
             let (text, warn) = if self.store.is_none() { (String::new(), false) } else if self.saving.is_some() { ("Saving\u{2026}".to_string(), false) }
                 else if let Some((t, true)) = &self.status { (t.clone(), true) }
+                else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
             self.foot.sync(&footer::Shown { text: &text, warn, has_note: !self.blank, has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
@@ -227,6 +235,7 @@ impl App {
             if let Some(gr) = self.grab.as_ref().filter(|x| x.dragging) {
                 if let Some((_, line)) = &gr.drop { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent(), None, &kurbo::RoundedRect::from_rect(*line + off, s)); }
                 let n = self.ed.run_len(); let label = if n == 1 { "1 block".to_string() } else { format!("{n} blocks") };
+                let label = match gr.to_note.and_then(|id| self.sidebar.as_ref().and_then(|sb| sb.row(id)).map(|r| r.title.clone())) { Some(t) => format!("{} {label} to \u{201c}{}\u{201d}", if self.mods.2 { "Copy" } else { "Move" }, t.chars().take(28).collect::<String>()), None => label };
                 let t = g.fonts.layout(&label, min_ui::Family::Sans, (12.0 * s) as f32, 500.0, paint::text());
                 let (px, py) = (self.pointer.0 + 14.0 * s, self.pointer.1 + 10.0 * s);
                 let chip = kurbo::Rect::new(px, py, px + t.width() as f64 + 16.0 * s, py + t.height() as f64 + 8.0 * s);
@@ -444,6 +453,46 @@ impl App {
         if want != self.cursor { self.cursor = want; g.window.set_cursor(winit::cursor::Cursor::Icon(want)); }
         if self.cursor_hidden { self.cursor_hidden = false; g.window.set_cursor_visible(true); }
     }
+    /// The selected blocks (the caret's block with its children) go to the END of another note (row 307): moved, or
+    /// with `copy` copied. The other note gets them as one undo step of its own; here they are removed as one step.
+    fn blocks_to_note(&mut self, to: BlockId, copy: bool) {
+        let now = self.now_ms();
+        if !self.ed.in_blocks() && !self.ed.toggle_blocks() { return }
+        let Some(clip) = self.ed.copy_blocks() else { return }; let n = self.ed.run_len();
+        let Some(st) = self.store.as_mut() else { return }; let from = st.note; if to == from { return }
+        let mut dest = match self.others.remove(&to) { Some(e) => e, None => match st.col.load_note(to) { Ok(d) => Editor::new(d), Err(e) => { eprintln!("move: {e}"); return } } };
+        let refused = match dest.append_blocks(&clip, now) { Ok(r) => r, Err(e) => { eprintln!("move: {e:?}"); self.others.insert(to, dest); return } };
+        // the other note is written to the staged copy first: the blocks exist there before they leave here
+        if let Err(e) = st.col.save_note(to, &dest.doc) { eprintln!("move: {e}"); let _ = dest.undo(); self.others.insert(to, dest); return }
+        st.unpublished = true; st.edited_since_stage = true; self.changed.insert(to);
+        let to_stamp = dest.stamp(); self.others.insert(to, dest);
+        let title = self.sidebar.as_ref().and_then(|sb| sb.row(to)).map(|r| r.title.clone()).unwrap_or_default();
+        if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.set_tree(&st.col); }
+        let what = if n == 1 { "1 block".to_string() } else { format!("{n} blocks") };
+        if copy { self.moved = None; self.notice = Some((format!("Copied {what} to \u{201c}{title}\u{201d}"), Instant::now() + std::time::Duration::from_secs(5))); self.apply(Dirty::Nothing); return }
+        if refused > 0 { eprintln!("move: {refused} block(s) cannot go there; they stay where they were, and the others were copied, not moved"); self.moved = None; self.apply(Dirty::Nothing); return }
+        let d = self.ed.delete_blocks(now + mn_doc::change::JOIN_MS + 1).unwrap_or(Dirty::Nothing);
+        self.moved = Some(Moved { from, to, from_stamp: self.ed.stamp(), to_stamp, undone: false });
+        self.notice = Some((format!("Moved {what} to \u{201c}{title}\u{201d} \u{2014} Undo takes them back"), Instant::now() + std::time::Duration::from_secs(5)));
+        self.follow = true; self.apply(d);
+    }
+    /// Undo / redo in the note blocks were moved OUT of, while that move is still its last step and the other note has
+    /// not been edited since: the other note's half goes with it, so one undo takes the whole move back.
+    fn undo_redo(&mut self, redo: bool) -> Dirty {
+        let here = self.store.as_ref().map(|st| st.note);
+        let linked = self.moved.as_ref().is_some_and(|m| Some(m.from) == here && m.undone == redo && self.ed.stamp() == m.from_stamp && self.others.get(&m.to).is_some_and(|o| o.stamp() == m.to_stamp));
+        let d = if redo { self.ed.redo() } else { self.ed.undo() }.unwrap_or(Dirty::Nothing);
+        if linked { let to = self.moved.as_ref().unwrap().to;
+            if let (Some(o), Some(st)) = (self.others.get_mut(&to), self.store.as_mut()) {
+                let _ = if redo { o.redo() } else { o.undo() };
+                match st.col.save_note(to, &o.doc) { Ok(()) => { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(to); } Err(e) => eprintln!("undo: {e}") }
+                let stamp = o.stamp(); if let Some(m) = self.moved.as_mut() { m.undone = !redo; m.from_stamp = self.ed.stamp(); m.to_stamp = stamp; }
+                if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); }
+                self.notice = Some((if redo { "The move was done again" } else { "The move was taken back" }.to_string(), Instant::now() + std::time::Duration::from_secs(4)));
+            }
+        }
+        d
+    }
     /// A chip of the toolbar was pressed: the palette opens under it for that role.
     fn open_colours(&mut self, role: mn_doc::MarkKind, tool: toolbar::Tool) {
         let Some(g) = self.gpu.as_mut() else { return };
@@ -482,9 +531,9 @@ impl App {
             let mac = cfg!(target_os = "macos"); let k = |m: &str, w: &str| if mac { m.to_string() } else { w.to_string() };
             let items = vec![I::with_shortcut("Cut", true, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", true, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", self.block_clip.is_some(), &k("\u{2318}V", "Ctrl+V")), I::Separator,
                 I::with_shortcut("Duplicate", true, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", true, "\u{232b}"), I::Separator,
-                I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", ""))];
+                I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", "")), I::Separator, I::action("Move to Note\u{2026}", true), I::action("Copy to Note\u{2026}", true)];
             let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
-            self.ctx_blocks = true; self.ctx_for = None;
+            self.ctx_blocks = true; self.ctx_for = None; self.ctx_notes.clear();
             self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
             #[cfg(target_os = "macos")] text_element::changed(false);
             g.window.request_redraw(); return
@@ -506,6 +555,23 @@ impl App {
     fn ctx_pick(&mut self, i: usize) {
         let label = match self.ctx.items.get(i) { Some(min_ui::menu::MenuItem::Action { label, .. }) => label.clone(), _ => return };
         if self.ctx_blocks {
+            // the second menu: the collection's notes; the one chosen takes the blocks
+            if !self.ctx_notes.is_empty() { let copy = self.ctx_for.is_some(); let mut k = 0; let mut to = None;
+                for (j, it) in self.ctx.items.iter().enumerate() { if matches!(it, min_ui::menu::MenuItem::Action { .. }) { if j == i { to = self.ctx_notes.get(k).copied(); } k += 1; } }
+                self.ctx_notes.clear(); self.ctx_for = None; if let Some(to) = to { self.blocks_to_note(to, copy); } return }
+            if label.starts_with("Move to Note") || label.starts_with("Copy to Note") {
+                let (Some(st), Some(g)) = (self.store.as_ref(), self.gpu.as_mut()) else { return };
+                fn walk(col: &mn_store::Collection, parent: Option<BlockId>, depth: usize, skip: BlockId, out: &mut Vec<(BlockId, String)>) { for e in col.list(parent).unwrap_or_default() {
+                    if e.kind == mn_store::DocKind::Note && e.id != skip { let t = if !e.title.is_empty() { e.title.clone() } else { col.first_line(e.id).unwrap_or_default() }; out.push((e.id, format!("{}{}", "    ".repeat(depth), if t.is_empty() { "Untitled".to_string() } else { t.chars().take(40).collect() }))); }
+                    if e.kind == mn_store::DocKind::Folder { walk(col, Some(e.id), depth + 1, skip, out); } } }
+                let mut notes = vec![]; walk(&st.col, None, 0, st.note, &mut notes);
+                if notes.is_empty() { return }
+                self.ctx_notes = notes.iter().map(|x| x.0).collect();
+                // `ctx_for` doubles as the "copy" mark while the notes are listed
+                self.ctx_for = label.starts_with("Copy").then_some(st.note);
+                let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
+                self.ctx.open_at(notes.iter().map(|x| min_ui::menu::MenuItem::action(&x.1, true)).collect(), &mut g.fonts, self.pointer.0, self.pointer.1, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
+                g.window.request_redraw(); return }
             let now = self.now_ms(); self.follow = true;
             let d = match label.as_str() {
                 "Cut" => { self.menu_cmd(menu::Cmd::Cut); return } "Copy" => { self.menu_cmd(menu::Cmd::Copy); return } "Paste" => { self.menu_cmd(menu::Cmd::Paste); return }
@@ -710,7 +776,7 @@ impl App {
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - self.top - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
-        if self.grab.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.grab = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
+        if self.grab.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.grab = None; if let Some(sb) = self.sidebar.as_mut() { sb.drop_row = None; } self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         if self.ctx.is_open() { if matches!(key, Key::Named(NamedKey::Escape)) { self.ctx.close(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         // where there is no native menu to take them, the file commands' keys are run here
         if cmd && cfg!(not(target_os = "macos")) { if let Key::Character(c) = key { let m = match (c.to_lowercase().as_str(), shift, alt) { ("o", false, false) => Some(menu::Cmd::Open), ("w", false, false) => Some(menu::Cmd::CloseCollection), ("q", false, false) => Some(menu::Cmd::Quit), ("s", true, false) => Some(menu::Cmd::SaveAs), ("n", false, true) => Some(menu::Cmd::NewCollection), _ => None }; if let Some(m) = m { self.menu_cmd(m); return } } }
@@ -777,7 +843,7 @@ impl App {
                 "a" => { self.ed.select_all(); Dirty::Nothing }
                 "d" => { self.follow = true; self.ed.duplicate_blocks(now).unwrap_or(Dirty::Nothing) }
                 "s" => { self.save(); return }
-                "z" => if shift { self.ed.redo() } else { self.ed.undo() }.unwrap_or(Dirty::Nothing),
+                "z" => self.undo_redo(shift),
                 "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
                 "v" => match self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
                     // the clipboard still holds what a copy of blocks put there: the blocks come back, after the caret's block
@@ -879,9 +945,23 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
+        // MN_MOVE_TEST=<a note's name>: the app moves the open note's first block to that note, undoes and redoes it,
+        // and prints the two notes' block counts after each (a scripted check of row 307; nothing is typed or clicked)
+        if let (Ok(name), false, true) = (std::env::var("MN_MOVE_TEST"), self.shown_blocks, self.layout.is_some() && !self.blank) { self.shown_blocks = true;
+            let to = self.sidebar.as_ref().and_then(|sb| sb.rows.iter().find(|r| r.title == name).map(|r| r.id));
+            if let (Some(to), Some(first)) = (to, self.ed.doc.walk().iter().find(|b| !b.kind.is_container()).map(|b| b.id)) {
+                let count = |me: &App, what: &str| println!("move-test {what}: here {} there {} stored-there {}", me.ed.doc.children(None).len(), me.others.get(&to).map(|o| o.doc.children(None).len() as i64).unwrap_or(-1), me.store.as_ref().and_then(|st| st.col.load_note(to).ok()).map(|d| d.children(None).len() as i64).unwrap_or(-1));
+                self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: first, at: 0 }))); count(self, "before");
+                self.blocks_to_note(to, false); count(self, "moved");
+                let d = self.undo_redo(false); self.apply(d); count(self, "undone");
+                let d = self.undo_redo(true); self.apply(d); count(self, "redone");
+                // an edit here after the move: undo then takes back only this note's half
+                let d = self.ed.insert("x", self.now_ms() + 5000).unwrap_or(Dirty::Nothing); self.apply(d); let d = self.undo_redo(false); self.apply(d); let d = self.undo_redo(false); self.apply(d); count(self, "typed, undone twice");
+            } else { println!("move-test: no note named {name:?}"); } }
         if std::env::var_os("MN_BLOCKS").is_some() && !self.blank && !self.ed.in_blocks() && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(id) = self.ed.doc.walk().iter().find(|b| !b.kind.is_container()).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); } self.ed.toggle_blocks(); self.ed.step_blocks(true, false); self.ed.step_blocks(true, false); self.ed.step_blocks(true, true); self.ed.step_blocks(true, true);
             // MN_DRAG=x,y (window px): as if the handle were being dragged with the pointer there
-            if let Some((x, y)) = std::env::var("MN_DRAG").ok().and_then(|v| { let mut p = v.split(',').map(|n| n.trim().parse::<f64>().ok()); Some((p.next()??, p.next()??)) }) { self.pointer = (x, y); let (nx, ny) = self.note_point(self.pointer); let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, nx, ny)); self.grab = Some(Grab { from: (0.0, 0.0), dragging: true, drop }); }
+            if let Some((x, y)) = std::env::var("MN_DRAG").ok().and_then(|v| { let mut p = v.split(',').map(|n| n.trim().parse::<f64>().ok()); Some((p.next()??, p.next()??)) }) { self.pointer = (x, y); let (nx, ny) = self.note_point(self.pointer); let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, nx, ny)); self.grab = Some(Grab { from: (0.0, 0.0), dragging: true, drop, to_note: None }); }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.show_pal.is_some() && self.bar.rect_of(toolbar::Tool::Color).width() > 1.0 { let what = self.show_pal.take().unwrap();
             if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
@@ -932,8 +1012,13 @@ impl ApplicationHandler for App {
                 // the handle is held: past a few pixels it is a drag, and the place the blocks would land follows the pointer
                 if self.grab.is_some() {
                     let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (x, y) = self.note_point(self.pointer);
-                    let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, x, y));
-                    if let Some(gr) = self.grab.as_mut() { if !gr.dragging && ((gr.from.0 - position.x).abs() > 4.0 * s || (gr.from.1 - position.y).abs() > 4.0 * s) { gr.dragging = true; } if gr.dragging { gr.drop = drop; } }
+                    // over the tree: another note's row takes the blocks (to its end); over the page: a place among the blocks
+                    let here = self.store.as_ref().map(|st| st.note);
+                    let to_note = self.sidebar.as_ref().filter(|sb| sb.rail.hit(position.x, position.y)).and_then(|sb| sb.id_at(position.x, position.y).filter(|id| Some(*id) != here && sb.row(*id).is_some_and(|r| r.kind == mn_store::DocKind::Note)));
+                    let over_tree = self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y));
+                    let drop = if over_tree { None } else { self.layout.as_ref().and_then(|l| self.ed.drop_at(l, x, y)) };
+                    if let Some(gr) = self.grab.as_mut() { if !gr.dragging && ((gr.from.0 - position.x).abs() > 4.0 * s || (gr.from.1 - position.y).abs() > 4.0 * s) { gr.dragging = true; } if gr.dragging { gr.drop = drop; gr.to_note = to_note; } }
+                    let shown = self.grab.as_ref().filter(|x| x.dragging).and_then(|x| x.to_note); if let Some(sb) = self.sidebar.as_mut() { sb.drop_row = shown; }
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 let taken = !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y });
                 self.set_cursor();
@@ -949,8 +1034,10 @@ impl ApplicationHandler for App {
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
                 // the handle: a press and release selects the block; a drag moves the blocks to where the line shows
-                if state == ElementState::Pressed && self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(position.x, position.y))) { self.grab = Some(Grab { from: self.pointer, dragging: false, drop: None }); self.set_cursor(); return }
+                if state == ElementState::Pressed && self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(position.x, position.y))) { self.grab = Some(Grab { from: self.pointer, dragging: false, drop: None, to_note: None }); self.set_cursor(); return }
                 if state == ElementState::Released { if let Some(gr) = self.grab.take() {
+                    if let Some(sb) = self.sidebar.as_mut() { sb.drop_row = None; }
+                    if let (true, Some(to)) = (gr.dragging, gr.to_note) { let copy = self.mods.2; self.blocks_to_note(to, copy); self.set_cursor(); return }
                     let d = if !gr.dragging { if !self.ed.in_blocks() { self.ed.toggle_blocks(); } Dirty::Nothing }
                         else if let Some((d, _)) = gr.drop { let now = self.now_ms(); self.follow = true; self.ed.drop_blocks(&d, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing };
                     self.apply(d); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
@@ -1091,7 +1178,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { grab: None, shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }

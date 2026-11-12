@@ -224,4 +224,25 @@ impl Editor {
         while let Some(x) = up { if picked.contains(&x) { return true } up = self.doc.get(x).and_then(|b| b.parent); }
         false
     }
+    /// Blocks from elsewhere (another note) are added at the END of this note with fresh identities, as one undo step
+    /// that never joins the step before it; a note that holds nothing but one empty paragraph is replaced by them.
+    /// Returns how many the note would not take.
+    pub fn append_blocks(&mut self, clip: &Clip, now_ms: u64) -> Result<usize, ChangeError> {
+        if self.preedit.is_some() || clip.is_empty() { return Ok(0) }
+        let root = self.doc.children(None).to_vec();
+        let lone = (root.len() == 1).then(|| self.doc.get(root[0])).flatten().filter(|x| x.kind == Kind::Paragraph && x.text.is_empty()).map(|x| x.id);
+        let mut b = self.batch(); let (mut at, mut refused, mut any) = (root.len(), 0usize, false);
+        for tree in clip {
+            let ids: HashMap<BlockId, BlockId> = tree.iter().map(|x| (x.id, BlockId::new())).collect();
+            let mut blocks: Vec<Block> = tree.iter().map(|x| { let mut n = x.clone(); n.id = ids[&x.id]; n.parent = x.parent.and_then(|p| ids.get(&p).copied()); n.children = x.children.iter().map(|c| ids[c]).collect(); n.conflict = None; n }).collect();
+            let Some(top) = blocks.first_mut() else { continue }; top.parent = None; top.rank = Rank::first();
+            match b.push(Change::Insert { index: at, blocks }) { Ok(()) => { at += 1; any = true; } Err(ChangeError::Tree(_)) => refused += 1, Err(e) => return Err(e) }
+        }
+        if !any { return Ok(refused) }
+        if let Some(id) = lone { let c = Change::removal(&b.scratch, id)?; b.push(c)?; }
+        let keep = self.sel;
+        self.commit(b, None, now_ms + mn_doc::change::JOIN_MS + 1)?;
+        self.sel = keep.and_then(|s| self.live(s)); if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
+        Ok(refused)
+    }
 }
