@@ -1,0 +1,13 @@
+[package]
+name = "s10-pdf"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "MIT OR Apache-2.0"
+description = "minplatform spike S10 — which PDF engine for minNotes' PDF block (dies after its verdict, docs/spikes/)"
+
+[dependencies]
+pdfium-render = { version = "0.9", default-features = false, features = ["pdfium_latest", "thread_safe", "image_latest"] }
+hayro = "0.9"
+png = { workspace = true }
