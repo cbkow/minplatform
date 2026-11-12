@@ -3,7 +3,9 @@
 //! list nesting is a depth on the item), so they travel with it. While blocks are selected the text selection spans
 //! them from first to last, so everything that works on a text selection (formatting, colours, indent, the plain text
 //! that Copy writes) works on them too.
-use crate::{end_of, paragraph, Dirty, Editor, Pos, Selection};
+use crate::{end_of, paragraph, Batch, Dirty, Editor, Pos, Selection};
+use kurbo::Rect;
+use mn_layout::NoteLayout;
 use mn_doc::{Block, BlockId, Change, ChangeError, Doc, Kind, Rank};
 use std::collections::HashMap;
 
@@ -16,6 +18,11 @@ fn with_children(doc: &Doc, sibs: &[BlockId], mut j: usize) -> usize {
     if let Some(d) = depth(doc, sibs[j]) { while j + 1 < sibs.len() && depth(doc, sibs[j + 1]).is_some_and(|x| x > d) { j += 1; } }
     j
 }
+
+/// Where dragged blocks would land (stage B): child `index` of `parent` — an index among the children as they stand
+/// BEFORE the move — and, for list items, the depth the run's first item takes (the rest keep their distance to it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drop { pub parent: Option<BlockId>, pub index: usize, pub depth: Option<u8> }
 
 /// Copied blocks: each entry is one block with everything under it, the top block first (as `Change::Insert` takes it).
 pub type Clip = Vec<Vec<Block>>;
@@ -135,5 +142,73 @@ impl Editor {
         self.blocks = Some((tops[0], *tops.last().unwrap())); self.span_blocks();
         if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
         Ok((dirty, refused))
+    }
+    /// The block a handle stands beside: the first of the run the selection stands for.
+    pub fn handle_block(&self) -> Option<BlockId> { if self.preedit.is_some() { return None } let (p, i, _) = self.run()?; self.doc.children(p).get(i).copied() }
+    /// How many blocks a drag would carry (children counted).
+    pub fn run_len(&self) -> usize { self.run().map(|(_, i, j)| j - i + 1).unwrap_or(0) }
+    /// The changes that put the run at `d`. None: it is where it already is. An error: the place does not take it (a
+    /// block into itself, columns into a column, a table into a cell — the tree's rules, row 273).
+    fn plan_drop(&self, d: &Drop) -> Result<Option<Batch>, ChangeError> {
+        let Some((parent, i, j)) = self.run() else { return Ok(None) };
+        let sibs = self.doc.children(parent).to_vec(); let mut b = self.batch();
+        if d.parent == parent {
+            if d.index > j + 1 { let m = d.index - 1; for (t, k) in (i..=j).rev().enumerate() { b.push(Change::Move { id: sibs[k], from: (parent, k), to: (parent, m - t) })?; } }
+            else if d.index < i { for (t, k) in (i..=j).enumerate() { b.push(Change::Move { id: sibs[k], from: (parent, k), to: (parent, d.index + t) })?; } }
+        } else {
+            for t in 0..=(j - i) { b.push(Change::Move { id: sibs[i + t], from: (parent, i), to: (d.parent, d.index + t) })?; }
+            // a column or a cell the run leaves empty keeps a paragraph to type in
+            if let Some(p) = parent { if b.scratch.children(Some(p)).is_empty() { b.push(Change::Insert { index: 0, blocks: vec![paragraph(Some(p), "")] })?; } }
+        }
+        if let (Some(want), Some(d0)) = (d.depth, depth(&self.doc, sibs[i])) { let delta = want as i16 - d0 as i16; if delta != 0 { for id in &sibs[i..=j] {
+            let old = self.doc.get(*id).unwrap().kind.clone(); let step = |x: u8| (x as i16 + delta).clamp(0, 8) as u8;
+            let new = match &old { Kind::Bullet { depth } => Kind::Bullet { depth: step(*depth) }, Kind::Numbered { depth } => Kind::Numbered { depth: step(*depth) }, Kind::Task { depth, state } => Kind::Task { depth: step(*depth), state: *state }, _ => continue };
+            if new != old { b.push(Change::Kind { id: *id, old, new })?; } } } }
+        Ok((!b.changes.is_empty()).then_some(b))
+    }
+    /// The dragged run lands at `d`, as one undo step; the selection stays on it.
+    pub fn drop_blocks(&mut self, d: &Drop, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some(b) = self.plan_drop(d)? else { return Ok(Dirty::Nothing) };
+        let (keep, blocks) = (self.sel, self.blocks);
+        let dirty = self.commit(b, None, now_ms)?;
+        self.sel = keep; self.blocks = blocks; if blocks.is_some() { self.span_blocks(); }
+        if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
+        Ok(dirty)
+    }
+    /// Where the run would land if released at a point of the page, with the line that shows it (the layout's
+    /// coordinates). None: nowhere — the place does not take it, or it is where it already is.
+    pub fn drop_at(&self, layout: &NoteLayout, x: f64, y: f64) -> Option<(Drop, Rect)> {
+        let (run_parent, ri, rj) = self.run()?; let head = self.doc.children(run_parent)[ri];
+        let s = layout.scale as f64; let edge = 6.0 * s;
+        let mut parent: Option<BlockId> = None;
+        let (index, kids, rects) = loop {
+            let kids = self.doc.children(parent).to_vec();
+            let rects: Vec<Rect> = kids.iter().filter_map(|id| layout.rect(&self.doc, *id)).collect();
+            if kids.is_empty() || rects.len() != kids.len() { break (0, kids, rects) }
+            let across = matches!(parent.and_then(|p| self.doc.get(p)).map(|b| &b.kind), Some(Kind::Columns | Kind::Row { .. }));
+            let dist = |r: &Rect| if across { if x < r.x0 { r.x0 - x } else if x > r.x1 { x - r.x1 } else { 0.0 } } else if y < r.y0 { r.y0 - y } else if y > r.y1 { y - r.y1 } else { 0.0 };
+            let k = (0..kids.len()).min_by(|a, b| dist(&rects[*a]).total_cmp(&dist(&rects[*b]))).unwrap();
+            let (id, r) = (kids[k], rects[k]);
+            if across { parent = Some(id); continue }
+            match self.doc.get(id).map(|b| &b.kind) {
+                // into a container, unless the pointer is at its very top or bottom: then beside it
+                Some(Kind::Columns | Kind::Table { .. }) if y > r.y0 + edge && y < r.y1 - edge => { parent = Some(id); continue }
+                Some(Kind::Row { .. }) => { parent = Some(id); continue }
+                _ => break (if y < r.center().y { k } else { k + 1 }, kids, rects),
+            }
+        };
+        // a list item's depth: between what the item below needs and one deeper than the item above, by how far right the pointer is
+        let frame = match parent { None => Rect::new(0.0, 0.0, layout.width as f64, layout.height as f64), Some(p) => layout.rect(&self.doc, p)? };
+        let indent = layout.style.list_indent as f64 * s;
+        let depth_here = depth(&self.doc, head).map(|_| {
+            let outside = |k: usize| run_parent != parent || k < ri || k > rj;
+            let above = (0..index).rev().find(|k| outside(*k)).map(|k| kids[k]); let below = (index..kids.len()).find(|k| outside(*k)).map(|k| kids[k]);
+            let min = below.and_then(|b| depth(&self.doc, b)).unwrap_or(0); let max = above.and_then(|a| depth(&self.doc, a)).map(|d| d + 1).unwrap_or(0).max(min).min(8);
+            (((x - frame.x0 - layout.style.marker as f64 * s) / indent).round().max(0.0) as u8).clamp(min, max)
+        });
+        let d = Drop { parent, index, depth: depth_here };
+        if !matches!(self.plan_drop(&d), Ok(Some(_))) { return None }
+        let ly = if rects.is_empty() { frame.y0 } else if index == 0 { rects[0].y0 - 3.0 * s } else if index >= rects.len() { rects[rects.len() - 1].y1 + 3.0 * s } else { (rects[index - 1].y1 + rects[index].y0) / 2.0 };
+        Some((d.clone(), Rect::new(frame.x0 + d.depth.unwrap_or(0) as f64 * indent, ly - s, frame.x1, ly + s)))
     }
 }

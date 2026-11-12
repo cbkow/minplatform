@@ -23,7 +23,7 @@ fn dim() -> Color { c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) }
 fn line() -> Color { c(t::DIVIDER_COLOR) }
 fn panel() -> Color { c(t::BACKGROUND_LAYER_2_COLOR) }
 fn header() -> Color { c(t::BACKGROUND_LAYER_1_COLOR) }
-fn accent() -> Color { c(t::ACCENT_BACKGROUND_COLOR_DEFAULT) }
+pub fn accent() -> Color { c(t::ACCENT_BACKGROUND_COLOR_DEFAULT) }
 fn conflict() -> Color { c(t::NOTICE_VISUAL_COLOR) }
 
 fn fill(scene: &mut Scene, r: Rect, c: Color) { scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r); }

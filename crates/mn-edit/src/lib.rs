@@ -10,7 +10,7 @@ use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Mark, Rank
 
 mod markdown;
 mod blocks;
-pub use blocks::Clip;
+pub use blocks::{Clip, Drop};
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
 
@@ -742,5 +742,30 @@ mod tests {
         e.undo().unwrap(); assert_eq!(order(&e), "intro B a1 b1");
         // Escape again: back to a caret
         e.set_selection(Some(Selection::caret(Pos { block: ids[0], at: 2 }))); assert!(e.toggle_blocks()); assert!(!e.toggle_blocks()); assert!(e.selection().unwrap().is_caret());
+    }
+    #[test]
+    fn a_dragged_run_lands_where_it_is_dropped_takes_the_depth_asked_and_refuses_itself() {
+        let mut d = Doc::new();
+        let ids: Vec<BlockId> = [(Kind::Paragraph, "intro"), (Kind::Bullet { depth: 0 }, "A"), (Kind::Bullet { depth: 1 }, "a1"), (Kind::Bullet { depth: 0 }, "B"), (Kind::Paragraph, "end")].into_iter().map(|(k, t)| add(&mut d, None, k, t)).collect();
+        let cols = add(&mut d, None, Kind::Columns, ""); let c1 = add(&mut d, Some(cols), Kind::Column { width: 0.5 }, ""); let c2 = add(&mut d, Some(cols), Kind::Column { width: 0.5 }, "");
+        let in1 = add(&mut d, Some(c1), Kind::Paragraph, "left"); let _in2 = add(&mut d, Some(c2), Kind::Paragraph, "right");
+        let mut e = Editor::new(d);
+        let order = |e: &Editor, p: Option<BlockId>| e.doc.children(p).iter().map(|id| e.doc.get(*id).unwrap().text.clone()).collect::<Vec<_>>().join(" ");
+        // A (with a1) dropped after B, one level in: A becomes B's child and a1 keeps its distance
+        e.set_selection(Some(Selection::caret(Pos { block: ids[1], at: 0 })));
+        e.drop_blocks(&Drop { parent: None, index: 4, depth: Some(1) }, 1000).unwrap();
+        assert_eq!(order(&e, None), "intro B A a1 end "); assert_eq!(e.doc.get(ids[1]).unwrap().kind, Kind::Bullet { depth: 1 }); assert_eq!(e.doc.get(ids[2]).unwrap().kind, Kind::Bullet { depth: 2 });
+        e.undo().unwrap(); assert_eq!(order(&e, None), "intro A a1 B end "); assert_eq!(e.doc.get(ids[2]).unwrap().kind, Kind::Bullet { depth: 1 });
+        // into a column; the column it is later taken out of keeps a paragraph
+        e.set_selection(Some(Selection::caret(Pos { block: ids[4], at: 0 })));
+        e.drop_blocks(&Drop { parent: Some(c1), index: 0, depth: None }, 3000).unwrap(); assert_eq!(order(&e, Some(c1)), "end left");
+        e.set_selection(Some(Selection { anchor: Pos { block: ids[4], at: 0 }, focus: Pos { block: in1, at: 0 } }));
+        e.drop_blocks(&Drop { parent: None, index: 0, depth: None }, 5000).unwrap(); assert_eq!(order(&e, None), "end left intro A a1 B "); assert_eq!(order(&e, Some(c1)), "");
+        assert_eq!(e.doc.children(Some(c1)).len(), 1, "the emptied column has a paragraph");
+        // the columns block cannot be dropped into its own column; where it already is, nothing happens
+        e.set_selection(Some(Selection::caret(Pos { block: e.doc.children(Some(c1))[0], at: 0 }))); e.toggle_blocks();
+        e.set_selection(Some(Selection::caret(Pos { block: ids[0], at: 0 })));
+        assert_eq!(e.drop_blocks(&Drop { parent: None, index: 2, depth: None }, 7000).unwrap(), Dirty::Nothing);
+        assert_eq!(e.drop_blocks(&Drop { parent: None, index: 3, depth: None }, 7000).unwrap(), Dirty::Nothing);
     }
 }

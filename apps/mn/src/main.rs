@@ -59,6 +59,14 @@ fn ime(window: &dyn Window, area: Option<Rect>, enable: bool) {
 /// The collection a note came from: its staged session, the database on the work copy, and what is not yet written.
 struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Collection, note: BlockId, title: String, edited: Option<Instant>, unpublished: bool, /// an edit went to the staged copy after the file being saved was made
     edited_since_stage: bool }
+/// The handle's place for an editor and its layout (`off`: the page's origin in the window).
+fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<Rect> {
+    let id = ed.handle_block()?; let r = l.rect(&ed.doc, id)?;
+    let line = if ed.doc.get(id).is_some_and(|b| b.kind.is_container()) { None } else { l.caret(&ed.doc, id, 0, 1.0) }.unwrap_or(Rect::new(r.x0, r.y0, r.x0, r.y0 + 24.0 * s));
+    let (cy, sz) = (line.center().y, 20.0 * s);
+    Some(Rect::new(r.x0 - 6.0 * s - sz, cy - sz / 2.0, r.x0 - 6.0 * s, cy + sz / 2.0) + off)
+}
+struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)> }
 /// A save under way: which try, what the document is expected to be, what a merge brought.
 struct Saving { attempt: u32, expect: Option<mn_store::share::Fingerprint>, /// Save As: the new place
     to: Option<std::path::PathBuf>, merged: Option<String>, /// blocks both sides changed, kept twice
@@ -86,7 +94,9 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq)]
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
-struct App { /// MN_BLOCKS: a block selection was made by the app itself, for a screenshot
+struct App { /// the handle is held (row 305): where it was pressed, whether the pointer has moved far enough to be a drag, and where the blocks would land
+    grab: Option<Grab>,
+    /// MN_BLOCKS: a block selection was made by the app itself, for a screenshot
     shown_blocks: bool,
     /// copied blocks, with the plain text that went to the system's clipboard beside them: a paste gives the blocks back while the clipboard still holds that text (row 304; stage E gives them a format of their own)
     block_clip: Option<(String, mn_edit::Clip)>, /// Control is down (Ctrl+Cmd+Up / Down move blocks)
@@ -206,6 +216,20 @@ impl App {
         if !self.blank { paint::note(scene, &self.ed.doc, l, &mut g.fonts, off.x, off.y, view); }
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
+        // the handle beside the caret's block; while it is dragged, the line where the blocks would land and how many they are
+        if let Some(hr) = (!self.blank).then(|| handle_rect_in(&self.ed, l, s, off)).flatten() {
+            let dragging = self.grab.as_ref().is_some_and(|x| x.dragging);
+            if let Some(i) = g.fonts.icon("dots-six-vertical", (16.0 * s) as f32, if dragging { paint::text() } else { paint::subdued() }) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((hr.x0 + (hr.width() - i.width() as f64) / 2.0, hr.y0 + (hr.height() - i.height() as f64) / 2.0))); }
+            if let Some(gr) = self.grab.as_ref().filter(|x| x.dragging) {
+                if let Some((_, line)) = &gr.drop { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent(), None, &kurbo::RoundedRect::from_rect(*line + off, s)); }
+                let n = self.ed.run_len(); let label = if n == 1 { "1 block".to_string() } else { format!("{n} blocks") };
+                let t = g.fonts.layout(&label, min_ui::Family::Sans, (12.0 * s) as f32, 500.0, paint::text());
+                let (px, py) = (self.pointer.0 + 14.0 * s, self.pointer.1 + 10.0 * s);
+                let chip = kurbo::Rect::new(px, py, px + t.width() as f64 + 16.0 * s, py + t.height() as f64 + 8.0 * s);
+                scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(chip, 6.0 * s));
+                min_ui::fonts::draw_layout(scene, &t, kurbo::Affine::translate((px + 8.0 * s, py + 4.0 * s)));
+            }
+        }
         if !self.blank && picked.is_empty() && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
@@ -406,7 +430,9 @@ impl App {
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
         let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open();
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
+            else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
+            else if self.grab.is_some() || self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(x, y))) { C::Grab }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.over_field(x, y)) { C::Text }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(x, y)) || self.bar.hit(x, y) || self.foot.hit(x, y) { C::Default }
             else if x >= self.side_w && x < w as f64 && y >= self.top && y < h as f64 - self.bottom { C::Text }
@@ -642,9 +668,17 @@ impl App {
         if let (Some(g), Some(st)) = (&self.gpu, &self.store) { let name = self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).unwrap_or_else(|| st.title.clone()); g.window.set_title(&format!("{}{}{} — minNotes", name, if self.saving.is_some() { " — saving…" } else { "" }, if st.unpublished || st.edited.is_some() { " •" } else { "" })); } }
     fn now_ms(&self) -> u64 { self.t0.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0) }
     /// A window point in the note's coordinates.
+    /// The handle (row 305): a grip in the margin beside the first line of the caret's block — of the first selected
+    /// block when blocks are selected. It stands where the CARET is, never where the pointer is. Window coordinates.
+    fn handle_rect(&self) -> Option<Rect> {
+        if self.blank { return None }
+        let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        handle_rect_in(&self.ed, l, s, kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll))
+    }
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); (p.0 - self.side_w - MARGIN * s, p.1 - self.top - PAD * s + self.scroll) }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        if self.grab.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.grab = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         if self.ctx.is_open() { if matches!(key, Key::Named(NamedKey::Escape)) { self.ctx.close(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         // where there is no native menu to take them, the file commands' keys are run here
         if cmd && cfg!(not(target_os = "macos")) { if let Key::Character(c) = key { let m = match (c.to_lowercase().as_str(), shift, alt) { ("o", false, false) => Some(menu::Cmd::Open), ("w", false, false) => Some(menu::Cmd::CloseCollection), ("q", false, false) => Some(menu::Cmd::Quit), ("s", true, false) => Some(menu::Cmd::SaveAs), ("n", false, true) => Some(menu::Cmd::NewCollection), _ => None }; if let Some(m) = m { self.menu_cmd(m); return } } }
@@ -812,7 +846,10 @@ impl ApplicationHandler for App {
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None }); self.t0 = Some(Instant::now()); self.title();
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
-        if std::env::var_os("MN_BLOCKS").is_some() && !self.blank && !self.ed.in_blocks() && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(id) = self.ed.doc.walk().iter().find(|b| !b.kind.is_container()).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); } self.ed.toggle_blocks(); self.ed.step_blocks(true, false); self.ed.step_blocks(true, false); self.ed.step_blocks(true, true); self.ed.step_blocks(true, true); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if std::env::var_os("MN_BLOCKS").is_some() && !self.blank && !self.ed.in_blocks() && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(id) = self.ed.doc.walk().iter().find(|b| !b.kind.is_container()).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); } self.ed.toggle_blocks(); self.ed.step_blocks(true, false); self.ed.step_blocks(true, false); self.ed.step_blocks(true, true); self.ed.step_blocks(true, true);
+            // MN_DRAG=x,y (window px): as if the handle were being dragged with the pointer there
+            if let Some((x, y)) = std::env::var("MN_DRAG").ok().and_then(|v| { let mut p = v.split(',').map(|n| n.trim().parse::<f64>().ok()); Some((p.next()??, p.next()??)) }) { self.pointer = (x, y); let (nx, ny) = self.note_point(self.pointer); let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, nx, ny)); self.grab = Some(Grab { from: (0.0, 0.0), dragging: true, drop }); }
+            if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.show_pal.is_some() && self.bar.rect_of(toolbar::Tool::Color).width() > 1.0 { let what = self.show_pal.take().unwrap();
             if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
             if what == "picker" { if let Some(g) = self.gpu.as_mut() { self.pal.show_picker(&mut g.fonts); } }
@@ -859,6 +896,12 @@ impl ApplicationHandler for App {
             WindowEvent::PointerLeft { .. } => { self.chrome_pointer(min_ui::Event::Leave); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
+                // the handle is held: past a few pixels it is a drag, and the place the blocks would land follows the pointer
+                if self.grab.is_some() {
+                    let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (x, y) = self.note_point(self.pointer);
+                    let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, x, y));
+                    if let Some(gr) = self.grab.as_mut() { if !gr.dragging && ((gr.from.0 - position.x).abs() > 4.0 * s || (gr.from.1 - position.y).abs() > 4.0 * s) { gr.dragging = true; } if gr.dragging { gr.drop = drop; } }
+                    self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 let taken = !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y });
                 self.set_cursor();
                 if taken { return }
@@ -872,6 +915,12 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
+                // the handle: a press and release selects the block; a drag moves the blocks to where the line shows
+                if state == ElementState::Pressed && self.handle_rect().is_some_and(|r| r.contains(kurbo::Point::new(position.x, position.y))) { self.grab = Some(Grab { from: self.pointer, dragging: false, drop: None }); self.set_cursor(); return }
+                if state == ElementState::Released { if let Some(gr) = self.grab.take() {
+                    let d = if !gr.dragging { if !self.ed.in_blocks() { self.ed.toggle_blocks(); } Dirty::Nothing }
+                        else if let Some((d, _)) = gr.drop { let now = self.now_ms(); self.follow = true; self.ed.drop_blocks(&d, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing };
+                    self.apply(d); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 self.pressed = state == ElementState::Pressed;
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() {
                     let (x, y) = self.note_point(self.pointer);
@@ -1009,7 +1058,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { grab: None, shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
