@@ -39,6 +39,7 @@ mod colours;
 mod clip;
 mod media;
 mod psd;
+mod paste;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
 mod text_element;
@@ -76,6 +77,8 @@ fn handle_rect_in(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Opti
 }
 /// Files coming in from outside (row 310): a drag over the page, drops being fetched and looked at, a picture being
 /// pointed at its file again; and the pictures found to be stored on their side.
+#[derive(Clone, Copy, PartialEq)]
+enum Paste { Rich, Plain, Markdown }
 /// A picture being resized by a corner (row 312): its record before, where the pointer took hold, and the width then.
 struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, left: bool }
 #[derive(Default)]
@@ -720,6 +723,37 @@ impl App {
         if let (true, Some(new)) = (keep, now) { if new != (Kind::Media { descriptor: rz.before }) { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(rz.id, new)], t).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; } }
         self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    /// Paste (row 309 a). RICH, in this order: blocks or a text selection copied in minNotes (whole blocks after the
+    /// caret's block, a selection at the caret with its formatting); in a code block, the text alone; files copied in
+    /// the Finder (as a drop of them); formatted text of another application as blocks; a picture's pixels; plain
+    /// text. PLAIN (Shift+Cmd+V): the text alone. MARKDOWN: the text read as Markdown source.
+    fn paste(&mut self, mode: Paste) -> Dirty {
+        let now = self.now_ms();
+        let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+        let frag = |me: &mut App, c: mn_edit::Clip| { me.follow = true; match me.ed.paste_fragment(&c, now) { Ok((d, refused)) => { if refused > 0 { me.notice = Some((format!("{refused} block(s) cannot go there and were left out"), Instant::now() + std::time::Duration::from_secs(6))); } d } Err(e) => { eprintln!("paste: {e:?}"); Dirty::Nothing } } };
+        match mode {
+            Paste::Plain => return text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing),
+            Paste::Markdown => { let c = text.as_deref().map(paste::from_markdown).unwrap_or_default(); return if c.is_empty() { Dirty::Nothing } else { frag(self, c) } }
+            Paste::Rich => {}
+        }
+        let html = self.clipboard.as_mut().and_then(|cb| cb.get().html().ok());
+        // `block_clip` is the fallback where the HTML cannot be read back
+        let own = html.as_deref().and_then(clip::from_html).or_else(|| match (&text, &self.block_clip) { (Some(t), Some((bt, c))) if t == bt => Some((c.clone(), true)), _ => None });
+        if let Some((c, whole)) = own {
+            if !whole { return frag(self, c) }
+            self.follow = true;
+            return match self.ed.paste_blocks(&c, now) { Ok((d, refused)) => { if refused > 0 { eprintln!("paste: {refused} block(s) cannot go there and were left out"); } d } Err(_) => Dirty::Nothing }
+        }
+        if matches!(self.ed.state().kind, Some(Kind::Code { .. })) && !self.ed.in_blocks() { return text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing) }
+        let at = self.ed.after_caret().unwrap_or(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None });
+        // files: only real ones (the helper also offers lines of text that look like paths - those stay text)
+        if self.store.is_some() { if let Ok(paths) = min_paths::clipboard::paste_paths() { let as_text = text.as_deref().is_some_and(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).eq(paths.iter().map(String::as_str)));
+            if !paths.is_empty() && !as_text && paths.iter().all(|p| std::path::Path::new(p).exists()) { self.add_files(paths.into_iter().map(Into::into).collect(), at); return Dirty::Nothing } } }
+        if let Some(c) = html.as_deref().map(paste::from_html).filter(|c| !c.is_empty()) { return frag(self, c) }
+        if self.store.is_some() { if let Some(img) = self.clipboard.as_mut().and_then(|cb| cb.get_image().ok()) { if img.width > 0 && img.height > 0 {
+            self.files.token += 1; self.files.pending.insert(self.files.token, at); self.media.add_pixels(self.files.token, img.bytes.into_owned(), img.width as u32, img.height as u32); return Dirty::Nothing } } }
+        text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing)
+    }
     /// Files go to the helpers to become blocks at `at`.
     fn add_files(&mut self, paths: Vec<std::path::PathBuf>, at: mn_edit::Drop) {
         if paths.is_empty() || self.blank { return }
@@ -746,6 +780,7 @@ impl App {
                 if p.exists() { let aside = p.with_extension(format!("replaced-{}.mnd", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))); let _ = std::fs::rename(&p, aside); }
                 self.request_close(Pending::New(p)) },
             M::SaveAs => self.save_as(),
+            M::PasteMarkdown => { let d = self.paste(Paste::Markdown); self.apply(d); }
             // the selected row's name (the open note's when nothing is selected); the sidebar is opened for it
             M::Rename => if let (Some(sb), Some(g), Some(st)) = (self.sidebar.as_mut(), self.gpu.as_mut(), self.store.as_ref()) { let id = sb.selected.unwrap_or(st.note); if sb.rail.collapsed { sb.rail.set_collapsed(false, Instant::now()); } sb.start_rename(id, &mut g.fonts); },
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
@@ -975,15 +1010,7 @@ impl App {
                 "s" => { self.save(); return }
                 "z" => self.undo_redo(shift),
                 "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { self.block_clip = None; let frag = self.ed.selected_fragment(); if let Some(cb) = self.clipboard.as_mut() { if cb.set_html(clip::html(&frag, false), Some(t.clone())).is_err() { let _ = cb.set_text(t); } } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
-                "v" => {
-                    // blocks that minNotes copied come back as blocks (they ride in the clipboard's HTML; `block_clip` is the
-                    // fallback where the HTML cannot be read back); anything else is pasted as plain text
-                    let html = self.clipboard.as_mut().and_then(|cb| cb.get().html().ok());
-                    let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
-                    let blocks = html.as_deref().and_then(clip::from_html).or_else(|| match (&text, &self.block_clip) { (Some(t), Some((bt, c))) if t == bt => Some(c.clone()), _ => None });
-                    match (blocks, text) {
-                        (Some(clip), _) => { self.follow = true; match self.ed.paste_blocks(&clip, now) { Ok((d, refused)) => { if refused > 0 { eprintln!("paste: {refused} block(s) cannot go there and were left out"); } d } Err(_) => Dirty::Nothing } }
-                        (None, Some(t)) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), _ => Dirty::Nothing } }
+                "v" => self.paste(if shift { Paste::Plain } else { Paste::Rich }),
                 _ => return,
             },
             // typed text — one key event may carry several characters (a writing tool's correction, the spike S9)

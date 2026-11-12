@@ -32,7 +32,7 @@ serde_json = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
 mn-edit = { path = "../../crates/mn-edit" }
-arboard = { workspace = true }
+arboard = { workspace = true, features = ["image-data"] }
 min-image = { path = "../../crates/min-image" }
 # GIF and WebP (their first frame): formats the notes take that the family's decoder (QCView's formats) does not
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }

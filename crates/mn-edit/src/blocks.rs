@@ -143,6 +143,78 @@ impl Editor {
         if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
         Ok((dirty, refused))
     }
+    /// Pastes a FRAGMENT at the caret (formatted text from another application, or a text selection copied here; row
+    /// 309): the selection is replaced; one text block merges into the caret's block with its formatting; several
+    /// blocks split the caret's block - the first joins what is before the caret (an empty block takes its kind, but a
+    /// plain paragraph never unmakes a heading or a list item), the others follow as blocks of their own, and what was
+    /// after the caret joins the last when that is text. At the START of a block that has text the blocks go in before
+    /// it, untouched. In a code block only the text goes in. With blocks selected it is [`Self::paste_blocks`]. One
+    /// undo step; returns how many blocks the place would not take.
+    pub fn paste_fragment(&mut self, clip: &Clip, now_ms: u64) -> Result<(Dirty, usize), ChangeError> {
+        if self.preedit.is_some() || clip.is_empty() { return Ok((Dirty::Nothing, 0)) }
+        if self.blocks.is_some() { return self.paste_blocks(clip, now_ms) }
+        let mut b = self.batch();
+        let Some(mut p) = self.delete_selection(&mut b)? else { return Ok((Dirty::Nothing, 0)) };
+        let cur = b.scratch.get(p.block).ok_or(mn_doc::TreeError::UnknownBlock(p.block))?.clone();
+        let leaf = |t: &Vec<Block>| t.len() == 1 && t[0].kind.is_text();
+        let fresh = |tree: &Vec<Block>, parent: Option<BlockId>| -> Vec<Block> {
+            let ids: HashMap<BlockId, BlockId> = tree.iter().map(|x| (x.id, BlockId::new())).collect();
+            let mut v: Vec<Block> = tree.iter().map(|x| { let mut n = x.clone(); n.id = ids[&x.id]; n.parent = x.parent.and_then(|q| ids.get(&q).copied()); n.children = x.children.iter().map(|c| ids[c]).collect(); n.conflict = None; n }).collect();
+            if let Some(top) = v.first_mut() { top.parent = parent; top.rank = Rank::first(); } v };
+        // text put into a text block at a place, with its formatting (not into code)
+        let merge = |b: &mut Batch, id: BlockId, at: usize, src: &Block| -> Result<usize, ChangeError> {
+            let at = b.scratch.get(id).map(|x| x.spans.snap_out_of_chip(at)).unwrap_or(at);
+            if src.text.is_empty() { return Ok(at) }
+            let code = matches!(b.scratch.get(id).map(|x| &x.kind), Some(Kind::Code { .. }));
+            let mut c = Change::edit(&b.scratch, id, at, 0, &src.text)?;
+            if let (Change::Text { new_spans, .. }, false) = (&mut c, code) { for sp in src.spans.as_slice() { if sp.end > sp.start && sp.end <= src.text.len() { new_spans.put(at + sp.start, at + sp.end, sp.mark.clone()); } } }
+            b.push(c)?; Ok(at + src.text.len()) };
+        let mut refused = 0usize;
+        // in code: the text alone, lines kept
+        if matches!(cur.kind, Kind::Code { .. }) {
+            let text = clip.iter().flatten().filter(|x| x.kind.is_text()).map(|x| x.text.as_str()).collect::<Vec<_>>().join("\n");
+            b.edit(p.block, p.at, 0, &text)?; p.at += text.len();
+            return Ok((self.commit(b, Some(p), now_ms + mn_doc::change::JOIN_MS + 1)?, 0))
+        }
+        let index = b.scratch.index_of(p.block).ok_or(mn_doc::TreeError::UnknownBlock(p.block))?;
+        let put = |b: &mut Batch, at: &mut usize, tree: &Vec<Block>, last: &mut Option<BlockId>, refused: &mut usize| -> Result<(), ChangeError> {
+            let blocks = fresh(tree, cur.parent); let Some(top) = blocks.first().map(|x| x.id) else { return Ok(()) };
+            match b.push(Change::Insert { index: *at, blocks }) { Ok(()) => { *at += 1; *last = Some(top); Ok(()) } Err(ChangeError::Tree(_)) => { *refused += 1; Ok(()) } Err(e) => Err(e) } };
+        let after = if !cur.kind.is_text() {
+            // beside a picture or a divider: the blocks go in before or after it
+            let (mut at, mut last) = (index + p.at.min(1), None);
+            for tree in clip { put(&mut b, &mut at, tree, &mut last, &mut refused)?; }
+            match last { Some(l) => { let l = last_leaf(&b.scratch, l); Pos { block: l, at: b.scratch.get(l).map(end_of).unwrap_or(0) } } None => p }
+        } else if clip.len() == 1 && leaf(&clip[0]) {
+            let src = &clip[0][0];
+            if cur.text.is_empty() && src.kind != Kind::Paragraph && cur.kind == Kind::Paragraph { b.push(Change::Kind { id: p.block, old: cur.kind.clone(), new: src.kind.clone() })?; }
+            Pos { block: p.block, at: merge(&mut b, p.block, p.at, src)? }
+        } else if p.at == 0 && !cur.text.is_empty() {
+            let (mut at, mut last) = (index, None);
+            for tree in clip { put(&mut b, &mut at, tree, &mut last, &mut refused)?; }
+            match last { Some(l) => { let l = last_leaf(&b.scratch, l); Pos { block: l, at: b.scratch.get(l).map(end_of).unwrap_or(0) } } None => p }
+        } else {
+            // the caret's block is split where the caret is (not at its end: nothing follows the caret there)
+            let tail = if p.at < cur.text.len() { let (c, new) = Change::split(&b.scratch, p.block, p.at)?; for x in c { b.push(x)?; } Some(new) } else { None };
+            let mut rest = clip.iter(); let mut end = Pos { block: p.block, at: p.at };
+            if leaf(&clip[0]) { let src = &rest.next().unwrap()[0];
+                if p.at == 0 && src.kind != Kind::Paragraph && cur.kind == Kind::Paragraph { b.push(Change::Kind { id: p.block, old: cur.kind.clone(), new: src.kind.clone() })?; }
+                end.at = merge(&mut b, p.block, p.at, src)?; }
+            let (mut at, mut last) = (index + 1, None);
+            for tree in rest { put(&mut b, &mut at, tree, &mut last, &mut refused)?; }
+            let last_text = last.filter(|l| b.scratch.get(*l).is_some_and(|x| x.kind.is_text() && x.children.is_empty()));
+            match (last, last_text, tail) {
+                // what was after the caret joins the last pasted block when both are text
+                (_, Some(l), Some(t)) => { let at = b.scratch.get(l).map(|x| x.text.len()).unwrap_or(0); for c in Change::join(&b.scratch, l, t)? { b.push(c)?; } Pos { block: l, at } }
+                (_, Some(l), None) => Pos { block: l, at: b.scratch.get(l).map(|x| x.text.len()).unwrap_or(0) },
+                (Some(l), None, _) => { let l = last_leaf(&b.scratch, l); Pos { block: l, at: b.scratch.get(l).map(end_of).unwrap_or(0) } }
+                // nothing went in after the first: the block is put together again
+                (None, _, Some(t)) => { for c in Change::join(&b.scratch, p.block, t)? { b.push(c)?; } end }
+                (None, _, None) => end,
+            }
+        };
+        Ok((self.commit(b, Some(after), now_ms + mn_doc::change::JOIN_MS + 1)?, refused))
+    }
     /// The block a handle stands beside: the first of the run the selection stands for.
     pub fn handle_block(&self) -> Option<BlockId> { if self.preedit.is_some() { return None } let (p, i, _) = self.run()?; self.doc.children(p).get(i).copied() }
     /// How many blocks a drag would carry (children counted).

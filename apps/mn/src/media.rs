@@ -102,6 +102,15 @@ impl Media {
             let _ = tx.send(Mail::Added { token, records, refused }); wake();
         });
     }
+    /// A picture that came as pixels (pasted from the clipboard): kept as a PNG with the collection, like a dropped
+    /// picture that is copied; its record has no name (as the Qt app's).
+    pub fn add_pixels(&self, token: u64, rgba: Vec<u8>, w: u32, h: u32) {
+        let (places, tx, wake) = (self.places.clone(), self.mail_tx.clone(), self.wake.clone());
+        let _ = std::thread::Builder::new().name("mn-media-add".into()).spawn(move || {
+            let made = min_image::write::png_rgba8_bytes(&rgba, w, h).and_then(|png| places.keep_bytes("pasted", "png", &png)).map(|src| serde_json::json!({ "src": src, "w": w, "h": h }).to_string());
+            let _ = tx.send(match made { Ok(r) => Mail::Added { token, records: vec![r], refused: vec![] }, Err(why) => Mail::Added { token, records: vec![], refused: vec![format!("the pasted picture: {why}")] } }); wake();
+        });
+    }
     /// A picture that was not found is pointed at `file`; the note's other pictures that are not found either and
     /// have a file of their name in the same folder follow. `blocks`: the note's media blocks with their records.
     pub fn relink(&self, blocks: Vec<(mn_doc::BlockId, String)>, chosen: mn_doc::BlockId, file: PathBuf) {
@@ -257,6 +266,14 @@ impl Places {
         if there { let _ = std::fs::remove_file(tmp); } else { std::fs::rename(tmp, &at).map_err(|e| e.to_string())?; }
         Ok(serde_json::Value::String(format!(".minnotes/{name}")))
     }
+    /// Bytes made here (a preview's PNG, a pasted picture) are kept in the waiting place under a name of their hash.
+    fn keep_bytes(&self, stem: &str, ext: &str, bytes: &[u8]) -> Result<serde_json::Value, String> {
+        let dir = self.staged.as_ref().ok_or("the collection has no file yet: save it first")?;
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(format!(".adding-{}-{:?}.tmp", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
+        std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+        self.settle(dir, &tmp, stem, ext, fnv(bytes))
+    }
     /// A file whose picture is MADE of it (a Photoshop file, an SVG, a camera's HEIC or RAW; row 313), as the Qt app's
     /// preview record: `src` = a PNG of it (its longer side at most 2048) kept with the collection, so the picture
     /// shows wherever the collection is opened; `preview` = the original, always referenced where it is, with its
@@ -264,12 +281,8 @@ impl Places {
     fn preview(&self, path: &Path, format: &str) -> Result<serde_json::Value, String> {
         let r = render(path, STORED)?;
         let png = min_image::write::png_rgba8_bytes(&r.rgba, r.w, r.h)?;
-        let dir = self.staged.as_ref().ok_or("the collection has no file yet: save it first")?;
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let tmp = dir.join(format!(".adding-{}-{:?}.tmp", std::process::id(), std::thread::current().id()).replace(['(', ')'], ""));
-        std::fs::write(&tmp, &png).map_err(|e| e.to_string())?;
         let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();
-        let src = self.settle(dir, &tmp, &stem, "png", fnv(&png))?;
+        let src = self.keep_bytes(&stem, "png", &png)?;
         let m = std::fs::metadata(path).map_err(|e| e.to_string())?;
         let (w, h) = r.nominal.unwrap_or((r.w, r.h));
         Ok(serde_json::json!({ "src": src, "w": w, "h": h, "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),

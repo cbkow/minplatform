@@ -773,6 +773,37 @@ mod tests {
         assert_eq!(e.drop_blocks(&Drop { parent: None, index: 3, depth: None }, 7000).unwrap(), Dirty::Nothing);
     }
     #[test]
+    fn a_fragment_merges_at_the_caret_splits_the_block_keeps_formatting_and_leaves_a_heading_alone() {
+        use mn_doc::{Block, Rank};
+        let mut d = Doc::new(); let a = add(&mut d, None, Kind::Paragraph, "Hello world"); let h = add(&mut d, None, Kind::Heading { level: 2 }, "Title"); let c = add(&mut d, None, Kind::Code { lang: String::new() }, "let x;");
+        let mut e = Editor::new(d);
+        let blk = |kind: Kind, text: &str| Block { id: BlockId::new(), parent: None, rank: Rank::first(), kind, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] };
+        let at = |e: &mut Editor, block: BlockId, at: usize| e.set_selection(Some(Selection::caret(Pos { block, at })));
+        let top = |e: &Editor| -> Vec<(String, Kind)> { e.doc.children(None).iter().map(|id| { let b = e.doc.get(*id).unwrap(); (b.text.clone(), b.kind.clone()) }).collect() };
+        // one text block goes in where the caret is, bold and all
+        let mut one = blk(Kind::Paragraph, "big "); one.spans.put(0, 3, Mark::Bold);
+        at(&mut e, a, 6); e.paste_fragment(&vec![vec![one]], 1_000).unwrap();
+        assert_eq!(e.doc.get(a).unwrap().text, "Hello big world"); assert!(e.doc.get(a).unwrap().spans.covers(6, 9, &Mark::Bold));
+        assert_eq!(e.selection().unwrap().focus, Pos { block: a, at: 10 });
+        // several: the first joins what is before the caret, the last takes what was after it
+        at(&mut e, a, 5); e.paste_fragment(&vec![vec![blk(Kind::Paragraph, "!")], vec![blk(Kind::Bullet { depth: 0 }, "item")], vec![blk(Kind::Paragraph, "And")]], 9_000).unwrap();
+        let t = top(&e); assert_eq!(t.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["Hello!", "item", "And big world", "Title", "let x;"]);
+        assert_eq!(t[1].1, Kind::Bullet { depth: 0 }); assert_eq!(t[2].1, Kind::Paragraph);
+        let f = e.selection().unwrap().focus; assert_eq!((e.doc.index_of(f.block), f.at), (Some(2), 3));
+        assert!(e.doc.get(f.block).unwrap().spans.covers(4, 7, &Mark::Bold), "the bold moved with the text it was on");
+        e.undo().unwrap(); assert_eq!(top(&e)[0].0, "Hello big world"); assert_eq!(top(&e).len(), 3); e.redo().unwrap();
+        // at the start of a heading the blocks go in before it and it stays a heading
+        at(&mut e, h, 0); e.paste_fragment(&vec![vec![blk(Kind::Paragraph, "x")], vec![blk(Kind::Paragraph, "y")]], 20_000).unwrap();
+        let t = top(&e); assert_eq!(t.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["Hello!", "item", "And big world", "x", "y", "Title", "let x;"]); assert_eq!(t[5].1, Kind::Heading { level: 2 });
+        // into code: the text alone, lines kept; into an empty paragraph: it takes the kind
+        let mut bold = blk(Kind::Heading { level: 1 }, "A"); bold.spans.put(0, 1, Mark::Bold);
+        at(&mut e, c, 6); e.paste_fragment(&vec![vec![bold.clone()], vec![blk(Kind::Paragraph, "B")]], 30_000).unwrap();
+        assert_eq!(e.doc.get(c).unwrap().text, "let x;A\nB"); assert!(e.doc.get(c).unwrap().spans.is_empty());
+        let empty = { let id = BlockId::new(); let n = e.doc.children(None).len(); e.doc.insert(None, n, id, Kind::Paragraph, "").unwrap(); id };
+        at(&mut e, empty, 0); e.paste_fragment(&vec![vec![bold]], 40_000).unwrap();
+        assert_eq!(e.doc.get(empty).unwrap().kind, Kind::Heading { level: 1 }); assert_eq!(e.doc.get(empty).unwrap().text, "A");
+    }
+    #[test]
     fn blocks_from_another_note_are_appended_as_one_step_and_the_stamp_tells_edits_from_undo() {
         let mut a = Doc::new(); let x = add(&mut a, None, Kind::Bullet { depth: 0 }, "X"); add(&mut a, None, Kind::Bullet { depth: 1 }, "x1"); add(&mut a, None, Kind::Paragraph, "stay");
         let mut src = Editor::new(a); src.set_selection(Some(Selection::caret(Pos { block: x, at: 0 }))); src.toggle_blocks();

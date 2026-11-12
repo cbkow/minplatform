@@ -9,6 +9,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 const ATTR: &str = "data-mn-blocks=\"";
+/// A text selection's blocks (cut to the selection) ride in the same way, on the `meta` element, so that pasted back
+/// here it keeps its formatting exactly (row 309 a) while other applications see only the markup.
+const TEXT: &str = "data-mn-text=\"";
 
 fn esc(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;") }
 fn unesc(s: &str) -> String { s.replace("&quot;", "\"").replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&") }
@@ -35,8 +38,11 @@ pub fn parse(s: &str) -> Option<Clip> {
     }
     (!out.is_empty()).then_some(out)
 }
-/// Blocks found in HTML that minNotes wrote.
-pub fn from_html(html: &str) -> Option<Clip> { let i = html.find(ATTR)? + ATTR.len(); let j = html[i..].find('"')?; parse(&unesc(&html[i..i + j])) }
+/// Blocks found in HTML that minNotes wrote, and whether they were copied as whole blocks (else: a text selection).
+pub fn from_html(html: &str) -> Option<(Clip, bool)> {
+    let (at, whole) = match html.find(ATTR) { Some(i) => (i + ATTR.len(), true), None => (html.find(TEXT)? + TEXT.len(), false) };
+    let j = html[at..].find('"')?; parse(&unesc(&html[at..at + j])).map(|c| (c, whole))
+}
 
 /// A block's text with its formatting as HTML.
 fn inline(b: &Block) -> String {
@@ -83,7 +89,7 @@ pub fn html(clip: &Clip, whole: bool) -> String {
     let all: HashMap<BlockId, &Block> = clip.iter().flatten().map(|b| (b.id, b)).collect();
     let tops: Vec<BlockId> = clip.iter().filter_map(|t| t.first().map(|b| b.id)).collect();
     let mut body = String::new(); siblings(&tops, &all, &mut body);
-    if whole { format!("<meta charset=\"utf-8\"><div {ATTR}{}\">{body}</div>", esc(&payload(clip))) } else { format!("<meta charset=\"utf-8\">{body}") }
+    if whole { format!("<meta charset=\"utf-8\"><div {ATTR}{}\">{body}</div>", esc(&payload(clip))) } else { format!("<meta charset=\"utf-8\" {TEXT}{}\">{body}", esc(&payload(clip))) }
 }
 
 #[cfg(test)]
@@ -101,13 +107,14 @@ mod tests {
         let clip: Clip = vec![vec![h], vec![p], vec![a], vec![a1], vec![n], vec![cols, col, inner]];
         let html = html(&clip, true);
         for part in ["<h2><b>Title</b> &amp; more</h2>", "<ul><li>A</li><ul><li>a1</li></ul></ul><ol><li>one</li></ol>", "<p>inside</p>", "color:#FF5768", "&lt;word&gt;"] { assert!(html.contains(part), "{part} not in {html}"); }
-        let back = from_html(&html).expect("the payload is found");
+        let (back, whole) = from_html(&html).expect("the payload is found"); assert!(whole);
         assert_eq!(back.len(), 6);
         let texts: Vec<&str> = back.iter().map(|t| t[0].text.as_str()).collect(); assert_eq!(texts, ["Title & more", "a \"quoted\" <word>", "A", "a1", "one", ""]);
         assert_eq!(back[0][0].kind, Kind::Heading { level: 2 }); assert!(back[1][0].spans.covers(2, 10, &Mark::Color("red".into())));
         let c = &back[5]; assert_eq!(c.len(), 3); assert_eq!(c[0].children, vec![c[1].id]); assert_eq!(c[2].parent, Some(c[1].id)); assert_eq!(c[2].text, "inside");
-        // a text selection's HTML carries no payload: it pastes back as text
-        assert!(from_html(&super::html(&clip, false)).is_none());
+        // a text selection's HTML carries its blocks too, marked as a fragment: pasted back it keeps its formatting
+        let (frag, whole) = from_html(&super::html(&clip[..2].to_vec(), false)).expect("the fragment is found"); assert!(!whole);
+        assert_eq!(frag.len(), 2); assert!(frag[1][0].spans.covers(2, 10, &Mark::Italic));
         assert!(from_html("<p>from elsewhere</p>").is_none());
     }
 }

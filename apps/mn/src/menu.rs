@@ -6,7 +6,7 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
     NewCollection, Open, OpenRecent(String), ClearRecent, Save, SaveAs, CloseCollection, NewNote, NewFolder, Rename, Quit,
-    Undo, Redo, Cut, Copy, Paste, SelectAll,
+    Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
 }
@@ -32,7 +32,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         ]),
         ("Edit", vec![
             item("Undo", sc('z'), Cmd::Undo), item("Redo", sc_shift('z'), Cmd::Redo), Node::Sep,
-            item("Cut", sc('x'), Cmd::Cut), item("Copy", sc('c'), Cmd::Copy), item("Paste", sc('v'), Cmd::Paste), Node::Sep,
+            item("Cut", sc('x'), Cmd::Cut), item("Copy", sc('c'), Cmd::Copy), item("Paste", sc('v'), Cmd::Paste), item("Paste and Match Style", sc_shift('v'), Cmd::PastePlain), item("Paste as Markdown", None, Cmd::PasteMarkdown), Node::Sep,
             item("Select All", sc('a'), Cmd::SelectAll),
         ]),
         ("Format", vec![
@@ -46,7 +46,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
 
 /// The key a command is run by in the window's key handler: (character, with Shift). None: it has a routine of its own.
 pub fn key_of(c: &Cmd) -> Option<(char, bool)> {
-    Some(match c { Cmd::NewNote => ('n', false), Cmd::NewFolder => ('n', true), Cmd::Save => ('s', false), Cmd::Undo => ('z', false), Cmd::Redo => ('z', true), Cmd::Cut => ('x', false), Cmd::Copy => ('c', false), Cmd::Paste => ('v', false), Cmd::SelectAll => ('a', false),
+    Some(match c { Cmd::NewNote => ('n', false), Cmd::NewFolder => ('n', true), Cmd::Save => ('s', false), Cmd::Undo => ('z', false), Cmd::Redo => ('z', true), Cmd::Cut => ('x', false), Cmd::Copy => ('c', false), Cmd::Paste => ('v', false), Cmd::PastePlain => ('v', true), Cmd::SelectAll => ('a', false),
         Cmd::Bold => ('b', false), Cmd::Italic => ('i', false), Cmd::Underline => ('u', false), Cmd::Strike => ('x', true), Cmd::Code => ('e', false), Cmd::Highlight => ('h', true), Cmd::ClearFormat => ('\\', false), Cmd::Sidebar => ('1', false), _ => return None })
 }
 
