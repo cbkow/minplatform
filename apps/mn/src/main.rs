@@ -130,6 +130,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// wide tables' sideways scrolls (kept across layouts)
     /// a choice cell's picker (row 317, stage 3), and the timecode paragraph the caret was last in (it settles when left)
     picker: Option<choice::ChoicePicker>, tc_last: Option<BlockId>,
+    /// the picker is a chip's in running text (row 320): the chip it is on
+    picker_chip: Option<mn_edit::chips::Chip>,
     /// a link's editor (row 320), and the link a context menu was opened on
     link: Option<linkedit::LinkEdit>, lmenu: Option<String>, /// the last press on a file chip (a second one soon after opens the file)
     chip_click: Option<(Instant, BlockId)>, /// a space was typed: the word before it becomes a link if it is an address
@@ -348,7 +350,7 @@ impl App {
             let r = r + off; let k = r.width() / t.w.max(1.0) as f64;
             for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // a note's words being typed: the field lies over the caption's place on the playing video's picture
-        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match l.rect(&self.ed.doc, p.cell) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; } }
+        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match self.files.picker_chip.as_ref().map(|c| l.range_rects(&self.ed.doc, c.0, c.1, c.2).into_iter().next()).unwrap_or_else(|| l.rect(&self.ed.doc, p.cell)) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; self.files.picker_chip = None; } }
         if let Some(p) = self.files.link.as_mut() { p.layout(&mut g.fonts, p.anchor + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
@@ -831,6 +833,7 @@ impl App {
             T::Divider => { let d = self.ed.insert_divider(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             // a table of three rows and three columns, its first row a header; a column beside the caret's block (row 317)
             T::Link => self.link_open(),
+            T::Chip => self.chip_insert(),
             T::Table => { let d = self.ed.insert_table(3, 3, now).unwrap_or(Dirty::Nothing); self.apply(d); }
             T::Columns => { let d = self.ed.insert_columns(now).unwrap_or(Dirty::Nothing); self.apply(d); }
             // a video block's set (rows 301, 316): the drawing tools arm and put down; the pen; the frame's note
@@ -856,7 +859,6 @@ impl App {
             // files of any kind, as chips that point at them (a picture, a video, a PDF chosen here still becomes its own block)
             T::File => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Files").pick_files() { self.add_files(paths, at); } },
             T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
-            _ => {}
         }
     }
     /// Dropped files that the helpers turned into records become blocks where they were dropped (one undo step); a
@@ -1161,6 +1163,25 @@ impl App {
         match st.path.filter(|_| st.found) { Some(p) => if reveal { open::reveal(&p) } else { open::file(&p) },
             None => { self.notice = Some(("The file is missing \u{2014} right-click it to locate it".to_string(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
     }
+    /// A choice chip goes in at the caret and its picker opens (the toolbar's tag, Option+Cmd+C).
+    fn chip_insert(&mut self) {
+        if self.blank || !self.ensure() { return } let now = self.now_ms(); self.follow = true;
+        let d = self.ed.insert_chip(now).unwrap_or(Dirty::Nothing); if d == Dirty::Nothing { return } self.apply(d); self.layout = None; self.ensure();
+        if let Some(c) = self.ed.chip_before_caret() { self.chip_open(c, ""); }
+    }
+    /// A chip's picker opens under it.
+    fn chip_open(&mut self, c: mn_edit::chips::Chip, typed: &str) {
+        let Some(g) = self.gpu.as_mut() else { return };
+        self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: c.0, at: c.2 })));
+        let mut p = choice::ChoicePicker::new(c.0, c.3.clone(), Some(c.4.clone()), typed, &mut g.fonts); p.inline = true;
+        self.files.picker = Some(p); self.files.picker_chip = Some(c); g.window.request_redraw();
+    }
+    /// The chip under a window point.
+    fn chip_under(&self, x: f64, y: f64) -> Option<mn_edit::chips::Chip> {
+        if self.blank || y < self.top || x < self.side_w { return None } let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y));
+        let (id, at) = l.hit(&self.ed.doc, nx, ny)?; let c = self.ed.chip_span_at(id, at)?;
+        l.range_rects(&self.ed.doc, id, c.1, c.2).iter().any(|r| r.inflate(5.0, 2.0).contains(kurbo::Point::new(nx, ny))).then_some(c)
+    }
     /// The link under a window point: its address.
     fn link_under(&self, x: f64, y: f64) -> Option<String> {
         if self.blank || y < self.top || x < self.side_w { return None } let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y));
@@ -1176,6 +1197,18 @@ impl App {
     }
     fn choice_out(&mut self, out: choice::Out) {
         let now = self.now_ms();
+        // a chip in running text (row 320): the pick, the new option and the edited set are the chip's own
+        if let Some(c) = self.files.picker_chip.clone() {
+            let all = self.files.picker.as_ref().is_some_and(|p| p.all);
+            let d = match out { choice::Out::None => return, choice::Out::Redraw => { if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                choice::Out::Close => Ok(Dirty::Nothing),
+                choice::Out::Pick(v) => self.ed.chip_set(&c, v.as_deref(), None, now),
+                choice::Out::Add(l) => { let l = mn_edit::typed::clean_label(&l); if l.is_empty() { Ok(Dirty::Nothing) } else { let mut set = c.3.clone(); let id = BlockId::new().to_string();
+                    set.push(ChoiceOption { id: id.clone(), label: l, color: mn_edit::typed::PALETTE[c.3.len() % mn_edit::typed::PALETTE.len()].to_string() }); self.ed.chip_set(&c, Some(&id), Some(&set), now) } }
+                choice::Out::Options(o) => if o.is_empty() { Ok(Dirty::Nothing) } else if all { self.ed.chips_replace_set(&c.3, &o, now) } else { let keep = o.iter().any(|x| x.id == c.4).then(|| c.4.clone()); self.ed.chip_set(&c, keep.as_deref(), Some(&o), now) } };
+            self.files.picker = None; self.files.picker_chip = None;
+            let d = d.unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); self.layout = None; }
+            if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         let d = match out { choice::Out::None => return, choice::Out::Redraw => Ok(Dirty::Nothing), choice::Out::Close => { self.files.picker = None; Ok(Dirty::Nothing) }
             choice::Out::Pick(v) => { self.files.picker = None; self.ed.cell_choose(v.as_deref(), now) }
             choice::Out::Add(l) => { self.files.picker = None; self.ed.cell_choose_new(&l, now) }
@@ -1580,6 +1613,9 @@ impl App {
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
         let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
+        // Option+Cmd+C: a choice chip at the caret; Option+Down just after a chip: its picker (row 320)
+        if let Key::Character(c) = key { if cmd && alt && !shift && matches!(c.to_lowercase().as_str(), "c" | "\u{e7}") { self.chip_insert(); return } }
+        if matches!(key, Key::Named(NamedKey::ArrowDown)) && alt && !cmd && !shift && !self.ed.in_blocks() { if let Some(c) = self.ed.chip_before_caret() { self.chip_open(c, ""); return } }
         // Cmd+K: the link's editor (row 320)
         if let Key::Character(c) = key { if cmd && !shift && !alt && c.to_lowercase() == "k" { self.link_open(); return } }
         // cells of a table are selected (row 319): Delete empties them (whole rows / columns go), Cmd+C / X carry them as a
@@ -1759,7 +1795,11 @@ impl ApplicationHandler for App {
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
             // MN_TABLE=1: at the note's end a table is made and filled by typing and Tab, a row added, and columns made beside a paragraph (as the toolbar and the keys would)
             // MN_LINK=1: a word of the note's second block is made a link, an address is typed after it (it links at its space), and the link's editor opens on the first
-            if std::env::var_os("MN_LINK").is_some() { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) { let t = self.now_ms();
+            // MN_LINK=2: a choice chip goes in at the start of the note's long paragraph and its picker opens; 3: a second chip, its options' editor
+            if matches!(std::env::var("MN_LINK").as_deref(), Ok("2") | Ok("3")) { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) {
+                self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); self.chip_insert();
+                if std::env::var("MN_LINK").as_deref() == Ok("3") { self.files.picker = None; self.files.picker_chip = None; let t = self.now_ms(); let _ = self.ed.insert(" then ", t + 20_000); self.apply(Dirty::Structure); self.chip_insert(); if let (Some(c), Some(g)) = (self.files.picker_chip.clone(), self.gpu.as_mut()) { let mut pk = choice::ChoicePicker::new(c.0, c.3.clone(), Some(c.4.clone()), "", &mut g.fonts).editing(); pk.inline = true; self.files.picker = Some(pk); } } } }
+            else if std::env::var_os("MN_LINK").is_some() { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) { let t = self.now_ms();
                 self.ed.set_selection(Some(mn_edit::Selection { anchor: mn_edit::Pos { block: p, at: 4 }, focus: mn_edit::Pos { block: p, at: 12 } })); let _ = self.ed.set_link("example.com/review", None, t);
                 self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); let _ = self.ed.insert("www.minnotes.app ", t + 9_000); let _ = self.ed.autolink(true, t + 9_000);
                 self.apply(Dirty::Structure); self.layout = None; self.ensure(); self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 24 }))); self.link_open(); } }
@@ -1991,6 +2031,8 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && self.files.tool.is_none() { match self.file_chip_under(position.x, position.y) {
                     Some((id, d)) => { let twice = self.files.chip_click.is_some_and(|(t, b)| b == id && t.elapsed().as_millis() < 450); self.files.chip_click = if twice { None } else { Some((Instant::now(), id)) }; if twice { self.file_open(&d, false); return } }
                     None => self.files.chip_click = None } }
+                // a press on a chip in the text opens its picker (row 320)
+                if state == ElementState::Pressed && !self.mods.0 && !self.mods.1 && self.files.tool.is_none() && self.files.note_field.is_none() { if let Some(c) = self.chip_under(position.x, position.y) { self.chip_open(c, ""); return } }
                 // Cmd + click on a link opens it (a plain click places the caret)
                 if state == ElementState::Pressed && self.mods.1 && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
                 if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }

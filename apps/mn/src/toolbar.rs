@@ -26,7 +26,7 @@ pub struct VideoShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// the 
     pub on_note: bool, pub addressed: bool }
 impl Tool {
     /// Built: the button does something today.
-    fn built(self) -> bool { !matches!(self, Tool::Chip) }
+    fn built(self) -> bool { true }
     /// (icon, a label when there is no icon, the command's name, its key).
     fn face(self) -> (&'static str, Option<&'static str>, &'static str, &'static str) {
         match self {
@@ -123,6 +123,8 @@ impl Toolbar {
                 Tool::ClearFormat | Tool::Divider | Tool::Image | Tool::File => (s.has_note, false),
                 // a link: never in a code block
                 Tool::Link => (s.has_note && !matches!(k, Some(Kind::Code { .. })), mark(MarkKind::Link)),
+                // a choice chip in the text: never in a code block
+                Tool::Chip => (s.has_note && !matches!(k, Some(Kind::Code { .. })), false),
                 // a cell holds no table and no columns
                 Tool::Table | Tool::Columns => (s.has_note && !s.in_cell, false),
                 _ => (false, false),

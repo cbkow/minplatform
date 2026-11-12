@@ -14,11 +14,15 @@ use vello::Scene;
 
 pub enum Out { None, Redraw, Close, Pick(Option<String>), Add(String), Options(Vec<ChoiceOption>) }
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Hit { Option(usize), Add, Clear, Sep, Edit, Swatch(usize), Label(usize) }
+enum Hit { Option(usize), Add, Clear, Sep, Edit, Swatch(usize), Label(usize), All }
 
 pub struct ChoicePicker {
     /// the cell it stands under
     pub cell: BlockId,
+    /// a chip in running text (not a table's cell): Clear removes the chip, and the options' editor offers `all`
+    pub inline: bool,
+    /// the edited options go to every chip of the note that shares this chip's set
+    pub all: bool,
     pop: Popover, field: TextField, options: Vec<ChoiceOption>, chosen: Option<String>,
     hover: Option<Hit>, at: usize, edit: bool, renaming: Option<usize>, rows: Vec<(Rect, Hit)>, scale: f64,
     /// the editor's tools: per option up, down, remove; then Add option, Cancel, Done
@@ -34,7 +38,7 @@ impl ChoicePicker {
     pub fn new(cell: BlockId, options: Vec<ChoiceOption>, chosen: Option<String>, typed: &str, fonts: &mut Fonts) -> ChoicePicker {
         let mut field = TextField::new(Family::Sans, t::BODY_SIZE_M); field.placeholder = "Find or add\u{2026}".into(); field.set_text_end(typed, fonts); field.focused = true;
         let mut add = ActionButton::new("plus", "").size_s(); add.label = Some("Add option".into()); add.icon_size = Some(t::ICON_SIZE_SMALL);
-        ChoicePicker { cell, pop: Popover::new(""), field, options, chosen, hover: None, at: 0, edit: false, renaming: None, rows: vec![], scale: 1.0,
+        ChoicePicker { cell, inline: false, all: true, pop: Popover::new(""), field, options, chosen, hover: None, at: 0, edit: false, renaming: None, rows: vec![], scale: 1.0,
             tools: vec![], add, cancel: TextButton::new("Cancel", Variant::Secondary).size_s(), done: TextButton::new("Done", Variant::Primary).size_s() }
     }
     /// Opened on its options' editor.
@@ -59,12 +63,13 @@ impl ChoicePicker {
         if self.edit {
             if self.tools.len() != self.options.len() { self.tools = (0..self.options.len()).map(|_| [small("caret-up", "Move up"), small("caret-down", "Move down"), small("x", "Remove")]).collect(); }
             let foot = t::COMPONENT_HEIGHT_75 as f64 + sep * 2.0;
-            self.pop.open_at_prefer(fonts, anchor, W, self.options.len() as f64 * rh + foot, bounds, s, Placement::Below);
+            self.pop.open_at_prefer(fonts, anchor, W, (self.options.len() + self.inline as usize) as f64 * rh + foot, bounds, s, Placement::Below);
             let k = self.pop.content; let mut y = k.y0; let b = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let n = self.options.len();
             for i in 0..n { let r = Rect::new(k.x0, y, k.x1, y + rh * s); y += rh * s; let by = r.center().y - b / 2.0;
                 self.rows.push((Rect::new(r.x0, r.y0, r.x0 + 28.0 * s, r.y1), Hit::Swatch(i))); self.rows.push((Rect::new(r.x0 + 28.0 * s, r.y0, r.x1 - 3.0 * b - 4.0 * s, r.y1), Hit::Label(i)));
                 for (j, t) in self.tools[i].iter_mut().enumerate() { let x = r.x1 - (3 - j) as f64 * b; t.rect = Rect::new(x, by, x + b, by + b); }
                 self.tools[i][0].enabled = i > 0; self.tools[i][1].enabled = i + 1 < n; }
+            if self.inline { self.rows.push((Rect::new(k.x0, y, k.x1, y + rh * s), Hit::All)); y += rh * s; }
             let fy = y + sep * s; let fh = t::COMPONENT_HEIGHT_75 as f64 * s;
             let (aw, _) = self.add.measure(fonts, s); self.add.rect = Rect::new(k.x0, fy, k.x0 + aw, fy + fh);
             let (dw, _) = self.done.measure(fonts, s); let (cw, _) = self.cancel.measure(fonts, s);
@@ -93,6 +98,7 @@ impl ChoicePicker {
             Hit::Edit => { self.to_edit(); Out::Redraw }
             Hit::Swatch(i) => { self.rename_end(true); if let Some(o) = self.options.get_mut(i) { let k = PALETTE.iter().position(|p| p.eq_ignore_ascii_case(&o.color)).map(|k| k + 1).unwrap_or(0); o.color = PALETTE[k % PALETTE.len()].to_string(); } Out::Redraw }
             Hit::Label(i) => { self.rename_end(true); self.rename(i, fonts); Out::Redraw }
+            Hit::All => { self.all = !self.all; Out::Redraw }
             Hit::Sep => Out::None,
         }
     }
@@ -145,6 +151,7 @@ impl ChoicePicker {
                 Hit::Label(i) if self.renaming != Some(i) => { if self.hover == Some(h) { min_ui::paint::rounded(scene, r, t::PICKER_CORNER_RADIUS as f64 * s, t::MENU_ITEM_HOVER_COLOR); }
                     let g = fonts.layout_fit(&self.options[i].label, Family::Sans, t::BODY_SIZE_M * s as f32, t::FONT_WEIGHT_REGULAR as f32, min_ui::paint::color(t::MENU_ITEM_CONTENT_COLOR), (r.width() - 8.0 * s).max(8.0));
                     draw_layout(scene, &g, Affine::translate((r.x0 + 4.0 * s, r.center().y - g.height() as f64 / 2.0))); }
+                Hit::All => menu::row(scene, fonts, r, "All chips with these options", true, self.hover == Some(h), Some(self.all), true, s),
                 _ => {} } }
             for t in self.tools.iter().flatten() { t.paint(scene, fonts, s, now); }
             if let Some(y) = self.rows.last().map(|(r, _)| r.y1) { let k = self.pop.content; menu::separator(scene, Rect::new(k.x0, y, k.x1, y + t::SPACING_100 as f64 * s), s); }
@@ -158,7 +165,7 @@ impl ChoicePicker {
             match h {
                 Hit::Option(i) => { let o = &self.options[i]; menu::row(scene, fonts, r, &o.label, true, lit, Some(self.chosen.as_deref() == Some(o.id.as_str())), true, s); dot(scene, r.x1 - 14.0 * s, r.center().y, &o.color) }
                 Hit::Add => menu::row(scene, fonts, r, &format!("Add \u{201c}{}\u{201d}", self.field.text().trim()), true, lit, None, true, s),
-                Hit::Clear => menu::row(scene, fonts, r, "Clear", true, lit, None, true, s),
+                Hit::Clear => menu::row(scene, fonts, r, if self.inline { "Remove chip" } else { "Clear" }, true, lit, None, true, s),
                 Hit::Edit => menu::row(scene, fonts, r, "Edit options\u{2026}", true, lit, None, true, s),
                 Hit::Sep => menu::separator(scene, r, s),
                 _ => {}

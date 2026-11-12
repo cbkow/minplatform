@@ -15,6 +15,7 @@ pub mod typed;
 pub mod cells;
 mod columns;
 pub mod links;
+pub mod chips;
 pub use blocks::{Clip, Drop};
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
