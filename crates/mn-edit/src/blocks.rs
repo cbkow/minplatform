@@ -211,4 +211,17 @@ impl Editor {
         let ly = if rects.is_empty() { frame.y0 } else if index == 0 { rects[0].y0 - 3.0 * s } else if index >= rects.len() { rects[rects.len() - 1].y1 + 3.0 * s } else { (rects[index - 1].y1 + rects[index].y0) / 2.0 };
         Some((d.clone(), Rect::new(frame.x0 + d.depth.unwrap_or(0) as f64 * indent, ly - s, frame.x1, ly + s)))
     }
+    /// A copy of the run right after it (the caret's block with its children when no blocks are selected), as one undo
+    /// step; the copies end up selected.
+    pub fn duplicate_blocks(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {
+        if !self.in_blocks() && !self.toggle_blocks() { return Ok(Dirty::Nothing) }
+        let Some(clip) = self.copy_blocks() else { return Ok(Dirty::Nothing) };
+        self.paste_blocks(&clip, now_ms).map(|(d, _)| d)
+    }
+    /// Whether a block is among the selected blocks or inside one of them.
+    pub fn in_block_selection(&self, id: BlockId) -> bool {
+        let picked = self.block_selection(); let mut up = Some(id);
+        while let Some(x) = up { if picked.contains(&x) { return true } up = self.doc.get(x).and_then(|b| b.parent); }
+        false
+    }
 }

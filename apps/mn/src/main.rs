@@ -110,7 +110,8 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     pal: colours::Colours, last_bg: String, /// MN_PALETTE=type|background|picker: the palette is opened by the app itself, for a screenshot
     show_pal: Option<String>,
     /// the tree's context menu and the row it was opened on (None: the empty part of the sidebar)
-    ctx: min_ui::menu::Menu, ctx_for: Option<BlockId>,
+    ctx: min_ui::menu::Menu, ctx_for: Option<BlockId>, /// the menu is the page's (blocks), not the tree's
+    ctx_blocks: bool,
     /// commands to run at the loop's next idle step
     later: Vec<menu::Cmd>, foot: footer::Footer, /// the footer's height, physical px
     bottom: f64, /// the last save's outcome for the footer's readout (text, a warning)
@@ -467,9 +468,29 @@ impl App {
     /// A right press: over the tree it opens the context menu (row 300) on the row under it, which is selected.
     fn context(&mut self, x: f64, y: f64) {
         if self.confirm.is_some() { return }
-        let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
-        if !sb.rail.hit(x, y) { return }
         use min_ui::menu::MenuItem as I;
+        // over the page: the block under the pointer is selected (the selected blocks stay when it is one of them) and
+        // the menu is theirs (row 306)
+        let over_tree = self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(x, y));
+        if !over_tree {
+            if self.blank || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return }
+            let (nx, ny) = self.note_point((x, y));
+            let Some(l) = self.layout.as_ref() else { return };
+            let Some((hit, _)) = l.hit(&self.ed.doc, nx, ny) else { return };
+            if !self.ed.in_block_selection(hit) { self.ed.point(l, nx, ny, false); if !self.ed.toggle_blocks() { return } }
+            let Some(g) = self.gpu.as_mut() else { return };
+            let mac = cfg!(target_os = "macos"); let k = |m: &str, w: &str| if mac { m.to_string() } else { w.to_string() };
+            let items = vec![I::with_shortcut("Cut", true, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", true, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", self.block_clip.is_some(), &k("\u{2318}V", "Ctrl+V")), I::Separator,
+                I::with_shortcut("Duplicate", true, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", true, "\u{232b}"), I::Separator,
+                I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", ""))];
+            let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
+            self.ctx_blocks = true; self.ctx_for = None;
+            self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
+            #[cfg(target_os = "macos")] text_element::changed(false);
+            g.window.request_redraw(); return
+        }
+        self.ctx_blocks = false;
+        let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{k}\u{2318}N") } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
         self.ctx_for = sb.id_at(x, y);
         if let Some(id) = self.ctx_for { sb.selected = Some(id); sb.focused = true; }
@@ -484,6 +505,14 @@ impl App {
     /// An item of the context menu was chosen (its place among the items, separators counted).
     fn ctx_pick(&mut self, i: usize) {
         let label = match self.ctx.items.get(i) { Some(min_ui::menu::MenuItem::Action { label, .. }) => label.clone(), _ => return };
+        if self.ctx_blocks {
+            let now = self.now_ms(); self.follow = true;
+            let d = match label.as_str() {
+                "Cut" => { self.menu_cmd(menu::Cmd::Cut); return } "Copy" => { self.menu_cmd(menu::Cmd::Copy); return } "Paste" => { self.menu_cmd(menu::Cmd::Paste); return }
+                "Duplicate" => self.ed.duplicate_blocks(now), "Delete" => self.ed.delete_blocks(now),
+                "Move Up" => self.ed.move_blocks(false, now), "Move Down" => self.ed.move_blocks(true, now), _ => return }.unwrap_or(Dirty::Nothing);
+            self.apply(d); return
+        }
         match (label.as_str(), self.ctx_for) {
             ("Rename", Some(id)) => if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { sb.start_rename(id, &mut g.fonts); },
             ("New Note", _) => self.new_entry(mn_store::DocKind::Note), ("New Folder", _) => self.new_entry(mn_store::DocKind::Folder),
@@ -746,6 +775,7 @@ impl App {
                 "b" => self.ed.toggle_mark(Mark::Bold, now), "i" => self.ed.toggle_mark(Mark::Italic, now), "u" => self.ed.toggle_mark(Mark::Underline, now), "e" => self.ed.toggle_mark(Mark::Code, now), _ => self.ed.clear_formatting(now) }.unwrap_or(Dirty::Nothing),
             Key::Character(c) if cmd => match c.to_lowercase().as_str() {
                 "a" => { self.ed.select_all(); Dirty::Nothing }
+                "d" => { self.follow = true; self.ed.duplicate_blocks(now).unwrap_or(Dirty::Nothing) }
                 "s" => { self.save(); return }
                 "z" => if shift { self.ed.redo() } else { self.ed.undo() }.unwrap_or(Dirty::Nothing),
                 "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
@@ -1061,7 +1091,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { grab: None, shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { grab: None, shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
