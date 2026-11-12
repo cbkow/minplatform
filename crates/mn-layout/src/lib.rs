@@ -80,7 +80,7 @@ pub struct Box { pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub part: Part 
 pub struct NoteLayout { boxes: HashMap<BlockId, Box>, pub width: f32, pub height: f32, pub scale: f32, pub style: Style, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId>,
     /// tables wider than their place (row 317, ruling 8): each one's whole width, and how far it is scrolled sideways
     /// inside its block (the host keeps the scrolls across layouts: [`NoteLayout::set_table_scrolls`])
-    wide: HashMap<BlockId, f32>, scrolls: HashMap<BlockId, f32> }
+    wide: HashMap<BlockId, f32>, scrolls: HashMap<BlockId, f32>, stacked: std::collections::HashSet<BlockId> }
 
 /// `#rgb`, `#rrggbb` or `#rrggbbaa` (the colours the file stores).
 pub fn hex(s: &str) -> Option<Color> {
@@ -100,6 +100,8 @@ pub fn tint(s: &str) -> Option<Color> { colour(s).map(|c| c.with_alpha(TINT)) }
 
 /// The room under a wide table's rows for the bar that shows its sideways scroll, page px.
 pub const TABLE_BAR: f32 = 10.0;
+/// The narrowest a column of a Columns block is laid side by side (logical px); under it the columns stack.
+pub const COLUMN_MIN: f32 = 160.0;
 /// The height of the strip under a PDF's page (the page readout, previous and next), page px.
 pub const PDF_STRIP: f32 = 36.0;
 /// The height of the strip under a video's picture (play, the counter, the line to scrub on), page px.
@@ -125,7 +127,7 @@ impl NoteLayout {
     pub fn build_turned(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>) -> NoteLayout { Self::build_media(doc, fonts, style, width, scale, turned, Default::default()) }
     /// `noted`: video blocks whose clip has notes - a row for them is added under the strip ([`VIDEO_NOTES`]).
     pub fn build_media(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId>) -> NoteLayout {
-        let mut l = NoteLayout { boxes: HashMap::with_capacity(doc.len()), width, height: 0.0, scale, style: style.clone(), turned, noted, wide: HashMap::new(), scrolls: HashMap::new() };
+        let mut l = NoteLayout { boxes: HashMap::with_capacity(doc.len()), width, height: 0.0, scale, style: style.clone(), turned, noted, wide: HashMap::new(), scrolls: HashMap::new(), stacked: Default::default() };
         for id in doc.children(None) { l.assign(doc, fonts, *id, 0.0, width); }
         l.height = l.stack(doc, None);
         l
@@ -142,7 +144,9 @@ impl NoteLayout {
                 let free = (w - self.px(self.style.column_gutter) * (n - 1.0)).max(n);
                 let shares: Vec<f32> = cols.iter().map(|c| match doc.get(*c).map(|c| &c.kind) { Some(Kind::Column { width }) if *width > 0.0 => *width, _ => 1.0 / n }).collect();
                 let total: f32 = shares.iter().sum::<f32>().max(f32::EPSILON); let mut cx = 0.0;
-                for (c, share) in cols.iter().zip(shares) { let cw = free * share / total; self.assign(doc, fonts, *c, cx, cw); cx += cw + self.px(self.style.column_gutter); }
+                // on a narrow page the columns stack: one would be narrower than COLUMN_MIN (row 317, ruling 11)
+                if cols.len() > 1 && shares.iter().any(|sh| free * sh / total < self.px(COLUMN_MIN)) { self.stacked.insert(id); for c in cols { self.assign(doc, fonts, *c, 0.0, w); } }
+                else { self.stacked.remove(&id); for (c, share) in cols.iter().zip(shares) { let cw = free * share / total; self.assign(doc, fonts, *c, cx, cw); cx += cw + self.px(self.style.column_gutter); } }
                 Part::Container
             }
             Kind::Column { .. } => { for c in doc.children(Some(id)) { self.assign(doc, fonts, *c, 0.0, w); } Part::Container }
@@ -252,7 +256,7 @@ impl NoteLayout {
         let kids = doc.children(parent);
         let kind = parent.and_then(|p| doc.get(p)).map(|b| b.kind.clone());
         let h = match kind {
-            Some(Kind::Columns) | Some(Kind::Row { .. }) => {
+            Some(Kind::Columns) | Some(Kind::Row { .. }) if !parent.is_some_and(|p| self.stacked.contains(&p)) => {
                 let h = kids.iter().filter_map(|k| self.boxes.get(k)).map(|b| b.h).fold(0.0, f32::max);
                 if matches!(kind, Some(Kind::Row { .. })) { for k in kids { if let Some(b) = self.boxes.get_mut(k) { b.h = h; } } }   // every cell is as tall as its row
                 for k in kids { if let Some(b) = self.boxes.get_mut(k) { b.y = 0.0; } }
@@ -291,6 +295,8 @@ impl NoteLayout {
     /// The host's sideways scrolls of wide tables (kept by it across layouts), each held within what its table has.
     pub fn set_table_scrolls(&mut self, scrolls: &HashMap<BlockId, f32>) { self.scrolls = scrolls.iter().filter_map(|(id, x)| { let full = *self.wide.get(id)?; let vis = self.boxes.get(id)?.w; Some((*id, x.clamp(0.0, (full - vis).max(0.0)))) }).collect(); }
     /// A wide table: (its whole width, the width that shows, how far it is scrolled); None for a table that fits.
+    /// A Columns block whose columns are stacked (the page is too narrow for them side by side).
+    pub fn is_stacked(&self, id: BlockId) -> bool { self.stacked.contains(&id) }
     /// The tables wider than their place.
     pub fn wide_tables(&self) -> Vec<BlockId> { self.wide.keys().copied().collect() }
     pub fn table_scroll(&self, id: BlockId) -> Option<(f32, f32, f32)> { let full = *self.wide.get(&id)?; Some((full, self.boxes.get(&id)?.w, self.scrolls.get(&id).copied().unwrap_or(0.0))) }
@@ -346,7 +352,7 @@ impl NoteLayout {
         let (mut parent, mut ox, mut oy) = (None, 0.0f64, 0.0f64);
         loop {
             let kids = doc.children(parent);
-            let across = matches!(parent.and_then(|p| doc.get(p)).map(|b| &b.kind), Some(Kind::Columns) | Some(Kind::Row { .. }));
+            let across = matches!(parent.and_then(|p| doc.get(p)).map(|b| &b.kind), Some(Kind::Columns) | Some(Kind::Row { .. })) && !parent.is_some_and(|p| self.stacked.contains(&p));
             let pick = if across { kids.iter().find(|k| self.boxes.get(k).is_some_and(|b| x < ox + (b.x + b.w) as f64)).or(kids.last()) }
                        else { kids.iter().find(|k| self.boxes.get(k).is_some_and(|b| y < oy + (b.y + b.h) as f64)).or(kids.last()) };
             let id = *pick?; let b = self.boxes.get(&id)?;
@@ -396,7 +402,10 @@ mod tests {
         let line = l.rect(&s.doc, s.last).unwrap().height();
         assert!(l.rect(&s.doc, s.h).unwrap().height() > line && l.rect(&s.doc, s.p).unwrap().height() > line * 1.5);
         let narrow = lay(&s.doc, &mut f, 300.0);
-        assert!(narrow.rect(&s.doc, s.p).unwrap().height() > l.rect(&s.doc, s.p).unwrap().height() && narrow.height > l.height);
+        assert!(narrow.rect(&s.doc, s.p).unwrap().height() > l.rect(&s.doc, s.p).unwrap().height());
+        // side by side at 760; at 300 a column would be narrower than COLUMN_MIN, so the columns stack (row 317, ruling 11)
+        assert!(!l.is_stacked(s.cols) && l.rect(&s.doc, s.right).unwrap().x0 > l.rect(&s.doc, s.left).unwrap().x1);
+        assert!(narrow.is_stacked(s.cols) && narrow.rect(&s.doc, s.right).unwrap().y0 >= narrow.rect(&s.doc, s.left).unwrap().y1 && narrow.rect(&s.doc, s.right).unwrap().x0 == narrow.rect(&s.doc, s.left).unwrap().x0);
         // a nested item's text starts further right
         assert!(l.caret(&s.doc, s.b1, 0, 1.0).unwrap().x0 > l.caret(&s.doc, s.b0, 0, 1.0).unwrap().x0 && l.caret(&s.doc, s.b0, 0, 1.0).unwrap().x0 > 0.0);
         // a picture keeps its shape; a divider and an empty paragraph have a height

@@ -13,6 +13,7 @@ mod blocks;
 mod table;
 pub mod typed;
 pub mod cells;
+mod columns;
 pub use blocks::{Clip, Drop};
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
@@ -430,6 +431,7 @@ impl Editor {
     pub fn delete(&mut self, forward: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
         if self.preedit.is_some() { return Ok(Dirty::Nothing) }
         let Some(s) = self.sel else { return Ok(Dirty::Nothing) };
+        if !forward && s.is_caret() { if let Some(d) = self.column_backspace(now_ms)? { return Ok(d) } }
         let mut b = self.batch();
         if !s.is_caret() { let p = self.delete_selection(&mut b)?; return self.commit(b, p, now_ms) }
         let p = s.focus; let blk = self.doc.get(p.block).ok_or(mn_doc::TreeError::UnknownBlock(p.block))?.clone();
@@ -765,20 +767,21 @@ mod tests {
         let order = |e: &Editor, p: Option<BlockId>| e.doc.children(p).iter().map(|id| e.doc.get(*id).unwrap().text.clone()).collect::<Vec<_>>().join(" ");
         // A (with a1) dropped after B, one level in: A becomes B's child and a1 keeps its distance
         e.set_selection(Some(Selection::caret(Pos { block: ids[1], at: 0 })));
-        e.drop_blocks(&Drop { parent: None, index: 4, depth: Some(1) }, 1000).unwrap();
+        e.drop_blocks(&Drop { parent: None, index: 4, depth: Some(1), beside: None }, 1000).unwrap();
         assert_eq!(order(&e, None), "intro B A a1 end "); assert_eq!(e.doc.get(ids[1]).unwrap().kind, Kind::Bullet { depth: 1 }); assert_eq!(e.doc.get(ids[2]).unwrap().kind, Kind::Bullet { depth: 2 });
         e.undo().unwrap(); assert_eq!(order(&e, None), "intro A a1 B end "); assert_eq!(e.doc.get(ids[2]).unwrap().kind, Kind::Bullet { depth: 1 });
-        // into a column; the column it is later taken out of keeps a paragraph
+        // into a column; the column it is later emptied of goes, and the one column left unwraps (row 317, ruling 10)
         e.set_selection(Some(Selection::caret(Pos { block: ids[4], at: 0 })));
-        e.drop_blocks(&Drop { parent: Some(c1), index: 0, depth: None }, 3000).unwrap(); assert_eq!(order(&e, Some(c1)), "end left");
+        e.drop_blocks(&Drop { parent: Some(c1), index: 0, depth: None, beside: None }, 3000).unwrap(); assert_eq!(order(&e, Some(c1)), "end left");
         e.set_selection(Some(Selection { anchor: Pos { block: ids[4], at: 0 }, focus: Pos { block: in1, at: 0 } }));
-        e.drop_blocks(&Drop { parent: None, index: 0, depth: None }, 5000).unwrap(); assert_eq!(order(&e, None), "end left intro A a1 B "); assert_eq!(order(&e, Some(c1)), "");
-        assert_eq!(e.doc.children(Some(c1)).len(), 1, "the emptied column has a paragraph");
+        e.drop_blocks(&Drop { parent: None, index: 0, depth: None, beside: None }, 5000).unwrap(); assert_eq!(order(&e, None), "end left intro A a1 B right"); assert!(e.doc.get(c1).is_none(), "the emptied column is gone");
+        e.undo().unwrap(); assert_eq!(order(&e, Some(c1)), "end left");
         // the columns block cannot be dropped into its own column; where it already is, nothing happens
         e.set_selection(Some(Selection::caret(Pos { block: e.doc.children(Some(c1))[0], at: 0 }))); e.toggle_blocks();
-        e.set_selection(Some(Selection::caret(Pos { block: ids[0], at: 0 })));
-        assert_eq!(e.drop_blocks(&Drop { parent: None, index: 2, depth: None }, 7000).unwrap(), Dirty::Nothing);
-        assert_eq!(e.drop_blocks(&Drop { parent: None, index: 3, depth: None }, 7000).unwrap(), Dirty::Nothing);
+        let cols = e.doc.get(c1).unwrap().parent.unwrap(); e.set_selection(Some(Selection::caret(Pos { block: e.doc.children(None)[0], at: 0 }))); e.toggle_blocks();
+        let at = e.doc.index_of(cols).unwrap(); let _ = at;
+        assert_eq!(e.drop_blocks(&Drop { parent: None, index: 0, depth: None, beside: None }, 7000).unwrap(), Dirty::Nothing);
+        assert_eq!(e.drop_blocks(&Drop { parent: None, index: 1, depth: None, beside: None }, 7000).unwrap(), Dirty::Nothing);
     }
     #[test]
     fn a_fragment_merges_at_the_caret_splits_the_block_keeps_formatting_and_leaves_a_heading_alone() {

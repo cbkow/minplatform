@@ -132,6 +132,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// their bars (min-ui's overlay scrollbar, along the bottom, always shown)
     tbars: std::collections::HashMap<BlockId, min_ui::ScrollBar>,
     tmenu: Option<bool>, col_drag: Option<(BlockId, usize, f64, f64, Kind)>,
+    /// the gap between two columns of a Columns block being dragged (row 319): the two columns, the pointer's x at the press, the px all the columns share, all their shares, the two kinds before
+    gap_drag: Option<(BlockId, BlockId, f64, f64, f32, Kind, Kind)>,
     tool: Option<qcv_annotate::Tool>, pen: Option<[f32; 4]>, pen_w: Option<f32>, drawing: bool, annot_due: Option<(String, Instant)>, clean: Option<(String, Arc<Vec<u8>>, (u32, u32))>, pal_pen: bool,
     note_field: Option<(BlockId, String, min_ui::TextField)>, /// the last press on a note's small picture (a second one soon after opens its words)
     thumb_click: Option<(Instant, BlockId, usize)>, vshown: Option<toolbar::VideoShown>, thumb_layer: Option<UiLayer>, written: Vec<std::sync::mpsc::Receiver<std::path::PathBuf>>, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
@@ -592,11 +594,12 @@ impl App {
         let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y));
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
-            else if self.files.col_drag.is_some() { C::ColResize }
+            else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
             // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
             else if self.files.tbars.values().any(|b| b.dragging() || (!over_ui && !self.blank && b.hovered())) { C::Default }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
+            else if self.grab.is_none() && !self.pressed && self.column_gap_at(x, y).is_some() { C::ColResize }
             else if let Some((_, _, left, top)) = self.corner_at(x, y) { if left == top { C::NwseResize } else { C::NeswResize } }
             else if self.table_ui().is_some_and(|ui| y >= ui.y.0 && y <= ui.y.1 && ui.borders.iter().any(|(_, bx)| (bx - x).abs() <= 4.0 * g.window.scale_factor())) { C::ColResize }
             else if self.table_ui().is_some_and(|ui| { let p = kurbo::Point::new(x, y); ui.row.contains(p) || ui.col.contains(p) || ui.add_row.contains(p) || ui.add_col.contains(p) }) { C::Default }
@@ -816,7 +819,7 @@ impl App {
                         _ => {} } }
                 if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             // pictures (and any other file, as a chip) chosen in the system's dialog go in after the caret's block (at the note's end when there is no caret)
-            T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
+            T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
             _ => {}
         }
     }
@@ -1136,6 +1139,18 @@ impl App {
             _ => false,
         }
     }
+    /// The gap between two columns under a window point: (the column before it, the one after, the px the columns share, the sum of their shares).
+    fn column_gap_at(&self, x: f64, y: f64) -> Option<(BlockId, BlockId, f64, f32)> {
+        if self.blank || self.confirm.is_some() || y < self.top { return None } let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        let off = kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll);
+        for id in self.ed.doc.children(None) { if self.ed.doc.get(*id).map(|b| &b.kind) != Some(&Kind::Columns) || l.is_stacked(*id) { continue }
+            let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) else { continue }; if y < r.y0 || y > r.y1 { continue }
+            let kids = self.ed.doc.children(Some(*id)); let rects: Vec<Rect> = kids.iter().filter_map(|c| l.rect(&self.ed.doc, *c).map(|q| q + off)).collect(); if rects.len() != kids.len() { continue }
+            for k in 0..kids.len().saturating_sub(1) { if x >= rects[k].x1 - 3.0 * s && x <= rects[k + 1].x0 + 3.0 * s {
+                let total: f32 = kids.iter().map(|c| match self.ed.doc.get(*c).map(|b| &b.kind) { Some(Kind::Column { width }) => *width, _ => 0.0 }).sum();
+                return Some((kids[k], kids[k + 1], rects.iter().map(|q| q.width()).sum(), total)) } } }
+        None
+    }
     fn table_ui(&self) -> Option<TableUi> {
         if self.blank || self.confirm.is_some() || self.files.picker.is_some() { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
@@ -1233,7 +1248,7 @@ impl App {
             return match self.ed.paste_blocks(&c, now) { Ok((d, refused)) => { if refused > 0 { eprintln!("paste: {refused} block(s) cannot go there and were left out"); } d } Err(_) => Dirty::Nothing }
         }
         if matches!(self.ed.state().kind, Some(Kind::Code { .. })) && !self.ed.in_blocks() { return text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing) }
-        let at = self.ed.after_caret().unwrap_or(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None });
+        let at = self.ed.after_caret().unwrap_or(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None });
         // files: only real ones (the helper also offers lines of text that look like paths - those stay text)
         if self.store.is_some() { if let Ok(paths) = min_paths::clipboard::paste_paths() { let as_text = text.as_deref().is_some_and(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).eq(paths.iter().map(String::as_str)));
             if !paths.is_empty() && !as_text && paths.iter().all(|p| std::path::Path::new(p).exists()) { self.add_files(paths.into_iter().map(Into::into).collect(), at); return Dirty::Nothing } } }
@@ -1678,6 +1693,11 @@ impl ApplicationHandler for App {
                     return }
                 // MN_TABLE=9: a rectangle of cells is selected (as a drag from cell to cell would); 10: the caret's whole row
                 if matches!(std::env::var("MN_TABLE").as_deref(), Ok("9") | Ok("10")) { if let Some((table, _, _)) = self.ed.table_pos() { if std::env::var("MN_TABLE").as_deref() == Ok("9") { self.ed.select_cells(table, (1, 0), (2, 1)); } else { let _ = self.ed.tab_cell(true, t + 50_000); let _ = self.ed.tab_cell(true, t + 50_000); self.ed.select_line(false, false); } } self.apply(Dirty::Structure); return }
+                // MN_TABLE=11: columns are made beside the paragraph (as below), then the note's first block is dropped beside them (a third column)
+                if std::env::var("MN_TABLE").as_deref() == Ok("11") { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000);
+                    let cols = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Columns)); let last = self.ed.doc.children(None).iter().rev().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && !b.text.is_empty()));
+                    if let (Some(cols), Some(p)) = (cols, last) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); self.ed.toggle_blocks(); let r = self.ed.drop_blocks(&mn_edit::Drop { parent: None, index: 0, depth: None, beside: Some((cols, 0)) }, t + 50_000); eprintln!("beside: {r:?}"); }
+                    self.apply(Dirty::Structure); self.follow = true; return }
                 if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) {} else if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
                 else { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000); }
                 self.apply(Dirty::Structure); }
@@ -1694,7 +1714,7 @@ impl ApplicationHandler for App {
                     self.resize_to(w * s); let live = dw(self); self.resize_end(true); let kept = dw(self);
                     let d = self.ed.undo().unwrap_or(Dirty::Nothing); self.apply(d); let undone = dw(self); let d = self.ed.redo().unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None;
                     println!("resize: while dragged {live:?}, kept {kept:?}, after undo {undone:?}, after redo {:?}", dw(self)); } }
-            if let Ok(v) = std::env::var("MN_ADD") { self.add_files(v.split(',').map(Into::into).collect(), mn_edit::Drop { parent: None, index: 1, depth: None }); }
+            if let Ok(v) = std::env::var("MN_ADD") { self.add_files(v.split(',').map(Into::into).collect(), mn_edit::Drop { parent: None, index: 1, depth: None, beside: None }); }
             if let Ok(v) = std::env::var("MN_RELINK") { let blocks: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
                 match blocks.iter().find(|(_, d)| self.media.is_missing(d)).map(|x| x.0) { Some(id) => self.media.relink(blocks, id, v.into()), None => println!("relink: no picture is missing") } } }
         // MN_MOVE_TEST=<a note's name>: the app moves the open note's first block to that note, undoes and redoes it,
@@ -1838,6 +1858,10 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
+                if let Some((a, b, from, free, total, ka, kb)) = self.files.gap_drag.clone() { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+                    if let (Kind::Column { width: wa }, Kind::Column { width: wb }) = (ka, kb) { let min = (mn_layout::COLUMN_MIN as f64 * s / free.max(1.0)) as f32 * total; let both = wa + wb;
+                        if both > 2.0 * min { let na = (wa + ((position.x - from) / free.max(1.0)) as f32 * total).clamp(min, both - min); let _ = self.ed.doc.set_kind(a, Kind::Column { width: na }); let _ = self.ed.doc.set_kind(b, Kind::Column { width: both - na }); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
+                    return }
                 if let Some((table, col, from, w0, before)) = self.files.col_drag.clone() { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
                     if let Kind::Table { header_rows, mut columns } = before { if columns.len() <= col { columns.resize(col + 1, Default::default()); } columns[col].width = Some((w0 + (position.x - from) / s).round().clamp(48.0, 4000.0) as u32);
                         let _ = self.ed.doc.set_kind(table, Kind::Table { header_rows, columns }); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -1930,6 +1954,13 @@ impl ApplicationHandler for App {
                     if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { self.files.resize = Some(Resize { id, before: descriptor, from_x: position.x, width: r.width() / s, max: lane / s, left }); self.set_cursor(); return } } }
                 // the caret's table (row 317): a column's border is dragged to set its width; the row's and the column's handles
                 // open their menus; the strips under and beside it add a row, a column, at the end
+                // the gap between two columns is dragged: they trade width (one undo step at the release)
+                if state == ElementState::Released { if let Some((a, b, _, _, _, ka, kb)) = self.files.gap_drag.take() {
+                    let now = (self.ed.doc.get(a).map(|x| x.kind.clone()), self.ed.doc.get(b).map(|x| x.kind.clone())); let _ = self.ed.doc.set_kind(a, ka.clone()); let _ = self.ed.doc.set_kind(b, kb.clone());
+                    if let (Some(na), Some(nb)) = now { if na != ka { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(a, na), (b, nb)], t).unwrap_or(Dirty::Nothing); self.apply(d); } }
+                    self.layout = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+                if state == ElementState::Pressed && self.files.tool.is_none() { if let Some((a, b, free, total)) = self.column_gap_at(position.x, position.y) { if let (Some(ka), Some(kb)) = (self.ed.doc.get(a).map(|x| x.kind.clone()), self.ed.doc.get(b).map(|x| x.kind.clone())) {
+                    self.files.gap_drag = Some((a, b, position.x, free, total, ka, kb)); self.set_cursor(); return } } }
                 if state == ElementState::Released { if let Some((table, _, _, _, before)) = self.files.col_drag.take() {
                     let now = self.ed.doc.get(table).map(|b| b.kind.clone()); let _ = self.ed.doc.set_kind(table, before.clone());
                     if let Some(new) = now.filter(|n| *n != before) { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(table, new)], t).unwrap_or(Dirty::Nothing); self.apply(d); }
