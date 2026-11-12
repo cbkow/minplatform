@@ -12,7 +12,8 @@ pub enum Do { Find, Undo, Redo, Save, Sidebar }
 const ORDER: [Do; 4] = [Do::Find, Do::Undo, Do::Redo, Do::Save];
 
 pub struct Shown<'a> { pub text: &'a str, /// the readout is a warning (a save that failed)
-    pub warn: bool, pub has_note: bool, pub has_file: bool, pub sidebar_open: bool, pub can_undo: bool, pub can_redo: bool, pub unsaved: bool, pub saving: bool }
+    pub warn: bool, /// the find bar is open
+    pub finding: bool, pub has_note: bool, pub has_file: bool, pub sidebar_open: bool, pub can_undo: bool, pub can_redo: bool, pub unsaved: bool, pub saving: bool }
 
 pub struct Footer { /// the sidebar's button, alone at the left end: there whether the sidebar is open or folded (row 300)
     side: ActionGroup, group: ActionGroup, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64, text: String, warn: bool }
@@ -22,7 +23,7 @@ impl Footer {
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}{}", if k.starts_with("Shift+") { "\u{21e7}" } else { "" }, k.trim_start_matches("Shift+")) } else { format!("Ctrl+{k}") };
         let b = |icon: &'static str, tip: String, on: bool| ActionButton::new(icon, &tip).enabled(on);
         let group = ActionGroup::new(vec![
-            b("magnifying-glass", format!("Find in this note ({}) \u{2014} not yet", key("F")), false),
+            b("magnifying-glass", format!("Find in this note ({})", key("F")), true),
             b("arrow-counter-clockwise", format!("Undo ({})", key("Z")), true), b("arrow-clockwise", format!("Redo ({})", key("Shift+Z")), true),
             b("floppy-disk", format!("Save ({})", key("S")), true),
         ]).compact();
@@ -44,7 +45,7 @@ impl Footer {
         self.text = s.text.to_string(); self.warn = s.warn;
         if let Some(b) = self.side.buttons.first_mut() { b.enabled = s.has_file; b.selected = s.has_file && s.sidebar_open; }
         for (b, what) in self.group.buttons.iter_mut().zip(ORDER) {
-            let (enabled, selected) = match what { Do::Find | Do::Sidebar => (false, false), Do::Undo => (s.has_note && s.can_undo, false), Do::Redo => (s.has_note && s.can_redo, false),
+            let (enabled, selected) = match what { Do::Sidebar => (false, false), Do::Find => (s.has_note, s.finding), Do::Undo => (s.has_note && s.can_undo, false), Do::Redo => (s.has_note && s.can_redo, false),
                 // lit while something is not in the document yet
                 Do::Save => (s.has_file && !s.saving, s.unsaved) };
             b.enabled = enabled; b.selected = selected && enabled;

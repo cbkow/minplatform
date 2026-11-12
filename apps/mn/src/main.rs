@@ -44,6 +44,7 @@ mod pdf;
 mod video;
 mod choice;
 mod linkedit;
+mod findbar;
 mod open;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
@@ -133,6 +134,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// the picker is a chip's in running text (row 320): the chip it is on
     picker_chip: Option<mn_edit::chips::Chip>,
     /// a link's editor (row 320), and the link a context menu was opened on
+    /// find in the note (row 321): the bar, the occurrences, the current one, and what they were found for (the words, the case, the note's stamp)
+    find: Option<findbar::FindBar>, hits: Vec<mn_edit::find::Hit>, hit_at: usize, found_for: Option<(String, bool, (u64, usize), BlockId)>,
     link: Option<linkedit::LinkEdit>, lmenu: Option<String>, /// the last press on a file chip (a second one soon after opens the file)
     chip_click: Option<(Instant, BlockId)>, /// a space was typed: the word before it becomes a link if it is an address
     autolink: bool,
@@ -252,6 +255,7 @@ fn sample() -> Doc {
 impl App {
     fn redraw(&mut self) {
         self.settle_timecode();
+        self.find_refresh();
         let Some(g) = self.gpu.as_mut() else { return };
         let t = Instant::now();
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let now = Instant::now();
@@ -271,7 +275,7 @@ impl App {
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { text: &text, warn, has_note: !self.blank, has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { text: &text, warn, finding: self.files.find.is_some(), has_note: !self.blank, has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: st.can_undo, can_redo: st.can_redo, unsaved, saving: self.saving.is_some() }); }
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
@@ -337,6 +341,11 @@ impl App {
         let picked = self.ed.block_selection();
         for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
+        // find (row 321): every occurrence is marked, the current one more strongly; under the text, as the selection is
+        if self.files.find.is_some() && !self.blank { let (soft, strong) = (peniko::Color::from_rgba8(0xe5, 0xa3, 0x3b, 0x55), peniko::Color::from_rgba8(0xe5, 0xa3, 0x3b, 0xb0));
+            for (i, h) in self.files.hits.iter().enumerate() { let rects = if h.kind == mn_edit::find::HitKind::Block { l.rect(&self.ed.doc, h.block).into_iter().collect() } else { l.range_rects(&self.ed.doc, h.block, h.start, h.end) };
+                for r in rects { let r = r + off; if r.y1 < view.y0 || r.y0 > view.y1 { continue } if h.kind == mn_edit::find::HitKind::Block { scene.stroke(&kurbo::Stroke::new(2.0 * s), kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r.inflate(2.0 * s, 2.0 * s), 6.0 * s)); }
+                    else { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r, 2.0 * s)); } } } }
         { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
         let (mut turned, mut noted) = (vec![], vec![]);
         if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.player.as_ref().filter(|_| !self.files.hide_notes || self.files.tool.is_some()).map(|p| &p.ann), self.files.hide_notes, off.x, off.y, view) { g.window.request_redraw(); }
@@ -351,6 +360,7 @@ impl App {
             for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // a note's words being typed: the field lies over the caption's place on the playing video's picture
         { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match self.files.picker_chip.as_ref().map(|c| l.range_rects(&self.ed.doc, c.0, c.1, c.2).into_iter().next()).unwrap_or_else(|| l.rect(&self.ed.doc, p.cell)) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; self.files.picker_chip = None; } }
+        if let Some(f) = self.files.find.as_mut() { f.count = (if self.files.hits.is_empty() { 0 } else { self.files.hit_at + 1 }, self.files.hits.len()); f.layout(&mut g.fonts, Rect::new(self.side_w, self.top, w as f64, h as f64), s); f.paint(scene, &mut g.fonts); if f.animating(now) { g.window.request_redraw(); } }
         if let Some(p) = self.files.link.as_mut() { p.layout(&mut g.fonts, p.anchor + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
@@ -600,7 +610,7 @@ impl App {
         use winit::cursor::CursorIcon as C;
         let Some(g) = self.gpu.as_ref() else { return };
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
-        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.link.as_ref().is_some_and(|p| p.hit(x, y));
+        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.link.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.find.as_ref().is_some_and(|p| p.hit(x, y));
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
@@ -1132,6 +1142,53 @@ impl App {
         if redraw { let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); }
         mine
     }
+    /// Find in the note: the bar opens (or takes the keys again), seeded with the selection when it is a few words of one line.
+    fn find_open(&mut self) {
+        if self.blank { return } let Some(g) = self.gpu.as_mut() else { return };
+        let seed = Some(self.ed.selected_text()).filter(|t| !t.is_empty() && !t.contains('\n') && t.len() <= 80 && self.ed.cell_rect().is_none());
+        match self.files.find.as_mut() { Some(f) => { if let Some(t) = &seed { f.query.set_text_end(t, &mut g.fonts); } f.focus(&mut g.fonts); }
+            None => { let last = self.files.found_for.as_ref().map(|x| x.0.clone()).unwrap_or_default(); self.files.find = Some(findbar::FindBar::new(seed.as_deref().unwrap_or(&last), &mut g.fonts)); } }
+        self.files.found_for = None; g.window.request_redraw();
+    }
+    fn find_close(&mut self) { self.files.find = None; self.files.hits.clear(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+    /// The occurrences are found again when the words, the case or the note changed; the current one stays the first at or after the caret.
+    fn find_refresh(&mut self) {
+        let Some(f) = self.files.find.as_ref() else { return }; let note = self.store.as_ref().map(|st| st.note).unwrap_or_else(BlockId::new);
+        let key = (f.query.text().to_string(), f.case, self.ed.stamp(), note); if self.files.found_for.as_ref() == Some(&key) { return }
+        let typed = self.files.found_for.as_ref().is_none_or(|k| k.0 != key.0 || k.1 != key.1 || k.3 != key.3);
+        let mut hits = self.ed.find(&key.0, key.1);
+        // a video's notes: the block is a hit when one of its notes holds the words
+        let videos: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\"") => Some((b.id, descriptor.clone())), _ => None }).collect();
+        if !key.0.is_empty() { let order: Vec<BlockId> = self.ed.doc.walk().iter().map(|b| b.id).collect(); let mut extra = false;
+            for (id, d) in videos { if hits.iter().any(|h| h.block == id) { continue } if self.media.notes(&d).iter().any(|n| mn_edit::find::holds(&n.text, &key.0, key.1)) { hits.push(mn_edit::find::Hit { block: id, start: 0, end: 0, kind: mn_edit::find::HitKind::Block }); extra = true; } }
+            if extra { hits.sort_by_key(|h| (order.iter().position(|x| *x == h.block).unwrap_or(0), h.start)); } }
+        // the current one: where the caret is (typing in the bar goes to the first at or after it; an edit keeps the place)
+        let caret = self.ed.selection().map(|x| if typed { x.anchor } else { x.focus }); let order: Vec<BlockId> = self.ed.doc.walk().iter().map(|b| b.id).collect(); let place = |id: BlockId| order.iter().position(|x| *x == id).unwrap_or(0);
+        self.files.hit_at = caret.and_then(|c| hits.iter().position(|h| (place(h.block), h.end) >= (place(c.block), c.at))).unwrap_or(0);
+        self.files.hits = hits; self.files.found_for = Some(key);
+        if typed { self.find_show(); }
+    }
+    /// The current occurrence is selected and brought into view.
+    fn find_show(&mut self) {
+        let Some(h) = self.files.hits.get(self.files.hit_at).copied() else { return }; use mn_edit::{Pos, Selection};
+        self.ed.set_selection(Some(Selection { anchor: Pos { block: h.block, at: h.start }, focus: Pos { block: h.block, at: h.end } })); self.follow = true;
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn find_out(&mut self, out: findbar::Out) {
+        use findbar::Out as O; let n = self.files.hits.len(); let now = self.now_ms();
+        match out { O::None => return, O::Redraw => {}, O::Close => self.find_close(),
+            O::Changed => { self.files.found_for = None; self.find_refresh(); }
+            O::Next | O::Prev => { self.find_refresh(); let n = self.files.hits.len(); if n > 0 { self.files.hit_at = if matches!(out, O::Next) { (self.files.hit_at + 1) % n } else { (self.files.hit_at + n - 1) % n }; self.find_show(); } }
+            O::Replace | O::ReplaceAll => { let with = self.files.find.as_ref().map(|f| f.with.text().to_string()).unwrap_or_default();
+                let hits: Vec<mn_edit::find::Hit> = if matches!(out, O::ReplaceAll) { self.files.hits.clone() } else { self.files.hits.get(self.files.hit_at).copied().into_iter().collect() }; if n == 0 { return }
+                match self.ed.replace_hits(&hits, &with, now) { Ok((d, done)) => { self.apply(d);
+                    if matches!(out, O::ReplaceAll) { self.notice = Some((if done == hits.len() { format!("Replaced {done}") } else { format!("Replaced {done} of {} \u{2014} chips, choice cells and link addresses are left alone", hits.len()) }, Instant::now() + std::time::Duration::from_secs(6))); }
+                    else if done == 0 { self.notice = Some(("This one cannot be replaced (a chip, a choice cell, a link's address or a name)".to_string(), Instant::now() + std::time::Duration::from_secs(6))); }
+                    // the one after what was replaced
+                    let at = self.files.hit_at; self.files.found_for = None; let caret = self.ed.selection(); self.find_refresh(); let _ = caret; let n = self.files.hits.len(); if n > 0 { self.files.hit_at = if done == 0 { (at + 1) % n } else { at.min(n - 1) }; self.find_show(); } else if let Some(f) = self.ed.selection().map(|x| x.focus) { self.ed.set_selection(Some(mn_edit::Selection::caret(f))); } }
+                    Err(e) => eprintln!("replace: {e:?}") } } }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
     /// The link's editor opens at the caret: on the link the caret is in, on the selection, or for a new link.
     fn link_open(&mut self) {
         if self.blank || self.ed.in_blocks() || !self.ensure() { return } let Some(l) = self.layout.as_ref() else { return };
@@ -1537,7 +1594,7 @@ impl App {
             // a press on a button is the button's to the end: the release must come back here, not go to the page
             if hit.is_some() || e.pos().is_some_and(|(x, y)| self.splash.iter().any(|b| b.hit(x, y))) { return true } }
         let (did, on_foot) = self.foot.event(&e, now);
-        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Find => continue }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (tools, on_bar) = self.bar.event(&e, now);
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -1592,9 +1649,10 @@ impl App {
         // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
         if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {
             let pasted = if c == "v" { self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) } else { None };
-            let field: Option<&mut min_ui::TextField> = if let Some(p) = self.files.link.as_mut() { Some(p.field()) } else if let Some(p) = self.files.picker.as_mut() { p.field() } else if let Some((_, _, f)) = self.files.note_field.as_mut() { Some(f) } else { None };
+            let field: Option<&mut min_ui::TextField> = if let Some(p) = self.files.link.as_mut() { Some(p.field()) } else if let Some(f) = self.files.find.as_mut().filter(|f| f.focused() && self.files.picker.is_none()) { f.field() } else if let Some(p) = self.files.picker.as_mut() { p.field() } else if let Some((_, _, f)) = self.files.note_field.as_mut() { Some(f) } else { None };
             if let (Some(f), Some(g)) = (field, self.gpu.as_mut()) {
                 let copied = if c == "v" { if let Some(t) = &pasted { f.paste(t, &mut g.fonts); } None } else { f.copy(c == "x", &mut g.fonts) };
+                if self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && self.files.find.is_some() { self.files.found_for = None; }
                 if let (Some(t), Some(cb)) = (copied, self.clipboard.as_mut()) { let _ = cb.set_text(t); self.block_clip = None; }
                 g.window.request_redraw(); return }
             if self.files.link.is_some() || self.files.picker.is_some() || self.files.note_field.is_some() { return } } } }
@@ -1602,6 +1660,11 @@ impl App {
         if self.files.note_field.is_some() { let r = match (self.files.note_field.as_mut(), self.gpu.as_mut()) { (Some((_, _, f)), Some(g)) => Some(f.key(&ui_key(), &mut g.fonts)), _ => None };
             match r { Some(min_ui::FieldResponse::Accepted) => self.note_words_end(true), Some(min_ui::FieldResponse::Cancelled) => self.note_words_end(false), _ => {} }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+        // find (row 321): Cmd+F opens the bar (or gives it the keys), Cmd+G / Shift+Cmd+G go on and back; while one of its fields has the keys they are the bar's
+        if self.files.link.is_none() && self.files.picker.is_none() && !self.blank {
+            if let Key::Character(c) = key { if cmd && !alt { match c.to_lowercase().as_str() { "f" if !shift => { self.find_open(); return } "g" if self.files.find.is_some() => { self.find_out(if shift { findbar::Out::Prev } else { findbar::Out::Next }); return } _ => {} } } }
+            if self.files.find.as_ref().is_some_and(|f| f.focused()) && !(cmd && matches!(key, Key::Character(c) if !matches!(c.to_lowercase().as_str(), "a"))) {
+                let out = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(f), Some(g)) => f.key(&ui_key(), &mut g.fonts), _ => findbar::Out::None }; self.find_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
         // a link's editor takes the keys while it is open
         if self.files.link.is_some() { let out = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => p.key(&ui_key(), &mut g.fonts), _ => linkedit::Out::None }; self.link_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a choice cell's picker takes the keys while it is open
@@ -1799,13 +1862,17 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some() || std::env::var_os("MN_FIND").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
             // MN_TABLE=1: at the note's end a table is made and filled by typing and Tab, a row added, and columns made beside a paragraph (as the toolbar and the keys would)
             // MN_LINK=1: a word of the note's second block is made a link, an address is typed after it (it links at its space), and the link's editor opens on the first
             // MN_LINK=2: a choice chip goes in at the start of the note's long paragraph and its picker opens; 3: a second chip, its options' editor
+            // MN_FIND=<words>: the find bar opens on them and goes to the second occurrence; MN_FIND_WITH=<words>: the replace row shows, and every occurrence is replaced
+            if let Ok(q) = std::env::var("MN_FIND") { self.find_open(); if let (Some(f), Some(g)) = (self.files.find.as_mut(), self.gpu.as_mut()) { f.query.set_text_end(&q, &mut g.fonts); }
+                self.find_out(findbar::Out::Changed); self.find_out(findbar::Out::Next);
+                if let Ok(w) = std::env::var("MN_FIND_WITH") { if let (Some(f), Some(g)) = (self.files.find.as_mut(), self.gpu.as_mut()) { f.replacing = true; f.with.set_text_end(&w, &mut g.fonts); } self.find_out(findbar::Out::ReplaceAll); } }
             if matches!(std::env::var("MN_LINK").as_deref(), Ok("2") | Ok("3")) { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) {
                 self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); self.chip_insert();
                 if std::env::var("MN_LINK").as_deref() == Ok("3") { self.files.picker = None; self.files.picker_chip = None; let t = self.now_ms(); let _ = self.ed.insert(" then ", t + 20_000); self.apply(Dirty::Structure); self.chip_insert(); if let (Some(c), Some(g)) = (self.files.picker_chip.clone(), self.gpu.as_mut()) { let mut pk = choice::ChoicePicker::new(c.0, c.3.clone(), Some(c.4.clone()), "", &mut g.fonts).editing(); pk.inline = true; self.files.picker = Some(pk); } } } }
@@ -2022,6 +2089,7 @@ impl ApplicationHandler for App {
                 self.set_cursor();
                 if taken { return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
+                if self.files.find.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.find_out(out); if taken { self.set_cursor(); return } } }
                 if self.files.link.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { self.set_cursor(); return } } }
                 if self.files.picker.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { self.set_cursor(); return } } }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
@@ -2037,6 +2105,7 @@ impl ApplicationHandler for App {
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
                 if self.files.link.is_some() { let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { return } } }
+                if self.files.find.is_some() { let r = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.find_out(out); if taken { return } } }
                 // a second press on a file chip opens its file (row 320); the first selects it, as any block
                 if state == ElementState::Pressed && self.files.tool.is_none() { match self.file_chip_under(position.x, position.y) {
                     Some((id, d)) => { let twice = self.files.chip_click.is_some_and(|(t, b)| b == id && t.elapsed().as_millis() < 450); self.files.chip_click = if twice { None } else { Some((Instant::now(), id)) }; if twice { self.file_open(&d, false); return } }
@@ -2158,6 +2227,8 @@ impl ApplicationHandler for App {
                 if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
                 self.key(&event.logical_key, text.as_deref()); }
             // composed text is never a video block's (its text input is off; one that still arrives is dropped)
+            WindowEvent::Ime(e) if self.files.find.as_ref().is_some_and(|f| f.focused()) && self.files.link.is_none() && self.files.picker.is_none() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
+                let out = match (ev, self.files.find.as_mut(), self.gpu.as_mut()) { (Some(ev), Some(p), Some(g)) => p.ime(&ev, &mut g.fonts), _ => findbar::Out::None }; self.find_out(out); }
             WindowEvent::Ime(e) if self.files.link.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(p), Some(g)) = (ev, self.files.link.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.picker.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
