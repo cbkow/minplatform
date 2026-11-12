@@ -20,6 +20,8 @@ impl ScrollBar {
     fn len(&self) -> f64 { if self.horizontal { self.view.width() } else { self.view.height() } }
     pub fn max(&self) -> f64 { (self.content - self.len()).max(0.0) }
     pub fn dragging(&self) -> bool { self.drag.is_some() }
+    /// The pointer is over the thumb.
+    pub fn hovered(&self) -> bool { self.hover }
     pub fn thumb(&self) -> Option<Rect> {
         if self.max() <= 0.5 || self.len() <= 0.0 { return None }
         let w = t::SCROLLBAR_THICKNESS as f64 * self.scale; let inset = t::SPACING_50 as f64 * self.scale;

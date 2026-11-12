@@ -586,6 +586,8 @@ impl App {
         let want = if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() { C::ColResize }
+            // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
+            else if self.files.tbars.values().any(|b| b.dragging() || (!over_ui && !self.blank && b.hovered())) { C::Default }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
             else if let Some((_, _, left, top)) = self.corner_at(x, y) { if left == top { C::NwseResize } else { C::NeswResize } }
@@ -1076,7 +1078,7 @@ impl App {
         for (id, b) in self.files.tbars.iter_mut() { if matches!(e, min_ui::Event::Down { y, .. } if y < top) { continue }
             let (changed, m) = b.event(&e, now); mine |= m; redraw |= changed || m;
             if (b.offset as f32 - self.files.tscroll.get(id).copied().unwrap_or(0.0)).abs() > 0.25 { self.files.tscroll.insert(*id, b.offset as f32); } }
-        if redraw { let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if redraw { let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); }
         mine
     }
     fn table_ui(&self) -> Option<TableUi> {
