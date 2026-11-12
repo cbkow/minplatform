@@ -159,7 +159,9 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         let mut x = band.x0 + 10.0 * s;
                         if *done { if let Some(c) = fonts.icon("check", (12.0 * s) as f32, Color::WHITE) { draw_layout(scene, &c, Affine::translate((x, band.center().y - c.height() as f64 / 2.0))); x += c.width() as f64 + 6.0 * s; } }
                         let k = fonts.layout(key, Family::Sans, (11.0 * s) as f32, 500.0, Color::WHITE.multiply_alpha(0.75)); draw_layout(scene, &k, Affine::translate((x, band.center().y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
-                        if !words.is_empty() && band.x1 - x > 40.0 * s { let t = fonts.layout_fit(words, Family::Sans, (12.0 * s) as f32, 400.0, Color::WHITE, band.x1 - x - 10.0 * s); draw_layout(scene, &t, Affine::translate((x, band.center().y - t.height() as f64 / 2.0))); } } } };
+                        // a note without words yet says where they go (not while it plays: the band is only passing by)
+                        let (shown, colour) = if words.is_empty() { ("Add a note\u{2026}", Color::WHITE.multiply_alpha(0.5)) } else { (words.as_str(), Color::WHITE) };
+                        if (!words.is_empty() || !me.is_some_and(|m| m.playing)) && band.x1 - x > 40.0 * s { let t = fonts.layout_fit(shown, Family::Sans, (12.0 * s) as f32, 400.0, colour, band.x1 - x - 10.0 * s); draw_layout(scene, &t, Affine::translate((x, band.center().y - t.height() as f64 / 2.0))); } } } };
                 if me.is_some_and(|x| x.shown) { annotate(scene, fonts, &over); continue }
                 if pdf {
                     let (page, pages) = (rec.get("page").and_then(|p| p.as_u64()).unwrap_or(0) + 1, rec.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).max(1));

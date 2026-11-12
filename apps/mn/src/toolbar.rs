@@ -18,7 +18,7 @@ pub enum Tool {
     Table, Columns, Divider, Image, File, Chip,
     /// the second set (rows 301, 316): shown while a video block is the current one - QCView's seven tools for drawing
     /// on the frame, the pen's colour and width, and the frame's note (add, its words, addressed, delete)
-    DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteAdd, NoteText, NoteDone, NoteDelete,
+    DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteText, NoteDone, NoteDelete,
 }
 /// What the band shows of the current video block's notes (None: no video block is current - the text's tools show).
 #[derive(Clone, Copy, PartialEq)]
@@ -37,8 +37,8 @@ impl Tool {
             Tool::Code => ("code", None, "Inline code", "E"), Tool::Highlight => ("highlighter", None, "Background colour \u{2014} the key applies the last one", "Shift+H"), Tool::Color => ("text-a-underline", None, "Type colour", ""), Tool::Link => ("link", None, "Link", "K"), Tool::ClearFormat => ("text-t-slash", None, "Clear formatting", "\\"),
             Tool::DrawSelect => ("cursor", None, "Select a drawing (drag to move, its corners to scale, Delete to remove; again to stop)", ""), Tool::DrawPen => ("pencil-simple", None, "Draw on the frame (again to stop)", ""), Tool::DrawRect => ("rectangle", None, "Rectangle", ""), Tool::DrawOval => ("circle", None, "Oval", ""),
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
-            Tool::PenColor => ("pen-nib", None, "Pen colour", ""), Tool::PenThinner => ("minus-circle", None, "Thinner line", ""), Tool::PenThicker => ("plus-circle", None, "Thicker line", ""),
-            Tool::NoteAdd => ("note-pencil", None, "Add a note on this frame", ""), Tool::NoteText => ("text-aa", None, "The note\u{2019}s words", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
+            Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
+            Tool::NoteText => ("chat-text", None, "Write a note on this frame", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
             Tool::Table => ("table", None, "Table", ""), Tool::Columns => ("columns", None, "Columns", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
@@ -70,8 +70,11 @@ impl Toolbar {
         ];
         let make = |sets: &Vec<Vec<Tool>>| -> Vec<ActionGroup> { sets.iter().map(|set| ActionGroup::new(set.iter().map(|tool| { let (icon, label, _, _) = tool.face(); let mut b = ActionButton::new(icon, &tool.tooltip()).enabled(tool.built()); b.label = label.map(|l| l.to_string()); b }).collect()).compact()).collect() };
         let groups = make(&sets);
-        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![NoteAdd, NoteText, NoteDone, NoteDelete]];
-        Toolbar { other: (make(&video), video.clone(), video.len()), video: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
+        // a video's set, as one reads it (the user 2026-11-12): what goes ON the frame together - the drawing tools and the
+        // note's words, as the last of them; then how a line looks - its colour as a swatch (not a pen: it is no tool) and
+        // its width; and, apart at the right end, what is done WITH the note - addressed, delete
+        let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
+        Toolbar { other: (make(&video), video.clone(), 2), video: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -102,7 +105,7 @@ impl Toolbar {
         if s.video.is_some() != self.video.is_some() { std::mem::swap(&mut self.groups, &mut self.other.0); std::mem::swap(&mut self.tools, &mut self.other.1); std::mem::swap(&mut self.right_from, &mut self.other.2); }
         self.video = s.video;
         if let Some(v) = s.video { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
-            b.enabled = match tool { Tool::NoteText | Tool::NoteDone | Tool::NoteDelete => v.on_note, Tool::NoteAdd => !v.on_note, _ => true };
+            b.enabled = match tool { Tool::NoteDone | Tool::NoteDelete => v.on_note, _ => true };
             b.selected = Some(*tool) == v.tool || (*tool == Tool::NoteDone && v.on_note && v.addressed); } }
             return swapped }
         self.chips = [s.state.color.as_deref().and_then(mn_layout::colour), s.state.highlight.as_deref().and_then(mn_layout::colour)];
@@ -144,7 +147,10 @@ impl Toolbar {
         paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y1 - t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_COLOR);
         for g in &self.groups { g.paint(scene, fonts, self.scale, now); }
         // a chip carries its role's colour as a bar under the glyph (none set: a quiet line)
-        for (tool, c) in [(Tool::Color, self.chips[0]), (Tool::Highlight, self.chips[1]), (Tool::PenColor, self.video.map(|v| v.pen))] {
+        // the drawing colour is a swatch: a disc of the colour itself
+        if let Some(v) = self.video { let r = self.rect_of(Tool::PenColor); if r.width() > 1.0 { let c = kurbo::Circle::new(r.center(), 8.0 * self.scale);
+            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, v.pen, None, &c); scene.stroke(&kurbo::Stroke::new(self.scale), kurbo::Affine::IDENTITY, paint::color(t::DIVIDER_COLOR), None, &c); } }
+        for (tool, c) in [(Tool::Color, self.chips[0]), (Tool::Highlight, self.chips[1])] {
             let r = self.rect_of(tool); if r.width() < 1.0 { continue }
             let (w, h) = (14.0 * self.scale, 3.0 * self.scale);
             let bar = kurbo::RoundedRect::new(r.center().x - w / 2.0, r.y1 - h - 2.0 * self.scale, r.center().x + w / 2.0, r.y1 - 2.0 * self.scale, h / 2.0);

@@ -100,7 +100,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// in, what the toolbar shows of the current video, the offscreen layer annotated pictures are composed on, and the
     /// pictures being written (each tells its path when it is on disk)
     tool: Option<qcv_annotate::Tool>, pen: Option<[f32; 4]>, pen_w: Option<f32>, drawing: bool, annot_due: Option<(String, Instant)>, clean: Option<(String, Arc<Vec<u8>>, (u32, u32))>, pal_pen: bool,
-    note_field: Option<(BlockId, String, min_ui::TextField)>, vshown: Option<toolbar::VideoShown>, thumb_layer: Option<UiLayer>, written: Vec<std::sync::mpsc::Receiver<std::path::PathBuf>>, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
+    note_field: Option<(BlockId, String, min_ui::TextField)>, /// the last press on a note's small picture (a second one soon after opens its words)
+    thumb_click: Option<(Instant, BlockId, usize)>, vshown: Option<toolbar::VideoShown>, thumb_layer: Option<UiLayer>, written: Vec<std::sync::mpsc::Receiver<std::path::PathBuf>>, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
 /// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
@@ -730,12 +731,13 @@ impl App {
                 let j = if tool == T::PenThinner { i.saturating_sub(1) } else { (i + 1).min(steps.len() - 1) }; self.files.pen_w = Some(steps[j]); if let Some(p) = self.player.as_mut() { p.ann.width = steps[j]; }
                 self.notice = Some((format!("Line width {}", steps[j]), Instant::now() + std::time::Duration::from_secs(2))); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             T::PenColor => { self.files.pal_pen = true; self.open_colours(mn_doc::MarkKind::Color, tool); }
-            T::NoteAdd | T::NoteText | T::NoteDone | T::NoteDelete => { if let Some(id) = self.video_current() { if self.video_start(id, false) {
+            T::NoteText | T::NoteDone | T::NoteDelete => { if let Some(id) = self.video_current() { if self.video_start(id, false) {
                 let mut keep = None; if let Some(p) = self.player.as_mut() { if p.t.is_playing() { p.t.pause(); keep = Some(p.t.current_frame()); } } if let Some(f) = keep { self.video_keep(id, f); }
                 if let Some((_, cur)) = self.video_geo() { let key = self.player.as_ref().and_then(|p| p.ann.note_at(&cur).map(|n| (n.timecode.clone(), n.addressed)));
                     match (tool, key) {
-                        (T::NoteAdd, None) => { let c = self.player.as_mut().and_then(|p| p.ann.add_note(&cur)); if let Some(c) = c { self.annotated(c); self.note_words(); } }
                         (T::NoteText, Some(_)) => self.note_words(),
+                        // on a frame without a note the same button makes one and opens its words
+                        (T::NoteText, None) => { let c = self.player.as_mut().and_then(|p| p.ann.add_note(&cur)); if let Some(c) = c { self.annotated(c); self.note_words(); } }
                         (T::NoteDone, Some((k, on))) => { let mut done = None; if let Some(p) = self.player.as_mut() { p.ann.set_addressed(&k, !on); done = Some((p.path.clone(), p.ann.notes.clone())); } if let Some((path, notes)) = done { self.media.set_notes(&path, notes); } }
                         (T::NoteDelete, Some((k, _))) => { let mut done = None; if let Some(p) = self.player.as_mut() { p.ann.delete_note(&k); done = Some((p.path.clone(), p.ann.notes.clone(), p.ann.dir())); }
                             if let Some((path, notes, dir)) = done { self.media.set_notes(&path, notes); if let Some(d) = dir { let d = qcv_notes::io::images_dir(&d); self.media.forget_file(&d.join(qcv_notes::io::image_filename(&k))); self.media.forget_file(&d.join(qcv_notes::io::annotated_filename(&k))); } } }
@@ -1651,7 +1653,10 @@ impl ApplicationHandler for App {
                         if let (Some((geo, cur)), true) = (self.video_geo(), self.player.as_ref().is_some_and(|p| p.shown)) { if let Some(p) = self.player.as_mut() { p.ann.press(geo.to_norm(position.x, position.y), &cur, &geo); self.files.drawing = true; } }
                         if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                     // the caption of the note the playing video stands on: a click opens its words to be typed
-                    if pic.contains(pt) && position.y > pic.y1 - 26.0 * s && self.player.as_ref().is_some_and(|p| p.id == id && !p.t.is_playing()) && self.video_geo().is_some_and(|(_, cur)| self.player.as_ref().is_some_and(|p| p.ann.note_at(&cur).is_some())) { self.note_words(); return }
+                    if pic.contains(pt) && position.y > pic.y1 - 26.0 * s && !self.files.hide_notes && !self.player.as_ref().is_some_and(|p| p.id == id && p.t.is_playing()) {
+                        let on_note = { let d = self.video_boxes(id).map(|b| b.3).unwrap_or_default(); let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
+                            let at = self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0)); self.media.notes(&d).iter().any(|n| n.frame == at) };
+                        if on_note { if self.video_start(id, false) { self.note_words(); } return } }
                     if pic.contains(pt) { self.video_toggle(id); return }
                     // the clip's notes: the eye hides their drawings and captions; a small picture or a tick goes to its frame
                     let notes = self.ed.doc.get(id).and_then(|b| match &b.kind { Kind::Media { descriptor } => Some(self.media.notes(descriptor)), _ => None }).unwrap_or_default();
@@ -1662,7 +1667,8 @@ impl ApplicationHandler for App {
                         if let Some(row) = self.video_row(id).filter(|r| r.contains(pt)) {
                             let aspect = rec.get("w").and_then(|w| w.as_f64()).unwrap_or(16.0) / rec.get("h").and_then(|h| h.as_f64()).unwrap_or(9.0).max(1.0);
                             let playing = self.player.as_ref().is_some_and(|p| p.id == id && p.t.is_playing());
-                            if let Some(i) = paint::note_thumbs(row, notes.len(), aspect, paint::note_at(&notes, at, fps, playing), s).iter().position(|q| q.contains(pt)) { self.video_seek(id, notes[i].frame as i32); }
+                            if let Some(i) = paint::note_thumbs(row, notes.len(), aspect, paint::note_at(&notes, at, fps, playing), s).iter().position(|q| q.contains(pt)) { let again = self.files.thumb_click.is_some_and(|(t, b, k)| b == id && k == i && t.elapsed() < std::time::Duration::from_millis(450)); self.files.thumb_click = Some((Instant::now(), id, i));
+                                self.video_seek(id, notes[i].frame as i32); if again { self.files.thumb_click = None; self.note_words(); } }
                             return }
                         if track.inflate(0.0, 12.0 * s).contains(pt) { if let Some(n) = notes.iter().find(|n| { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); (nx - position.x).abs() <= 4.0 * s }) { self.video_seek(id, n.frame as i32); return } }
                     }
