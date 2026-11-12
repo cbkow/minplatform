@@ -384,7 +384,9 @@ mod golden_tests {
     /// into a crate of its own (2026-11-12) was checked with it.
     #[test] fn a_fixed_sequence_of_edits_leaves_the_same_sidecar() {
         let dir = std::env::temp_dir().join(format!("qcv-golden-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
-        let media = dir.join("clip.mov"); std::fs::write(&media, b"").unwrap();
+        // `QCV_GOLDEN_MEDIA`: the sequence is run beside that file instead and its sidecar is left there (a fixture for another app's check)
+        let kept = std::env::var_os("QCV_GOLDEN_MEDIA").map(PathBuf::from);
+        let media = kept.clone().unwrap_or_else(|| { let m = dir.join("clip.mov"); std::fs::write(&m, b"").unwrap(); m });
         let geo = Geo { rect: [0.0, 0.0, 1920.0, 1080.0], px_per_src: 1.0 };
         let mut a = Annotations::new(); a.load(Some(&media)); a.active = true;
         let stroke = |a: &mut Annotations, tool: Tool, f: i32, pts: &[[f64; 2]]| { let cur = Cur::file(f, 24.0); std::thread::sleep(std::time::Duration::from_millis(3)); a.tool = tool; a.press(pts[0], &cur, &geo); for p in &pts[1..] { a.motion(*p, &cur, &geo, true); } a.release(*pts.last().unwrap(), &cur, &geo); };

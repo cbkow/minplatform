@@ -44,6 +44,9 @@ ureq = "3"
 hayro = "0.9"
 # video: the family's decoder and player (QCView's), row 316
 qcv-player = { path = "../../crates/qcv-player" }
+# a clip's notes: QCView's sidecar (frozen) and its annotation code, shared
+qcv-notes = { path = "../../crates/qcv-notes" }
+qcv-annotate = { path = "../../crates/qcv-annotate" }
 base64 = "0.22"
 min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"

@@ -67,6 +67,8 @@ pub struct Media {
     entries: HashMap<String, Entry>, queue: Arc<Queue>, done: mpsc::Receiver<(String, u32, Outcome)>,
     places: Places, budget: usize, total: usize, frame: u64,
     mail_tx: mpsc::Sender<Mail>, mail: mpsc::Receiver<Mail>, wake: Arc<dyn Fn() + Send + Sync>,
+    /// clips' notes (QCView's sidecar), by the clip's file: what was read, and when it was last asked for
+    notes: HashMap<PathBuf, (Arc<Vec<qcv_notes::Note>>, Instant, bool)>, notes_tx: mpsc::Sender<(PathBuf, Vec<qcv_notes::Note>)>, notes_rx: mpsc::Receiver<(PathBuf, Vec<qcv_notes::Note>)>,
     /// addresses being fetched or fetched (their record), failures as they come back, and those to be told again
     fetching: HashMap<String, Option<String>>, fetch_tx: mpsc::Sender<(String, Result<String, String>)>, fetched: mpsc::Receiver<(String, Result<String, String>)>, again: std::collections::HashSet<String>, slots: Arc<(Mutex<usize>, Condvar)>,
 }
@@ -75,7 +77,7 @@ impl Media {
     /// `wake` is called from a worker when a picture is ready (it must make the window poll and redraw).
     pub fn new(settings: &Path, wake: impl Fn() + Send + Sync + 'static) -> Media {
         let queue = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), more: Condvar::new() });
-        let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel(); let (ftx, frx) = mpsc::channel();
+        let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel(); let (ftx, frx) = mpsc::channel(); let (ntx, nrx) = mpsc::channel();
         std::thread::spawn(trim_cache);
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
         for i in 0..n {
@@ -91,7 +93,7 @@ impl Media {
         }
         let mappings = std::fs::read_to_string(settings.join("mappings.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let budget = std::env::var("MN_MEDIA_BUDGET_MB").ok().and_then(|v| v.parse::<usize>().ok()).map(|mb| mb << 20).unwrap_or(BUDGET);
-        Media { entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake, fetching: HashMap::new(), fetch_tx: ftx, fetched: frx, again: Default::default(), slots: Arc::new((Mutex::new(0), Condvar::new())) }
+        Media { entries: HashMap::new(), queue, done, places: Places { base: None, staged: None, mappings }, budget, total: 0, frame: 0, mail_tx, mail, wake, notes: HashMap::new(), notes_tx: ntx, notes_rx: nrx, fetching: HashMap::new(), fetch_tx: ftx, fetched: frx, again: Default::default(), slots: Arc::new((Mutex::new(0), Condvar::new())) }
     }
     /// The folder the collection's file is in (`.minnotes/` is beside it) and where this session keeps added files
     /// until a save. A change of folder forgets every picture.
@@ -140,6 +142,32 @@ impl Media {
             }
             let _ = tx.send(Mail::Relinked { records, problem }); wake();
         });
+    }
+    /// A video's notes (QCView's `.qcview` sidecar beside the clip; rows 215, 316), read off this thread and read again
+    /// every two seconds while they are asked for - another application's edits show without anything being reopened.
+    /// Empty until the first reading lands (and for a clip without notes).
+    pub fn notes(&mut self, descriptor: &str) -> Arc<Vec<qcv_notes::Note>> {
+        let Some(path) = self.locate(descriptor) else { return Arc::new(vec![]) };
+        let now = Instant::now();
+        let e = self.notes.entry(path.clone()).or_insert_with(|| (Arc::new(vec![]), now - std::time::Duration::from_secs(60), false));
+        if !e.2 && now.duration_since(e.1) > std::time::Duration::from_secs(2) { e.1 = now; e.2 = true;
+            let (tx, wake) = (self.notes_tx.clone(), self.wake.clone());
+            let _ = std::thread::Builder::new().name("mn-media-notes".into()).spawn(move || { let n = qcv_notes::io::load(&path).unwrap_or_default(); let _ = tx.send((path, n)); wake(); }); }
+        e.0.clone()
+    }
+    /// Takes the notes that were read. True: some changed - draw again.
+    pub fn poll_notes(&mut self) -> bool {
+        let mut any = false;
+        while let Ok((path, n)) = self.notes_rx.try_recv() { if let Some(e) = self.notes.get_mut(&path) { e.2 = false; if *e.0 != n { e.0 = Arc::new(n); any = true; } } }
+        any
+    }
+    /// A picture file as it is (a note's small picture in the sidecar), for a box of `w` x `h` physical pixels: asked for
+    /// when it is not held. `stamp` tells one state of the file from another (it is rewritten when its note is drawn on).
+    pub fn file_picture(&mut self, path: &Path, stamp: u64, w: f64, h: f64) -> Option<&peniko::ImageBrush> {
+        let key = format!("file:{}#{stamp}", path.display()); let (w, h) = ((w.ceil() as u32).max(1), (h.ceil() as u32).max(1));
+        if !self.entries.contains_key(&key) { self.ask(&key, path.to_path_buf(), w, h, None, None, None); self.entries.insert(key.clone(), Entry { state: State::Loading, name: String::new(), asked: w, whole: false, used: self.frame }); }
+        let e = self.entries.get_mut(&key)?; e.used = self.frame;
+        match &e.state { State::Ready(p) => Some(&p.brush), _ => None }
     }
     /// Where a block's file is on this machine (None: its record names none that can be looked for).
     pub fn locate(&self, descriptor: &str) -> Option<PathBuf> { let v: serde_json::Value = serde_json::from_str(descriptor).ok()?; self.places.locate(v.get("src")?).ok() }

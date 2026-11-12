@@ -91,7 +91,8 @@ struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool,
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
-struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
+struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
+    noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
 /// The last move of blocks to another note (row 307), while one undo in the note they left can still take it back whole:
@@ -220,7 +221,7 @@ impl App {
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
         #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_turned(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone())); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone())); }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
         if self.frames == 0 && std::env::var_os("MN_DEMO").is_some() {
@@ -242,7 +243,7 @@ impl App {
         // UNDER this layer, where the page is left open; a block that left the view (or the note) stops being the one
         let (mut hole, mut live): (Option<Rect>, Option<paint::Live>) = (None, None);
         if let Some(p) = self.player.as_mut() {
-            let pic = self.ed.doc.get(p.id).filter(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).and_then(|_| l.rect(&self.ed.doc, p.id)).map(|r| r + off).map(|r| Rect::new(r.x0, r.y0, r.x1, r.y1 - mn_layout::VIDEO_STRIP as f64 * s));
+            let pic = self.ed.doc.get(p.id).filter(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).and_then(|_| l.rect(&self.ed.doc, p.id)).map(|r| r + off).map(|r| Rect::new(r.x0, r.y0, r.x1, r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(p.id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s));
             match pic.filter(|r| !self.blank && r.y1 > self.top && r.y0 < h as f64 - self.bottom) {
                 None => self.files.vstop = true,
                 Some(r) => {
@@ -277,10 +278,12 @@ impl App {
         for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
         { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
-        let mut turned = vec![];
-        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, live, off.x, off.y, view) { g.window.request_redraw(); }
+        let (mut turned, mut noted) = (vec![], vec![]);
+        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.files.hide_notes, off.x, off.y, view) { g.window.request_redraw(); }
         // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
         for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
+        // a video whose clip got its first note (or lost its last): its block gains (or loses) the row of the notes' pictures
+        for (id, on) in noted { if if on { self.files.noted.insert(id) } else { self.files.noted.remove(&id) } { self.files.relay = true; g.window.request_redraw(); } }
         // text selected on a PDF's page: washed over where it is
         if let Some(sel) = &self.files.pdf { if let Some(Kind::Media { descriptor }) = self.ed.doc.get(sel.id).map(|b| &b.kind) { if let (Some(t), Some(r)) = (self.media.page_text(descriptor), l.rect(&self.ed.doc, sel.id)) {
             let r = r + off; let k = r.width() / t.w.max(1.0) as f64;
@@ -349,7 +352,7 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return false };
         let (w, _) = g.presenter.size(); let s = g.window.scale_factor();
         let page_w = (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s);
-        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_turned(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone())); }
+        if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { self.layout = Some(NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone())); }
         if self.flat.is_none() { self.flat = Some(mn_doc::FlatText::build(&self.ed.doc)); }
         true
     }
@@ -742,8 +745,18 @@ impl App {
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) else { return None };
         if serde_json::from_str::<serde_json::Value>(descriptor).ok()?.get("kind").and_then(|k| k.as_str()) != Some("video") { return None }
-        let r = l.rect(&self.ed.doc, id)? + kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll); let cut = r.y1 - mn_layout::VIDEO_STRIP as f64 * s;
-        Some((id, Rect::new(r.x0, r.y0, r.x1, cut), Rect::new(r.x0, cut, r.x1, r.y1), descriptor.clone()))
+        let r = l.rect(&self.ed.doc, id)? + kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll);
+        let row = if l.is_noted(id) { mn_layout::VIDEO_NOTES as f64 * s } else { 0.0 }; let cut = r.y1 - row - mn_layout::VIDEO_STRIP as f64 * s;
+        Some((id, Rect::new(r.x0, r.y0, r.x1, cut), Rect::new(r.x0, cut, r.x1, r.y1 - row), descriptor.clone()))
+    }
+    /// The row of a video block's notes (their small pictures), when its clip has notes.
+    fn video_row(&self, id: BlockId) -> Option<Rect> { let (_, _, strip, _) = self.video_boxes(id)?; let l = self.layout.as_ref()?; let s = self.gpu.as_ref()?.window.scale_factor(); l.is_noted(id).then(|| Rect::new(strip.x0, strip.y1, strip.x1, strip.y1 + mn_layout::VIDEO_NOTES as f64 * s)) }
+    /// A video block goes to a frame (a click on a note's picture or tick): it becomes the playing one, paused there.
+    fn video_seek(&mut self, id: BlockId, frame: i32) {
+        if !self.video_start(id, false) { return }
+        if let Some(p) = self.player.as_mut() { p.t.pause(); p.t.seek_to_frame(frame); p.awake = Instant::now() + std::time::Duration::from_millis(900); }
+        self.video_keep(id, frame);
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn video_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
         if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
@@ -1319,10 +1332,12 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
+            // MN_SEEK=<frame>: the note's first video block goes to that frame, paused (as a click on a note's picture would)
+            if let Some(f) = std::env::var("MN_SEEK").ok().and_then(|v| v.parse::<i32>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { self.video_seek(id, f); } }
             // MN_PLAY=1: the note's first video block plays (as a click on it would)
             if std::env::var_os("MN_PLAY").is_some() { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { let ok = self.video_start(id, true); println!("play: started {ok}"); } }
             // MN_RESIZE=<width>: the note's first picture is made current and resized to that width as a corner drag would (one undo step), then undone and redone
@@ -1363,6 +1378,14 @@ impl ApplicationHandler for App {
         { let dev = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone())); let poster = &mut self.poster;
           if self.media.poll(&mut |px, meta| poster.convert(dev.as_ref().map(|d| (&d.0, &d.1)), px, meta)) { if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         for m in self.media.mail() { self.media_mail(m); }
+        // clips' notes are read again every two seconds while a video block is on the page (another application's edits)
+        if self.media.poll_notes() { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.blank && self.ed.doc.walk().iter().any(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))) {
+            let now = Instant::now(); let due = *self.files.notes_at.get_or_insert(now + std::time::Duration::from_millis(2100));
+            // (a helper thread wakes the loop for it: the loop's own deadline belongs to whatever is due soonest)
+            static WATCH: std::sync::Once = std::sync::Once::new();
+            WATCH.call_once(|| { let _ = std::thread::Builder::new().name("mn-notes-watch".into()).spawn(|| loop { std::thread::sleep(std::time::Duration::from_millis(2100)); if let Some(p) = WAKE.get() { p.wake_up(); } }); });
+            if now >= due { self.files.notes_at = Some(now + std::time::Duration::from_millis(2100)); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         if let Some(id) = self.files.pdf_test { if let Some(t) = self.pdf_boxes(id).and_then(|b| self.media.page_text(&b.3)) { self.files.pdf_test = None; if !t.chars.is_empty() { println!("pdf: {} characters on the page, {} of text in words", t.chars.len(), t.words(0, t.chars.len() - 1).len()); self.files.pdf = Some(PdfSel { id, a: 0, b: t.chars.len() - 1, drag: false }); } else { println!("pdf: no text on the page"); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         // MN_PLAY_ACT=1 (with MN_PLAY): once it plays, the actions QCView's keys stand for are applied and their effect printed
         if self.frames == 150 && std::env::var_os("MN_PLAY_ACT").is_some() { if let Some(p) = self.player.as_mut() { use qcv_player::Action as A; let now = Instant::now();
@@ -1476,6 +1499,19 @@ impl ApplicationHandler for App {
                     let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
                     let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let (_, track) = paint::video_strip(strip, s);
                     if pic.contains(pt) { self.video_toggle(id); return }
+                    // the clip's notes: the eye hides their drawings and captions; a small picture or a tick goes to its frame
+                    let notes = self.ed.doc.get(id).and_then(|b| match &b.kind { Kind::Media { descriptor } => Some(self.media.notes(descriptor)), _ => None }).unwrap_or_default();
+                    if !notes.is_empty() {
+                        if paint::video_eye(strip, s).contains(pt) { self.files.hide_notes = !self.files.hide_notes; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                        let rec: serde_json::Value = self.video_boxes(id).and_then(|b| serde_json::from_str(&b.3).ok()).unwrap_or_default();
+                        let (frames, fps, at) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0), self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0)));
+                        if let Some(row) = self.video_row(id).filter(|r| r.contains(pt)) {
+                            let aspect = rec.get("w").and_then(|w| w.as_f64()).unwrap_or(16.0) / rec.get("h").and_then(|h| h.as_f64()).unwrap_or(9.0).max(1.0);
+                            let playing = self.player.as_ref().is_some_and(|p| p.id == id && p.t.is_playing());
+                            if let Some(i) = paint::note_thumbs(row, notes.len(), aspect, paint::note_at(&notes, at, fps, playing), s).iter().position(|q| q.contains(pt)) { self.video_seek(id, notes[i].frame as i32); }
+                            return }
+                        if track.inflate(0.0, 12.0 * s).contains(pt) { if let Some(n) = notes.iter().find(|n| { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); (nx - position.x).abs() <= 4.0 * s }) { self.video_seek(id, n.frame as i32); return } }
+                    }
                     if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(position.x); } return }
                     if strip.contains(pt) { self.video_toggle(id); return } } }
                 // a PDF block (row 315): its strip turns the page; a drag on its page selects text

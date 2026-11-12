@@ -77,7 +77,7 @@ pub enum Part {
 }
 pub struct Box { pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub part: Part }
 
-pub struct NoteLayout { boxes: HashMap<BlockId, Box>, pub width: f32, pub height: f32, pub scale: f32, pub style: Style, turned: std::collections::HashSet<BlockId> }
+pub struct NoteLayout { boxes: HashMap<BlockId, Box>, pub width: f32, pub height: f32, pub scale: f32, pub style: Style, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId> }
 
 /// `#rgb`, `#rrggbb` or `#rrggbbaa` (the colours the file stores).
 pub fn hex(s: &str) -> Option<Color> {
@@ -99,6 +99,8 @@ pub fn tint(s: &str) -> Option<Color> { colour(s).map(|c| c.with_alpha(TINT)) }
 pub const PDF_STRIP: f32 = 36.0;
 /// The height of the strip under a video's picture (play, the counter, the line to scrub on), page px.
 pub const VIDEO_STRIP: f32 = 30.0;
+/// The height of the row of a video's notes (their small pictures) under its strip, page px; only clips with notes have it.
+pub const VIDEO_NOTES: f32 = 62.0;
 /// A media record's own size, its width on the page when it has one, and whether it is a PDF (its page takes the
 /// width of its place, and a strip sits under it).
 fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>, bool, f32)> {
@@ -109,12 +111,16 @@ fn media_size(descriptor: &str) -> Option<(f32, f32, Option<f32>, bool, f32)> {
 }
 
 impl NoteLayout {
+    /// A video block that was laid out with the row of its notes.
+    pub fn is_noted(&self, id: BlockId) -> bool { self.noted.contains(&id) }
     /// Lays the whole note out at `width` physical pixels.
     pub fn build(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32) -> NoteLayout { Self::build_turned(doc, fonts, style, width, scale, Default::default()) }
     /// `turned`: pictures whose file stores them on their side while their record has the size as stored (the Qt app
     /// measured without the orientation): their boxes take the upright shape.
-    pub fn build_turned(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>) -> NoteLayout {
-        let mut l = NoteLayout { boxes: HashMap::with_capacity(doc.len()), width, height: 0.0, scale, style: style.clone(), turned };
+    pub fn build_turned(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>) -> NoteLayout { Self::build_media(doc, fonts, style, width, scale, turned, Default::default()) }
+    /// `noted`: video blocks whose clip has notes - a row for them is added under the strip ([`VIDEO_NOTES`]).
+    pub fn build_media(doc: &Doc, fonts: &mut Fonts, style: &Style, width: f32, scale: f32, turned: std::collections::HashSet<BlockId>, noted: std::collections::HashSet<BlockId>) -> NoteLayout {
+        let mut l = NoteLayout { boxes: HashMap::with_capacity(doc.len()), width, height: 0.0, scale, style: style.clone(), turned, noted };
         for id in doc.children(None) { l.assign(doc, fonts, *id, 0.0, width); }
         l.height = l.stack(doc, None);
         l
@@ -154,7 +160,7 @@ impl NoteLayout {
             Kind::Row { .. } | Kind::Cell { .. } => return,   // placed by their table
             Kind::Divider => { self.boxes.insert(id, Box { x, y: 0.0, w, h: self.px(self.style.divider), part: Part::Divider }); return }
             Kind::Media { descriptor } => {
-                let (bw, bh) = match media_size(descriptor).map(|(mw, mh, dw, pdf, strip)| if self.turned.contains(&id) { (mh, mw, dw, pdf, strip) } else { (mw, mh, dw, pdf, strip) }) { Some((mw, mh, dw, pdf, strip)) => { let shown = dw.map(|d| self.px(d)).unwrap_or(if pdf { w } else { self.px(mw) }).min(w).max(1.0); (shown, shown * mh / mw + self.px(strip)) } None => (w, self.px(self.style.media_chip)) };
+                let (bw, bh) = match media_size(descriptor).map(|(mw, mh, dw, pdf, strip)| if self.turned.contains(&id) { (mh, mw, dw, pdf, strip) } else { (mw, mh, dw, pdf, strip) }) { Some((mw, mh, dw, pdf, strip)) => { let shown = dw.map(|d| self.px(d)).unwrap_or(if pdf { w } else { self.px(mw) }).min(w).max(1.0); (shown, shown * mh / mw + self.px(strip) + if self.noted.contains(&id) { self.px(VIDEO_NOTES) } else { 0.0 }) } None => (w, self.px(self.style.media_chip)) };
                 self.boxes.insert(id, Box { x, y: 0.0, w: bw, h: bh, part: Part::Media }); return
             }
             _ => { let (layout, dx, dy, h) = self.shape(fonts, b, Some(w)); self.boxes.insert(id, Box { x, y: 0.0, w, h, part: Part::Text { layout, dx, dy } }); return }
