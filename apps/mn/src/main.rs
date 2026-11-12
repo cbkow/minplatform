@@ -45,6 +45,7 @@ mod video;
 mod choice;
 mod linkedit;
 mod findbar;
+mod search;
 mod open;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
@@ -135,6 +136,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     picker_chip: Option<mn_edit::chips::Chip>,
     /// a link's editor (row 320), and the link a context menu was opened on
     /// find in the note (row 321): the bar, the occurrences, the current one, and what they were found for (the words, the case, the note's stamp)
+    /// the search across the collection under way (the sidebar's field)
+    search: Option<search::Search>,
     find: Option<findbar::FindBar>, hits: Vec<mn_edit::find::Hit>, hit_at: usize, found_for: Option<(String, bool, (u64, usize), BlockId)>,
     link: Option<linkedit::LinkEdit>, lmenu: Option<String>, /// the last press on a file chip (a second one soon after opens the file)
     chip_click: Option<(Instant, BlockId)>, /// a space was typed: the word before it becomes a link if it is an address
@@ -256,6 +259,7 @@ impl App {
     fn redraw(&mut self) {
         self.settle_timecode();
         self.find_refresh();
+        self.search_step();
         let Some(g) = self.gpu.as_mut() else { return };
         let t = Instant::now();
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let now = Instant::now();
@@ -1150,6 +1154,25 @@ impl App {
             None => { let last = self.files.found_for.as_ref().map(|x| x.0.clone()).unwrap_or_default(); self.files.find = Some(findbar::FindBar::new(seed.as_deref().unwrap_or(&last), &mut g.fonts)); } }
         self.files.found_for = None; g.window.request_redraw();
     }
+    /// The search across the collection: begun again when the sidebar's field changes, and a few notes are read each
+    /// frame (at most ~6 ms of them) until all were - the page stays live meanwhile.
+    fn search_step(&mut self) {
+        let Some(sb) = self.sidebar.as_mut() else { return }; let q = sb.query.text().trim().to_string();
+        if sb.query.focused { if let Some(f) = self.files.find.as_mut() { f.blur(); } }
+        if q.is_empty() { if sb.results.take().is_some() { sb.rail.scroll = 0.0; } sb.scanning = false; self.files.search = None; return }
+        let Some(st) = self.store.as_ref() else { return };
+        if self.files.search.as_ref().is_none_or(|x| x.query != q) { self.files.search = Some(search::Search::new(&q, &st.col)); sb.rail.scroll = 0.0; sb.results = Some(vec![]); sb.scanning = true; }
+        let Some(se) = self.files.search.as_mut() else { return }; if se.done() { return }
+        let t0 = Instant::now();
+        while let Some((id, _)) = se.next() { 
+            let doc = if id == st.note && !self.blank { Some(self.ed.doc.clone()) } else { st.col.load_note(id).ok() };
+            // a video's notes count as the note's text - those that were read already (a video never shown has none yet)
+            let extra: Vec<String> = doc.as_ref().map(|d| d.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\"") => Some(descriptor.clone()), _ => None }).collect::<Vec<_>>()).unwrap_or_default()
+                .iter().flat_map(|d| self.media.notes(d).iter().map(|n| n.text.clone()).collect::<Vec<_>>()).collect();
+            se.took(doc.as_ref(), &extra); if t0.elapsed().as_millis() >= 6 { break } }
+        sb.results = Some(se.results()); sb.scanning = !se.done();
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
     fn find_close(&mut self) { self.files.find = None; self.files.hits.clear(); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
     /// The occurrences are found again when the words, the case or the note changed; the current one stays the first at or after the caret.
     fn find_refresh(&mut self) {
@@ -1569,6 +1592,11 @@ impl App {
     }
     fn act(&mut self, a: sidebar::Act) {
         match a { sidebar::Act::None => {}, sidebar::Act::Redraw => { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            // a search result (row 321): the note opens with the find bar on the word, at the occurrence chosen
+            sidebar::Act::Found(id, go) => { self.open_note(id); if let Some(sb) = self.sidebar.as_mut() { sb.query.focused = false; }
+                if let Some((term, ord)) = go { self.ensure(); if let Some(g) = self.gpu.as_mut() { match self.files.find.as_mut() { Some(f) => f.query.set_text_end(&term, &mut g.fonts), None => self.files.find = Some(findbar::FindBar::new(&term, &mut g.fonts)) } }
+                    if let Some(f) = self.files.find.as_mut() { f.blur(); f.case = false; } self.files.found_for = None; self.find_refresh(); if !self.files.hits.is_empty() { self.files.hit_at = ord.min(self.files.hits.len() - 1); self.find_show(); } }
+                if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Open(id) => { if self.sidebar.as_ref().and_then(|sb| sb.row(id)).is_some_and(|r| r.kind == mn_store::DocKind::Note) { self.open_note(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Fold(id) => { if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.toggle_fold(id); sb.set_tree(&st.col); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::NewNote => self.new_entry(mn_store::DocKind::Note), sidebar::Act::NewFolder => self.new_entry(mn_store::DocKind::Folder),
@@ -1600,7 +1628,7 @@ impl App {
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
         // the rail's floating tab (the caret that reopens a folded sidebar, as in QCView) shows while the pointer is in the window
         let (a, taken) = sb.event(&e, &mut g.fonts, now);
-        if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; }
+        if !taken && matches!(e, min_ui::Event::Down { .. }) { sb.focused = false; sb.query.focused = false; }
         self.act(a); taken
     }
     fn title(&self) { if let (Some(g), None) = (&self.gpu, &self.store) { g.window.set_title("minNotes"); }
@@ -1649,20 +1677,20 @@ impl App {
         // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
         if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {
             let pasted = if c == "v" { self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) } else { None };
-            let field: Option<&mut min_ui::TextField> = if let Some(p) = self.files.link.as_mut() { Some(p.field()) } else if let Some(f) = self.files.find.as_mut().filter(|f| f.focused() && self.files.picker.is_none()) { f.field() } else if let Some(p) = self.files.picker.as_mut() { p.field() } else if let Some((_, _, f)) = self.files.note_field.as_mut() { Some(f) } else { None };
+            let field: Option<&mut min_ui::TextField> = if let Some(sb) = self.sidebar.as_mut().filter(|sb| sb.query.focused && !sb.renaming()) { Some(&mut sb.query) } else if let Some(p) = self.files.link.as_mut() { Some(p.field()) } else if let Some(f) = self.files.find.as_mut().filter(|f| f.focused() && self.files.picker.is_none()) { f.field() } else if let Some(p) = self.files.picker.as_mut() { p.field() } else if let Some((_, _, f)) = self.files.note_field.as_mut() { Some(f) } else { None };
             if let (Some(f), Some(g)) = (field, self.gpu.as_mut()) {
                 let copied = if c == "v" { if let Some(t) = &pasted { f.paste(t, &mut g.fonts); } None } else { f.copy(c == "x", &mut g.fonts) };
                 if self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && self.files.find.is_some() { self.files.found_for = None; }
                 if let (Some(t), Some(cb)) = (copied, self.clipboard.as_mut()) { let _ = cb.set_text(t); self.block_clip = None; }
                 g.window.request_redraw(); return }
-            if self.files.link.is_some() || self.files.picker.is_some() || self.files.note_field.is_some() { return } } } }
+            if self.files.link.is_some() || self.files.picker.is_some() || self.files.note_field.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.query.focused) { return } } } }
         // a note's words being typed take the keys: Enter keeps them, Escape gives them up
         if self.files.note_field.is_some() { let r = match (self.files.note_field.as_mut(), self.gpu.as_mut()) { (Some((_, _, f)), Some(g)) => Some(f.key(&ui_key(), &mut g.fonts)), _ => None };
             match r { Some(min_ui::FieldResponse::Accepted) => self.note_words_end(true), Some(min_ui::FieldResponse::Cancelled) => self.note_words_end(false), _ => {} }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // find (row 321): Cmd+F opens the bar (or gives it the keys), Cmd+G / Shift+Cmd+G go on and back; while one of its fields has the keys they are the bar's
         if self.files.link.is_none() && self.files.picker.is_none() && !self.blank {
-            if let Key::Character(c) = key { if cmd && !alt { match c.to_lowercase().as_str() { "f" if !shift => { self.find_open(); return } "g" if self.files.find.is_some() => { self.find_out(if shift { findbar::Out::Prev } else { findbar::Out::Next }); return } _ => {} } } }
+            if let Key::Character(c) = key { if cmd && !alt { match c.to_lowercase().as_str() { "f" if shift => { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.rail.collapsed { self.later.push(menu::Cmd::Sidebar); } sb.search_focus(&mut g.fonts); if let Some(f) = self.files.find.as_mut() { f.blur(); } g.window.request_redraw(); } return } "f" if !shift => { if let Some(sb) = self.sidebar.as_mut() { sb.query.focused = false; } self.find_open(); return } "g" if self.files.find.is_some() => { self.find_out(if shift { findbar::Out::Prev } else { findbar::Out::Next }); return } _ => {} } } }
             if self.files.find.as_ref().is_some_and(|f| f.focused()) && !(cmd && matches!(key, Key::Character(c) if !matches!(c.to_lowercase().as_str(), "a"))) {
                 let out = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(f), Some(g)) => f.key(&ui_key(), &mut g.fonts), _ => findbar::Out::None }; self.find_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
         // a link's editor takes the keys while it is open
@@ -1862,13 +1890,17 @@ impl ApplicationHandler for App {
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_ADD=<file>[,<file>...]: the files are added after the note's first block, as a drop there would; MN_RELINK=
         // <file>: the note's first picture that was not found is pointed at it (both for scripted checks: no input is sent)
-        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some() || std::env::var_os("MN_FIND").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if !self.files.tested && (std::env::var_os("MN_ADD").is_some() || std::env::var_os("MN_RELINK").is_some() || std::env::var_os("MN_RESIZE").is_some() || std::env::var_os("MN_PDF").is_some() || std::env::var_os("MN_PLAY").is_some() || std::env::var_os("MN_SEEK").is_some() || std::env::var_os("MN_TABLE").is_some() || std::env::var_os("MN_LINK").is_some() || std::env::var_os("MN_FIND").is_some() || std::env::var_os("MN_SEARCH").is_some()) { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if self.frames >= 60 && !self.files.tested && self.layout.is_some() && !self.blank { self.files.tested = true;
             // MN_PDF=<page>: the note's first PDF block turns to that page (counted from 0); when its text is read, all of it is selected and its length printed
             if let Some(p) = std::env::var("MN_PDF").ok().and_then(|v| v.parse::<i64>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"pdf\""))).map(|b| b.id) { self.pdf_turn(id, p); self.files.pdf_test = Some(id); } }
             // MN_TABLE=1: at the note's end a table is made and filled by typing and Tab, a row added, and columns made beside a paragraph (as the toolbar and the keys would)
             // MN_LINK=1: a word of the note's second block is made a link, an address is typed after it (it links at its space), and the link's editor opens on the first
             // MN_LINK=2: a choice chip goes in at the start of the note's long paragraph and its picker opens; 3: a second chip, its options' editor
+            // MN_SEARCH=<words>: they are typed into the sidebar's search field; MN_SEARCH_GO=1: the first result's first line is chosen
+            if let Ok(q) = std::env::var("MN_SEARCH") { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { sb.query.set_text_end(&q, &mut g.fonts); }
+                if std::env::var_os("MN_SEARCH_GO").is_some() { for _ in 0..200 { self.search_step(); if self.files.search.as_ref().is_none_or(|x| x.done()) { break } }
+                    let go = self.sidebar.as_ref().and_then(|sb| sb.results.as_ref()).and_then(|r| r.iter().find(|f| !f.snippets.is_empty())).map(|f| (f.id, f.snippets.last().map(|sn| (sn.term.clone(), sn.ord)))); if let Some((id, g)) = go { self.act(sidebar::Act::Found(id, g)); } } }
             // MN_FIND=<words>: the find bar opens on them and goes to the second occurrence; MN_FIND_WITH=<words>: the replace row shows, and every occurrence is replaced
             if let Ok(q) = std::env::var("MN_FIND") { self.find_open(); if let (Some(f), Some(g)) = (self.files.find.as_mut(), self.gpu.as_mut()) { f.query.set_text_end(&q, &mut g.fonts); }
                 self.find_out(findbar::Out::Changed); self.find_out(findbar::Out::Next);
@@ -2239,7 +2271,7 @@ impl ApplicationHandler for App {
             // a choice or a check cell takes no typing
             WindowEvent::Ime(_) if !self.ed.in_blocks() && self.ed.typed_cell().is_some_and(|t| !matches!(t.kind, ColumnKind::Timecode { .. })) => {}
             WindowEvent::Ime(e) => {
-                if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.renaming() { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None }; if let Some(ev) = ev { sb.ime(&ev, &mut g.fonts); g.window.request_redraw(); } return } }
+                if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { if sb.typing() { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None }; if let Some(ev) = ev { sb.ime(&ev, &mut g.fonts); g.window.request_redraw(); } return } }
                 let now = self.now_ms(); let d = match e {
                     winit::event::Ime::Preedit(text, cursor) => self.ed.set_preedit(&text, cursor, now).unwrap_or(Dirty::Nothing),
                     winit::event::Ime::Commit(text) => self.ed.commit_preedit(&text, now).unwrap_or(Dirty::Nothing),

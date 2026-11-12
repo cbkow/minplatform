@@ -16,11 +16,14 @@ const INDENT: f64 = t::ICON_SIZE_SMALL as f64;
 const HEAD: f64 = t::COMPONENT_HEIGHT_75 as f64 + t::SPACING_100 as f64;
 /// The caret's slot at the start of a row: a press here folds or unfolds, anywhere else on the row selects.
 const CARET: f64 = t::RAIL_SECTION_CHEVRON_SIZE as f64;
+/// A line of a search result under its note's row.
+const SNIP: f64 = 22.0;
 
 pub struct Row { pub id: BlockId, pub parent: Option<BlockId>, pub depth: usize, pub kind: DocKind, pub title: String, pub named: bool, pub has_children: bool }
 pub enum Act { None, Redraw, /// the header's buttons
     NewNote, NewFolder, Open(BlockId), Renamed(BlockId, String), /// fold or unfold this folder
-    Fold(BlockId) }
+    Fold(BlockId), /// a search result was chosen: the note, and the occurrence to go to (the word, which of its occurrences)
+    Found(BlockId, Option<(String, usize)>) }
 /// The keys the tree takes while it has the focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nav { Up, Down, Left, Right }
@@ -33,6 +36,8 @@ pub struct Sidebar {
     pub focused: bool,
     /// the header: a search field for the collection (shown, not built yet), new note, new folder
     head: ActionGroup, search: Rect, tooltips: Tooltips,
+    /// the search field (row 321), and - while something is typed in it - what was found (in place of the tree); `scanning`: notes are still being read
+    pub query: TextField, pub results: Option<Vec<crate::search::Found>>, pub scanning: bool, rhover: Option<(usize, Option<usize>)>,
     hover: Option<usize>, rename: Option<(BlockId, TextField)>, last_down: Option<(Instant, BlockId)>, scale: f64,
 }
 
@@ -40,7 +45,8 @@ impl Sidebar {
     pub fn new() -> Sidebar { let mut rail = Rail::new(Side::Left, 240.0, false); rail.settle(); rail.tab_centered = true; rail.header_extra = HEAD; rail.shortcut = if cfg!(target_os = "macos") { "⌘1" } else { "Ctrl+1" }.into();
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
         let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
-        Sidebar { drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
+        let mut query = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); query.placeholder = "Search".into();
+        Sidebar { query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
     pub fn set_tree(&mut self, col: &Collection) {
         fn walk(col: &Collection, parent: Option<BlockId>, depth: usize, folded: &HashSet<BlockId>, out: &mut Vec<Row>) {
@@ -71,7 +77,7 @@ impl Sidebar {
     /// Places the rail; returns the width it takes of the window, physical px.
     pub fn layout(&mut self, top: f64, height: f64, scale: f64, now: Instant) -> f64 {
         self.scale = scale; self.rail.layout(0.0, top, height, scale, now);
-        self.rail.content_height = self.rows.len() as f64 * ROW * scale;
+        self.rail.content_height = match &self.results { Some(r) => r.iter().map(|f| ROW + f.snippets.len() as f64 * SNIP + t::SPACING_75 as f64).sum::<f64>().max(ROW) * scale, None => self.rows.len() as f64 * ROW * scale };
         self.head.rect = Rect::ZERO; self.search = Rect::ZERO;
         self.rail.visible_width(now, scale)
     }
@@ -82,6 +88,17 @@ impl Sidebar {
     /// The pointer is over the name being edited (the I-beam's place in the tree).
     pub fn over_field(&self, x: f64, y: f64) -> bool { self.rename.as_ref().is_some_and(|(_, f)| f.hit(x, y)) }
     pub fn renaming(&self) -> bool { self.rename.is_some() }
+    /// One of its fields has the keys (a name being edited, the search).
+    pub fn typing(&self) -> bool { self.rename.is_some() || self.query.focused }
+    /// The search field takes the keys.
+    pub fn search_focus(&mut self, fonts: &mut Fonts) { self.query.focused = true; self.focused = false; self.query.select_all(fonts); }
+    /// The rows of the results: (the row's box, the result, the snippet - None: the note's own row).
+    fn result_rows(&self) -> Vec<(Rect, usize, Option<usize>)> {
+        let Some(res) = &self.results else { return vec![] }; let c = self.rail.content_rect(); let s = self.scale; let mut y = c.y0 - self.rail.scroll; let mut out = vec![];
+        for (i, f) in res.iter().enumerate() { out.push((Rect::new(c.x0, y, c.x1, y + ROW * s), i, None)); y += ROW * s;
+            for k in 0..f.snippets.len() { out.push((Rect::new(c.x0, y, c.x1, y + SNIP * s), i, Some(k))); y += SNIP * s; } y += t::SPACING_75 as f64 * s; }
+        out
+    }
     pub fn start_rename(&mut self, id: BlockId, fonts: &mut Fonts) {
         let Some(r) = self.row(id) else { return }; let text = if r.named { r.title.clone() } else { String::new() };
         let mut f = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); f.placeholder = r.title.clone(); f.set_text_end(&text, fonts); f.select_all(fonts); f.focused = true;
@@ -99,9 +116,12 @@ impl Sidebar {
             let clicked = self.head.event(e, now).into_iter().find(|(_, r)| *r == Response::Clicked).map(|(i, _)| i);
             if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
             let over = self.head.buttons.iter().enumerate().find(|(_, b)| b.hovered()).map(|(i, b)| (i as u64, b.rect, b.tooltip.clone()))
-                .or_else(|| e.pos().filter(|(x, y)| self.search.contains(kurbo::Point::new(*x, *y))).map(|_| (9, self.search, "Search the collection \u{2014} not yet".to_string())));
+;
             self.tooltips.hover(over.as_ref().map(|(k, r, s)| (*k, *r, s.as_str())), now);
             match clicked { Some(0) => return (Act::NewNote, true), Some(_) => return (Act::NewFolder, true), None => {} }
+            // the search field: a press in it gives it the keys; a press anywhere else takes them away
+            if let Event::Down { x, y, .. } = *e { if self.search.contains(kurbo::Point::new(x, y)) { self.query.focused = true; self.focused = false; self.query.pointer(e, fonts); return (Act::Redraw, true) } else if self.query.focused { self.query.focused = false; } }
+            else if self.query.focused && self.query.pointer(e, fonts) { return (Act::Redraw, true) }
             if e.pos().is_some_and(|(x, y)| self.rail.hit(x, y) && y < self.rail.rect.y0 + self.rail.header_height()) { return (Act::Redraw, true) }
         }
         let Some((x, y)) = e.pos() else { let had = self.hover.take().is_some(); return (if had || r.dirty { Act::Redraw } else { Act::None }, false) };
@@ -110,7 +130,13 @@ impl Sidebar {
             if matches!(e, Event::Down { .. }) && !f.hit(x, y) { let (id, text) = (*id, f.text().trim().to_string()); self.rename = None; return (Act::Renamed(id, text), inside) }
             if f.pointer(e, fonts) { return (Act::Redraw, true) }
         }
-        if !inside { let had = self.hover.take().is_some(); return (if had || r.dirty { Act::Redraw } else { Act::None }, false) }
+        if !inside { let had = self.hover.take().is_some() | self.rhover.take().is_some(); return (if had || r.dirty { Act::Redraw } else { Act::None }, false) }
+        // what was found stands in the tree's place: a press on a note's row opens it, on a line of it goes to that occurrence
+        if let Some(res) = &self.results {
+            let at = if self.rail.content_rect().contains(kurbo::Point::new(x, y)) { self.result_rows().into_iter().find(|(q, ..)| q.contains(kurbo::Point::new(x, y))).map(|(_, i, k)| (i, k)) } else { None };
+            return match e { Event::Move { .. } => { let ch = self.rhover != at; self.rhover = at; (if ch || r.dirty { Act::Redraw } else { Act::None }, true) }
+                Event::Down { button: Button::Primary, .. } => match at.and_then(|(i, k)| res.get(i).map(|f| (f, k))) { Some((f, k)) => { let go = k.and_then(|k| f.snippets.get(k)).or(f.snippets.first()).map(|sn| (sn.term.clone(), sn.ord)); (Act::Found(f.id, go), true) } None => (Act::Redraw, true) },
+                _ => (Act::None, true) } }
         let at = self.row_at(x, y);
         match e {
             Event::Move { .. } => { let changed = self.hover != at; self.hover = at; (if changed || r.dirty { Act::Redraw } else { Act::None }, true) }
@@ -132,10 +158,15 @@ impl Sidebar {
     }
     /// A key while a name is being edited. None: the key was not the sidebar's.
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> Option<Act> {
+        // the search field: Escape empties it and gives the keys back, Enter opens the first note found
+        if self.query.focused && self.rename.is_none() { return Some(match self.query.key(k, fonts) {
+            FieldResponse::Cancelled => { self.query.clear(); self.query.focused = false; Act::Redraw }
+            FieldResponse::Accepted => match self.results.as_ref().and_then(|r| r.first()) { Some(f) => Act::Found(f.id, f.snippets.first().map(|sn| (sn.term.clone(), sn.ord))), None => Act::Redraw },
+            _ => Act::Redraw }) }
         let (id, f) = self.rename.as_mut()?;
         Some(match f.key(k, fonts) { FieldResponse::Accepted => { let (id, text) = (*id, f.text().trim().to_string()); self.rename = None; Act::Renamed(id, text) } FieldResponse::Cancelled => { self.rename = None; Act::Redraw } _ => Act::Redraw })
     }
-    pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) -> bool { match self.rename.as_mut() { Some((_, f)) => { f.ime(e, fonts); true } None => false } }
+    pub fn ime(&mut self, e: &min_ui::ImeEvent, fonts: &mut Fonts) -> bool { match self.rename.as_mut() { Some((_, f)) => { f.ime(e, fonts); true } None if self.query.focused => { self.query.ime(e, fonts); true } None => false } }
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) || self.head.animating(now) }
     pub fn next_change(&self, now: Instant) -> Option<Instant> { self.tooltips.next_change(now) }
     pub fn paint_tooltip(&self, scene: &mut Scene, fonts: &mut Fonts, bounds: Rect, now: Instant) { self.tooltips.paint(scene, fonts, self.scale, bounds, now); }
@@ -152,16 +183,33 @@ impl Sidebar {
             let w = self.head.layout(fonts, 0.0, 0.0, s); let bh = self.head.rect.height();
             self.head.layout(fonts, x1 - w, y + (hh - bh) / 2.0, s);
             self.search = Rect::new(x0, y, (x1 - w - t::SPACING_100 as f64 * s).max(x0), y + hh);
-            paint::rounded(scene, self.search, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR_IDLE);
-            let mut x = self.search.x0 + t::SPACING_75 as f64 * s;
-            if let Some(g) = fonts.icon("magnifying-glass", t::ICON_SIZE_SMALL * s as f32, paint::color(t::DISABLED_CONTENT_COLOR)) { draw_layout(scene, &g, Affine::translate((x, y + (hh - g.height() as f64) / 2.0))); x += g.width() as f64 + t::TEXT_TO_VISUAL_75 as f64 * s; }
-            let l = fonts.layout_fit("Search", Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, paint::color(t::DISABLED_CONTENT_COLOR), (self.search.x1 - x - t::SPACING_75 as f64 * s).max(10.0));
-            draw_layout(scene, &l, Affine::translate((x, y + (hh - l.height() as f64) / 2.0)));
+            let field = self.search; self.query.layout(fonts, field, s); self.query.paint(scene, fonts, s);
             self.head.paint(scene, fonts, s, now);
             scene.pop_layer();
         }
         self.rail.push_clip(scene);
         let icon = t::ICON_SIZE_SMALL as f64 * s;
+        // what was found, in the tree's place (row 321): a row a note - its name and how often - and up to three lines of it, the words found in the stronger colour
+        if let Some(res) = &self.results {
+            let rows = self.result_rows(); let (dim, strong) = (paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT));
+            if res.is_empty() { let c = self.rail.content_rect(); let l = fonts.layout_fit(if self.scanning { "Searching\u{2026}" } else { "No results" }, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, dim, c.width()); draw_layout(scene, &l, Affine::translate((c.x0 + t::SPACING_75 as f64 * s, c.y0 + (ROW * s - l.height() as f64) / 2.0))); }
+            for (r, i, k) in rows { if r.y1 < self.rail.rect.y0 || r.y0 > self.rail.rect.y1 { continue } let f = &res[i]; let mid = |h: f64| r.y0 + (r.height() - h) / 2.0;
+                if self.rhover == Some((i, k)) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); } else if k.is_none() && current == Some(f.id) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::RAIL_ROW_ACTIVE_FILL); }
+                match k {
+                    None => { let mut x = r.x0 + t::SPACING_75 as f64 * s; let label = if current == Some(f.id) { t::RAIL_ROW_ACTIVE_LABEL } else { t::RAIL_LABEL_COLOR };
+                        if let Some(g) = fonts.icon("note", icon as f32, paint::color(label)) { draw_layout(scene, &g, Affine::translate((x, mid(g.height() as f64)))); x += icon + t::TEXT_TO_VISUAL_75 as f64 * s; }
+                        let n = fonts.layout(&f.count.to_string(), Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_REGULAR as f32, dim); let nx = r.x1 - t::SPACING_100 as f64 * s - n.width() as f64;
+                        if f.count > 0 { draw_layout(scene, &n, Affine::translate((nx, mid(n.height() as f64)))); }
+                        let l = fonts.layout_fit(&f.title, Family::Sans, t::RAIL_LABEL_SIZE * s as f32, t::FONT_WEIGHT_BOLD as f32, paint::color(label), (nx - x - t::SPACING_75 as f64 * s).max(10.0)); draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64)))); }
+                    Some(k) => { let sn = &f.snippets[k]; let size = (t::RAIL_LABEL_SIZE - 1.0) * s as f32; let mut x = r.x0 + (t::SPACING_75 as f64 + t::ICON_SIZE_SMALL as f64 + t::TEXT_TO_VISUAL_75 as f64) * s;
+                        scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &Rect::new(r.x0, r.y0, r.x1 - t::SPACING_75 as f64 * s, r.y1));
+                        for (piece, col, weight) in [(&sn.text[..sn.bold.0], dim, t::FONT_WEIGHT_REGULAR), (&sn.text[sn.bold.0..sn.bold.1], strong, t::FONT_WEIGHT_BOLD), (&sn.text[sn.bold.1..], dim, t::FONT_WEIGHT_REGULAR)] { if piece.is_empty() { continue }
+                            let l = fonts.layout(piece, Family::Sans, size, weight as f32, col); draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64)))); x += l.width() as f64; }
+                        scene.pop_layer(); }
+                }
+            }
+            self.rail.pop_clip(scene); self.rail.paint_foreground(scene, fonts, s, now); return
+        }
         for i in 0..self.rows.len() {
             let r = self.row_rect(i); if r.y1 < self.rail.rect.y0 || r.y0 > self.rail.rect.y1 { continue }
             let r = Rect::new(r.x0, r.y0, r.x1, r.y1 - t::RAIL_ROW_GAP as f64 * s);

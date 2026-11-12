@@ -39,12 +39,11 @@ pub enum HitKind { /// in the block's text
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hit { pub block: BlockId, pub start: usize, pub end: usize, pub kind: HitKind }
 
-impl Editor {
-    /// Every occurrence in the note, in its order: in the text of its blocks (cells, code and chips too), in links'
-    /// addresses, in the names of its pictures and files.
-    pub fn find(&self, query: &str, case: bool) -> Vec<Hit> {
+/// Every occurrence in a note, in its order: in the text of its blocks (cells, code and chips too), in links'
+/// addresses, in the names of its pictures and files.
+pub fn find_in(doc: &mn_doc::Doc, query: &str, case: bool) -> Vec<Hit> {
         let mut out = vec![]; if fold(query, case).0.is_empty() { return out }
-        for id in leaves(&self.doc) { let Some(b) = self.doc.get(id) else { continue };
+        for id in leaves(doc) { let Some(b) = doc.get(id) else { continue };
             if let Kind::Media { descriptor } = &b.kind { let name = serde_json::from_str::<serde_json::Value>(descriptor).ok().and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string)).unwrap_or_default();
                 if holds(&name, query, case) { out.push(Hit { block: id, start: 0, end: 0, kind: HitKind::Block }); } continue }
             if !b.kind.is_text() { continue }
@@ -52,7 +51,11 @@ impl Editor {
             for sp in b.spans.as_slice() { if let Mark::Link(u) = &sp.mark { if holds(u, query, case) && !here.iter().any(|h| h.start < sp.end && h.end > sp.start) { here.push(Hit { block: id, start: sp.start, end: sp.end, kind: HitKind::Link }); } } }
             here.sort_by_key(|h| h.start); out.extend(here); }
         out
-    }
+}
+
+impl Editor {
+    /// Every occurrence in the note (`find_in`).
+    pub fn find(&self, query: &str, case: bool) -> Vec<Hit> { find_in(&self.doc, query, case) }
     /// A hit's text may be replaced: it is text, not in a chip, not in a choice or a check cell.
     pub fn replaceable(&self, h: &Hit) -> bool {
         if h.kind != HitKind::Text { return false } let Some(b) = self.doc.get(h.block) else { return false };
