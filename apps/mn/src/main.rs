@@ -102,7 +102,9 @@ enum Ask {
 enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
 
 struct App { /// the handle is held (row 305): where it was pressed, whether the pointer has moved far enough to be a drag, and where the blocks would land
-    drawn: bool, grab: Option<Grab>, moved: Option<Moved>, /// a short notice in the footer (what a move did), until this time
+    drawn: bool, /// frames still owed after the first: a frame presented before the window is on screen is not shown, and nothing else asks for another until the pointer moves (the user 2026-11-11)
+    warm: u8, /// and a frame every quarter second for the launch's first second and a half, for a window that reaches the screen late
+    warm_at: Option<Instant>, grab: Option<Grab>, moved: Option<Moved>, /// a short notice in the footer (what a move did), until this time
     notice: Option<(String, Instant)>,
     /// the context menu lists notes to move the selected blocks to
     ctx_notes: Vec<BlockId>,
@@ -951,6 +953,8 @@ impl ApplicationHandler for App {
         startup_log("fonts loaded");
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        if let Some(t0) = self.t0.filter(|t| t.elapsed().as_millis() < 1500) { let now = Instant::now(); let at = *self.warm_at.get_or_insert(t0 + std::time::Duration::from_millis(250));
+            if now >= at { self.warm_at = Some(now + std::time::Duration::from_millis(250)); if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
         // MN_MOVE_TEST=<a note's name>: the app moves the open note's first block to that note, undoes and redoes it,
         // and prints the two notes' block counts after each (a scripted check of row 307; nothing is typed or clicked)
@@ -998,7 +1002,8 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => { self.autosave(); self.request_close(Pending::Quit); if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); } }
-            WindowEvent::Focused(true) => { startup_log("window focused"); #[cfg(target_os = "macos")] text_element::focused(); }
+            WindowEvent::Occluded(false) => { self.warm = self.warm.max(2); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            WindowEvent::Focused(true) => { startup_log("window focused"); self.warm = self.warm.max(2); if let Some(g) = &self.gpu { g.window.request_redraw(); } #[cfg(target_os = "macos")] text_element::focused(); }
             WindowEvent::SurfaceResized(s) => if let Some(g) = self.gpu.as_mut() {
                 g.presenter.resize(s.width, s.height); g.presenter.engine.set_ui_scale(g.window.scale_factor() as f32);
                 g.ui.resize(&g.presenter.engine.device, s.width, s.height); g.presenter.engine.set_overlay(Some(g.ui.view()));
@@ -1079,7 +1084,8 @@ impl ApplicationHandler for App {
                     match d { Dirty::Structure => self.layout = None, Dirty::Blocks(ids) => if let (Some(l), Some(g)) = (self.layout.as_mut(), self.gpu.as_mut()) { for id in ids { l.update_block(&self.ed.doc, &mut g.fonts, id); } }, Dirty::Nothing => {} }
                     self.flat = None; self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); }
                 } else { self.apply(d); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
-            WindowEvent::RedrawRequested => { let first = !self.drawn; if first { startup_log("first frame: begin"); } self.redraw(); if first { self.drawn = true; startup_log("first frame: presented"); } }
+            WindowEvent::RedrawRequested => { let first = !self.drawn; if first { startup_log("first frame: begin"); } self.redraw(); if first { self.drawn = true; startup_log("first frame: presented"); }
+                if self.warm > 0 { self.warm -= 1; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             _ => {}
         }
     }
@@ -1192,7 +1198,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { drawn: false, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
