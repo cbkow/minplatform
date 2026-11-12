@@ -12,6 +12,7 @@ mod markdown;
 mod blocks;
 mod table;
 pub mod typed;
+pub mod cells;
 pub use blocks::{Clip, Drop};
 use mn_layout::{NoteLayout, Part};
 use parley::{Affinity, Cursor, Selection as PSel};
@@ -46,6 +47,8 @@ pub struct Editor {
     pub doc: Doc,
     pub history: History,
     sel: Option<Selection>,
+    /// whole rows (false) or whole columns (true) of a table are selected - while the selection is still this one
+    whole: Option<(Selection, bool)>,
     /// the x a run of Up / Down moves keeps returning to
     goal_x: Option<f64>,
     /// the caret stands at a soft wrap and belongs to the END of the upper line (End put it there)
@@ -81,7 +84,7 @@ fn next_char(s: &str, at: usize) -> usize { s[at..].chars().next().map(|c| at + 
 fn paragraph(parent: Option<BlockId>, text: &str) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind: Kind::Paragraph, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] } }
 
 impl Editor {
-    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None, commits: 0 } }
+    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, whole: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None, commits: 0 } }
     pub fn selection(&self) -> Option<Selection> { self.sel }
     /// (new steps recorded so far, steps that can be undone): together they say whether the last step is still the one a caller remembers.
     pub fn stamp(&self) -> (u64, usize) { (self.commits, self.marks.len()) }
@@ -203,6 +206,7 @@ impl Editor {
     pub fn caret_rect(&self, layout: &NoteLayout, width: f32) -> Option<Rect> { let s = self.sel?; layout.caret_side(&self.doc, s.focus.block, s.focus.at, width, self.upstream) }
     /// The rectangles of the selection, block by block (none for a caret).
     pub fn selection_rects(&self, layout: &NoteLayout) -> Vec<Rect> {
+        if let Some(cr) = self.cell_rect() { return self.cells_in(&cr).into_iter().filter_map(|c| layout.rect(&self.doc, c)).collect() }
         let Some((a, b)) = self.ordered() else { return vec![] }; if a == b { return vec![] }
         if a.block == b.block { return layout.range_rects(&self.doc, a.block, a.at, b.at) }
         let l = leaves(&self.doc); let (Some(i), Some(j)) = (l.iter().position(|x| *x == a.block), l.iter().position(|x| *x == b.block)) else { return vec![] };
@@ -222,6 +226,8 @@ impl Editor {
     /// Removes the selection (into `b`) and returns where the caret is afterwards.
     fn delete_selection(&self, b: &mut Batch) -> Result<Option<Pos>, ChangeError> {
         let Some((s, e)) = self.ordered() else { return Ok(None) }; if s == e { return Ok(Some(s)) }
+        // cells of a table are selected: nothing is joined across cells (the cells' own commands empty or remove them)
+        if self.cell_rect().is_some() { return Ok(self.sel.map(|x| x.focus)) }
         if s.block == e.block {
             let blk = self.doc.get(s.block).unwrap();
             if blk.kind.is_text() { b.edit(s.block, s.at, e.at - s.at, "")?; return Ok(Some(s)) }

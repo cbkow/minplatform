@@ -728,9 +728,9 @@ impl App {
         if self.files.tmenu.take().is_some() { let now = self.now_ms(); self.follow = true; let label = label.trim_start_matches("\u{2713} ");
             let d = match label {
                 "Insert Row Above" => self.ed.table_insert(false, false, now), "Insert Row Below" => self.ed.table_insert(false, true, now), "Move Row Up" => self.ed.table_move(false, false, now), "Move Row Down" => self.ed.table_move(false, true, now),
-                "Duplicate Row" => self.ed.table_duplicate(false, now), "Delete Row" => self.ed.table_remove(false, now), "No Header Row" | "First Row Is a Header" => self.ed.table_header(now),
+                "Duplicate Row" => self.ed.table_duplicate(false, now), "Delete Row" => if self.ed.cells_whole() == Some(false) { self.ed.cells_delete(now) } else { self.ed.table_remove(false, now) }, "No Header Row" | "First Row Is a Header" => self.ed.table_header(now),
                 "Insert Column Left" => self.ed.table_insert(true, false, now), "Insert Column Right" => self.ed.table_insert(true, true, now), "Move Column Left" => self.ed.table_move(true, false, now), "Move Column Right" => self.ed.table_move(true, true, now),
-                "Duplicate Column" => self.ed.table_duplicate(true, now), "Delete Column" => self.ed.table_remove(true, now),
+                "Duplicate Column" => self.ed.table_duplicate(true, now), "Delete Column" => if self.ed.cells_whole() == Some(true) { self.ed.cells_delete(now) } else { self.ed.table_remove(true, now) },
                 "Align Left" => self.ed.table_column(|c| c.align = 0, now), "Align Centre" => self.ed.table_column(|c| c.align = 1, now), "Align Right" => self.ed.table_column(|c| c.align = 2, now), "Automatic Width" => self.ed.table_column(|c| c.width = None, now),
                 "Text Column" => { self.column_kind(0, false); return } "Choice Column" => { self.column_kind(1, false); return } "Check Column" => { self.column_kind(2, false); return } "Timecode Column" => { self.column_kind(3, false); return }
                 "Edit Options\u{2026}" => { self.choice_open("", true); return }
@@ -1208,6 +1208,14 @@ impl App {
     fn paste(&mut self, mode: Paste) -> Dirty {
         let now = self.now_ms();
         let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+        // in a table (row 319): cells copied in minNotes, or a spreadsheet's text, fill cells from the caret's cell
+        if !self.ed.in_blocks() && self.ed.table_pos().is_some() {
+            let told = |me: &mut App, r: Result<(Dirty, usize), mn_doc::ChangeError>| -> Dirty { me.follow = true; me.layout = None; match r { Ok((d, left)) => { if left > 0 { me.notice = Some((format!("{left} column(s) did not fit in the table and were left out"), Instant::now() + std::time::Duration::from_secs(6))); } d } Err(e) => { eprintln!("paste: {e:?}"); Dirty::Nothing } } };
+            if matches!(mode, Paste::Rich) { let html = self.clipboard.as_mut().and_then(|cb| cb.get().html().ok());
+                let own = html.as_deref().and_then(clip::from_html).or_else(|| match (&text, &self.block_clip) { (Some(t), Some((bt, c))) if t == bt => Some((c.clone(), true)), _ => None });
+                if let Some((c, true)) = own { if let Some(r) = self.ed.paste_table_clip(&c, now) { return told(self, r) } } }
+            if let Some(t) = text.as_deref().filter(|t| t.contains('\t')) { let r = self.ed.paste_grid_text(t, now); return told(self, r) }
+        }
         // into a typed cell: the text becomes the cell's value (a choice's option - a new one when there is none of that name)
         if !self.ed.in_blocks() && self.ed.typed_cell().is_some() { self.follow = true; let d = text.and_then(|t| self.ed.cell_put_text(&t, now).ok().flatten()).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.layout = None; } return d }
         let frag = |me: &mut App, c: mn_edit::Clip| { me.follow = true; match me.ed.paste_fragment(&c, now) { Ok((d, refused)) => { if refused > 0 { me.notice = Some((format!("{refused} block(s) cannot go there and were left out"), Instant::now() + std::time::Duration::from_secs(6))); } d } Err(e) => { eprintln!("paste: {e:?}"); Dirty::Nothing } } };
@@ -1236,6 +1244,8 @@ impl App {
             if c.len() == 1 && c[0].len() == 1 && matches!(c[0][0].kind, Kind::Media { .. }) && pixels(self) { return Dirty::Nothing }
             return frag(self, c) }
         if pixels(self) { return Dirty::Nothing }
+        // a spreadsheet's text with no markup beside it: a table of its own
+        if let Some(t) = text.as_deref().filter(|t| t.contains('\t') && t.trim_end().contains('\n') && !self.ed.in_blocks()) { self.follow = true; if let Ok((d, _)) = self.ed.paste_grid_text(t, now) { if d != Dirty::Nothing { self.layout = None; return d } } }
         text.map(|t| self.ed.insert(&t, now).unwrap_or(Dirty::Nothing)).unwrap_or(Dirty::Nothing)
     }
     /// Files go to the helpers to become blocks at `at`.
@@ -1474,6 +1484,17 @@ impl App {
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
         let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
+        // cells of a table are selected (row 319): Delete empties them (whole rows / columns go), Cmd+C / X carry them as a
+        // small table and as a spreadsheet's text, Escape lets them go; nothing is typed over them
+        if !self.ed.in_blocks() && !self.blank && self.ed.cell_rect().is_some() { match key {
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) => { self.follow = true; let d = self.ed.cells_delete(now).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+            Key::Named(NamedKey::Escape) => { if let Some(f) = self.ed.selection().map(|x| x.focus) { self.ed.set_selection(Some(mn_edit::Selection::caret(f))); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+            Key::Character(c) if cmd && !shift && !alt && matches!(c.to_lowercase().as_str(), "c" | "x") => { let text = self.ed.cells_text();
+                if let Some(clip) = self.ed.copy_cells() { if let Some(cb) = self.clipboard.as_mut() { if cb.set_html(clip::html(&clip, true), Some(text.clone())).is_err() { let _ = cb.set_text(text.clone()); } } self.block_clip = Some((text, clip)); }
+                if c.to_lowercase() == "x" { let d = self.ed.cells_clear(now).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+            Key::Character(_) if !cmd => return,
+            Key::Named(NamedKey::Enter) if !cmd => return,
+            _ => {} } }
         // a typed cell (row 317, stage 3): a choice opens its picker (a letter goes into its field), a check goes to its
         // next state; neither takes typing. Enter in a timecode cell writes it as a timecode.
         if !cmd && !alt && !self.ed.in_blocks() && !self.blank { if let Some(tc) = self.ed.typed_cell() {
@@ -1655,6 +1676,8 @@ impl ApplicationHandler for App {
                     self.apply(Dirty::Structure); self.follow = true;
                     match which.as_str() { "5" => self.choice_open("", false), "6" => self.choice_open("", true), "8" => self.table_menu(true, 700.0, 300.0), _ => { let _ = self.ed.tab_cell(false, t + 58_000); self.column_kind(3, false); } }
                     return }
+                // MN_TABLE=9: a rectangle of cells is selected (as a drag from cell to cell would); 10: the caret's whole row
+                if matches!(std::env::var("MN_TABLE").as_deref(), Ok("9") | Ok("10")) { if let Some((table, _, _)) = self.ed.table_pos() { if std::env::var("MN_TABLE").as_deref() == Ok("9") { self.ed.select_cells(table, (1, 0), (2, 1)); } else { let _ = self.ed.tab_cell(true, t + 50_000); let _ = self.ed.tab_cell(true, t + 50_000); self.ed.select_line(false, false); } } self.apply(Dirty::Structure); return }
                 if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) {} else if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
                 else { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000); }
                 self.apply(Dirty::Structure); }
@@ -1916,8 +1939,7 @@ impl ApplicationHandler for App {
                         if let (Some(Kind::Table { .. }), Some(l)) = (self.ed.doc.get(ui.table).map(|b| b.kind.clone()), self.layout.as_ref()) { let before = self.ed.doc.get(ui.table).unwrap().kind.clone();
                             let w = self.ed.doc.children(Some(ui.table)).first().and_then(|r| self.ed.doc.children(Some(*r)).get(*col)).and_then(|c| l.rect(&self.ed.doc, *c)).map(|q| q.width() / s).unwrap_or(160.0);
                             self.files.col_drag = Some((ui.table, *col, position.x, w, before)); self.set_cursor(); return } } }
-                    if ui.row.contains(pt) { self.table_menu(false, position.x, position.y); return }
-                    if ui.col.contains(pt) { self.table_menu(true, position.x, position.y); return }
+                    if ui.row.contains(pt) || ui.col.contains(pt) { let column = ui.col.contains(pt); let shift = self.mods.0; self.ed.select_line(column, shift); if !shift { self.table_menu(column, position.x, position.y); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                     if ui.add_row.contains(pt) || ui.add_col.contains(pt) { let column = ui.add_col.contains(pt); let now = self.now_ms();
                         // the caret goes to the table's last row (its last column) first: the new one follows it
                         if let Some((table, r, c)) = self.ed.table_pos() { let rows = self.ed.doc.children(Some(table)).to_vec(); let row = if column { rows.get(r) } else { rows.last() }.copied();

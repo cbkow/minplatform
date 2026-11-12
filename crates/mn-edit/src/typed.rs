@@ -21,7 +21,7 @@ pub fn chosen(text: &str, spans: &Spans) -> Option<String> {
     let sp = spans.as_slice().iter().find(|s| matches!(s.mark, Mark::Choice(_)))?; if text.is_empty() { return None }
     let Mark::Choice(p) = &sp.mark else { return None }; serde_json::from_str::<serde_json::Value>(p).ok()?.get("v")?.as_str().map(str::to_string)
 }
-fn chip(options: &[ChoiceOption], id: &str) -> (String, Spans) {
+pub(crate) fn chip(options: &[ChoiceOption], id: &str) -> (String, Spans) {
     let Some(o) = options.iter().find(|o| o.id == id) else { return (String::new(), Spans::new()) };
     let mut s = Spans::new(); if !o.label.is_empty() { s.put(0, o.label.len(), Mark::Choice(payload(options, id))); } (o.label.clone(), s)
 }
@@ -87,7 +87,7 @@ impl Editor {
     pub fn cell_value(&self, cell: BlockId) -> Option<String> { let p = self.doc.get(*self.doc.children(Some(cell)).first()?)?; chosen(&p.text, &p.spans) }
 
     /// A cell is made ONE paragraph with this text and these spans; where the caret may stand in it.
-    fn write_cell(&self, b: &mut crate::Batch, cell: BlockId, text: &str, spans: Spans) -> Result<Pos, ChangeError> {
+    pub(crate) fn write_cell(&self, b: &mut crate::Batch, cell: BlockId, text: &str, spans: Spans) -> Result<Pos, ChangeError> {
         let kids = b.scratch.children(Some(cell)).to_vec();
         if let [one] = kids[..] { let blk = b.scratch.get(one).unwrap().clone();
             if blk.kind == Kind::Paragraph && blk.children.is_empty() {
@@ -106,7 +106,7 @@ impl Editor {
         let Some((head, mut cols)) = self.table_spec(table) else { return Ok(()) }; let Some(spec) = cols.get_mut(col) else { return Ok(()) }; spec.kind = kind;
         let old = b.scratch.get(table).unwrap().kind.clone(); let new = Kind::Table { header_rows: head, columns: cols }; if old != new { b.push(Change::Kind { id: table, old, new })?; } Ok(())
     }
-    fn finish(&mut self, b: crate::Batch, caret: Option<Pos>, now_ms: u64) -> Result<Dirty, ChangeError> {
+    pub(crate) fn finish(&mut self, b: crate::Batch, caret: Option<Pos>, now_ms: u64) -> Result<Dirty, ChangeError> {
         let keep = self.sel; let d = self.commit(b, caret, now_ms + mn_doc::change::JOIN_MS + 1)?;
         if caret.is_none() { self.sel = keep.and_then(|s| self.live(s)).or_else(|| self.sel); if let Some(m) = self.marks.last_mut() { m.1 = self.sel; } }
         Ok(d)
@@ -203,7 +203,7 @@ impl Editor {
         self.finish(b, caret, now_ms)
     }
 }
-fn check_state(v: &str) -> &'static str {
+pub(crate) fn check_state(v: &str) -> &'static str {
     match v.trim().to_lowercase().as_str() { "[x]" | "done" | "2" => "2", "[/]" | "doing" | "1" => "1", _ => "0" }
 }
 

@@ -5,9 +5,9 @@
 use mn_doc::{Block, BlockId, Change, ChangeError, ColumnSpec, Kind, Rank, Spans};
 use crate::{end_of, paragraph, Dirty, Editor, Pos};
 
-fn bare(kind: Kind, parent: Option<BlockId>) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind, text: String::new(), spans: Spans::new(), conflict: None, children: vec![] } }
+pub(crate) fn bare(kind: Kind, parent: Option<BlockId>) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind, text: String::new(), spans: Spans::new(), conflict: None, children: vec![] } }
 /// A row of `n` cells, each with an empty paragraph, as an insert takes it (the row first); and its cells' paragraphs.
-fn row_tree(table: BlockId, n: usize) -> (Vec<Block>, Vec<BlockId>) {
+pub(crate) fn row_tree(table: BlockId, n: usize) -> (Vec<Block>, Vec<BlockId>) {
     let mut row = bare(Kind::row(), Some(table)); let (mut rest, mut firsts) = (vec![], vec![]);
     for _ in 0..n { let mut cell = bare(Kind::cell(), Some(row.id)); let p = paragraph(Some(cell.id), ""); row.children.push(cell.id); cell.children.push(p.id); firsts.push(p.id); rest.push(cell); rest.push(p); }
     let mut tree = vec![row]; tree.extend(rest); (tree, firsts)
@@ -108,9 +108,9 @@ impl Editor {
         let n = self.doc.children(Some(table)).iter().map(|r| self.doc.children(Some(*r)).len()).max().unwrap_or(0).max(columns.len());
         let mut c = columns.clone(); c.resize(n, ColumnSpec::default()); Some((*header_rows, c))
     }
-    fn first_in(&self, cell: BlockId) -> Option<Pos> { let mut id = *self.doc.children(Some(cell)).first()?; while let Some(n) = self.doc.get(id).and_then(|b| b.children.first().copied()) { id = n; } Some(Pos { block: id, at: 0 }) }
+    pub(crate) fn first_in(&self, cell: BlockId) -> Option<Pos> { let mut id = *self.doc.children(Some(cell)).first()?; while let Some(n) = self.doc.get(id).and_then(|b| b.children.first().copied()) { id = n; } Some(Pos { block: id, at: 0 }) }
     /// The caret's blocks under fresh identities (a row or a cell with all it holds), its top under `parent`.
-    fn copy_of(&self, id: BlockId, parent: Option<BlockId>) -> Result<Vec<Block>, ChangeError> {
+    pub(crate) fn copy_of(&self, id: BlockId, parent: Option<BlockId>) -> Result<Vec<Block>, ChangeError> {
         let Change::Remove { blocks, .. } = Change::removal(&self.doc, id)? else { return Ok(vec![]) };
         let ids: std::collections::HashMap<BlockId, BlockId> = blocks.iter().map(|x| (x.id, BlockId::new())).collect();
         let mut out: Vec<Block> = blocks.iter().map(|x| { let mut n = x.clone(); n.id = ids[&x.id]; n.parent = x.parent.and_then(|q| ids.get(&q).copied()); n.children = x.children.iter().map(|c| ids[c]).collect(); n.conflict = None; n }).collect();
