@@ -291,6 +291,8 @@ impl NoteLayout {
     /// The host's sideways scrolls of wide tables (kept by it across layouts), each held within what its table has.
     pub fn set_table_scrolls(&mut self, scrolls: &HashMap<BlockId, f32>) { self.scrolls = scrolls.iter().filter_map(|(id, x)| { let full = *self.wide.get(id)?; let vis = self.boxes.get(id)?.w; Some((*id, x.clamp(0.0, (full - vis).max(0.0)))) }).collect(); }
     /// A wide table: (its whole width, the width that shows, how far it is scrolled); None for a table that fits.
+    /// The tables wider than their place.
+    pub fn wide_tables(&self) -> Vec<BlockId> { self.wide.keys().copied().collect() }
     pub fn table_scroll(&self, id: BlockId) -> Option<(f32, f32, f32)> { let full = *self.wide.get(&id)?; Some((full, self.boxes.get(&id)?.w, self.scrolls.get(&id).copied().unwrap_or(0.0))) }
     /// The wide table a block is in (itself excluded), if any.
     pub fn wide_table_of(&self, doc: &Doc, id: BlockId) -> Option<BlockId> { let mut up = doc.get(id)?.parent; while let Some(p) = up { if self.wide.contains_key(&p) { return Some(p) } up = doc.get(p)?.parent; } None }

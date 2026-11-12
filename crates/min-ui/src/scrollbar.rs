@@ -8,8 +8,9 @@ use std::time::Instant;
 use vello::Scene;
 
 pub struct ScrollBar { pub offset: f64, content: f64, view: Rect, scale: f64, hover: bool, inside: bool, drag: Option<(f64, f64)>, last: Option<Instant>, widen: Ramp, /// along the bottom edge, scrolling sideways (the Notes cards row)
-    pub horizontal: bool }
-impl Default for ScrollBar { fn default() -> Self { ScrollBar { offset: 0.0, content: 0.0, view: Rect::ZERO, scale: 1.0, hover: false, inside: false, drag: None, last: None, horizontal: false, widen: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } } }
+    pub horizontal: bool, /// shown whether or not the pointer is over the box (a page's own content, where nothing appears with the pointer)
+    pub always: bool }
+impl Default for ScrollBar { fn default() -> Self { ScrollBar { offset: 0.0, content: 0.0, view: Rect::ZERO, scale: 1.0, hover: false, inside: false, drag: None, last: None, horizontal: false, always: false, widen: Ramp::new(0.0, t::ANIMATION_DURATION_HOVER) } } }
 
 impl ScrollBar {
     /// The visible box and the content's full height (px).
@@ -55,7 +56,7 @@ impl ScrollBar {
     pub fn paint(&self, scene: &mut Scene, now: Instant) {
         let Some(th) = self.thumb() else { return };
         let recent = self.last.is_some_and(|t0| now.duration_since(t0).as_millis() as u32 <= t::BANDS_HIDE_DELAY);
-        if !(self.inside || recent || self.drag.is_some()) { return }
+        if !(self.always || self.inside || recent || self.drag.is_some()) { return }
         let c = if self.hover || self.drag.is_some() { t::SCROLLBAR_COLOR_HOVER } else { t::SCROLLBAR_COLOR };
         // the rail's widening: the pill grows inward to twice its width under the pointer
         let k = 1.0 + self.widen.value(now) as f64;

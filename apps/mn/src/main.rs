@@ -72,6 +72,12 @@ struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Colle
 /// What stands around the table the caret is in (row 317, ruling 6: only that table has them, and nothing comes or goes
 /// with the pointer): a handle beside the caret's row and one above its column (their menus), a strip under the table
 /// and one at its right (a row, a column, at the end), and the columns' right borders (dragged to set a width).
+/// Each wide table's bar is placed over the room under its rows and given the table's scroll.
+fn sync_bars(bars: &mut std::collections::HashMap<BlockId, min_ui::ScrollBar>, l: &NoteLayout, doc: &Doc, off: kurbo::Vec2, s: f64) {
+    let wide = l.wide_tables(); bars.retain(|id, b| wide.contains(id) || b.dragging());
+    for id in wide { let (Some(r), Some((full, _, at))) = (l.rect(doc, id), l.table_scroll(id)) else { continue };
+        let b = bars.entry(id).or_insert_with(|| { let mut b = min_ui::ScrollBar::horizontal(); b.always = true; b }); b.set(r + off, full as f64, s); b.offset = at as f64; }
+}
 struct TableUi { table: BlockId, row: Rect, col: Rect, add_row: Rect, add_col: Rect, borders: Vec<(usize, f64)>, y: (f64, f64) }
 fn table_ui(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<TableUi> {
     let (table, r, c) = ed.table_pos()?; let rows = ed.doc.children(Some(table)); let cells = ed.doc.children(Some(*rows.get(r)?));
@@ -120,6 +126,8 @@ struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edi
     /// column, where the pointer took hold, the width then, the table's kind before)
     /// wide tables' sideways scrolls (kept across layouts)
     tscroll: std::collections::HashMap<BlockId, f32>,
+    /// their bars (min-ui's overlay scrollbar, along the bottom, always shown)
+    tbars: std::collections::HashMap<BlockId, min_ui::ScrollBar>,
     tmenu: Option<bool>, col_drag: Option<(BlockId, usize, f64, f64, Kind)>,
     tool: Option<qcv_annotate::Tool>, pen: Option<[f32; 4]>, pen_w: Option<f32>, drawing: bool, annot_due: Option<(String, Instant)>, clean: Option<(String, Arc<Vec<u8>>, (u32, u32))>, pal_pen: bool,
     note_field: Option<(BlockId, String, min_ui::TextField)>, /// the last press on a note's small picture (a second one soon after opens its words)
@@ -316,6 +324,7 @@ impl App {
         { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
         let (mut turned, mut noted) = (vec![], vec![]);
         if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.player.as_ref().filter(|_| !self.files.hide_notes || self.files.tool.is_some()).map(|p| &p.ann), self.files.hide_notes, off.x, off.y, view) { g.window.request_redraw(); }
+        if !self.blank { let now = Instant::now(); sync_bars(&mut self.files.tbars, l, &self.ed.doc, off, s); for b in self.files.tbars.values() { if b.thumb().is_some_and(|t| t.y0 >= view.y0 && t.y1 <= view.y1) { b.paint(scene, now); } if b.animating(now) { g.window.request_redraw(); } } }
         // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
         for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
         // a video whose clip got its first note (or lost its last): its block gains (or loses) the row of the notes' pictures
@@ -1058,6 +1067,18 @@ impl App {
         if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    /// A pointer event goes to the wide tables' bars first: true when a bar took it (a press on its thumb, a drag).
+    fn table_bar_event(&mut self, e: min_ui::Event) -> bool {
+        if self.blank || self.confirm.is_some() { return false }
+        let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let s = g.window.scale_factor(); let now = Instant::now();
+        sync_bars(&mut self.files.tbars, l, &self.ed.doc, kurbo::Vec2::new(self.side_w + MARGIN * s, self.top + PAD * s - self.scroll), s);
+        let (mut mine, mut redraw) = (false, false); let top = self.top;
+        for (id, b) in self.files.tbars.iter_mut() { if matches!(e, min_ui::Event::Down { y, .. } if y < top) { continue }
+            let (changed, m) = b.event(&e, now); mine |= m; redraw |= changed || m;
+            if (b.offset as f32 - self.files.tscroll.get(id).copied().unwrap_or(0.0)).abs() > 0.25 { self.files.tscroll.insert(*id, b.offset as f32); } }
+        if redraw { let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        mine
+    }
     fn table_ui(&self) -> Option<TableUi> {
         if self.blank || self.confirm.is_some() { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
@@ -1723,6 +1744,7 @@ impl ApplicationHandler for App {
                 let taken = !self.pressed && self.chrome_pointer(min_ui::Event::Move { x: position.x, y: position.y });
                 self.set_cursor();
                 if taken { return }
+                if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.pressed && !self.blank { if let Some(l) = self.layout.as_ref() { let (x, y) = self.note_point(self.pointer); self.ed.point(l, x, y, true); self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
@@ -1733,6 +1755,7 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
+                if self.table_bar_event(e) { return }
                 // a note's words being typed: a press outside the field keeps them
                 if state == ElementState::Pressed && self.files.note_field.as_ref().is_some_and(|(_, _, f)| !f.hit(position.x, position.y)) { self.note_words_end(true); }
                 if self.files.note_field.is_some() { let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } }; if let (Some((_, _, f)), Some(g)) = (self.files.note_field.as_mut(), self.gpu.as_mut()) { f.pointer(&e, &mut g.fonts); g.window.request_redraw(); } return }

@@ -94,10 +94,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
         let Some(r) = layout.rect(doc, b.id) else { continue };
         let r = r + kurbo::Vec2::new(ox, oy);
         if let (Kind::Table { .. }, Some((full, vis, at))) = (&b.kind, layout.table_scroll(b.id)) {
-            // the bar under its rows: the part of the table that shows, within the whole
-            let bar = mn_layout::TABLE_BAR as f64 * s; let track = Rect::new(r.x0, r.y1 - bar + 4.0 * s, r.x1, r.y1 - bar + 7.0 * s);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, line(), None, &RoundedRect::from_rect(track, 1.5 * s));
-            let k = track.width() / full.max(1.0) as f64; scene.fill(Fill::NonZero, Affine::IDENTITY, dim(), None, &RoundedRect::from_rect(Rect::new(track.x0 + at as f64 * k, track.y0, track.x0 + (at + vis) as f64 * k, track.y1), 1.5 * s));
+            let bar = mn_layout::TABLE_BAR as f64 * s; let _ = (full, vis, at);   // the bar itself is min-ui's (the window paints it)
             scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &Rect::new(r.x0 - s, r.y0 - s, r.x1 + s, r.y1 - bar + s)); clipped.push(b.id);
         }
         if r.y1 < view.y0 || r.y0 > view.y1 { continue }
