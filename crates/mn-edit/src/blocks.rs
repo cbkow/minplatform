@@ -245,4 +245,14 @@ impl Editor {
         self.sel = keep.and_then(|s| self.live(s)); if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
         Ok(refused)
     }
+    /// The text selection as loose blocks - each touched block cut down to its selected part, formatting kept - for
+    /// the formatted text a copy writes (not for pasting back as blocks).
+    pub fn selected_fragment(&self) -> Clip {
+        let Some((a, z)) = self.ordered() else { return vec![] }; let l = crate::leaves(&self.doc);
+        let (Some(i), Some(j)) = (l.iter().position(|x| *x == a.block), l.iter().position(|x| *x == z.block)) else { return vec![] };
+        l[i..=j].iter().filter_map(|id| { let mut b = self.doc.get(*id)?.clone(); b.parent = None; b.children.clear();
+            if b.kind.is_text() { let (s, e) = (if *id == a.block { a.at } else { 0 }, if *id == z.block { z.at } else { b.text.len() }); if e < s { return None }
+                let _ = b.spans.split(e); let right = b.spans.split(s); b.spans = right; b.text = b.text[s..e].to_string(); }
+            Some(vec![b]) }).collect()
+    }
 }

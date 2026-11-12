@@ -35,6 +35,7 @@ mod sidebar;
 mod toolbar;
 mod footer;
 mod colours;
+mod clip;
 #[cfg(target_os = "macos")]
 mod text_element;
 
@@ -531,7 +532,7 @@ impl App {
             if !self.ed.in_block_selection(hit) { self.ed.point(l, nx, ny, false); if !self.ed.toggle_blocks() { return } }
             let Some(g) = self.gpu.as_mut() else { return };
             let mac = cfg!(target_os = "macos"); let k = |m: &str, w: &str| if mac { m.to_string() } else { w.to_string() };
-            let items = vec![I::with_shortcut("Cut", true, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", true, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", self.block_clip.is_some(), &k("\u{2318}V", "Ctrl+V")), I::Separator,
+            let items = vec![I::with_shortcut("Cut", true, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", true, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", true, &k("\u{2318}V", "Ctrl+V")), I::Separator,
                 I::with_shortcut("Duplicate", true, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", true, "\u{232b}"), I::Separator,
                 I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", "")), I::Separator, I::action("Move to Note\u{2026}", true), I::action("Copy to Note\u{2026}", true)];
             let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
@@ -823,7 +824,7 @@ impl App {
             Key::Character(c) if blocks && cmd && !shift && matches!(c.to_lowercase().as_str(), "a" | "c" | "x") => {
                 if c.to_lowercase() == "a" { self.ed.select_all_blocks(); Dirty::Nothing } else {
                     let text = self.ed.selected_text();
-                    if let Some(clip) = self.ed.copy_blocks() { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(text.clone()); } self.block_clip = Some((text, clip)); }
+                    if let Some(clip) = self.ed.copy_blocks() { if let Some(cb) = self.clipboard.as_mut() { if cb.set_html(clip::html(&clip, true), Some(text.clone())).is_err() { let _ = cb.set_text(text.clone()); } } self.block_clip = Some((text, clip)); }
                     if c.to_lowercase() == "x" { self.ed.delete_blocks(now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } } }
             Key::Character(_) if blocks && !cmd => return,
             Key::Named(NamedKey::ArrowLeft) => { self.ed.move_caret(l, mv(Move::Left, Move::WordLeft, Move::LineStart), shift); Dirty::Nothing }
@@ -846,12 +847,16 @@ impl App {
                 "d" => { self.follow = true; self.ed.duplicate_blocks(now).unwrap_or(Dirty::Nothing) }
                 "s" => { self.save(); return }
                 "z" => self.undo_redo(shift),
-                "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(t); } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
-                "v" => match self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
-                    // the clipboard still holds what a copy of blocks put there: the blocks come back, after the caret's block
-                    Some(t) if self.block_clip.as_ref().is_some_and(|(text, _)| *text == t) => { let clip = self.block_clip.as_ref().unwrap().1.clone(); self.follow = true;
-                        match self.ed.paste_blocks(&clip, now) { Ok((d, refused)) => { if refused > 0 { eprintln!("paste: {refused} block(s) cannot go there and were left out"); } d } Err(_) => Dirty::Nothing } }
-                    Some(t) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), None => Dirty::Nothing },
+                "c" | "x" => { let t = self.ed.selected_text(); if !t.is_empty() { self.block_clip = None; let frag = self.ed.selected_fragment(); if let Some(cb) = self.clipboard.as_mut() { if cb.set_html(clip::html(&frag, false), Some(t.clone())).is_err() { let _ = cb.set_text(t); } } } if c.to_lowercase() == "x" { self.ed.delete(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
+                "v" => {
+                    // blocks that minNotes copied come back as blocks (they ride in the clipboard's HTML; `block_clip` is the
+                    // fallback where the HTML cannot be read back); anything else is pasted as plain text
+                    let html = self.clipboard.as_mut().and_then(|cb| cb.get().html().ok());
+                    let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+                    let blocks = html.as_deref().and_then(clip::from_html).or_else(|| match (&text, &self.block_clip) { (Some(t), Some((bt, c))) if t == bt => Some(c.clone()), _ => None });
+                    match (blocks, text) {
+                        (Some(clip), _) => { self.follow = true; match self.ed.paste_blocks(&clip, now) { Ok((d, refused)) => { if refused > 0 { eprintln!("paste: {refused} block(s) cannot go there and were left out"); } d } Err(_) => Dirty::Nothing } }
+                        (None, Some(t)) => self.ed.insert(&t, now).unwrap_or(Dirty::Nothing), _ => Dirty::Nothing } }
                 _ => return,
             },
             // typed text — one key event may carry several characters (a writing tool's correction, the spike S9)
