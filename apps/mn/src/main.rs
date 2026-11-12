@@ -340,7 +340,7 @@ impl App {
             let r = r + off; let k = r.width() / t.w.max(1.0) as f64;
             for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // a note's words being typed: the field lies over the caption's place on the playing video's picture
-        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match l.rect(&self.ed.doc, p.cell) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); } None => gone = true } } if gone { self.files.picker = None; } }
+        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match l.rect(&self.ed.doc, p.cell) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
@@ -1158,7 +1158,11 @@ impl App {
                 I::action(if head > 0 { "No Header Row" } else { "First Row Is a Header" }, true), I::Separator, I::action("Delete Row", rows > 1)] };
         let Some(g) = self.gpu.as_mut() else { return }; let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
         self.files.tmenu = Some(column); self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear();
-        self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
+        // a ticked item: the tick is the menu's own (the text face has no check mark)
+        let checks: Vec<Option<bool>> = items.iter().map(|it| match it { I::Action { label, .. } => Some(label.starts_with("\u{2713} ")), _ => None }).collect();
+        let items: Vec<I> = items.into_iter().map(|it| match it { I::Action { label, enabled, shortcut } => I::Action { label: label.trim_start_matches("\u{2713} ").to_string(), enabled, shortcut }, x => x }).collect();
+        let checks = if checks.iter().any(|c| *c == Some(true)) { checks } else { vec![] };
+        self.ctx.open_checked_at(items, checks, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
         #[cfg(target_os = "macos")] text_element::changed(false);
         g.window.request_redraw();
     }
@@ -1645,11 +1649,11 @@ impl ApplicationHandler for App {
                     if std::env::var("MN_TABLE").as_deref() == Ok("4") { for _ in 0..6 { let _ = self.ed.tab_cell(true, t + 60_000); } } self.follow = true; }
                 // MN_TABLE=5|6|7: the Status column becomes a choice (its values the options), the Shot column a check (one cycled to done);
                 // 5 opens the picker on a Status cell, 6 its options' editor, 7 asks before the Note column (rich cells) becomes a timecode
-                if matches!(std::env::var("MN_TABLE").as_deref(), Ok("5") | Ok("6") | Ok("7")) { let which = std::env::var("MN_TABLE").unwrap_or_default();
+                if matches!(std::env::var("MN_TABLE").as_deref(), Ok("5") | Ok("6") | Ok("7") | Ok("8")) { let which = std::env::var("MN_TABLE").unwrap_or_default();
                     let _ = self.ed.table_set_kind(ColumnKind::Choice { options: vec![] }, t + 50_000); let _ = self.ed.tab_cell(true, t + 51_000); let _ = self.ed.table_set_kind(ColumnKind::Check, t + 52_000);
                     let _ = self.ed.cell_check_cycle(t + 54_000); let _ = self.ed.cell_check_cycle(t + 56_000); let _ = self.ed.tab_cell(false, t + 57_000);
                     self.apply(Dirty::Structure); self.follow = true;
-                    match which.as_str() { "5" => self.choice_open("", false), "6" => self.choice_open("", true), _ => { let _ = self.ed.tab_cell(false, t + 58_000); self.column_kind(3, false); } }
+                    match which.as_str() { "5" => self.choice_open("", false), "6" => self.choice_open("", true), "8" => self.table_menu(true, 700.0, 300.0), _ => { let _ = self.ed.tab_cell(false, t + 58_000); self.column_kind(3, false); } }
                     return }
                 if matches!(std::env::var("MN_TABLE").as_deref(), Ok("3") | Ok("4")) {} else if std::env::var("MN_TABLE").as_deref() == Ok("2") { let _ = self.ed.tab_cell(true, t + 32_000); let _ = self.ed.table_column(|c| { c.align = 2; c.width = Some(220); }, t + 33_000); let _ = self.ed.table_move(false, false, t + 34_000); }
                 else { self.ed.move_caret(self.layout.as_ref().unwrap(), Move::DocEnd, false); let _ = self.ed.insert("Beside this paragraph a column is made.", t + 40_000); let _ = self.ed.insert_columns(t + 42_000); let _ = self.ed.insert("The second column.", t + 44_000); }

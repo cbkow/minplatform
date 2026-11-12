@@ -15,17 +15,21 @@ impl MenuItem {
     pub fn with_shortcut(label: &str, enabled: bool, shortcut: &str) -> MenuItem { MenuItem::Action { label: label.to_string(), enabled, shortcut: shortcut.to_string() } }
 }
 
-pub struct Menu { pub items: Vec<MenuItem>, pub popover: Popover, hover: Option<usize>, pressed: Option<usize>, scale: f64 }
+pub struct Menu { pub items: Vec<MenuItem>, pub popover: Popover, hover: Option<usize>, pressed: Option<usize>, scale: f64, /// a tick per item (Some = a checkable row); empty = no row is checkable
+    checks: Vec<Option<bool>> }
 
 impl Menu {
-    pub fn new() -> Menu { Menu { items: vec![], popover: Popover::new(""), hover: None, pressed: None, scale: 1.0 } }
+    pub fn new() -> Menu { Menu { items: vec![], popover: Popover::new(""), hover: None, pressed: None, scale: 1.0, checks: vec![] } }
     pub fn is_open(&self) -> bool { self.popover.open }
     pub fn close(&mut self) { self.popover.close(); self.hover = None; self.pressed = None; }
     fn row_h(&self, i: usize) -> f64 { match self.items[i] { MenuItem::Separator => t::SPACING_100 as f64, _ => t::MENU_ITEM_HEIGHT as f64 } }
     /// Open `items` with the menu's top-left at the pointer (flipped above / clamped inside `bounds` when there is no room).
-    pub fn open_at(&mut self, items: Vec<MenuItem>, fonts: &mut Fonts, x: f64, y: f64, bounds: Rect, scale: f64) {
+    pub fn open_at(&mut self, items: Vec<MenuItem>, fonts: &mut Fonts, x: f64, y: f64, bounds: Rect, scale: f64) { self.open_checked_at(items, vec![], fonts, x, y, bounds, scale) }
+    /// As `open_at`, with checkable rows: `checks[i] = Some(ticked)` (the tick is the icon face's, in a gutter every row keeps).
+    pub fn open_checked_at(&mut self, items: Vec<MenuItem>, checks: Vec<Option<bool>>, fonts: &mut Fonts, x: f64, y: f64, bounds: Rect, scale: f64) {
+        self.checks = if checks.iter().any(|c| c.is_some()) { checks } else { vec![] }; let gutter = !self.checks.is_empty();
         self.items = items; self.scale = scale; self.hover = None; self.pressed = None;
-        let w = self.items.iter().map(|it| match it { MenuItem::Action { label, shortcut, .. } => row_width(fonts, label, shortcut, false, false), MenuItem::Separator => 0.0 }).fold(t::MENU_MIN_WIDTH as f64, f64::max);
+        let w = self.items.iter().map(|it| match it { MenuItem::Action { label, shortcut, .. } => row_width(fonts, label, shortcut, gutter, false), MenuItem::Separator => 0.0 }).fold(t::MENU_MIN_WIDTH as f64, f64::max);
         let h: f64 = (0..self.items.len()).map(|i| self.row_h(i)).sum();
         self.popover.open_at_prefer(fonts, Rect::new(x, y, x, y), w, h, bounds, scale, Placement::Below);
     }
@@ -62,12 +66,18 @@ impl Menu {
             let r = self.item_rect(i);
             match it {
                 MenuItem::Separator => paint_separator(scene, r, scale),
-                MenuItem::Action { label, enabled, shortcut } => paint_row(scene, fonts, r, &Row { label, shortcut, enabled: *enabled, hover: self.hover == Some(i), down: self.pressed == Some(i), checked: None, gutter: false, sub: false, underline: None }, scale),
+                MenuItem::Action { label, enabled, shortcut } => paint_row(scene, fonts, r, &Row { label, shortcut, enabled: *enabled, hover: self.hover == Some(i), down: self.pressed == Some(i), checked: self.checks.get(i).copied().flatten(), gutter: !self.checks.is_empty(), sub: false, underline: None }, scale),
             }
         }
     }
 }
 
+/// A menu's row drawn for a list that is not a `Menu` (a picker with a field over its rows): the same fill, face and tick.
+pub fn row(scene: &mut Scene, fonts: &mut Fonts, r: Rect, label: &str, enabled: bool, hover: bool, checked: Option<bool>, gutter: bool, scale: f64) {
+    paint_row(scene, fonts, r, &Row { label, shortcut: "", enabled, hover, down: false, checked, gutter, sub: false, underline: None }, scale)
+}
+/// A menu's separator, for such a list.
+pub fn separator(scene: &mut Scene, r: Rect, scale: f64) { paint_separator(scene, r, scale) }
 /// One row of a menu — the context menu's and the menu bar's popups share it (QCView's `ThemedMenuItem`): the rounded
 /// hover / down fill, the label at the edge (after a check gutter when the menu has checkable rows), the shortcut right-
 /// aligned in the disabled colour, a caret for a submenu, the mnemonic underlined while the keyboard drives the menu.
