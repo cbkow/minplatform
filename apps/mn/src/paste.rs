@@ -12,6 +12,30 @@ use mn_edit::Clip;
 
 fn block(kind: Kind, text: String, spans: Spans) -> Block { Block { id: BlockId::new(), parent: None, rank: Rank::first(), kind, text, spans, conflict: None, children: vec![] } }
 
+/// How a reader differs for a FILE that is imported (row 335) from what is pasted: an import is faithful - colours
+/// are kept (but not greys: black on white is stamped on whole documents, and a grey says nothing and is lost on a
+/// dark page), and a picture named by a file's path becomes a block (the importer finds and keeps the file).
+#[derive(Clone, Copy, Default)]
+pub struct Opts { pub colours: bool, pub local: bool }
+
+/// A CSS colour as `#rrggbb`; None for what is no colour here (transparent, a grey, something unread).
+fn colour(v: &str) -> Option<String> {
+    let v = v.split_whitespace().next().unwrap_or("").trim().to_ascii_lowercase(); let v = if v.starts_with("rgb") { v } else { v.trim_end_matches("!important").to_string() };
+    let rgb: [u8; 3] = if let Some(h) = v.strip_prefix('#') { let d: Vec<u8> = h.chars().filter_map(|c| c.to_digit(16).map(|d| d as u8)).collect();
+            match (h.len(), d.len()) { (3, 3) | (4, 4) => [d[0] * 17, d[1] * 17, d[2] * 17], (6, 6) | (8, 8) => [d[0] * 16 + d[1], d[2] * 16 + d[3], d[4] * 16 + d[5]], _ => return None } }
+        else { match v.as_str() { "red" => [255, 0, 0], "green" => [0, 128, 0], "blue" => [0, 0, 255], "yellow" => [255, 255, 0], "orange" => [255, 165, 0], "purple" => [128, 0, 128], "pink" => [255, 192, 203], "brown" => [165, 42, 42],
+            "cyan" | "aqua" => [0, 255, 255], "magenta" | "fuchsia" => [255, 0, 255], "teal" => [0, 128, 128], "navy" => [0, 0, 128], "maroon" => [128, 0, 0], "olive" => [128, 128, 0], "lime" => [0, 255, 0], "gold" => [255, 215, 0], _ => return None } };
+    if rgb.iter().max().unwrap() - rgb.iter().min().unwrap() < 24 { return None }
+    Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
+}
+/// `rgb(1, 2, 3)` / `rgba(1 2 3 / 50%)` as `#rrggbb` text for [`colour`] (nothing when it is fully clear).
+fn css_colour(v: &str) -> Option<String> {
+    let v = v.trim().to_ascii_lowercase();
+    if let Some(i) = v.find("rgb") { let inner = v[i..].split_once('(')?.1.split(')').next()?; let n: Vec<f64> = inner.split([',', ' ', '/']).filter(|x| !x.is_empty()).filter_map(|x| x.trim_end_matches('%').parse::<f64>().ok()).collect();
+        if n.len() < 3 || n.get(3).is_some_and(|a| *a == 0.0) { return None } return colour(&format!("#{:02x}{:02x}{:02x}", n[0].clamp(0.0, 255.0) as u8, n[1].clamp(0.0, 255.0) as u8, n[2].clamp(0.0, 255.0) as u8)) }
+    colour(&v)
+}
+
 // ── HTML
 
 enum Tok { Open(String, Vec<(String, String)>), Close(String), Text(String), /// Word's list marker (between `<![if !supportLists]>` and `<![endif]>`)
@@ -77,15 +101,18 @@ fn tokens(html: &str) -> Vec<Tok> {
 
 /// The marks an element's tag and `style` turn on, and whether it turns bold OFF (Google Docs wraps everything in a
 /// `<b style="font-weight:normal">`).
-fn marks_of(name: &str, at: &[(String, String)]) -> (Vec<Mark>, bool) {
+fn marks_of(name: &str, at: &[(String, String)], colours: bool) -> (Vec<Mark>, bool) {
     let mut m = match name { "b" | "strong" => vec![Mark::Bold], "i" | "em" | "cite" | "dfn" | "var" => vec![Mark::Italic], "u" | "ins" => vec![Mark::Underline], "s" | "strike" | "del" => vec![Mark::Strike], "code" | "kbd" | "tt" | "samp" => vec![Mark::Code],
         "a" => at.iter().find(|a| a.0 == "href").filter(|a| !a.1.is_empty() && !a.1.starts_with('#') && !a.1.to_ascii_lowercase().starts_with("javascript:")).map(|a| vec![Mark::Link(a.1.clone())]).unwrap_or_default(), _ => vec![] };
     let mut unbold = false;
+    if colours { if name == "mark" { m.push(Mark::Highlight("#ffd400".into())); } if name == "font" { if let Some(c) = at.iter().find(|a| a.0 == "color").and_then(|a| css_colour(&a.1)) { m.push(Mark::Color(c)); } } }
     if let Some((_, style)) = at.iter().find(|a| a.0 == "style") { for decl in style.split(';') { let Some((k, v)) = decl.split_once(':') else { continue }; let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_ascii_lowercase());
         match k.as_str() {
             "font-weight" => { let heavy = v == "bold" || v == "bolder" || v.parse::<u32>().is_ok_and(|n| n >= 600); if heavy { if !m.contains(&Mark::Bold) { m.push(Mark::Bold) } } else { m.retain(|x| *x != Mark::Bold); unbold = true; } }
             "font-style" => if v.starts_with("italic") || v.starts_with("oblique") { if !m.contains(&Mark::Italic) { m.push(Mark::Italic) } } else if v == "normal" { m.retain(|x| *x != Mark::Italic) },
             "text-decoration" | "text-decoration-line" => { if v.contains("underline") && !m.contains(&Mark::Underline) { m.push(Mark::Underline) } if v.contains("line-through") && !m.contains(&Mark::Strike) { m.push(Mark::Strike) } }
+            "color" if colours => if let Some(c) = css_colour(&v) { m.retain(|x| x.kind() != MarkKind::Color); m.push(Mark::Color(c)); },
+            "background-color" | "background" if colours => if let Some(c) = css_colour(&v) { m.retain(|x| x.kind() != MarkKind::Highlight); m.push(Mark::Highlight(c)); },
             _ => {}
         } } }
     (m, unbold)
@@ -99,7 +126,7 @@ struct Table { rows: Vec<(bool, Vec<Clip>)>, in_head: bool }
 #[derive(Default)]
 struct Reader {
     /// where finished blocks go: the result, or the cell being read (one entry per open cell)
-    sinks: Vec<Clip>, cur: Cur, inline: Vec<(String, Vec<Mark>, bool)>, lists: Vec<bool>, item: Option<Kind>, quote: usize, heading: Option<u8>, pre: usize, tables: Vec<Table>, word_list: Option<u8>,
+    sinks: Vec<Clip>, cur: Cur, inline: Vec<(String, Vec<Mark>, bool)>, lists: Vec<bool>, item: Option<Kind>, quote: usize, heading: Option<u8>, pre: usize, tables: Vec<Table>, word_list: Option<u8>, opts: Opts,
 }
 impl Reader {
     fn active(&self) -> Vec<Mark> {
@@ -147,10 +174,12 @@ impl Reader {
                 let num = |k: &str| get(k).and_then(|v| v.trim_end_matches("px").parse::<f64>().ok()).filter(|v| *v > 0.0);
                 let Some(src) = get("src").or_else(|| get("data-src")) else { return };
                 let src = if let Some(r) = src.strip_prefix("//") { format!("https://{r}") } else { src };
-                if !crate::media::remote(&src) { return }
+                if !crate::media::remote(&src) && !self.opts.local { return }
                 let (w, h) = (num("width"), num("height"));
                 if w.is_some_and(|w| w <= 32.0) && h.is_some_and(|h| h <= 32.0) { if let Some(alt) = get("alt").filter(|a| a.chars().count() <= 8) { self.text(&alt); } return }
                 self.flush();
+                // a file's picture: the importer measures it; only a width the document asked for is passed on
+                if !crate::media::remote(&src) { let d = match w { Some(w) => serde_json::json!({ "src": src, "w": w.round() as u32 }), None => serde_json::json!({ "src": src }) }; self.push(vec![block(Kind::Media { descriptor: d.to_string() }, String::new(), Spans::new())]); return }
                 let (w, h) = match (w, h) { (Some(w), Some(h)) => (w.round() as u32, h.round() as u32), _ => (480, 300) };
                 self.push(vec![block(Kind::Media { descriptor: serde_json::json!({ "src": src, "w": w, "h": h }).to_string() }, String::new(), Spans::new())]);
             }
@@ -177,7 +206,7 @@ impl Reader {
             "td" | "th" => { self.flush(); if self.tables.last().is_some_and(|t| !t.rows.is_empty()) {
                 if let Some(r) = self.tables.last_mut().and_then(|t| t.rows.last_mut()) { if name == "th" && r.1.is_empty() { r.0 = true; } }
                 self.sinks.push(vec![]); self.inline.push((format!("/{name}"), vec![], false)); } }
-            _ => { let (m, unbold) = marks_of(name, at); self.inline.push((name.to_string(), m, unbold)); }
+            _ => { let (m, unbold) = marks_of(name, at, self.opts.colours); self.inline.push((name.to_string(), m, unbold)); }
         }
     }
     fn close(&mut self, name: &str) {
@@ -203,29 +232,37 @@ impl Reader {
     fn table(&mut self, t: Table) {
         let cols = t.rows.iter().map(|r| r.1.len()).max().unwrap_or(0);
         if cols < 2 || !self.tables.is_empty() { for (_, cells) in t.rows { for cell in cells { for tree in cell { self.push(tree); } } } return }
-        let header_rows = t.rows.iter().take_while(|r| r.0).count().min(t.rows.len().saturating_sub(1)).min(255) as u8;
-        let mut table = block(Kind::Table { header_rows, columns: vec![ColumnSpec::default(); cols] }, String::new(), Spans::new()); let mut all: Vec<Block> = vec![];
-        for (_, mut cells) in t.rows {
-            cells.resize_with(cols, Vec::new);
-            let mut row = block(Kind::row(), String::new(), Spans::new()); row.parent = Some(table.id); table.children.push(row.id); let mut under: Vec<Block> = vec![];
-            for cell_trees in cells {
-                let mut cell = block(Kind::cell(), String::new(), Spans::new()); cell.parent = Some(row.id); row.children.push(cell.id); let mut inner: Vec<Block> = vec![];
-                // a cell holds leaves; a list item's depth has no meaning there but is kept
-                for mut tree in cell_trees { if tree.len() != 1 { continue } let mut b = tree.remove(0); b.parent = Some(cell.id); cell.children.push(b.id); inner.push(b); }
-                if inner.is_empty() { let mut p = block(Kind::Paragraph, String::new(), Spans::new()); p.parent = Some(cell.id); cell.children.push(p.id); inner.push(p); }
-                under.push(cell); under.extend(inner);
-            }
-            all.push(row); all.extend(under);
-        }
-        let mut tree = vec![table]; tree.extend(all); self.push(tree);
+        let tree = table_tree(t.rows, vec![ColumnSpec::default(); cols]); self.push(tree);
     }
 }
 
+/// Rows of cells (each a header row or not, each cell its blocks) as a Table's tree: the table, then every row with
+/// its cells and their leaves. A row short of cells is filled; an empty cell holds an empty paragraph.
+pub fn table_tree(rows: Vec<(bool, Vec<Clip>)>, columns: Vec<ColumnSpec>) -> Vec<Block> {
+    let cols = columns.len();
+    let header_rows = rows.iter().take_while(|r| r.0).count().min(rows.len().saturating_sub(1)).min(255) as u8;
+    let mut table = block(Kind::Table { header_rows, columns }, String::new(), Spans::new()); let mut all: Vec<Block> = vec![];
+    for (_, mut cells) in rows {
+        cells.resize_with(cols, Vec::new);
+        let mut row = block(Kind::row(), String::new(), Spans::new()); row.parent = Some(table.id); table.children.push(row.id); let mut under: Vec<Block> = vec![];
+        for cell_trees in cells {
+            let mut cell = block(Kind::cell(), String::new(), Spans::new()); cell.parent = Some(row.id); row.children.push(cell.id); let mut inner: Vec<Block> = vec![];
+            // a cell holds leaves; a list item's depth has no meaning there but is kept
+            for mut tree in cell_trees { if tree.len() != 1 { continue } let mut b = tree.remove(0); b.parent = Some(cell.id); cell.children.push(b.id); inner.push(b); }
+            if inner.is_empty() { let mut p = block(Kind::Paragraph, String::new(), Spans::new()); p.parent = Some(cell.id); cell.children.push(p.id); inner.push(p); }
+            under.push(cell); under.extend(inner);
+        }
+        all.push(row); all.extend(under);
+    }
+    let mut tree = vec![table]; tree.extend(all); tree
+}
+
 /// Formatted text from another application as blocks. Empty: nothing in it is text.
-pub fn from_html(html: &str) -> Clip {
+pub fn from_html(html: &str) -> Clip { from_html_with(html, Opts::default()) }
+pub fn from_html_with(html: &str, opts: Opts) -> Clip {
     // what was copied is between these marks when a browser on Windows wrote them
     let html = match (html.find("<!--StartFragment-->"), html.find("<!--EndFragment-->")) { (Some(a), Some(b)) if a + 20 <= b => &html[a + 20..b], _ => html };
-    let mut r = Reader { sinks: vec![vec![]], ..Default::default() };
+    let mut r = Reader { sinks: vec![vec![]], opts, ..Default::default() };
     for t in tokens(html) { match t {
         Tok::Text(t) => r.text(&t),
         // Word's own marker: the item is numbered when the marker is a number or a letter with a stop
@@ -274,13 +311,13 @@ fn inline(src: &str) -> (String, Spans) {
 
 /// Pictures in Markdown (`![words](address "title")`) are taken out of the text: each follows its paragraph as a
 /// block, when its address can be fetched from (a file's path has no place to be looked for from here).
-fn images(s: &str) -> (String, Vec<String>) {
+fn images(s: &str, local: bool) -> (String, Vec<String>) {
     let (mut out, mut found, mut rest) = (String::new(), vec![], s);
     while let Some(i) = rest.find("![") {
         let Some((j, k)) = rest[i..].find("](").and_then(|j| rest[i + j + 2..].find(')').map(|k| (i + j, k))) else { break };
         out.push_str(&rest[..i]);
         let addr = rest[j + 2..j + 2 + k].split_whitespace().next().unwrap_or("").trim_matches(['<', '>']).to_string();
-        if crate::media::remote(&addr) { found.push(addr); rest = &rest[j + 2 + k + 1..]; if out.ends_with(' ') && rest.starts_with(' ') { rest = &rest[1..]; } continue }
+        if crate::media::remote(&addr) || (local && !addr.is_empty()) { found.push(addr); rest = &rest[j + 2 + k + 1..]; if out.ends_with(' ') && rest.starts_with(' ') { rest = &rest[1..]; } continue }
         out.push_str(&rest[i + 2..j]); rest = &rest[j + 2 + k + 1..];
     }
     out.push_str(rest); (out, found)
@@ -288,12 +325,26 @@ fn images(s: &str) -> (String, Vec<String>) {
 
 /// Markdown source as blocks: headings, quotes, lists (nested by their indent; task boxes), fenced code, rules,
 /// paragraphs (lines of one paragraph are joined by a space; two spaces or a backslash at a line's end keep the break).
-pub fn from_markdown(text: &str) -> Clip {
+pub fn from_markdown(text: &str) -> Clip { from_markdown_with(text, false) }
+/// A table's line as its cells (`| a | b |`, the outer bars optional; `\|` is a bar in a cell).
+fn md_cells(line: &str) -> Vec<String> {
+    let t = line.trim(); let t = t.strip_prefix('|').unwrap_or(t); let t = if t.ends_with('|') && !t.ends_with("\\|") { &t[..t.len() - 1] } else { t };
+    let (mut cells, mut cur, mut esc) = (vec![], String::new(), false);
+    for c in t.chars() { if esc { if c != '|' { cur.push('\\'); } cur.push(c); esc = false; } else if c == '\\' { esc = true; } else if c == '|' { cells.push(cur.trim().to_string()); cur.clear(); } else { cur.push(c); } }
+    if esc { cur.push('\\'); } cells.push(cur.trim().to_string()); cells
+}
+/// The line under a table's header (`|---|:--:|--:|`) as each column's alignment; None when it is not one.
+fn md_rule(line: &str) -> Option<Vec<u8>> {
+    if !line.contains('-') || !line.contains('|') { return None }
+    md_cells(line).iter().map(|c| { let d = c.trim_matches(':'); if d.is_empty() || !d.chars().all(|x| x == '-') { return None } Some(match (c.starts_with(':'), c.ends_with(':')) { (true, true) => 1, (false, true) => 2, _ => 0 }) }).collect()
+}
+/// `local`: pictures named by a file's path become blocks too (an imported file's; the importer finds them).
+pub fn from_markdown_with(text: &str, local: bool) -> Clip {
     let mut out: Clip = vec![]; let mut para: Vec<String> = vec![]; let mut indents: Vec<usize> = vec![];
     let flush = |out: &mut Clip, para: &mut Vec<String>, kind: Kind| { if para.is_empty() { return }
         let mut joined = String::new(); for (i, l) in para.iter().enumerate() { let hard = l.ends_with("  ") || l.ends_with('\\'); joined.push_str(l.trim_end().trim_end_matches('\\')); if i + 1 < para.len() { joined.push(if hard { '\n' } else { ' ' }); } }
-        para.clear(); let (joined, pictures) = images(&joined); let (t, s) = inline(joined.trim()); if !t.is_empty() { out.push(vec![block(kind, t, s)]); }
-        for src in pictures { out.push(vec![block(Kind::Media { descriptor: serde_json::json!({ "src": src, "w": 480, "h": 300 }).to_string() }, String::new(), Spans::new())]); } };
+        para.clear(); let (joined, pictures) = images(&joined, local); let (t, s) = inline(joined.trim()); if !t.is_empty() { out.push(vec![block(kind, t, s)]); }
+        for src in pictures { out.push(vec![block(Kind::Media { descriptor: if crate::media::remote(&src) { serde_json::json!({ "src": src, "w": 480, "h": 300 }) } else { serde_json::json!({ "src": src }) }.to_string() }, String::new(), Spans::new())]); } };
     let mut lines = text.lines().map(|l| l.replace('\t', "    ")).peekable();
     while let Some(line) = lines.next() {
         let t = line.trim_start(); let indent = line.len() - t.len();
@@ -303,6 +354,13 @@ pub fn from_markdown(text: &str) -> Clip {
             out.push(vec![block(Kind::Code { lang: lang.trim().to_string() }, code.join("\n"), Spans::new())]); indents.clear(); continue
         }
         if t.is_empty() { flush(&mut out, &mut para, Kind::Paragraph); continue }
+        // a table: a line with bars, and under it the line of dashes that makes it the header
+        if t.contains('|') { if let Some(align) = lines.peek().and_then(|n| md_rule(n)).filter(|a| a.len() == md_cells(t).len()) {
+            flush(&mut out, &mut para, Kind::Paragraph); lines.next(); let cols = align.len();
+            let cell = |c: &str| -> Clip { let (x, s) = inline(c); if x.is_empty() { vec![] } else { vec![vec![block(Kind::Paragraph, x, s)]] } };
+            let mut rows = vec![(true, md_cells(t).iter().map(|c| cell(c)).collect::<Vec<_>>())];
+            while let Some(n) = lines.peek().filter(|n| n.contains('|') && !n.trim().is_empty()) { let mut c: Vec<Clip> = md_cells(n).iter().map(|c| cell(c)).collect(); c.truncate(cols); rows.push((false, c)); lines.next(); }
+            out.push(table_tree(rows, align.into_iter().map(|a| ColumnSpec { align: a, ..Default::default() }).collect())); indents.clear(); continue } }
         let rule = t.len() >= 3 && ["-", "*", "_"].iter().any(|c| t.replace(' ', "").chars().all(|x| x.to_string() == *c)) && t.replace(' ', "").len() >= 3;
         if rule { flush(&mut out, &mut para, Kind::Paragraph); out.push(vec![block(Kind::Divider, String::new(), Spans::new())]); indents.clear(); continue }
         let hashes = t.bytes().take_while(|c| *c == b'#').count();

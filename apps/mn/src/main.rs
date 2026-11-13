@@ -40,6 +40,7 @@ mod clip;
 mod media;
 mod psd;
 mod paste;
+mod import;
 mod pdf;
 mod video;
 mod choice;
@@ -149,6 +150,8 @@ struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, 
 struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool, awake: Instant, /// the clip's notes as they are drawn on and written (QCView's own code, `qcv-annotate`; row 316, stage 4b)
     ann: qcv_annotate::Annotations, path: std::path::PathBuf }
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
+/// A file being read into a note (row 335): the reader's answer, and the file.
+struct Importing { rx: std::sync::mpsc::Receiver<Result<import::Done, String>>, path: std::path::PathBuf }
 /// A package file being unpacked (row 334): the thread's word (the size, then how it ended), the bytes written so far.
 struct Unpack { rx: std::sync::mpsc::Receiver<(u64, Option<Result<std::path::PathBuf, String>>)>, done: Arc<std::sync::atomic::AtomicU64>, stop: Arc<std::sync::atomic::AtomicBool>, total: u64, name: String, drawn: Instant }
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
@@ -158,7 +161,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
-    gather: Option<gather_win::Window>, gather_test: bool, next_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
+    gather: Option<gather_win::Window>, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
+    import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
@@ -226,6 +230,8 @@ enum Ask {
     Notice,
     /// a save did not go through: OK / Retry
     SaveFailed,
+    /// an imported file's table is very large: Cancel / Attach File / Import First Rows
+    ImportBig,
 }
 
 /// What the collection is being closed for.
@@ -324,6 +330,7 @@ impl App {
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
             let (text, warn) = if self.store.is_none() { (String::new(), false) } else if self.saving.is_some() { ("Saving\u{2026}".to_string(), false) }
                 else if let Some((t, true)) = &self.status { (t.clone(), true) }
+                else if let Some(i) = &self.files.import { (format!("Importing {}\u{2026}", i.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), false) }
                 else if let Some(u) = &self.files.unpack { (format!("Unpacking {} \u{2014} {}%", u.name, if u.total > 0 { u.done.load(std::sync::atomic::Ordering::Relaxed) * 100 / u.total } else { 0 }), false) }
                 else if let Some(t) = self.files.gather.as_ref().and_then(|w| w.readout()) { (t, false) }
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
@@ -675,7 +682,7 @@ impl App {
         // the open canvas and what plays go with the collection (they were left over the next one's page); leaving a
         // card stages its note again, which must not turn a session with nothing unpublished into one that is kept
         let clean = !self.unpublished(); self.video_stop(); self.canvas_leave(); self.find_close();
-        self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.cnotes.clear(); self.files.canvas_at.set(None); self.files.creload = false;
+        self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.cnotes.clear(); self.files.canvas_at.set(None); self.files.creload = false; self.files.import = None; self.files.import_wait.clear(); self.files.import_big = None;
         if clean { self.changed.clear(); if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } }
         self.autosave(); self.gather_drop();
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
@@ -858,6 +865,62 @@ impl App {
         }
         if let Some(w) = self.files.gather.as_ref() { for (i, a) in w.assets.iter().enumerate() { println!("gather:   {:?} {} -> {} [{}]", a.kind, a.name, a.dest, match w.run.as_ref().map(|r| r.state(i)) { Some(gather::DONE) => "copied".to_string(), Some(gather::THERE) => "already there".to_string(), Some(gather::FAILED) => format!("failed: {}", w.run.as_ref().map(|r| r.slots[i].why.lock().unwrap().clone()).unwrap_or_default()), _ => a.problem.clone().unwrap_or_else(|| "not copied".into()) }); } }
     }
+    // ── a file of another application becomes a note (row 335)
+    /// These files are imported, one after another: each a new note beside the selected entry.
+    fn import_files(&mut self, paths: Vec<std::path::PathBuf>) {
+        if self.store.is_none() { return }
+        let (known, other): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| import::family(p).is_some());
+        if let Some(p) = other.first() { self.notice = Some((format!("{} is not a kind of file minNotes imports", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), Instant::now() + std::time::Duration::from_secs(8))); }
+        self.files.import_wait.extend(known); self.import_next();
+    }
+    /// The next waiting file is read, off this thread (nothing is read while one is, or while its question is open).
+    fn import_next(&mut self) {
+        if self.files.import.is_some() || self.files.import_big.is_some() || self.files.import_wait.is_empty() { return }
+        if self.store.is_none() { self.files.import_wait.clear(); return }
+        let path = self.files.import_wait.remove(0); let (tx, rx) = std::sync::mpsc::channel(); let (places, from) = (self.media.places(), path.clone());
+        std::thread::spawn(move || { let r = import::read(&from, &places); let _ = tx.send(r); if let Some(w) = WAKE.get() { w.wake_up(); } });
+        self.files.import = Some(Importing { rx, path }); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn import_tick(&mut self) {
+        let Some(i) = self.files.import.as_ref() else { return };
+        let got = match i.rx.try_recv() { Ok(r) => r, Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => Err("The reader stopped.".into()) };
+        let path = self.files.import.take().map(|i| i.path).unwrap_or_default(); let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        use min_ui::text_button::Variant as V;
+        match got {
+            Err(e) => { eprintln!("import: {name}: {e}"); self.ask(Ask::Notice, &format!("Couldn\u{2019}t import \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
+            Ok(done) => match done.big {
+                Some((rows, cells)) => { let keep = import::rows_that_fit(cells / rows.max(1));
+                    let body = format!("\u{201c}{name}\u{201d} has a table of {rows} rows and {cells} cells. Notes are for tables you read and edit; big data stays in spreadsheets. Import the first {keep} rows, or attach the file to open it in its own app.");
+                    self.files.import_big = Some((done, path));
+                    match std::env::var("MN_IMPORT_BIG").as_deref() { Ok("first") => self.import_big(2), Ok("attach") => self.import_big(1), Ok("cancel") => self.import_big(0),
+                        _ => self.ask(Ask::ImportBig, "This table is very large", &body, vec![("Cancel", V::Secondary), ("Attach File", V::Secondary), ("First Rows", V::Primary)]) } }
+                None => self.import_land(done),
+            },
+        }
+        self.import_next(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The large table's question was answered: 0 nothing, 1 the file as a chip in a note of its name, 2 its first rows.
+    fn import_big(&mut self, answer: usize) {
+        let Some((mut done, path)) = self.files.import_big.take() else { return };
+        match answer {
+            2 => { import::cut(&mut done.clip); done.big = None; self.import_land(done); }
+            1 => { let rec = self.media.file_record(&path); done.clip = vec![vec![mn_doc::Block { id: BlockId::new(), parent: None, rank: mn_doc::Rank::first(), kind: Kind::Media { descriptor: rec }, text: String::new(), spans: Spans::new(), conflict: None, children: vec![] }]]; done.lost = 0; self.import_land(done); }
+            _ => {}
+        }
+        self.import_next();
+    }
+    /// What was read becomes a note beside the selected entry (inside it, when that is a folder), named after the file, and is opened.
+    fn import_land(&mut self, done: import::Done) {
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        let parent = sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
+        let made = st.col.create(parent, mn_store::DocKind::Note, &done.title).and_then(|id| st.col.save_note(id, &import::doc_of(&done.clip)).map(|_| id));
+        let id = match made { Ok(id) => id, Err(e) => { eprintln!("import: {e}"); use min_ui::text_button::Variant as V; self.ask(Ask::Notice, &format!("Couldn\u{2019}t import \u{201c}{}\u{201d}", done.title), &e.to_string(), vec![("OK", V::Primary)]); return } };
+        st.unpublished = true; st.edited_since_stage = true; sb.set_tree(&st.col); sb.selected = Some(id); sb.focused = false; self.changed.insert(id);
+        println!("imported: {} ({} blocks, {} pictures not found)", done.title, done.clip.iter().map(|t| t.len()).sum::<usize>(), done.lost);
+        self.notice = Some((match done.lost { 0 => format!("Imported {}", done.title), 1 => format!("Imported {} \u{2014} 1 picture was not found", done.title), n => format!("Imported {} \u{2014} {n} pictures were not found", done.title) }, Instant::now() + std::time::Duration::from_secs(8)));
+        self.open_note(id);
+    }
+
     // ── a package file is opened: unpacked to a folder, which is then the collection (row 334)
     /// `to`: the folder (None: the system's panel asks, offering the package's name).
     fn unpack_open(&mut self, archive: std::path::PathBuf, to: Option<std::path::PathBuf>) {
@@ -1916,6 +1979,7 @@ impl App {
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::ExportPoster => self.export(4, None), M::CopyMarkdown => self.copy_markdown(),
+            M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } self.panel(dlg, 2, |me, p| me.import_files(p)); } }
             M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
@@ -1935,6 +1999,7 @@ impl App {
             (Ask::DiscardRecovered, 1) => self.discard_recovered(),
             (Ask::DiscardRecovered, _) => self.offer_recovered(),
             (Ask::SaveFailed, 1) => self.save(),
+            (Ask::ImportBig, i) => self.import_big(i),
             _ => {}
         }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -2562,6 +2627,8 @@ impl ApplicationHandler for App {
         if std::env::var_os("MN_ASK_CLOSE").is_some() && self.confirm.is_none() && !self.blank && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(st) = self.store.as_mut() { st.unpublished = true; } self.request_close(Pending::Close); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         // (scripted, MN_OPEN_NEXT=<collection>: once a canvas is open and drawn, another collection is opened over it)
         if let (false, Ok(p), true) = (self.files.next_test, std::env::var("MN_OPEN_NEXT"), self.frames > 30 && self.files.canvas.is_some()) { self.files.next_test = true; self.request_close(Pending::Open(p.into())); }
+        // (scripted, MN_IMPORT=<file>[:<file>…]: the files are imported once the collection is shown; MN_IMPORT_BIG=first|attach|cancel answers the large table's question)
+        if let (false, Ok(list), true) = (self.files.import_test, std::env::var("MN_IMPORT"), self.frames > 2 && self.store.is_some()) { self.files.import_test = true; self.import_files(list.split(':').map(std::path::PathBuf::from).collect()); }
         // (scripted, MN_GATHER_SHOW=collect | package:<folder>[,go]: the window is opened by the app itself, for a screenshot; `go` starts the copy)
         if let (false, Ok(spec), true) = (self.files.gather_test, std::env::var("MN_GATHER_SHOW"), self.frames > 2 && self.store.is_some()) { self.files.gather_test = true; let (spec, _) = spec.split_once(',').unwrap_or((&spec, "")); let (what, to) = match spec.split_once(':') { Some(("package", f)) => (gather::What::Package, Some(std::path::PathBuf::from(f))), _ => (gather::What::Collect, None) }; self.gather_open(what, to); }
         if let Ok(x) = std::env::var("MN_GATHER_SHOW") { if x.ends_with(",go") || x.ends_with(",stop") { if let Some(w) = self.files.gather.as_mut() { if w.phase == gather_win::Phase::Review && w.run.is_none() && w.go() && x.ends_with(",stop") {
@@ -2647,7 +2714,7 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
-        self.unpack_tick();
+        self.unpack_tick(); self.import_tick();
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
             // no answer from the document's place: stop waiting (the call itself cannot be ended; its late result is dropped)

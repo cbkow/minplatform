@@ -328,6 +328,7 @@ impl Media {
 
 impl Places {
     /// The places of a collection in `base` with nothing waiting and no mapped volumes.
+    #[cfg(test)] pub fn staged_in(mut self, dir: PathBuf) -> Places { self.staged = Some(dir); self }
     #[cfg(test)] pub fn at(base: Option<PathBuf>) -> Places { Places { base, staged: None, mappings: vec![] } }
     /// Where a descriptor's `src` is on this machine. Err: why it cannot be looked for.
     pub fn locate(&self, src: &serde_json::Value) -> Result<PathBuf, String> {
@@ -409,7 +410,7 @@ impl Places {
             "preview": { "src": self.reference(path), "format": format, "mtime": mtime_ms(&m), "size": m.len() as f64 } }))
     }
     /// As [`Self::picture`], for a file that will not stay (a fetched one): always copied.
-    fn picture_copied(&self, path: &Path) -> Result<serde_json::Value, String> {
+    pub fn picture_copied(&self, path: &Path) -> Result<serde_json::Value, String> {
         let (w, h) = size_of(path)?; let (w, h) = if orientation(path) >= 5 { (h, w) } else { (w, h) };
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let stem: String = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default().chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).take(60).collect();
