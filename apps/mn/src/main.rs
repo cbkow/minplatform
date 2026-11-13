@@ -421,7 +421,8 @@ impl App {
         if let Some(cv) = self.files.canvas.as_mut() { let live = self.files.card.as_ref().map(|c| c.el);
             let (cards, ed, store, others) = (&mut self.files.cards, &self.ed, self.store.as_ref(), &self.others);
             let mut note = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, k: f64, far: bool| card_pic(cards, ed, store, others, scene, fonts, media, e, r, k, s, far);
-            cv.quiet = self.player.as_ref().filter(|p| p.t.is_playing() || p.scrub || self.files.drawing).map(|p| p.id);
+            // a card whose video has been taken up (played, scrubbed, drawn on, gone to a note) shows no outline and no corners until it is selected afresh
+            cv.quiet = self.player.as_ref().map(|p| p.id);
             let (ann, hide, vlive) = (self.player.as_ref().map(|p| &p.ann), self.files.hide_notes, live_video);
             let mut video = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, strip: Option<Rect>| { let me = vlive.filter(|m| m.id == e.id); paint::video_card(scene, fonts, media, &e.record, r, strip, me, ann.filter(|_| me.is_some()), hide, s); };
             if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s, live, &mut note, vlive.filter(|_| live.is_none()).map(|m| m.id), hole, &mut video) { g.window.request_redraw(); } }
@@ -456,6 +457,10 @@ impl App {
         if let Some(p) = self.files.link.as_mut() { p.layout(&mut g.fonts, p.anchor + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
+            f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
+        // (on a canvas the note's words are typed along the card's lower edge)
+        if let Some(pic) = self.files.note_field.as_ref().map(|x| x.0).and_then(|id| self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).and_then(|cv| cv.video_el(id))).map(|x| x.0) { if let Some((_, _, f)) = self.files.note_field.as_mut() {
+            let band = Rect::new(pic.x0, pic.y1 - 26.0 * s, pic.x1, pic.y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
         // ink on the current picture or PDF page (row 325): the stroke being drawn, as it will be kept; the picked stroke's box
         if let Some((id, frame, d)) = self.files.iblock.as_ref().filter(|b| b.1.width() >= 1.0) { let rec: serde_json::Value = serde_json::from_str(d).unwrap_or_default(); let size = ink::page_size(&rec, *frame); let k = size.0 / frame.width();
@@ -1423,6 +1428,15 @@ impl App {
     /// as in a note: the video becomes the playing one, paused). True: the press was the video's.
     fn canvas_video_press(&mut self, x: f64, y: f64) -> bool {
         let pt = kurbo::Point::new(x, y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+        // the selected card's notes row (row 336): a small picture goes to its note's frame; a second click soon after opens its words
+        if let Some((id, _, strip, d)) = self.video_current().and_then(|id| self.video_boxes(id)) { let row = paint::card_row(strip, s); let notes = self.media.notes(&d);
+            if !notes.is_empty() && row.contains(pt) { let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
+                let (fps, at) = (rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0), self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0)));
+                let aspect = rec.get("w").and_then(|w| w.as_f64()).unwrap_or(16.0) / rec.get("h").and_then(|h| h.as_f64()).unwrap_or(9.0).max(1.0); let playing = self.player.as_ref().is_some_and(|p| p.id == id && p.t.is_playing());
+                let inner = Rect::new(row.x0 + 6.0 * s, row.y0, row.x1 - 6.0 * s, row.y1);
+                if let Some(i) = paint::note_thumbs(inner, notes.len(), aspect, paint::note_at(&notes, at, fps, playing), s).iter().position(|q| q.contains(pt)) { let again = self.files.thumb_click.is_some_and(|(t, b, k)| b == id && k == i && t.elapsed() < std::time::Duration::from_millis(450)); self.files.thumb_click = Some((Instant::now(), id, i));
+                    self.video_seek(id, notes[i].frame as i32); if again { self.files.thumb_click = None; self.note_words(); } }
+                return true } }
         if let Some((id, _, strip, _)) = self.video_current().and_then(|id| self.video_boxes(id)) { if strip.contains(pt) { let (_, track) = paint::video_strip(strip, s);
             if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(x); } } else { self.video_toggle(id); }
             return true } }
@@ -2306,7 +2320,7 @@ impl App {
         // a note edited in a card (row 322, stage 2): Escape leaves the card when nothing else has a use for it; Cmd+Return on a selected note card opens the note in the page
         if self.files.card.is_some() && matches!(key, Key::Named(NamedKey::Escape)) && !self.modal() && !self.ctx.is_open() && self.files.link.is_none() && self.files.picker.is_none() && self.files.find.as_ref().is_none_or(|f| !f.focused()) && !self.ed.in_blocks() && self.ed.cell_rect().is_none() && self.files.resize.is_none() && self.grab.is_none() { self.card_leave(); return }
         if self.files.canvas.is_some() && cmd && matches!(key, Key::Named(NamedKey::Enter)) && self.files.card.is_none() { if let Some((_, note, _)) = self.card_note() { self.open_note(note); return } }
-        if self.files.canvas.is_some() && self.files.card.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) {
+        if self.files.canvas.is_some() && self.files.card.is_none() && self.files.note_field.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) {
             if self.files.canvas.as_ref().is_some_and(|c| c.editing()) && cmd && !alt { if let Key::Character(c) = key { if c.to_lowercase() == "v" { let t = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()); if let (Some(t), Some(cv), Some(g)) = (t, self.files.canvas.as_mut(), self.gpu.as_mut()) { let k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(t), shift: false, cmd: false }; cv.key(&k, &mut g.fonts); g.window.request_redraw(); } return } } }
             if self.canvas_key(key, ui_key()) { self.canvas_asks(); return } }
         // (a canvas has no page, but the sidebar is still the window's: Cmd+1 folds and opens it there too)
@@ -3216,6 +3230,9 @@ fn main() {
         std::fs::rename(&tmp, &path).expect("sample"); println!("wrote {}", path.display()); return
     }
     // a collection: the first argument that is not an option or an option's value
+    // (scripted, MN_VNOTES=<clip>: three notes are written into the clip's sidecar - no pictures - so that a video with notes can be shown without real footage)
+    if let Ok(clip) = std::env::var("MN_VNOTES") { let mk = |frame: i64, text: &str, addressed: bool| { let mut n = qcv_notes::Note::default(); n.frame = frame; n.timestamp_seconds = frame as f64 / 24.0; n.timecode = video::timecode(frame, 24.0); n.text = text.into(); n.addressed = addressed; n };
+        if let Err(e) = qcv_notes::io::save(std::path::Path::new(&clip), &[mk(24, "too dark here", false), mk(84, "fixed", true), mk(168, "", false)]) { eprintln!("MN_VNOTES: {e}"); } }
     let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample"];
     let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
     let mut store = None; let mut recovered = false;

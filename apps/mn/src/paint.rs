@@ -45,6 +45,27 @@ pub fn note_thumbs(row: Rect, n: usize, aspect: f64, current: Option<usize>, s: 
     let shift = if total <= room { 0.0 } else { let c = current.unwrap_or(0) as f64 * (w + gap) + w / 2.0; (c - room / 2.0).clamp(0.0, total - room) };
     (0..n).map(|i| { let x = row.x0 + i as f64 * (w + gap) - shift; Rect::new(x, row.y0 + 6.0 * s, x + w, row.y0 + 6.0 * s + h) }).collect()
 }
+/// The row of a clip's notes as small pictures (a video block's, under its strip; a canvas card's, under its strip while
+/// it is the selected one): each with its timecode, a tick when addressed, the one the video stands on outlined.
+#[allow(clippy::too_many_arguments)]
+pub fn notes_row(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descriptor: &str, rec: &serde_json::Value, notes: &[qcv_notes::Note], cur: Option<usize>, row: Rect, s: f64) {
+    let aspect = rec.get("w").and_then(|w| w.as_f64()).unwrap_or(16.0) / rec.get("h").and_then(|h| h.as_f64()).unwrap_or(9.0).max(1.0);
+    let dir = media.locate(descriptor).map(|p| qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(&p)));
+    scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &row);
+    for (i, q) in note_thumbs(row, notes.len(), aspect, cur, s).into_iter().enumerate() { if q.x1 < row.x0 || q.x0 > row.x1 { continue } let n = &notes[i];
+        let drawn = n.annotation.as_ref().is_some_and(|a| !a.is_null() && a.to_string().len() > 4);
+        let file = dir.as_ref().map(|d| d.join(if drawn { qcv_notes::io::annotated_filename(&n.timecode) } else { qcv_notes::io::image_filename(&n.timecode) }));
+        let stamp = n.annotation.as_ref().map(|a| a.to_string().len() as u64).unwrap_or(0);
+        match file.as_ref().and_then(|f| media.file_picture(f, stamp, q.width(), q.height())) { Some(img) => { let img = img.clone(); min_ui::paint::image(scene, &img, q) } None => fill(scene, q, panel()) }
+        let t = fonts.layout(&n.timecode, Family::Sans, (9.0 * s) as f32, 500.0, Color::WHITE);
+        fill(scene, Rect::new(q.x0, q.y1 - t.height() as f64 - 2.0 * s, q.x1, q.y1), Color::BLACK.multiply_alpha(0.6)); draw_layout(scene, &t, Affine::translate((q.x0 + 3.0 * s, q.y1 - t.height() as f64 - s)));
+        if n.addressed { if let Some(c) = fonts.icon("check", (10.0 * s) as f32, Color::WHITE) { draw_layout(scene, &c, Affine::translate((q.x1 - c.width() as f64 - 3.0 * s, q.y1 - c.height() as f64 - 2.0 * s))); } }
+        scene.stroke(&Stroke::new(if cur == Some(i) { 2.0 * s } else { s }), Affine::IDENTITY, if cur == Some(i) { accent() } else { note_mark(n.addressed).multiply_alpha(0.7) }, None, &q);
+    }
+    scene.pop_layer();
+}
+/// Where a canvas card's notes row is: under its strip (row 336).
+pub fn card_row(strip: Rect, s: f64) -> Rect { Rect::new(strip.x0, strip.y1 + 4.0 * s, strip.x1, strip.y1 + 4.0 * s + mn_layout::VIDEO_NOTES as f64 * s) }
 /// The note a video's caption and drawings are of when it stands on `at`: the note of exactly that frame; while it
 /// plays, also the last one passed within two and a half seconds (one frame's flash cannot be read).
 pub fn note_at(notes: &[qcv_notes::Note], at: i64, fps: f64, playing: bool) -> Option<usize> {
@@ -79,6 +100,8 @@ pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descr
         fill(scene, track, line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
         for n in notes.iter() { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); fill(scene, Rect::new(nx - s, strip.center().y - 5.0 * s, nx + s, strip.center().y + 5.0 * s), note_mark(n.addressed)); }
         scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
+    // the selected card's notes: their small pictures in a row under the strip (a click goes to a note's frame)
+    if !notes.is_empty() { let row = card_row(strip, s); scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(row, 6.0 * s)); notes_row(scene, fonts, media, descriptor, &rec, &notes, note_at(&notes, at, fps, playing), row.inset(-4.0 * s).with_origin((row.x0 + 6.0 * s, row.y0)).with_size((row.width() - 12.0 * s, row.height())), s); }
     if let Some(m) = me.filter(|m| m.muted) { let _ = m; if let Some(i) = fonts.icon("speaker-slash", (13.0 * s) as f32, dim()) { draw_layout(scene, &i, Affine::translate((strip.x1 - 10.0 * s - i.width() as f64, strip.center().y - i.height() as f64 / 2.0))); } }
 }
 /// The parts of a video block's strip: the play button's box and the line to scrub on (the counter sits between).
@@ -173,21 +196,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         if let (Some(i), false) = (cur, hide_notes) { let n = &notes[i]; let exact = n.frame == at;
                             over = Some((if exact { qcv_notes::strokes::parse(n.annotation.as_ref()) } else { vec![] }, Some((n.addressed, n.timecode.clone(), n.text.replace(['\n', '\r'], " "))), r.width() / rec.get("w").and_then(|w| w.as_f64()).unwrap_or(1920.0).max(1.0))); }
                         // the row of the notes' small pictures: the one the video stands on is outlined; a click goes to its frame
-                        if has_row { let row = Rect::new(whole.x0, strip.y1, whole.x1, whole.y1); let aspect = rec.get("w").and_then(|w| w.as_f64()).unwrap_or(16.0) / rec.get("h").and_then(|h| h.as_f64()).unwrap_or(9.0).max(1.0);
-                            let dir = media.locate(descriptor).map(|p| qcv_notes::io::images_dir(&qcv_notes::io::notes_dir(&p)));
-                            scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &row);
-                            for (i, q) in note_thumbs(row, notes.len(), aspect, cur, s).into_iter().enumerate() { if q.x1 < row.x0 || q.x0 > row.x1 { continue } let n = &notes[i];
-                                let drawn = n.annotation.as_ref().is_some_and(|a| !a.is_null() && a.to_string().len() > 4);
-                                let file = dir.as_ref().map(|d| d.join(if drawn { qcv_notes::io::annotated_filename(&n.timecode) } else { qcv_notes::io::image_filename(&n.timecode) }));
-                                let stamp = n.annotation.as_ref().map(|a| a.to_string().len() as u64).unwrap_or(0);
-                                match file.as_ref().and_then(|f| media.file_picture(f, stamp, q.width(), q.height())) { Some(img) => { let img = img.clone(); min_ui::paint::image(scene, &img, q) } None => fill(scene, q, panel()) }
-                                let t = fonts.layout(&n.timecode, Family::Sans, (9.0 * s) as f32, 500.0, Color::WHITE);
-                                fill(scene, Rect::new(q.x0, q.y1 - t.height() as f64 - 2.0 * s, q.x1, q.y1), Color::BLACK.multiply_alpha(0.6)); draw_layout(scene, &t, Affine::translate((q.x0 + 3.0 * s, q.y1 - t.height() as f64 - s)));
-                                if n.addressed { if let Some(c) = fonts.icon("check", (10.0 * s) as f32, Color::WHITE) { draw_layout(scene, &c, Affine::translate((q.x1 - c.width() as f64 - 3.0 * s, q.y1 - c.height() as f64 - 2.0 * s))); } }
-                                scene.stroke(&Stroke::new(if cur == Some(i) { 2.0 * s } else { s }), Affine::IDENTITY, if cur == Some(i) { accent() } else { note_mark(n.addressed).multiply_alpha(0.7) }, None, &q);
-                            }
-                            scene.pop_layer();
-                        }
+                        if has_row { notes_row(scene, fonts, media, descriptor, &rec, &notes, cur, Rect::new(whole.x0, strip.y1, whole.x1, whole.y1), s); }
                     }
                     // what is not as usual, said small at the strip's right end: a speed other than 1, muted, not looping
                     if let Some(m) = me { let mut x = strip.x1 - 10.0 * s;
