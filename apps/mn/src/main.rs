@@ -154,7 +154,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// the export's options (read from the settings when first wanted)
-    xopts: Option<export::Opts>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
+    xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
+    panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -670,6 +671,17 @@ impl App {
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    /// A system file panel (row 328's fix): asked for on a thread of its own, answered later. The panel must NOT be run
+    /// from inside an event of the window's loop - it runs a loop of its own, and winit panics when a wake-up from
+    /// another thread (a decoder, the notes' poll) arrives in it while the event that opened it is still being handled.
+    /// From a thread the panel is put up by the main queue, outside any event; its answer comes back with a wake-up and
+    /// `then` runs with the chosen paths (not at all when the panel was cancelled). `kind`: 0 save, 1 one file, 2 files.
+    fn panel(&mut self, dlg: rfd::FileDialog, kind: u8, then: impl FnOnce(&mut App, Vec<std::path::PathBuf>) + 'static) {
+        if std::env::var_os("MN_NO_DIALOGS").is_some() || self.files.panel_then.is_some() { return }
+        self.files.panel_then = Some(Box::new(then));
+        std::thread::spawn(move || { let got = match kind { 0 => dlg.save_file().into_iter().collect(), 1 => dlg.pick_file().into_iter().collect(), _ => dlg.pick_files().unwrap_or_default() };
+            *PANEL_DONE.lock().unwrap() = Some(got); if let Some(w) = WAKE.get() { w.wake_up(); } });
+    }
     fn sync_export_checks(&mut self) { let o = *self.files.xopts.get_or_insert_with(export_settings); #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_ref() { m.set_check(&menu::Cmd::ExportPaths, o.paths); m.set_check(&menu::Cmd::ExportVideoNotes, o.video_notes); } let _ = o; }
     fn export_toggle(&mut self, paths: bool) { let mut o = *self.files.xopts.get_or_insert_with(export_settings); if paths { o.paths = !o.paths; } else { o.video_notes = !o.video_notes; } self.files.xopts = Some(o); save_export_settings(o); self.sync_export_checks(); }
     /// The open note's name, as the sidebar has it.
@@ -681,7 +693,7 @@ impl App {
         if self.blank || self.store.is_none() { if self.store.is_some() { self.notice = Some(("Open a note to export it".into(), soon(5))); } return }
         let title = self.note_title(); let ext = if md { "md" } else { "html" };
         let safe: String = title.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\n' | '\r') { '-' } else { c }).collect();
-        let Some(path) = to.or_else(|| if std::env::var_os("MN_NO_DIALOGS").is_some() { None } else { rfd::FileDialog::new().set_title(if md { "Export as Markdown" } else { "Export as HTML" }).add_filter(if md { "Markdown" } else { "HTML" }, &[ext]).set_file_name(format!("{safe}.{ext}")).save_file() }) else { return };
+        let Some(path) = to else { let dlg = rfd::FileDialog::new().set_title(if md { "Export as Markdown" } else { "Export as HTML" }).add_filter(if md { "Markdown" } else { "HTML" }, &[ext]).set_file_name(format!("{safe}.{ext}")); self.panel(dlg, 0, move |me, p| me.export(md, p.into_iter().next())); return };
         let opts = *self.files.xopts.get_or_insert_with(export_settings);
         let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
         let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu }; let doc = &self.ed.doc;
@@ -718,7 +730,11 @@ impl App {
     /// Save As: the collection is published at a place the user picks, which becomes its document.
     fn save_as(&mut self) {
         if self.saving.is_some() || self.store.is_none() { return }
-        let Some(path) = rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name(self.doc_name()).save_file() else { return };
+        let dlg = rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name(self.doc_name());
+        self.panel(dlg, 0, |me, p| if let Some(p) = p.into_iter().next() { me.save_as_to(p) });
+    }
+    fn save_as_to(&mut self, path: std::path::PathBuf) {
+        if self.saving.is_some() || self.store.is_none() { return }
         self.autosave();
         // the system's dialog has asked about replacing a file that is there: that file is what is expected
         let expect = mn_store::share::fingerprint_if_present(&path).ok().flatten();
@@ -968,14 +984,14 @@ impl App {
                     "Reveal in Finder" | "Show in Explorer" => { self.files.locate = None; self.file_open(&d, true); return }
                     "Copy Path" => { self.files.locate = None; if let (Some(p), Some(cb)) = (self.media.file_state(&d).path, self.clipboard.as_mut()) { let _ = cb.set_text(p.to_string_lossy().into_owned()); self.block_clip = None; } return }
                     l if l.starts_with("Locate File") => { self.files.locate = None;
-                        if let Some(file) = rfd::FileDialog::new().set_title("Locate File").pick_file() { let rec = self.media.file_record(&file); let t = self.now_ms(); let dd = self.ed.set_kinds(vec![(id, Kind::Media { descriptor: rec })], t).unwrap_or(Dirty::Nothing); self.apply(dd); self.layout = None; }
+                        self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let Some(file) = p.first() { let rec = me.media.file_record(file); let t = me.now_ms(); let dd = me.ed.set_kinds(vec![(id, Kind::Media { descriptor: rec })], t).unwrap_or(Dirty::Nothing); me.apply(dd); me.layout = None; });
                         return }
                     _ => {} } }
             if label.starts_with("Locate File") {
                 let Some(id) = self.files.locate.take() else { return };
-                if let Some(file) = rfd::FileDialog::new().set_title("Locate File").pick_file() {
-                    let blocks = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
-                    self.media.relink(blocks, id, file); }
+                self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let Some(file) = p.into_iter().next() {
+                    let blocks = me.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
+                    me.media.relink(blocks, id, file); });
                 return }
             let now = self.now_ms(); self.follow = true;
             let d = match label.as_str() {
@@ -1042,9 +1058,9 @@ impl App {
                 if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
             // pictures (and any other file, as a chip) chosen in the system's dialog go in after the caret's block (at the note's end when there is no caret)
             // files of any kind, as chips that point at them (a picture, a video, a PDF chosen here still becomes its own block)
-            T::File | T::Image if self.files.canvas.is_some() && self.files.card.is_none() => { if self.store.is_some() { if let Some(paths) = rfd::FileDialog::new().set_title("Add to the Canvas").pick_files() { self.files.canvas_at.set(None); self.add_files(paths, Self::canvas_drop()); } } }
-            T::File => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Files").pick_files() { self.add_files(paths, at); } },
-            T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { if let Some(paths) = rfd::FileDialog::new().set_title("Add Pictures").pick_files() { self.add_files(paths, at); } },
+            T::File | T::Image if self.files.canvas.is_some() && self.files.card.is_none() => { if self.store.is_some() { self.panel(rfd::FileDialog::new().set_title("Add to the Canvas"), 2, |me, paths| { me.files.canvas_at.set(None); me.add_files(paths, Self::canvas_drop()); }); } }
+            T::File => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { self.panel(rfd::FileDialog::new().set_title("Add Files"), 2, move |me, paths| me.add_files(paths, at)); },
+            T::Image => if let (Some(at), true) = (self.ed.after_caret().or(Some(mn_edit::Drop { parent: None, index: self.ed.doc.children(None).len(), depth: None, beside: None })), self.store.is_some()) { self.panel(rfd::FileDialog::new().set_title("Add Pictures"), 2, move |me, paths| me.add_files(paths, at)); },
         }
     }
     /// Dropped files that the helpers turned into records become blocks where they were dropped (one undo step); a
@@ -1727,17 +1743,16 @@ impl App {
         use menu::Cmd as M;
         if let (Some(cv), true) = (self.files.canvas.as_mut().filter(|_| self.files.card.is_none()), matches!(c, M::Undo | M::Redo)) { if c == M::Undo { cv.undo() } else { cv.redo() } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.confirm.is_some() && c != M::Quit { return }
-        let pick = || rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).pick_file();
         match c {
             M::Quit => self.request_close(Pending::Quit),
             M::CloseCollection => if self.store.is_some() { self.request_close(Pending::Close) },
-            M::Open => if let Some(p) = pick() { self.request_close(Pending::Open(p)) },
+            M::Open => self.panel(rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]), 1, |me, p| if let Some(p) = p.into_iter().next() { me.request_close(Pending::Open(p)) }),
             M::OpenRecent(p) => self.request_close(Pending::Open(p.into())),
             M::ClearRecent => { recent_clear(); self.sync_recent(); }
-            M::NewCollection => if let Some(p) = rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name("Untitled.mnd").save_file() {
+            M::NewCollection => self.panel(rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name("Untitled.mnd"), 0, |me, p| if let Some(p) = p.into_iter().next() {
                 // the system's dialog has asked about replacing: a new collection starts where nothing is, so an old file is moved aside by name, never deleted
                 if p.exists() { let aside = p.with_extension(format!("replaced-{}.mnd", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))); let _ = std::fs::rename(&p, aside); }
-                self.request_close(Pending::New(p)) },
+                me.request_close(Pending::New(p)) }),
             M::SaveAs => self.save_as(),
             M::PasteMarkdown => { let d = self.paste(Paste::Markdown); self.apply(d); }
             // the selected row's name (the open note's when nothing is selected); the sidebar is opened for it
@@ -2172,6 +2187,7 @@ impl App {
     }
 
     fn finish(&mut self) {
+        trail(&format!("finish: the application is closing (quit asked: {})", self.quit));
         if let Some(t0) = *SPIN_T0.lock().unwrap() { let n = SPUN.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(30); let s = t0.elapsed().as_secs_f64(); println!("spin: {n} frames in {s:.2} s = {:.1} per second ({} elements)", n as f64 / s, self.files.canvas.as_ref().map(|c| c.els.len()).unwrap_or(0)); }
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
@@ -2445,6 +2461,8 @@ impl ApplicationHandler for App {
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         // (the queue is taken and let go BEFORE the commands run: one of them may put a system panel up, and a menu key
         // pressed in the panel comes to the same queue on this thread)
+        // a file panel has been answered
+        if let Some(paths) = PANEL_DONE.lock().unwrap().take() { if let Some(then) = self.files.panel_then.take() { if !paths.is_empty() { then(self, paths); if let Some(g) = &self.gpu { g.window.request_redraw(); } } } }
         #[cfg(target_os = "macos")] let menu_events = std::mem::take(&mut *MENU_EVENTS.lock().unwrap());
         #[cfg(target_os = "macos")] for ev in menu_events { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
             // a command changes what is shown, and no window event follows it to ask for the frame
@@ -2787,6 +2805,11 @@ static SPIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static SPUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SPIN_T0: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 /// The pen's colour and width, as last chosen (a canvas's ink and a video's drawings share them); kept beside the player's settings.
+/// A line in `panic.log` beside the settings: what the application was doing, for looking back after it went down.
+fn trail(line: &str) {
+    let f = player_file().with_file_name("panic.log"); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
+    if let Ok(mut o) = std::fs::OpenOptions::new().create(true).append(true).open(&f) { use std::io::Write; let _ = writeln!(o, "{} {line}", jiff::Zoned::now().strftime("%H:%M:%S%.3f")); }
+}
 fn export_file() -> std::path::PathBuf { player_file().with_file_name("export.json") }
 fn export_settings() -> export::Opts {
     let v: serde_json::Value = std::fs::read_to_string(export_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
@@ -2858,6 +2881,7 @@ fn startup_log(what: &str) {
 }
 /// Menu commands as the native menu reports them, kept until the loop (woken for them) takes them.
 /// Wakes the loop from another thread (a decoded picture).
+static PANEL_DONE: std::sync::Mutex<Option<Vec<std::path::PathBuf>>> = std::sync::Mutex::new(None);
 static WAKE: std::sync::OnceLock<winit::event_loop::EventLoopProxy> = std::sync::OnceLock::new();
 #[cfg(target_os = "macos")] static MENU_EVENTS: std::sync::Mutex<Vec<muda::MenuEvent>> = std::sync::Mutex::new(Vec::new());
 
