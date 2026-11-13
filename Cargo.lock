@@ -4241,6 +4241,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "s11-notepdf"
+version = "0.0.0"
+dependencies = [
+ "krilla",
+ "min-ui",
+ "mn-doc",
+ "mn-layout",
+ "parley",
+ "peniko",
+]
+
+[[package]]
 name = "s3-text"
 version = "0.0.0"
 dependencies = [

@@ -1,0 +1,16 @@
+[package]
+name = "s11-notepdf"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform spike S11 — can the note's own layout be paginated onto paper as a vector PDF with selectable text (dies after its verdict, docs/spikes/)"
+
+[dependencies]
+mn-doc = { path = "../../crates/mn-doc" }
+mn-layout = { path = "../../crates/mn-layout" }
+min-ui = { path = "../../crates/min-ui" }
+parley = { workspace = true }
+peniko = { workspace = true }
+krilla = { version = "0.8.2", default-features = false, features = ["raster-images", "simple-text"] }
