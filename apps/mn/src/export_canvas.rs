@@ -59,7 +59,7 @@ pub fn canvas_html(els: &[&Element], title: &str, exported: &str, opts: Opts, fo
     o += "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"generator\" content=\"minNotes\">\n";
     o += &format!("<title>{}</title>\n<style>\n", esc(title));
     o += &qcv_notes::export::font_faces(fonts); o += qcv_notes::export::TOKENS; o += CSS; o += CANVAS_CSS;
-    o += &format!("@media print{{\n{}\n{PRINT}}}\n", qcv_notes::export::PRINT_TOKENS);
+    o += &super::syntax_css(&mn_layout::syntax::DARK); o += &format!("@media print{{\n{}\n{PRINT}{}}}\n", qcv_notes::export::PRINT_TOKENS, super::syntax_css(&mn_layout::syntax::LIGHT));
     o += "</style></head><body class=\"cv\">\n";
     o += &format!("<header id=\"bar\"><span class=\"name\">{}</span><span class=\"meta\">Exported {}</span><span class=\"grow\"></span><button id=\"fit\" title=\"Fit everything (0)\">Fit</button><span id=\"zoom\">100%</span></header>\n", esc(title), esc(exported));
     o += &format!("<div id=\"view\"><div id=\"world\" style=\"width:{:.1}px;height:{:.1}px\">\n{world}</div></div>\n", b.width(), b.height());

@@ -128,6 +128,12 @@ fn html_media(it: &Item, opts: Opts, out: &mut String) {
         out.push_str("</tbody></table>\n");
     }
 }
+/// A code block's text with its colours (row 337): a span per coloured stretch, classed by its kind.
+fn code_html(lang: &str, text: &str) -> String {
+    mn_layout::syntax::pieces(lang, text).into_iter().map(|(t, k)| match k { Some(k) => format!("<span class=\"y{}\">{}</span>", k.class(), esc(t)), None => esc(t) }).collect()
+}
+/// The six colours' rules, from a palette of `mn_layout::syntax`.
+pub(crate) fn syntax_css(p: &[&str; 6]) -> String { ["c", "s", "n", "k", "t", "f"].iter().zip(p).map(|(c, h)| format!("pre .y{c}{{color:{h}}}")).collect::<String>() + "pre .yc{font-style:italic}\n" }
 fn html_blocks(w: &Walk, ids: &[BlockId], col: &Col, src: &mut dyn Source, out: &mut String) {
     let mut lists: Vec<&str> = vec![]; let mut li = false;
     fn close(lists: &mut Vec<&str>, li: &mut bool, out: &mut String) { if *li { out.push_str("</li>"); } if let Some(t) = lists.pop() { out.push_str(&format!("</{t}>\n")); } *li = !lists.is_empty(); }
@@ -148,7 +154,7 @@ fn html_blocks(w: &Walk, ids: &[BlockId], col: &Col, src: &mut dyn Source, out: 
             Kind::Paragraph => { let t = html_inline(b, col); out.push_str(&format!("<p{}>{}</p>\n", if col.mono { " class=\"tcode\"" } else { "" }, if t.is_empty() { "&nbsp;".to_string() } else { t })) }
             Kind::Heading { level } => { let n = (*level).clamp(1, 6); out.push_str(&format!("<h{n}>{}</h{n}>\n", html_inline(b, col))) }
             Kind::Quote => out.push_str(&format!("<blockquote><p>{}</p></blockquote>\n", html_inline(b, col))),
-            Kind::Code { lang } => out.push_str(&format!("<pre>{}<code>{}</code></pre>\n", if lang.is_empty() { String::new() } else { format!("<span class=\"lang\">{}</span>", esc(lang)) }, esc(&b.text))),
+            Kind::Code { lang } => out.push_str(&format!("<pre>{}<code>{}</code></pre>\n", if lang.is_empty() { String::new() } else { format!("<span class=\"lang\">{}</span>", esc(lang)) }, code_html(lang, &b.text))),
             Kind::Divider => out.push_str("<hr>\n"),
             Kind::Media { descriptor } => html_media(&src.item(descriptor, Mode::Layers, w.opts), w.opts, out),
             Kind::Columns => { out.push_str("<div class=\"lanes\">");
@@ -198,8 +204,8 @@ pub fn html<'a>(blocks: impl IntoIterator<Item = &'a Block>, tops: &[BlockId], t
     let mut o = String::with_capacity(body.len() + 256 * 1024);
     o += "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"generator\" content=\"minNotes\">\n";
     o += &format!("<title>{}</title>\n<style>\n", esc(title));
-    o += &qcv_notes::export::font_faces(fonts); o += qcv_notes::export::TOKENS; o += CSS;
-    o += &format!("@media print{{\n{}\n{PRINT}}}\n", qcv_notes::export::PRINT_TOKENS);
+    o += &qcv_notes::export::font_faces(fonts); o += qcv_notes::export::TOKENS; o += CSS; o += &syntax_css(&mn_layout::syntax::DARK);
+    o += &format!("@media print{{\n{}\n{PRINT}{}}}\n", qcv_notes::export::PRINT_TOKENS, syntax_css(&mn_layout::syntax::LIGHT));
     o += "</style></head><body>\n<main>\n";
     o += &format!("<header class=\"doc\"><div class=\"titles\"><div class=\"name\">{}</div><div class=\"meta\"><span>Exported {}</span></div></div></header>\n<article>\n", esc(title), esc(exported));
     o += &body; o += "</article>\n</main>\n"; o += LIGHTBOX; o += "</body></html>\n"; o

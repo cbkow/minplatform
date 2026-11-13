@@ -12,6 +12,7 @@ use kurbo::Rect;
 use min_ui::fonts::{Family, Fonts};
 use mn_doc::{Block, BlockId, ColumnSpec, Doc, FlatText, Kind, Mark};
 use parley::{Affinity, Alignment, AlignmentOptions, Cursor, FontFamily, FontFamilyName, FontStyle, FontWeight, Layout, LineHeight, Selection, StyleProperty};
+pub mod syntax;
 use peniko::{Brush, Color};
 
 /// The metrics, in LOGICAL pixels (multiplied by the scale at layout). The defaults are the Qt app's numbers
@@ -58,14 +59,19 @@ pub struct Style {
     pub media_chip: f32,
     pub text: Color,
     pub link: Color,
+    /// a code block's six colours, in [`syntax::Tok`]'s order (row 337)
+    pub syntax: [Color; 6],
 }
 impl Default for Style {
     fn default() -> Self {
         Style { body: 14.0, body_weight: 500.0, line_height: 1.35, heading: [33.0, 28.0, 24.0, 20.0, 18.0, 16.0], heading_weight: 300.0, code: 13.0, block_gap: 12.0, list_gap: 12.0, heading_above: 0.0, list_indent: 24.0, marker: 22.0, marker_numbered: 34.0,
             quote_inset: 22.0, code_pad: 12.0, divider: 30.0, column_gutter: 24.0, cell_pad: 8.0, table_col_min: 48.0, table_col_max: 360.0, table_col_default: 160.0, table_col_extra: 22.0, media_chip: 56.0,
-            text: Color::from_rgb8(0xEB, 0xEB, 0xEB), link: Color::from_rgb8(0x4D, 0xA3, 0xFF) }
+            text: Color::from_rgb8(0xEB, 0xEB, 0xEB), link: Color::from_rgb8(0x4D, 0xA3, 0xFF), syntax: palette(&syntax::DARK) }
     }
 }
+
+/// A palette of [`syntax`] as colours.
+pub fn palette(p: &[&str; 6]) -> [Color; 6] { p.map(|h| hex(h).unwrap_or(Color::from_rgb8(0x80, 0x80, 0x80))) }
 
 /// What a box holds.
 pub enum Part {
@@ -235,6 +241,7 @@ impl NoteLayout {
                 Mark::Highlight(_) | Mark::Choice(_) => {}
             }
         }
+        if let Kind::Code { lang } = &b.kind { for (r, t) in syntax::lex(lang, &b.text) { builder.push(StyleProperty::Brush(Brush::Solid(st.syntax[t.index()])), r); } }
         let mut layout = builder.build(&b.text);
         layout.break_all_lines(width.map(|w| (w - dx - pad).max(1.0)));
         layout.align(match align { 1 => Alignment::Center, 2 => Alignment::End, _ => Alignment::Start }, AlignmentOptions::default());

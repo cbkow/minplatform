@@ -191,7 +191,7 @@ fn stroke_of(c: Rgb, width: f32) -> Stroke { Stroke { paint: rgb::Color::new(c[0
 /// The note as a PDF. `style`: the editor's (its sizes and spacing; the colours are paper's). `metric`: A4, else Letter.
 pub fn pdf(doc: &Doc, title: &str, style: &Style, opts: Opts, metric: bool, src: &mut dyn Source) -> Result<Vec<u8>, String> {
     let (pw, ph) = if metric { (595.28f32, 841.89f32) } else { (612.0, 792.0) }; let m = 54.0f32; let k = (pw - 2.0 * m) / LAY_W; let page_h = (ph - 2.0 * m) / k;
-    let style = Style { text: Color::from_rgb8(INK[0], INK[1], INK[2]), link: Color::from_rgb8(0x05, 0x63, 0xc1), ..style.clone() };
+    let style = Style { text: Color::from_rgb8(INK[0], INK[1], INK[2]), link: Color::from_rgb8(0x05, 0x63, 0xc1), syntax: mn_layout::palette(&mn_layout::syntax::LIGHT), ..style.clone() };
     let mut fonts = Fonts::new(); let lay = NoteLayout::build(doc, &mut fonts, &style, LAY_W, 1.0);
     let mut p = Paper { doc, lay: &lay, fonts, faces: HashMap::new(), atoms: vec![], spans: vec![], inserts: vec![], squeezes: vec![], units: vec![], row_unit: HashMap::new(), wide: HashMap::new() };
     // a table wider than the page, at the top of the note: drawn smaller (inside columns it is left as it is)

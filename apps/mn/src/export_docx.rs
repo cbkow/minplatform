@@ -130,7 +130,7 @@ fn blocks(w: &Walk, ids: &[BlockId], col: &Col, cx: &Ctx, src: &mut dyn Source, 
             Kind::Paragraph => out.body += &para(&format!("{}{}", base(cx), tail(cx)), &tinted(if col.mono { runs.clone().replace("<w:r><w:t", &format!("<w:r><w:rPr>{MONO}</w:rPr><w:t")) } else { runs.clone() }, cx)),
             Kind::Heading { level } => out.body += &para(&format!("<w:pStyle w:val=\"Heading{}\"/>", (*level).clamp(1, 6)), &runs.clone()),
             Kind::Quote => out.body += &para("<w:pStyle w:val=\"Quote\"/>", &runs.clone()),
-            Kind::Code { lang } => { if !lang.is_empty() { out.body += &styled("CodeLang", lang); } out.body += &styled("Code", &b.text); }
+            Kind::Code { lang } => { if !lang.is_empty() { out.body += &styled("CodeLang", lang); } out.body += &para("<w:pStyle w:val=\"Code\"/>", &mn_layout::syntax::pieces(lang, &b.text).into_iter().map(|(t, k)| text_run(t, &k.map(|k| format!("<w:color w:val=\"{}\"/>{}", &mn_layout::syntax::LIGHT[k.index()][1..], if k == mn_layout::syntax::Tok::Comment { "<w:i/>" } else { "" })).unwrap_or_default())).collect::<String>()); }
             Kind::Bullet { depth } => out.body += &para(&format!("<w:pStyle w:val=\"ListParagraph\"/><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"1\"/></w:numPr>", (*depth).min(8)), &tinted(runs.clone(), cx)),
             Kind::Numbered { depth } => out.body += &para(&format!("<w:pStyle w:val=\"ListParagraph\"/><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{num}\"/></w:numPr>", (*depth).min(8)), &tinted(runs.clone(), cx)),
             Kind::Task { depth, state } => { let left = 360 * (*depth as i64 + 1);

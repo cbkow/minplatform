@@ -3150,7 +3150,7 @@ fn recent_add(path: &std::path::Path) {
 fn recent_clear() { let _ = std::fs::remove_file(recent_file()); }
 
 /// The page's metrics with the theme's colours for text and links.
-fn style() -> Style { Style { text: paint::text(), link: paint::link(), ..Style::default() } }
+fn style() -> Style { let mut syntax = mn_layout::palette(&mn_layout::syntax::DARK); syntax[mn_layout::syntax::Tok::Comment.index()] = paint::subdued(); Style { text: paint::text(), link: paint::link(), syntax, ..Style::default() } }
 
 /// Where staged sessions live on this machine (row 272: never beside the file).
 fn sessions_root() -> std::path::PathBuf {
