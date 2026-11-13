@@ -263,7 +263,7 @@ pub fn rub(l: &Line, a: Point, b: Point, r: f64) -> Option<Vec<Line>> {
 mod tests {
     use super::*;
     fn line(tool: Tool, pts: Vec<[f64; 2]>, pr: Option<Vec<f64>>) -> Line { Line { s: Stroke { id: "s".into(), tool, color: [1.0, 0.0, 0.0, 1.0], width: 6.0, filled: false, is_modeled: tool == Tool::Freehand, points: pts }, pressures: pr } }
-    fn el(l: &Line) -> Element { let (b, record) = write(l); Element { id: mn_doc::BlockId::new(), kind: "ink".into(), x: b.x0, y: b.y0, w: b.width(), h: b.height(), z: 1, parent: None, record } }
+    fn el(l: &Line) -> Element { let (b, record) = write(l); Element { id: mn_doc::BlockId::new(), kind: "ink".into(), x: b.x0, y: b.y0, w: b.width(), h: b.height(), z: 1, parent: None, record, locked: false } }
     fn near(a: &Line, b: &Line) -> bool { a.s.points.len() == b.s.points.len() && a.s.points.iter().zip(&b.s.points).all(|(p, q)| (p[0] - q[0]).abs() < 0.01 && (p[1] - q[1]).abs() < 0.01) }
     #[test]
     fn a_stroke_is_kept_as_qcviews_shape_and_read_back_where_it_was() {

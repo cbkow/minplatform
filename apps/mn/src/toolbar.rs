@@ -15,7 +15,8 @@ pub enum Tool {
     Paragraph, Heading, Bullet, Numbered, Task, Quote, CodeBlock, Outdent, Indent,
     Bold, Italic, Underline, Strike, Code, /// the two colour chips: Type (the text's colour) and Background (behind it)
     Color, Highlight, Link, ClearFormat,
-    Table, Columns, Divider, Image, File, Chip,
+    Table, Columns, Divider, Image, File, Chip, /// a canvas's frame tool (row 327)
+    Frame,
     /// the second set (rows 301, 316): shown while a video block is the current one - QCView's seven tools for drawing
     /// on the frame, the pen's colour and width, and the frame's note (add, its words, addressed, delete)
     DrawSelect, DrawPen, DrawRect, DrawOval, DrawArrow, DrawLine, DrawErase, PenColor, PenThinner, PenThicker, NoteText, NoteDone, NoteDelete,
@@ -39,7 +40,7 @@ impl Tool {
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
             Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
             Tool::NoteText => ("chat-text", None, "Write a note on this frame", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
-            Tool::Table => ("table", None, "Table (Tab: the next cell; \u{2318}\u{21b5}: a row below)", ""), Tool::Columns => ("columns", None, "Columns \u{2014} a column beside this block (again: one more)", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Chip => ("tag", None, "Choice", ""),
+            Tool::Table => ("table", None, "Table (Tab: the next cell; \u{2318}\u{21b5}: a row below)", ""), Tool::Columns => ("columns", None, "Columns \u{2014} a column beside this block (again: one more)", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Frame => ("frame-corners", None, "Frame", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
     fn tooltip(self) -> String {
@@ -82,11 +83,11 @@ impl Toolbar {
         // its width; and, apart at the right end, what is done WITH the note - addressed, delete
         let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
         // a canvas's set (row 324): the pointer and the drawing tools with the Qt app's keys, how a line looks, what is put on the sheet
-        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Image, File]];
+        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Frame, Image, File]];
         let mut cgroups = make(&canvas);
         for (b, tip) in cgroups[0].buttons.iter_mut().zip(["Select and move (V, or Esc)", "Pen (P) \u{2014} a tablet's pressure varies the line", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in cgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the selected ink's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
-        for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Frame (F) \u{2014} click for one that hugs what is put in it, drag for one with a size of its own", "Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
         // a picture's or a PDF page's set (row 325): the same tools, and a pointer that picks what was drawn
         let page: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker]];
         let mut pgroups = make(&page);

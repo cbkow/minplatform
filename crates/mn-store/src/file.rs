@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS palette (color TEXT PRIMARY KEY, pos INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS canvas_elements (
   id TEXT PRIMARY KEY, doc TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   kind TEXT NOT NULL, x REAL NOT NULL DEFAULT 0, y REAL NOT NULL DEFAULT 0, w REAL NOT NULL DEFAULT 0, h REAL NOT NULL DEFAULT 0,
-  z INTEGER NOT NULL DEFAULT 0, parent TEXT, record TEXT NOT NULL DEFAULT '', created INTEGER, modified INTEGER
+  z INTEGER NOT NULL DEFAULT 0, parent TEXT, record TEXT NOT NULL DEFAULT '', created INTEGER, modified INTEGER, locked INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS canvas_elements_doc ON canvas_elements(doc, z);
 CREATE TABLE IF NOT EXISTS canvas_meta (doc TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE, camera TEXT);
@@ -65,7 +65,8 @@ pub struct Collection { db: Connection, pending: Vec<(BlockId, Doc)> }
 /// canvas's own units, its place in the stack (higher is in front), the element that owns it, and its record (a media
 /// block's record as a note has it; a text card's words).
 #[derive(Clone, Debug, PartialEq)]
-pub struct Element { pub id: BlockId, pub kind: String, pub x: f64, pub y: f64, pub w: f64, pub h: f64, pub z: i64, pub parent: Option<BlockId>, pub record: String }
+pub struct Element { pub id: BlockId, pub kind: String, pub x: f64, pub y: f64, pub w: f64, pub h: f64, pub z: i64, pub parent: Option<BlockId>, pub record: String, /// it is not moved, resized or removed until it is unlocked (row 327)
+    pub locked: bool }
 /// A canvas's content: its elements from the back to the front, and where it was last looked at (centre x, centre y, zoom).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Canvas { pub elements: Vec<Element>, pub camera: Option<(f64, f64, f64)> }
@@ -108,6 +109,8 @@ impl Collection {
         }
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
         db.execute_batch(DDL)?;
+        // a file whose canvases were made before a card could be locked (row 327) gets the column
+        { let has: i64 = db.query_row("SELECT COUNT(*) FROM pragma_table_info('canvas_elements') WHERE name = 'locked'", [], |r| r.get(0))?; if has == 0 { db.execute_batch("ALTER TABLE canvas_elements ADD COLUMN locked INTEGER NOT NULL DEFAULT 0;")?; } }
         let c = Collection { db, pending: vec![] };
         if !existed { c.stamp()?; }
         Ok(c)
@@ -160,9 +163,11 @@ impl Collection {
     /// A canvas's content (empty for a canvas nothing was put on, and in a file from before canvases had any).
     pub fn load_canvas(&self, canvas: BlockId) -> Result<Canvas, Error> {
         let has: bool = self.db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'canvas_elements'", [], |r| r.get::<_, i64>(0)).map(|n| n > 0)?; if !has { return Ok(Canvas::default()) }
-        let mut q = self.db.prepare("SELECT id, kind, x, y, w, h, z, parent, record FROM canvas_elements WHERE doc = ?1 ORDER BY z, id")?;
-        let elements = q.query_map([canvas.to_string()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get::<_, Option<String>>(7)?, r.get(8)?)))?
-            .filter_map(|r| r.ok()).filter_map(|(id, kind, x, y, w, h, z, parent, record)| Some(Element { id: BlockId::parse(&id)?, kind, x, y, w, h, z, parent: parent.and_then(|p| BlockId::parse(&p)), record })).collect();
+        // (a file opened only to be read may be from before the lock's column)
+        let lock: i64 = self.db.query_row("SELECT COUNT(*) FROM pragma_table_info('canvas_elements') WHERE name = 'locked'", [], |r| r.get(0))?;
+        let mut q = self.db.prepare(&format!("SELECT id, kind, x, y, w, h, z, parent, record, {} FROM canvas_elements WHERE doc = ?1 ORDER BY z, id", if lock > 0 { "locked" } else { "0" }))?;
+        let elements = q.query_map([canvas.to_string()], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get::<_, Option<String>>(7)?, r.get(8)?, r.get::<_, i64>(9)?)))?
+            .filter_map(|r| r.ok()).filter_map(|(id, kind, x, y, w, h, z, parent, record, locked)| Some(Element { id: BlockId::parse(&id)?, kind, x, y, w, h, z, parent: parent.and_then(|p| BlockId::parse(&p)), record, locked: locked != 0 })).collect();
         let cam: Option<String> = self.db.query_row("SELECT camera FROM canvas_meta WHERE doc = ?1", [canvas.to_string()], |r| r.get(0)).optional()?.flatten();
         let camera = cam.and_then(|c| serde_json::from_str::<Vec<f64>>(&c).ok()).and_then(|v| (v.len() == 3 && v[2] > 0.0).then(|| (v[0], v[1], v[2])));
         Ok(Canvas { elements, camera })
@@ -176,12 +181,12 @@ impl Collection {
     /// A canvas's content is written whole (its elements, its camera).
     pub fn save_canvas(&mut self, canvas: BlockId, c: &Canvas) -> Result<(), Error> {
         let (t, doc) = (now_ms(), canvas.to_string()); let tx = self.db.transaction()?;
-        let old: std::collections::HashMap<String, (i64, i64, String)> = { let mut q = tx.prepare("SELECT id, created, modified, kind || '|' || x || '|' || y || '|' || w || '|' || h || '|' || z || '|' || IFNULL(parent, '') || '|' || record FROM canvas_elements WHERE doc = ?1")?; let v = q.query_map([&doc], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<i64>>(2)?.unwrap_or(0), r.get::<_, String>(3)?))))?.filter_map(|r| r.ok()).collect(); v };
+        let old: std::collections::HashMap<String, (i64, i64, String)> = { let mut q = tx.prepare("SELECT id, created, modified, kind || '|' || x || '|' || y || '|' || w || '|' || h || '|' || z || '|' || IFNULL(parent, '') || '|' || locked || '|' || record FROM canvas_elements WHERE doc = ?1")?; let v = q.query_map([&doc], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<i64>>(2)?.unwrap_or(0), r.get::<_, String>(3)?))))?.filter_map(|r| r.ok()).collect(); v };
         tx.execute("DELETE FROM canvas_elements WHERE doc = ?1", [&doc])?;
         for e in &c.elements { let id = e.id.to_string();
-            tx.execute("INSERT INTO canvas_elements (id, doc, kind, x, y, w, h, z, parent, record, created, modified) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)", params![id, doc, e.kind, e.x, e.y, e.w, e.h, e.z, e.parent.map(|p| p.to_string()), e.record, old.get(&id).map(|o| o.0).unwrap_or(t), t])?; }
+            tx.execute("INSERT INTO canvas_elements (id, doc, kind, x, y, w, h, z, parent, record, created, modified, locked) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)", params![id, doc, e.kind, e.x, e.y, e.w, e.h, e.z, e.parent.map(|p| p.to_string()), e.record, old.get(&id).map(|o| o.0).unwrap_or(t), t, e.locked as i64])?; }
         // what was written unchanged keeps its time
-        for (id, (_, modified, sig)) in &old { tx.execute("UPDATE canvas_elements SET modified = ?2 WHERE id = ?1 AND doc = ?3 AND (kind || '|' || x || '|' || y || '|' || w || '|' || h || '|' || z || '|' || IFNULL(parent, '') || '|' || record) = ?4", params![id, modified, doc, sig])?; }
+        for (id, (_, modified, sig)) in &old { tx.execute("UPDATE canvas_elements SET modified = ?2 WHERE id = ?1 AND doc = ?3 AND (kind || '|' || x || '|' || y || '|' || w || '|' || h || '|' || z || '|' || IFNULL(parent, '') || '|' || locked || '|' || record) = ?4", params![id, modified, doc, sig])?; }
         tx.execute("INSERT INTO canvas_meta (doc, camera) VALUES (?1, ?2) ON CONFLICT(doc) DO UPDATE SET camera = ?2", params![doc, c.camera.map(|(x, y, z)| serde_json::json!([x, y, z]).to_string())])?;
         tx.execute("UPDATE documents SET modified = ?2 WHERE id = ?1", params![doc, t])?;
         tx.commit()?; Ok(())
@@ -413,7 +418,7 @@ mod tests {
     fn canvases_merge_card_by_card() {
         let dir = std::env::temp_dir().join(format!("mn-canvas-merge-{}", std::process::id())); let _ = std::fs::remove_dir_all(&dir); std::fs::create_dir_all(&dir).unwrap();
         let (base_p, mine_p, their_p) = (dir.join("base.mnd"), dir.join("mine.mnd"), dir.join("theirs.mnd"));
-        let el = |x: f64, rec: &str| Element { id: BlockId::new(), kind: "text".into(), x, y: 0.0, w: 100.0, h: 50.0, z: 1, parent: None, record: rec.into() };
+        let el = |x: f64, rec: &str| Element { id: BlockId::new(), kind: "text".into(), x, y: 0.0, w: 100.0, h: 50.0, z: 1, parent: None, record: rec.into(), locked: false };
         let (a, b, c) = (el(0.0, "a"), el(200.0, "b"), el(400.0, "c"));
         let cid = { let mut col = Collection::open(&base_p).unwrap(); let cid = col.create(None, DocKind::Canvas, "Board").unwrap(); col.save_canvas(cid, &Canvas { elements: vec![a.clone(), b.clone(), c.clone()], camera: None }).unwrap(); cid };
         std::fs::copy(&base_p, &mine_p).unwrap(); std::fs::copy(&base_p, &their_p).unwrap();
@@ -434,7 +439,7 @@ mod tests {
         let note = c.create(Some(folder), DocKind::Note, "First").unwrap(); let other = c.create(Some(folder), DocKind::Canvas, "Board").unwrap();
         // a canvas keeps what is put on it, in the stack's order, and where it was looked at
         assert_eq!(c.load_canvas(other).unwrap(), Canvas::default());
-        let el = |z: i64, rec: &str| Element { id: BlockId::new(), kind: "text".into(), x: 10.0, y: -20.5, w: 200.0, h: 80.0, z, parent: None, record: rec.into() };
+        let el = |z: i64, rec: &str| Element { id: BlockId::new(), kind: "text".into(), x: 10.0, y: -20.5, w: 200.0, h: 80.0, z, parent: None, record: rec.into(), locked: false };
         let cv = Canvas { elements: vec![el(1, "behind"), el(5, "in front")], camera: Some((100.0, 50.0, 0.5)) }; c.save_canvas(other, &cv).unwrap(); assert_eq!(c.load_canvas(other).unwrap(), cv);
         let cv2 = Canvas { elements: vec![cv.elements[1].clone()], camera: None }; c.save_canvas(other, &cv2).unwrap(); assert_eq!(c.load_canvas(other).unwrap(), cv2); assert_eq!(c.load_canvas(note).unwrap(), Canvas::default());
         assert_eq!(c.list(Some(folder)).unwrap().iter().map(|e| (e.id, e.kind, e.title.as_str())).collect::<Vec<_>>(), [(note, DocKind::Note, "First"), (other, DocKind::Canvas, "Board")]);
