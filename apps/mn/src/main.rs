@@ -505,6 +505,8 @@ impl App {
     /// cannot be reached; the work stays on this machine.
     fn save(&mut self) {
         if self.saving.is_some() { return }
+        // an open canvas's last changes go into the collection first
+        if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true);
         self.autosave();
         let Some(st) = self.store.as_mut() else { println!("save: this note has no file"); return };
         let Some(session) = st.session.as_ref() else { return };
@@ -1836,6 +1838,8 @@ impl App {
         // Enter after a typed address: the address becomes a link first (row 320)
         if matches!(key, Key::Named(NamedKey::Enter)) && !cmd && !self.blank && self.confirm.is_none() && self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && !self.ctx.is_open() { let d = self.ed.autolink(false, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
+        // Save is the collection's, wherever the keys are - on a canvas (which has no page laid out), in the tree, in a field
+        if cmd && !alt && !shift && self.confirm.is_none() && matches!(key, Key::Character(c) if c.to_lowercase() == "s") { self.save(); return }
         // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
         if let Some(sel) = &self.files.pdf {
             match key { Key::Character(c) if cmd && !shift && c.to_lowercase() == "c" => { if let Some(t) = self.pdf_boxes(sel.id).and_then(|b| self.media.page_text(&b.3)) { let words = t.words(sel.a, sel.b); if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(words); } self.block_clip = None; } return }
