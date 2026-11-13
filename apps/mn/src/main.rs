@@ -46,6 +46,8 @@ mod choice;
 mod linkedit;
 mod findbar;
 mod export;
+mod gather;
+mod gather_win;
 mod search;
 mod canvas;
 mod ink;
@@ -153,7 +155,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     space_cam: Option<(f64, f64, f64)>,
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
-    cv_test: bool, /// the export's options (read from the settings when first wanted)
+    cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
+    gather: Option<gather_win::Window>, gather_test: bool, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
@@ -319,16 +322,17 @@ impl App {
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
             let (text, warn) = if self.store.is_none() { (String::new(), false) } else if self.saving.is_some() { ("Saving\u{2026}".to_string(), false) }
                 else if let Some((t, true)) = &self.status { (t.clone(), true) }
+                else if let Some(t) = self.files.gather.as_ref().and_then(|w| w.readout()) { (t, false) }
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { text: &text, warn, finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { text: &text, warn, link: self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
         if let (Some(c), Some(cv)) = (self.files.card.as_mut(), self.files.canvas.as_ref()) { if let Some(r) = cv.rect_of(c.el) { if r != c.rect { self.geom_moved = Some(Instant::now()); } c.rect = r; } }
         if let Some(sb) = self.sidebar.as_mut() { sb.defer_open = self.files.canvas.is_some() && self.files.card.is_none(); }
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -489,6 +493,7 @@ impl App {
         self.pal.paint(scene, &mut g.fonts, paint::page(), now);
         if self.foot.tick(now) { g.window.request_redraw(); }
         if self.bar.tick(now) { g.window.request_redraw(); }
+        if let Some(w) = self.files.gather.as_mut() { w.paint(scene, &mut g.fonts, view, s, now); if w.animating(now) { g.window.request_redraw(); } }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
@@ -563,6 +568,8 @@ impl App {
             SaveStep::Put(Ok(_)) => {
                 let to = sv.to.clone().unwrap_or_else(|| session.original().to_path_buf());
                 if sv.to.is_some() { recent_add(&to); }
+                // (the Qt app's quiet offer after a Save As: the files the collection still refers to elsewhere)
+                let outside = if sv.to.is_some() { gather::descriptors(&st.col).iter().flat_map(|d| gather::sources(d)).filter(|(src, ..)| !src.as_str().is_some_and(|x| x.starts_with(".minnotes/"))).count() } else { 0 };
                 if let Err(e) = session.published(&to) { eprintln!("save: the document was written, but the session could not record it: {e}"); }
                 st.unpublished = st.edited_since_stage || st.edited.is_some();
                 match &sv.merged { Some(m) => println!("saved {place} — merged with a save by someone else: {m}"), None => println!("saved {place}") }
@@ -571,6 +578,7 @@ impl App {
                 // the footer says how it went; a dialog only when there is something to look at (both versions of a paragraph kept)
                 self.status = Some((if merged.is_some() { "Saved \u{2014} merged with someone else\u{2019}s changes" } else { "Saved" }.to_string(), false));
                 if !self.unpublished() { self.changed.clear(); }
+                if outside > 0 { self.notice = Some((format!("Saved \u{2014} {outside} file{} referenced outside the collection: File \u{25b8} Collect Media\u{2026} brings them in", if outside == 1 { " is" } else { "s are" }), Instant::now() + std::time::Duration::from_secs(10))); }
                 if std::mem::take(&mut self.close_after_save) && !self.unpublished() && doubled == 0 { self.proceed(); }
                 else if doubled > 0 { use min_ui::text_button::Variant as V;
                     let body = if doubled > 0 { format!("Someone else saved this document while you were working. Their changes have been merged with yours. {doubled} paragraph(s) were changed by both of you: both versions are kept, the second marked, for you to choose between.") } else { "Someone else saved this document while you were working. Their changes have been merged with yours.".to_string() };
@@ -627,12 +635,16 @@ impl App {
         let c: Vec<char> = name.chars().collect();
         if c.len() <= 60 { name } else { format!("{}\u{2026}{}", c[..36].iter().collect::<String>(), c[c.len() - 20..].iter().collect::<String>()) }
     }
+    /// A dialog or the copy's window is over the page: nothing under it takes events.
+    fn modal(&self) -> bool { self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) }
     fn unpublished(&self) -> bool { self.store.as_ref().is_some_and(|st| st.unpublished || st.edited.is_some()) }
     /// The collection is to be closed — for quitting, for another collection, or just closed. With changes that are not
     /// in the document, the Qt app's question is put first.
     fn request_close(&mut self, what: Pending) {
         use min_ui::text_button::Variant as V;
         if self.confirm.as_ref().is_some_and(|(a, _)| *a == Ask::Close) { return }
+        // a copy under way is not walked away from: it is stopped first, or waited for
+        if self.files.gather.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } self.notice = Some(("Files are still being copied \u{2014} stop the copy or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         self.after_close = Some(what);
         if self.unpublished() {
             let name = self.doc_name();
@@ -652,7 +664,7 @@ impl App {
     }
     /// The collection leaves the window: a session with nothing unpublished is removed; the window is blank.
     fn end_session(&mut self) {
-        self.autosave();
+        self.autosave(); self.gather_drop();
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
         self.store = None; self.sidebar = None; self.others.clear(); self.changed.clear(); self.status = None; self.ed = Editor::new(Doc::new()); self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = true; self.side_w = 0.0;
         #[cfg(target_os = "macos")] text_element::changed(true);
@@ -738,6 +750,95 @@ impl App {
         if let Some(cb) = self.clipboard.as_mut() { if cb.set_text(text).is_ok() { self.block_clip = None; self.notice = Some((format!("Copied the {what} as Markdown"), Instant::now() + std::time::Duration::from_secs(5))); } }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
+    // ── Collect Media and the package (row 332)
+    /// The window is opened on a look at the collection's files. Collect Media copies into the collection's own
+    /// folder; the package asks for a folder (`to`: given by a scripted check) and takes a copy of the collection as
+    /// it stands now. While a copy runs the same window is shown again instead.
+    fn gather_open(&mut self, what: gather::What, to: Option<std::path::PathBuf>) {
+        let soon = |s: u64| Instant::now() + std::time::Duration::from_secs(s);
+        if let Some(w) = self.files.gather.as_mut() { if w.active() { w.shown = true; if w.what != what { self.notice = Some(("A copy is under way \u{2014} one at a time".into(), soon(6))); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+        if self.store.is_none() { return }
+        if what == gather::What::Package && to.is_none() {
+            let stem = self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|x| x.original().file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Collection".into());
+            self.panel(rfd::FileDialog::new().set_title("Export Collection as Package").set_file_name(format!("{stem} package")), 0, move |me, p| if let Some(p) = p.into_iter().next() { me.gather_open(gather::What::Package, Some(p)) }); return
+        }
+        // everything typed and placed goes into the collection first: the look is at the collection as it stands
+        if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.autosave(); self.gather_drop();
+        let Some(st) = self.store.as_ref() else { return }; let Some(session) = st.session.as_ref() else { return };
+        let Some(base) = session.original().parent().map(|p| p.to_path_buf()) else { return };
+        let doc_name = session.original().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Collection.mnd".into());
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| { if let Some(p) = WAKE.get() { p.wake_up(); } });
+        let recs = gather::descriptors(&st.col);
+        let win = match (what, to) {
+            (gather::What::Package, Some(folder)) => {
+                if folder.is_file() { self.notice = Some(("A file has that name \u{2014} the package is a folder: choose another name".into(), soon(8))); return }
+                if folder == base { self.notice = Some(("That is the collection\u{2019}s own folder \u{2014} choose another place for the package".into(), soon(8))); return }
+                let snap = sessions_root().join(format!("package-{}-{}.mnd", std::process::id(), self.now_ms()));
+                if let Err(e) = st.col.publish(&snap) { self.notice = Some((format!("The package could not be started \u{2014} {e}"), soon(10))); return }
+                let mut w = gather_win::Window::open(what, recs, self.media.places(), folder.join(".minnotes"), wake); w.folder = Some(folder); w.snap = Some(snap); w.doc_name = doc_name; w
+            }
+            _ => gather_win::Window::open(what, recs, self.media.places(), base.join(".minnotes"), wake),
+        };
+        self.files.gather = Some(win); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The window goes (a copy under way is told to stop); a package's copy of the collection is cleared away.
+    fn gather_drop(&mut self) {
+        let Some(w) = self.files.gather.take() else { return }; if let Some(r) = &w.run { r.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
+        if let Some(snap) = &w.snap { for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
+    }
+    fn gather_out(&mut self, out: gather_win::Out) {
+        use gather_win::Out as O;
+        match out {
+            O::None => return,
+            O::Redraw => {}
+            O::Close => { let note = self.files.gather.as_ref().map(|w| w.note.clone()).filter(|n| !n.is_empty()); self.gather_drop(); if let Some(n) = note { self.notice = Some((n, Instant::now() + std::time::Duration::from_secs(8))); } }
+            O::Relink(i) => self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let (Some(p), Some(w)) = (p.into_iter().next(), me.files.gather.as_mut()) { w.relinked(i, p); }),
+            O::Reveal => if let Some(w) = self.files.gather.as_ref() { match (&w.folder, w.what) { (Some(f), _) => open::reveal(&f.join(&w.doc_name)), _ => { let first = w.run.as_ref().and_then(|r| r.jobs.iter().enumerate().find(|(i, j)| j.is_some() && matches!(r.state(*i), gather::DONE | gather::THERE)).and_then(|(_, j)| j.as_ref().map(|j| j.to.clone()))); open::reveal(&first.unwrap_or_else(|| w.dest.clone())) } } },
+            O::Discard => { if let Some(w) = self.files.gather.as_ref() { if let Some(f) = &w.folder { let _ = std::fs::remove_dir(f.join(".minnotes").join(".qcview")); let _ = std::fs::remove_dir(f.join(".minnotes")); let _ = std::fs::remove_dir(f); } } }
+            O::Commit => { let err = self.gather_commit().err(); if let Some(e) = &err { eprintln!("gather: {e}"); } if let Some(w) = self.files.gather.as_mut() { w.committed(err); println!("gather: {}", w.note); } }
+        }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The copying is over: the references are pointed at the copies. Collect Media changes the open collection -
+    /// the open note, the notes held in memory and the open canvas each as ONE step of their own history (an undo
+    /// there takes it back), every other note and canvas in the collection directly - and saves it, so the document
+    /// and the files beside it cannot part. The package changes only its own copy of the collection, which is then
+    /// written into the package's folder as its document.
+    fn gather_commit(&mut self) -> Result<(), String> {
+        let Some(w) = self.files.gather.as_ref() else { return Ok(()) }; let map = w.map();
+        if w.what == gather::What::Package {
+            let (Some(folder), Some(snap)) = (w.folder.clone(), w.snap.clone()) else { return Err("the package has no folder".into()) };
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+            let mut col = mn_store::Collection::open(&snap).map_err(|e| e.to_string())?;
+            gather::rewrite_collection(&mut col, &map, &Default::default())?;
+            let (part, to) = (folder.join(format!(".{}.part", w.doc_name)), folder.join(&w.doc_name)); let _ = std::fs::remove_file(&part);
+            col.publish(&part).map_err(|e| e.to_string())?; std::fs::rename(&part, &to).map_err(|e| e.to_string())?;
+            return Ok(())
+        }
+        if map.is_empty() { return Ok(()) }
+        if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.autosave();
+        let now = self.now_ms(); let mut skip = std::collections::HashSet::new();
+        let ch = gather::rewritten(&self.ed.doc, &map);
+        if !ch.is_empty() { match self.ed.set_kinds(ch, now) { Ok(d) => { self.apply(d); self.layout = None; } Err(e) => return Err(format!("{e:?}")) } self.autosave(); }
+        let Some(st) = self.store.as_mut() else { return Ok(()) }; skip.insert(st.note);
+        for (id, ed) in self.others.iter_mut() { skip.insert(*id); let ch = gather::rewritten(&ed.doc, &map); if ch.is_empty() { continue }
+            ed.set_kinds(ch, now).map_err(|e| format!("{e:?}"))?; st.col.save_note(*id, &ed.doc).map_err(|e| e.to_string())?; self.changed.insert(*id); }
+        if let Some(cv) = self.files.canvas.as_mut() { skip.insert(cv.id); if cv.set_records(|r| gather::rewrite(r, &map)) > 0 { cv.dirty = true; } }
+        gather::rewrite_collection(&mut st.col, &map, &skip)?;
+        st.unpublished = true; st.edited_since_stage = true; self.files.cards.clear();
+        self.canvas_save(true); self.save();
+        Ok(())
+    }
+    /// A scripted check (`MN_GATHER=collect` or `package:<folder>`): the whole of it, waited for, as the run ends.
+    fn gather_now(&mut self, spec: &str) {
+        let (what, to) = match spec.split_once(':') { Some(("package", f)) => (gather::What::Package, Some(std::path::PathBuf::from(f))), _ => (gather::What::Collect, None) };
+        self.gather_open(what, to); let t = Instant::now(); let mut over = false;
+        while !over && t.elapsed().as_secs() < 300 {
+            let Some(w) = self.files.gather.as_mut() else { break }; let out = w.tick(); if w.phase == gather_win::Phase::Review { if !w.go() { println!("gather: nothing to do"); break } }
+            over = matches!(out, gather_win::Out::Commit | gather_win::Out::Discard); self.gather_out(out); if !over { std::thread::sleep(std::time::Duration::from_millis(5)); }
+        }
+        if let Some(w) = self.files.gather.as_ref() { for (i, a) in w.assets.iter().enumerate() { println!("gather:   {:?} {} -> {} [{}]", a.kind, a.name, a.dest, match w.run.as_ref().map(|r| r.state(i)) { Some(gather::DONE) => "copied".to_string(), Some(gather::THERE) => "already there".to_string(), Some(gather::FAILED) => format!("failed: {}", w.run.as_ref().map(|r| r.slots[i].why.lock().unwrap().clone()).unwrap_or_default()), _ => a.problem.clone().unwrap_or_else(|| "not copied".into()) }); } }
+    }
     fn sync_recent(&mut self) { #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_mut() { m.set_recent(&recent_list()); } }
     /// Save As: the collection is published at a place the user picks, which becomes its document.
     fn save_as(&mut self) {
@@ -759,7 +860,7 @@ impl App {
         use winit::cursor::CursorIcon as C;
         let Some(g) = self.gpu.as_ref() else { return };
         let (x, y) = self.pointer; let (w, h) = g.presenter.size();
-        let over_ui = self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.link.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.find.as_ref().is_some_and(|p| p.hit(x, y));
+        let over_ui = self.modal() || self.pal.is_open() || self.ctx.is_open() || self.files.picker.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.link.as_ref().is_some_and(|p| p.hit(x, y)) || self.files.find.as_ref().is_some_and(|p| p.hit(x, y));
         let on_canvas = !over_ui && !self.files.card.as_ref().is_some_and(|c| Rect::new(c.rect.x0 - 40.0, c.rect.y0, c.rect.x1, c.rect.y1).contains(kurbo::Point::new(x, y))) && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(x, y))) && !self.bar.hit(x, y) && !self.foot.hit(x, y);
         let want = if self.files.row_drag.is_some_and(|d| d.2) { if self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(x, y))) { C::Copy } else { C::Grabbing } }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
@@ -855,7 +956,7 @@ impl App {
     }
     /// A right press: over the tree it opens the context menu (row 300) on the row under it, which is selected.
     fn context(&mut self, x: f64, y: f64) {
-        if self.confirm.is_some() { return }
+        if self.modal() { return }
         use min_ui::menu::MenuItem as I;
         // over the page: the block under the pointer is selected (the selected blocks stay when it is one of them) and
         // the menu is theirs (row 306)
@@ -1195,7 +1296,7 @@ impl App {
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn video_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
-        if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        if self.blank || self.modal() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
         let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
         self.video_boxes(id)
     }
@@ -1275,8 +1376,8 @@ impl App {
     /// page's to give (no dialog, menu, palette or rename field).
     fn video_current(&self) -> Option<BlockId> {
         // on a canvas: the one selected card, when it is a video
-        if let Some(cv) = self.files.canvas.as_ref().filter(|_| self.files.card.is_none()) { if self.confirm.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming() || sb.typing()) || self.pal.is_open() || self.ctx.is_open() { return None } return cv.selected_video() }
-        if self.blank || self.confirm.is_some() || self.files.note_field.is_some() || self.ed.run_len() != 1 || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()) || self.pal.is_open() || self.ctx.is_open() { return None }
+        if let Some(cv) = self.files.canvas.as_ref().filter(|_| self.files.card.is_none()) { if self.modal() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming() || sb.typing()) || self.pal.is_open() || self.ctx.is_open() { return None } return cv.selected_video() }
+        if self.blank || self.modal() || self.files.note_field.is_some() || self.ed.run_len() != 1 || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()) || self.pal.is_open() || self.ctx.is_open() { return None }
         self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some())
     }
     /// A key while a video block is the current one (row 316, stage 3): QCView's transport keys (`qcv_player::map_key`)
@@ -1329,7 +1430,7 @@ impl App {
     /// The PDF block under a window point: its id, its page's box and its strip's box in the window, and its record.
     /// The current block when it can be drawn on (row 325): a picture, or a PDF - its page's frame in the window, its record.
     fn ink_block(&self) -> Option<(BlockId, Rect, String)> {
-        if self.blank || self.confirm.is_some() || (self.files.canvas.is_some() && self.files.card.is_none()) { return None }
+        if self.blank || self.modal() || (self.files.canvas.is_some() && self.files.card.is_none()) { return None }
         if let Some((id, r)) = self.picture() { if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) { return Some((id, r, descriptor.clone())) } }
         let id = self.ed.handle_block().filter(|_| self.ed.run_len() == 1 && !self.grab.as_ref().is_some_and(|g| g.dragging))?; let (id, page, _, d) = self.pdf_boxes(id)?; Some((id, page, d))
     }
@@ -1390,7 +1491,7 @@ impl App {
         println!("page ink: strokes after the pen {a}, after the shapes {b}, after the eraser {c}, after undo {u}, after redo {}", count(self)); self.files.pick = None; self.layout = None;
     }
     fn pdf_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
-        if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        if self.blank || self.modal() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
         let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
         self.pdf_boxes(id)
     }
@@ -1421,7 +1522,7 @@ impl App {
     }
     /// A pointer event goes to the wide tables' bars first: true when a bar took it (a press on its thumb, a drag).
     fn table_bar_event(&mut self, e: min_ui::Event) -> bool {
-        if self.blank || self.confirm.is_some() { return false }
+        if self.blank || self.modal() { return false }
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let s = g.window.scale_factor(); let now = Instant::now();
         sync_bars(&mut self.files.tbars, l, &self.ed.doc, origin(&self.files.card, self.side_w, self.top, self.scroll, s), s);
         let (mut mine, mut redraw) = (false, false); let top = self.top;
@@ -1614,7 +1715,7 @@ impl App {
     }
     /// The gap between two columns under a window point: (the column before it, the one after, the px the columns share, the sum of their shares).
     fn column_gap_at(&self, x: f64, y: f64) -> Option<(BlockId, BlockId, f64, f32)> {
-        if self.blank || self.confirm.is_some() || y < self.top { return None } let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
+        if self.blank || self.modal() || y < self.top { return None } let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         let off = origin(&self.files.card, self.side_w, self.top, self.scroll, s);
         for id in self.ed.doc.children(None) { if self.ed.doc.get(*id).map(|b| &b.kind) != Some(&Kind::Columns) || l.is_stacked(*id) { continue }
             let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) else { continue }; if y < r.y0 || y > r.y1 { continue }
@@ -1625,7 +1726,7 @@ impl App {
         None
     }
     fn table_ui(&self) -> Option<TableUi> {
-        if self.blank || self.confirm.is_some() || self.files.picker.is_some() { return None }
+        if self.blank || self.modal() || self.files.picker.is_some() { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         table_ui(&self.ed, l, s, origin(&self.files.card, self.side_w, self.top, self.scroll, s))
     }
@@ -1746,15 +1847,15 @@ impl App {
     /// The page's drop place under a window point (None: over the bars, the sidebar, a dialog, or no note).
     fn file_drop_at(&self, x: f64, y: f64) -> Option<(mn_edit::Drop, Rect)> {
         // over an open canvas: the files go where the pointer is (no line is shown)
-        if self.files.canvas.is_some() && self.files.card.is_none() { if self.confirm.is_some() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None } self.files.canvas_at.set(Some((x, y))); return Some((Self::canvas_drop(), Rect::ZERO)) }
-        if self.blank || self.confirm.is_some() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        if self.files.canvas.is_some() && self.files.card.is_none() { if self.modal() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None } self.files.canvas_at.set(Some((x, y))); return Some((Self::canvas_drop(), Rect::ZERO)) }
+        if self.blank || self.modal() || self.store.is_none() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
         let (nx, ny) = self.note_point((x, y)); self.ed.insert_at(self.layout.as_ref()?, nx, ny)
     }
     /// A command of the menu bar (row 296).
     fn menu_cmd(&mut self, c: menu::Cmd) {
         use menu::Cmd as M;
         if let (Some(cv), true) = (self.files.canvas.as_mut().filter(|_| self.files.card.is_none()), matches!(c, M::Undo | M::Redo)) { if c == M::Undo { cv.undo() } else { cv.redo() } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
-        if self.confirm.is_some() && c != M::Quit { return }
+        if self.modal() && c != M::Quit { return }
         match c {
             M::Quit => self.request_close(Pending::Quit),
             M::CloseCollection => if self.store.is_some() { self.request_close(Pending::Close) },
@@ -1773,6 +1874,7 @@ impl App {
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::ExportPoster => self.export(4, None), M::CopyMarkdown => self.copy_markdown(),
+            M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
@@ -2005,6 +2107,7 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
+        if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = self.files.gather.as_mut().map(|w| w.pointer(&e)).unwrap_or(gather_win::Out::None); self.gather_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // the colour palette: while it is open every event is its own
         if self.pal.is_open() { if let Some(g) = self.gpu.as_mut() { let out = self.pal.event(&e, &mut g.fonts, now); self.colour_out(out); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // the tree's context menu is over everything but a dialog: while it is open the event is its own
@@ -2017,7 +2120,7 @@ impl App {
             // a press on a button is the button's to the end: the release must come back here, not go to the page
             if hit.is_some() || e.pos().is_some_and(|(x, y)| self.splash.iter().any(|b| b.hit(x, y))) { return true } }
         let (did, on_foot) = self.foot.event(&e, now);
-        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Readout => { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } continue } footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (tools, on_bar) = self.bar.event(&e, now);
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -2041,10 +2144,10 @@ impl App {
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
         // Enter after a typed address: the address becomes a link first (row 320)
-        if matches!(key, Key::Named(NamedKey::Enter)) && !cmd && !self.blank && self.confirm.is_none() && self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && !self.ctx.is_open() { let d = self.ed.autolink(false, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
+        if matches!(key, Key::Named(NamedKey::Enter)) && !cmd && !self.blank && !self.modal() && self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && !self.ctx.is_open() { let d = self.ed.autolink(false, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
         // Save is the collection's, wherever the keys are - on a canvas (which has no page laid out), in the tree, in a field
-        if cmd && !alt && !shift && self.confirm.is_none() && matches!(key, Key::Character(c) if c.to_lowercase() == "s") { self.save(); return }
+        if cmd && !alt && !shift && !self.modal() && matches!(key, Key::Character(c) if c.to_lowercase() == "s") { self.save(); return }
         if self.page_key(key) { return }
         // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
         if let Some(sel) = &self.files.pdf {
@@ -2073,9 +2176,10 @@ impl App {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
         }
+        if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = match key { Key::Named(NamedKey::Escape) => self.files.gather.as_mut().map(|w| w.key(false)), Key::Named(NamedKey::Enter) => self.files.gather.as_mut().map(|w| w.key(true)), _ => None }; if let Some(o) = out { self.gather_out(o); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a canvas is open (row 322): its keys, unless a field of the sidebar has them
         // a note edited in a card (row 322, stage 2): Escape leaves the card when nothing else has a use for it; Cmd+Return on a selected note card opens the note in the page
-        if self.files.card.is_some() && matches!(key, Key::Named(NamedKey::Escape)) && self.confirm.is_none() && !self.ctx.is_open() && self.files.link.is_none() && self.files.picker.is_none() && self.files.find.as_ref().is_none_or(|f| !f.focused()) && !self.ed.in_blocks() && self.ed.cell_rect().is_none() && self.files.resize.is_none() && self.grab.is_none() { self.card_leave(); return }
+        if self.files.card.is_some() && matches!(key, Key::Named(NamedKey::Escape)) && !self.modal() && !self.ctx.is_open() && self.files.link.is_none() && self.files.picker.is_none() && self.files.find.as_ref().is_none_or(|f| !f.focused()) && !self.ed.in_blocks() && self.ed.cell_rect().is_none() && self.files.resize.is_none() && self.grab.is_none() { self.card_leave(); return }
         if self.files.canvas.is_some() && cmd && matches!(key, Key::Named(NamedKey::Enter)) && self.files.card.is_none() { if let Some((_, note, _)) = self.card_note() { self.open_note(note); return } }
         if self.files.canvas.is_some() && self.files.card.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) {
             if self.files.canvas.as_ref().is_some_and(|c| c.editing()) && cmd && !alt { if let Key::Character(c) = key { if c.to_lowercase() == "v" { let t = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()); if let (Some(t), Some(cv), Some(g)) = (t, self.files.canvas.as_mut(), self.gpu.as_mut()) { let k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(t), shift: false, cmd: false }; cv.key(&k, &mut g.fonts); g.window.request_redraw(); } return } } }
@@ -2205,6 +2309,8 @@ impl App {
         if let Some(t0) = *SPIN_T0.lock().unwrap() { let n = SPUN.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(30); let s = t0.elapsed().as_secs_f64(); println!("spin: {n} frames in {s:.2} s = {:.1} per second ({} elements)", n as f64 / s, self.files.canvas.as_ref().map(|c| c.els.len()).unwrap_or(0)); }
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
+        // (scripted, MN_GATHER=collect | package:<folder>: Collect Media or the package, run whole as the run ends)
+        if let Ok(spec) = std::env::var("MN_GATHER") { self.gather_now(&spec); }
         // (scripted, MN_EXPORT=<a.html>[:<b.md>]: the open note is exported there as the run ends)
         if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else if p.ends_with(".png") { 4 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
@@ -2224,6 +2330,7 @@ impl App {
         }
         let mut d = std::mem::take(&mut self.draw_ms); d.sort_by(|a, b| a.partial_cmp(b).unwrap());
         if !d.is_empty() { println!("frames {}: layout + scene + render + present, CPU ms p50 {:.2} p95 {:.2}", self.frames, d[d.len() / 2], d[(d.len() * 95 / 100).min(d.len() - 1)]); }
+        self.gather_drop();
         let (bytes, n) = self.media.held(); if n > 0 { println!("pictures held: {n}, {:.1} MB", bytes as f64 / (1 << 20) as f64); }
     }
 }
@@ -2408,6 +2515,11 @@ impl ApplicationHandler for App {
             if let Some((x, y)) = std::env::var("MN_DRAG").ok().and_then(|v| { let mut p = v.split(',').map(|n| n.trim().parse::<f64>().ok()); Some((p.next()??, p.next()??)) }) { self.pointer = (x, y); let (nx, ny) = self.note_point(self.pointer); let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, nx, ny)); self.grab = Some(Grab { from: (0.0, 0.0), dragging: true, drop, to_note: None }); }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if std::env::var_os("MN_ASK_CLOSE").is_some() && self.confirm.is_none() && !self.blank && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(st) = self.store.as_mut() { st.unpublished = true; } self.request_close(Pending::Close); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        // (scripted, MN_GATHER_SHOW=collect | package:<folder>[,go]: the window is opened by the app itself, for a screenshot; `go` starts the copy)
+        if let (false, Ok(spec), true) = (self.files.gather_test, std::env::var("MN_GATHER_SHOW"), self.frames > 2 && self.store.is_some()) { self.files.gather_test = true; let (spec, _) = spec.split_once(',').unwrap_or((&spec, "")); let (what, to) = match spec.split_once(':') { Some(("package", f)) => (gather::What::Package, Some(std::path::PathBuf::from(f))), _ => (gather::What::Collect, None) }; self.gather_open(what, to); }
+        if let Ok(x) = std::env::var("MN_GATHER_SHOW") { if x.ends_with(",go") || x.ends_with(",stop") { if let Some(w) = self.files.gather.as_mut() { if w.phase == gather_win::Phase::Review && w.run.is_none() && w.go() && x.ends_with(",stop") {
+            // (the face that asks what to keep: the copy is let finish, then counted as stopped)
+            if let Some(r) = w.run.clone() { let t = Instant::now(); while r.busy() && t.elapsed().as_secs() < 60 { std::thread::sleep(std::time::Duration::from_millis(5)); } r.stop.store(true, std::sync::atomic::Ordering::Relaxed); } } } } }
         if self.show_pal.is_some() && self.bar.rect_of(toolbar::Tool::Color).width() > 1.0 { let what = self.show_pal.take().unwrap();
             if what == "background" { self.open_colours(mn_doc::MarkKind::Highlight, toolbar::Tool::Highlight) } else { self.open_colours(mn_doc::MarkKind::Color, toolbar::Tool::Color) }
             if what == "picker" { if let Some(g) = self.gpu.as_mut() { self.pal.show_picker(&mut g.fonts); } }
@@ -2488,6 +2600,7 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
+        if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
             // no answer from the document's place: stop waiting (the call itself cannot be ended; its late result is dropped)
             eprintln!("save: the document's place has not answered for 20 seconds. It is treated as unreachable; your changes are kept on this machine. Whether the save went through is not known — it is looked at again at the next Save.");
@@ -2512,6 +2625,7 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
+                if let Some(w) = self.files.gather.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
                 // over an open canvas (row 322): the wheel pans, with Cmd (or Ctrl) it zooms about the pointer
                 // (a note edited in a card: over the card the wheel is the note's when it has more than the card shows; a zoom leaves the card)
@@ -2618,7 +2732,7 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 // a note's row pressed while a canvas is open may be dragged onto it: it becomes a card where it is let go (row 322, stage 2)
-                if state == ElementState::Pressed && self.files.canvas.is_some() && self.files.card.is_none() && self.confirm.is_none() && !self.ctx.is_open() { self.files.row_drag = self.sidebar.as_ref().filter(|sb| sb.rail.hit(position.x, position.y) && !sb.typing()).and_then(|sb| sb.id_at(position.x, position.y)).filter(|id| self.sidebar.as_ref().and_then(|sb| sb.row(*id)).is_some_and(|r| r.kind == mn_store::DocKind::Note)).map(|id| (id, (position.x, position.y), false)); }
+                if state == ElementState::Pressed && self.files.canvas.is_some() && self.files.card.is_none() && !self.modal() && !self.ctx.is_open() { self.files.row_drag = self.sidebar.as_ref().filter(|sb| sb.rail.hit(position.x, position.y) && !sb.typing()).and_then(|sb| sb.id_at(position.x, position.y)).filter(|id| self.sidebar.as_ref().and_then(|sb| sb.row(*id)).is_some_and(|r| r.kind == mn_store::DocKind::Note)).map(|id| (id, (position.x, position.y), false)); }
                 if state == ElementState::Released { if let Some((id, _, moved)) = self.files.row_drag.take() { if moved { if let Some(sb) = self.sidebar.as_mut() { sb.pressed_row = None; }
                     if let Some(cv) = self.files.canvas.as_mut().filter(|c| c.rect.contains(kurbo::Point::new(position.x, position.y))) { cv.add_note(id, Some((position.x, position.y))); }
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
@@ -2626,7 +2740,7 @@ impl ApplicationHandler for App {
                 // a canvas is open: the pointer is its own over the page's place (row 322)
                 // (a note edited in a card: a press outside the card leaves it - and is the canvas's; inside, it is the note's)
                 if state == ElementState::Pressed && !self.pressed { if let Some(c) = &self.files.card { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); if !Rect::new(c.rect.x0 - 40.0 * s, c.rect.y0, c.rect.x1, c.rect.y1).contains(kurbo::Point::new(position.x, position.y)) && !self.files.find.as_ref().is_some_and(|f| f.hit(position.x, position.y)) && self.files.link.is_none() && self.files.picker.is_none() { self.card_leave(); } } }
-                if self.files.canvas.is_some() && self.files.card.is_none() && self.confirm.is_none() && !self.ctx.is_open() {
+                if self.files.canvas.is_some() && self.files.card.is_none() && !self.modal() && !self.ctx.is_open() {
                     if state == ElementState::Released && std::mem::take(&mut self.files.drawing) { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.release(geo.to_norm(position.x, position.y), &cur, &geo)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                     if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
                     if state == ElementState::Pressed && self.canvas_video_press(position.x, position.y) { return } }
@@ -2743,7 +2857,7 @@ impl ApplicationHandler for App {
                     #[cfg(target_os = "macos")] text_element::changed(false);
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
-            WindowEvent::KeyboardInput { ref event, .. } if self.files.card.is_none() && self.files.canvas.as_ref().is_some_and(|c| !c.editing()) && self.confirm.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) && matches!(&event.logical_key, Key::Character(c) if c.as_str() == " ") => { let down = event.state.is_pressed(); let mut tap = false; if let Some(cv) = self.files.canvas.as_mut() { if down && !event.repeat { self.files.space_cam = Some(cv.camera()); } cv.space = down; if !down { tap = self.files.space_cam.take() == Some(cv.camera()); } }
+            WindowEvent::KeyboardInput { ref event, .. } if self.files.card.is_none() && self.files.canvas.as_ref().is_some_and(|c| !c.editing()) && !self.modal() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) && matches!(&event.logical_key, Key::Character(c) if c.as_str() == " ") => { let down = event.state.is_pressed(); let mut tap = false; if let Some(cv) = self.files.canvas.as_mut() { if down && !event.repeat { self.files.space_cam = Some(cv.camera()); } cv.space = down; if !down { tap = self.files.space_cam.take() == Some(cv.camera()); } }
                 if tap && !self.pressed { if let Some(id) = self.video_current() { self.video_toggle(id); } } self.set_cursor(); }
             WindowEvent::KeyboardInput { ref event, .. } if self.video_key(event) => {}
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {

@@ -2489,6 +2489,7 @@ dependencies = [
  "jiff",
  "krilla",
  "kurbo 0.13.1",
+ "libc",
  "log",
  "min-image",
  "min-paths",

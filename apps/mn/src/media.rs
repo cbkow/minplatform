@@ -184,6 +184,8 @@ impl Media {
         match &e.state { State::Ready(p) => Some(&p.brush), _ => None }
     }
     /// Where a block's file is on this machine (None: its record names none that can be looked for).
+    /// Where files are, for work off this thread.
+    pub fn places(&self) -> Places { self.places.clone() }
     pub fn locate(&self, descriptor: &str) -> Option<PathBuf> { let v: serde_json::Value = serde_json::from_str(descriptor).ok()?; self.places.locate(v.get("src")?).ok() }
     /// The characters of the page a PDF block shows, once its page has been drawn (None: not yet, or none to read).
     pub fn page_text(&self, descriptor: &str) -> Option<Arc<crate::pdf::PageText>> {
@@ -318,6 +320,8 @@ impl Media {
 }
 
 impl Places {
+    /// The places of a collection in `base` with nothing waiting and no mapped volumes.
+    #[cfg(test)] pub fn at(base: Option<PathBuf>) -> Places { Places { base, staged: None, mappings: vec![] } }
     /// Where a descriptor's `src` is on this machine. Err: why it cannot be looked for.
     pub fn locate(&self, src: &serde_json::Value) -> Result<PathBuf, String> {
         use min_paths::map::{resolve_ref, Ref};

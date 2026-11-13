@@ -141,6 +141,11 @@ impl Canvas {
         let put = self.sel.clone(); self.adopt(&put);
         if self.fit { self.fit_all(); }
     }
+    /// Media cards' records are changed by `f` (None: as it is) - one step of the history. How many changed.
+    pub fn set_records(&mut self, f: impl Fn(&str) -> Option<String>) -> usize {
+        let new: Vec<(usize, String)> = self.els.iter().enumerate().filter(|(_, e)| e.kind == "media").filter_map(|(i, e)| f(&e.record).map(|r| (i, r))).collect();
+        if new.is_empty() { return 0 } self.edit_end(true); self.step(); let n = new.len(); for (i, r) in new { self.els[i].record = r; } self.drawn.clear(); n
+    }
     /// An address becomes a link card at the view's centre.
     pub fn add_link(&mut self, url: &str) { self.edit_end(true); self.step(); self.add("link", url.to_string(), 340.0, 52.0, None, 0); }
     /// The one selected PDF card shows the page after (or before) the one it shows. True: it did.

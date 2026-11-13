@@ -30,6 +30,8 @@ pub mod scrollbar;
 pub mod toast;
 pub mod color_picker;
 pub mod text_area;
+pub mod progress;
+pub mod checkbox;
 pub use layer::UiLayer;
 pub use fonts::{Family, Fonts};
 pub use input::{Button, Event, ImeEvent, Key, KeyEvent, Named};

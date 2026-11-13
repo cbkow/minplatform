@@ -57,6 +57,10 @@ krilla = { version = "0.8.2", default-features = false, features = ["raster-imag
 # a Word document is a zip (as QCView's notes export writes it)
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
 
+[target.'cfg(unix)'.dependencies]
+# the room left on a disk (the package / Collect Media window)
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSRange", "NSUserDefaults", "objc2-core-foundation"] }

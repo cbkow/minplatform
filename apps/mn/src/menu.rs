@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes,
+    ExportHtml, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -29,7 +29,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         ("File", vec![
             item("New Collection…", sc_alt('n'), Cmd::NewCollection), item("New Note", sc('n'), Cmd::NewNote), item("New Folder", sc_shift('n'), Cmd::NewFolder), item("Rename", None, Cmd::Rename), Node::Sep,
             item("Open…", sc('o'), Cmd::Open), Node::Recent, Node::Sep,
-            item("Save", sc('s'), Cmd::Save), item("Save As…", sc_shift('s'), Cmd::SaveAs), Node::Sep,
+            item("Save", sc('s'), Cmd::Save), item("Save As…", sc_shift('s'), Cmd::SaveAs), item("Collect Media…", None, Cmd::CollectMedia), Node::Sep,
             item("Close Collection", sc('w'), Cmd::CloseCollection),
         ]),
         ("Edit", vec![
@@ -45,6 +45,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         // row 328: a note written out for other applications; the two options stay as they are set
         ("Export", vec![
             item("as HTML…", None, Cmd::ExportHtml), item("as Markdown…", None, Cmd::ExportMarkdown), item("as Word Document…", None, Cmd::ExportDocx), item("as PDF…", None, Cmd::ExportPdf), item("Canvas Poster (PNG)…", None, Cmd::ExportPoster), Node::Sep,
+            item("Collection as Package…", None, Cmd::ExportPackage), Node::Sep,
             item("Copy as Markdown", sc_shift('c'), Cmd::CopyMarkdown), Node::Sep,
             Node::Check { label: "Include File Paths", cmd: Cmd::ExportPaths }, Node::Check { label: "Include Video Notes", cmd: Cmd::ExportVideoNotes },
         ]),
