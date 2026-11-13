@@ -220,7 +220,7 @@ mod tests {
     use mn_doc::Doc;
     struct Fake;
     impl Source for Fake { fn item(&mut self, _: &str, mode: Mode, _: Opts) -> Item { assert_eq!(mode, Mode::Paper);
-        Item { what: What::Pdf, name: "plan.pdf".into(), path: "/vol/plan.pdf".into(), meta: "pdf \u{b7} 2 pages".into(), dw: None, problem: None, shots: vec![Shot { pic: Some(super::super::Pic { bytes: vec![9; 8], mime: "image/jpeg", ext: "jpg", w: 1280, h: 640 }), ..Default::default() }], notes: vec![] } } }
+        Item { what: What::Pdf, name: "plan.pdf".into(), path: "/vol/plan.pdf".into(), meta: "pdf \u{b7} 2 pages".into(), dw: None, problem: None, shots: vec![Shot { pic: Some(super::super::Pic { bytes: vec![9; 8], mime: "image/jpeg", ext: "jpg", w: 1280, h: 640 }), ..Default::default() }], notes: vec![], href: None } } }
     fn part(zip_bytes: &[u8], name: &str) -> String { use std::io::Read; let mut z = zip::ZipArchive::new(Cursor::new(zip_bytes)).unwrap(); let mut s = String::new(); z.by_name(name).unwrap().read_to_string(&mut s).unwrap(); s }
     #[test]
     fn headings_are_styles_each_numbered_list_starts_again_and_links_are_real() {

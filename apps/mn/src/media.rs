@@ -46,7 +46,10 @@ struct Job { key: String, path: PathBuf, w: u32, h: u32, /// a preview's origina
     still: Option<i32> }
 enum Outcome { Pic { rgba: Vec<u8>, w: u32, h: u32, whole: bool }, /// a video's frame as the decoder gives it: its colour is finished on the window's thread
     Still(qcv_player::thumbnail_cache::ThumbPixels, min_present::ColorMeta), Missing, Failed(String) }
-struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar }
+struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar, /// its `Media` is gone: the workers leave
+    shut: std::sync::atomic::AtomicBool }
+/// A `Media` made for one piece of work off the window's thread (a web folder's export) takes its workers with it.
+impl Drop for Media { fn drop(&mut self) { self.queue.shut.store(true, std::sync::atomic::Ordering::Relaxed); self.queue.more.notify_all(); } }
 
 /// Where files are: the collection's folder, this session's waiting place for added files, the path mappings.
 #[derive(Clone, Default)]
@@ -89,7 +92,7 @@ pub struct Media {
 impl Media {
     /// `wake` is called from a worker when a picture is ready (it must make the window poll and redraw).
     pub fn new(settings: &Path, wake: impl Fn() + Send + Sync + 'static) -> Media {
-        let queue = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), more: Condvar::new() });
+        let queue = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), more: Condvar::new(), shut: std::sync::atomic::AtomicBool::new(false) });
         let (tx, done) = mpsc::channel(); let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake); let (mail_tx, mail) = mpsc::channel(); let (ftx, frx) = mpsc::channel(); let (ntx, nrx) = mpsc::channel();
         std::thread::spawn(trim_cache);
         let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
@@ -97,7 +100,7 @@ impl Media {
             let (q, tx, wake) = (queue.clone(), tx.clone(), wake.clone());
             let _ = std::thread::Builder::new().name(format!("mn-media-{i}")).spawn(move || loop {
                 // the newest request first: it is what is on screen now
-                let job = { let mut j = q.jobs.lock().unwrap(); loop { if let Some(x) = j.pop_back() { break x } j = q.more.wait(j).unwrap(); } };
+                let job = { let mut j = q.jobs.lock().unwrap(); loop { if q.shut.load(std::sync::atomic::Ordering::Relaxed) { return } if let Some(x) = j.pop_back() { break x } j = q.more.wait(j).unwrap(); } };
                 // a preview answers twice: the stored picture at once, then (when it is worth it) the original, sharper
                 let mut send = |out: Outcome| { let ok = tx.send((job.key.clone(), job.w, out)).is_ok(); wake(); ok };
                 let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&job, &mut send))).unwrap_or_else(|_| send(Outcome::Failed("the decoder stopped".into())));

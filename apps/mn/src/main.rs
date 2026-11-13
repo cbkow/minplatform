@@ -51,6 +51,7 @@ mod findbar;
 mod export;
 mod gather;
 mod gather_win;
+mod site_win;
 mod search;
 mod canvas;
 mod ink;
@@ -166,7 +167,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
-    gather: Option<gather_win::Window>, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
+    gather: Option<gather_win::Window>, /// the web folder's window (row 339)
+    site: Option<site_win::Window>, site_test: bool, site_said: bool, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
     import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, code_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
@@ -341,16 +343,17 @@ impl App {
                 else if let Some(i) = &self.files.import { (format!("Importing {}\u{2026}", i.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), false) }
                 else if let Some(u) = &self.files.unpack { (format!("Unpacking {} \u{2014} {}%", u.name, if u.total > 0 { u.done.load(std::sync::atomic::Ordering::Relaxed) * 100 / u.total } else { 0 }), false) }
                 else if let Some(t) = self.files.gather.as_ref().and_then(|w| w.readout()) { (t, false) }
+                else if let Some(t) = self.files.site.as_ref().and_then(|w| w.readout()) { (t, false) }
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { text: &text, warn, link: self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { text: &text, warn, link: (self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) || self.files.site.as_ref().is_some_and(|w| w.readout().is_some())) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
         if let (Some(c), Some(cv)) = (self.files.card.as_mut(), self.files.canvas.as_ref()) { if let Some(r) = cv.rect_of(c.el) { if r != c.rect { self.geom_moved = Some(Instant::now()); } c.rect = r; } }
         if let Some(sb) = self.sidebar.as_mut() { sb.defer_open = self.files.canvas.is_some() && self.files.card.is_none(); }
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -527,6 +530,7 @@ impl App {
         if self.foot.tick(now) { g.window.request_redraw(); }
         if self.bar.tick(now) { g.window.request_redraw(); }
         if let Some(w) = self.files.gather.as_mut() { w.paint(scene, &mut g.fonts, view, s, now); if w.animating(now) { g.window.request_redraw(); } }
+        if let Some(w) = self.files.site.as_mut() { w.paint(scene, &mut g.fonts, view, s, now); if w.animating(now) { g.window.request_redraw(); } }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
@@ -671,7 +675,7 @@ impl App {
         if c.len() <= 60 { name } else { format!("{}\u{2026}{}", c[..36].iter().collect::<String>(), c[c.len() - 20..].iter().collect::<String>()) }
     }
     /// A dialog or the copy's window is over the page: nothing under it takes events.
-    fn modal(&self) -> bool { self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) }
+    fn modal(&self) -> bool { self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) }
     fn unpublished(&self) -> bool { self.store.as_ref().is_some_and(|st| st.unpublished || st.edited.is_some()) }
     /// The collection is to be closed — for quitting, for another collection, or just closed. With changes that are not
     /// in the document, the Qt app's question is put first.
@@ -682,6 +686,7 @@ impl App {
         if let Pending::Open(p) = &what { if p.extension().is_some_and(|x| x.eq_ignore_ascii_case(gather::PACKAGE)) { let p = p.clone(); self.unpack_open(p, None); return } }
         // a copy under way is not walked away from: it is stopped first, or waited for
         if self.files.gather.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } self.notice = Some(("Files are still being copied \u{2014} stop the copy or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+        if self.files.site.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.site.as_mut() { w.shown = true; } self.notice = Some(("A web folder is still being written \u{2014} stop it or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         self.after_close = Some(what);
         self.canvas_save(true);   // what was moved or drawn on the open canvas counts as a change to ask about
         if self.unpublished() {
@@ -831,6 +836,68 @@ impl App {
     fn gather_drop(&mut self) {
         let Some(w) = self.files.gather.take() else { return }; if let Some(r) = &w.run { r.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
         if let Some(snap) = &w.snap { let _ = std::fs::remove_file(snap.with_extension("out")); for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
+    }
+    /// "Export as Web Folder" (row 339): its window, on what is to go.
+    fn site_open(&mut self) {
+        if let Some(w) = self.files.site.as_mut() { if w.active() { w.shown = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+        let Some(st) = self.store.as_ref() else { return };
+        fn walk(c: &mn_store::Collection, parent: Option<BlockId>, depth: usize, out: &mut Vec<site_win::Entry>) { for e in c.list(parent).unwrap_or_default() { let id = e.id; out.push(site_win::Entry { id, parent: e.parent, depth, kind: e.kind, title: e.title, on: false }); walk(c, Some(id), depth + 1, out); } }
+        let mut entries = vec![]; walk(&st.col, None, 0, &mut entries);
+        if let Some(sb) = self.sidebar.as_ref() { for e in entries.iter_mut() { if let Some(r) = sb.row(e.id) { e.title = r.title.clone(); } } }
+        let current = match (&self.files.canvas, &self.files.card) { (Some(cv), None) => Some(cv.id), _ if !self.blank => Some(st.note), _ => None };
+        self.files.site = Some(site_win::Window::open(entries, current, true)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn site_out(&mut self, out: site_win::Out) {
+        use site_win::Out as O;
+        match out {
+            O::None => return,
+            O::Redraw => {}
+            O::Close => { let note = self.files.site.take().map(|w| w.note).filter(|n| !n.is_empty()); if let Some(n) = note { self.notice = Some((n, Instant::now() + std::time::Duration::from_secs(8))); } }
+            O::Reveal => if let Some(d) = self.files.site.as_ref().and_then(|w| w.dest.clone()) { open::reveal(&d.join("index.html")) },
+            O::Choose => { let stem = self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|x| x.original().file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Collection".into());
+                self.panel(rfd::FileDialog::new().set_title("Export as Web Folder \u{2014} name the folder").set_file_name(format!("{stem} web")), 0, move |me, p| if let Some(p) = p.into_iter().next() { me.site_start(p); }); }
+        }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The export begins: what is to go is read here (the open note and canvas as they stand), and written off this thread.
+    fn site_start(&mut self, dest: std::path::PathBuf) {
+        use export::site::{Job, Kind as K, Page, Progress};
+        let (Some(w), Some(st)) = (self.files.site.as_ref(), self.store.as_ref()) else { return };
+        if w.active() { return }
+        let chosen: std::collections::HashSet<BlockId> = w.chosen().into_iter().collect(); if chosen.is_empty() { return }
+        if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); }
+        let (mut pages, mut shown, mut cards) = (vec![], vec![], std::collections::HashMap::new());
+        let title = |id: BlockId, fallback: &str| self.sidebar.as_ref().and_then(|sb| sb.row(id)).map(|r| r.title.clone()).unwrap_or_else(|| fallback.to_string());
+        for (i, e) in w.entries.iter().enumerate() {
+            let kind = if !chosen.contains(&e.id) {
+                // an entry on the way to an exported one is kept as a heading
+                if !w.entries[i + 1..].iter().take_while(|x| x.depth > e.depth).any(|x| chosen.contains(&x.id)) { continue } K::Folder
+            } else { match e.kind {
+                mn_store::DocKind::Note => K::Note(if e.id == st.note && !self.blank { self.ed.doc.clone() } else { match st.col.load_note(e.id) { Ok(d) => d, Err(_) => continue } }),
+                mn_store::DocKind::Canvas => { let els: Vec<mn_store::Element> = match self.files.canvas.as_ref().filter(|cv| cv.id == e.id) { Some(cv) => cv.ordered().into_iter().cloned().collect(), None => match st.col.load_canvas(e.id) { Ok(c) => canvas::Canvas::new(e.id, c).ordered().into_iter().cloned().collect(), Err(_) => continue } };
+                    for x in els.iter().filter(|x| x.kind == "note") { if let Some(id) = BlockId::parse(&x.record) { if let Ok(d) = st.col.load_note(id) { cards.insert(id, (title(id, ""), d)); } } }
+                    K::Canvas(els) }
+                mn_store::DocKind::Folder => K::Folder } };
+            if !matches!(kind, K::Folder) { shown.push((pages.len(), e.title.clone(), matches!(kind, K::Canvas(_)))); }
+            pages.push(Page { id: e.id, parent: e.parent, title: e.title.clone(), kind });
+        }
+        let se = st.session.as_ref(); let (base, staged) = (se.and_then(|x| x.original().parent().map(|p| p.to_path_buf())), se.map(|x| x.media_dir()));
+        let name = se.and_then(|x| x.original().file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Collection".into());
+        let files = w.files.on; let opts = *self.files.xopts.get_or_insert_with(export_settings);
+        let job = Job { pages, dest: dest.clone(), opts, files, name, when: jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), cards };
+        let prog = std::sync::Arc::new(Progress::new(job.pages.len())); let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
+        let settings = sessions_root().parent().unwrap_or(std::path::Path::new(".")).to_path_buf(); let p = prog.clone();
+        let wake = || { if let Some(w) = WAKE.get() { w.wake_up(); } };
+        let made = std::thread::Builder::new().name("mn-site".into()).spawn(move || {
+            // media of its own for this piece of work: its decoders are not the window's
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { let mut media = media::Media::new(&settings, || {}); media.set_base(base.as_deref(), staged); let mut poster = video::Poster::default();
+                let mut src = export::Files { media: &mut media, poster: &mut poster, gpu }; export::site::write(&job, &mut src, &export::fonts(), &p, &wake) })).unwrap_or_else(|_| Err("The export stopped on an error of its own".into()));
+            if let Err(e) = r { *p.error.lock().unwrap() = Some(e); }
+            p.over.store(true, std::sync::atomic::Ordering::Relaxed); wake();
+        });
+        if made.is_err() { self.notice = Some(("The export could not be started".into(), Instant::now() + std::time::Duration::from_secs(6))); return }
+        if let Some(w) = self.files.site.as_mut() { w.begin(dest, prog, shown); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn gather_out(&mut self, out: gather_win::Out) {
         use gather_win::Out as O;
@@ -2049,7 +2116,7 @@ impl App {
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::ExportPoster => self.export(4, None), M::CopyMarkdown => self.copy_markdown(),
             M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } self.panel(dlg, 2, |me, p| me.import_files(p)); } }
-            M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
+            M::ExportSite => self.site_open(), M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
@@ -2283,6 +2350,7 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
+        if self.files.site.as_ref().is_some_and(|w| w.shown) { let out = self.files.site.as_mut().map(|w| w.pointer(&e)).unwrap_or(site_win::Out::None); self.site_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = self.files.gather.as_mut().map(|w| w.pointer(&e)).unwrap_or(gather_win::Out::None); self.gather_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // the colour palette: while it is open every event is its own
         if self.pal.is_open() { if let Some(g) = self.gpu.as_mut() { let out = self.pal.event(&e, &mut g.fonts, now); self.colour_out(out); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
@@ -2296,7 +2364,7 @@ impl App {
             // a press on a button is the button's to the end: the release must come back here, not go to the page
             if hit.is_some() || e.pos().is_some_and(|(x, y)| self.splash.iter().any(|b| b.hit(x, y))) { return true } }
         let (did, on_foot) = self.foot.event(&e, now);
-        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Readout => { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } continue } footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Readout => { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } else if let Some(w) = self.files.site.as_mut() { w.shown = true; } continue } footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (tools, on_bar) = self.bar.event(&e, now);
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -2352,6 +2420,7 @@ impl App {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
         }
+        if self.files.site.as_ref().is_some_and(|w| w.shown) { let out = match key { Key::Named(NamedKey::Escape) => self.files.site.as_mut().map(|w| w.key(false)), Key::Named(NamedKey::Enter) => self.files.site.as_mut().map(|w| w.key(true)), _ => None }; if let Some(o) = out { self.site_out(o); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = match key { Key::Named(NamedKey::Escape) => self.files.gather.as_mut().map(|w| w.key(false)), Key::Named(NamedKey::Enter) => self.files.gather.as_mut().map(|w| w.key(true)), _ => None }; if let Some(o) = out { self.gather_out(o); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a canvas is open (row 322): its keys, unless a field of the sidebar has them
         // a note edited in a card (row 322, stage 2): Escape leaves the card when nothing else has a use for it; Cmd+Return on a selected note card opens the note in the page
@@ -2697,6 +2766,13 @@ impl ApplicationHandler for App {
         // (scripted, MN_OPEN_NEXT=<collection>: once a canvas is open and drawn, another collection is opened over it)
         if let (false, Ok(p), true) = (self.files.next_test, std::env::var("MN_OPEN_NEXT"), self.frames > 30 && self.files.canvas.is_some()) { self.files.next_test = true; self.request_close(Pending::Open(p.into())); }
         // (scripted, MN_IMPORT=<file>[:<file>…]: the files are imported once the collection is shown; MN_IMPORT_BIG=first|attach|cancel answers the large table's question)
+        // (scripted, MN_SITE=<folder>[,all|this|show]: the web folder's window is opened and - but for `show` - the export started, of this note or of everything)
+        if let (false, Ok(v), true) = (self.files.site_test, std::env::var("MN_SITE"), self.frames > 6 && self.store.is_some() && self.files.import.is_none() && self.files.import_wait.is_empty()) {
+            self.files.site_test = true; let (to, how) = v.split_once(',').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((v.clone(), "all".into()));
+            self.site_open(); if let Some(w) = self.files.site.as_mut() { w.scope = if how == "this" { site_win::Scope::This } else { site_win::Scope::All }; }
+            if how != "show" { self.site_start(to.into()); }
+        }
+        if std::env::var_os("MN_SITE").is_some() { if let Some(w) = self.files.site.as_ref() { if w.phase == site_win::Phase::Done && !self.files.site_said { self.files.site_said = true; println!("site: {}", w.note); } } }
         // (scripted, MN_CODE=lang|copy[:<n>]: the n-th code block's label or button is pressed as a pointer would)
         if let (false, Ok(v), true) = (self.files.code_test, std::env::var("MN_CODE"), self.frames > 4 && self.layout.is_some() && !self.blank && self.ed.doc.walk().iter().any(|b| matches!(b.kind, Kind::Code { .. }))) {
             self.files.code_test = true; let (what, n) = v.split_once(':').map(|(a, b)| (a.to_string(), b.parse().unwrap_or(0))).unwrap_or((v.clone(), 0usize));
@@ -2792,6 +2868,7 @@ impl ApplicationHandler for App {
         if let Some(step) = self.saver.poll() { self.save_step(step); }
         self.unpack_tick(); self.import_tick();
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
+        if self.files.site.is_some() { let out = self.files.site.as_mut().map(|w| w.tick()).unwrap_or(site_win::Out::None); self.site_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
             // no answer from the document's place: stop waiting (the call itself cannot be ended; its late result is dropped)
             eprintln!("save: the document's place has not answered for 20 seconds. It is treated as unreachable; your changes are kept on this machine. Whether the save went through is not known — it is looked at again at the next Save.");
@@ -2816,6 +2893,7 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
+                if let Some(w) = self.files.site.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.gather.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
                 if self.files.picker.as_ref().is_some_and(|p| p.plain && p.hit(self.pointer.0, self.pointer.1)) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; if let Some(p) = self.files.picker.as_mut() { p.wheel(-dy); } g.window.request_redraw(); return }

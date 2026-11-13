@@ -19,6 +19,8 @@ mod pdf;
 pub use pdf::pdf;
 #[path = "export_canvas.rs"]
 mod canvas;
+#[path = "export_site.rs"]
+pub mod site;
 pub use canvas::{canvas_html, canvas_poster};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,7 +48,8 @@ pub struct Item { pub what: What, pub name: String, /// where the file is on thi
     pub dw: Option<f64>, /// why there is no picture of it
     pub problem: Option<String>, /// the first is the block's own picture; a PDF's other drawn-on pages follow
     pub shots: Vec<Shot>, /// a video's notes
-    pub notes: Vec<Shot> }
+    pub notes: Vec<Shot>, /// where a reader of a web folder finds the file itself (a copy beside the pages)
+    pub href: Option<String> }
 /// How much of a media block a writer wants.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mode { /// clean pictures and the drawings beside them
@@ -105,7 +108,7 @@ fn thumb(s: &Shot, cls: &str) -> String {
         esc(&s.head), esc(&s.sub), esc(&s.text), p.mime, b64(&p.bytes), p.w, p.h, esc(&s.head), s.ink.as_ref().map(svg).unwrap_or_default())
 }
 fn html_media(it: &Item, opts: Opts, out: &mut String) {
-    let lines = |out: &mut String| { out.push_str(&format!("<span class=\"name\">{}</span>", esc(&it.name)));
+    let lines = |out: &mut String| { match &it.href { Some(h) => out.push_str(&format!("<a class=\"name\" href=\"{}\">{}</a>", esc(h), esc(&it.name))), None => out.push_str(&format!("<span class=\"name\">{}</span>", esc(&it.name))) }
         if opts.paths && !it.path.is_empty() { out.push_str(&format!("<span class=\"path\">{}</span>", esc(&it.path))); }
         if !it.meta.is_empty() { out.push_str(&format!("<span class=\"meta\">{}</span>", esc(&it.meta))); }
         if let Some(p) = &it.problem { out.push_str(&format!("<span class=\"meta bad\">{}</span>", esc(p))); } };
@@ -520,7 +523,7 @@ impl Source for Files<'_> {
         let name = rec.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string).or_else(|| path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "file".into());
         // a picture made of another file (a PSD, a RAW): the file it was made of is the one a reader would look for
         let shown = rec.get("preview").and_then(|p| p.get("src")).and_then(|s| self.media.locate(&serde_json::json!({ "src": s }).to_string())).or(path.clone());
-        let mut it = Item { what, name, path: shown.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), meta: String::new(), dw: rec.get("dw").and_then(Value::as_f64), problem: None, shots: vec![], notes: vec![] };
+        let mut it = Item { what, name, path: shown.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), meta: String::new(), dw: rec.get("dw").and_then(Value::as_f64), problem: None, shots: vec![], notes: vec![], href: None };
         let (rw, rh) = (rec.get("w").and_then(Value::as_f64).unwrap_or(0.0), rec.get("h").and_then(Value::as_f64).unwrap_or(0.0));
         let there = path.as_ref().filter(|p| p.exists());
         match what {
@@ -580,7 +583,7 @@ mod tests {
         let ink = (mode == Mode::Layers).then(|| Ink { w: 4.0, h: 2.0, paths: "<path d=\"M0 0L4 2\"/>".into() });
         let what = if d.contains("video") { What::Video } else if d.contains("pdf") { What::Pdf } else { What::Picture };
         Item { what, name: "shot one.png".into(), path: "/vol/shot one.png".into(), meta: if what == What::Picture { String::new() } else { "facts".into() }, dw: None, problem: None, shots: vec![Shot { pic, ink, head: "shot one.png".into(), ..Default::default() }],
-            notes: if what == What::Video { vec![Shot { head: "00:00:01:00".into(), sub: "frame 24".into(), text: "fix <this>".into(), done: Some(true), ..Default::default() }] } else { vec![] } } } }
+            notes: if what == What::Video { vec![Shot { head: "00:00:01:00".into(), sub: "frame 24".into(), text: "fix <this>".into(), done: Some(true), ..Default::default() }] } else { vec![] }, href: None } } }
     fn doc(list: Vec<(Kind, &str, Vec<(usize, usize, Mark)>)>) -> Doc {
         let mut d = Doc::new();
         for (i, (k, t, marks)) in list.into_iter().enumerate() { let id = BlockId::new(); d.insert(None, i, id, k, t).unwrap(); if !marks.is_empty() { let mut s = Spans::new(); for (a, b, m) in marks { s.put(a, b, m); } d.set_spans(id, s).unwrap(); } }
