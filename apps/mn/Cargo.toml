@@ -52,6 +52,8 @@ min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"
 # the time an export says it was made at
 jiff = "0.2"
+# a Word document is a zip (as QCView's notes export writes it)
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }

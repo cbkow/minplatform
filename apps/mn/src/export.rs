@@ -11,6 +11,10 @@ use mn_doc::{Block, BlockId, ColumnKind, ColumnSpec, Kind, Mark};
 use qcv_notes::export::{b64, esc};
 use std::collections::HashMap;
 
+#[path = "export_docx.rs"]
+mod docx;
+pub use docx::docx;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Opts { /// where each referenced file is on this machine, under its name
     pub paths: bool, /// a video's notes (its frames, drawings, words) under it
@@ -41,7 +45,8 @@ pub struct Item { pub what: What, pub name: String, /// where the file is on thi
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mode { /// clean pictures and the drawings beside them
     Layers, /// the drawings in the pictures
-    Baked, /// no pictures: names, paths, facts
+    Baked, /// for paper (a Word document, a PDF): the drawings in the pictures, and every picture a PNG or a JPEG
+    Paper, /// no pictures: names, paths, facts
     Brief }
 pub trait Source { fn item(&mut self, descriptor: &str, mode: Mode, opts: Opts) -> Item; }
 
@@ -469,7 +474,7 @@ impl Files<'_> {
     /// A still as a shot: its drawings beside it, or in it.
     fn shot(&self, mut rgba: Vec<u8>, w: u32, h: u32, ink: Option<Ink>, mode: Mode) -> Shot {
         let ink = ink.filter(|i| !i.paths.is_empty());
-        if mode == Mode::Baked { if let Some(i) = &ink { bake(&mut rgba, w, h, i); } }
+        if matches!(mode, Mode::Baked | Mode::Paper) { if let Some(i) = &ink { bake(&mut rgba, w, h, i); } }
         Shot { pic: encode(&rgba, w, h), ink: if mode == Mode::Layers { ink } else { None }, ..Default::default() }
     }
 }
@@ -505,7 +510,7 @@ impl Source for Files<'_> {
                 let has_ink = rec.get("ink").and_then(|i| i.get("0")).and_then(|e| e.get("shapes")).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
                 let small = std::fs::metadata(path).map(|m| m.len() <= WHOLE).unwrap_or(false);
                 // the file's own bytes when a browser shows them and nothing has to be drawn into them
-                if let (Some((mime, ext)), true, false) = (plain, small, mode == Mode::Baked && has_ink) { if let Ok(bytes) = std::fs::read(path) {
+                if let (Some((mime, ext)), true, false) = (plain.filter(|(_, e)| mode != Mode::Paper || matches!(*e, "png" | "jpg")), small, matches!(mode, Mode::Baked | Mode::Paper) && has_ink) { if let Ok(bytes) = std::fs::read(path) {
                     let (w, h) = (rw.max(1.0) as u32, rh.max(1.0) as u32);
                     it.shots.push(Shot { pic: Some(Pic { bytes, mime, ext, w, h }), ink: if mode == Mode::Layers { page_ink(0, w, h) } else { None }, head: it.name.clone(), ..Default::default() }); return it } }
                 match crate::media::pixels(path, LONGEST) { Ok((rgba, w, h)) => { let mut s = self.shot(rgba, w, h, page_ink(0, w, h), mode); s.head = it.name.clone(); it.shots.push(s); } Err(e) => it.problem = Some(e) }
