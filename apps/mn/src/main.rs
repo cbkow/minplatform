@@ -2864,6 +2864,13 @@ static WAKE: std::sync::OnceLock<winit::event_loop::EventLoopProxy> = std::sync:
 fn main() {
     let _ = STARTED.set(Instant::now()); startup_log("main");
     env_logger::init();
+    // a panic is written down where it can be found afterwards (an application opened from the Finder has no terminal):
+    // `panic.log` beside the settings - the time, the message, where, the calls that led there
+    { let before = std::panic::take_hook(); std::panic::set_hook(Box::new(move |info| {
+        let f = player_file().with_file_name("panic.log"); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
+        if let Ok(mut o) = std::fs::OpenOptions::new().create(true).append(true).open(&f) { use std::io::Write;
+            let _ = writeln!(o, "---- {} minNotes {}\n{info}\n{}", jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S"), env!("CARGO_PKG_VERSION"), std::backtrace::Backtrace::force_capture()); }
+        before(info); })); }
     // holding a letter offers its accents (the system's popup) instead of repeating it — the app says so itself, so it
     // does not depend on a machine-wide setting
     #[cfg(target_os = "macos")]
