@@ -31,6 +31,9 @@ pub struct Window {
     pub dest: PathBuf,
     /// the package: its folder, the collection as it was when the package was asked for, the document's name in it
     pub folder: Option<PathBuf>, pub snap: Option<PathBuf>, pub doc_name: String,
+    /// the package as one file (row 334): where it would be written, and the switch that chooses it over the folder;
+    /// the question on screen is about a stop (else: about files that failed while one file was being written)
+    pub archive: Option<PathBuf>, pub one: Switch, stopped: bool,
     pub assets: Vec<Asset>, pub run: Option<Arc<Run>>,
     /// how it ended, in words
     pub note: String,
@@ -55,15 +58,17 @@ impl Window {
     pub fn open(what: What, descriptors: Vec<String>, places: crate::media::Places, dest: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> Window {
         let (tx, rx) = mpsc::channel(); let (d, w) = (dest.clone(), wake.clone());
         let _ = std::thread::Builder::new().name("mn-gather-plan".into()).spawn(move || { let _ = tx.send(gather::plan(what, &descriptors, &places, &d)); w(); });
-        Window { what, shown: true, phase: Phase::Scanning, dest, folder: None, snap: None, doc_name: String::new(), assets: vec![], run: None, note: String::new(), scan: Some(rx), wake,
+        Window { what, shown: true, phase: Phase::Scanning, dest, folder: None, snap: None, doc_name: String::new(), archive: None, one: Switch::new(false), stopped: false, assets: vec![], run: None, note: String::new(), scan: Some(rx), wake,
             check: Switch::new(false), bar: ScrollBar::default(), b0: TextButton::new("Cancel", Variant::Secondary), b1: TextButton::new("Collect", Variant::Primary), row_btn: HashMap::new(),
             rows: vec![], card: Rect::ZERO, list: Rect::ZERO, hover: None, scale: 1.0, free: None, follow: true, started: None, took: Duration::ZERO, drawn: Instant::now(), rates: HashMap::new(), overall: None }
     }
     /// A copy is under way or waits for an answer: the window cannot be replaced or dropped.
     pub fn active(&self) -> bool { matches!(self.phase, Phase::Running | Phase::Asking) }
-    fn state(&self, i: usize) -> u8 { match &self.run { Some(r) => r.state(i), None => if self.assets[i].on { if self.assets[i].there { THERE } else { QUEUED } } else { OFF } } }
+    /// The package is to be one file.
+    pub fn packing(&self) -> bool { self.what == What::Package && self.archive.is_some() && self.one.on }
+    fn state(&self, i: usize) -> u8 { match &self.run { Some(r) => r.state(i), None => if self.assets[i].on { if self.assets[i].there && !self.packing() { THERE } else { QUEUED } } else { OFF } } }
     /// (files chosen, bytes that would be copied)
-    fn chosen(&self) -> (usize, u64) { self.assets.iter().filter(|a| a.on).fold((0, 0), |(n, b), a| (n + 1, b + if a.there { 0 } else { a.size })) }
+    fn chosen(&self) -> (usize, u64) { self.assets.iter().filter(|a| a.on).fold((0, 0), |(n, b), a| (n + 1, b + if a.there && !self.packing() { 0 } else { a.size })) }
     fn fits(&self) -> bool { self.free.is_none_or(|f| self.chosen().1 <= f) }
     fn can_go(&self) -> bool { self.fits() && (self.what == What::Package || self.assets.iter().any(|a| a.on)) }
     /// (files done, files to copy, bytes done, bytes to copy) of the run
@@ -84,7 +89,7 @@ impl Window {
     pub fn committed(&mut self, err: Option<String>) {
         let Some(run) = &self.run else { return }; let (done, there, failed, left) = (run.count(DONE), run.count(THERE), run.count(FAILED), run.count(QUEUED));
         let size: u64 = self.assets.iter().enumerate().filter(|(i, _)| run.state(*i) == DONE).map(|(_, a)| a.size).sum();
-        let mut s = match self.what { What::Collect => format!("Collected {} ({})", files(done), gather::bytes(size)), What::Package => format!("Package written with {} ({})", files(done + there), gather::bytes(size)) };
+        let mut s = match self.what { What::Collect => format!("Collected {} ({})", files(done), gather::bytes(size)), What::Package if run.pack.is_some() => format!("Package written as one file with {} ({})", files(done), gather::bytes(size)), What::Package => format!("Package written with {} ({})", files(done + there), gather::bytes(size)) };
         if self.took.as_secs() >= 1 { s.push_str(&format!(" in {}", gather::span(self.took.as_secs_f64()).trim_start_matches("about "))); }
         if there > 0 && self.what == What::Collect { s.push_str(&format!(" \u{00b7} {there} already there")); }
         let missing = self.assets.iter().filter(|a| a.problem.is_some()).count(); if missing > 0 { s.push_str(&format!(" \u{00b7} {missing} missing, left as {}", if missing == 1 { "it is" } else { "they are" })); }
@@ -107,7 +112,7 @@ impl Window {
     }
     fn left(&self) -> Option<String> { let (_, _, b, all) = self.totals(); let (_, _, rate) = self.overall?; (rate > 1.0).then(|| gather::span((all.saturating_sub(b)) as f64 / rate)) }
     fn begin(&mut self) {
-        let run = Run::new(&self.assets, &self.dest, self.check.on, { let w = self.wake.clone(); move || w() });
+        let run = Run::new(&self.assets, &self.dest, self.check.on, if self.packing() { self.archive.clone() } else { None }, { let w = self.wake.clone(); move || w() });
         run.start(); self.run = Some(run); self.phase = Phase::Running; self.started = Some(Instant::now()); self.overall = None; self.rates.clear(); self.follow = true; self.row_btn.clear(); self.note.clear();
     }
     /// Starts the copy with what is chosen (the scripted check; the window's own button does the same).
@@ -125,9 +130,13 @@ impl Window {
         if run.busy() { return if now.duration_since(self.drawn) >= Duration::from_millis(100) { self.drawn = now; Out::Redraw } else { Out::None } }
         self.took += self.started.take().map(|t| t.elapsed()).unwrap_or_default();
         if run.stop.load(Relaxed) {
-            if run.made_any() { self.phase = Phase::Asking; self.shown = true; return Out::Redraw }
+            // (one file: a stopped package is no package - what was written goes)
+            if run.pack.is_some() { run.remove_made(); self.phase = Phase::Done; self.note = "Stopped \u{2014} the package was not written".into(); return Out::Discard }
+            if run.made_any() { self.phase = Phase::Asking; self.stopped = true; self.shown = true; return Out::Redraw }
             self.phase = Phase::Done; self.note = "Stopped \u{2014} nothing was copied and nothing was changed".into(); return Out::Discard
         }
+        // one file is closed for good when it is finished: files that failed are asked about first
+        if run.pack.is_some() && run.count(FAILED) > 0 { self.phase = Phase::Asking; self.stopped = false; self.shown = true; return Out::Redraw }
         self.phase = Phase::Done; Out::Commit
     }
 
@@ -150,16 +159,20 @@ impl Window {
             Phase::Scanning => ("", "Close", Variant::Secondary),
             Phase::Review => ("Cancel", if self.what == What::Collect { "Collect" } else { "Export" }, Variant::Primary),
             Phase::Running => ("Hide", if self.run.as_ref().is_some_and(|r| r.stop.load(Relaxed)) { "Stopping\u{2026}" } else { "Stop" }, Variant::Secondary),
-            Phase::Asking => ("Remove Them", "Keep Them", Variant::Primary),
+            Phase::Asking => if self.stopped { ("Remove Them", "Keep Them", Variant::Primary) } else { ("Cancel Package", "Finish Without Them", Variant::Primary) },
             Phase::Done => (if self.run.as_ref().is_some_and(|r| r.count(DONE) + r.count(THERE) > 0) { "Show in Finder" } else { "" }, "Close", Variant::Primary),
         };
         if self.b0.label != l0 { self.b0 = TextButton::new(l0, Variant::Secondary); } if self.b1.label != l1 { self.b1 = TextButton::new(l1, v1); }
         self.b1.enabled = match self.phase { Phase::Review => self.can_go(), Phase::Running => !self.run.as_ref().is_some_and(|r| r.stop.load(Relaxed)), _ => true };
         let by = self.card.y1 - pad - bh; let (w1, _) = self.b1.measure(fonts, s); self.b1.rect = Rect::new(self.card.x1 - pad - w1, by, self.card.x1 - pad, by + bh);
         if l0.is_empty() { self.b0.rect = Rect::ZERO; } else { let (w0, _) = self.b0.measure(fonts, s); let x1 = self.b1.rect.x0 - t::DIALOG_BUTTON_GAP as f64 * s; self.b0.rect = Rect::new(x1 - w0, by, x1, by + bh); }
-        let (sw, sh) = Switch::size(s); self.check.rect = if self.phase == Phase::Review { Rect::new(self.card.x0 + pad, by + (bh - sh) / 2.0, self.card.x0 + pad + sw, by + (bh + sh) / 2.0) } else { Rect::ZERO };
+        let (sw, sh) = Switch::size(s); let has_one = self.phase == Phase::Review && self.what == What::Package && self.archive.is_some();
+        self.one.rect = if has_one { Rect::new(self.card.x0 + pad, by + (bh - sh) / 2.0, self.card.x0 + pad + sw, by + (bh + sh) / 2.0) } else { Rect::ZERO };
+        // (one file holds a sum for every entry, checked when it is unpacked: the read-back is the folder's option)
+        let cx = self.card.x0 + pad + if has_one { sw + 150.0 * s } else { 0.0 };
+        self.check.rect = if self.packing() { Rect::ZERO } else if self.phase == Phase::Review { Rect::new(cx, by + (bh - sh) / 2.0, cx + sw, by + (bh + sh) / 2.0) } else { Rect::ZERO };
         // a row's own button: Locate… on a file that cannot be copied (before the start), Retry on one that failed
-        let want: Vec<(usize, &str)> = self.rows.iter().filter_map(|(_, r)| match r { Row::Asset(i) => match self.phase { Phase::Review if self.assets[*i].problem.is_some() => Some((*i, "Locate\u{2026}")), Phase::Running | Phase::Done if self.state(*i) == FAILED => Some((*i, "Retry")), _ => None }, _ => None }).collect();
+        let want: Vec<(usize, &str)> = self.rows.iter().filter_map(|(_, r)| match r { Row::Asset(i) => match self.phase { Phase::Review if self.assets[*i].problem.is_some() => Some((*i, "Locate\u{2026}")), Phase::Running | Phase::Done | Phase::Asking if self.state(*i) == FAILED && !(self.phase == Phase::Done && self.run.as_ref().is_some_and(|r| r.pack.is_some())) && !(self.phase == Phase::Asking && self.stopped) => Some((*i, "Retry")), _ => None }, _ => None }).collect();
         self.row_btn.retain(|i, b| want.iter().any(|(k, l)| k == i && b.label == *l));
         for (i, l) in want { let b = self.row_btn.entry(i).or_insert_with(|| TextButton::new(l, Variant::Secondary).size_s()); let (bw, bhs) = b.measure(fonts, s);
             let r = self.rows.iter().find(|(_, x)| *x == Row::Asset(i)).map(|(r, _)| *r).unwrap_or(Rect::ZERO); let cy = r.y0 + 35.0 * s;
@@ -178,7 +191,7 @@ impl Window {
             (Phase::Review, false) => { self.begin(); Out::Redraw }
             (Phase::Running, true) => { self.shown = false; Out::Redraw }
             (Phase::Running, false) => { if let Some(r) = &self.run { r.stop.store(true, Relaxed); } Out::Redraw }
-            (Phase::Asking, true) => { if let Some(r) = &self.run { r.remove_made(); } self.phase = Phase::Done; self.note = "Stopped \u{2014} the copies were removed and nothing was changed".into(); Out::Discard }
+            (Phase::Asking, true) => { if let Some(r) = &self.run { r.remove_made(); } self.phase = Phase::Done; self.note = if self.stopped { "Stopped \u{2014} the copies were removed and nothing was changed" } else { "The package was not written" }.into(); Out::Discard }
             (Phase::Asking, false) => { self.phase = Phase::Done; Out::Commit }
             (Phase::Done, true) => Out::Reveal,
             (Phase::Done, false) => Out::Close,
@@ -194,9 +207,9 @@ impl Window {
         let mut hit = None; for (i, b) in self.row_btn.iter_mut() { if b.event(e, now).0 { hit = Some(*i); } }
         if let Some(i) = hit {
             if self.phase == Phase::Review { return Out::Relink(i) }
-            if let Some(run) = self.run.clone() { run.retry(i); if self.phase == Phase::Done { self.phase = Phase::Running; self.started = Some(Instant::now()); self.overall = None; } self.row_btn.remove(&i); } return Out::Redraw
+            if let Some(run) = self.run.clone() { run.retry(i); if matches!(self.phase, Phase::Done | Phase::Asking) { self.phase = Phase::Running; self.started = Some(Instant::now()); self.overall = None; } self.row_btn.remove(&i); } return Out::Redraw
         }
-        if self.phase == Phase::Review { self.check.event(e, now); }
+        if self.phase == Phase::Review { if self.check.rect.width() > 0.0 { self.check.event(e, now); } if self.one.rect.width() > 0.0 { self.one.event(e, now); } }
         match *e {
             Event::Move { x, y } => { self.hover = self.row_at(x, y); Out::Redraw }
             Event::Down { x, y, button: Button::Primary } if self.phase == Phase::Review => { if self.row_btn.values().any(|b| b.hit(x, y)) { return Out::Redraw } if let Some(r) = self.row_at(x, y) { self.toggle(r); } Out::Redraw }
@@ -209,7 +222,7 @@ impl Window {
     pub fn key(&mut self, enter: bool) -> Out {
         match (self.phase, enter) { (Phase::Review, true) if self.can_go() => self.press(false), (Phase::Done, true) => Out::Close, (Phase::Running, false) => self.press(true), (Phase::Scanning | Phase::Review | Phase::Done, false) => Out::Close, _ => Out::None }
     }
-    pub fn animating(&self, now: Instant) -> bool { self.shown && (self.b0.animating(now) || self.b1.animating(now) || self.check.animating(now) || self.bar.animating(now) || self.row_btn.values().any(|b| b.animating(now))) }
+    pub fn animating(&self, now: Instant) -> bool { self.shown && (self.b0.animating(now) || self.b1.animating(now) || self.check.animating(now) || self.one.animating(now) || self.bar.animating(now) || self.row_btn.values().any(|b| b.animating(now))) }
 
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, view: Rect, s: f64, now: Instant) {
         if !self.shown { return }
@@ -229,6 +242,7 @@ impl Window {
         line(scene, fonts, if self.what == What::Collect { "Collect Media" } else { "Export Package" }, x0, y0 + 10.0 * s, t::DIALOG_TITLE_SIZE, true, ink, wide, false);
         let about = match self.what {
             What::Collect => format!("Copies the files this collection refers to elsewhere into the \u{201c}{}\u{201d} folder beside it, so it stays whole when the originals are moved. The notes then point at the copies.", crate::media::SIDE),
+            What::Package if self.packing() => format!("A copy of the collection with every file it shows, in one file. Opening it in minNotes unpacks it to a folder of your choice: {}", self.archive.as_deref().map(home).unwrap_or_default()),
             What::Package => format!("A copy of the collection with every file it shows in a \u{201c}{}\u{201d} folder beside it. The package opens on any machine: {}", crate::media::SIDE, self.folder.as_deref().map(home).unwrap_or_default()) };
         let l = fonts.layout_width(&about, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, c(t::DIALOG_BODY_COLOR), Some(wide as f32)); draw_layout(scene, &l, Affine::translate((x0, y0 + 26.0 * s)));
         // where things stand, and the bar of the whole
@@ -245,6 +259,7 @@ impl Window {
                 let (n, of, b, all) = self.totals(); let frac = if all > 0 { b as f64 / all as f64 } else { 1.0 };
                 let text = match self.phase {
                     Phase::Running => { let mut s = format!("{n} of {} \u{00b7} {} of {}", files(of), gather::bytes(b), gather::bytes(all)); if let Some(l) = self.left() { s.push_str(&format!(" \u{00b7} {l} left")); } s }
+                    Phase::Asking if !self.stopped => { let f = self.run.as_ref().map(|r| r.count(FAILED)).unwrap_or(0); format!("{} failed. Retry {}, or finish the package without {}?", files(f), if f == 1 { "it" } else { "them" }, if f == 1 { "it" } else { "them" }) }
                     Phase::Asking => format!("Stopped. {} copied \u{2014} keep {} or remove {}?", files(n), if n == 1 { "it" } else { "them" }, if n == 1 { "it" } else { "them" }),
                     _ => self.note.clone() };
                 line(scene, fonts, &text, x0, sy, t::BODY_SIZE_M, false, ink, wide, false);
@@ -302,7 +317,8 @@ impl Window {
         scene.pop_layer();
         self.bar.paint(scene, now);
         // the foot: the option before the start, the buttons
-        if review { self.check.paint(scene, s, now); let cy = self.check.rect.center().y; line(scene, fonts, "Read every copy back and compare it (slower)", self.check.rect.x1 + 10.0 * s, cy, t::BODY_SIZE_S, false, sub, (self.b0.rect.x0 - self.check.rect.x1 - 24.0 * s).max(20.0), false); }
+        if review && self.one.rect.width() > 0.0 { self.one.paint(scene, s, now); line(scene, fonts, "One file (.mnpkg)", self.one.rect.x1 + 10.0 * s, self.one.rect.center().y, t::BODY_SIZE_S, false, sub, 130.0 * s, false); }
+        if review && self.check.rect.width() > 0.0 { self.check.paint(scene, s, now); let cy = self.check.rect.center().y; line(scene, fonts, "Read every copy back and compare it (slower)", self.check.rect.x1 + 10.0 * s, cy, t::BODY_SIZE_S, false, sub, (self.b0.rect.x0 - self.check.rect.x1 - 24.0 * s).max(20.0), false); }
         if !self.b0.label.is_empty() { self.b0.paint(scene, fonts, s, now); } self.b1.paint(scene, fonts, s, now);
     }
 }

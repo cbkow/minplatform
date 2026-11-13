@@ -201,7 +201,20 @@ pub struct Run {
     made: Mutex<Vec<PathBuf>>,
     /// bytes written by this run
     pub copied: AtomicU64, wake: Box<dyn Fn() + Send + Sync>,
+    /// the package as ONE file (row 334): every job is an entry written into it, in turn, on one thread
+    pub pack: Option<Pack>,
 }
+
+/// A package being written as one file: a zip whose media are stored as they are (video and pictures do not get
+/// smaller), under a temporary name until [`Run::seal`] adds the document and gives it its name.
+pub struct Pack { pub path: PathBuf, part: PathBuf, zip: Mutex<Option<zip::ZipWriter<std::fs::File>>> }
+/// The package file's extension.
+pub const PACKAGE: &str = "mnpkg";
+
+fn zip_time(t: SystemTime) -> Option<zip::DateTime> { let z = jiff::Timestamp::try_from(t).ok()?.to_zoned(jiff::tz::TimeZone::UTC); zip::DateTime::from_date_and_time(z.year() as u16, z.month() as u8, z.day() as u8, z.hour() as u8, z.minute() as u8, z.second() as u8).ok() }
+fn file_time(d: zip::DateTime) -> Option<SystemTime> { let z = jiff::civil::date(d.year() as i16, d.month() as i8, d.day() as i8).at(d.hour() as i8, d.minute() as i8, d.second() as i8, 0).to_zoned(jiff::tz::TimeZone::UTC).ok()?; Some(SystemTime::from(z.timestamp())) }
+fn stored(t: Option<SystemTime>) -> zip::write::SimpleFileOptions { let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(true); match t.and_then(zip_time) { Some(d) => o.last_modified_time(d), None => o } }
+fn entry(p: &Path) -> String { p.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/") }
 
 fn full(e: &std::io::Error) -> bool { e.kind() == std::io::ErrorKind::StorageFull || e.kind() == std::io::ErrorKind::QuotaExceeded }
 fn fail(what: &str, e: std::io::Error) -> Fail { Fail::Why(if full(&e) { "The destination is full".to_string() } else { format!("{what} ({e})") }, full(&e)) }
@@ -220,18 +233,22 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 
 impl Run {
     /// The chosen assets of a plan become jobs into `dest`; what is there already is marked so.
-    pub fn new(assets: &[Asset], dest: &Path, check: bool, wake: impl Fn() + Send + Sync + 'static) -> Arc<Run> {
+    /// `pack`: the package is written as one file at that path instead - `dest` is then the folder's name INSIDE it,
+    /// nothing is "there already", and one thread writes every entry.
+    pub fn new(assets: &[Asset], dest: &Path, check: bool, pack: Option<PathBuf>, wake: impl Fn() + Send + Sync + 'static) -> Arc<Run> {
+        let dest = match &pack { Some(_) => Path::new(crate::media::SIDE), None => dest };
         let (mut jobs, mut slots, mut big, mut small) = (vec![], vec![], VecDeque::new(), VecDeque::new());
         for (i, a) in assets.iter().enumerate() {
             let go = a.on && a.problem.is_none() && a.path.is_some();
             let to = dest.join(&a.dest);
             let notes = a.notes.as_ref().map(|n| (n.clone(), dest.join(".qcview").join(qcv_notes::io::sanitize_media_name(&a.dest))));
             // a clip that is there already may still lack its notes: they are small, and copied again
-            let state = if !go { OFF } else if a.there { if let Some((from, to)) = &notes { if !to.exists() { let _ = copy_dir(from, to); } } THERE } else { if a.size >= LARGE { big.push_back(i) } else { small.push_back(i) } QUEUED };
+            let state = if !go { OFF } else if pack.is_some() { big.push_back(i); QUEUED } else if a.there { if let Some((from, to)) = &notes { if !to.exists() { let _ = copy_dir(from, to); } } THERE } else { if a.size >= LARGE { big.push_back(i) } else { small.push_back(i) } QUEUED };
             jobs.push(go.then(|| Job { from: a.path.clone().unwrap(), to, size: a.size, notes }));
             slots.push(Slot { state: AtomicU8::new(state), done: AtomicU64::new(0), why: Mutex::new(String::new()) });
         }
-        Arc::new(Run { jobs, slots, queues: [Mutex::new(big), Mutex::new(small)], live: [AtomicBool::new(false), AtomicBool::new(false)], stop: AtomicBool::new(false), full: AtomicBool::new(false), check, made: Mutex::new(vec![]), copied: AtomicU64::new(0), wake: Box::new(wake) })
+        Arc::new(Run { jobs, slots, queues: [Mutex::new(big), Mutex::new(small)], live: [AtomicBool::new(false), AtomicBool::new(false)], stop: AtomicBool::new(false), full: AtomicBool::new(false), check, made: Mutex::new(vec![]), copied: AtomicU64::new(0), wake: Box::new(wake),
+            pack: pack.map(|path| { let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); Pack { part: path.with_file_name(format!(".{name}.{}.part", std::process::id())), path, zip: Mutex::new(None) } }) })
     }
     /// A thread per queue that has work and no thread.
     pub fn start(self: &Arc<Self>) {
@@ -253,10 +270,11 @@ impl Run {
     pub fn retry(self: &Arc<Self>, i: usize) {
         let Some(Some(j)) = self.jobs.get(i) else { return }; if self.state(i) != FAILED { return }
         self.slots[i].state.store(QUEUED, Relaxed); self.slots[i].done.store(0, Relaxed); self.full.store(false, Relaxed); self.stop.store(false, Relaxed);
-        self.queues[if j.size >= LARGE { 0 } else { 1 }].lock().unwrap().push_back(i); self.start();
+        self.queues[if j.size >= LARGE || self.pack.is_some() { 0 } else { 1 }].lock().unwrap().push_back(i); self.start();
     }
     /// Everything this run wrote is removed (after a stop); the files it copied count as not copied.
     pub fn remove_made(&self) {
+        if let Some(p) = &self.pack { *p.zip.lock().unwrap() = None; let _ = std::fs::remove_file(&p.part); }
         for p in self.made.lock().unwrap().drain(..) { if p.is_dir() { let _ = std::fs::remove_dir_all(&p); } else { let _ = std::fs::remove_file(&p); } }
         for s in &self.slots { if s.state.load(Relaxed) == DONE { s.state.store(QUEUED, Relaxed); s.done.store(0, Relaxed); } }
     }
@@ -264,12 +282,50 @@ impl Run {
     fn one(&self, i: usize) {
         let (Some(job), slot) = (self.jobs[i].as_ref(), &self.slots[i]) else { return };
         slot.done.store(0, Relaxed); slot.state.store(COPYING, Relaxed); (self.wake)();
-        match self.copy(job, slot) {
+        match if self.pack.is_some() { self.pack_one(job, slot) } else { self.copy(job, slot) } {
             Ok(()) => slot.state.store(DONE, Relaxed),
             Err(Fail::Stopped) => { slot.done.store(0, Relaxed); slot.state.store(QUEUED, Relaxed); }
             Err(Fail::Why(why, no_room)) => { *slot.why.lock().unwrap() = why; slot.done.store(0, Relaxed); slot.state.store(FAILED, Relaxed); if no_room { self.full.store(true, Relaxed); } }
         }
         (self.wake)();
+    }
+    /// One file as an entry of the package file (and its notes folder's files after it). A failure or a stop takes the
+    /// half-written entry out again; the file as a whole stays good.
+    fn pack_one(&self, job: &Job, slot: &Slot) -> Result<(), Fail> {
+        let Some(pack) = &self.pack else { return Ok(()) }; let mut guard = pack.zip.lock().unwrap();
+        if guard.is_none() { if let Some(d) = pack.part.parent() { std::fs::create_dir_all(d).map_err(|e| fail("The destination folder could not be made", e))?; }
+            *guard = Some(zip::ZipWriter::new(std::fs::File::create(&pack.part).map_err(|e| fail("The destination cannot be written to", e))?)); }
+        let zw = guard.as_mut().unwrap(); let zerr = |e: zip::result::ZipError| match e { zip::result::ZipError::Io(io) => fail("Writing the package failed", io), other => Fail::Why(format!("Writing the package failed ({other})"), false) };
+        let put = |zw: &mut zip::ZipWriter<std::fs::File>, from: &Path, name: String, count: bool| -> Result<(), Fail> {
+            let mut f = std::fs::File::open(from).map_err(|e| fail("It cannot be read", e))?; let meta = f.metadata().map_err(|e| fail("It cannot be read", e))?;
+            zw.start_file(name, stored(meta.modified().ok())).map_err(zerr)?;
+            let mut buf = vec![0u8; 4 << 20]; let (mut all, mut told) = (0u64, Instant::now());
+            let r = (|| loop {
+                if self.stop.load(Relaxed) { return Err(Fail::Stopped) }
+                let n = fill(&mut f, &mut buf).map_err(|e| fail("Reading it failed", e))?; if n == 0 { break Ok(()) }
+                zw.write_all(&buf[..n]).map_err(|e| fail("Writing the package failed", e))?; all += n as u64;
+                if count { slot.done.store(all, Relaxed); self.copied.fetch_add(n as u64, Relaxed); if told.elapsed() > Duration::from_millis(100) { told = Instant::now(); (self.wake)(); } }
+                if n < buf.len() { break Ok(()) }
+            })();
+            let r = r.and_then(|_| if all == meta.len() { Ok(()) } else { Err(Fail::Why("The copy is not the size of the file \u{2014} the file may have changed while it was copied".into(), false)) });
+            if r.is_err() { let _ = zw.abort_file(); } r
+        };
+        put(zw, &job.from, entry(&job.to), true)?;
+        if let Some((from, to)) = &job.notes { fn walk(d: &Path, out: &mut Vec<PathBuf>) { for e in std::fs::read_dir(d).into_iter().flatten().flatten() { let p = e.path(); if p.is_dir() { walk(&p, out) } else { out.push(p) } } }
+            let mut all = vec![]; walk(from, &mut all); for f in all { if let Ok(rel) = f.strip_prefix(from) { put(zw, &f, entry(&to.join(rel)), false)?; } } }
+        Ok(())
+    }
+    /// The package file is finished: the collection's document (`doc`, already pointing at the packed files) goes in
+    /// under `name`, the file is closed and takes its own name.
+    pub fn seal(&self, doc: &Path, name: &str) -> Result<(), String> {
+        let Some(pack) = &self.pack else { return Ok(()) }; let mut guard = pack.zip.lock().unwrap();
+        let mut zw = match guard.take() { Some(z) => z, None => { if let Some(d) = pack.part.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; } zip::ZipWriter::new(std::fs::File::create(&pack.part).map_err(|e| e.to_string())?) } };
+        let done = (|| -> Result<(), String> {
+            zw.start_file(name, zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated)).map_err(|e| e.to_string())?;
+            std::io::copy(&mut std::fs::File::open(doc).map_err(|e| e.to_string())?, &mut zw).map_err(|e| e.to_string())?;
+            zw.finish().map_err(|e| e.to_string())?.sync_all().map_err(|e| e.to_string())?;
+            std::fs::rename(&pack.part, &pack.path).map_err(|e| e.to_string()) })();
+        if done.is_err() { let _ = std::fs::remove_file(&pack.part); } done
     }
     /// One file: written under a temporary name, checked, given the original's time, then given its name.
     fn copy(&self, job: &Job, slot: &Slot) -> Result<(), Fail> {
@@ -317,6 +373,33 @@ pub fn map(assets: &[Asset], run: &Run) -> HashMap<String, String> {
     for (i, a) in assets.iter().enumerate() { if matches!(run.state(i), DONE | THERE) { let to = format!(".minnotes/{}", a.dest); for s in &a.srcs { if *s != serde_json::Value::String(to.clone()).to_string() { m.insert(s.clone(), to.clone()); } } } }
     m
 }
+
+/// A package file is unpacked into `folder` (made if need be): every entry under its own path, each written under a
+/// temporary name first, read to its end (which checks it against the sum the package holds) and given the time it
+/// had. `done` counts the bytes; `stop` ends it. The collection's document in the folder, when all went well.
+pub fn unpack(archive: &Path, folder: &Path, done: &AtomicU64, stop: &AtomicBool, wake: &dyn Fn()) -> Result<PathBuf, String> {
+    let mut z = zip::ZipArchive::new(std::fs::File::open(archive).map_err(|e| e.to_string())?).map_err(|e| format!("it is not a package this version reads ({e})"))?;
+    let (mut doc, mut buf, mut told) = (None, vec![0u8; 4 << 20], Instant::now());
+    for i in 0..z.len() {
+        let mut f = z.by_index(i).map_err(|e| e.to_string())?;
+        // (a name that would leave the folder is not a package's: refused)
+        let rel = f.enclosed_name().ok_or("the package names a file outside itself")?; let to = folder.join(&rel);
+        if f.is_dir() { std::fs::create_dir_all(&to).map_err(|e| e.to_string())?; continue }
+        if let Some(d) = to.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+        let tmp = to.with_file_name(format!(".{}.{}.part", to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), std::process::id()));
+        let r = (|| -> Result<(), String> {
+            let mut out = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+            loop { if stop.load(Relaxed) { return Err("stopped".into()) } let n = f.read(&mut buf).map_err(|e| format!("{}: {e}", rel.display()))?; if n == 0 { break }
+                out.write_all(&buf[..n]).map_err(|e| e.to_string())?; done.fetch_add(n as u64, Relaxed); if told.elapsed() > Duration::from_millis(100) { told = Instant::now(); wake(); } }
+            if let Some(t) = f.last_modified().and_then(file_time) { let _ = out.set_modified(t); }
+            out.sync_all().map_err(|e| e.to_string())?; std::fs::rename(&tmp, &to).map_err(|e| e.to_string()) })();
+        if let Err(e) = r { let _ = std::fs::remove_file(&tmp); return Err(e) }
+        if rel.components().count() == 1 && rel.extension().is_some_and(|x| x == "mnd") { doc = Some(to); }
+    }
+    doc.ok_or_else(|| "the package holds no collection".to_string())
+}
+/// The bytes a package file unpacks to.
+pub fn unpacked_size(archive: &Path) -> u64 { std::fs::File::open(archive).ok().and_then(|f| zip::ZipArchive::new(f).ok()).map(|mut z| (0..z.len()).filter_map(|i| z.by_index(i).ok().map(|f| f.size())).sum()).unwrap_or(0) }
 
 /// A size in words.
 pub fn bytes(n: u64) -> String {
@@ -376,7 +459,7 @@ mod tests {
         let mut assets = plan(What::Collect, &recs, &places, &dest);
         // one file goes missing between the look and the copy
         std::fs::write(src.join("later.txt"), b"x").unwrap(); let mut taken = HashSet::new(); for a in assets.iter_mut() { settle(a, &dest, &mut taken); } std::fs::remove_file(src.join("later.txt")).unwrap();
-        let run = Run::new(&assets, &dest, true, || {}); run.start(); wait(&run);
+        let run = Run::new(&assets, &dest, true, None, || {}); run.start(); wait(&run);
         let at = |n: &str| assets.iter().position(|a| a.name == n).unwrap();
         assert_eq!((run.state(at("big.mov")), run.state(at("small.png")), run.state(at("later.txt"))), (DONE, DONE, FAILED));
         assert_eq!(std::fs::read(dest.join("big.mov")).unwrap(), big); assert_eq!(std::fs::read(dest.join(".qcview/big.mov/images/a.png")).unwrap(), b"p");
@@ -387,7 +470,7 @@ mod tests {
         std::fs::write(src.join("later.txt"), b"x").unwrap(); run.retry(at("later.txt")); wait(&run); assert_eq!(run.state(at("later.txt")), DONE);
         // a second look finds everything there: nothing is copied again
         let again = plan(What::Collect, &recs, &places, &dest); assert!(again.iter().all(|a| a.there), "{again:?}");
-        let run2 = Run::new(&again, &dest, false, || {}); run2.start(); wait(&run2); assert_eq!((run2.count(THERE), run2.copied.load(Relaxed)), (3, 0));
+        let run2 = Run::new(&again, &dest, false, None, || {}); run2.start(); wait(&run2); assert_eq!((run2.count(THERE), run2.copied.load(Relaxed)), (3, 0));
         // a stop takes back what the run made
         run.remove_made(); assert!(!dest.join("big.mov").exists() && !dest.join(".qcview/big.mov").exists());
         let _ = std::fs::remove_dir_all(&d);
@@ -406,6 +489,25 @@ mod tests {
         assert_eq!(rewrite_collection(&mut col, &m, &HashSet::new()).unwrap(), 2);
         let all = descriptors(&col); assert!(all.iter().any(|r| r.contains(".minnotes/a.png")) && all.iter().any(|r| r.contains(".minnotes/b.mov")), "{all:?}");
         assert_eq!(rewrite_collection(&mut col, &m, &HashSet::new()).unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_package_as_one_file_holds_the_files_their_notes_and_the_document_and_unpacks_to_a_collection() {
+        let d = tmp("pack"); let src = d.join("src"); std::fs::create_dir_all(src.join(".qcview/clip.mov")).unwrap();
+        let big: Vec<u8> = (0..(5usize << 20) + 7).map(|i| (i * 17 % 253) as u8).collect();
+        std::fs::write(src.join("clip.mov"), &big).unwrap(); std::fs::write(src.join(".qcview/clip.mov/notes.json"), b"{}").unwrap(); std::fs::write(src.join("a.png"), b"png").unwrap(); std::fs::write(d.join("doc.mnd"), b"the document").unwrap();
+        let p = |x: &Path| x.to_string_lossy().into_owned();
+        let recs = vec![rec(serde_json::json!({ "kind": "video", "src": p(&src.join("clip.mov")), "name": "clip.mov" })), rec(serde_json::json!({ "src": p(&src.join("a.png")), "name": "a.png" })), rec(serde_json::json!({ "kind": "pdf", "src": p(&src.join("no.pdf")), "name": "no.pdf" }))];
+        let assets = plan(What::Package, &recs, &Places::default(), &d.join("out").join(crate::media::SIDE));
+        let file = d.join("out.mnpkg"); let run = Run::new(&assets, Path::new(""), false, Some(file.clone()), || {}); run.start(); wait(&run);
+        assert_eq!((run.count(DONE), run.count(OFF)), (2, 1)); assert!(map(&assets, &run).values().all(|v| v.starts_with(".minnotes/")));
+        assert!(!file.exists()); run.seal(&d.join("doc.mnd"), "n.mnd").unwrap(); assert!(file.is_file() && names_in(&d).iter().all(|n| !n.ends_with(".part")));
+        let (done, stop) = (AtomicU64::new(0), AtomicBool::new(false)); let doc = unpack(&file, &d.join("un"), &done, &stop, &|| {}).unwrap();
+        assert_eq!(doc, d.join("un/n.mnd")); assert_eq!(std::fs::read(d.join("un/minNotes Media/clip.mov")).unwrap(), big); assert!(d.join("un/minNotes Media/.qcview/clip.mov/notes.json").is_file() && d.join("un/minNotes Media/a.png").is_file());
+        assert_eq!(done.load(Relaxed), unpacked_size(&file)); assert!(near(std::fs::metadata(d.join("un/minNotes Media/clip.mov")).unwrap().modified().ok(), std::fs::metadata(src.join("clip.mov")).unwrap().modified().ok()));
+        // a stopped run leaves no file behind
+        let run = Run::new(&assets, Path::new(""), false, Some(d.join("two.mnpkg")), || {}); run.stop.store(true, Relaxed); run.start(); wait(&run); run.remove_made(); assert!(names_in(&d).iter().all(|n| !n.contains("two.mnpkg")));
         let _ = std::fs::remove_dir_all(&d);
     }
 

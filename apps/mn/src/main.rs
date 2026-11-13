@@ -149,6 +149,8 @@ struct Resize { id: BlockId, before: String, from_x: f64, width: f64, max: f64, 
 struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool, awake: Instant, /// the clip's notes as they are drawn on and written (QCView's own code, `qcv-annotate`; row 316, stage 4b)
     ann: qcv_annotate::Annotations, path: std::path::PathBuf }
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
+/// A package file being unpacked (row 334): the thread's word (the size, then how it ended), the bytes written so far.
+struct Unpack { rx: std::sync::mpsc::Receiver<(u64, Option<Result<std::path::PathBuf, String>>)>, done: Arc<std::sync::atomic::AtomicU64>, stop: Arc<std::sync::atomic::AtomicBool>, total: u64, name: String, drawn: Instant }
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
 struct Files { /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
@@ -156,7 +158,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
-    gather: Option<gather_win::Window>, gather_test: bool, /// the export's options (read from the settings when first wanted)
+    gather: Option<gather_win::Window>, gather_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
@@ -322,6 +324,7 @@ impl App {
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
             let (text, warn) = if self.store.is_none() { (String::new(), false) } else if self.saving.is_some() { ("Saving\u{2026}".to_string(), false) }
                 else if let Some((t, true)) = &self.status { (t.clone(), true) }
+                else if let Some(u) = &self.files.unpack { (format!("Unpacking {} \u{2014} {}%", u.name, if u.total > 0 { u.done.load(std::sync::atomic::Ordering::Relaxed) * 100 / u.total } else { 0 }), false) }
                 else if let Some(t) = self.files.gather.as_ref().and_then(|w| w.readout()) { (t, false) }
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
@@ -645,6 +648,8 @@ impl App {
     fn request_close(&mut self, what: Pending) {
         use min_ui::text_button::Variant as V;
         if self.confirm.as_ref().is_some_and(|(a, _)| *a == Ask::Close) { return }
+        // a package file is not opened as it is: it is unpacked to a folder first, and that is opened
+        if let Pending::Open(p) = &what { if p.extension().is_some_and(|x| x.eq_ignore_ascii_case(gather::PACKAGE)) { let p = p.clone(); self.unpack_open(p, None); return } }
         // a copy under way is not walked away from: it is stopped first, or waited for
         if self.files.gather.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } self.notice = Some(("Files are still being copied \u{2014} stop the copy or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         self.after_close = Some(what);
@@ -762,7 +767,7 @@ impl App {
         if self.store.is_none() { return }
         if what == gather::What::Package && to.is_none() {
             let stem = self.store.as_ref().and_then(|st| st.session.as_ref()).and_then(|x| x.original().file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Collection".into());
-            self.panel(rfd::FileDialog::new().set_title("Export Collection as Package").set_file_name(format!("{stem} package")), 0, move |me, p| if let Some(p) = p.into_iter().next() { me.gather_open(gather::What::Package, Some(p)) }); return
+            self.panel(rfd::FileDialog::new().set_title("Export Collection as Package").add_filter("minNotes package", &[gather::PACKAGE]).set_file_name(format!("{stem}.{}", gather::PACKAGE)), 0, move |me, p| if let Some(p) = p.into_iter().next() { me.gather_open(gather::What::Package, Some(p)) }); return
         }
         // everything typed and placed goes into the collection first: the look is at the collection as it stands
         if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.autosave(); self.gather_drop();
@@ -772,12 +777,15 @@ impl App {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| { if let Some(p) = WAKE.get() { p.wake_up(); } });
         let recs = gather::descriptors(&st.col);
         let win = match (what, to) {
-            (gather::What::Package, Some(folder)) => {
-                if folder.is_file() { self.notice = Some(("A file has that name \u{2014} the package is a folder: choose another name".into(), soon(8))); return }
+            (gather::What::Package, Some(given)) => {
+                // one file (the name ends in .mnpkg) or a folder; the window's switch can still change it
+                let one = given.extension().is_some_and(|x| x.eq_ignore_ascii_case(gather::PACKAGE)); let folder = if one { given.with_extension("") } else { given.clone() };
+                let archive = if one { given } else { let mut n = folder.clone().into_os_string(); n.push(format!(".{}", gather::PACKAGE)); n.into() };
+                if !one && folder.is_file() { self.notice = Some(("A file has that name \u{2014} the package is a folder: choose another name".into(), soon(8))); return }
                 if folder == base { self.notice = Some(("That is the collection\u{2019}s own folder \u{2014} choose another place for the package".into(), soon(8))); return }
                 let snap = sessions_root().join(format!("package-{}-{}.mnd", std::process::id(), self.now_ms()));
                 if let Err(e) = st.col.publish(&snap) { self.notice = Some((format!("The package could not be started \u{2014} {e}"), soon(10))); return }
-                let mut w = gather_win::Window::open(what, recs, self.media.places(), folder.join(media::SIDE), wake); w.folder = Some(folder); w.snap = Some(snap); w.doc_name = doc_name; w
+                let mut w = gather_win::Window::open(what, recs, self.media.places(), folder.join(media::SIDE), wake); w.folder = Some(folder); w.snap = Some(snap); w.doc_name = doc_name; w.archive = Some(archive); w.one = min_ui::Switch::new(one); w
             }
             _ => gather_win::Window::open(what, recs, self.media.places(), base.join(media::SIDE), wake),
         };
@@ -786,7 +794,7 @@ impl App {
     /// The window goes (a copy under way is told to stop); a package's copy of the collection is cleared away.
     fn gather_drop(&mut self) {
         let Some(w) = self.files.gather.take() else { return }; if let Some(r) = &w.run { r.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
-        if let Some(snap) = &w.snap { for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
+        if let Some(snap) = &w.snap { let _ = std::fs::remove_file(snap.with_extension("out")); for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
     }
     fn gather_out(&mut self, out: gather_win::Out) {
         use gather_win::Out as O;
@@ -795,7 +803,7 @@ impl App {
             O::Redraw => {}
             O::Close => { let note = self.files.gather.as_ref().map(|w| w.note.clone()).filter(|n| !n.is_empty()); self.gather_drop(); if let Some(n) = note { self.notice = Some((n, Instant::now() + std::time::Duration::from_secs(8))); } }
             O::Relink(i) => self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let (Some(p), Some(w)) = (p.into_iter().next(), me.files.gather.as_mut()) { w.relinked(i, p); }),
-            O::Reveal => if let Some(w) = self.files.gather.as_ref() { match (&w.folder, w.what) { (Some(f), _) => open::reveal(&f.join(&w.doc_name)), _ => { let first = w.run.as_ref().and_then(|r| r.jobs.iter().enumerate().find(|(i, j)| j.is_some() && matches!(r.state(*i), gather::DONE | gather::THERE)).and_then(|(_, j)| j.as_ref().map(|j| j.to.clone()))); open::reveal(&first.unwrap_or_else(|| w.dest.clone())) } } },
+            O::Reveal => if let Some(w) = self.files.gather.as_ref() { match (&w.folder, w.what) { _ if w.run.as_ref().is_some_and(|r| r.pack.is_some()) => { if let Some(p) = w.run.as_ref().and_then(|r| r.pack.as_ref()) { open::reveal(&p.path) } } (Some(f), _) => open::reveal(&f.join(&w.doc_name)), _ => { let first = w.run.as_ref().and_then(|r| r.jobs.iter().enumerate().find(|(i, j)| j.is_some() && matches!(r.state(*i), gather::DONE | gather::THERE)).and_then(|(_, j)| j.as_ref().map(|j| j.to.clone()))); open::reveal(&first.unwrap_or_else(|| w.dest.clone())) } } },
             O::Discard => { if let Some(w) = self.files.gather.as_ref() { if let Some(f) = &w.folder { let _ = std::fs::remove_dir(f.join(media::SIDE).join(".qcview")); let _ = std::fs::remove_dir(f.join(media::SIDE)); let _ = std::fs::remove_dir(f); } } }
             O::Commit => { let err = self.gather_commit().err(); if let Some(e) = &err { eprintln!("gather: {e}"); } if let Some(w) = self.files.gather.as_mut() { w.committed(err); println!("gather: {}", w.note); } }
         }
@@ -810,11 +818,14 @@ impl App {
         let Some(w) = self.files.gather.as_ref() else { return Ok(()) }; let map = w.map();
         if w.what == gather::What::Package {
             let (Some(folder), Some(snap)) = (w.folder.clone(), w.snap.clone()) else { return Err("the package has no folder".into()) };
-            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
             let mut col = mn_store::Collection::open(&snap).map_err(|e| e.to_string())?;
             gather::rewrite_collection(&mut col, &map, &Default::default())?;
+            // the package's document, made on this machine first: it goes into the one file, or into the folder
+            let out = snap.with_extension("out"); let _ = std::fs::remove_file(&out); col.publish(&out).map_err(|e| e.to_string())?;
+            if let Some(run) = w.run.as_ref().filter(|r| r.pack.is_some()) { let r = run.seal(&out, &w.doc_name); let _ = std::fs::remove_file(&out); return r }
+            std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
             let (part, to) = (folder.join(format!(".{}.part", w.doc_name)), folder.join(&w.doc_name)); let _ = std::fs::remove_file(&part);
-            col.publish(&part).map_err(|e| e.to_string())?; std::fs::rename(&part, &to).map_err(|e| e.to_string())?;
+            std::fs::copy(&out, &part).map_err(|e| e.to_string())?; std::fs::rename(&part, &to).map_err(|e| e.to_string())?; let _ = std::fs::remove_file(&out);
             return Ok(())
         }
         if map.is_empty() { return Ok(()) }
@@ -840,6 +851,29 @@ impl App {
             over = matches!(out, gather_win::Out::Commit | gather_win::Out::Discard); self.gather_out(out); if !over { std::thread::sleep(std::time::Duration::from_millis(5)); }
         }
         if let Some(w) = self.files.gather.as_ref() { for (i, a) in w.assets.iter().enumerate() { println!("gather:   {:?} {} -> {} [{}]", a.kind, a.name, a.dest, match w.run.as_ref().map(|r| r.state(i)) { Some(gather::DONE) => "copied".to_string(), Some(gather::THERE) => "already there".to_string(), Some(gather::FAILED) => format!("failed: {}", w.run.as_ref().map(|r| r.slots[i].why.lock().unwrap().clone()).unwrap_or_default()), _ => a.problem.clone().unwrap_or_else(|| "not copied".into()) }); } }
+    }
+    // ── a package file is opened: unpacked to a folder, which is then the collection (row 334)
+    /// `to`: the folder (None: the system's panel asks, offering the package's name).
+    fn unpack_open(&mut self, archive: std::path::PathBuf, to: Option<std::path::PathBuf>) {
+        if self.files.unpack.is_some() { return }
+        let Some(folder) = to else { let stem = archive.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Package".into());
+            let mut dlg = rfd::FileDialog::new().set_title("Unpack Package To").set_file_name(stem); if let Some(d) = archive.parent() { dlg = dlg.set_directory(d); }
+            self.panel(dlg, 0, move |me, p| if let Some(p) = p.into_iter().next() { me.unpack_open(archive, Some(p)) }); return };
+        if folder.is_file() { self.notice = Some(("A file has that name \u{2014} the package unpacks to a folder: choose another name".into(), Instant::now() + std::time::Duration::from_secs(8))); return }
+        let (done, stop) = (Arc::new(std::sync::atomic::AtomicU64::new(0)), Arc::new(std::sync::atomic::AtomicBool::new(false))); let (tx, rx) = std::sync::mpsc::channel();
+        let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        { let (done, stop) = (done.clone(), stop.clone()); std::thread::spawn(move || { let wake = || { if let Some(p) = WAKE.get() { p.wake_up(); } };
+            let total = gather::unpacked_size(&archive); let _ = tx.send((total, None)); let r = gather::unpack(&archive, &folder, &done, &stop, &wake); let _ = tx.send((total, Some(r))); wake(); }); }
+        self.files.unpack = Some(Unpack { rx, done, stop, total: 0, name, drawn: Instant::now() }); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn unpack_tick(&mut self) {
+        let Some(u) = self.files.unpack.as_mut() else { return }; let mut end = None;
+        while let Ok((total, r)) = u.rx.try_recv() { u.total = total; if r.is_some() { end = r; } }
+        match end {
+            None => if u.drawn.elapsed() >= std::time::Duration::from_millis(100) { u.drawn = Instant::now(); if let Some(g) = &self.gpu { g.window.request_redraw(); } },
+            Some(Ok(doc)) => { self.files.unpack = None; println!("unpacked: {}", doc.display()); self.notice = Some(("The package was unpacked".into(), Instant::now() + std::time::Duration::from_secs(6))); self.request_close(Pending::Open(doc)); }
+            Some(Err(e)) => { let name = u.name.clone(); self.files.unpack = None; eprintln!("unpack: {e}"); use min_ui::text_button::Variant as V; self.ask(Ask::Notice, &format!("Couldn\u{2019}t unpack \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
+        }
     }
     fn sync_recent(&mut self) { #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_mut() { m.set_recent(&recent_list()); } }
     /// Save As: the collection is published at a place the user picks, which becomes its document.
@@ -1861,7 +1895,7 @@ impl App {
         match c {
             M::Quit => self.request_close(Pending::Quit),
             M::CloseCollection => if self.store.is_some() { self.request_close(Pending::Close) },
-            M::Open => self.panel(rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]), 1, |me, p| if let Some(p) = p.into_iter().next() { me.request_close(Pending::Open(p)) }),
+            M::Open => self.panel(rfd::FileDialog::new().add_filter("minNotes collection or package", &["mnd", gather::PACKAGE]), 1, |me, p| if let Some(p) = p.into_iter().next() { me.request_close(Pending::Open(p)) }),
             M::OpenRecent(p) => self.request_close(Pending::Open(p.into())),
             M::ClearRecent => { recent_clear(); self.sync_recent(); }
             M::NewCollection => self.panel(rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name("Untitled.mnd"), 0, |me, p| if let Some(p) = p.into_iter().next() {
@@ -2313,6 +2347,9 @@ impl App {
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
         // (scripted, MN_GATHER=collect | package:<folder>: Collect Media or the package, run whole as the run ends)
         if let Ok(spec) = std::env::var("MN_GATHER") { self.gather_now(&spec); }
+        // (scripted, MN_UNPACK=<package>:<folder>: a package file is unpacked, waited for)
+        if let Ok(spec) = std::env::var("MN_UNPACK") { if let Some((a, f)) = spec.split_once(':') { self.unpack_open(a.into(), Some(f.into())); let t = Instant::now(); while self.files.unpack.is_some() && t.elapsed().as_secs() < 300 { self.unpack_tick(); std::thread::sleep(std::time::Duration::from_millis(5)); } } }
+        if let Some(u) = self.files.unpack.take() { u.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
         // (scripted, MN_EXPORT=<a.html>[:<b.md>]: the open note is exported there as the run ends)
         if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else if p.ends_with(".png") { 4 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
@@ -2602,6 +2639,7 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
+        self.unpack_tick();
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
             // no answer from the document's place: stop waiting (the call itself cannot be ended; its late result is dropped)
