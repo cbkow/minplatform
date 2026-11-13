@@ -50,6 +50,8 @@ qcv-annotate = { path = "../../crates/qcv-annotate" }
 base64 = "0.22"
 min-paths = { path = "../../crates/min-paths", features = ["serde"] }
 rfd = "0.18"
+# the time an export says it was made at
+jiff = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }

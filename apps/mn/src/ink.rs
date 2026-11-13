@@ -206,6 +206,22 @@ pub fn drawn(l: &Line, origin: Point) -> Drawn {
     Drawn { lines: g.paths, fills: g.head.into_iter().collect(), width: g.width, color }
 }
 
+/// Drawn shapes as SVG paths (an export's layer over a picture).
+fn svg_of(d: &Drawn, out: &mut String) {
+    let c = d.color.to_rgba8(); let (col, op) = (format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b), c.a as f64 / 255.0);
+    for p in &d.lines { out.push_str(&format!("<path d=\"{}\" fill=\"none\" stroke=\"{col}\" stroke-opacity=\"{op:.3}\" stroke-width=\"{:.3}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>", p.to_svg(), d.width)); }
+    for p in &d.fills { out.push_str(&format!("<path d=\"{}\" fill=\"{col}\" fill-opacity=\"{op:.3}\"/>", p.to_svg())); }
+}
+/// A page's lines (in the page's units) as SVG paths.
+pub fn svg(lines: &[Line]) -> String { let mut o = String::new(); for l in lines { svg_of(&drawn(l, Point::ORIGIN), &mut o); } o }
+/// A clip's drawings (QCView's strokes, fractions of the frame) as SVG paths in a sheet of the clip's own pixels.
+pub fn svg_strokes(strokes: &[Stroke], w: f64, h: f64) -> String {
+    let mut o = String::new();
+    for s in strokes { let c = s.color; let g = qcv_notes::ink::geometry(s, [0.0, 0.0, w, h], 1.0);
+        svg_of(&Drawn { lines: g.paths, fills: g.head.into_iter().collect(), width: g.width, color: peniko::Color::new([c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32]) }, &mut o); }
+    o
+}
+
 fn seg_dist(p: Point, a: Point, b: Point) -> f64 { let d = b - a; let l2 = d.hypot2(); if l2 < 1e-18 { return (p - a).hypot() } let t = ((p - a).dot(d) / l2).clamp(0.0, 1.0); (p - (a + d * t)).hypot() }
 fn pt(q: [f64; 2]) -> Point { Point::new(q[0], q[1]) }
 /// A point is on the drawn line (within `slack` of its edge) - not merely in its box.

@@ -45,6 +45,7 @@ mod video;
 mod choice;
 mod linkedit;
 mod findbar;
+mod export;
 mod search;
 mod canvas;
 mod ink;
@@ -152,7 +153,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     space_cam: Option<(f64, f64, f64)>,
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
-    cv_test: bool, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
+    cv_test: bool, /// the export's options (read from the settings when first wanted)
+    xopts: Option<export::Opts>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -667,6 +669,50 @@ impl App {
             Err(e) => { use min_ui::text_button::Variant as V; let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); self.ask(Ask::Notice, &format!("Couldn\u{2019}t open \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn sync_export_checks(&mut self) { let o = *self.files.xopts.get_or_insert_with(export_settings); #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_ref() { m.set_check(&menu::Cmd::ExportPaths, o.paths); m.set_check(&menu::Cmd::ExportVideoNotes, o.video_notes); } let _ = o; }
+    fn export_toggle(&mut self, paths: bool) { let mut o = *self.files.xopts.get_or_insert_with(export_settings); if paths { o.paths = !o.paths; } else { o.video_notes = !o.video_notes; } self.files.xopts = Some(o); save_export_settings(o); self.sync_export_checks(); }
+    /// The open note's name, as the sidebar has it.
+    fn note_title(&self) -> String { self.store.as_ref().map(|st| self.sidebar.as_ref().and_then(|sb| sb.row(st.note)).map(|r| r.title.clone()).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Untitled".into())).unwrap_or_default() }
+    /// The open note written out (row 328): HTML - one file - or Markdown with its pictures in a folder beside it.
+    /// `to`: where (a scripted check); otherwise the system's panel asks.
+    fn export(&mut self, md: bool, to: Option<std::path::PathBuf>) {
+        let soon = |s: u64| Instant::now() + std::time::Duration::from_secs(s);
+        if self.blank || self.store.is_none() { if self.store.is_some() { self.notice = Some(("Open a note to export it".into(), soon(5))); } return }
+        let title = self.note_title(); let ext = if md { "md" } else { "html" };
+        let safe: String = title.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\n' | '\r') { '-' } else { c }).collect();
+        let Some(path) = to.or_else(|| if std::env::var_os("MN_NO_DIALOGS").is_some() { None } else { rfd::FileDialog::new().set_title(if md { "Export as Markdown" } else { "Export as HTML" }).add_filter(if md { "Markdown" } else { "HTML" }, &[ext]).set_file_name(format!("{safe}.{ext}")).save_file() }) else { return };
+        let opts = *self.files.xopts.get_or_insert_with(export_settings);
+        let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
+        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu }; let doc = &self.ed.doc;
+        let text = if md {
+            // pictures go to `<name>.assets/` beside the file, each under its own name (a second of a name gets a number)
+            let dir = path.with_extension("assets"); let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "assets".into());
+            let mut used = std::collections::HashSet::new();
+            let mut sink = |name: &str, p: &export::Pic| -> Option<String> {
+                let stem: String = name.rsplit_once('.').map(|x| x.0).unwrap_or(name).chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect(); let stem = if stem.is_empty() { "picture".to_string() } else { stem };
+                let mut file = format!("{stem}.{}", p.ext); let mut n = 2; while !used.insert(file.to_lowercase()) { file = format!("{stem}-{n}.{}", p.ext); n += 1; }
+                std::fs::create_dir_all(&dir).ok()?; std::fs::write(dir.join(&file), &p.bytes).ok()?; Some(format!("{folder}/{file}")) };
+            export::markdown(doc.walk(), doc.children(None), &title, opts, &mut src, Some(&mut sink))
+        } else { export::html(doc.walk(), doc.children(None), &title, &jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), opts, &export::fonts(), &mut src) };
+        // written beside and moved into place: a reader never sees half a file
+        let tmp = path.with_extension(format!("{ext}.part"));
+        let done = std::fs::write(&tmp, text.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path));
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.notice = Some(match done { Ok(()) => (format!("Exported {name}"), soon(6)), Err(e) => { let _ = std::fs::remove_file(&tmp); (format!("Export failed \u{2014} {e}"), soon(12)) } });
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// Shift+Cmd+C: the selected blocks - the whole note when none are - on the clipboard as Markdown. Nothing is written
+    /// anywhere: a picture is named where it is.
+    fn copy_markdown(&mut self) {
+        if self.blank || self.store.is_none() { return }
+        let opts = *self.files.xopts.get_or_insert_with(export_settings); let title = self.note_title();
+        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu: None };
+        let (text, what) = match self.ed.copy_blocks() {
+            Some(clip) => { let tops: Vec<BlockId> = clip.iter().filter_map(|t| t.first().map(|b| b.id)).collect(); (export::markdown(clip.iter().flatten(), &tops, "", opts, &mut src, None), if tops.len() == 1 { "block".to_string() } else { format!("{} blocks", tops.len()) }) }
+            None => (export::markdown(self.ed.doc.walk(), self.ed.doc.children(None), &title, opts, &mut src, None), "note".to_string()) };
+        if let Some(cb) = self.clipboard.as_mut() { if cb.set_text(text).is_ok() { self.block_clip = None; self.notice = Some((format!("Copied the {what} as Markdown"), Instant::now() + std::time::Duration::from_secs(5))); } }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn sync_recent(&mut self) { #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_mut() { m.set_recent(&recent_list()); } }
     /// Save As: the collection is published at a place the user picks, which becomes its document.
@@ -1699,6 +1745,8 @@ impl App {
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
+            M::ExportHtml => self.export(false, None), M::ExportMarkdown => self.export(true, None), M::CopyMarkdown => self.copy_markdown(),
+            M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
     }
@@ -2127,6 +2175,8 @@ impl App {
         if let Some(t0) = *SPIN_T0.lock().unwrap() { let n = SPUN.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(30); let s = t0.elapsed().as_secs_f64(); println!("spin: {n} frames in {s:.2} s = {:.1} per second ({} elements)", n as f64 / s, self.files.canvas.as_ref().map(|c| c.els.len()).unwrap_or(0)); }
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
+        // (scripted, MN_EXPORT=<a.html>[:<b.md>]: the open note is exported there as the run ends)
+        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(p.ends_with(".md"), Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
         let t = Instant::now(); while self.saving.is_some() && t.elapsed().as_secs() < 20 { if let Some(step) = self.saver.poll() { self.save_step(step); } else { std::thread::sleep(std::time::Duration::from_millis(5)); } }
         if self.saving.take().is_some() { self.saver.abandon(); eprintln!("save: no answer from the document's place; your changes are kept on this machine"); }
@@ -2215,7 +2265,7 @@ impl ApplicationHandler for App {
         #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
         // the request is REFUSED (silently) unless every capability asked for comes with its first value: the caret's area
         ime(window.as_ref().as_ref(), Some(Rect::new(0.0, 0.0, 1.0, 1.0)), true);
-        #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); }
+        #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); } self.sync_export_checks();
         startup_log("text element, input method, menu ready");
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None, ime_on: true }); self.t0 = Some(Instant::now()); self.title();
         startup_log("fonts loaded");
@@ -2732,6 +2782,12 @@ static SPIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static SPUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SPIN_T0: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 /// The pen's colour and width, as last chosen (a canvas's ink and a video's drawings share them); kept beside the player's settings.
+fn export_file() -> std::path::PathBuf { player_file().with_file_name("export.json") }
+fn export_settings() -> export::Opts {
+    let v: serde_json::Value = std::fs::read_to_string(export_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    export::Opts { paths: v.get("paths").and_then(|x| x.as_bool()).unwrap_or(true), video_notes: v.get("videoNotes").and_then(|x| x.as_bool()).unwrap_or(true) }
+}
+fn save_export_settings(o: export::Opts) { let f = export_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } let _ = std::fs::write(f, serde_json::json!({ "paths": o.paths, "videoNotes": o.video_notes }).to_string()); }
 fn pen_file() -> std::path::PathBuf { player_file().with_file_name("pen.json") }
 fn pen_settings() -> (Option<[f32; 4]>, Option<f32>) {
     let v: serde_json::Value = std::fs::read_to_string(pen_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();

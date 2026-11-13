@@ -49,7 +49,7 @@ pub fn b64(data: &[u8]) -> String {
     }
     s
 }
-fn esc(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;") }
+pub fn esc(s: &str) -> String { s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;") }
 
 /// QCView's Markdown sanitizer: letters, digits, `_ - . space`; the rest → `_`.
 pub fn sanitize(s: &str) -> String { s.chars().map(|c| if c.is_ascii_alphanumeric() || "_-. ".contains(c) { c } else { '_' }).collect::<String>().trim().to_string() }
@@ -92,8 +92,8 @@ pub fn html(d: &Doc) -> String {
     let mut o = String::with_capacity(64 * 1024);
     o += "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n";
     o += &format!("<title>{}</title>\n<style>\n", esc(&title));
-    for (fam, w, st, bytes) in &d.fonts { o += &format!("@font-face{{font-family:'{fam}';font-weight:{w};font-style:{st};font-display:block;src:url(data:font/ttf;base64,{}) format('truetype')}}\n", b64(bytes)); }
-    o += CSS;
+    o += &font_faces(&d.fonts);
+    o += TOKENS; o += CSS;
     o += "</style></head><body>\n<main>\n<header class=\"doc\">";
     o += &format!("<img class=\"brand\" src=\"data:image/png;base64,{}\" alt=\"\">", b64(d.brand_png));
     o += &format!("<div class=\"titles\"><h1>{}</h1><div class=\"meta\">", esc(&title));
@@ -131,10 +131,20 @@ pub fn html(d: &Doc) -> String {
 
 /// Spectrum 2's dark greys (min-theme): base #111 · layer-1 #1b1b1b · layer-2 #222 · gray-100…900; blue-800 the accent,
 /// blue-400 the selected fill (the Media bin's loaded row); green for Addressed. Prints light.
-const CSS: &str = r#"
+/// The family's export look, shared (row 328: minNotes' HTML export starts from this one): the tokens, the fonts
+/// embedded, and - in [`PRINT_TOKENS`] - the light set a print uses.
+pub const TOKENS: &str = r#"
 :root{--base:#111111;--l1:#1b1b1b;--l2:#222222;--g100:#2c2c2c;--g200:#323232;--g300:#393939;--g400:#444444;--g500:#6d6d6d;--g600:#8a8a8a;--g700:#afafaf;--g800:#dbdbdb;--g900:#f2f2f2;
 --accent:#4069fd;--accent-hi:#6995fe;--sel:#122d9a;--pos:#099d59;--r:8px;--rs:4px;
---sans:Geist,-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;--mono:'Geist Mono',ui-monospace,Menlo,Consolas,monospace}
+--sans:Geist,-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;--mono:'Geist Mono',ui-monospace,Menlo,Consolas,monospace}"#;
+pub const PRINT_TOKENS: &str = ":root{--base:#fff;--l1:#fff;--l2:#f4f4f4;--g200:#e6e6e6;--g300:#dadada;--g400:#c6c6c6;--g500:#8f8f8f;--g600:#6d6d6d;--g700:#464646;--g800:#222;--g900:#000}";
+/// `@font-face` rules with the fonts' bytes in them.
+pub fn font_faces(fonts: &[(&'static str, u16, &'static str, &'static [u8])]) -> String {
+    let mut o = String::new();
+    for (fam, w, st, bytes) in fonts { o += &format!("@font-face{{font-family:'{fam}';font-weight:{w};font-style:{st};font-display:block;src:url(data:font/ttf;base64,{}) format('truetype')}}\n", b64(bytes)); }
+    o
+}
+const CSS: &str = r#"
 *{box-sizing:border-box}
 html{background:var(--base)}
 body{margin:0;color:var(--g800);font:400 14px/20px var(--sans);-webkit-font-smoothing:antialiased}

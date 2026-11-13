@@ -9,6 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
+    ExportHtml, ExportMarkdown, CopyMarkdown, ExportPaths, ExportVideoNotes,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -18,7 +19,8 @@ const fn sc(key: char) -> Option<Sc> { Some(Sc { shift: false, alt: false, key }
 const fn sc_shift(key: char) -> Option<Sc> { Some(Sc { shift: true, alt: false, key }) }
 const fn sc_alt(key: char) -> Option<Sc> { Some(Sc { shift: false, alt: true, key }) }
 
-pub enum Node { Item { label: &'static str, sc: Option<Sc>, cmd: Cmd }, Recent, Sep }
+pub enum Node { Item { label: &'static str, sc: Option<Sc>, cmd: Cmd }, /// an item with a tick (an option that stays)
+    Check { label: &'static str, cmd: Cmd }, Recent, Sep }
 fn item(label: &'static str, sc: Option<Sc>, cmd: Cmd) -> Node { Node::Item { label, sc, cmd } }
 
 /// The menus, left to right.
@@ -40,6 +42,12 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
             item("Inline Code", sc('e'), Cmd::Code), item("Highlight", sc_shift('h'), Cmd::Highlight), Node::Sep,
             item("Clear Formatting", sc('\\'), Cmd::ClearFormat),
         ]),
+        // row 328: a note written out for other applications; the two options stay as they are set
+        ("Export", vec![
+            item("as HTML…", None, Cmd::ExportHtml), item("as Markdown…", None, Cmd::ExportMarkdown), Node::Sep,
+            item("Copy as Markdown", sc_shift('c'), Cmd::CopyMarkdown), Node::Sep,
+            Node::Check { label: "Include File Paths", cmd: Cmd::ExportPaths }, Node::Check { label: "Include Video Notes", cmd: Cmd::ExportVideoNotes },
+        ]),
         ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
     ]
 }
@@ -56,10 +64,10 @@ pub use native::AppMenu;
 #[cfg(target_os = "macos")]
 mod native {
     use super::{spec, Cmd, Node, Sc};
-    use muda::{accelerator::{Accelerator, Code, Modifiers}, AboutMetadata, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+    use muda::{accelerator::{Accelerator, Code, Modifiers}, AboutMetadata, CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
     use std::collections::HashMap;
 
-    pub struct AppMenu { pub menu: Menu, ids: HashMap<MenuId, Cmd>, recent: Submenu, seen: Option<Vec<String>> }
+    pub struct AppMenu { pub menu: Menu, ids: HashMap<MenuId, Cmd>, recent: Submenu, seen: Option<Vec<String>>, checks: Vec<(Cmd, CheckMenuItem)> }
 
     fn accel(s: Sc) -> Option<Accelerator> {
         let code = match s.key { 'a' => Code::KeyA, 'b' => Code::KeyB, 'c' => Code::KeyC, 'e' => Code::KeyE, 'h' => Code::KeyH, 'i' => Code::KeyI, 'n' => Code::KeyN, 'o' => Code::KeyO, 'q' => Code::KeyQ, 's' => Code::KeyS, 'u' => Code::KeyU, 'v' => Code::KeyV, 'w' => Code::KeyW, 'x' => Code::KeyX, 'z' => Code::KeyZ, '1' => Code::Digit1, '2' => Code::Digit2, '3' => Code::Digit3, '\\' => Code::Backslash, _ => return None };
@@ -78,17 +86,18 @@ mod native {
             let about = AboutMetadata { name: Some("minNotes".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
             let _ = app.append_items(&[&PredefinedMenuItem::about(Some("About minNotes"), Some(about)), &PredefinedMenuItem::separator(), &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
             let _ = menu.append(&app);
-            let mut recent = None;
+            let mut recent = None; let mut checks = vec![];
             for (title, nodes) in spec() {
                 let sub = Submenu::new(title, true);
                 for n in nodes { match n {
                     Node::Item { label, sc, cmd } => { let i = MenuItem::new(label, true, sc.and_then(accel)); ids.insert(i.id().clone(), cmd); let _ = sub.append(&i); }
+                    Node::Check { label, cmd } => { let i = CheckMenuItem::new(label, true, false, None); ids.insert(i.id().clone(), cmd.clone()); let _ = sub.append(&i); checks.push((cmd, i)); }
                     Node::Recent => { let s = Submenu::new("Open Recent", true); let _ = sub.append(&s); recent = Some(s); }
                     Node::Sep => { let _ = sub.append(&PredefinedMenuItem::separator()); }
                 } }
                 let _ = menu.append(&sub);
             }
-            let mut m = AppMenu { menu, ids, recent: recent.expect("the File menu has Open Recent"), seen: None };
+            let mut m = AppMenu { menu, ids, recent: recent.expect("the File menu has Open Recent"), seen: None, checks };
             m.set_recent(&[]); m
         }
         /// AppKit adds tab-bar and full-screen items to any menu titled "View"; minNotes has neither yet.
@@ -98,6 +107,8 @@ mod native {
             objc2_app_kit::NSWindow::setAllowsAutomaticWindowTabbing(false, mtm);
             NSUserDefaults::standardUserDefaults().setBool_forKey(false, &NSString::from_str("NSFullScreenMenuItemEverywhere"));
         }
+        /// An option's tick (the system flips it on a click: it is set to what the option now is).
+        pub fn set_check(&self, cmd: &Cmd, on: bool) { for (c, i) in &self.checks { if c == cmd { i.set_checked(on); } } }
         pub fn cmd(&self, id: &MenuId) -> Option<Cmd> { self.ids.get(id).cloned() }
         /// Open Recent: the collections' file names, "(none)" when empty, then Clear Menu.
         pub fn set_recent(&mut self, list: &[String]) {

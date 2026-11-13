@@ -615,6 +615,11 @@ fn decode(path: &Path, want_w: u32, want_h: u32) -> Outcome {
     if turn > 1 { (rgba, w, h) = oriented(&rgba, w, h, turn); }
     Outcome::Pic { rgba, w, h, whole }
 }
+/// A picture file's pixels for an export: straight RGBA, upright, its longer side at most `max`.
+pub fn pixels(path: &Path, max: u32) -> Result<(Vec<u8>, u32, u32), String> {
+    if preview_format(path).is_some() { return render(path, max).map(|r| (r.rgba, r.w, r.h)) }
+    match decode(path, max, max) { Outcome::Pic { rgba, w, h, .. } => Ok((rgba, w, h)), Outcome::Missing => Err("The file was not found".into()), Outcome::Failed(e) => Err(e), Outcome::Still(..) => Err("not a picture".into()) }
+}
 /// A GIF or a WebP (read here, their first frame).
 fn still(path: &Path) -> bool { matches!(path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("gif" | "webp")) }
 /// A file that is shown as a picture today.

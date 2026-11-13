@@ -2486,6 +2486,7 @@ dependencies = [
  "env_logger",
  "hayro",
  "image",
+ "jiff",
  "kurbo 0.13.1",
  "log",
  "min-image",
