@@ -314,12 +314,12 @@ impl App {
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
             self.foot.sync(&footer::Shown { text: &text, warn, finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
-        if let (Some(c), Some(cv)) = (self.files.card.as_mut(), self.files.canvas.as_ref()) { if let Some(r) = cv.rect_of(c.el) { c.rect = r; } }
+        if let (Some(c), Some(cv)) = (self.files.card.as_mut(), self.files.canvas.as_ref()) { if let Some(r) = cv.rect_of(c.el) { if r != c.rect { self.geom_moved = Some(Instant::now()); } c.rect = r; } }
         if let Some(sb) = self.sidebar.as_mut() { sb.defer_open = self.files.canvas.is_some() && self.files.card.is_none(); }
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured(self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -2021,9 +2021,12 @@ impl text_element::TextHost for App {
         let (f, l) = (self.flat.as_ref().unwrap(), self.layout.as_ref().unwrap()); let s = l.scale as f64;
         let rects = if length == 0 { f.locate16(location).and_then(|(line, at)| l.caret(&self.ed.doc, line.block, at, 1.0)).into_iter().collect() } else { l.flat_rects(&self.ed.doc, f, location, length) };
         let Some(u) = rects.into_iter().reduce(|a: Rect, b| a.union(b)) else { return (0.0, 0.0, 0.0, 0.0) };
-        { let o = origin(&self.files.card, self.side_w, self.top, self.scroll, s); ((u.x0 + o.x) / s, (u.y0 + o.y) / s, u.width() / s, u.height() / s) }
+        let o = origin(&self.files.card, self.side_w, self.top, self.scroll, s); let mut u = u + o;
+        // In a card only what the card shows has a place: the rest answers nothing, so no underline is drawn outside it.
+        if let Some(c) = &self.files.card { u = u.intersect(c.rect); if u.width() <= 0.0 || u.height() <= 0.0 { return (0.0, 0.0, 0.0, 0.0) } }
+        (u.x0 / s, u.y0 / s, u.width() / s, u.height() / s)
     }
-    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; (self.side_w / s + MARGIN, self.top / s + PAD - self.scroll / s, l.width as f64 / s, l.height as f64 / s) }
+    fn ax_note_frame(&mut self) -> (f64, f64, f64, f64) { if !self.ensure() { return (0.0, 0.0, 0.0, 0.0) } let l = self.layout.as_ref().unwrap(); let s = l.scale as f64; let o = origin(&self.files.card, self.side_w, self.top, self.scroll, s); (o.x / s, o.y / s, l.width as f64 / s, l.height as f64 / s) }
     fn ax_viewport(&mut self) -> (f64, f64) { self.gpu.as_ref().map(|g| { let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); (w as f64 / s, h as f64 / s) }).unwrap_or((0.0, 0.0)) }
     fn replace_before_caret(&mut self, text: &str) {
         let now = self.now_ms(); if !self.ensure() { return }
