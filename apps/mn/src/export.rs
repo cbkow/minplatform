@@ -154,7 +154,10 @@ fn html_blocks(w: &Walk, ids: &[BlockId], col: &Col, src: &mut dyn Source, out: 
             Kind::Paragraph => { let t = html_inline(b, col); out.push_str(&format!("<p{}>{}</p>\n", if col.mono { " class=\"tcode\"" } else { "" }, if t.is_empty() { "&nbsp;".to_string() } else { t })) }
             Kind::Heading { level } => { let n = (*level).clamp(1, 6); out.push_str(&format!("<h{n}>{}</h{n}>\n", html_inline(b, col))) }
             Kind::Quote => out.push_str(&format!("<blockquote><p>{}</p></blockquote>\n", html_inline(b, col))),
-            Kind::Code { lang } => out.push_str(&format!("<pre>{}<code>{}</code></pre>\n", if lang.is_empty() { String::new() } else { format!("<span class=\"lang\">{}</span>", esc(lang)) }, code_html(lang, &b.text))),
+            Kind::Code { lang } => { let l = lang.trim();
+                // its corner (row 338): the language's name and a button that copies the code; `data-ui` marks them as not the page's text (an import skips them)
+                out.push_str(&format!("<pre{}><span class=\"tools\" data-ui>{}<button class=\"copy\" type=\"button\" title=\"Copy\" aria-label=\"Copy the code\">{COPY_ICONS}</button></span><code>{}</code></pre>\n",
+                    if l.is_empty() { String::new() } else { format!(" data-lang=\"{}\"", esc(l)) }, if l.is_empty() { String::new() } else { format!("<span class=\"lang\">{}</span>", esc(mn_layout::syntax::title(l).unwrap_or(l))) }, code_html(lang, &b.text))) }
             Kind::Divider => out.push_str("<hr>\n"),
             Kind::Media { descriptor } => html_media(&src.item(descriptor, Mode::Layers, w.opts), w.opts, out),
             Kind::Columns => { out.push_str("<div class=\"lanes\">");
@@ -208,7 +211,7 @@ pub fn html<'a>(blocks: impl IntoIterator<Item = &'a Block>, tops: &[BlockId], t
     o += &format!("@media print{{\n{}\n{PRINT}{}}}\n", qcv_notes::export::PRINT_TOKENS, syntax_css(&mn_layout::syntax::LIGHT));
     o += "</style></head><body>\n<main>\n";
     o += &format!("<header class=\"doc\"><div class=\"titles\"><div class=\"name\">{}</div><div class=\"meta\"><span>Exported {}</span></div></div></header>\n<article>\n", esc(title), esc(exported));
-    o += &body; o += "</article>\n</main>\n"; o += LIGHTBOX; o += "</body></html>\n"; o
+    let copies = body.contains("<button class=\"copy\""); o += &body; o += "</article>\n</main>\n"; o += LIGHTBOX; if copies { o += COPY_SCRIPT; } o += "</body></html>\n"; o
 }
 
 /// The note's page on the family's tokens: a readable column, quiet type, the table and the frames bordered as QCView's
@@ -232,7 +235,10 @@ mark{color:inherit;background:rgba(255,236,89,.3);border-radius:2px;padding:0 1p
 code{font:13px/20px var(--mono);background:var(--l2);border:1px solid var(--g200);border-radius:var(--rs);padding:1px 4px}
 pre{position:relative;margin:0 0 1em;padding:14px 16px;background:var(--l1);border:1px solid var(--g300);border-radius:var(--r);overflow:auto}
 pre code{display:block;background:none;border:0;padding:0;white-space:pre;color:var(--g800)}
-pre .lang{position:absolute;top:8px;right:12px;font:11px/16px var(--mono);color:var(--g500)}
+pre .tools{position:absolute;top:6px;right:8px;display:flex;align-items:center;gap:6px;padding-left:8px;background:var(--l1);border-radius:var(--rs);user-select:none}
+pre .lang{font:11px/16px var(--sans);color:var(--g500)}
+pre .copy{display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--rs);background:none;color:var(--g500);cursor:pointer}pre .copy:hover{color:var(--g900);background:var(--l2)}
+pre .copy .ok,pre .copy.done .cp{display:none}pre .copy.done .ok{display:block;color:var(--g900)}
 blockquote{margin:0 0 1em;padding:2px 0 2px 16px;border-left:3px solid var(--g400);color:var(--g700)}
 blockquote p:last-child{margin-bottom:0}
 hr{border:0;border-top:1px solid var(--g300);margin:1.6em 0}
@@ -306,9 +312,20 @@ tr.done .text,tr.done td.tc .main{color:var(--g600)}
 @media (max-width:760px){main{padding:24px 16px 64px}.lanes{flex-direction:column;gap:0}table.vnotes td.fr{width:140px}table.vnotes .thumb,table.vnotes .nothumb{width:128px}table.vnotes td.st{display:none}}
 "#;
 /// Inside `@media print`, after the light tokens.
-const PRINT: &str = "#lb{display:none!important}main{padding:0;max-width:none}tr,figure,pre{break-inside:avoid}h1,h2,h3,h4,h5,h6{break-after:avoid}.thumb{background:none}\n";
+const PRINT: &str = "#lb,pre .copy{display:none!important}main{padding:0;max-width:none}tr,figure,pre{break-inside:avoid}h1,h2,h3,h4,h5,h6{break-after:avoid}.thumb{background:none}\n";
 
 /// QCView's export lightbox, for any picture of the page: click one; the arrows step, Esc closes, A hides the drawings.
+/// The copy button's two faces (the pages, the tick).
+const COPY_ICONS: &str = r#"<svg class="cp" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><svg class="ok" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>"#;
+/// A code block's copy button (row 338): the code goes to the clipboard and the button shows a tick; where the browser
+/// keeps the clipboard from a page (some do for a file opened from disk), the code is selected instead, to be copied by hand.
+pub(crate) const COPY_SCRIPT: &str = r#"<script>
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('pre .copy');if(!b)return;var c=b.closest('pre').querySelector('code');
+function ok(){b.classList.add('done');setTimeout(function(){b.classList.remove('done')},1200)}
+function byHand(){var r=document.createRange();r.selectNodeContents(c);var s=getSelection();s.removeAllRanges();s.addRange(r);try{if(document.execCommand('copy')){s.removeAllRanges();ok()}}catch(x){}}
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(c.textContent).then(ok,byHand)}else byHand()});
+</script>
+"#;
 const LIGHTBOX: &str = r#"<div id="lb" aria-hidden="true"><span class="cnt"></span>
 <button class="strokes" title="Show or hide the drawings (A)">Drawings <kbd>A</kbd></button>
 <button class="close" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>

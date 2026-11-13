@@ -64,7 +64,7 @@ pub fn canvas_html(els: &[&Element], title: &str, exported: &str, opts: Opts, fo
     o += &format!("<header id=\"bar\"><span class=\"name\">{}</span><span class=\"meta\">Exported {}</span><span class=\"grow\"></span><button id=\"fit\" title=\"Fit everything (0)\">Fit</button><span id=\"zoom\">100%</span></header>\n", esc(title), esc(exported));
     o += &format!("<div id=\"view\"><div id=\"world\" style=\"width:{:.1}px;height:{:.1}px\">\n{world}</div></div>\n", b.width(), b.height());
     o += "<div id=\"reader\" aria-hidden=\"true\"><header><button id=\"back\" title=\"Back to the canvas (Esc)\">\u{2190} Canvas</button><span class=\"name\"></span></header><main><article></article></main></div>\n";
-    o += LIGHTBOX; o += CANVAS_SCRIPT; o += "</body></html>\n"; o
+    o += LIGHTBOX; if o.contains("<button class=\"copy\"") { o += super::COPY_SCRIPT; } o += CANVAS_SCRIPT; o += "</body></html>\n"; o
 }
 
 const CANVAS_CSS: &str = r#"

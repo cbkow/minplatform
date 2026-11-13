@@ -113,7 +113,7 @@ fn card_pic(cards: &mut std::collections::HashMap<BlockId, CardPic>, ed: &Editor
     if cards.get(&note).is_none_or(|p| p.key != key || p.again) && !far {
         let loaded; let doc = match mem { Some(d) => d, None => { if st.col.entry(note).ok().flatten().is_none() { words(scene, fonts, "Note deleted"); return (64.0, false) } match st.col.load_note(note) { Ok(d) => { loaded = d; &loaded } Err(_) => return (64.0, false) } } };
         let layout = NoteLayout::build_media(doc, fonts, &style(), (((e.w - 2.0 * CARD_PAD) * s).max(60.0)) as f32, s as f32, Default::default(), Default::default());
-        let mut sub = vello::Scene::new(); let again = paint::note(&mut sub, doc, &layout, fonts, media, &mut vec![], &mut vec![], None, None, false, CARD_PAD * s, CARD_PAD * s, Rect::new(0.0, 0.0, e.w * s, e.h * s));
+        let mut sub = vello::Scene::new(); let again = paint::note(&mut sub, doc, &layout, fonts, media, &mut vec![], &mut vec![], None, None, false, None, CARD_PAD * s, CARD_PAD * s, Rect::new(0.0, 0.0, e.w * s, e.h * s));
         cards.insert(note, CardPic { scene: sub, key, h: layout.height as f64 / s + 2.0 * CARD_PAD, again });
     }
     let Some(p) = cards.get(&note) else { return (0.0, false) }; if far { return (p.h, false) }
@@ -167,7 +167,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
     gather: Option<gather_win::Window>, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
-    import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
+    import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, code_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
@@ -181,7 +181,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// column, where the pointer took hold, the width then, the table's kind before)
     /// wide tables' sideways scrolls (kept across layouts)
     /// a choice cell's picker (row 317, stage 3), and the timecode paragraph the caret was last in (it settles when left)
-    picker: Option<choice::ChoicePicker>, tc_last: Option<BlockId>,
+    picker: Option<choice::ChoicePicker>, tc_last: Option<BlockId>, /// the picker is a code block's language's (row 338); the block whose text was just copied by its button, until when its tick shows
+    picker_lang: Option<BlockId>, copied: Option<(BlockId, Instant)>,
     /// the picker is a chip's in running text (row 320): the chip it is on
     picker_chip: Option<mn_edit::chips::Chip>,
     /// a link's editor (row 320), and the link a context menu was opened on
@@ -439,7 +440,8 @@ impl App {
                 for r in rects { let r = r + off; if r.y1 < view.y0 || r.y0 > view.y1 { continue } if h.kind == mn_edit::find::HitKind::Block { scene.stroke(&kurbo::Stroke::new(2.0 * s), kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r.inflate(2.0 * s, 2.0 * s), 6.0 * s)); }
                     else { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r, 2.0 * s)); } } } }
         let (mut turned, mut noted) = (vec![], vec![]);
-        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.player.as_ref().filter(|_| !self.files.hide_notes || self.files.tool.is_some()).map(|p| &p.ann), self.files.hide_notes, off.x, off.y, view) { g.window.request_redraw(); }
+        if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.player.as_ref().filter(|_| !self.files.hide_notes || self.files.tool.is_some()).map(|p| &p.ann), self.files.hide_notes, Some(self.files.copied.filter(|c| now < c.1).map(|c| c.0)), off.x, off.y, view) { g.window.request_redraw(); }
+        if self.files.copied.is_some_and(|c| now < c.1) { g.window.request_redraw(); } else { self.files.copied = None; }
         if !self.blank { let now = Instant::now(); let seen = match &self.files.card { Some(c) => c.rect, None => Rect::new(self.side_w, self.top, w as f64, h as f64 - self.bottom) };
             sync_bars(&mut self.files.tbars, l, &self.ed.doc, off, s, seen); for b in self.files.tbars.values() { if b.thumb().is_some_and(|t| t.y0 >= view.y0 && t.y1 <= view.y1) { b.paint(scene, now); } if b.animating(now) { g.window.request_redraw(); } }
             // the note's own bar (not a card's: the canvas scrolls those)
@@ -454,7 +456,8 @@ impl App {
             for (x0, y0, x1, y1) in t.rects(sel.a, sel.b) { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::accent().multiply_alpha(0.35), None, &Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k)); } } } }
         // a note's words being typed: the field lies over the caption's place on the playing video's picture
         if carded.is_some() { scene.pop_layer(); }
-        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { match self.files.picker_chip.as_ref().map(|c| l.range_rects(&self.ed.doc, c.0, c.1, c.2).into_iter().next()).unwrap_or_else(|| l.rect(&self.ed.doc, p.cell)) { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; self.files.picker_chip = None; } }
+        { let mut gone = false; if let Some(p) = self.files.picker.as_mut() { let lang_at = self.files.picker_lang.and_then(|id| { let r = l.rect(&self.ed.doc, id)?; match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Code { lang }) => Some(paint::code_tools(&mut g.fonts, r, lang, s).0), _ => None } });
+            match if self.files.picker_lang.is_some() { lang_at } else { self.files.picker_chip.as_ref().map(|c| l.range_rects(&self.ed.doc, c.0, c.1, c.2).into_iter().next()).unwrap_or_else(|| l.rect(&self.ed.doc, p.cell)) } { Some(r) => { p.layout(&mut g.fonts, r + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } } None => gone = true } } if gone { self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; } }
         if let Some(f) = self.files.find.as_mut() { f.count = (if self.files.hits.is_empty() { 0 } else { self.files.hit_at + 1 }, self.files.hits.len()); f.layout(&mut g.fonts, Rect::new(self.side_w, self.top, w as f64, h as f64), s); f.paint(scene, &mut g.fonts); if f.animating(now) { g.window.request_redraw(); } }
         if let Some(p) = self.files.link.as_mut() { p.layout(&mut g.fonts, p.anchor + off, Rect::new(0.0, self.top, w as f64, h as f64), s); p.paint(scene, &mut g.fonts); if p.animating(now) { g.window.request_redraw(); } }
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
@@ -702,7 +705,7 @@ impl App {
         // the open canvas and what plays go with the collection (they were left over the next one's page); leaving a
         // card stages its note again, which must not turn a session with nothing unpublished into one that is kept
         let clean = !self.unpublished(); self.video_stop(); self.canvas_leave(); self.find_close();
-        self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.cnotes.clear(); self.files.canvas_at.set(None); self.files.creload = false; self.files.import = None; self.files.import_wait.clear(); self.files.import_big = None;
+        self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.cnotes.clear(); self.files.canvas_at.set(None); self.files.creload = false; self.files.import = None; self.files.import_wait.clear(); self.files.import_big = None;
         if clean { self.changed.clear(); if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } }
         self.autosave(); self.gather_drop();
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
@@ -1774,6 +1777,29 @@ impl App {
         let d = self.ed.insert_chip(now).unwrap_or(Dirty::Nothing); if d == Dirty::Nothing { return } self.apply(d); self.layout = None; self.ensure();
         if let Some(c) = self.ed.chip_before_caret() { self.chip_open(c, ""); }
     }
+    /// A press on a code block's corner (row 338): the label opens the language's picker, the button copies the block's text.
+    fn code_press(&mut self, x: f64, y: f64) -> bool {
+        if self.blank || self.modal() || y < self.top || x < self.side_w { return false }
+        let (nx, ny) = self.note_point((x, y)); let pt = kurbo::Point::new(nx, ny);
+        let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_mut()) else { return false }; let s = g.window.scale_factor();
+        let hit = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Code { lang } => Some((b.id, lang.clone(), b.text.clone())), _ => None }).find_map(|(id, lang, text)| { let r = l.rect(&self.ed.doc, id)?; if !r.contains(pt) { return None }
+            let (label, copy) = paint::code_tools(&mut g.fonts, r, &lang, s); if label.x0 < r.x0 + 4.0 * s { return None }
+            if copy.contains(pt) { Some((id, lang, Some(text))) } else if label.contains(pt) { Some((id, lang, None)) } else { None } });
+        let Some((id, lang, copy)) = hit else { return false };
+        self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
+        match copy {
+            Some(text) => { self.code_copy(id, &text); }
+            None => { let options = mn_layout::syntax::NAMES.iter().map(|(id, label)| mn_doc::ChoiceOption { id: id.to_string(), label: label.to_string(), color: String::new() }).collect::<Vec<_>>();
+                let mut options = options; options.insert(0, mn_doc::ChoiceOption { id: String::new(), label: "Plain text".into(), color: String::new() });
+                let chosen = mn_layout::syntax::short(&lang).map(str::to_string).unwrap_or(lang.trim().to_string());
+                if let Some(g) = self.gpu.as_mut() { self.files.picker = Some(choice::ChoicePicker::new(id, options, Some(chosen), "", &mut g.fonts).plain("Find a language\u{2026}")); self.files.picker_lang = Some(id); } }
+        }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); } true
+    }
+    fn code_copy(&mut self, id: BlockId, text: &str) {
+        if std::env::var_os("MN_NO_DIALOGS").is_none() { if let Some(cb) = self.clipboard.as_mut() { if cb.set_text(text.to_string()).is_err() { self.notice = Some(("The code could not be copied".into(), Instant::now() + std::time::Duration::from_secs(4))); return } } }
+        self.block_clip = None; self.files.copied = Some((id, Instant::now() + std::time::Duration::from_millis(1200))); self.notice = Some(("Copied".into(), Instant::now() + std::time::Duration::from_secs(2)));
+    }
     /// A chip's picker opens under it.
     fn chip_open(&mut self, c: mn_edit::chips::Chip, typed: &str) {
         let Some(g) = self.gpu.as_mut() else { return };
@@ -1802,6 +1828,15 @@ impl App {
     }
     fn choice_out(&mut self, out: choice::Out) {
         let now = self.now_ms();
+        // a code block's language (row 338): the pick, or what was typed
+        if let Some(id) = self.files.picker_lang {
+            let d = match out { choice::Out::None => return, choice::Out::Redraw => { if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                choice::Out::Pick(v) => self.ed.set_code_lang(id, v.as_deref().unwrap_or(""), now),
+                choice::Out::Add(l) => { let l: String = l.trim().chars().filter(|c| !c.is_whitespace() && *c != '`').take(24).collect(); let l = mn_layout::syntax::short(&l).map(str::to_string).unwrap_or(l); self.ed.set_code_lang(id, &l, now) }
+                _ => Ok(Dirty::Nothing) };
+            self.files.picker = None; self.files.picker_lang = None;
+            match d { Ok(d) => self.apply(if d == Dirty::Nothing { Dirty::Nothing } else { Dirty::Structure }), Err(e) => eprintln!("language: {e:?}") } return
+        }
         // a chip in running text (row 320): the pick, the new option and the edited set are the chip's own
         if let Some(c) = self.files.picker_chip.clone() {
             let all = self.files.picker.as_ref().is_some_and(|p| p.all);
@@ -1811,7 +1846,7 @@ impl App {
                 choice::Out::Add(l) => { let l = mn_edit::typed::clean_label(&l); if l.is_empty() { Ok(Dirty::Nothing) } else { let mut set = c.3.clone(); let id = BlockId::new().to_string();
                     set.push(ChoiceOption { id: id.clone(), label: l, color: mn_edit::typed::PALETTE[c.3.len() % mn_edit::typed::PALETTE.len()].to_string() }); self.ed.chip_set(&c, Some(&id), Some(&set), now) } }
                 choice::Out::Options(o) => if o.is_empty() { Ok(Dirty::Nothing) } else if all { self.ed.chips_replace_set(&c.3, &o, now) } else { let keep = o.iter().any(|x| x.id == c.4).then(|| c.4.clone()); self.ed.chip_set(&c, keep.as_deref(), Some(&o), now) } };
-            self.files.picker = None; self.files.picker_chip = None;
+            self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
             let d = d.unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); self.layout = None; }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         let d = match out { choice::Out::None => return, choice::Out::Redraw => Ok(Dirty::Nothing), choice::Out::Close => { self.files.picker = None; Ok(Dirty::Nothing) }
@@ -2089,7 +2124,7 @@ impl App {
     fn open_canvas(&mut self, id: BlockId) {
         if self.files.canvas.as_ref().is_some_and(|c| c.id == id) { return } self.canvas_leave();
         let Some(st) = self.store.as_mut() else { return }; if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
-        st.edited.get_or_insert_with(Instant::now); self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None;
+        st.edited.get_or_insert_with(Instant::now); self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
         let Some(st) = self.store.as_mut() else { return };
         match st.col.load_canvas(id) { Ok(mut c) => { let mut turned = false;
                 for e in c.elements.iter_mut().filter(|e| e.kind == "text") { let Ok(nid) = st.col.create(Some(id), mn_store::DocKind::Note, "") else { continue }; let mut d = Doc::new();
@@ -2151,7 +2186,7 @@ impl App {
     /// The entered card is left: its note is kept, and the canvas has the keys again.
     fn card_leave(&mut self) {
         if self.files.card.take().is_none() { return } if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
-        if let Some(st) = self.store.as_mut() { st.edited.get_or_insert_with(Instant::now); } self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None;
+        if let Some(st) = self.store.as_mut() { st.edited.get_or_insert_with(Instant::now); } self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
         self.blank = true; self.layout = None; self.scroll = 0.0; if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// A note of the canvas's own is made at a point of the sheet (its top left), with these lines; `enter`: and entered.
@@ -2574,7 +2609,7 @@ impl ApplicationHandler for App {
                 if let Ok(w) = std::env::var("MN_FIND_WITH") { if let (Some(f), Some(g)) = (self.files.find.as_mut(), self.gpu.as_mut()) { f.replacing = true; f.with.set_text_end(&w, &mut g.fonts); } self.find_out(findbar::Out::ReplaceAll); } }
             if matches!(std::env::var("MN_LINK").as_deref(), Ok("2") | Ok("3")) { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) {
                 self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); self.chip_insert();
-                if std::env::var("MN_LINK").as_deref() == Ok("3") { self.files.picker = None; self.files.picker_chip = None; let t = self.now_ms(); let _ = self.ed.insert(" then ", t + 20_000); self.apply(Dirty::Structure); self.chip_insert(); if let (Some(c), Some(g)) = (self.files.picker_chip.clone(), self.gpu.as_mut()) { let mut pk = choice::ChoicePicker::new(c.0, c.3.clone(), Some(c.4.clone()), "", &mut g.fonts).editing(); pk.inline = true; self.files.picker = Some(pk); } } } }
+                if std::env::var("MN_LINK").as_deref() == Ok("3") { self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; let t = self.now_ms(); let _ = self.ed.insert(" then ", t + 20_000); self.apply(Dirty::Structure); self.chip_insert(); if let (Some(c), Some(g)) = (self.files.picker_chip.clone(), self.gpu.as_mut()) { let mut pk = choice::ChoicePicker::new(c.0, c.3.clone(), Some(c.4.clone()), "", &mut g.fonts).editing(); pk.inline = true; self.files.picker = Some(pk); } } } }
             else if std::env::var_os("MN_LINK").is_some() { if let Some(p) = self.ed.doc.children(None).iter().copied().find(|id| self.ed.doc.get(*id).is_some_and(|b| b.kind == Kind::Paragraph && b.text.len() > 30)) { let t = self.now_ms();
                 self.ed.set_selection(Some(mn_edit::Selection { anchor: mn_edit::Pos { block: p, at: 4 }, focus: mn_edit::Pos { block: p, at: 12 } })); let _ = self.ed.set_link("example.com/review", None, t);
                 self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: p, at: 0 }))); let _ = self.ed.insert("www.minnotes.app ", t + 9_000); let _ = self.ed.autolink(true, t + 9_000);
@@ -2662,6 +2697,13 @@ impl ApplicationHandler for App {
         // (scripted, MN_OPEN_NEXT=<collection>: once a canvas is open and drawn, another collection is opened over it)
         if let (false, Ok(p), true) = (self.files.next_test, std::env::var("MN_OPEN_NEXT"), self.frames > 30 && self.files.canvas.is_some()) { self.files.next_test = true; self.request_close(Pending::Open(p.into())); }
         // (scripted, MN_IMPORT=<file>[:<file>…]: the files are imported once the collection is shown; MN_IMPORT_BIG=first|attach|cancel answers the large table's question)
+        // (scripted, MN_CODE=lang|copy[:<n>]: the n-th code block's label or button is pressed as a pointer would)
+        if let (false, Ok(v), true) = (self.files.code_test, std::env::var("MN_CODE"), self.frames > 4 && self.layout.is_some() && !self.blank && self.ed.doc.walk().iter().any(|b| matches!(b.kind, Kind::Code { .. }))) {
+            self.files.code_test = true; let (what, n) = v.split_once(':').map(|(a, b)| (a.to_string(), b.parse().unwrap_or(0))).unwrap_or((v.clone(), 0usize));
+            let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let o = origin(&self.files.card, self.side_w, self.top, self.scroll, s);
+            let at = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Code { lang } => Some((b.id, lang.clone())), _ => None }).nth(n).and_then(|(id, lang)| { let r = self.layout.as_ref()?.rect(&self.ed.doc, id)?; let g = self.gpu.as_mut()?; let (l, c) = paint::code_tools(&mut g.fonts, r, &lang, s); Some(if what == "copy" { c.center() } else { l.center() } + o) });
+            if let Some(p) = at { let did = self.code_press(p.x, p.y); eprintln!("MN_CODE {what}: pressed {did}"); }
+        }
         if let (false, Ok(list), true) = (self.files.import_test, std::env::var("MN_IMPORT"), self.frames > 2 && self.store.is_some()) { self.files.import_test = true; self.import_files(list.split(':').map(std::path::PathBuf::from).collect()); }
         // (scripted, MN_GATHER_SHOW=collect | package:<folder>[,go]: the window is opened by the app itself, for a screenshot; `go` starts the copy)
         if let (false, Ok(spec), true) = (self.files.gather_test, std::env::var("MN_GATHER_SHOW"), self.frames > 2 && self.store.is_some()) { self.files.gather_test = true; let (spec, _) = spec.split_once(',').unwrap_or((&spec, "")); let (what, to) = match spec.split_once(':') { Some(("package", f)) => (gather::What::Package, Some(std::path::PathBuf::from(f))), _ => (gather::What::Collect, None) }; self.gather_open(what, to); }
@@ -2776,6 +2818,7 @@ impl ApplicationHandler for App {
                 let s = g.window.scale_factor();
                 if let Some(w) = self.files.gather.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
+                if self.files.picker.as_ref().is_some_and(|p| p.plain && p.hit(self.pointer.0, self.pointer.1)) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; if let Some(p) = self.files.picker.as_mut() { p.wheel(-dy); } g.window.request_redraw(); return }
                 // over an open canvas (row 322): the wheel pans, with Cmd (or Ctrl) it zooms about the pointer
                 // (a note edited in a card: over the card the wheel is the note's when it has more than the card shows; a zoom leaves the card)
                 let in_card = self.files.card.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(self.pointer.0, self.pointer.1))) && !(self.mods.1 || self.ctrl) && self.layout.as_ref().zip(self.files.card.as_ref()).is_some_and(|(l, c)| l.height as f64 + 2.0 * CARD_PAD * s > c.rect.height() + 1.0);
@@ -2909,6 +2952,8 @@ impl ApplicationHandler for App {
                     None => self.files.chip_click = None } }
                 // a press on a chip in the text opens its picker (row 320)
                 if state == ElementState::Pressed && !self.mods.0 && !self.mods.1 && self.files.tool.is_none() && self.files.note_field.is_none() { if let Some(c) = self.chip_under(position.x, position.y) { self.chip_open(c, ""); return } }
+                // a code block's corner (row 338): its language's label opens the picker, its button copies its text
+                if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && self.code_press(position.x, position.y) { return }
                 // Cmd + click on a link opens it (a plain click places the caret)
                 if state == ElementState::Pressed && self.mods.1 && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
                 if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }

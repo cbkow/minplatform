@@ -369,6 +369,14 @@ impl Editor {
     /// The text blocks in the selection (or the caret's block) become `want`; when every one of them already is, they
     /// become plain paragraphs (the control toggles). A list keeps each item's depth; a block that becomes a code block
     /// loses its formatting. Blocks without text are left alone.
+    /// A code block's language (row 338): one step.
+    pub fn set_code_lang(&mut self, id: BlockId, lang: &str, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some(old) = self.doc.get(id).map(|b| b.kind.clone()).filter(|k| matches!(k, Kind::Code { .. })) else { return Ok(Dirty::Nothing) };
+        let new = Kind::Code { lang: lang.to_string() }; if new == old { return Ok(Dirty::Nothing) }
+        let mut b = self.batch(); b.push(Change::Kind { id, old, new })?;
+        let keep = self.sel; let d = self.commit(b, None, now_ms)?; self.sel = keep; if let Some(m) = self.marks.last_mut() { if d != Dirty::Nothing { m.1 = keep; } }
+        Ok(d)
+    }
     pub fn set_block_kind(&mut self, want: BlockType, now_ms: u64) -> Result<Dirty, ChangeError> {
         let Some((a, z)) = self.ordered() else { return Ok(Dirty::Nothing) };
         let l = leaves(&self.doc); let (Some(i), Some(j)) = (l.iter().position(|x| *x == a.block), l.iter().position(|x| *x == z.block)) else { return Ok(Dirty::Nothing) };

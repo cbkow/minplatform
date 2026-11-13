@@ -23,6 +23,8 @@ pub struct ChoicePicker {
     pub inline: bool,
     /// the edited options go to every chip of the note that shares this chip's set
     pub all: bool,
+    /// a plain list to pick one of (a code block's language, row 338): no dots, no options' editor; a long list scrolls
+    pub plain: bool, bar: min_ui::ScrollBar, list_rect: Rect, follow: bool,
     pop: Popover, field: TextField, options: Vec<ChoiceOption>, chosen: Option<String>,
     hover: Option<Hit>, at: usize, edit: bool, renaming: Option<usize>, rows: Vec<(Rect, Hit)>, scale: f64,
     /// the editor's tools: per option up, down, remove; then Add option, Cancel, Done
@@ -38,22 +40,27 @@ impl ChoicePicker {
     pub fn new(cell: BlockId, options: Vec<ChoiceOption>, chosen: Option<String>, typed: &str, fonts: &mut Fonts) -> ChoicePicker {
         let mut field = TextField::new(Family::Sans, t::BODY_SIZE_M); field.placeholder = "Find or add\u{2026}".into(); field.set_text_end(typed, fonts); field.focused = true;
         let mut add = ActionButton::new("plus", "").size_s(); add.label = Some("Add option".into()); add.icon_size = Some(t::ICON_SIZE_SMALL);
-        ChoicePicker { cell, inline: false, all: true, pop: Popover::new(""), field, options, chosen, hover: None, at: 0, edit: false, renaming: None, rows: vec![], scale: 1.0,
+        ChoicePicker { cell, inline: false, all: true, plain: false, bar: { let mut b = min_ui::ScrollBar::default(); b.always = true; b }, list_rect: Rect::ZERO, follow: false, pop: Popover::new(""), field, options, chosen, hover: None, at: 0, edit: false, renaming: None, rows: vec![], scale: 1.0,
             tools: vec![], add, cancel: TextButton::new("Cancel", Variant::Secondary).size_s(), done: TextButton::new("Done", Variant::Primary).size_s() }
     }
+    /// A plain list (a language's picker).
+    pub fn plain(mut self, placeholder: &str) -> ChoicePicker { self.plain = true; self.at = self.chosen.as_ref().and_then(|c| self.options.iter().position(|o| o.id == *c)).unwrap_or(0); self.follow = true; self.field.placeholder = placeholder.into(); self }
+    /// The wheel over it: a long list is scrolled.
+    pub fn wheel(&mut self, dy: f64) -> bool { self.plain && self.bar.wheel(dy, Instant::now()) }
     /// Opened on its options' editor.
     pub fn editing(mut self) -> ChoicePicker { self.to_edit(); self }
     fn to_edit(&mut self) { self.edit = true; self.field.clear(); self.field.placeholder.clear(); self.field.focused = false; self.hover = None; }
     pub fn hit(&self, x: f64, y: f64) -> bool { self.pop.hit(x, y) }
     /// The field the keys go to (a paste, a copy), when it has them.
     pub fn field(&mut self) -> Option<&mut TextField> { self.field.focused.then_some(&mut self.field) }
-    pub fn animating(&self, now: Instant) -> bool { self.edit && (self.add.animating(now) || self.cancel.animating(now) || self.done.animating(now) || self.tools.iter().flatten().any(|b| b.animating(now))) }
+    pub fn animating(&self, now: Instant) -> bool { (self.plain && self.bar.animating(now)) || self.edit && (self.add.animating(now) || self.cancel.animating(now) || self.done.animating(now) || self.tools.iter().flatten().any(|b| b.animating(now))) }
     fn filter(&self) -> String { self.field.text().trim().to_lowercase() }
     /// The rows of the list, in order (the picker's face).
     fn list(&self) -> Vec<Hit> {
         let f = self.filter();
         let mut v: Vec<Hit> = self.options.iter().enumerate().filter(|(_, o)| f.is_empty() || o.label.to_lowercase().contains(&f)).map(|(i, _)| Hit::Option(i)).collect();
         if !f.is_empty() && !self.options.iter().any(|o| o.label.trim().to_lowercase() == f) { v.push(Hit::Add); }
+        if self.plain { return v }
         if f.is_empty() { if !v.is_empty() { v.push(Hit::Sep); } if self.chosen.is_some() { v.push(Hit::Clear); } v.push(Hit::Edit); }
         v
     }
@@ -81,13 +88,21 @@ impl ChoicePicker {
         }
         let list = self.list(); let top = FIELD + sep;
         let h: f64 = list.iter().map(|x| if *x == Hit::Sep { sep } else { rh }).sum();
-        self.pop.open_at_prefer(fonts, anchor, W, top + h, bounds, s, Placement::Below);
+        let shown = if self.plain { h.min(9.0 * rh) } else { h };
+        self.pop.open_at_prefer(fonts, anchor, W, top + shown, bounds, s, Placement::Below);
         let k = self.pop.content; let mut y = k.y0 + top * s;
+        self.list_rect = Rect::new(k.x0, y, k.x1, y + shown * s);
+        if self.plain {
+            self.bar.set(self.list_rect, h * s, s);
+            // the row the keys stand on is kept in sight
+            if std::mem::take(&mut self.follow) { let (a, z) = (self.at as f64 * rh * s, (self.at + 1) as f64 * rh * s); if a < self.bar.offset { self.bar.offset = a; } else if z > self.bar.offset + shown * s { self.bar.offset = z - shown * s; } }
+            y -= self.bar.offset;
+        }
         for x in list { let hh = if x == Hit::Sep { sep } else { rh } * s; self.rows.push((Rect::new(k.x0, y, k.x1, y + hh), x)); y += hh; }
         self.field.layout(fonts, Rect::new(k.x0, k.y0, k.x1, k.y0 + FIELD * s), s);
         self.at = self.at.min(self.stops().len().saturating_sub(1));
     }
-    fn at_point(&self, x: f64, y: f64) -> Option<Hit> { self.rows.iter().find(|(r, h)| *h != Hit::Sep && r.contains(kurbo::Point::new(x, y))).map(|(_, h)| *h) }
+    fn at_point(&self, x: f64, y: f64) -> Option<Hit> { if self.plain && !self.edit && !self.list_rect.contains(kurbo::Point::new(x, y)) { return None } self.rows.iter().find(|(r, h)| *h != Hit::Sep && r.contains(kurbo::Point::new(x, y))).map(|(_, h)| *h) }
     fn rename_end(&mut self, keep: bool) {
         if let Some(i) = self.renaming.take() { let l = mn_edit::typed::clean_label(self.field.text()); if keep && !l.is_empty() { if let Some(o) = self.options.get_mut(i) { o.label = l; } } if self.options.get(i).is_some_and(|o| o.label.is_empty()) { self.options.remove(i); } self.field.focused = false; }
     }
@@ -120,6 +135,7 @@ impl ChoicePicker {
     /// A pointer event. A press outside closes it (and is not taken: the page gets it).
     pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> (Out, bool) {
         if self.edit { if let Some(out) = self.tools_event(e, fonts) { return (out, true) } }
+        if self.plain { let (changed, mine) = self.bar.event(e, Instant::now()); if mine { return (Out::Redraw, true) } let _ = changed; }
         match *e {
             Event::Move { x, y } => { self.hover = self.at_point(x, y); if self.field.focused { self.field.pointer(e, fonts); } (Out::Redraw, self.hit(x, y)) }
             Event::Down { x, y, .. } => { if !self.hit(x, y) { return (if self.edit { self.rename_end(true); Out::Options(self.options.clone()) } else { Out::Close }, false) }
@@ -138,10 +154,10 @@ impl ChoicePicker {
         let stops = self.stops();
         match k.key {
             Key::Named(Named::Escape) => Out::Close,
-            Key::Named(Named::Down) => { self.at = (self.at + 1).min(stops.len().saturating_sub(1)); Out::Redraw }
-            Key::Named(Named::Up) => { self.at = self.at.saturating_sub(1); Out::Redraw }
+            Key::Named(Named::Down) => { self.at = (self.at + 1).min(stops.len().saturating_sub(1)); self.follow = true; Out::Redraw }
+            Key::Named(Named::Up) => { self.at = self.at.saturating_sub(1); self.follow = true; Out::Redraw }
             Key::Named(Named::Enter) | Key::Named(Named::Tab) => match stops.get(self.at).copied() { Some(h) => self.act(h, fonts), None => Out::Close },
-            _ => { if self.field.key(k, fonts) == FieldResponse::Changed { self.at = 0; } Out::Redraw }
+            _ => { if self.field.key(k, fonts) == FieldResponse::Changed { self.at = 0; self.bar.offset = 0.0; } Out::Redraw }
         }
     }
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts) {
@@ -162,17 +178,19 @@ impl ChoicePicker {
             return
         }
         let current = self.stops().get(self.at).copied();
+        if self.plain { scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &self.list_rect); }
         for (r, h) in self.rows.clone() {
             let lit = self.hover == Some(h) || (self.hover.is_none() && current == Some(h));
             match h {
-                Hit::Option(i) => { let o = &self.options[i]; menu::row(scene, fonts, r, &o.label, true, lit, Some(self.chosen.as_deref() == Some(o.id.as_str())), true, s); dot(scene, r.x1 - 14.0 * s, r.center().y, &o.color) }
-                Hit::Add => menu::row(scene, fonts, r, &format!("Add \u{201c}{}\u{201d}", self.field.text().trim()), true, lit, None, true, s),
+                Hit::Option(i) => { let o = &self.options[i]; menu::row(scene, fonts, r, &o.label, true, lit, Some(self.chosen.as_deref() == Some(o.id.as_str())), true, s); if !self.plain { dot(scene, r.x1 - 14.0 * s, r.center().y, &o.color) } }
+                Hit::Add => menu::row(scene, fonts, r, &format!("{} \u{201c}{}\u{201d}", if self.plain { "Use" } else { "Add" }, self.field.text().trim()), true, lit, None, true, s),
                 Hit::Clear => menu::row(scene, fonts, r, if self.inline { "Remove chip" } else { "Clear" }, true, lit, None, true, s),
                 Hit::Edit => menu::row(scene, fonts, r, "Edit options\u{2026}", true, lit, None, true, s),
                 Hit::Sep => menu::separator(scene, r, s),
                 _ => {}
             }
         }
+        if self.plain { scene.pop_layer(); self.bar.paint(scene, now); }
         self.field.paint(scene, fonts, s);
     }
 }

@@ -29,6 +29,22 @@ fn conflict() -> Color { c(t::NOTICE_VISUAL_COLOR) }
 
 fn fill(scene: &mut Scene, r: Rect, c: Color) { scene.fill(Fill::NonZero, Affine::IDENTITY, c, None, &r); }
 
+/// A code block's corner (row 338): what its language's label reads, and where the label and the copy button sit in the
+/// block (`r`, window px) - its top right, over its padding. They are always there, quietly: nothing appears with the pointer.
+pub fn code_label(lang: &str) -> String { let l = lang.trim(); if l.is_empty() { "Plain text".into() } else { mn_layout::syntax::title(l).map(str::to_string).unwrap_or(l.to_string()) } }
+pub fn code_tools(fonts: &mut Fonts, r: Rect, lang: &str, s: f64) -> (Rect, Rect) {
+    let w = fonts.layout(&code_label(lang), Family::Sans, (11.0 * s) as f32, 400.0, dim()).width() as f64; let b = 22.0 * s;
+    let copy = Rect::new(r.x1 - 5.0 * s - b, r.y0 + 4.0 * s, r.x1 - 5.0 * s, r.y0 + 4.0 * s + b);
+    (Rect::new(copy.x0 - w - 14.0 * s, copy.y0, copy.x0, copy.y1), copy)
+}
+fn code_tools_paint(scene: &mut Scene, fonts: &mut Fonts, r: Rect, lang: &str, copied: bool, s: f64) {
+    let (label, copy) = code_tools(fonts, r, lang, s); if label.x0 < r.x0 + 4.0 * s { return }
+    // a long first line runs under them: they keep the block's ground behind them
+    scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(Rect::new(label.x0, label.y0, copy.x1, copy.y1), 4.0 * s));
+    let g = fonts.layout(&code_label(lang), Family::Sans, (11.0 * s) as f32, 400.0, dim()); draw_layout(scene, &g, Affine::translate((label.x0 + 7.0 * s, label.center().y - g.height() as f64 / 2.0)));
+    let size = 14.0 * s; if let Some(i) = fonts.icon(if copied { "check" } else { "copy" }, size as f32, if copied { text() } else { dim() }) { draw_layout(scene, &i, Affine::translate((copy.center().x - size / 2.0, copy.center().y - size / 2.0))); }
+}
+
 /// The video that plays, as the page's painter needs it: its block, the frame it is on, whether it plays, whether the
 /// presenter shows it yet (until then its poster is painted), its speed, and whether it is muted / does not loop.
 #[derive(Clone, Copy)]
@@ -147,7 +163,7 @@ fn number(doc: &Doc, id: BlockId, depth: u8) -> usize {
 
 /// Paints the note with its top-left at (`ox`, `oy`) physical px; blocks wholly outside `view` are skipped. True: a
 /// picture is still fading in - another frame is wanted.
-pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, noted: &mut Vec<(BlockId, bool)>, live: Option<Live>, ink: Option<&qcv_annotate::Annotations>, hide_notes: bool, ox: f64, oy: f64, view: Rect) -> bool {
+pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts, media: &mut Media, turned: &mut Vec<BlockId>, noted: &mut Vec<(BlockId, bool)>, live: Option<Live>, ink: Option<&qcv_annotate::Annotations>, hide_notes: bool, tools: Option<Option<BlockId>>, ox: f64, oy: f64, view: Rect) -> bool {
     let s = layout.scale as f64; let st = layout.style.clone(); let mut animating = false;
     // a table wider than its place is seen through its place: what is inside it is clipped to it while it is painted
     let mut clipped: Vec<BlockId> = vec![];
@@ -339,6 +355,7 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                 if faint { scene.push_layer(Fill::NonZero, peniko::Mix::Normal, 0.45, Affine::IDENTITY, &r); }
                 if !boxed { draw_layout(scene, text, Affine::translate((tx, ty))); }
                 if faint { scene.pop_layer(); }
+                if let (Kind::Code { lang }, Some(copied)) = (kind, tools) { code_tools_paint(scene, fonts, r, lang, copied == Some(b.id), s); }
                 for sp in b.spans.as_slice().iter().filter(|_| !boxed) {
                     let k = sp.mark.kind(); if !matches!(k, MarkKind::Underline | MarkKind::Link | MarkKind::Strike) { continue }
                     for q in layout.range_rects(doc, b.id, sp.start, sp.end) { let q = q + kurbo::Vec2::new(ox, oy);

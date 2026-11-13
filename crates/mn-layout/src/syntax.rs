@@ -82,6 +82,17 @@ static LANGS: &[Lang] = &[
     Lang { names: &["ps1", "psm1", "powershell", "pwsh"], block: &[("<#", "#>")], ci: true, caps: false, funcs: false, sigils: "$", dash: true, multi: true, esc: false, keywords: "begin break catch class continue data do dynamicparam else elseif end enum exit filter finally for foreach from function if in param process return switch throw trap try until using while", ..HASH },
 ];
 
+/// What a picker offers: (the short name a block stores, the name shown), in the shown names' order.
+pub const NAMES: &[(&str, &str)] = &[("sh", "Bash / Shell"), ("c", "C"), ("cpp", "C++"), ("cs", "C#"), ("cmake", "CMake"), ("css", "CSS"), ("glsl", "GLSL"), ("go", "Go"), ("html", "HTML"), ("ini", "INI"), ("java", "Java"), ("js", "JavaScript"), ("json", "JSON"),
+    ("kt", "Kotlin"), ("lua", "Lua"), ("m", "Objective-C"), ("pl", "Perl"), ("php", "PHP"), ("ps1", "PowerShell"), ("py", "Python"), ("r", "R"), ("rb", "Ruby"), ("rs", "Rust"), ("scss", "SCSS"), ("sql", "SQL"), ("swift", "Swift"), ("toml", "TOML"), ("ts", "TypeScript"), ("xml", "XML"), ("yaml", "YAML")];
+/// A known language's shown name ("python", "py" -> "Python"); None for one that is not known.
+pub fn title(lang: &str) -> Option<&'static str> {
+    let l = lang.trim().to_ascii_lowercase(); if let Some(n) = NAMES.iter().find(|n| n.0 == l) { return Some(n.1) }
+    find(&l)?.names.iter().find_map(|x| NAMES.iter().find(|n| n.0 == *x).map(|n| n.1))
+}
+/// The short name of a known language as a block stores it.
+pub fn short(lang: &str) -> Option<&'static str> { let t = title(lang)?; let l = lang.trim().to_ascii_lowercase(); NAMES.iter().find(|n| n.0 == l).or_else(|| NAMES.iter().find(|n| n.1 == t)).map(|n| n.0) }
+
 fn find(lang: &str) -> Option<&'static Lang> { let l = lang.trim().to_ascii_lowercase(); if l.is_empty() { return None } LANGS.iter().find(|x| x.names.contains(&l.as_str())) }
 /// Whether a block of this language is coloured.
 pub fn known(lang: &str) -> bool { find(lang).is_some() }
@@ -232,6 +243,13 @@ mod tests {
         assert!(known("rs") && known("Rust") && known(" python ") && known("c++") && known("bash") && known("yml"));
         assert!(!known("") && !known("txt") && !known("klingon"));
         assert!(lex("", "let a = 1;").is_empty() && lex("klingon", "let a = 1;").is_empty());
+    }
+    #[test]
+    fn every_language_has_a_shown_name_and_every_shown_name_a_language() {
+        for l in LANGS { assert!(title(l.names[0]).is_some(), "{}", l.names[0]); }
+        for (short_name, shown) in NAMES { assert!(known(short_name) && title(short_name) == Some(shown)); }
+        assert_eq!((title("Python"), title("svg"), title("htm"), title("yml"), title("nope")), (Some("Python"), Some("XML"), Some("XML"), Some("YAML"), None));
+        assert_eq!((short("python"), short("html"), short("bash"), short("nope")), (Some("py"), Some("html"), Some("sh"), None));
     }
     #[test]
     fn rust_is_cut_into_its_six_kinds() {

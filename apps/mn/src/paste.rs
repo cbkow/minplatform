@@ -94,7 +94,10 @@ fn tokens(html: &str) -> Vec<Tok> {
         // what is inside these is not text of the page
         if matches!(name.as_str(), "script" | "style" | "head" | "title" | "svg" | "math" | "noscript" | "template" | "object" | "iframe" | "select" | "textarea") {
             let close = format!("</{name}"); rest = rest.to_ascii_lowercase().find(&close).and_then(|k| rest[k..].find('>').map(|e| &rest[k + e + 1..])).unwrap_or(""); continue }
-        out.push(Tok::Open(name, attrs(&inner[n..])));
+        let at = attrs(&inner[n..]);
+        // our own exports' chrome (a code block's label and button): not text of the page either
+        if at.iter().any(|a| a.0 == "data-ui") && !inner.ends_with('/') { let close = format!("</{name}"); rest = rest.to_ascii_lowercase().find(&close).and_then(|k| rest[k..].find('>').map(|e| &rest[k + e + 1..])).unwrap_or(""); continue }
+        out.push(Tok::Open(name, at));
     }
     out
 }
@@ -126,7 +129,7 @@ struct Table { rows: Vec<(bool, Vec<Clip>)>, in_head: bool }
 #[derive(Default)]
 struct Reader {
     /// where finished blocks go: the result, or the cell being read (one entry per open cell)
-    sinks: Vec<Clip>, cur: Cur, inline: Vec<(String, Vec<Mark>, bool)>, lists: Vec<bool>, item: Option<Kind>, quote: usize, heading: Option<u8>, pre: usize, tables: Vec<Table>, word_list: Option<u8>, opts: Opts,
+    sinks: Vec<Clip>, cur: Cur, inline: Vec<(String, Vec<Mark>, bool)>, lists: Vec<bool>, item: Option<Kind>, quote: usize, heading: Option<u8>, pre: usize, pre_lang: String, tables: Vec<Table>, word_list: Option<u8>, opts: Opts,
 }
 impl Reader {
     fn active(&self) -> Vec<Mark> {
@@ -137,7 +140,7 @@ impl Reader {
         on
     }
     fn kind_here(&mut self) -> Kind {
-        if self.pre > 0 { return Kind::Code { lang: String::new() } }
+        if self.pre > 0 { return Kind::Code { lang: self.pre_lang.clone() } }
         if let Some(k) = self.item.take() { return k }
         if let Some(d) = self.word_list.take() { return Kind::Bullet { depth: d } }
         if let Some(l) = self.heading { return Kind::Heading { level: l } }
@@ -192,7 +195,7 @@ impl Reader {
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => { self.flush(); self.heading = Some(name.as_bytes()[1] - b'0'); }
             "blockquote" => { self.flush(); self.quote += 1; }
-            "pre" => { self.flush(); self.pre += 1; }
+            "pre" => { self.flush(); self.pre += 1; self.pre_lang = at.iter().find(|a| a.0 == "data-lang").map(|a| a.1.trim().to_string()).unwrap_or_default(); }
             "ul" | "ol" | "menu" => { self.flush(); self.lists.push(name == "ol"); }
             "li" => { self.flush(); let depth = self.lists.len().saturating_sub(1).min(8) as u8; self.item = Some(if self.lists.last() == Some(&true) { Kind::Numbered { depth } } else { Kind::Bullet { depth } }); }
             "input" => if at.iter().any(|a| a.0 == "type" && a.1.eq_ignore_ascii_case("checkbox")) { let done = at.iter().any(|a| a.0 == "checked");
