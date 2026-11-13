@@ -158,7 +158,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
-    gather: Option<gather_win::Window>, gather_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
+    gather: Option<gather_win::Window>, gather_test: bool, next_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
@@ -653,6 +653,7 @@ impl App {
         // a copy under way is not walked away from: it is stopped first, or waited for
         if self.files.gather.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } self.notice = Some(("Files are still being copied \u{2014} stop the copy or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         self.after_close = Some(what);
+        self.canvas_save(true);   // what was moved or drawn on the open canvas counts as a change to ask about
         if self.unpublished() {
             let name = self.doc_name();
             self.ask(Ask::Close, &format!("Save changes to \u{201c}{name}\u{201d}?"), "Your changes will be lost if you don\u{2019}t save them.", vec![("Cancel", V::Secondary), ("Don\u{2019}t Save", V::Secondary), ("Save", V::Primary)]);
@@ -671,6 +672,11 @@ impl App {
     }
     /// The collection leaves the window: a session with nothing unpublished is removed; the window is blank.
     fn end_session(&mut self) {
+        // the open canvas and what plays go with the collection (they were left over the next one's page); leaving a
+        // card stages its note again, which must not turn a session with nothing unpublished into one that is kept
+        let clean = !self.unpublished(); self.video_stop(); self.canvas_leave(); self.find_close();
+        self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.cnotes.clear(); self.files.canvas_at.set(None); self.files.creload = false;
+        if clean { self.changed.clear(); if let Some(st) = self.store.as_mut() { st.edited = None; st.unpublished = false; } }
         self.autosave(); self.gather_drop();
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
         self.store = None; self.sidebar = None; self.others.clear(); self.changed.clear(); self.status = None; self.ed = Editor::new(Doc::new()); self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = true; self.side_w = 0.0;
@@ -2554,6 +2560,8 @@ impl ApplicationHandler for App {
             if let Some((x, y)) = std::env::var("MN_DRAG").ok().and_then(|v| { let mut p = v.split(',').map(|n| n.trim().parse::<f64>().ok()); Some((p.next()??, p.next()??)) }) { self.pointer = (x, y); let (nx, ny) = self.note_point(self.pointer); let drop = self.layout.as_ref().and_then(|l| self.ed.drop_at(l, nx, ny)); self.grab = Some(Grab { from: (0.0, 0.0), dragging: true, drop, to_note: None }); }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if std::env::var_os("MN_ASK_CLOSE").is_some() && self.confirm.is_none() && !self.blank && self.layout.is_some() && !self.shown_blocks { self.shown_blocks = true; if let Some(st) = self.store.as_mut() { st.unpublished = true; } self.request_close(Pending::Close); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        // (scripted, MN_OPEN_NEXT=<collection>: once a canvas is open and drawn, another collection is opened over it)
+        if let (false, Ok(p), true) = (self.files.next_test, std::env::var("MN_OPEN_NEXT"), self.frames > 30 && self.files.canvas.is_some()) { self.files.next_test = true; self.request_close(Pending::Open(p.into())); }
         // (scripted, MN_GATHER_SHOW=collect | package:<folder>[,go]: the window is opened by the app itself, for a screenshot; `go` starts the copy)
         if let (false, Ok(spec), true) = (self.files.gather_test, std::env::var("MN_GATHER_SHOW"), self.frames > 2 && self.store.is_some()) { self.files.gather_test = true; let (spec, _) = spec.split_once(',').unwrap_or((&spec, "")); let (what, to) = match spec.split_once(':') { Some(("package", f)) => (gather::What::Package, Some(std::path::PathBuf::from(f))), _ => (gather::What::Collect, None) }; self.gather_open(what, to); }
         if let Ok(x) = std::env::var("MN_GATHER_SHOW") { if x.ends_with(",go") || x.ends_with(",stop") { if let Some(w) = self.files.gather.as_mut() { if w.phase == gather_win::Phase::Review && w.run.is_none() && w.go() && x.ends_with(",stop") {
