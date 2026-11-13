@@ -235,19 +235,43 @@ pub fn docx(path: &Path, places: &Places) -> Result<(Clip, usize), String> {
 
 // ── sheets (Excel, OpenDocument)
 
-/// One sheet: its name and its cells that hold something (row, column, text).
-struct Sheet { name: String, cells: Vec<(usize, usize, String)> }
+/// One sheet: its name, its cells that hold something (row, column, text), and its pictures - each in a cell
+/// (row, column, the kept picture's record), or over the sheet with no cell of its own (those follow the table).
+#[derive(Default)]
+struct Sheet { name: String, cells: Vec<(usize, usize, String)>, pictures: Vec<(usize, usize, String)>, loose: Vec<String> }
+
+/// A part named from another part's folder (`../media/a.png` from `xl/drawings`), as the zip names it.
+fn part_path(folder: &str, target: &str) -> String {
+    if let Some(abs) = target.strip_prefix('/') { return abs.to_string() }
+    let mut at: Vec<&str> = folder.split('/').filter(|x| !x.is_empty()).collect();
+    for step in target.split('/') { match step { ".." => { at.pop(); } "." | "" => {} x => at.push(x) } }
+    at.join("/")
+}
+/// A part's relationships (`<folder>/_rels/<name>.rels`): id -> the part it names.
+fn rels_of(zip: &mut Zip, part: &str) -> HashMap<String, String> {
+    let (folder, name) = part.rsplit_once('/').unwrap_or(("", part)); let mut out = HashMap::new();
+    if let Some(x) = zip.text(&format!("{folder}/_rels/{name}.rels")) { for t in tokens(&x) { if let Tok::Open { name, attrs, .. } = t { if name == "Relationship" { if let (Some(id), Some(target)) = (attr(&attrs, "Id"), attr(&attrs, "Target")) { out.insert(id.to_string(), part_path(folder, target)); } } } } }
+    out
+}
+/// A picture in a cell is shown no wider than this (px): it is a figure beside values, not the page's picture.
+const CELL_PICTURE: f64 = 240.0;
 
 /// Sheets as blocks: a table each (the first row its header), a heading before each when there are several.
 fn sheets(all: Vec<Sheet>) -> Result<Clip, String> {
-    let all: Vec<Sheet> = all.into_iter().filter(|s| !s.cells.is_empty()).collect(); let many = all.len() > 1; let mut out: Clip = vec![];
+    let all: Vec<Sheet> = all.into_iter().filter(|s| !s.cells.is_empty() || !s.pictures.is_empty() || !s.loose.is_empty()).collect(); let many = all.len() > 1; let mut out: Clip = vec![];
     for s in all {
-        let rows = s.cells.iter().map(|c| c.0).max().unwrap_or(0) + 1; let cols = s.cells.iter().map(|c| c.1).max().unwrap_or(0) + 1;
-        if rows.saturating_mul(cols) > 4_000_000 { return Err(format!("The sheet \u{201c}{}\u{201d} is too large to be a note ({rows} rows, {cols} columns).", s.name)) }
-        let mut grid: Vec<Vec<Clip>> = vec![vec![vec![]; cols]; rows];
-        for (r, c, text) in s.cells { grid[r][c] = vec![vec![block(Kind::Paragraph, text, Spans::new())]]; }
-        if many { out.push(vec![block(Kind::Heading { level: 2 }, s.name, Spans::new())]); }
-        out.push(crate::paste::table_tree(grid.into_iter().enumerate().map(|(i, r)| (i == 0 && rows > 1, r)).collect(), vec![ColumnSpec::default(); cols]));
+        if many { out.push(vec![block(Kind::Heading { level: 2 }, s.name.clone(), Spans::new())]); }
+        let picture = |rec: String| vec![block(Kind::Media { descriptor: rec }, String::new(), Spans::new())];
+        if !s.cells.is_empty() || !s.pictures.is_empty() {
+            let at = s.cells.iter().map(|c| (c.0, c.1)).chain(s.pictures.iter().map(|c| (c.0, c.1)));
+            let rows = at.clone().map(|c| c.0).max().unwrap_or(0) + 1; let cols = at.map(|c| c.1).max().unwrap_or(0) + 1;
+            if rows.saturating_mul(cols) > 4_000_000 { return Err(format!("The sheet \u{201c}{}\u{201d} is too large to be a note ({rows} rows, {cols} columns).", s.name)) }
+            let mut grid: Vec<Vec<Clip>> = vec![vec![vec![]; cols]; rows];
+            for (r, c, text) in s.cells { grid[r][c].push(vec![block(Kind::Paragraph, text, Spans::new())]); }
+            for (r, c, rec) in s.pictures { grid[r][c].push(picture(sized(rec, Some(CELL_PICTURE)))); }
+            out.push(crate::paste::table_tree(grid.into_iter().enumerate().map(|(i, r)| (i == 0 && rows > 1, r)).collect(), vec![ColumnSpec::default(); cols]));
+        }
+        for rec in s.loose { out.push(picture(rec)); }
     }
     Ok(out)
 }
@@ -284,7 +308,7 @@ fn number(v: &str) -> String {
     match v.parse::<f64>() { Ok(f) => { let s = format!("{:.10}", f); s.trim_end_matches('0').trim_end_matches('.').to_string() } Err(_) => v.to_string() }
 }
 
-pub fn xlsx(path: &Path) -> Result<Clip, String> {
+pub fn xlsx(path: &Path, places: &Places) -> Result<(Clip, usize), String> {
     let mut zip = Zip::open(path)?;
     let book = zip.text("xl/workbook.xml").ok_or("The file has no workbook in it.")?;
     let mut rels: HashMap<String, String> = HashMap::new();
@@ -308,19 +332,40 @@ pub fn xlsx(path: &Path) -> Result<Clip, String> {
                 _ => {} },
             Tok::Close(n) if n == "cellXfs" => in_xfs = false, _ => {} } } }
     let from_1904 = book.contains("date1904=\"1\"") || book.contains("date1904=\"true\"");
+    // pictures placed IN cells (Excel's "place in cell"): a cell's `vm` number leads, through the value metadata and
+    // the rich values, to a relationship of the rich values' part
+    let mut in_cell: Vec<Option<String>> = vec![];
+    if let (Some(meta), Some(values), Some(rel)) = (zip.text("xl/metadata.xml"), zip.text("xl/richData/rdrichvalue.xml"), zip.text("xl/richData/richValueRel.xml")) {
+        let rels = rels_of(&mut zip, "xl/richData/richValueRel.xml");
+        let parts: Vec<Option<String>> = tokens(&rel).iter().filter_map(|t| match t { Tok::Open { name, attrs, .. } if name == "rel" => Some(attr(attrs, "r:id").and_then(|id| rels.get(id)).cloned()), _ => None }).collect();
+        // each rich value's first number is its picture's place in that list
+        let (mut firsts, mut want, mut in_v): (Vec<Option<usize>>, bool, bool) = (vec![], false, false);
+        for t in tokens(&values) { match t { Tok::Open { name, empty, .. } => { if name == "rv" { firsts.push(None); want = true; } else if name == "v" && !empty { in_v = true; } } Tok::Text(x) => if in_v && want { if let Some(l) = firsts.last_mut() { *l = x.trim().parse().ok(); } want = false; }, Tok::Close(n) => if n == "v" { in_v = false; }, } }
+        let mut in_value = false;
+        for t in tokens(&meta) { match t { Tok::Open { name, attrs, empty } => { if name == "valueMetadata" { in_value = !empty; } else if name == "rc" && in_value { in_cell.push(attr(&attrs, "v").and_then(|v| v.parse::<usize>().ok()).and_then(|v| firsts.get(v).copied().flatten()).and_then(|i| parts.get(i).cloned().flatten())); } } Tok::Close(n) => if n == "valueMetadata" { in_value = false; }, _ => {} } }
+    }
+    let mut lost = 0usize; let mut kept: HashMap<String, Option<String>> = HashMap::new();
+    let mut keep = |zip: &mut Zip, part: &str, lost: &mut usize| -> Option<String> {
+        let rec = kept.entry(part.to_string()).or_insert_with(|| zip.bytes(part).and_then(|b| crate::media::kept(places, &b, part.rsplit('/').next().unwrap_or("picture")).ok())).clone();
+        if rec.is_none() { *lost += 1; } rec };
     let mut all = vec![];
     for t in tokens(&book) {
         let Tok::Open { name, attrs, .. } = t else { continue }; if name != "sheet" { continue }
         let Some(target) = attr(&attrs, "r:id").and_then(|id| rels.get(id)) else { continue };
         let part = if let Some(abs) = target.strip_prefix('/') { abs.to_string() } else { format!("xl/{target}") };
         let Some(x) = zip.text(&part) else { continue };
-        let mut sheet = Sheet { name: attr(&attrs, "name").unwrap_or("Sheet").to_string(), cells: vec![] };
+        let mut sheet = Sheet { name: attr(&attrs, "name").unwrap_or("Sheet").to_string(), ..Default::default() };
+        let (mut drawings, mut wanted): (Vec<String>, Vec<(usize, usize, String)>) = (vec![], vec![]); let sheet_rels = rels_of(&mut zip, &part);
         let (mut row, mut col) = (0usize, 0usize); let (mut kind, mut style, mut at) = (String::new(), None::<usize>, None::<(usize, usize)>); let (mut in_v, mut in_is, mut text) = (false, false, String::new());
         for t in tokens(&x) { match t {
             Tok::Open { name, attrs, empty } => match name.as_str() {
                 "row" => { row = attr(&attrs, "r").and_then(|v| v.parse::<usize>().ok()).map(|r| r.saturating_sub(1)).unwrap_or(if sheet.cells.is_empty() && at.is_none() { 0 } else { row + 1 }); col = 0; }
                 "c" => { let here = attr(&attrs, "r").and_then(cell_ref).unwrap_or((row, col)); col = here.1 + 1; row = here.0;
-                    if !empty { at = Some(here); kind = attr(&attrs, "t").unwrap_or("n").to_string(); style = attr(&attrs, "s").and_then(|v| v.parse().ok()); text.clear(); } }
+                    // a picture in the cell: its value is only the error Excel shows where pictures are not known
+                    let pic = attr(&attrs, "vm").and_then(|v| v.parse::<usize>().ok()).and_then(|v| in_cell.get(v.wrapping_sub(1)).cloned().flatten());
+                    if let Some(p) = pic { wanted.push((here.0, here.1, p)); at = None; in_v = false; in_is = false; }
+                    else if !empty { at = Some(here); kind = attr(&attrs, "t").unwrap_or("n").to_string(); style = attr(&attrs, "s").and_then(|v| v.parse().ok()); text.clear(); } }
+                "drawing" => if let Some(d) = attr(&attrs, "r:id").and_then(|id| sheet_rels.get(id)) { drawings.push(d.clone()); },
                 "v" if at.is_some() && !empty => in_v = true, "is" if at.is_some() && !empty => in_is = true, _ => {} },
             Tok::Text(x) => if in_v || in_is { text.push_str(&x) },
             Tok::Close(n) => match n.as_str() { "v" => in_v = false, "is" => in_is = false,
@@ -330,9 +375,22 @@ pub fn xlsx(path: &Path) -> Result<Clip, String> {
                     if !shown.trim().is_empty() && here.0 < 1_048_576 && here.1 < 16_384 { sheet.cells.push((here.0, here.1, shown.trim_end().to_string())); } },
                 _ => {} },
         } }
+        for (r, c, p) in wanted { if let Some(rec) = keep(&mut zip, &p, &mut lost) { sheet.pictures.push((r, c, rec)); } }
+        // pictures laid over the sheet: each belongs to the cell its top left corner is in
+        for d in drawings { let Some(x) = zip.text(&d) else { continue }; let rels = rels_of(&mut zip, &d);
+            let (mut from, mut which, mut cell): (bool, u8, (Option<usize>, Option<usize>)) = (false, 0, (None, None));
+            for t in tokens(&x) { match t {
+                Tok::Open { name, attrs, empty } => match name.as_str() {
+                    "xdr:twoCellAnchor" | "xdr:oneCellAnchor" | "xdr:absoluteAnchor" => cell = (None, None),
+                    "xdr:from" => from = !empty, "xdr:col" if from => which = 1, "xdr:row" if from => which = 2,
+                    "a:blip" => if let Some(p) = attr(&attrs, "r:embed").and_then(|id| rels.get(id)).cloned() { if let Some(rec) = keep(&mut zip, &p, &mut lost) { match cell { (Some(r), Some(c)) if r < 1_048_576 && c < 16_384 => sheet.pictures.push((r, c, rec)), _ => sheet.loose.push(rec) } } },
+                    _ => {} },
+                Tok::Text(v) => { match which { 1 => cell.1 = v.trim().parse().ok(), 2 => cell.0 = v.trim().parse().ok(), _ => {} } which = 0; }
+                Tok::Close(n) => { if n == "xdr:from" { from = false; } which = 0; }
+            } } }
         all.push(sheet);
     }
-    sheets(all)
+    sheets(all).map(|c| (c, lost))
 }
 
 // ── OpenDocument
@@ -467,16 +525,19 @@ pub fn odt(path: &Path, places: &Places) -> Result<(Clip, usize), String> {
     Ok((join_code(clip), d.lost))
 }
 
-pub fn ods(path: &Path) -> Result<Clip, String> {
+pub fn ods(path: &Path, places: &Places) -> Result<(Clip, usize), String> {
     let mut zip = Zip::open(path)?;
     let content = zip.text("content.xml").ok_or("The file has no OpenDocument content in it.")?;
     let toks = tokens(&content); let mut all: Vec<Sheet> = vec![];
     let (mut row, mut col, mut row_rep, mut col_rep) = (0usize, 0usize, 1usize, 1usize); let (mut in_cell, mut skip, mut text, mut paras) = (false, 0usize, String::new(), 0usize);
-    let mut row_cells: Vec<(usize, String)> = vec![];
+    let mut row_cells: Vec<(usize, String)> = vec![]; let mut lost = 0usize; let mut cell_pics: Vec<String> = vec![];
     for t in &toks { match t {
         Tok::Open { name, attrs, empty } => { let rep = |k: &str| attr(attrs, k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
             match name.as_str() {
-                "table:table" => { all.push(Sheet { name: attr(attrs, "table:name").unwrap_or("Sheet").to_string(), cells: vec![] }); row = 0; }
+                "table:table" => { all.push(Sheet { name: attr(attrs, "table:name").unwrap_or("Sheet").to_string(), ..Default::default() }); row = 0; }
+                // a picture: in the cell it stands in, or over the sheet (then it follows the table)
+                "draw:image" => if let Some(href) = attr(attrs, "xlink:href").filter(|h| !h.contains("://")) { let name = href.rsplit('/').next().unwrap_or("picture");
+                    match zip.bytes(href.trim_start_matches("./")).ok_or(String::new()).and_then(|b| crate::media::kept(places, &b, name)) { Ok(rec) => { if in_cell { cell_pics.push(rec) } else if let Some(s) = all.last_mut() { s.loose.push(rec) } } Err(_) => lost += 1 } },
                 "table:table-row" => { row_rep = rep("table:number-rows-repeated"); col = 0; row_cells.clear(); if *empty { row += row_rep; } }
                 "table:table-cell" | "table:covered-table-cell" => { col_rep = rep("table:number-columns-repeated"); if *empty { col += col_rep; } else { in_cell = true; text.clear(); paras = 0; } }
                 "office:annotation" if !empty => skip += 1,
@@ -489,11 +550,12 @@ pub fn ods(path: &Path) -> Result<Clip, String> {
             "office:annotation" => skip = skip.saturating_sub(1),
             "table:table-cell" | "table:covered-table-cell" => { in_cell = false; let shown = text.trim_end().to_string();
                 // a value repeated across cells is written out (within reason); empty ones only move the place on
-                if !shown.trim().is_empty() { for k in 0..col_rep.min(256) { row_cells.push((col + k, shown.clone())); } } col += col_rep; }
+                if !shown.trim().is_empty() { for k in 0..col_rep.min(256) { row_cells.push((col + k, shown.clone())); } }
+                if let Some(s) = all.last_mut() { for rec in cell_pics.drain(..) { s.pictures.push((row, col, rec)); } } col += col_rep; }
             "table:table-row" => { if let Some(s) = all.last_mut() { if !row_cells.is_empty() { for k in 0..row_rep.min(1000) { for (c, x) in &row_cells { if *c < 16_384 { s.cells.push((row + k, *c, x.clone())); } } } } } row += row_rep; row_cells.clear(); }
             _ => {} },
     } }
-    sheets(all)
+    sheets(all).map(|c| (c, lost))
 }
 
 #[cfg(test)]
@@ -536,17 +598,27 @@ mod tests {
     }
     #[test]
     fn a_workbook_becomes_a_table_a_sheet_with_dates_as_dates() {
-        let d = dir("xlsx");
+        let d = dir("xlsx"); let places = Places::at(Some(d.clone())).staged_in(d.join("staged")); let png = min_image::write::png_rgba8_bytes(&[120u8; 4 * 400 * 100], 400, 100).unwrap(); let png2 = min_image::write::png_rgba8_bytes(&[60u8; 4 * 10 * 10], 10, 10).unwrap();
         zip_of(&d.join("a.xlsx"), &[("xl/workbook.xml", b"<workbook><sheets><sheet name=\"Shots\" sheetId=\"1\" r:id=\"r1\"/><sheet name=\"Empty\" sheetId=\"2\" r:id=\"r2\"/><sheet name=\"More\" sheetId=\"3\" r:id=\"r3\"/></sheets></workbook>"),
             ("xl/_rels/workbook.xml.rels", b"<Relationships><Relationship Id=\"r1\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"r2\" Target=\"worksheets/sheet2.xml\"/><Relationship Id=\"r3\" Target=\"/xl/worksheets/sheet3.xml\"/></Relationships>"),
             ("xl/sharedStrings.xml", b"<sst><si><t>Shot</t></si><si><r><t>Due </t></r><r><t>date</t></r><rPh><t>guide</t></rPh></si><si><t>010</t></si></sst>"),
             ("xl/styles.xml", b"<styleSheet><numFmts><numFmt numFmtId=\"164\" formatCode=\"yyyy\\-mm\\-dd\\ hh:mm\"/><numFmt numFmtId=\"165\" formatCode=\"0.0 &quot;days&quot;\"/></numFmts><cellStyleXfs><xf numFmtId=\"14\"/></cellStyleXfs><cellXfs><xf numFmtId=\"0\"/><xf numFmtId=\"14\"/><xf numFmtId=\"164\"/><xf numFmtId=\"165\"/></cellXfs></styleSheet>"),
-            ("xl/worksheets/sheet1.xml", b"<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c><c r=\"D1\" t=\"inlineStr\"><is><t>Note</t></is></c></row><row r=\"3\"><c r=\"A3\" t=\"s\"><v>2</v></c><c r=\"B3\" s=\"1\"><v>46339</v></c><c r=\"C3\" s=\"2\"><v>46339.75</v></c><c r=\"D3\" s=\"3\"><v>0.30000000000000004</v></c><c r=\"E3\" t=\"b\"><v>1</v></c><c r=\"F3\"><f>A1</f><v>12</v></c></row></sheetData></worksheet>"),
+            ("xl/worksheets/sheet1.xml", b"<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c><c r=\"D1\" t=\"inlineStr\"><is><t>Note</t></is></c></row><row r=\"3\"><c r=\"A3\" t=\"s\"><v>2</v></c><c r=\"B3\" s=\"1\"><v>46339</v></c><c r=\"C3\" s=\"2\"><v>46339.75</v></c><c r=\"D3\" s=\"3\"><v>0.30000000000000004</v></c><c r=\"E3\" t=\"b\"><v>1</v></c><c r=\"F3\"><f>A1</f><v>12</v></c><c r=\"A4\" t=\"e\" vm=\"1\"><v>#VALUE!</v></c></row></sheetData><drawing r:id=\"rD\"/></worksheet>"),
+            ("xl/worksheets/_rels/sheet1.xml.rels", b"<Relationships><Relationship Id=\"rD\" Target=\"../drawings/drawing1.xml\"/></Relationships>"),
+            ("xl/drawings/drawing1.xml", b"<xdr:wsDr><xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:row>3</xdr:row></xdr:to><xdr:pic><xdr:blipFill><a:blip r:embed=\"rI\"/></xdr:blipFill></xdr:pic></xdr:twoCellAnchor></xdr:wsDr>"),
+            ("xl/drawings/_rels/drawing1.xml.rels", b"<Relationships><Relationship Id=\"rI\" Target=\"../media/image1.png\"/></Relationships>"), ("xl/media/image1.png", &png), ("xl/media/image2.png", &png2),
+            ("xl/metadata.xml", b"<metadata><futureMetadata><bk><extLst/></bk></futureMetadata><valueMetadata count=\"1\"><bk><rc t=\"1\" v=\"0\"/></bk></valueMetadata></metadata>"),
+            ("xl/richData/rdrichvalue.xml", b"<rvData count=\"1\"><rv s=\"0\"><v>0</v><v>5</v></rv></rvData>"), ("xl/richData/richValueRel.xml", b"<richValueRels><rel r:id=\"rId1\"/></richValueRels>"),
+            ("xl/richData/_rels/richValueRel.xml.rels", b"<Relationships><Relationship Id=\"rId1\" Target=\"../media/image2.png\"/></Relationships>"),
             ("xl/worksheets/sheet2.xml", b"<worksheet><sheetData/></worksheet>"), ("xl/worksheets/sheet3.xml", b"<worksheet><sheetData><row><c><v>1</v></c><c><v>2</v></c></row></sheetData></worksheet>")]);
-        let c = xlsx(&d.join("a.xlsx")).unwrap(); assert_eq!(c.len(), 4);
-        assert_eq!(c[0][0].text, "Shots"); assert_eq!(c[2][0].text, "More"); assert!(matches!(&c[1][0].kind, Kind::Table { header_rows: 1, columns } if columns.len() == 6)); assert_eq!(c[1][0].children.len(), 3);
+        let (c, lost) = xlsx(&d.join("a.xlsx"), &places).unwrap(); assert_eq!(c.len(), 4); assert_eq!(lost, 0);
+        assert_eq!(c[0][0].text, "Shots"); assert_eq!(c[2][0].text, "More"); assert!(matches!(&c[1][0].kind, Kind::Table { header_rows: 1, columns } if columns.len() == 6)); assert_eq!(c[1][0].children.len(), 4);
+        // a picture over the sheet is in the cell of its corner (no wider than a cell's picture), one placed in a cell is in that cell
+        let pics: Vec<&str> = c[1].iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some(descriptor.as_str()), _ => None }).collect(); assert_eq!(pics.len(), 2);
+        assert!(pics[0].contains("image1-") && pics[0].contains("\"w\":240") && pics[0].contains("\"h\":60") && pics[1].contains("image2-"), "{pics:?}");
+        let c13 = c[1][0].children[0]; let row1 = c[1].iter().find(|b| b.id == c13).unwrap(); let cell = c[1].iter().find(|b| b.id == row1.children[2]).unwrap(); assert!(c[1].iter().any(|b| b.parent == Some(cell.id) && matches!(b.kind, Kind::Media { .. })));
         let texts: Vec<&str> = c[1].iter().filter(|b| b.kind.is_text()).map(|b| b.text.as_str()).collect();
-        assert_eq!(texts, ["Shot", "Due date", "", "Note", "", "", "", "", "", "", "", "", "010", "2026-11-13", "2026-11-13 18:00", "0.3", "TRUE", "12"]);
+        assert_eq!(texts, ["Shot", "Due date", "Note", "", "", "", "", "", "", "", "", "010", "2026-11-13", "2026-11-13 18:00", "0.3", "TRUE", "12", "", "", "", "", ""]);
         assert_eq!(cell_ref("BC12"), Some((11, 54))); assert_eq!(serial(0.5, false), "12:00"); assert_eq!(serial(1.0, true), "1904-01-02"); assert!(dated(165, Some("0.0 \"days\"")) == false && dated(0, Some("[h]:mm")));
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -559,8 +631,8 @@ mod tests {
         assert_eq!(kinds(&c)[..5], [(Kind::Heading { level: 2 }, "A heading"), (Kind::Paragraph, "Plain bold red  link\nnext"), (Kind::Numbered { depth: 0 }, "one"), (Kind::Numbered { depth: 1 }, "inner"), (Kind::Code { lang: String::new() }, "code 1\ncode 2")]);
         let s = &c[1][0].spans; assert!(s.covers(6, 14, &Mark::Bold) && s.covers(6, 14, &Mark::Color("#c81e1e".into())) && s.covers(16, 20, &Mark::Link("https://example.com".into())));
         assert!(matches!(&c[5][0].kind, Kind::Table { header_rows: 1, columns } if columns.len() == 2)); assert!(matches!(&c[6][0].kind, Kind::Media { .. })); assert_eq!(c.len(), 7);
-        zip_of(&d.join("a.ods"), &[("content.xml", b"<office:document-content><office:body><office:spreadsheet><table:table table:name=\"One\"><table:table-column table:number-columns-repeated=\"1024\"/><table:table-row><table:table-cell office:value-type=\"string\"><text:p>Name</text:p></table:table-cell><table:table-cell table:number-columns-repeated=\"2\"/><table:table-cell><text:p>Date</text:p></table:table-cell><table:table-cell table:number-columns-repeated=\"1020\"/></table:table-row><table:table-row table:number-rows-repeated=\"2\"><table:table-cell><text:p>x</text:p><text:p>y</text:p></table:table-cell><table:table-cell table:number-columns-repeated=\"2\"/><table:table-cell office:value-type=\"date\" office:date-value=\"2026-11-13\"><text:p>13/11/26</text:p></table:table-cell></table:table-row><table:table-row table:number-rows-repeated=\"1048573\"><table:table-cell table:number-columns-repeated=\"1024\"/></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>")]);
-        let c = ods(&d.join("a.ods")).unwrap(); assert_eq!(c.len(), 1); assert!(matches!(&c[0][0].kind, Kind::Table { header_rows: 1, columns } if columns.len() == 4)); assert_eq!(c[0][0].children.len(), 3);
+        zip_of(&d.join("a.ods"), &[("content.xml", b"<office:document-content><office:body><office:spreadsheet><table:table table:name=\"One\"><table:table-column table:number-columns-repeated=\"1024\"/><table:table-row><table:table-cell office:value-type=\"string\"><text:p>Name</text:p></table:table-cell><table:table-cell table:number-columns-repeated=\"2\"/><table:table-cell><text:p>Date</text:p></table:table-cell><table:table-cell table:number-columns-repeated=\"1020\"/></table:table-row><table:table-row table:number-rows-repeated=\"2\"><table:table-cell><text:p>x</text:p><text:p>y</text:p></table:table-cell><table:table-cell table:number-columns-repeated=\"2\"/><table:table-cell office:value-type=\"date\" office:date-value=\"2026-11-13\"><text:p>13/11/26</text:p><draw:frame><draw:image xlink:href=\"Pictures/p.png\"/></draw:frame></table:table-cell></table:table-row><table:table-row table:number-rows-repeated=\"1048573\"><table:table-cell table:number-columns-repeated=\"1024\"/></table:table-row><table:shapes><draw:frame><draw:image xlink:href=\"Pictures/p.png\"/></draw:frame></table:shapes></table:table></office:spreadsheet></office:body></office:document-content>"), ("Pictures/p.png", &png)]);
+        let (c, lost) = ods(&d.join("a.ods"), &places).unwrap(); assert_eq!((c.len(), lost), (2, 0)); assert!(matches!(c[1][0].kind, Kind::Media { .. })); assert_eq!(c[0].iter().filter(|b| matches!(b.kind, Kind::Media { .. })).count(), 1); assert!(matches!(&c[0][0].kind, Kind::Table { header_rows: 1, columns } if columns.len() == 4)); assert_eq!(c[0][0].children.len(), 3);
         let texts: Vec<&str> = c[0].iter().filter(|b| b.kind.is_text()).map(|b| b.text.as_str()).collect(); assert_eq!(texts, ["Name", "", "", "Date", "x\ny", "", "", "13/11/26", "x\ny", "", "", "13/11/26"]);
         let _ = std::fs::remove_dir_all(&d);
     }

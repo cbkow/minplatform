@@ -357,7 +357,8 @@ pub fn from_markdown_with(text: &str, local: bool) -> Clip {
         // a table: a line with bars, and under it the line of dashes that makes it the header
         if t.contains('|') { if let Some(align) = lines.peek().and_then(|n| md_rule(n)).filter(|a| a.len() == md_cells(t).len()) {
             flush(&mut out, &mut para, Kind::Paragraph); lines.next(); let cols = align.len();
-            let cell = |c: &str| -> Clip { let (x, s) = inline(c); if x.is_empty() { vec![] } else { vec![vec![block(Kind::Paragraph, x, s)]] } };
+            let cell = |c: &str| -> Clip { let (c, pictures) = images(c, local); let (x, s) = inline(c.trim()); let mut out: Clip = if x.is_empty() { vec![] } else { vec![vec![block(Kind::Paragraph, x, s)]] };
+                for src in pictures { out.push(vec![block(Kind::Media { descriptor: if crate::media::remote(&src) { serde_json::json!({ "src": src, "w": 240, "h": 150 }) } else { serde_json::json!({ "src": src }) }.to_string() }, String::new(), Spans::new())]); } out };
             let mut rows = vec![(true, md_cells(t).iter().map(|c| cell(c)).collect::<Vec<_>>())];
             while let Some(n) = lines.peek().filter(|n| n.contains('|') && !n.trim().is_empty()) { let mut c: Vec<Clip> = md_cells(n).iter().map(|c| cell(c)).collect(); c.truncate(cols); rows.push((false, c)); lines.next(); }
             out.push(table_tree(rows, align.into_iter().map(|a| ColumnSpec { align: a, ..Default::default() }).collect())); indents.clear(); continue } }

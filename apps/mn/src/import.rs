@@ -170,7 +170,8 @@ pub fn read(path: &Path, places: &Places) -> Result<Done, String> {
         Family::Table(sep) => table(rows_of(&text, sep.unwrap_or_else(|| separator(&text)))),
         Family::Docx => { let (c, n) = crate::import_office::docx(path, places)?; lost = n; c }
         Family::Odt => { let (c, n) = crate::import_office::odt(path, places)?; lost = n; c }
-        Family::Xlsx => crate::import_office::xlsx(path)?, Family::Ods => crate::import_office::ods(path)?,
+        Family::Xlsx => { let (c, n) = crate::import_office::xlsx(path, places)?; lost = n; c }
+        Family::Ods => { let (c, n) = crate::import_office::ods(path, places)?; lost = n; c }
         Family::Rtf => crate::paste::from_html_with(&converted(path)?, opts),
     };
     if rich { lost += keep_pictures(&mut clip, folder, places); }

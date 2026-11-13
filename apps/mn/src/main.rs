@@ -86,10 +86,13 @@ struct Store { session: Option<mn_store::staging::Session>, col: mn_store::Colle
 /// with the pointer): a handle beside the caret's row and one above its column (their menus), a strip under the table
 /// and one at its right (a row, a column, at the end), and the columns' right borders (dragged to set a width).
 /// Each wide table's bar is placed over the room under its rows and given the table's scroll.
-fn sync_bars(bars: &mut std::collections::HashMap<BlockId, min_ui::ScrollBar>, l: &NoteLayout, doc: &Doc, off: kurbo::Vec2, s: f64) {
+/// A table whose end is below what is seen (`seen`: the note's part of the window) has its bar at the seen part's
+/// bottom instead, over its rows - a long table is scrolled sideways without going to its end first.
+fn sync_bars(bars: &mut std::collections::HashMap<BlockId, min_ui::ScrollBar>, l: &NoteLayout, doc: &Doc, off: kurbo::Vec2, s: f64, seen: Rect) {
     let wide = l.wide_tables(); bars.retain(|id, b| wide.contains(id) || b.dragging());
     for id in wide { let (Some(r), Some((full, _, at))) = (l.rect(doc, id), l.table_scroll(id)) else { continue };
-        let b = bars.entry(id).or_insert_with(|| { let mut b = min_ui::ScrollBar::horizontal(); b.always = true; b }); b.set(r + off, full as f64, s); b.offset = at as f64; }
+        let mut r = r + off; if r.y1 > seen.y1 && r.y0 + 3.0 * mn_layout::TABLE_BAR as f64 * s < seen.y1 { r.y1 = seen.y1; }
+        let b = bars.entry(id).or_insert_with(|| { let mut b = min_ui::ScrollBar::horizontal(); b.always = true; b }); b.set(r, full as f64, s); b.offset = at as f64; }
 }
 /// The space between a note card's edge and its text (the canvas's units).
 const CARD_PAD: f64 = 16.0;
@@ -197,7 +200,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     autolink: bool,
     tscroll: std::collections::HashMap<BlockId, f32>,
     /// their bars (min-ui's overlay scrollbar, along the bottom, always shown)
-    tbars: std::collections::HashMap<BlockId, min_ui::ScrollBar>,
+    tbars: std::collections::HashMap<BlockId, min_ui::ScrollBar>, /// the note's own bar, at the page's right edge (shown while the note is longer than the page)
+    pbar: min_ui::ScrollBar,
     tmenu: Option<bool>, col_drag: Option<(BlockId, usize, f64, f64, Kind)>,
     /// the gap between two columns of a Columns block being dragged (row 319): the two columns, the pointer's x at the press, the px all the columns share, all their shares, the two kinds before
     gap_drag: Option<(BlockId, BlockId, f64, f64, f32, Kind, Kind)>,
@@ -432,7 +436,10 @@ impl App {
                     else { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, if i == self.files.hit_at { strong } else { soft }, None, &kurbo::RoundedRect::from_rect(r, 2.0 * s)); } } } }
         let (mut turned, mut noted) = (vec![], vec![]);
         if !self.blank && paint::note(scene, &self.ed.doc, l, &mut g.fonts, &mut self.media, &mut turned, &mut noted, live, self.player.as_ref().filter(|_| !self.files.hide_notes || self.files.tool.is_some()).map(|p| &p.ann), self.files.hide_notes, off.x, off.y, view) { g.window.request_redraw(); }
-        if !self.blank { let now = Instant::now(); sync_bars(&mut self.files.tbars, l, &self.ed.doc, off, s); for b in self.files.tbars.values() { if b.thumb().is_some_and(|t| t.y0 >= view.y0 && t.y1 <= view.y1) { b.paint(scene, now); } if b.animating(now) { g.window.request_redraw(); } } }
+        if !self.blank { let now = Instant::now(); let seen = match &self.files.card { Some(c) => c.rect, None => Rect::new(self.side_w, self.top, w as f64, h as f64 - self.bottom) };
+            sync_bars(&mut self.files.tbars, l, &self.ed.doc, off, s, seen); for b in self.files.tbars.values() { if b.thumb().is_some_and(|t| t.y0 >= view.y0 && t.y1 <= view.y1) { b.paint(scene, now); } if b.animating(now) { g.window.request_redraw(); } }
+            // the note's own bar (not a card's: the canvas scrolls those)
+            if self.files.card.is_none() { let b = &mut self.files.pbar; b.always = true; b.set(seen, l.height as f64 + 2.0 * PAD * s, s); b.offset = self.scroll; b.paint(scene, now); if b.animating(now) { g.window.request_redraw(); } } }
         // a picture stored on its side in a box of the stored shape: the box is laid out again, upright
         for id in turned { if self.files.turned.insert(id) { self.files.relay = true; g.window.request_redraw(); } }
         // a video whose clip got its first note (or lost its last): its block gains (or loses) the row of the notes' pictures
@@ -976,7 +983,7 @@ impl App {
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
             // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
-            else if self.files.tbars.values().any(|b| b.dragging() || (!over_ui && !self.blank && b.hovered())) { C::Default }
+            else if self.files.pbar.dragging() || (!over_ui && !self.blank && self.files.card.is_none() && self.files.pbar.hovered()) || self.files.tbars.values().any(|b| b.dragging() || (!over_ui && !self.blank && b.hovered())) { C::Default }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
             else if over_ui || self.blank { C::Default }
             // Cmd held over a link: it would open
@@ -1631,8 +1638,13 @@ impl App {
     fn table_bar_event(&mut self, e: min_ui::Event) -> bool {
         if self.blank || self.modal() { return false }
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let s = g.window.scale_factor(); let now = Instant::now();
-        sync_bars(&mut self.files.tbars, l, &self.ed.doc, origin(&self.files.card, self.side_w, self.top, self.scroll, s), s);
+        let (w, h) = g.presenter.size(); let seen = match &self.files.card { Some(c) => c.rect, None => Rect::new(self.side_w, self.top, w as f64, h as f64 - self.bottom) };
         let (mut mine, mut redraw) = (false, false); let top = self.top;
+        // the note's own bar first: its thumb is dragged
+        if self.files.card.is_none() { let b = &mut self.files.pbar; b.always = true; b.set(seen, l.height as f64 + 2.0 * PAD * s, s); b.offset = self.scroll.clamp(0.0, b.max());
+            if !matches!(e, min_ui::Event::Down { y, .. } if y < top) { let (changed, m) = b.event(&e, now); if (b.offset - self.scroll).abs() > 0.25 { self.scroll = b.offset; } if m || changed { if let Some(g) = &self.gpu { g.window.request_redraw(); } } if m { self.set_cursor(); return true } } }
+        let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let _ = g;
+        sync_bars(&mut self.files.tbars, l, &self.ed.doc, origin(&self.files.card, self.side_w, self.top, self.scroll, s), s, seen);
         for (id, b) in self.files.tbars.iter_mut() { if matches!(e, min_ui::Event::Down { y, .. } if y < top) { continue }
             let (changed, m) = b.event(&e, now); mine |= m; redraw |= changed || m;
             if (b.offset as f32 - self.files.tscroll.get(id).copied().unwrap_or(0.0)).abs() > 0.25 { self.files.tscroll.insert(*id, b.offset as f32); } }

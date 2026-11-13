@@ -815,7 +815,7 @@ mod tests {
         let mut other = crate::psd::tests::file(false, false, 8, true); let n = other.len(); other[n - 16..n - 8].fill(0); other.extend_from_slice(&[0; 2]); std::fs::write(&psd, &other).unwrap();
         let got = run(&Job { key: "k".into(), path: stored.clone(), w: 4, h: 2, orig: orig(&rec), page: None, still: None });
         assert_eq!(got.len(), 2, "the stored picture, then the original"); assert!(matches!(&got[1], Outcome::Pic { w: 4, h: 2, whole: true, .. }));
-        assert_eq!(std::fs::read_dir(cache_dir()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(cache_dir()).unwrap().filter(|e| !e.as_ref().unwrap().file_name().to_string_lossy().starts_with("fetch-")).count(), 1);   // (other tests' pictures pass through folders of their own here)
         // an SVG: its own size in the record, a large drawing kept
         let svg = dir.join("mark.svg"); std::fs::write(&svg, r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##).unwrap();
         let rec: serde_json::Value = serde_json::from_str(&places.record(&svg).unwrap()).unwrap();
