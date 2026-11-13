@@ -25,17 +25,21 @@ const LARGEST_PAGE: u64 = 1 << 30;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Family { Markdown, Html, Text, /// one code block; the language is the extension
     Code(String), /// a table; the separator (None: found from the first line)
-    Table(Option<char>) }
+    Table(Option<char>), Docx, Xlsx, Odt, Ods, /// through the system's converter (macOS)
+    Rtf }
 
 const CODE: [&str; 38] = ["py", "js", "ts", "jsx", "tsx", "c", "cc", "cpp", "cxx", "h", "hpp", "m", "mm", "cs", "java", "kt", "swift", "go", "rs", "rb", "php", "sh", "bash", "zsh", "sql", "json", "yaml", "yml", "toml", "xml", "ini", "css", "scss", "lua", "pl", "r", "cmake", "ps1"];
 /// What the file panel offers, a family at a time.
-pub const FILTERS: [(&str, &[&str]); 5] = [("Markdown", &["md", "markdown", "mdown"]), ("Web page", &["html", "htm"]), ("Plain text", &["txt", "text", "log"]), ("Table (CSV, TSV)", &["csv", "tsv", "tab"]), ("Source code", &CODE)];
+#[cfg(target_os = "macos")] const RICH: &[&str] = &["docx", "odt", "rtf", "doc"];
+#[cfg(not(target_os = "macos"))] const RICH: &[&str] = &["docx", "odt"];
+pub const FILTERS: [(&str, &[&str]); 7] = [("Word, OpenDocument, RTF", RICH), ("Spreadsheet (Excel, OpenDocument)", &["xlsx", "ods"]), ("Markdown", &["md", "markdown", "mdown"]), ("Web page", &["html", "htm"]), ("Plain text", &["txt", "text", "log"]), ("Table (CSV, TSV)", &["csv", "tsv", "tab"]), ("Source code", &CODE)];
 pub fn extensions() -> Vec<&'static str> { FILTERS.iter().flat_map(|f| f.1.iter().copied()).collect() }
 
 pub fn family(path: &Path) -> Option<Family> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() { "md" | "markdown" | "mdown" => Family::Markdown, "html" | "htm" => Family::Html, "txt" | "text" => Family::Text, "csv" => Family::Table(None), "tsv" | "tab" => Family::Table(Some('\t')),
         // a log is lines to be read as they are, in one face: a code block of no language
+        "docx" => Family::Docx, "xlsx" => Family::Xlsx, "odt" => Family::Odt, "ods" => Family::Ods, "rtf" | "doc" if cfg!(target_os = "macos") => Family::Rtf,
         "log" => Family::Code(String::new()), e if CODE.contains(&e) => Family::Code(ext), _ => return None })
 }
 
@@ -139,14 +143,24 @@ fn keep_pictures(clip: &mut Clip, folder: &Path, places: &Places) -> usize {
     lost
 }
 
+/// An RTF (or old Word) file as HTML, by the system's converter: macOS has one, `textutil`.
+fn converted(path: &Path) -> Result<String, String> {
+    let out = std::process::Command::new("/usr/bin/textutil").args(["-convert", "html", "-stdout"]).arg(path).output().map_err(|e| format!("The system\u{2019}s converter could not be run ({e})."))?;
+    if !out.status.success() || out.stdout.is_empty() { return Err("The system\u{2019}s converter could not read the file.".into()) }
+    Ok(decode(&out.stdout))
+}
+
 /// Reads `path` into a note's blocks. `places`: where the collection keeps files (pictures are copied there).
 pub fn read(path: &Path, places: &Places) -> Result<Done, String> {
     let fam = family(path).ok_or("minNotes does not import this kind of file")?;
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if len > if fam == Family::Html { LARGEST_PAGE } else { LARGEST } { return Err("The file is too large to be a note \u{2014} drop it into a note to attach it instead.".into()) }
-    let text = decode(&std::fs::read(path).map_err(|e| e.to_string())?);
+    let text_kind = matches!(fam, Family::Markdown | Family::Text | Family::Code(_) | Family::Table(_));
+    if len > if text_kind { LARGEST } else { LARGEST_PAGE } { return Err("The file is too large to be a note \u{2014} drop it into a note to attach it instead.".into()) }
+    let text = if matches!(fam, Family::Docx | Family::Xlsx | Family::Odt | Family::Ods | Family::Rtf) { String::new() } else { decode(&std::fs::read(path).map_err(|e| e.to_string())?) };
+    let mut lost = 0;
     let folder = path.parent().unwrap_or(Path::new("."));
     let opts = crate::paste::Opts { colours: true, local: true };
+    let rich = matches!(fam, Family::Markdown | Family::Html | Family::Rtf);
     let mut clip: Clip = match fam {
         Family::Markdown => crate::paste::from_markdown_with(&text, true),
         Family::Html => crate::paste::from_html_with(&text, opts),
@@ -154,8 +168,12 @@ pub fn read(path: &Path, places: &Places) -> Result<Done, String> {
         Family::Text => text.lines().filter(|l| !l.trim().is_empty()).map(|l| vec![block(Kind::Paragraph, l.trim_end().replace('\t', "    "))]).collect(),
         Family::Code(lang) => { let t = text.trim_end_matches('\n'); if t.trim().is_empty() { vec![] } else { vec![vec![block(Kind::Code { lang }, t.to_string())]] } }
         Family::Table(sep) => table(rows_of(&text, sep.unwrap_or_else(|| separator(&text)))),
+        Family::Docx => { let (c, n) = crate::import_office::docx(path, places)?; lost = n; c }
+        Family::Odt => { let (c, n) = crate::import_office::odt(path, places)?; lost = n; c }
+        Family::Xlsx => crate::import_office::xlsx(path)?, Family::Ods => crate::import_office::ods(path)?,
+        Family::Rtf => crate::paste::from_html_with(&converted(path)?, opts),
     };
-    let lost = keep_pictures(&mut clip, folder, places);
+    if rich { lost += keep_pictures(&mut clip, folder, places); }
     if clip.is_empty() { return Err("Nothing in the file could be read as a note.".into()) }
     let big = clip.iter().filter_map(|t| size(t)).filter(|s| s.1 > CAP).max_by_key(|s| s.1);
     Ok(Done { title: path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), clip, lost, big })

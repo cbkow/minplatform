@@ -29,7 +29,7 @@ fn colour(v: &str) -> Option<String> {
     Some(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]))
 }
 /// `rgb(1, 2, 3)` / `rgba(1 2 3 / 50%)` as `#rrggbb` text for [`colour`] (nothing when it is fully clear).
-fn css_colour(v: &str) -> Option<String> {
+pub fn css_colour(v: &str) -> Option<String> {
     let v = v.trim().to_ascii_lowercase();
     if let Some(i) = v.find("rgb") { let inner = v[i..].split_once('(')?.1.split(')').next()?; let n: Vec<f64> = inner.split([',', ' ', '/']).filter(|x| !x.is_empty()).filter_map(|x| x.trim_end_matches('%').parse::<f64>().ok()).collect();
         if n.len() < 3 || n.get(3).is_some_and(|a| *a == 0.0) { return None } return colour(&format!("#{:02x}{:02x}{:02x}", n[0].clamp(0.0, 255.0) as u8, n[1].clamp(0.0, 255.0) as u8, n[2].clamp(0.0, 255.0) as u8)) }

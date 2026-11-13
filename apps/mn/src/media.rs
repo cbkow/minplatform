@@ -503,15 +503,19 @@ pub fn fetched(places: &Places, addr: &str) -> Result<String, String> {
         let last = addr.split(['?', '#']).next().unwrap_or("").rsplit('/').next().unwrap_or("");
         (bytes, min_paths::url::percent_decode(last))
     };
-    let ext = sniff(&bytes).ok_or("what came back is not a picture")?;
+    kept(places, &bytes, &name)
+}
+/// A picture's bytes (fetched, or taken out of a document that is imported), kept with the collection: its record.
+pub fn kept(places: &Places, bytes: &[u8], name: &str) -> Result<String, String> {
+    let ext = sniff(bytes).ok_or("what came back is not a picture")?;
     if ext == "avif" { return Err("AVIF pictures are not read yet".into()) }
-    let stem: String = std::path::Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "picture".into()).chars().filter(|c| !matches!(c, '/' | '\\' | ':')).take(60).collect();
+    let stem: String = std::path::Path::new(name).file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| "picture".into()).chars().filter(|c| !matches!(c, '/' | '\\' | ':')).take(60).collect();
     // through a file of its own, so that it is measured, copied (or previewed) exactly as a dropped file is
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = cache_dir().join(format!("fetch-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let tmp = dir.join(format!("{stem}.{ext}"));
-    let rec = std::fs::write(&tmp, &bytes).map_err(|e| e.to_string()).and_then(|_| if readable(&tmp) { places.picture_copied(&tmp) } else if let Some(f) = preview_format(&tmp) { places.preview(&tmp, f) } else { Err(format!("{} pictures are not read yet", ext.to_uppercase())) });
+    let rec = std::fs::write(&tmp, bytes).map_err(|e| e.to_string()).and_then(|_| if readable(&tmp) { places.picture_copied(&tmp) } else if let Some(f) = preview_format(&tmp) { places.preview(&tmp, f) } else { Err(format!("{} pictures are not read yet", ext.to_uppercase())) });
     let _ = std::fs::remove_dir_all(&dir);
     // a preview of a fetched file has no original that stays: it is a plain picture
     rec.map(|mut v| { if let Some(o) = v.as_object_mut() { o.remove("preview"); } v.to_string() })

@@ -41,6 +41,8 @@ mod media;
 mod psd;
 mod paste;
 mod import;
+mod import_office;
+mod xml;
 mod pdf;
 mod video;
 mod choice;
