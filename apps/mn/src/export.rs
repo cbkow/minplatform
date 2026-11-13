@@ -17,6 +17,9 @@ pub use docx::docx;
 #[path = "export_pdf.rs"]
 mod pdf;
 pub use pdf::pdf;
+#[path = "export_canvas.rs"]
+mod canvas;
+pub use canvas::{canvas_html, canvas_poster};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Opts { /// where each referenced file is on this machine, under its name
@@ -312,7 +315,9 @@ var root=document.documentElement,lb=document.getElementById('lb'),stage=lb.quer
 try{if(localStorage.getItem('mn.noink')==='1')root.classList.add('noink')}catch(e){}
 function paintSb(){sb.classList.toggle('off',root.classList.contains('noink'))}paintSb();
 function toggleInk(){root.classList.toggle('noink');try{localStorage.setItem('mn.noink',root.classList.contains('noink')?'1':'0')}catch(e){}paintSb()}
-var list=[].slice.call(document.querySelectorAll('.thumb'));
+var list=[];
+// (the pictures are looked for when one is opened: a page may show a part of itself in another place - a canvas's note opened over it)
+function pick(){var scope=document.querySelector('#reader.open')||document;return [].slice.call(scope.querySelectorAll('.thumb')).filter(function(t){return !lb.contains(t)})}
 function show(i){if(!list.length)return;cur=(i+list.length)%list.length;var t=list[cur];
 stage.innerHTML='';[].forEach.call(t.children,function(c){stage.appendChild(c.cloneNode(true))});
 stage.style.animation='none';void stage.offsetWidth;stage.style.animation='';
@@ -320,7 +325,9 @@ cap.querySelector('.tc').textContent=t.dataset.tc||'';cap.querySelector('.sub').
 sb.style.display=t.querySelector('.ink')?'':'none';
 cnt.textContent=(cur+1)+' / '+list.length;lb.classList.add('open');lb.setAttribute('aria-hidden','false')}
 function close(){lb.classList.remove('open');lb.setAttribute('aria-hidden','true');cur=-1}
-list.forEach(function(t,i){function go(){show(i)}t.addEventListener('click',go);t.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();go()}})});
+function from(el){var t=el&&el.closest&&el.closest('.thumb');if(!t||lb.contains(t))return false;list=pick();show(list.indexOf(t));return true}
+document.addEventListener('click',function(e){from(e.target)});
+document.addEventListener('keydown',function(e){if((e.key==='Enter'||e.key===' ')&&cur<0&&from(document.activeElement))e.preventDefault()});
 lb.addEventListener('click',function(e){if(e.target===lb||e.target===stage.parentNode)close()});
 lb.querySelector('.prev').addEventListener('click',function(){show(cur-1)});
 lb.querySelector('.next').addEventListener('click',function(){show(cur+1)});

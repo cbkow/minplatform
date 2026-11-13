@@ -272,6 +272,8 @@ impl Canvas {
     fn frame_fixed(e: &Element) -> bool { e.kind == "frame" && Self::frame_rec(e).get("fixed").and_then(|f| f.as_bool()).unwrap_or(false) }
     fn frame_put(&mut self, id: BlockId, key: &str, v: serde_json::Value) { if let Some(e) = self.els.iter_mut().find(|e| e.id == id && e.kind == "frame") { let mut r = Self::frame_rec(e); if v.is_null() { r.remove(key); } else { r.insert(key.into(), v); } e.record = serde_json::Value::Object(r).to_string(); } }
     /// The elements from the back to the front: by their place in the stack, each frame with its members straight after it.
+    /// The elements as an export writes them: from the back to the front, each frame with its members after it.
+    pub fn ordered(&self) -> Vec<&Element> { self.order().into_iter().map(|i| &self.els[i]).collect() }
     fn order(&self) -> Vec<usize> {
         let frames: std::collections::HashSet<BlockId> = self.els.iter().filter(|e| e.kind == "frame").map(|e| e.id).collect();
         if frames.is_empty() { let mut v: Vec<usize> = (0..self.els.len()).collect(); v.sort_by_key(|i| self.els[*i].z); return v }

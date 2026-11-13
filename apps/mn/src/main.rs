@@ -691,14 +691,25 @@ impl App {
     fn export(&mut self, fmt: u8, to: Option<std::path::PathBuf>) {
         let md = fmt == 1;
         let soon = |s: u64| Instant::now() + std::time::Duration::from_secs(s);
-        if self.blank || self.store.is_none() { if self.store.is_some() { self.notice = Some(("Open a note to export it".into(), soon(5))); } return }
-        let title = self.note_title(); let (ext, kind) = match fmt { 1 => ("md", "Markdown"), 2 => ("docx", "Word Document"), 3 => ("pdf", "PDF"), _ => ("html", "HTML") };
+        // a canvas (no card of it entered) goes out whole: as HTML, or as a poster
+        let on_canvas = self.files.canvas.is_some() && self.files.card.is_none();
+        if on_canvas && !matches!(fmt, 0 | 4) { self.notice = Some(("A canvas exports as HTML or as a poster".into(), soon(6))); return }
+        if !on_canvas && fmt == 4 { if self.store.is_some() { self.notice = Some(("Open a canvas to make its poster".into(), soon(5))); } return }
+        if (self.blank && !on_canvas) || self.store.is_none() { if self.store.is_some() { self.notice = Some(("Open a note to export it".into(), soon(5))); } return }
+        let title = if on_canvas { self.files.canvas.as_ref().and_then(|cv| self.sidebar.as_ref().and_then(|sb| sb.row(cv.id)).map(|r| r.title.clone())).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Canvas".into()) } else { self.note_title() };
+        let (ext, kind) = match fmt { 1 => ("md", "Markdown"), 2 => ("docx", "Word Document"), 3 => ("pdf", "PDF"), 4 => ("png", "PNG"), _ => ("html", "HTML") };
         let safe: String = title.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\n' | '\r') { '-' } else { c }).collect();
-        let Some(path) = to else { let dlg = rfd::FileDialog::new().set_title(format!("Export as {kind}")).add_filter(kind, &[ext]).set_file_name(format!("{safe}.{ext}")); self.panel(dlg, 0, move |me, p| me.export(fmt, p.into_iter().next())); return };
+        let Some(path) = to else { let dlg = rfd::FileDialog::new().set_title(format!("Export as {kind}")).add_filter(kind, &[ext]).set_file_name(format!("{safe}{}.{ext}", if fmt == 4 { "-poster" } else if on_canvas { "-canvas" } else { "" })); self.panel(dlg, 0, move |me, p| me.export(fmt, p.into_iter().next())); return };
         let opts = *self.files.xopts.get_or_insert_with(export_settings);
         let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
         let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu }; let doc = &self.ed.doc;
-        let text: Result<Vec<u8>, String> = if fmt == 2 { export::docx(doc.walk(), doc.children(None), &title, opts, &mut src) } else if fmt == 3 { export::pdf(doc, &title, &style(), opts, metric_paper(), &mut src) } else if md {
+        let when = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
+        let text: Result<Vec<u8>, String> = if on_canvas {
+            if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); }
+            let (cv, store, sidebar) = (self.files.canvas.as_ref().expect("a canvas"), self.store.as_ref(), self.sidebar.as_ref()); let els = cv.ordered();
+            let mut note = |id: BlockId| { let st = store?; let doc = st.col.load_note(id).ok()?; Some((sidebar.and_then(|sb| sb.row(id)).map(|r| r.title.clone()).unwrap_or_default(), doc)) };
+            if fmt == 4 { export::canvas_poster(&els, &mut src, &mut note) } else { Ok(export::canvas_html(&els, &title, &when, opts, &export::fonts(), &mut src, &mut note).into_bytes()) }
+        } else if fmt == 2 { export::docx(doc.walk(), doc.children(None), &title, opts, &mut src) } else if fmt == 3 { export::pdf(doc, &title, &style(), opts, metric_paper(), &mut src) } else if md {
             // pictures go to `<name>.assets/` beside the file, each under its own name (a second of a name gets a number)
             let dir = path.with_extension("assets"); let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "assets".into());
             let mut used = std::collections::HashSet::new();
@@ -707,7 +718,7 @@ impl App {
                 let mut file = format!("{stem}.{}", p.ext); let mut n = 2; while !used.insert(file.to_lowercase()) { file = format!("{stem}-{n}.{}", p.ext); n += 1; }
                 std::fs::create_dir_all(&dir).ok()?; std::fs::write(dir.join(&file), &p.bytes).ok()?; Some(format!("{folder}/{file}")) };
             Ok(export::markdown(doc.walk(), doc.children(None), &title, opts, &mut src, Some(&mut sink)).into_bytes())
-        } else { Ok(export::html(doc.walk(), doc.children(None), &title, &jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), opts, &export::fonts(), &mut src).into_bytes()) };
+        } else { Ok(export::html(doc.walk(), doc.children(None), &title, &when, opts, &export::fonts(), &mut src).into_bytes()) };
         // written beside and moved into place: a reader never sees half a file
         let tmp = path.with_extension(format!("{ext}.part"));
         let done = text.map_err(std::io::Error::other).and_then(|bytes| std::fs::write(&tmp, bytes)).and_then(|_| std::fs::rename(&tmp, &path));
@@ -1761,7 +1772,7 @@ impl App {
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
-            M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::CopyMarkdown => self.copy_markdown(),
+            M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::ExportPoster => self.export(4, None), M::CopyMarkdown => self.copy_markdown(),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
@@ -2195,7 +2206,7 @@ impl App {
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
         // (scripted, MN_EXPORT=<a.html>[:<b.md>]: the open note is exported there as the run ends)
-        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
+        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else if p.ends_with(".png") { 4 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
         let t = Instant::now(); while self.saving.is_some() && t.elapsed().as_secs() < 20 { if let Some(step) = self.saver.poll() { self.save_step(step); } else { std::thread::sleep(std::time::Duration::from_millis(5)); } }
         if self.saving.take().is_some() { self.saver.abandon(); eprintln!("save: no answer from the document's place; your changes are kept on this machine"); }
