@@ -217,6 +217,8 @@ pub fn note(scene: &mut Scene, doc: &Doc, layout: &NoteLayout, fonts: &mut Fonts
                         if let Some(p) = pill { let t = fonts.layout(&p, Family::Sans, (10.5 * s) as f32, 600.0, text());
                             let q = Rect::new(x + 8.0 * s, y + dh - 8.0 * s - t.height() as f64 - 4.0 * s, x + 8.0 * s + t.width() as f64 + 12.0 * s, y + dh - 8.0 * s);
                             if q.y0 > y && q.x1 < x + dw { scene.fill(Fill::NonZero, Affine::IDENTITY, panel().multiply_alpha(0.85 * fade), None, &RoundedRect::from_rect(q, 4.0 * s)); draw_layout(scene, &t, Affine::translate((q.x0 + 6.0 * s, q.y0 + 2.0 * s))); } }
+                        // what was drawn on the picture, or on this page of the PDF (row 325)
+                        if !video { crate::ink::page_paint(scene, b.id, descriptor, &rec, r); }
                     }
                     View::Loading => if !pdf { scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &box_) },
                     View::Missing { name, looked } => words(scene, fonts, "Not found", &name, &looked),

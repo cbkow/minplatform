@@ -55,14 +55,15 @@ impl Tool {
 /// What the band needs to know to light and enable its buttons.
 /// What the band shows while a canvas is open (row 324): the armed drawing tool (`DrawSelect`: none - the pointer selects) and the pen's colour.
 #[derive(Clone, Copy, PartialEq)]
-pub struct InkShown { pub tool: Tool, pub pen: peniko::Color }
+pub struct InkShown { pub tool: Option<Tool>, pub pen: peniko::Color, /// not a canvas: a picture or a PDF block of a note is the current one (row 325)
+    pub page: bool }
 pub struct Shown<'a> { pub state: &'a mn_edit::State, /// a canvas is open (pictures and files can be put on it)
     pub canvas: bool, pub has_note: bool, /// the caret is in a table's cell
     pub in_cell: bool, pub video: Option<VideoShown>, /// a canvas is open and no card of it is entered: its drawing set shows
     pub ink: Option<InkShown> }
 
 pub struct Toolbar { /// the three sets - the text's, a video block's, a canvas's (the one shown now is in `groups` / `tools` / `right_from`, its place here empty)
-    sets: [(Vec<ActionGroup>, Vec<Vec<Tool>>, usize); 3], cur: usize, video: Option<VideoShown>, ink: Option<InkShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
+    sets: [(Vec<ActionGroup>, Vec<Vec<Tool>>, usize); 4], cur: usize, video: Option<VideoShown>, ink: Option<InkShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
     right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64, /// the colours in effect at the caret for the two chips (Type, Background)
     chips: [Option<peniko::Color>; 2] }
 
@@ -86,7 +87,12 @@ impl Toolbar {
         for (b, tip) in cgroups[0].buttons.iter_mut().zip(["Select and move (V, or Esc)", "Pen (P) \u{2014} a tablet's pressure varies the line", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in cgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the selected ink's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
-        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 2), (cgroups, canvas.clone(), 3)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
+        // a picture's or a PDF page's set (row 325): the same tools, and a pointer that picks what was drawn
+        let page: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker]];
+        let mut pgroups = make(&page);
+        for (b, tip) in pgroups[0].buttons.iter_mut().zip(["Pick a stroke (V) \u{2014} drag to move it, Delete to remove it; again to stop", "Pen (P) \u{2014} draws on the picture or the page; again to stop", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in pgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the picked stroke's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
+        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 2), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -113,10 +119,10 @@ impl Toolbar {
     /// True: the set was swapped - it must be laid out before it is shown (the caller draws again).
     pub fn sync(&mut self, s: &Shown) -> bool {
         // the set follows what is current: a video block's tools, a canvas's, else the text's (the caller lays the band out again)
-        let which = if s.video.is_some() { 1 } else if s.ink.is_some() { 2 } else { 0 }; let swapped = which != self.cur;
+        let which = if s.video.is_some() { 1 } else if let Some(i) = s.ink { if i.page { 3 } else { 2 } } else { 0 }; let swapped = which != self.cur;
         if swapped { let put = (std::mem::take(&mut self.groups), std::mem::take(&mut self.tools), self.right_from); let (g, tl, r) = std::mem::take(&mut self.sets[which]); self.sets[self.cur] = put; self.groups = g; self.tools = tl; self.right_from = r; self.cur = which; }
         self.video = s.video; self.ink = s.ink;
-        if let (Some(v), 2) = (s.ink, which) { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) { b.enabled = true; b.selected = *tool == v.tool; } } return swapped }
+        if let (Some(v), 2 | 3) = (s.ink, which) { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) { b.enabled = true; b.selected = Some(*tool) == v.tool; } } return swapped }
         if let Some(v) = s.video { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
             b.enabled = match tool { Tool::NoteDone | Tool::NoteDelete => v.on_note, _ => true };
             b.selected = Some(*tool) == v.tool || (*tool == Tool::NoteDone && v.on_note && v.addressed); } }

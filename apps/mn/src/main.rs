@@ -148,7 +148,10 @@ struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool,
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
-struct Files { pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
+struct Files { /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
+    /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
+    pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
+    pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
     /// (QCView's defaults: red, 6 source px), a gesture under way, the annotated picture owed (a note's key, when), the
@@ -305,7 +308,7 @@ impl App {
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
         self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
-        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some() && self.files.card.is_none(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown, ink: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|cv| { use canvas::Ink as I; use toolbar::Tool as T; toolbar::InkShown { tool: match cv.tool { None => T::DrawSelect, Some(I::Pen) => T::DrawPen, Some(I::Line) => T::DrawLine, Some(I::Arrow) => T::DrawArrow, Some(I::Rect) => T::DrawRect, Some(I::Oval) => T::DrawOval, Some(I::Eraser) => T::DrawErase }, pen: peniko::Color::new(cv.pen) } }) }) { g.window.request_redraw(); }
+        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some() && self.files.card.is_none(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown, ink: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|cv| { use canvas::Ink as I; use toolbar::Tool as T; toolbar::InkShown { page: false, tool: Some(match cv.tool { None => T::DrawSelect, Some(I::Pen) => T::DrawPen, Some(I::Line) => T::DrawLine, Some(I::Arrow) => T::DrawArrow, Some(I::Rect) => T::DrawRect, Some(I::Oval) => T::DrawOval, Some(I::Eraser) => T::DrawErase }), pen: peniko::Color::new(cv.pen) } }).or(self.files.ishown) }) { g.window.request_redraw(); }
             let unsaved = self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some());
             // the readout: a save under way, a save that failed, what is not in the document yet, else the last outcome
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
@@ -419,6 +422,12 @@ impl App {
         if let Some((id, _, f)) = self.files.note_field.as_mut() { if let Some(r) = l.rect(&self.ed.doc, *id).map(|r| r + off) { let y1 = r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(*id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s;
             let band = Rect::new(r.x0, y1 - 26.0 * s, r.x1, y1); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &band);
             f.layout(&mut g.fonts, band.inset(-2.0 * s), s); f.paint(scene, &mut g.fonts, s); } }
+        // ink on the current picture or PDF page (row 325): the stroke being drawn, as it will be kept; the picked stroke's box
+        if let Some((id, frame, d)) = self.files.iblock.as_ref().filter(|b| b.1.width() >= 1.0) { let rec: serde_json::Value = serde_json::from_str(d).unwrap_or_default(); let size = ink::page_size(&rec, *frame); let k = size.0 / frame.width();
+            let at = kurbo::Affine::translate((frame.x0, frame.y0)) * kurbo::Affine::scale(1.0 / k); let (pen, w) = (self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]), self.files.pen_w.unwrap_or(6.0) as f64);
+            if let Some(line) = self.files.gest.as_ref().filter(|g| g.block == *id).and_then(|g| g.live(pen, w * s * k)) { scene.push_clip_layer(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, frame); ink::drawn(&line, kurbo::Point::ORIGIN).paint(scene, at); scene.pop_layer(); }
+            if let Some((_, sid)) = self.files.psel.as_ref().filter(|p| p.0 == *id) { let now = self.ed.doc.get(*id).and_then(|b| match &b.kind { Kind::Media { descriptor } => serde_json::from_str::<serde_json::Value>(descriptor).ok(), _ => None }).unwrap_or(rec);
+                if let Some(l) = ink::page_lines(&now, ink::page_no(&now), size).into_iter().find(|l| l.s.id == *sid) { let b = at.transform_rect_bbox(ink::bounds(&l)).inflate(2.0 * s, 2.0 * s); scene.stroke(&kurbo::Stroke::new(1.5 * s).with_dashes(0.0, [4.0 * s, 3.0 * s]), kurbo::Affine::IDENTITY, paint::accent(), None, &b); } } }
         // the current picture: an outline, and a handle at each corner to resize it by
         let current = (!self.blank && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
             .filter(|id| matches!(self.ed.doc.get(*id).map(|b| &b.kind), Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\""))).and_then(|id| l.rect(&self.ed.doc, id)).map(|r| r + off);
@@ -673,6 +682,7 @@ impl App {
         let want = if self.files.row_drag.is_some_and(|d| d.2) { if self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(x, y))) { C::Copy } else { C::Grabbing } }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
             else if on_canvas { match self.files.canvas.as_mut().map(|c| c.cursor(x, y)).unwrap_or(0) { 1 => if self.pressed { C::Grabbing } else { C::Grab }, 2 => C::NwseResize, 3 => C::NeswResize, 5 => C::Crosshair, _ => C::Default } }
+            else if matches!(self.files.pick, Some(ink::Pick::Draw(_))) && !over_ui && self.files.iblock.as_ref().is_some_and(|b| b.1.contains(kurbo::Point::new(x, y))) { C::Crosshair }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
             // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
@@ -749,7 +759,7 @@ impl App {
         if self.files.pal_pen {
             let chosen = match &out { colours::Out::Pick(v) => Some(v.clone()), colours::Out::Add(h) => Some(Some(h.clone())), _ => None };
             if let Some(v) = chosen { let c = v.as_deref().and_then(mn_layout::colour).map(|c| { let x = c.to_rgba8(); [x.r as f32 / 255.0, x.g as f32 / 255.0, x.b as f32 / 255.0, 1.0] }).unwrap_or([1.0, 0.0, 0.0, 1.0]);
-                self.files.pen = Some(c); if let Some(p) = self.player.as_mut() { p.ann.color = c; } if let Some(cv) = self.files.canvas.as_mut() { cv.pen = c; cv.restyle(Some(c), None); } save_pen_settings(self.files.pen, self.files.pen_w); self.pal.close(); self.files.pal_pen = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                self.files.pen = Some(c); if let Some(p) = self.player.as_mut() { p.ann.color = c; } if let Some(cv) = self.files.canvas.as_mut() { cv.pen = c; cv.restyle(Some(c), None); } save_pen_settings(self.files.pen, self.files.pen_w); self.page_picked(|l| { l.s.color = qcv_notes::strokes::Stroke::qcolor(c); true }); self.pal.close(); self.files.pal_pen = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
             if !self.pal.is_open() { self.files.pal_pen = false; }
             if matches!(out, colours::Out::None | colours::Out::Redraw) { return } }
         let pick = |me: &mut App, v: Option<String>| { me.pal.close(); if let (mn_doc::MarkKind::Highlight, Some(c)) = (role, &v) { me.last_bg = c.clone(); }
@@ -920,6 +930,10 @@ impl App {
         if self.files.card.is_none() { if let Some(cv) = self.files.canvas.as_mut() { use canvas::Ink as I;
             if let Some(i) = match tool { T::DrawSelect => Some(None), T::DrawPen => Some(Some(I::Pen)), T::DrawLine => Some(Some(I::Line)), T::DrawArrow => Some(Some(I::Arrow)), T::DrawRect => Some(Some(I::Rect)), T::DrawOval => Some(Some(I::Oval)), T::DrawErase => Some(Some(I::Eraser)), _ => None } {
                 cv.arm(i); if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return } } }
+        // a picture's or a PDF page's tools (row 325): armed and put down; the pen's colour and width also restyle the picked stroke
+        if self.files.vshown.is_none() && self.files.ishown.is_some() { use ink::{Ink as I, Pick as P};
+            if let Some(p) = match tool { T::DrawSelect => Some(P::Select), T::DrawPen => Some(P::Draw(I::Pen)), T::DrawLine => Some(P::Draw(I::Line)), T::DrawArrow => Some(P::Draw(I::Arrow)), T::DrawRect => Some(P::Draw(I::Rect)), T::DrawOval => Some(P::Draw(I::Oval)), T::DrawErase => Some(P::Draw(I::Eraser)), _ => None } {
+                self.files.pick = if self.files.pick == Some(p) { None } else { Some(p) }; self.files.psel = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return } }
         match tool {
             T::Bold => self.menu_cmd(M::Bold), T::Italic => self.menu_cmd(M::Italic), T::Underline => self.menu_cmd(M::Underline), T::Strike => self.menu_cmd(M::Strike), T::Code => self.menu_cmd(M::Code), T::Highlight => self.open_colours(mn_doc::MarkKind::Highlight, tool), T::Color => self.open_colours(mn_doc::MarkKind::Color, tool), T::ClearFormat => self.menu_cmd(M::ClearFormat),
             T::Paragraph => block(self, B::Paragraph), T::Bullet => block(self, B::Bullet), T::Numbered => block(self, B::Numbered), T::Task => block(self, B::Task), T::Quote => block(self, B::Quote), T::CodeBlock => block(self, B::Code),
@@ -938,6 +952,7 @@ impl App {
             T::PenThinner | T::PenThicker => { let steps = [1.0f32, 2.0, 3.0, 4.0, 6.0, 9.0, 14.0, 22.0, 32.0, 48.0, 64.0]; let w = self.files.pen_w.unwrap_or(6.0); let i = steps.iter().position(|x| *x >= w).unwrap_or(4);
                 let j = if tool == T::PenThinner { i.saturating_sub(1) } else { (i + 1).min(steps.len() - 1) }; self.files.pen_w = Some(steps[j]); if let Some(p) = self.player.as_mut() { p.ann.width = steps[j]; }
                 if let Some(cv) = self.files.canvas.as_mut() { cv.pen_w = steps[j] as f64; cv.restyle(None, Some(steps[j] as f64)); } save_pen_settings(self.files.pen, self.files.pen_w);
+                { let was = w as f64; let now = steps[j] as f64; self.page_picked(|l| { l.s.width *= now / was.max(0.1); true }); }
                 self.notice = Some((format!("Line width {}", steps[j]), Instant::now() + std::time::Duration::from_secs(2))); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             T::PenColor => { self.files.pal_pen = true; self.open_colours(mn_doc::MarkKind::Color, tool); }
             T::NoteText | T::NoteDone | T::NoteDelete => { if let Some(id) = self.video_current() { if self.video_start(id, false) {
@@ -1189,6 +1204,68 @@ impl App {
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// The PDF block under a window point: its id, its page's box and its strip's box in the window, and its record.
+    /// The current block when it can be drawn on (row 325): a picture, or a PDF - its page's frame in the window, its record.
+    fn ink_block(&self) -> Option<(BlockId, Rect, String)> {
+        if self.blank || self.confirm.is_some() || (self.files.canvas.is_some() && self.files.card.is_none()) { return None }
+        if let Some((id, r)) = self.picture() { if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) { return Some((id, r, descriptor.clone())) } }
+        let id = self.ed.handle_block().filter(|_| self.ed.run_len() == 1 && !self.grab.as_ref().is_some_and(|g| g.dragging))?; let (id, page, _, d) = self.pdf_boxes(id)?; Some((id, page, d))
+    }
+    fn pen_now(&self) -> ([f32; 4], f64) { (self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]), self.files.pen_w.unwrap_or(6.0) as f64) }
+    /// A press with a page tool armed, inside the current block's frame: the gesture begins. True: the press was the page's.
+    fn page_press(&mut self, x: f64, y: f64) -> bool {
+        let Some(pick) = self.files.pick else { return false }; let Some((id, frame, d)) = self.ink_block() else { return false }; if !frame.contains(kurbo::Point::new(x, y)) || frame.width() < 1.0 { return false }
+        let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default(); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let k = ink::page_size(&rec, frame).0 / frame.width();
+        let (g, picked) = ink::Gesture::press(pick, id, &d, &rec, frame, kurbo::Point::new((x - frame.x0) * k, (y - frame.y0) * k), pen_pressure(), (self.pen_now().1 / 2.0).max(5.0) * s * k, 4.0 * s * k);
+        if pick == ink::Pick::Select { self.files.psel = picked.map(|i| (id, i)); } else { self.files.psel = None; }
+        self.files.iblock = Some((id, frame, d)); self.files.gest = Some(g); self.page_show(); if let Some(g) = &self.gpu { g.window.request_redraw(); } true
+    }
+    /// The page's strokes as the gesture has them now go into the record, outside the history (the release makes the one step).
+    fn page_show(&mut self) { let Some(g) = &self.files.gest else { return }; if !g.changed { return } if let Some(d) = ink::page_set(&g.before, g.page, g.size, &g.lines) { let _ = self.ed.doc.set_kind(g.block, Kind::Media { descriptor: d }); } }
+    fn page_point(&self, x: f64, y: f64) -> Option<(kurbo::Point, f64, f64)> { let g = self.files.gest.as_ref()?; let (_, frame, _) = self.files.iblock.as_ref()?; let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let k = g.size.0 / frame.width().max(1e-9); Some((kurbo::Point::new((x - frame.x0) * k, (y - frame.y0) * k), k, s)) }
+    fn page_drag(&mut self, x: f64, y: f64) {
+        let Some((p, k, s)) = self.page_point(x, y) else { return }; let reach = (self.pen_now().1 / 2.0).max(5.0) * s * k;
+        if self.files.gest.as_mut().is_some_and(|g| g.drag(p, pen_pressure(), reach)) { self.page_show(); } if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The release: the record goes back to what it was and, when the page's strokes changed, takes them as ONE step of the note's history.
+    fn page_release(&mut self, x: f64, y: f64) {
+        let Some((p, k, s)) = self.page_point(x, y) else { self.files.gest = None; return }; let (pen, w) = self.pen_now(); let Some(mut g) = self.files.gest.take() else { return };
+        let changed = g.release(p, pen, w * s * k, 2.0 * s * k); let _ = self.ed.doc.set_kind(g.block, Kind::Media { descriptor: g.before.clone() });
+        if changed { self.page_keep(g.block, &g.before, g.page, g.size, &g.lines); } if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn page_keep(&mut self, block: BlockId, before: &str, page: usize, size: (f64, f64), lines: &[ink::Line]) {
+        if let Some(d) = ink::page_set(before, page, size, lines) { if d != before { let t = self.now_ms(); let dd = self.ed.set_kinds(vec![(block, Kind::Media { descriptor: d })], t).unwrap_or(Dirty::Nothing); self.apply(dd); } }
+    }
+    /// The picked stroke is changed (None from `f`: removed) - one step. True: there was one.
+    fn page_picked(&mut self, f: impl Fn(&mut ink::Line) -> bool) -> bool {
+        let Some((bid, sid)) = self.files.psel.clone() else { return false }; let Some((id, frame, d)) = self.ink_block().filter(|b| b.0 == bid) else { return false };
+        let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default(); let (size, page) = (ink::page_size(&rec, frame), ink::page_no(&rec)); let mut lines = ink::page_lines(&rec, page, size);
+        let Some(i) = lines.iter().position(|l| l.s.id == sid) else { return false }; if !f(&mut lines[i]) { lines.remove(i); self.files.psel = None; }
+        self.page_keep(id, &d, page, size, &lines); if let Some(g) = &self.gpu { g.window.request_redraw(); } true
+    }
+    /// A key while a picture or a PDF block is the current one: the tools' keys (the canvas's), Escape, Delete. True: it was the page's.
+    fn page_key(&mut self, key: &Key) -> bool {
+        let (_, cmd, alt) = self.mods; if cmd || alt || self.ctrl || self.files.vshown.is_some() || self.files.link.is_some() || self.files.picker.is_some() || self.files.find.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.typing()) { return false }
+        if self.ink_block().is_none() { return false } use ink::{Ink as I, Pick as P};
+        let done = match key {
+            Key::Named(NamedKey::Escape) => { if let Some(g) = self.files.gest.take() { let _ = self.ed.doc.set_kind(g.block, Kind::Media { descriptor: g.before }); true } else if self.files.psel.take().is_some() { true } else { self.files.pick.take().is_some() } }
+            Key::Named(NamedKey::Backspace | NamedKey::Delete) if self.files.psel.is_some() => self.page_picked(|_| false),
+            Key::Character(c) => { let to = match c.to_lowercase().as_str() { "v" => Some(P::Select), "p" => Some(P::Draw(I::Pen)), "l" => Some(P::Draw(I::Line)), "a" => Some(P::Draw(I::Arrow)), "r" => Some(P::Draw(I::Rect)), "o" => Some(P::Draw(I::Oval)), "e" => Some(P::Draw(I::Eraser)), _ => None };
+                match to { Some(p) => { self.files.pick = if self.files.pick == Some(p) { None } else { Some(p) }; self.files.psel = None; true } None => false } }
+            _ => false };
+        if done { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } done
+    }
+    /// For scripted checks (`MN_PAGE_INK=1`): on the current picture or PDF page a pen's line, a rectangle and an oval are drawn as
+    /// the pointer would; part of the line is rubbed out; a step is taken back and made again.
+    fn page_ink_test(&mut self) {
+        let Some((id, f, _)) = self.ink_block() else { return }; use ink::{Ink as I, Pick as P}; let at = |u: f64, v: f64| (f.x0 + f.width() * u, f.y0 + f.height() * v);
+        let count = |me: &App| me.ed.doc.get(id).and_then(|b| match &b.kind { Kind::Media { descriptor } => serde_json::from_str::<serde_json::Value>(descriptor).ok(), _ => None }).map(|r| { let p = ink::page_no(&r); r["ink"][p.to_string()]["shapes"].as_array().map(|a| a.len()).unwrap_or(0) }).unwrap_or(0);
+        let go = |me: &mut App, pick: P, pts: Vec<(f64, f64)>| { me.files.pick = Some(pick); let p0 = at(pts[0].0, pts[0].1); if !me.page_press(p0.0, p0.1) { println!("page ink: the press was not taken"); return } for q in &pts[1..] { let p = at(q.0, q.1); std::thread::sleep(std::time::Duration::from_millis(2)); me.page_drag(p.0, p.1); } let l = at(pts[pts.len() - 1].0, pts[pts.len() - 1].1); me.page_release(l.0, l.1); };
+        go(self, P::Draw(I::Pen), (0..=60).map(|i| { let u = 0.1 + 0.8 * i as f64 / 60.0; (u, 0.3 + 0.12 * (u * 14.0).sin()) }).collect()); let a = count(self);
+        go(self, P::Draw(I::Rect), vec![(0.15, 0.55), (0.45, 0.85)]); go(self, P::Draw(I::Oval), vec![(0.55, 0.55), (0.9, 0.85)]); let b = count(self);
+        go(self, P::Draw(I::Eraser), vec![(0.5, 0.1), (0.5, 0.5)]); let c = count(self);
+        let d = self.ed.undo().unwrap_or(Dirty::Nothing); self.apply(d); let u = count(self); let d = self.ed.redo().unwrap_or(Dirty::Nothing); self.apply(d);
+        println!("page ink: strokes after the pen {a}, after the shapes {b}, after the eraser {c}, after undo {u}, after redo {}", count(self)); self.files.pick = None; self.layout = None;
+    }
     fn pdf_under(&self, x: f64, y: f64) -> Option<(BlockId, Rect, Rect, String)> {
         if self.blank || self.confirm.is_some() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
         let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
@@ -1840,6 +1917,7 @@ impl App {
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
         // Save is the collection's, wherever the keys are - on a canvas (which has no page laid out), in the tree, in a field
         if cmd && !alt && !shift && self.confirm.is_none() && matches!(key, Key::Character(c) if c.to_lowercase() == "s") { self.save(); return }
+        if self.page_key(key) { return }
         // a PDF's page: Cmd+C copies the selected text, Escape lets it go; Cmd+A on a current PDF block selects its page's text
         if let Some(sel) = &self.files.pdf {
             match key { Key::Character(c) if cmd && !shift && c.to_lowercase() == "c" => { if let Some(t) = self.pdf_boxes(sel.id).and_then(|b| self.media.page_text(&b.3)) { let words = t.words(sel.a, sel.b); if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(words); } self.block_clip = None; } return }
@@ -2145,6 +2223,8 @@ impl ApplicationHandler for App {
             if let Some(f) = std::env::var("MN_SEEK").ok().and_then(|v| v.parse::<i32>().ok()) { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); self.video_seek(id, f); if std::env::var_os("MN_DRAW").is_some() { self.arm(qcv_annotate::Tool::Arrow); } } }
             // MN_PLAY=1: the note's first video block plays (as a click on it would)
             if std::env::var_os("MN_PLAY").is_some() { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { let ok = self.video_start(id, true); println!("play: started {ok}"); } }
+            // MN_PAGE_INK=1: the note's first picture (2: its first PDF) is made current and drawn on as the pointer would (see `page_ink_test`)
+            if std::env::var_os("MN_PAGE_INK").is_some() { self.files.ink_test = true; }
             // MN_RESIZE=<width>: the note's first picture is made current and resized to that width as a corner drag would (one undo step), then undone and redone
             if let Some(w) = std::env::var("MN_RESIZE").ok().and_then(|v| v.parse::<f64>().ok()) { use mn_edit::{Pos, Selection};
                 if let Some((id, before)) = self.ed.doc.walk().iter().find_map(|b| match &b.kind { Kind::Media { descriptor } if !descriptor.contains("\"kind\"") => Some((b.id, descriptor.clone())), _ => None }) {
@@ -2229,6 +2309,13 @@ impl ApplicationHandler for App {
               let notes = self.media.notes(&d); let note = notes.iter().find(|n| n.frame == at); let c = self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]);
               toolbar::VideoShown { tool: self.files.tool.map(|t| match t { A::Select => T::DrawSelect, A::Freehand => T::DrawPen, A::Rectangle => T::DrawRect, A::Oval => T::DrawOval, A::Arrow => T::DrawArrow, A::Line => T::DrawLine, A::Eraser => T::DrawErase }), pen: peniko::Color::new(c), on_note: note.is_some(), addressed: note.is_some_and(|n| n.addressed) } });
           if shown != self.files.vshown { self.files.vshown = shown; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
+        { use ink::{Ink as I, Pick as P}; use toolbar::Tool as T; self.files.iblock = self.ink_block();
+          let shown = self.files.iblock.as_ref().filter(|_| self.files.vshown.is_none()).map(|_| toolbar::InkShown { page: true, pen: peniko::Color::new(self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0])),
+              tool: self.files.pick.map(|p| match p { P::Select => T::DrawSelect, P::Draw(I::Pen) => T::DrawPen, P::Draw(I::Line) => T::DrawLine, P::Draw(I::Arrow) => T::DrawArrow, P::Draw(I::Rect) => T::DrawRect, P::Draw(I::Oval) => T::DrawOval, P::Draw(I::Eraser) => T::DrawErase }) });
+          if shown != self.files.ishown { self.files.ishown = shown; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+          if self.files.ink_test && self.layout.is_some() { if self.files.iblock.is_some() { self.files.ink_test = false; self.page_ink_test(); }
+              // (scripted) the block to draw on is made the current one once it is in the note
+              else { let pdf = std::env::var("MN_PAGE_INK").is_ok_and(|v| v == "2"); if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if if pdf { descriptor.contains("\"kind\":\"pdf\"") } else { !descriptor.contains("\"kind\"") })).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } } } }
         // text input is off while a video block is the current one: its keys are held to shuttle and to step, and the
         // system's text input would answer a held letter with its accents and type the one chosen beside the video
         { let want = self.video_current().is_none(); if let Some(g) = self.gpu.as_mut() { if g.ime_on != want { g.ime_on = want;
@@ -2342,6 +2429,7 @@ impl ApplicationHandler for App {
                 if taken { return }
                 // a note's row dragged from the sidebar towards the canvas
                 if let Some((_, from, moved)) = self.files.row_drag.as_mut() { if !*moved && ((from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0) { *moved = true; } if *moved { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+                if self.files.gest.is_some() { self.page_drag(position.x, position.y); return }
                 if self.files.canvas.is_some() && self.files.card.is_none() { if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.pressure = pen_pressure(); if cv.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, false, false, &mut g.fonts) { g.window.request_redraw(); } } self.set_cursor(); return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.files.find.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.find_out(out); if taken { self.set_cursor(); return } } }
@@ -2429,6 +2517,9 @@ impl ApplicationHandler for App {
                     }
                     if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(position.x); } return }
                     if strip.contains(pt) { self.video_toggle(id); return } } }
+                // a picture or a PDF's page with a drawing tool armed (row 325): the gesture is the page's
+                if state == ElementState::Released && self.files.gest.is_some() { self.page_release(position.x, position.y); return }
+                if state == ElementState::Pressed && self.page_press(position.x, position.y) { return }
                 // a PDF block (row 315): its strip turns the page; a drag on its page selects text
                 if state == ElementState::Released { if let Some(sel) = self.files.pdf.as_mut().filter(|x| x.drag) { sel.drag = false; if sel.a == sel.b { self.files.pdf = None; } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if state == ElementState::Pressed { let had = self.files.pdf.take().is_some();
