@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportMarkdown, ExportDocx, CopyMarkdown, ExportPaths, ExportVideoNotes,
+    ExportHtml, ExportMarkdown, ExportDocx, ExportPdf, CopyMarkdown, ExportPaths, ExportVideoNotes,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -44,7 +44,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         ]),
         // row 328: a note written out for other applications; the two options stay as they are set
         ("Export", vec![
-            item("as HTML…", None, Cmd::ExportHtml), item("as Markdown…", None, Cmd::ExportMarkdown), item("as Word Document…", None, Cmd::ExportDocx), Node::Sep,
+            item("as HTML…", None, Cmd::ExportHtml), item("as Markdown…", None, Cmd::ExportMarkdown), item("as Word Document…", None, Cmd::ExportDocx), item("as PDF…", None, Cmd::ExportPdf), Node::Sep,
             item("Copy as Markdown", sc_shift('c'), Cmd::CopyMarkdown), Node::Sep,
             Node::Check { label: "Include File Paths", cmd: Cmd::ExportPaths }, Node::Check { label: "Include Video Notes", cmd: Cmd::ExportVideoNotes },
         ]),

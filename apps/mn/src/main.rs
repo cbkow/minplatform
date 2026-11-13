@@ -692,13 +692,13 @@ impl App {
         let md = fmt == 1;
         let soon = |s: u64| Instant::now() + std::time::Duration::from_secs(s);
         if self.blank || self.store.is_none() { if self.store.is_some() { self.notice = Some(("Open a note to export it".into(), soon(5))); } return }
-        let title = self.note_title(); let (ext, kind) = match fmt { 1 => ("md", "Markdown"), 2 => ("docx", "Word Document"), _ => ("html", "HTML") };
+        let title = self.note_title(); let (ext, kind) = match fmt { 1 => ("md", "Markdown"), 2 => ("docx", "Word Document"), 3 => ("pdf", "PDF"), _ => ("html", "HTML") };
         let safe: String = title.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\n' | '\r') { '-' } else { c }).collect();
         let Some(path) = to else { let dlg = rfd::FileDialog::new().set_title(format!("Export as {kind}")).add_filter(kind, &[ext]).set_file_name(format!("{safe}.{ext}")); self.panel(dlg, 0, move |me, p| me.export(fmt, p.into_iter().next())); return };
         let opts = *self.files.xopts.get_or_insert_with(export_settings);
         let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
         let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu }; let doc = &self.ed.doc;
-        let text: Result<Vec<u8>, String> = if fmt == 2 { export::docx(doc.walk(), doc.children(None), &title, opts, &mut src) } else if md {
+        let text: Result<Vec<u8>, String> = if fmt == 2 { export::docx(doc.walk(), doc.children(None), &title, opts, &mut src) } else if fmt == 3 { export::pdf(doc, &title, &style(), opts, metric_paper(), &mut src) } else if md {
             // pictures go to `<name>.assets/` beside the file, each under its own name (a second of a name gets a number)
             let dir = path.with_extension("assets"); let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "assets".into());
             let mut used = std::collections::HashSet::new();
@@ -1761,7 +1761,7 @@ impl App {
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
-            M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::CopyMarkdown => self.copy_markdown(),
+            M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::CopyMarkdown => self.copy_markdown(),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
@@ -2195,7 +2195,7 @@ impl App {
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
         // (scripted, MN_EXPORT=<a.html>[:<b.md>]: the open note is exported there as the run ends)
-        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
+        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
         let t = Instant::now(); while self.saving.is_some() && t.elapsed().as_secs() < 20 { if let Some(step) = self.saver.poll() { self.save_step(step); } else { std::thread::sleep(std::time::Duration::from_millis(5)); } }
         if self.saving.take().is_some() { self.saver.abandon(); eprintln!("save: no answer from the document's place; your changes are kept on this machine"); }
@@ -2813,6 +2813,11 @@ fn trail(line: &str) {
     let f = player_file().with_file_name("panic.log"); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
     if let Ok(mut o) = std::fs::OpenOptions::new().create(true).append(true).open(&f) { use std::io::Write; let _ = writeln!(o, "{} {line}", jiff::Zoned::now().strftime("%H:%M:%S%.3f")); }
 }
+/// The paper a PDF is made for: A4 where the system measures in metres (the Qt app's rule), Letter elsewhere.
+#[cfg(target_os = "macos")]
+fn metric_paper() -> bool { use objc2::{class, msg_send, runtime::AnyObject}; unsafe { let l: *mut AnyObject = msg_send![class!(NSLocale), currentLocale]; if l.is_null() { return false } let m: bool = msg_send![l, usesMetricSystem]; m } }
+#[cfg(not(target_os = "macos"))]
+fn metric_paper() -> bool { false }
 fn export_file() -> std::path::PathBuf { player_file().with_file_name("export.json") }
 fn export_settings() -> export::Opts {
     let v: serde_json::Value = std::fs::read_to_string(export_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();

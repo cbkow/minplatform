@@ -2487,6 +2487,7 @@ dependencies = [
  "hayro",
  "image",
  "jiff",
+ "krilla",
  "kurbo 0.13.1",
  "log",
  "min-image",
