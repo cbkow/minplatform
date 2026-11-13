@@ -206,7 +206,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// the gap between two columns of a Columns block being dragged (row 319): the two columns, the pointer's x at the press, the px all the columns share, all their shares, the two kinds before
     gap_drag: Option<(BlockId, BlockId, f64, f64, f32, Kind, Kind)>,
     tool: Option<qcv_annotate::Tool>, pen: Option<[f32; 4]>, pen_w: Option<f32>, drawing: bool, annot_due: Option<(String, Instant)>, clean: Option<(String, Arc<Vec<u8>>, (u32, u32))>, pal_pen: bool,
-    note_field: Option<(BlockId, String, min_ui::TextField)>, /// the last press on a note's small picture (a second one soon after opens its words)
+    note_field: Option<(BlockId, String, min_ui::TextField)>, /// the canvas card whose picture was pressed last (it is being arranged: its outline and corners show although its video is taken up)
+    arrange: Option<BlockId>, /// the last press on a note's small picture (a second one soon after opens its words)
     thumb_click: Option<(Instant, BlockId, usize)>, vshown: Option<toolbar::VideoShown>, thumb_layer: Option<UiLayer>, written: Vec<std::sync::mpsc::Receiver<std::path::PathBuf>>, tested: bool, pdf_test: Option<BlockId>, turned: std::collections::HashSet<BlockId> }
 struct Grab { from: (f64, f64), dragging: bool, drop: Option<(mn_edit::Drop, Rect)>, /// the pointer is over another note's row in the tree: the blocks would go to that note
     to_note: Option<BlockId> }
@@ -422,7 +423,8 @@ impl App {
             let (cards, ed, store, others) = (&mut self.files.cards, &self.ed, self.store.as_ref(), &self.others);
             let mut note = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, k: f64, far: bool| card_pic(cards, ed, store, others, scene, fonts, media, e, r, k, s, far);
             // a card whose video has been taken up (played, scrubbed, drawn on, gone to a note) shows no outline and no corners until it is selected afresh
-            cv.quiet = self.player.as_ref().map(|p| p.id);
+            // … or until its PICTURE is pressed: that is arranging (the corners are wanted), the strip and the notes row are watching
+            cv.quiet = self.player.as_ref().map(|p| p.id).filter(|id| self.files.arrange != Some(*id));
             let (ann, hide, vlive) = (self.player.as_ref().map(|p| &p.ann), self.files.hide_notes, live_video);
             let mut video = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, strip: Option<Rect>| { let me = vlive.filter(|m| m.id == e.id); paint::video_card(scene, fonts, media, &e.record, r, strip, me, ann.filter(|_| me.is_some()), hide, s); };
             if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s, live, &mut note, vlive.filter(|_| live.is_none()).map(|m| m.id), hole, &mut video) { g.window.request_redraw(); } }
@@ -2890,8 +2892,13 @@ impl ApplicationHandler for App {
                 if self.files.canvas.is_some() && self.files.card.is_none() && !self.modal() && !self.ctx.is_open() {
                     if state == ElementState::Released && std::mem::take(&mut self.files.drawing) { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.release(geo.to_norm(position.x, position.y), &cur, &geo)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                     if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
-                    if state == ElementState::Pressed && self.canvas_video_press(position.x, position.y) { return } }
-                if self.files.canvas.is_some() && self.files.card.is_none() { self.pressed = state == ElementState::Pressed; let shift = self.mods.0; if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if state == ElementState::Pressed && !cv.rect.contains(kurbo::Point::new(position.x, position.y)) { return } cv.pressure = pen_pressure(); cv.ctrl = self.ctrl; cv.pointer(&e, false, shift, &mut g.fonts); g.window.request_redraw(); } self.canvas_asks(); self.set_cursor(); return }
+                    // a note's words being typed on a card: a press in the field is the field's; one anywhere else keeps the words and goes on
+                    if self.files.note_field.is_some() { let inside = self.files.note_field.as_ref().is_some_and(|(_, _, f)| f.hit(position.x, position.y));
+                        if inside || state == ElementState::Released { let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
+                            if let (Some((_, _, f)), Some(g)) = (self.files.note_field.as_mut(), self.gpu.as_mut()) { f.pointer(&e, &mut g.fonts); g.window.request_redraw(); } return }
+                        self.note_words_end(true); }
+                    if state == ElementState::Pressed && self.canvas_video_press(position.x, position.y) { self.files.arrange = None; return } }
+                if self.files.canvas.is_some() && self.files.card.is_none() { self.pressed = state == ElementState::Pressed; let shift = self.mods.0; if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if state == ElementState::Pressed && !cv.rect.contains(kurbo::Point::new(position.x, position.y)) { return } cv.pressure = pen_pressure(); cv.ctrl = self.ctrl; cv.pointer(&e, false, shift, &mut g.fonts); if state == ElementState::Pressed { self.files.arrange = match cv.sel[..] { [id] => Some(id), _ => None }; } g.window.request_redraw(); } self.canvas_asks(); self.set_cursor(); return }
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
                 if self.files.link.is_some() { let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { return } } }
