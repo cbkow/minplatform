@@ -954,7 +954,8 @@ impl App {
         if self.files.card.is_none() { if let Some(cv) = self.files.canvas.as_mut() { use canvas::Ink as I;
             if let Some(i) = match tool { T::DrawSelect => Some(None), T::DrawPen => Some(Some(I::Pen)), T::DrawLine => Some(Some(I::Line)), T::DrawArrow => Some(Some(I::Arrow)), T::DrawRect => Some(Some(I::Rect)), T::DrawOval => Some(Some(I::Oval)), T::DrawErase => Some(Some(I::Eraser)), _ => None } {
                 cv.arm(i); if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return }
-            if tool == T::Frame { let on = !cv.framing; cv.arm(None); cv.framing = on; if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return } } }
+            // the Frame button: with cards selected it frames them at once (as Cmd+G); with none it arms the frame tool
+            if tool == T::Frame { if cv.framing || !cv.group() { let on = !cv.framing; cv.arm(None); cv.framing = on; } if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return } } }
         // a picture's or a PDF page's tools (row 325): armed and put down; the pen's colour and width also restyle the picked stroke
         if self.files.vshown.is_none() && self.files.ishown.is_some() { use ink::{Ink as I, Pick as P};
             if let Some(p) = match tool { T::DrawSelect => Some(P::Select), T::DrawPen => Some(P::Draw(I::Pen)), T::DrawLine => Some(P::Draw(I::Line)), T::DrawArrow => Some(P::Draw(I::Arrow)), T::DrawRect => Some(P::Draw(I::Rect)), T::DrawOval => Some(P::Draw(I::Oval)), T::DrawErase => Some(P::Draw(I::Eraser)), _ => None } {
@@ -1983,7 +1984,8 @@ impl App {
         if self.ctx.is_open() { if matches!(key, Key::Named(NamedKey::Escape)) { self.ctx.close(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         // where there is no native menu to take them, the file commands' keys are run here
         if cmd && cfg!(not(target_os = "macos")) { if let Key::Character(c) = key { let m = match (c.to_lowercase().as_str(), shift, alt) { ("o", false, false) => Some(menu::Cmd::Open), ("w", false, false) => Some(menu::Cmd::CloseCollection), ("q", false, false) => Some(menu::Cmd::Quit), ("s", true, false) => Some(menu::Cmd::SaveAs), ("n", false, true) => Some(menu::Cmd::NewCollection), _ => None }; if let Some(m) = m { self.menu_cmd(m); return } } }
-        if self.blank { return }
+        // (an open canvas has no page - `blank` - and its keys are taken below; nothing after them is for it)
+        if self.blank && self.files.canvas.is_none() { return }
         // what lies over the page takes keys first: a question, a name being edited, then the tree when it has the focus
         let ui_key = || { use min_ui::{Key as K, Named as N};
             let k = match key { Key::Named(NamedKey::Escape) => K::Named(N::Escape), Key::Named(NamedKey::Enter) => K::Named(N::Enter), Key::Named(NamedKey::Tab) => K::Named(N::Tab), Key::Named(NamedKey::Backspace) => K::Named(N::Backspace), Key::Named(NamedKey::Delete) => K::Named(N::Delete),
@@ -2003,6 +2005,7 @@ impl App {
         if self.files.canvas.is_some() && self.files.card.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) {
             if self.files.canvas.as_ref().is_some_and(|c| c.editing()) && cmd && !alt { if let Key::Character(c) = key { if c.to_lowercase() == "v" { let t = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()); if let (Some(t), Some(cv), Some(g)) = (t, self.files.canvas.as_mut(), self.gpu.as_mut()) { let k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(t), shift: false, cmd: false }; cv.key(&k, &mut g.fonts); g.window.request_redraw(); } return } } }
             if self.canvas_key(key, ui_key()) { self.canvas_asks(); return } }
+        if self.blank { return }
         // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
         if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {
             let pasted = if c == "v" { self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) } else { None };
@@ -2296,6 +2299,10 @@ impl ApplicationHandler for App {
                     if which == "4" { if let Some(el) = first { self.ensure(); self.card_enter(el); let t = self.now_ms(); let _ = self.ed.insert("Typed in the card. ", t); self.apply(Dirty::Structure); } } }
                 else if which == "6" { let id = self.files.canvas.as_mut().and_then(|cv| { let id = cv.els.iter().find(|e| e.kind == "media" && e.record.contains("\"kind\":\"video\"")).map(|e| e.id)?; cv.sel = vec![id]; Some(id) }); match id { Some(id) => { let ok = self.video_start(id, std::env::var_os("MN_PLAY").is_some()); println!("canvas video: started {ok}"); } None => self.files.cv_test = true } }
                 else if which == "7" { if let Some(cv) = self.files.canvas.as_mut() { cv.frame_demo(); } }
+                // 8: two cards are selected and Cmd+G is sent down the real key path (the frame must be there at once)
+                else if which == "8" { let n = |me: &App| me.files.canvas.as_ref().map(|cv| cv.els.iter().filter(|e| e.kind == "frame").count()).unwrap_or(0);
+                    if let Some(cv) = self.files.canvas.as_mut() { cv.add_link("https://example.org/one"); cv.add_link("https://example.org/two"); let ids: Vec<BlockId> = cv.els.iter().filter(|e| e.kind == "link").map(|e| e.id).collect(); cv.sel = ids; }
+                    let (before, mods) = (n(self), self.mods); self.mods = (false, true, false); self.key(&Key::Character("g".into()), None); self.mods = mods; println!("canvas Cmd+G: frames {before} -> {}, framing {}", n(self), self.files.canvas.as_ref().is_some_and(|cv| cv.framing)); }
                 else if which == "5" { if let Some(cv) = self.files.canvas.as_mut() { cv.ink_demo(std::env::var("MN_INK").ok().and_then(|n| n.parse().ok()).unwrap_or(0)); if std::env::var_os("MN_INK_ERASE").is_some() { cv.arm(Some(canvas::Ink::Eraser)); } } }
                 else if let Some(cv) = self.files.canvas.as_mut() { cv.add_text("A text card on the canvas.\nTyped in place; its second line."); if which == "2" { cv.add_text("Selected alone: the corners show"); } } }
             if let Ok(v) = std::env::var("MN_ADD") { let at = if self.files.canvas.is_some() { self.files.canvas_at.set(None); Self::canvas_drop() } else { mn_edit::Drop { parent: None, index: 1, depth: None, beside: None } }; self.add_files(v.split(',').map(Into::into).collect(), at); }
