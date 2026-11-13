@@ -15,7 +15,7 @@
   `mn-edit` - collections opened and saved by hand (row 293), the tree, the menu bar, the toolbar / footer / sidebar
   header (rows 297-300), colours (301), whole-block selection, drags, the blocks' menu, moves to other notes and the
   clipboard's first half (303-308). Read `docs/phase3/handoff-2026-11-10.md` - its LAST addenda are where things
-  stand (the LAST addendum is the place to resume) - and rows 268-325.
+  stand (the LAST addendum is the place to resume) - and rows 268-326.
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a

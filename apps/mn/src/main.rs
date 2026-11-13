@@ -148,9 +148,11 @@ struct Player { id: BlockId, t: qcv_player::Transport, scrub: bool, shown: bool,
 /// Text selected on a PDF's page (row 315): the block, and the first and last characters (places in the page's list).
 struct PdfSel { id: BlockId, a: usize, b: usize, drag: bool }
 #[derive(Default)]
-struct Files { /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
+struct Files { /// the camera when Space went down over a canvas (unchanged at its release: a tap - the selected video plays or pauses)
+    space_cam: Option<(f64, f64, f64)>,
+    /// ink on a picture or a PDF's page in a note (row 325): the armed tool, the gesture under way, the stroke the pointer picked (its block, its id),
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
-    pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
+    cv_test: bool, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -354,8 +356,10 @@ impl App {
         // UNDER this layer, where the page is left open; a block that left the view (or the note) stops being the one
         let (mut hole, mut live): (Option<Rect>, Option<paint::Live>) = (None, None);
         if let Some(p) = self.player.as_mut() {
+            let on_canvas = self.files.canvas.is_some() && self.files.card.is_none();
             let pic = self.ed.doc.get(p.id).filter(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).and_then(|_| l.rect(&self.ed.doc, p.id)).map(|r| r + off).map(|r| Rect::new(r.x0, r.y0, r.x1, r.y1 - (mn_layout::VIDEO_STRIP + if l.is_noted(p.id) { mn_layout::VIDEO_NOTES } else { 0.0 }) as f64 * s));
-            match pic.filter(|r| !self.blank && r.y1 > self.top && r.y0 < h as f64 - self.bottom) {
+            let pic = if on_canvas { self.files.canvas.as_ref().and_then(|cv| cv.video_place(p.id)) } else { pic.filter(|r| !self.blank && r.y1 > self.top && r.y0 < h as f64 - self.bottom) };
+            match pic {
                 None => self.files.vstop = true,
                 Some(r) => {
                     match p.t.tick(now) { Some(f) => { if g.presenter.engine.show(&f.frame).is_ok() { p.shown = true; } } None => p.t.idle_refresh() }
@@ -368,6 +372,7 @@ impl App {
                 }
             }
         }
+        if let (Some(hr), Some(c)) = (hole, &self.files.card) { hole = Some(hr.intersect(c.rect)).filter(|r| r.width() > 0.0 && r.height() > 0.0); }
         let scene = g.ui.scene_mut(); scene.reset();
         // the page's ground, left open where the video plays
         match hole.map(|r| r.intersect(view)).filter(|r| r.width() > 0.0 && r.height() > 0.0) {
@@ -389,10 +394,13 @@ impl App {
         // a canvas in the page's place (row 322); its note cards are drawn from pictures kept of them, and the one being edited by the note's own layer, through its card
         // MN_SPIN=1 (scripted): the canvas is panned a little at every frame and the frames are counted - how fast it draws (`all`: with everything in view)
         if SPIN.get_or_init(|| std::env::var_os("MN_SPIN").is_some()).to_owned() { if let Some(cv) = self.files.canvas.as_mut() { let n = SPUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed); if n == 30 { *SPIN_T0.lock().unwrap() = Some(Instant::now()); } if n == 3 && std::env::var("MN_SPIN").is_ok_and(|v| v == "all") { cv.fit_all(); } cv.pan_by(if (n / 240) % 2 == 0 { 3.0 } else { -3.0 }, 0.0); g.window.request_redraw(); } }
+        let live_video = live;
         if let Some(cv) = self.files.canvas.as_mut() { let live = self.files.card.as_ref().map(|c| c.el);
             let (cards, ed, store, others) = (&mut self.files.cards, &self.ed, self.store.as_ref(), &self.others);
             let mut note = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, k: f64, far: bool| card_pic(cards, ed, store, others, scene, fonts, media, e, r, k, s, far);
-            if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s, live, &mut note) { g.window.request_redraw(); } }
+            let (ann, hide, vlive) = (self.player.as_ref().map(|p| &p.ann), self.files.hide_notes, live_video);
+            let mut video = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, strip: Option<Rect>| { let me = vlive.filter(|m| m.id == e.id); paint::video_card(scene, fonts, media, &e.record, r, strip, me, ann.filter(|_| me.is_some()), hide, s); };
+            if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s, live, &mut note, vlive.filter(|_| live.is_none()).map(|m| m.id), hole, &mut video) { g.window.request_redraw(); } }
         let carded = self.files.card.as_ref().map(|c| c.rect);
         if let Some(r) = carded { scene.push_clip_layer(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, &Rect::new(r.x0 - 40.0 * s, r.y0, r.x1, r.y1).intersect(Rect::new(self.side_w, self.top, w as f64, self.foot.rect.y0.max(self.top)))); }
         let picked = self.ed.block_selection();
@@ -1008,6 +1016,8 @@ impl App {
     }
     /// A video block's boxes in the window: its picture, its strip, and its record.
     fn video_boxes(&self, id: BlockId) -> Option<(BlockId, Rect, Rect, String)> {
+        // on a canvas (row 326): a video's card - its picture is the card, its strip lies under it
+        if let Some(cv) = self.files.canvas.as_ref().filter(|_| self.files.card.is_none()) { let (pic, d) = cv.video_el(id)?; return Some((id, pic, cv.video_strip(id)?, d)) }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) else { return None };
         if serde_json::from_str::<serde_json::Value>(descriptor).ok()?.get("kind").and_then(|k| k.as_str()) != Some("video") { return None }
@@ -1096,8 +1106,26 @@ impl App {
         let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
         self.video_boxes(id)
     }
+    /// A press on a canvas that is a video's (row 326): on the selected card's strip - play or pause, or the line to scrub
+    /// on; inside a video card that was entered, with a drawing tool armed - the press draws on the frame (QCView's notes,
+    /// as in a note: the video becomes the playing one, paused). True: the press was the video's.
+    fn canvas_video_press(&mut self, x: f64, y: f64) -> bool {
+        let pt = kurbo::Point::new(x, y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+        if let Some((id, _, strip, _)) = self.video_current().and_then(|id| self.video_boxes(id)) { if strip.contains(pt) { let (_, track) = paint::video_strip(strip, s);
+            if track.inflate(4.0 * s, 12.0 * s).contains(pt) { if self.video_start(id, false) { if let Some(p) = self.player.as_mut() { p.t.begin_scrub(); p.scrub = true; } self.video_scrub(x); } } else { self.video_toggle(id); }
+            return true } }
+        let Some((id, tool, pen, pen_w)) = self.files.canvas.as_ref().and_then(|cv| Some((cv.inked?, cv.tool?, cv.pen, cv.pen_w))) else { return false };
+        let Some((_, pic, _, _)) = self.video_boxes(id) else { return false }; if !pic.contains(pt) { return false }
+        if !self.video_start(id, false) { return true }
+        let mut keep = None; if let Some(p) = self.player.as_mut() { if p.t.is_playing() { p.t.pause(); keep = Some(p.t.current_frame()); } } if let Some(f) = keep { self.video_keep(id, f); }
+        if let (Some((geo, cur)), true) = (self.video_geo(), self.player.as_ref().is_some_and(|p| p.shown)) { if let Some(p) = self.player.as_mut() { use canvas::Ink as I; use qcv_annotate::Tool as A;
+            p.ann.active = true; p.ann.tool = match tool { I::Pen => A::Freehand, I::Line => A::Line, I::Arrow => A::Arrow, I::Rect => A::Rectangle, I::Oval => A::Oval, I::Eraser => A::Eraser }; p.ann.color = pen; p.ann.width = pen_w as f32;
+            p.ann.press(geo.to_norm(x, y), &cur, &geo); self.files.drawing = true; } }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); } true
+    }
     /// The frame a video block stands on goes into its record (not a step of the history).
     fn video_keep(&mut self, id: BlockId, frame: i32) {
+        if let Some(cv) = self.files.canvas.as_mut().filter(|c| c.video_el(id).is_some()) { cv.set_frame(id, frame); return }
         let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) else { return };
         let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) else { return };
         if v.get("frame").and_then(|f| f.as_i64()).unwrap_or(0) == frame as i64 { return }
@@ -1153,6 +1181,8 @@ impl App {
     /// The video block that is the current one - the caret is on it or it is the one selected block - when keys are the
     /// page's to give (no dialog, menu, palette or rename field).
     fn video_current(&self) -> Option<BlockId> {
+        // on a canvas: the one selected card, when it is a video
+        if let Some(cv) = self.files.canvas.as_ref().filter(|_| self.files.card.is_none()) { if self.confirm.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming() || sb.typing()) || self.pal.is_open() || self.ctx.is_open() { return None } return cv.selected_video() }
         if self.blank || self.confirm.is_some() || self.files.note_field.is_some() || self.ed.run_len() != 1 || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()) || self.pal.is_open() || self.ctx.is_open() { return None }
         self.ed.handle_block().filter(|id| self.video_boxes(*id).is_some())
     }
@@ -1717,7 +1747,7 @@ impl App {
         let changed = cv.dirty; match st.col.save_canvas(cv.id, &cv.stored()) { Ok(()) => { cv.dirty = false; if changed { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(cv.id); self.title(); } } Err(e) => eprintln!("canvas: {e}") }
     }
     /// The canvas gives the page's place back to the note.
-    fn canvas_leave(&mut self) { if self.files.canvas.is_none() { return } self.card_leave(); self.files.cards.clear(); if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.files.canvas = None; self.blank = self.store.is_none(); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+    fn canvas_leave(&mut self) { if self.files.canvas.is_none() { return } self.video_stop(); self.card_leave(); self.files.cards.clear(); if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.files.canvas = None; self.blank = self.store.is_none(); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
     /// A canvas of the collection is opened in the page's place (the note stays as it is behind it).
     fn open_canvas(&mut self, id: BlockId) {
         if self.files.canvas.as_ref().is_some_and(|c| c.id == id) { return } self.canvas_leave();
@@ -1748,7 +1778,7 @@ impl App {
             Key::Named(NamedKey::ArrowLeft) => { cv.nudge(-step, 0.0); true } Key::Named(NamedKey::ArrowRight) => { cv.nudge(step, 0.0); true }
             Key::Named(NamedKey::ArrowUp) => { cv.nudge(0.0, -step); true } Key::Named(NamedKey::ArrowDown) => { cv.nudge(0.0, step); true }
             // the drawing tools, by the Qt app's keys (the same again puts the tool down; V: the pointer)
-            Key::Character(c) if !cmd && !alt && !self.ctrl => { use canvas::Ink as I; match c.to_lowercase().as_str() { "v" => { cv.arm(None); true } "p" => { cv.arm(Some(I::Pen)); true } "l" => { cv.arm(Some(I::Line)); true } "a" => { cv.arm(Some(I::Arrow)); true }
+            Key::Character(c) if !cmd && !alt && !self.ctrl && cv.selected_video().is_none() => { use canvas::Ink as I; match c.to_lowercase().as_str() { "v" => { cv.arm(None); true } "p" => { cv.arm(Some(I::Pen)); true } "l" => { cv.arm(Some(I::Line)); true } "a" => { cv.arm(Some(I::Arrow)); true }
                 "r" => { cv.arm(Some(I::Rect)); true } "o" => { cv.arm(Some(I::Oval)); true } "e" => { cv.arm(Some(I::Eraser)); true } _ => false } }
             Key::Character(c) if cmd && !alt => match c.to_lowercase().as_str() {
                 "a" => { cv.select_all(); true } "d" => { let clip = cv.copy(); cv.paste(&clip, 24.0); true }
@@ -2242,6 +2272,7 @@ impl ApplicationHandler for App {
                 if matches!(which.as_str(), "3" | "4") { let notes: Vec<BlockId> = self.sidebar.as_ref().map(|sb| sb.rows.iter().filter(|r| r.kind == mn_store::DocKind::Note).map(|r| r.id).collect()).unwrap_or_default();
                     let mut first = None; if let Some(cv) = self.files.canvas.as_mut() { for (i, n) in notes.iter().take(2).enumerate() { let el = cv.add_note(*n, None); if let Some(e) = cv.els.iter_mut().find(|e| e.id == el) { e.x = i as f64 * 600.0; e.y = 0.0; } first = first.or(Some(el)); } cv.sel.clear(); }
                     if which == "4" { if let Some(el) = first { self.ensure(); self.card_enter(el); let t = self.now_ms(); let _ = self.ed.insert("Typed in the card. ", t); self.apply(Dirty::Structure); } } }
+                else if which == "6" { let id = self.files.canvas.as_mut().and_then(|cv| { let id = cv.els.iter().find(|e| e.kind == "media" && e.record.contains("\"kind\":\"video\"")).map(|e| e.id)?; cv.sel = vec![id]; Some(id) }); match id { Some(id) => { let ok = self.video_start(id, std::env::var_os("MN_PLAY").is_some()); println!("canvas video: started {ok}"); } None => self.files.cv_test = true } }
                 else if which == "5" { if let Some(cv) = self.files.canvas.as_mut() { cv.ink_demo(std::env::var("MN_INK").ok().and_then(|n| n.parse().ok()).unwrap_or(0)); if std::env::var_os("MN_INK_ERASE").is_some() { cv.arm(Some(canvas::Ink::Eraser)); } } }
                 else if let Some(cv) = self.files.canvas.as_mut() { cv.add_text("A text card on the canvas.\nTyped in place; its second line."); if which == "2" { cv.add_text("Selected alone: the corners show"); } } }
             if let Ok(v) = std::env::var("MN_ADD") { let at = if self.files.canvas.is_some() { self.files.canvas_at.set(None); Self::canvas_drop() } else { mn_edit::Drop { parent: None, index: 1, depth: None, beside: None } }; self.add_files(v.split(',').map(Into::into).collect(), at); }
@@ -2304,7 +2335,7 @@ impl ApplicationHandler for App {
             if now >= due && !self.files.drawing && self.files.written.is_empty() { self.files.annot_due = None; self.compose_annotated(&key); } else if let Some(g) = &self.gpu { if now >= due { g.window.request_redraw(); } } }
         { let now = Instant::now(); let mut fresh = None; if let Some(p) = self.player.as_mut() { if !self.files.drawing && p.ann.poll_disk(now) { fresh = Some((p.path.clone(), p.ann.notes.clone())); } } if let Some((path, notes)) = fresh { self.media.set_notes(&path, notes); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         { use qcv_annotate::Tool as A; use toolbar::Tool as T;
-          let shown = self.video_current().map(|id| { let d = self.video_boxes(id).map(|b| b.3).unwrap_or_default(); let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
+          let shown = self.video_current().filter(|_| self.files.canvas.is_none() || self.files.card.is_some()).map(|id| { let d = self.video_boxes(id).map(|b| b.3).unwrap_or_default(); let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
               let at = self.player.as_ref().filter(|p| p.id == id).map(|p| p.t.current_frame() as i64).unwrap_or(rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0));
               let notes = self.media.notes(&d); let note = notes.iter().find(|n| n.frame == at); let c = self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]);
               toolbar::VideoShown { tool: self.files.tool.map(|t| match t { A::Select => T::DrawSelect, A::Freehand => T::DrawPen, A::Rectangle => T::DrawRect, A::Oval => T::DrawOval, A::Arrow => T::DrawArrow, A::Line => T::DrawLine, A::Eraser => T::DrawErase }), pen: peniko::Color::new(c), on_note: note.is_some(), addressed: note.is_some_and(|n| n.addressed) } });
@@ -2313,6 +2344,12 @@ impl ApplicationHandler for App {
           let shown = self.files.iblock.as_ref().filter(|_| self.files.vshown.is_none()).map(|_| toolbar::InkShown { page: true, pen: peniko::Color::new(self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0])),
               tool: self.files.pick.map(|p| match p { P::Select => T::DrawSelect, P::Draw(I::Pen) => T::DrawPen, P::Draw(I::Line) => T::DrawLine, P::Draw(I::Arrow) => T::DrawArrow, P::Draw(I::Rect) => T::DrawRect, P::Draw(I::Oval) => T::DrawOval, P::Draw(I::Eraser) => T::DrawErase }) });
           if shown != self.files.ishown { self.files.ishown = shown; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+          // (scripted, MN_CANVAS=6) the canvas's first video card is selected and started once it is there
+          if self.files.cv_test { let id = self.files.canvas.as_mut().and_then(|cv| { let id = cv.els.iter().find(|e| e.kind == "media" && e.record.contains("\"kind\":\"video\"")).map(|e| e.id)?; cv.sel = vec![id]; Some(id) }); // (MN_STACK=front|behind: the canvas's first picture is laid half over the video, in front of it or behind it)
+              let stack = std::env::var("MN_STACK").ok(); let ready = stack.is_none() || self.files.canvas.as_ref().is_some_and(|cv| cv.els.iter().any(|e| e.kind == "media" && !e.record.contains("\"kind\"")));
+              if let (Some(id), true) = (id, ready) { self.files.cv_test = false;
+                  if let (Some(how), Some(cv)) = (stack, self.files.canvas.as_mut()) { let v = cv.els.iter().find(|e| e.id == id).map(|e| (e.x, e.y, e.w, e.z)); if let (Some((x, y, w, z)), Some(pic)) = (v, cv.els.iter_mut().find(|e| e.kind == "media" && !e.record.contains("\"kind\""))) { pic.x = x + w / 2.0; pic.y = y + 40.0; pic.z = if how == "front" { z + 1 } else { z - 1 }; } }
+                  let ok = self.video_start(id, std::env::var_os("MN_PLAY").is_some()); println!("canvas video: started {ok}"); } }
           if self.files.ink_test && self.layout.is_some() { if self.files.iblock.is_some() { self.files.ink_test = false; self.page_ink_test(); }
               // (scripted) the block to draw on is made the current one once it is in the note
               else { let pdf = std::env::var("MN_PAGE_INK").is_ok_and(|v| v == "2"); if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if if pdf { descriptor.contains("\"kind\":\"pdf\"") } else { !descriptor.contains("\"kind\"") })).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: id, at: 0 }))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } } } }
@@ -2430,6 +2467,10 @@ impl ApplicationHandler for App {
                 // a note's row dragged from the sidebar towards the canvas
                 if let Some((_, from, moved)) = self.files.row_drag.as_mut() { if !*moved && ((from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0) { *moved = true; } if *moved { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if self.files.gest.is_some() { self.page_drag(position.x, position.y); return }
+                // a canvas's video (row 326): its line being scrubbed, its frame being drawn on
+                if self.files.canvas.is_some() && self.files.card.is_none() {
+                    if self.player.as_ref().is_some_and(|p| p.scrub) { self.video_scrub(position.x); return }
+                    if self.files.drawing { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.motion(geo.to_norm(position.x, position.y), &cur, &geo, true)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if self.files.canvas.is_some() && self.files.card.is_none() { if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.pressure = pen_pressure(); if cv.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, false, false, &mut g.fonts) { g.window.request_redraw(); } } self.set_cursor(); return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.files.find.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.find_out(out); if taken { self.set_cursor(); return } } }
@@ -2465,6 +2506,10 @@ impl ApplicationHandler for App {
                 // a canvas is open: the pointer is its own over the page's place (row 322)
                 // (a note edited in a card: a press outside the card leaves it - and is the canvas's; inside, it is the note's)
                 if state == ElementState::Pressed && !self.pressed { if let Some(c) = &self.files.card { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); if !Rect::new(c.rect.x0 - 40.0 * s, c.rect.y0, c.rect.x1, c.rect.y1).contains(kurbo::Point::new(position.x, position.y)) && !self.files.find.as_ref().is_some_and(|f| f.hit(position.x, position.y)) && self.files.link.is_none() && self.files.picker.is_none() { self.card_leave(); } } }
+                if self.files.canvas.is_some() && self.files.card.is_none() && self.confirm.is_none() && !self.ctx.is_open() {
+                    if state == ElementState::Released && std::mem::take(&mut self.files.drawing) { if let Some((geo, cur)) = self.video_geo() { let c = self.player.as_mut().and_then(|p| p.ann.release(geo.to_norm(position.x, position.y), &cur, &geo)); if let Some(c) = c { self.annotated(c); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                    if state == ElementState::Released && self.player.as_ref().is_some_and(|p| p.scrub) { let mut keep = None; if let Some(p) = self.player.as_mut() { p.t.end_scrub(); p.scrub = false; p.awake = Instant::now() + std::time::Duration::from_millis(800); if !p.t.is_playing() { keep = Some((p.id, p.t.current_frame())); } } if let Some((id, f)) = keep { self.video_keep(id, f); } return }
+                    if state == ElementState::Pressed && self.canvas_video_press(position.x, position.y) { return } }
                 if self.files.canvas.is_some() && self.files.card.is_none() { self.pressed = state == ElementState::Pressed; let shift = self.mods.0; if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if state == ElementState::Pressed && !cv.rect.contains(kurbo::Point::new(position.x, position.y)) { return } cv.pressure = pen_pressure(); cv.pointer(&e, false, shift, &mut g.fonts); g.window.request_redraw(); } self.canvas_asks(); self.set_cursor(); return }
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
@@ -2578,7 +2623,8 @@ impl ApplicationHandler for App {
                     #[cfg(target_os = "macos")] text_element::changed(false);
                     if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             }
-            WindowEvent::KeyboardInput { ref event, .. } if self.files.card.is_none() && self.files.canvas.as_ref().is_some_and(|c| !c.editing()) && self.confirm.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) && matches!(&event.logical_key, Key::Character(c) if c.as_str() == " ") => { if let Some(cv) = self.files.canvas.as_mut() { cv.space = event.state.is_pressed(); } self.set_cursor(); }
+            WindowEvent::KeyboardInput { ref event, .. } if self.files.card.is_none() && self.files.canvas.as_ref().is_some_and(|c| !c.editing()) && self.confirm.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) && matches!(&event.logical_key, Key::Character(c) if c.as_str() == " ") => { let down = event.state.is_pressed(); let mut tap = false; if let Some(cv) = self.files.canvas.as_mut() { if down && !event.repeat { self.files.space_cam = Some(cv.camera()); } cv.space = down; if !down { tap = self.files.space_cam.take() == Some(cv.camera()); } }
+                if tap && !self.pressed { if let Some(id) = self.video_current() { self.video_toggle(id); } } self.set_cursor(); }
             WindowEvent::KeyboardInput { ref event, .. } if self.video_key(event) => {}
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 // macOS: a key the system's text input kept for itself (a held letter offering its accents, a key steering

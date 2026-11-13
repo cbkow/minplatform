@@ -142,6 +142,21 @@ impl Canvas {
         let to = (page + if forward { 1 } else { -1 }).clamp(0, pages - 1); if to == page { return true }
         v.insert("page".into(), serde_json::json!(to)); let rec = serde_json::Value::Object(v).to_string(); self.step(); if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.record = rec; } true
     }
+    // -- a video's card (row 326): it plays in the card, on the window's one player
+
+    pub fn camera(&self) -> (f64, f64, f64) { self.cam }
+    /// A video card's picture in the window and its record.
+    pub fn video_el(&self, id: BlockId) -> Option<(Rect, String)> { let e = self.get(id).filter(|e| kind_of(e).as_deref() == Some("video"))?; Some((self.on_screen(e), e.record.clone())) }
+    /// Where a video card can play: its picture's place, while it is in view and not seen from far out.
+    pub fn video_place(&self, id: BlockId) -> Option<Rect> { let (r, _) = self.video_el(id)?; (self.cam.2 >= FAR && r.width() >= 28.0 * self.scale && r.intersect(self.rect).area() > 0.0).then_some(r) }
+    /// The strip under a video card (play, the frame, the line to scrub on): shown while the card is the one selected.
+    pub fn video_strip(&self, id: BlockId) -> Option<Rect> { let (r, _) = self.video_el(id)?; let s = self.scale; Some(Rect::new(r.x0, r.y1 + 6.0 * s, r.x1.max(r.x0 + 300.0 * s), r.y1 + 6.0 * s + mn_layout::VIDEO_STRIP as f64 * s)) }
+    pub fn selected_video(&self) -> Option<BlockId> { if self.edit.is_some() { return None } self.selected_media("video").map(|e| e.id) }
+    /// The frame a video card stands on goes into its record (not a step of the history).
+    pub fn set_frame(&mut self, id: BlockId, frame: i32) {
+        let Some(e) = self.els.iter_mut().find(|e| e.id == id) else { return }; let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&e.record) else { return };
+        if v.get("frame").and_then(|f| f.as_i64()).unwrap_or(0) == frame as i64 { return } v.insert("frame".into(), serde_json::json!(frame)); e.record = serde_json::Value::Object(v).to_string(); self.dirty = true;
+    }
     /// The one selected card, when it is of this kind of media (`file`, `pdf`, `video`).
     pub fn selected_media(&self, kind: &str) -> Option<&Element> { let [id] = self.sel[..] else { return None }; self.get(id).filter(|e| kind_of(e).as_deref() == Some(kind)) }
     /// Text from the clipboard becomes a text card at the view's centre.
@@ -278,7 +293,7 @@ impl Canvas {
                 let hit = self.at(x, y);
                 let twice = self.last_click.is_some_and(|(t0, h)| h == hit && t0.elapsed().as_millis() < 420); self.last_click = if twice { None } else { Some((now, hit)) };
                 match hit {
-                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("ink") => {} Some("note") => { self.sel = vec![id]; self.entered = Some(id); } Some("link") => self.opened = Some(id), _ if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), _ => { self.open(id); if self.card_page(id).is_some() { self.inked = Some(id); } } } }
+                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("ink") => {} Some("note") => { self.sel = vec![id]; self.entered = Some(id); } Some("link") => self.opened = Some(id), _ if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), _ => { self.open(id); if self.card_page(id).is_some() || self.video_el(id).is_some() { self.inked = Some(id); } } } }
                     Some(id) => { if shift { if let Some(i) = self.sel.iter().position(|s| *s == id) { self.sel.remove(i); } else { self.sel.push(id); } } else if !self.sel.contains(&id) { self.sel = vec![id]; }
                         self.act = Some(Act::Move { from: w, orig: self.els.iter().filter(|e| self.sel.contains(&e.id)).map(|e| (e.id, e.x, e.y)).collect(), moved: false }); }
                     // twice on the empty sheet: a text card there, ready to be typed in
@@ -332,7 +347,12 @@ impl Canvas {
     /// Painted into `rect` (window px). True: something is still arriving or moving - draw again.
     /// `live`: the note card whose text the window itself draws (it is being edited); `note`: draws a note card's
     /// content into its box (the box, the units' size on screen, far out) and says how tall the content is (units) and whether to draw again.
-    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, rect: Rect, s: f64, live: Option<BlockId>, note: &mut dyn FnMut(&mut Scene, &mut Fonts, &mut Media, &Element, Rect, f64, bool) -> (f64, bool)) -> bool {
+    /// `playing`: the video card the window's player shows UNDER this picture - an opening is cut for it (`cut`, also the
+    /// opening for a video of the entered note card), so what lies behind it does not show and what lies in front covers it;
+    /// `video`: draws what goes over a video card's picture (its frame's notes) and its strip (the box given when it is selected).
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, rect: Rect, s: f64, live: Option<BlockId>, note: &mut dyn FnMut(&mut Scene, &mut Fonts, &mut Media, &Element, Rect, f64, bool) -> (f64, bool), playing: Option<BlockId>, cut: Option<Rect>, video: &mut dyn FnMut(&mut Scene, &mut Fonts, &mut Media, &Element, Rect, Option<Rect>)) -> bool {
+        let open = |scene: &mut Scene, h: Rect| { scene.push_layer(Fill::NonZero, peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::DestOut), 1.0, Affine::IDENTITY, &h); scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &h); scene.pop_layer(); };
         let first = self.rect.width() < 1.0; self.rect = rect; self.scale = s; if self.fit && (first || self.act.is_none()) && self.edit.is_none() { self.fit_all(); }
         let now = Instant::now(); let mut again = false; let k = self.k();
         scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &rect);
@@ -350,7 +370,7 @@ impl Canvas {
                 "link" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if far { continue } let link = c(t::ACCENT_CONTENT_COLOR_DEFAULT); let mut x = r.x0 + 12.0 * k;
                     if let Some(g) = fonts.icon("link", (18.0 * k) as f32, link) { draw_layout(scene, &g, Affine::translate((x, r.center().y - g.height() as f64 / 2.0))); x += 26.0 * k; }
                     let l = fonts.layout_fit(&e.record, Family::Sans, (13.0 * k).clamp(5.0, 44.0) as f32, 400.0, link, (r.x1 - x - 10.0 * k).max(8.0)); draw_layout(scene, &l, Affine::translate((x, r.center().y - l.height() as f64 / 2.0))); }
-                "note" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if live == Some(e.id) { continue }
+                "note" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if live == Some(e.id) { if let Some(h) = cut { open(scene, h.intersect(r)); } continue }
                     let (h, more) = note(scene, fonts, media, e, r, k, far); again |= more; if h > 0.0 { fits.push((e.id, h)); } }
                 "text" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round);
                     if self.edit.as_ref().is_some_and(|(id, _)| *id == e.id) || far { continue }
@@ -359,11 +379,14 @@ impl Canvas {
                     scene.pop_layer(); }
                 _ => { let name = name_of(e); let kind = serde_json::from_str::<serde_json::Value>(&e.record).ok().and_then(|v| v.get("kind").and_then(|x| x.as_str()).map(str::to_string));
                     if far { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); continue }
+                    let strip = (kind.as_deref() == Some("video") && self.sel.len() == 1 && self.sel[0] == e.id).then(|| self.video_strip(e.id)).flatten();
+                    // the playing video: the presenter's picture shows through an opening; its notes and its strip go over it
+                    if playing == Some(e.id) { if let Some(h) = cut { open(scene, h.intersect(r)); } else { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &r); } video(scene, fonts, media, e, r, strip); again = true; continue }
                     match media.view(&e.record, r.width(), r.height()) {
                         Pic::Ready { brush, fade, .. } => { if fade < 1.0 { again = true; scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &r); } scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &round); min_ui::paint::image(scene, brush, r); scene.pop_layer();
                             // what was drawn ON the picture or the page (its own record's ink, as in a note)
                             if matches!(kind.as_deref(), None | Some("pdf")) && e.record.contains("\"ink\"") { if let Ok(rec) = serde_json::from_str::<serde_json::Value>(&e.record) { ink::page_paint(scene, e.id, &e.record, &rec, r); } }
-                            if kind.as_deref() == Some("video") { if let Some(g) = fonts.icon("play", (22.0 * s) as f32, Color::WHITE) { let m = Rect::from_center_size(r.center(), (40.0 * s, 40.0 * s)); scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0, 0, 0, 0x90), None, &RoundedRect::from_rect(m, 20.0 * s)); draw_layout(scene, &g, Affine::translate((m.center().x - g.width() as f64 / 2.0, m.center().y - g.height() as f64 / 2.0))); } } }
+                            if kind.as_deref() == Some("video") { if let Some(g) = fonts.icon("play", (22.0 * s) as f32, Color::WHITE) { let m = Rect::from_center_size(r.center(), (40.0 * s, 40.0 * s)); if strip.is_none() { scene.fill(Fill::NonZero, Affine::IDENTITY, Color::from_rgba8(0, 0, 0, 0x90), None, &RoundedRect::from_rect(m, 20.0 * s)); draw_layout(scene, &g, Affine::translate((m.center().x - g.width() as f64 / 2.0, m.center().y - g.height() as f64 / 2.0))); } } video(scene, fonts, media, e, r, strip); } }
                         Pic::Loading => { again = true; scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); }
                         Pic::Missing { name, looked } => words(scene, fonts, &format!("Not found \u{2014} {name}"), &looked),
                         Pic::Failed { name, why } => words(scene, fonts, &format!("Cannot be shown \u{2014} {name}"), &why),

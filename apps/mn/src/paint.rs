@@ -53,6 +53,34 @@ pub fn note_at(notes: &[qcv_notes::Note], at: i64, fps: f64, playing: bool) -> O
     let back = (2.5 * fps.max(1.0)) as i64;
     notes.iter().enumerate().filter(|(_, n)| n.frame < at && at - n.frame <= back).max_by_key(|(_, n)| n.frame).map(|(i, _)| i)
 }
+/// What goes with a video's card on a canvas (row 326): over its picture `r` the drawings and the words of the note its
+/// frame has (QCView's sidecar - the playing clip's come from the annotations themselves, the stroke being drawn with
+/// them); and, when the card is the one selected, its strip - play or pause, the frame as a timecode, the line with a tick
+/// for every note.
+#[allow(clippy::too_many_arguments)]
+pub fn video_card(scene: &mut Scene, fonts: &mut Fonts, media: &mut Media, descriptor: &str, r: Rect, strip: Option<Rect>, me: Option<Live>, ink: Option<&qcv_annotate::Annotations>, hide_notes: bool, s: f64) {
+    let rec: serde_json::Value = serde_json::from_str(descriptor).unwrap_or_default(); let notes = media.notes(descriptor);
+    let (frames, fps) = (rec.get("frames").and_then(|f| f.as_i64()).unwrap_or(1).max(1), rec.get("fps").and_then(|f| f.as_f64()).unwrap_or(24.0));
+    let (at, playing) = match me { Some(m) => (m.frame as i64, m.playing), None => (rec.get("frame").and_then(|f| f.as_i64()).unwrap_or(0), false) };
+    if !hide_notes {
+        let geo = qcv_annotate::Geo { rect: [r.x0, r.y0, r.width(), r.height()], px_per_src: r.width() / rec.get("w").and_then(|w| w.as_f64()).unwrap_or(1920.0).max(1.0) };
+        let cur = note_at(&notes, at, fps, playing);
+        match (me.filter(|m| m.shown), ink) { (Some(m), Some(a)) => a.paint(scene, &qcv_annotate::Cur::file(m.frame, fps), &geo), _ => if let Some(n) = cur.map(|i| &notes[i]).filter(|n| n.frame == at) { for st in qcv_notes::strokes::parse(n.annotation.as_ref()) { qcv_annotate::draw(scene, &st, &geo); } } }
+        if let Some(n) = cur.map(|i| &notes[i]) { let band = Rect::new(r.x0, r.y1 - 26.0 * s, r.x1, r.y1); let words = n.text.replace(['\n', '\r'], " ");
+            if band.y0 > r.y0 + 30.0 * s && r.width() > 160.0 * s && !words.is_empty() { fill(scene, band, Color::BLACK.multiply_alpha(0.62)); let mut x = band.x0 + 10.0 * s;
+                let k = fonts.layout(&n.timecode, Family::Sans, (11.0 * s) as f32, 500.0, Color::WHITE.multiply_alpha(0.75)); draw_layout(scene, &k, Affine::translate((x, band.center().y - k.height() as f64 / 2.0))); x += k.width() as f64 + 10.0 * s;
+                if band.x1 - x > 40.0 * s { let t = fonts.layout_fit(&words, Family::Sans, (12.0 * s) as f32, 400.0, Color::WHITE, band.x1 - x - 10.0 * s); draw_layout(scene, &t, Affine::translate((x, band.center().y - t.height() as f64 / 2.0))); } } }
+    }
+    let Some(strip) = strip else { return }; let (play, track) = video_strip(strip, s);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, panel(), None, &RoundedRect::from_rect(strip, 6.0 * s));
+    if let Some(i) = fonts.icon(if playing { "pause" } else { "play" }, (15.0 * s) as f32, text()) { draw_layout(scene, &i, Affine::translate((play.center().x - i.width() as f64 / 2.0, play.center().y - i.height() as f64 / 2.0))); }
+    let t = fonts.layout(&crate::video::timecode(at, fps), Family::Sans, (12.0 * s) as f32, 400.0, dim()); draw_layout(scene, &t, Affine::translate((play.x1 + 2.0 * s, strip.center().y - t.height() as f64 / 2.0)));
+    if track.width() > 8.0 * s { let x = track.x0 + track.width() * (at.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64);
+        fill(scene, track, line()); fill(scene, Rect::new(track.x0, track.y0, x, track.y1), accent());
+        for n in notes.iter() { let nx = track.x0 + track.width() * (n.frame.clamp(0, frames - 1) as f64 / (frames - 1).max(1) as f64); fill(scene, Rect::new(nx - s, strip.center().y - 5.0 * s, nx + s, strip.center().y + 5.0 * s), note_mark(n.addressed)); }
+        scene.fill(Fill::NonZero, Affine::IDENTITY, text(), None, &RoundedRect::from_rect(Rect::new(x - 1.5 * s, strip.center().y - 7.0 * s, x + 1.5 * s, strip.center().y + 7.0 * s), 1.5 * s)); }
+    if let Some(m) = me.filter(|m| m.muted) { let _ = m; if let Some(i) = fonts.icon("speaker-slash", (13.0 * s) as f32, dim()) { draw_layout(scene, &i, Affine::translate((strip.x1 - 10.0 * s - i.width() as f64, strip.center().y - i.height() as f64 / 2.0))); } }
+}
 /// The parts of a video block's strip: the play button's box and the line to scrub on (the counter sits between).
 pub fn video_strip(strip: Rect, s: f64) -> (Rect, Rect) {
     let play = Rect::new(strip.x0, strip.y0, strip.x0 + 34.0 * s, strip.y1); let x0 = strip.x0 + 34.0 * s + 96.0 * s;
