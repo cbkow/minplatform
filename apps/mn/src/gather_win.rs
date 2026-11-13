@@ -27,7 +27,7 @@ enum Row { Group(Kind), Asset(usize) }
 
 pub struct Window {
     pub what: What, pub shown: bool, pub phase: Phase,
-    /// the folder the files go to (a collection's `.minnotes`)
+    /// the folder the files go to (a collection's `minNotes Media`)
     pub dest: PathBuf,
     /// the package: its folder, the collection as it was when the package was asked for, the document's name in it
     pub folder: Option<PathBuf>, pub snap: Option<PathBuf>, pub doc_name: String,
@@ -228,8 +228,8 @@ impl Window {
             draw_layout(scene, &l, Affine::translate((if right { x - w } else { x }, cy - l.height() as f64 / 2.0))); w };
         line(scene, fonts, if self.what == What::Collect { "Collect Media" } else { "Export Package" }, x0, y0 + 10.0 * s, t::DIALOG_TITLE_SIZE, true, ink, wide, false);
         let about = match self.what {
-            What::Collect => "Copies the files this collection refers to elsewhere into its own folder, so it stays whole when the originals are moved. The notes then point at the copies.".to_string(),
-            What::Package => format!("A copy of the collection with every file it shows, in one folder that opens on any machine: {}", self.folder.as_deref().map(home).unwrap_or_default()) };
+            What::Collect => format!("Copies the files this collection refers to elsewhere into the \u{201c}{}\u{201d} folder beside it, so it stays whole when the originals are moved. The notes then point at the copies.", crate::media::SIDE),
+            What::Package => format!("A copy of the collection with every file it shows in a \u{201c}{}\u{201d} folder beside it. The package opens on any machine: {}", crate::media::SIDE, self.folder.as_deref().map(home).unwrap_or_default()) };
         let l = fonts.layout_width(&about, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, c(t::DIALOG_BODY_COLOR), Some(wide as f32)); draw_layout(scene, &l, Affine::translate((x0, y0 + 26.0 * s)));
         // where things stand, and the bar of the whole
         let sy = y0 + 76.0 * s; let (n_on, need) = self.chosen();

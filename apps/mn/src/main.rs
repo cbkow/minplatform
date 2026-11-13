@@ -551,10 +551,12 @@ impl App {
         let (to, expect) = (sv.to.clone().unwrap_or_else(|| session.original().to_path_buf()), sv.expect);
         // the files added since the last save go beside the document FIRST, so the document never names a file that is
         // not there; a Save As to another folder carries the old folder's files along
-        let (added, old_side) = (session.media_dir(), session.original().parent().map(|p| p.join(".minnotes")));
+        let (added, old) = (session.media_dir(), session.original().parent().map(|p| p.to_path_buf()));
         self.saver.start(move || {
-            if let Some(side) = to.parent().map(|p| p.join(".minnotes")) { let also = old_side.filter(|o| *o != side);
-                if let Err(e) = media::publish(&added, &side, also.as_deref()) { return SaveStep::Put(Err(mn_store::share::PutError::Io(e))) } }
+            if let Some(side) = to.parent().map(|p| p.join(media::SIDE)) {
+                // (the hidden folder of before row 333 first, so a file of the same name in the visible one is the one that stays)
+                let also: Vec<std::path::PathBuf> = old.filter(|o| Some(o.as_path()) != to.parent()).map(|o| vec![o.join(media::OLD_SIDE), o.join(media::SIDE)]).unwrap_or_default();
+                if let Err(e) = media::publish(&added, &side, &also) { return SaveStep::Put(Err(mn_store::share::PutError::Io(e))) } }
             SaveStep::Put(mn_store::share::put(&staged, &to, expect)) });
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -775,9 +777,9 @@ impl App {
                 if folder == base { self.notice = Some(("That is the collection\u{2019}s own folder \u{2014} choose another place for the package".into(), soon(8))); return }
                 let snap = sessions_root().join(format!("package-{}-{}.mnd", std::process::id(), self.now_ms()));
                 if let Err(e) = st.col.publish(&snap) { self.notice = Some((format!("The package could not be started \u{2014} {e}"), soon(10))); return }
-                let mut w = gather_win::Window::open(what, recs, self.media.places(), folder.join(".minnotes"), wake); w.folder = Some(folder); w.snap = Some(snap); w.doc_name = doc_name; w
+                let mut w = gather_win::Window::open(what, recs, self.media.places(), folder.join(media::SIDE), wake); w.folder = Some(folder); w.snap = Some(snap); w.doc_name = doc_name; w
             }
-            _ => gather_win::Window::open(what, recs, self.media.places(), base.join(".minnotes"), wake),
+            _ => gather_win::Window::open(what, recs, self.media.places(), base.join(media::SIDE), wake),
         };
         self.files.gather = Some(win); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -794,7 +796,7 @@ impl App {
             O::Close => { let note = self.files.gather.as_ref().map(|w| w.note.clone()).filter(|n| !n.is_empty()); self.gather_drop(); if let Some(n) = note { self.notice = Some((n, Instant::now() + std::time::Duration::from_secs(8))); } }
             O::Relink(i) => self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let (Some(p), Some(w)) = (p.into_iter().next(), me.files.gather.as_mut()) { w.relinked(i, p); }),
             O::Reveal => if let Some(w) = self.files.gather.as_ref() { match (&w.folder, w.what) { (Some(f), _) => open::reveal(&f.join(&w.doc_name)), _ => { let first = w.run.as_ref().and_then(|r| r.jobs.iter().enumerate().find(|(i, j)| j.is_some() && matches!(r.state(*i), gather::DONE | gather::THERE)).and_then(|(_, j)| j.as_ref().map(|j| j.to.clone()))); open::reveal(&first.unwrap_or_else(|| w.dest.clone())) } } },
-            O::Discard => { if let Some(w) = self.files.gather.as_ref() { if let Some(f) = &w.folder { let _ = std::fs::remove_dir(f.join(".minnotes").join(".qcview")); let _ = std::fs::remove_dir(f.join(".minnotes")); let _ = std::fs::remove_dir(f); } } }
+            O::Discard => { if let Some(w) = self.files.gather.as_ref() { if let Some(f) = &w.folder { let _ = std::fs::remove_dir(f.join(media::SIDE).join(".qcview")); let _ = std::fs::remove_dir(f.join(media::SIDE)); let _ = std::fs::remove_dir(f); } } }
             O::Commit => { let err = self.gather_commit().err(); if let Some(e) = &err { eprintln!("gather: {e}"); } if let Some(w) = self.files.gather.as_mut() { w.committed(err); println!("gather: {}", w.note); } }
         }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -3049,7 +3051,7 @@ fn main() {
         // pictures (row 310), made here: one larger than the page, one the file stores on its side, one with clear
         // parts, and the states - a file that is not there, a format not read yet, a volume without a path
         {
-            let side = path.parent().unwrap_or(std::path::Path::new(".")).join(".minnotes"); std::fs::create_dir_all(&side).expect("sample");
+            let side = path.parent().unwrap_or(std::path::Path::new(".")).join(media::SIDE); std::fs::create_dir_all(&side).expect("sample");
             let at = |n: &str| side.join(n).to_string_lossy().into_owned();
             let grad = |w: u32, h: u32| -> Vec<u8> { let mut v = Vec::with_capacity((w * h * 3) as usize); for y in 0..h { for x in 0..w { let band = (x * 8 / w) % 2 == (y * 6 / h) % 2; v.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, if band { 200 } else { 60 }]); } } v };
             min_image::write::png8(&at("wide.png"), &grad(2400, 1350), 2400, 1350).expect("sample");

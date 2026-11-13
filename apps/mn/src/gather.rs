@@ -1,4 +1,4 @@
-//! Collect Media and the package (canon row 332): the files a collection refers to are copied to one place - beside
+//! Collect Media and the package (canon rows 332, 333): the files a collection refers to are copied to one place - beside
 //! the collection (Collect Media), or into a folder that holds a copy of the collection with everything it shows (the
 //! package) - and the references are pointed at the copies. This file is the work without the window: what is to be
 //! copied ([`plan`]), the copying itself off the window's thread ([`Run`]), and the references rewritten
@@ -114,7 +114,9 @@ pub fn plan(what: What, descriptors: &[String], places: &Places, dest: &Path) ->
         let dest = if inside { src.as_str().map(|s| s[10..].to_string()).unwrap_or_default() } else { String::new() };
         out.push(Asset { kind, name, srcs: vec![text], path, size: 0, mtime: None, inside, problem, dest, notes: None, on: false, there: false, uses: 1 });
     } }
-    let mut taken = names_in(dest); for a in out.iter().filter(|a| a.inside) { taken.insert(a.dest.to_lowercase()); }
+    // (a name in the hidden folder of before row 333, beside the destination, is taken too: a record's `.minnotes/x` is
+    // looked for in the visible folder first, so a new file of that name there would stand in front of the old one)
+    let mut taken = names_in(dest); if let Some(b) = dest.parent() { taken.extend(names_in(&b.join(crate::media::OLD_SIDE))); } for a in out.iter().filter(|a| a.inside) { taken.insert(a.dest.to_lowercase()); }
     for a in out.iter_mut() { settle(a, dest, &mut taken); }
     out.sort_by(|a, b| (a.kind, a.name.to_lowercase()).cmp(&(b.kind, b.name.to_lowercase())));
     out
@@ -336,7 +338,7 @@ mod tests {
 
     #[test]
     fn a_plan_lists_each_file_once_names_clashes_apart_and_marks_what_is_missing() {
-        let d = tmp("plan"); let (a, b, dest) = (d.join("a"), d.join("b"), d.join("col/.minnotes"));
+        let d = tmp("plan"); let (a, b, dest) = (d.join("a"), d.join("b"), d.join("col/minNotes Media"));
         for x in [&a, &b, &dest] { std::fs::create_dir_all(x).unwrap(); }
         std::fs::write(a.join("shot.png"), b"one").unwrap(); std::fs::write(b.join("Shot.png"), b"other").unwrap(); std::fs::write(a.join("clip.mov"), vec![7u8; 4096]).unwrap();
         std::fs::create_dir_all(a.join(".qcview/clip.mov")).unwrap(); std::fs::write(a.join(".qcview/clip.mov/notes.json"), b"{}").unwrap();
@@ -357,14 +359,14 @@ mod tests {
         assert_eq!(names, [("clip.mov", "clip.mov", 1, false), ("gone.pdf", "", 1, true), ("shot.png", "shot.png", 2, false), ("Shot.png", "Shot-2.png", 1, false), ("art.psd", "", 1, true)]);
         assert!(plan_c[0].notes.is_some() && plan_c[0].on && !plan_c[1].on);
         // a package takes what is with the collection too, under its own name
-        let pk = d.join("pkg/.minnotes"); let plan_p = plan(What::Package, &recs, &places, &pk);
+        let pk = d.join("pkg/minNotes Media"); let plan_p = plan(What::Package, &recs, &places, &pk);
         let kept = plan_p.iter().find(|a| a.inside).unwrap(); assert_eq!((kept.dest.as_str(), kept.uses, kept.on), ("kept-1234.png", 2, true));
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn files_are_copied_checked_and_not_copied_twice_and_a_failure_stops_nothing_else() {
-        let d = tmp("run"); let (src, dest) = (d.join("src"), d.join("col/.minnotes")); std::fs::create_dir_all(&src).unwrap();
+        let d = tmp("run"); let (src, dest) = (d.join("src"), d.join("col/minNotes Media")); std::fs::create_dir_all(&src).unwrap();
         let big: Vec<u8> = (0..(5usize << 20) + 13).map(|i| (i * 31 % 251) as u8).collect();
         std::fs::write(src.join("big.mov"), &big).unwrap(); std::fs::write(src.join("small.png"), b"small").unwrap();
         std::fs::create_dir_all(src.join(".qcview/big.mov/images")).unwrap(); std::fs::write(src.join(".qcview/big.mov/notes.json"), b"{\"n\":1}").unwrap(); std::fs::write(src.join(".qcview/big.mov/images/a.png"), b"p").unwrap();

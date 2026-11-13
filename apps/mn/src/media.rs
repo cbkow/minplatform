@@ -53,6 +53,13 @@ struct Queue { jobs: Mutex<VecDeque<Job>>, more: Condvar }
 pub struct Places { base: Option<PathBuf>, staged: Option<PathBuf>, mappings: Vec<min_paths::map::Mapping> }
 
 /// What came back from file work asked of the helpers.
+/// The folder beside a collection's document that holds the files kept with it (row 333): visible, so that whoever
+/// moves the document sees what belongs to it. A record still names such a file `.minnotes/<name>` - that prefix is the
+/// MARK of a file kept with the collection, not a place on the disk.
+pub const SIDE: &str = "minNotes Media";
+/// Where such files were kept before row 333 (hidden); still read, never written.
+pub const OLD_SIDE: &str = ".minnotes";
+
 pub enum Mail {
     /// Dropped / chosen files as block records, in order; what could not be taken, in words.
     Added { token: u64, records: Vec<String>, refused: Vec<String> },
@@ -333,7 +340,8 @@ impl Places {
             serde_json::Value::String(s) if s.starts_with(".minnotes/") => return match (&self.staged, &self.base) {
                 // added since the last save: still on this machine
                 (Some(st), _) if st.join(&s[10..]).is_file() => Ok(st.join(&s[10..])),
-                (_, Some(b)) => Ok(b.join(s)), _ => Err("the collection has no folder yet".into()) },
+                // beside the document: the visible folder, else the hidden one of before row 333
+                (_, Some(b)) => { let (new, old) = (b.join(SIDE).join(&s[10..]), b.join(s)); Ok(if !new.is_file() && old.is_file() { old } else { new }) } _ => Err("the collection has no folder yet".into()) },
             serde_json::Value::String(s) => Ref::Abs(s.clone()),
             _ => return Err("the block names no file".into()),
         };
@@ -374,7 +382,7 @@ impl Places {
     fn settle(&self, dir: &Path, tmp: &Path, stem: &str, ext: &str, hash: u64) -> Result<serde_json::Value, String> {
         let name = format!("{}-{:08x}.{ext}", if stem.is_empty() { "picture" } else { stem }, (hash >> 32) as u32 ^ hash as u32);
         let at = dir.join(&name);
-        let there = at.is_file() || self.base.as_ref().is_some_and(|b| b.join(".minnotes").join(&name).is_file());
+        let there = at.is_file() || self.base.as_ref().is_some_and(|b| b.join(SIDE).join(&name).is_file() || b.join(OLD_SIDE).join(&name).is_file());
         if there { let _ = std::fs::remove_file(tmp); } else { std::fs::rename(tmp, &at).map_err(|e| e.to_string())?; }
         Ok(serde_json::Value::String(format!(".minnotes/{name}")))
     }
@@ -439,10 +447,10 @@ impl Places {
 }
 
 /// A save's first half (runs on the save's helper thread): the files added in this session go beside the document,
-/// into `side` (its `.minnotes/`), each written under a temporary name and renamed; one already there with the same
+/// into `side` (its `minNotes Media/`), each written under a temporary name and renamed; one already there with the same
 /// size is left. `also`: another folder of such files to carry along (Save As to a new place).
-pub fn publish(staged: &Path, side: &Path, also: Option<&Path>) -> std::io::Result<()> {
-    for from in [Some(staged), also].into_iter().flatten() {
+pub fn publish(staged: &Path, side: &Path, also: &[PathBuf]) -> std::io::Result<()> {
+    for from in std::iter::once(staged).chain(also.iter().map(|p| p.as_path())) {
         let Ok(list) = std::fs::read_dir(from) else { continue };
         for e in list.flatten() {
             let (p, name) = (e.path(), e.file_name()); let Ok(m) = e.metadata() else { continue };
@@ -453,7 +461,17 @@ pub fn publish(staged: &Path, side: &Path, also: Option<&Path>) -> std::io::Resu
             let tmp = side.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
             if let Err(e) = std::fs::copy(&p, &tmp).and_then(|_| std::fs::rename(&tmp, &to)) { let _ = std::fs::remove_file(&tmp); return Err(e) }
         }
+        // collected clips' notes (QCView's sidecar folders) go along with a Save As
+        if from != staged { let q = from.join(".qcview"); if q.is_dir() { carry(&q, &side.join(".qcview"))?; } }
     }
+    Ok(())
+}
+
+/// A folder's files copied into another, folders walked; a file there already with the same size is left.
+fn carry(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() { let (p, t) = (e.path(), to.join(e.file_name())); let Ok(m) = e.metadata() else { continue };
+        if m.is_dir() { carry(&p, &t)?; } else if !std::fs::metadata(&t).is_ok_and(|x| x.len() == m.len()) { std::fs::copy(&p, &t)?; } }
     Ok(())
 }
 
@@ -748,6 +766,17 @@ mod tests {
         assert_eq!(exif_orientation(&jpg), Some(6));
         assert_eq!(exif_orientation(&[0xff, 0xd8, 0xff, 0xda, 0, 2]), None);
         assert_eq!(exif_orientation(b"not a jpeg"), None);
+    }
+    #[test]
+    fn a_kept_file_is_looked_for_in_the_visible_folder_then_in_the_hidden_one_of_before_and_a_save_as_carries_both() {
+        let d = std::env::temp_dir().join(format!("mn-side-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("a/.minnotes")).unwrap(); std::fs::create_dir_all(d.join("a/minNotes Media/.qcview/c.mov")).unwrap(); std::fs::create_dir_all(d.join("staged")).unwrap();
+        std::fs::write(d.join("a/.minnotes/old.png"), b"old").unwrap(); std::fs::write(d.join("a/minNotes Media/new.png"), b"new").unwrap(); std::fs::write(d.join("a/minNotes Media/.qcview/c.mov/notes.json"), b"{}").unwrap(); std::fs::write(d.join("staged/added.png"), b"added").unwrap();
+        let places = Places::at(Some(d.join("a"))); let at = |n: &str| places.locate(&serde_json::json!(format!(".minnotes/{n}"))).unwrap();
+        assert_eq!((at("old.png"), at("new.png"), at("none.png")), (d.join("a/.minnotes/old.png"), d.join("a/minNotes Media/new.png"), d.join("a/minNotes Media/none.png")));
+        let side = d.join("b").join(SIDE); publish(&d.join("staged"), &side, &[d.join("a").join(OLD_SIDE), d.join("a").join(SIDE)]).unwrap();
+        for f in ["old.png", "new.png", "added.png", ".qcview/c.mov/notes.json"] { assert!(side.join(f).is_file(), "{f}"); }
+        let _ = std::fs::remove_dir_all(&d);
     }
     #[test]
     fn a_gif_gives_its_first_frame_and_an_unknown_format_says_so() {
