@@ -17,8 +17,10 @@ use std::path::{Path, PathBuf};
 /// 100 000: a whole layout of a table costs about 6 ms per 1000 cells here and a cell about 11 KB (19 200 cells: 91 ms;
 /// 76 800: 445 ms and 0.9 GB), so 10 000 cells is the size whose whole layout still fits in about three frames.
 pub const CAP: usize = 10_000;
-/// A text file larger than this is not read as a document at all.
+/// A text file larger than this is not read as a document at all. A web page may be far larger: its pictures are
+/// often inside it (minNotes' own HTML export is one file with everything in it).
 const LARGEST: u64 = 32 << 20;
+const LARGEST_PAGE: u64 = 1 << 30;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Family { Markdown, Html, Text, /// one code block; the language is the extension
@@ -119,7 +121,12 @@ fn keep_pictures(clip: &mut Clip, folder: &Path, places: &Places) -> usize {
     for tree in clip.iter_mut() { for b in tree.iter_mut() {
         let Kind::Media { descriptor } = &b.kind else { continue };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(descriptor) else { continue };
-        let Some(src) = v.get("src").and_then(|s| s.as_str()).filter(|s| !crate::media::remote(s)) else { continue };
+        let Some(src) = v.get("src").and_then(|s| s.as_str()) else { continue };
+        // a picture inside the document itself is kept now, so that the note does not carry its bytes as text
+        if src.starts_with("data:") { match crate::media::fetched(places, src).ok().and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok()) {
+            Some(mut rec) => { if let (Some(w), Some(h)) = (v.get("w").and_then(|w| w.as_f64()).filter(|_| v.get("h").is_some() && !(v["w"] == 480 && v["h"] == 300)), v.get("h").and_then(|h| h.as_f64())) { rec["w"] = serde_json::json!(w.round()); rec["h"] = serde_json::json!(h.round()); } b.kind = Kind::Media { descriptor: rec.to_string() }; }
+            None => { lost += 1; b.kind = Kind::Paragraph; } } continue }
+        if crate::media::remote(src) { continue }
         match places.picture_copied(&local(src, folder)) {
             Ok(mut rec) => { // the size the document gave it is kept in proportion: its width, the picture's own shape
                 if let (Some(w), Some(pw), Some(ph)) = (v.get("w").and_then(|w| w.as_f64()).filter(|w| *w >= 16.0), rec.get("w").and_then(|w| w.as_f64()), rec.get("h").and_then(|h| h.as_f64())) { if pw > 0.0 && w < pw { rec["w"] = serde_json::json!(w.round()); rec["h"] = serde_json::json!((w * ph / pw).round()); } }
@@ -136,7 +143,7 @@ fn keep_pictures(clip: &mut Clip, folder: &Path, places: &Places) -> usize {
 pub fn read(path: &Path, places: &Places) -> Result<Done, String> {
     let fam = family(path).ok_or("minNotes does not import this kind of file")?;
     let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if len > LARGEST { return Err("The file is too large to be a note \u{2014} drop it into a note to attach it instead.".into()) }
+    if len > if fam == Family::Html { LARGEST_PAGE } else { LARGEST } { return Err("The file is too large to be a note \u{2014} drop it into a note to attach it instead.".into()) }
     let text = decode(&std::fs::read(path).map_err(|e| e.to_string())?);
     let folder = path.parent().unwrap_or(Path::new("."));
     let opts = crate::paste::Opts { colours: true, local: true };

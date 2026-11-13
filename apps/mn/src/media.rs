@@ -490,7 +490,7 @@ fn sniff(b: &[u8]) -> Option<&'static str> {
         else if b.len() > 12 && &b[4..8] == b"ftyp" { if &b[8..12] == b"avif" { "avif" } else { "heic" } } else if text() { "svg" } else { return None })
 }
 /// The picture an address names, kept with the collection as a dropped file of it would be: its record.
-fn fetched(places: &Places, addr: &str) -> Result<String, String> {
+pub fn fetched(places: &Places, addr: &str) -> Result<String, String> {
     const MOST: u64 = 64 << 20;
     let (bytes, name): (Vec<u8>, String) = if let Some(rest) = addr.strip_prefix("data:") {
         let (head, data) = rest.split_once(',').ok_or("the embedded picture is not complete")?;
