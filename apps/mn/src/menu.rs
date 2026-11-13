@@ -59,13 +59,28 @@ pub fn key_of(c: &Cmd) -> Option<(char, bool)> {
 }
 
 #[cfg(target_os = "macos")]
-pub use native::AppMenu;
+pub use native::{panel_takes, AppMenu};
 
 #[cfg(target_os = "macos")]
 mod native {
     use super::{spec, Cmd, Node, Sc};
     use muda::{accelerator::{Accelerator, Code, Modifiers}, AboutMetadata, CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
     use std::collections::HashMap;
+
+    /// The Edit menu's items by their ids: what a system panel's text field is sent in their place.
+    static EDIT: std::sync::OnceLock<HashMap<MenuId, &'static std::ffi::CStr>> = std::sync::OnceLock::new();
+    /// A menu command arrived while a system panel (Save, Open) is up. The Edit menu's keys are the panel's then - sent
+    /// to whatever field has the keys there, as the system's own Edit menu would - and every other command is dropped:
+    /// the window behind a panel does nothing. True: the event is dealt with.
+    pub fn panel_takes(id: &MenuId) -> bool {
+        use objc2::{class, msg_send, runtime::{AnyObject, Sel}};
+        unsafe {
+            let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication]; if app.is_null() { return false }
+            let modal: *mut AnyObject = msg_send![app, modalWindow]; if modal.is_null() { return false }
+            if let Some(name) = EDIT.get().and_then(|m| m.get(id)) { let sel = Sel::register(name); let nil: *mut AnyObject = std::ptr::null_mut(); let _: bool = msg_send![app, sendAction: sel, to: nil, from: nil]; }
+            true
+        }
+    }
 
     pub struct AppMenu { pub menu: Menu, ids: HashMap<MenuId, Cmd>, recent: Submenu, seen: Option<Vec<String>>, checks: Vec<(Cmd, CheckMenuItem)> }
 
@@ -97,6 +112,7 @@ mod native {
                 } }
                 let _ = menu.append(&sub);
             }
+            let _ = EDIT.set(ids.iter().filter_map(|(id, c)| Some((id.clone(), match c { Cmd::Cut => c"cut:", Cmd::Copy => c"copy:", Cmd::Paste | Cmd::PastePlain => c"paste:", Cmd::SelectAll => c"selectAll:", Cmd::Undo => c"undo:", Cmd::Redo => c"redo:", _ => return None }))).collect());
             let mut m = AppMenu { menu, ids, recent: recent.expect("the File menu has Open Recent"), seen: None, checks };
             m.set_recent(&[]); m
         }

@@ -2330,6 +2330,8 @@ impl ApplicationHandler for App {
             if std::env::var_os("MN_PLAY").is_some() { if let Some(id) = self.ed.doc.walk().iter().find(|b| matches!(&b.kind, Kind::Media { descriptor } if descriptor.contains("\"kind\":\"video\""))).map(|b| b.id) { let ok = self.video_start(id, true); println!("play: started {ok}"); } }
             // MN_PAGE_INK=1: the note's first picture (2: its first PDF) is made current and drawn on as the pointer would (see `page_ink_test`)
             if std::env::var_os("MN_PAGE_INK").is_some() { self.files.ink_test = true; }
+            // (scripted, MN_EXPORT_PANEL=1: the export's save panel is opened as the menu opens it - to watch what the application does while it is up)
+            if std::env::var_os("MN_EXPORT_PANEL").is_some() { self.later.push(menu::Cmd::ExportHtml); }
             // MN_RESIZE=<width>: the note's first picture is made current and resized to that width as a corner drag would (one undo step), then undone and redone
             if let Some(w) = std::env::var("MN_RESIZE").ok().and_then(|v| v.parse::<f64>().ok()) { use mn_edit::{Pos, Selection};
                 if let Some((id, before)) = self.ed.doc.walk().iter().find_map(|b| match &b.kind { Kind::Media { descriptor } if !descriptor.contains("\"kind\"") => Some((b.id, descriptor.clone())), _ => None }) {
@@ -2441,7 +2443,10 @@ impl ApplicationHandler for App {
         if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
-        #[cfg(target_os = "macos")] for ev in std::mem::take(&mut *MENU_EVENTS.lock().unwrap()) { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
+        // (the queue is taken and let go BEFORE the commands run: one of them may put a system panel up, and a menu key
+        // pressed in the panel comes to the same queue on this thread)
+        #[cfg(target_os = "macos")] let menu_events = std::mem::take(&mut *MENU_EVENTS.lock().unwrap());
+        #[cfg(target_os = "macos")] for ev in menu_events { let c = self.menu.as_ref().and_then(|m| m.cmd(&ev.id)); text_element::key_log(format!("menu {c:?}")); if let Some(c) = c { self.menu_cmd(c); }
             // a command changes what is shown, and no window event follows it to ask for the frame
             if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(t) = self.geom_moved { let due = t + std::time::Duration::from_millis(150); if Instant::now() >= due { self.geom_moved = None; #[cfg(target_os = "macos")] text_element::relaid(); } else { el.set_control_flow(ControlFlow::WaitUntil(due)); } }
@@ -2948,6 +2953,6 @@ fn main() {
     let el = EventLoop::new().unwrap();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     let _ = WAKE.set(el.create_proxy());
-    #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
+    #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { if menu::panel_takes(&ev.id) { return } MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
     el.run_app(app).unwrap();
 }
