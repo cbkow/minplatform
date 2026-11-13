@@ -83,8 +83,13 @@ body.cv{overflow:hidden;height:100vh}
 .card.link{display:flex;flex-direction:column;justify-content:center;padding:6px 12px;text-decoration:none}
 .card.link .host{color:var(--accent-hi);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card.link .url{font:11px/16px var(--mono);color:var(--g600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card.pic{background:#000;line-height:0}.card.pic .thumb.fill{width:100%;height:100%;border-radius:0}.card.pic .thumb.fill img{width:100%;height:100%;object-fit:contain}
-.card.ref figure{margin:0;border:0;border-radius:0;height:100%;display:flex;flex-direction:column}.card.ref figure.ref .thumb{flex:1;min-height:0}.card.ref figure.ref .thumb img{width:100%;height:100%;object-fit:contain}
-.card.ref figure+figure,.card.ref table.vnotes{display:none}
+.card.ref{display:flex;flex-direction:column}.card.ref figure{margin:0;border:0;border-radius:0;flex:1;min-height:0;display:flex;flex-direction:column}.card.ref figure.ref .thumb{flex:1;min-height:0}.card.ref figure.ref .thumb img{width:100%;height:100%;object-fit:contain}
+.card.ref figure+figure{display:none}
+/* a video's notes on its card: their stills in a row under the picture (each opens with its drawing and its words) */
+.card.ref table.vnotes{display:block;flex:none;width:auto;margin:0;border:0;border-top:1px solid var(--g300);border-radius:0;padding:6px;overflow:hidden;background:var(--l1)}
+.card.ref table.vnotes tbody{display:flex;gap:6px}.card.ref table.vnotes tr{display:block;flex:none}.card.ref table.vnotes td{display:none}
+.card.ref table.vnotes td.fr{display:block;padding:0;width:auto;border:0}.card.ref table.vnotes .thumb,.card.ref table.vnotes .nothumb{width:auto;height:44px;border-radius:3px}.card.ref table.vnotes .thumb img{width:auto;height:44px}
+.card.ref table.vnotes tr.done .thumb{opacity:.55}
 .card.note{cursor:pointer;background:var(--l1)}
 .card.note:hover,.card.note:focus-visible{border-color:var(--accent);outline:none}
 .card.note .nt{font:500 12px/18px var(--mono);color:var(--g700);padding:8px 16px 6px;border-bottom:1px solid var(--g200)}
@@ -195,6 +200,18 @@ mod tests {
     struct Fake;
     impl Source for Fake { fn item(&mut self, _: &str, _: Mode, _: Opts) -> Item { Item { what: What::Picture, name: "shot.png".into(), path: String::new(), meta: String::new(), dw: None, problem: None, shots: vec![Shot { pic: Some(Pic { bytes: vec![1, 2, 3], mime: "image/png", ext: "png", w: 4, h: 2 }), head: "shot.png".into(), ..Default::default() }], notes: vec![] } } }
     fn el(kind: &str, record: &str, x: f64, y: f64, w: f64, h: f64, parent: Option<BlockId>) -> Element { Element { id: BlockId::new(), kind: kind.into(), x, y, w, h, z: 0, parent, record: record.into(), locked: false } }
+    /// A page to LOOK at (run with `--ignored`, `MN_SAMPLE=<file.html>`): a video card with three notes, one without.
+    #[test] #[ignore]
+    fn a_sample_canvas_with_a_videos_notes_is_written() {
+        let Ok(to) = std::env::var("MN_SAMPLE") else { return };
+        struct Vid;
+        impl Source for Vid { fn item(&mut self, d: &str, _: Mode, _: Opts) -> Item {
+            let shot = |shade: u8, head: &str, text: &str, done: Option<bool>| Shot { pic: Some(Pic { bytes: min_image::write::png_rgba8_bytes(&[shade, 90, 255 - shade, 255].repeat(160 * 90), 160, 90).unwrap(), mime: "image/png", ext: "png", w: 160, h: 90 }), head: head.into(), sub: "frame".into(), text: text.into(), done, ..Default::default() };
+            Item { what: What::Video, name: "clip.mp4".into(), path: String::new(), meta: "1920 \u{d7} 1080 \u{b7} 00:00:10:00".into(), dw: None, problem: None, shots: vec![shot(40, "clip.mp4", "", None)],
+                notes: if d.contains("plain") { vec![] } else { vec![shot(90, "00:00:01:00", "too dark here", Some(false)), shot(150, "00:00:03:12", "fixed", Some(true)), shot(210, "00:00:07:00", "", Some(false))] } } } }
+        let a = el("media", "{\"kind\":\"video\"}", 0.0, 0.0, 420.0, 330.0, None); let b = el("media", "{\"kind\":\"video\",\"plain\":1}", 460.0, 0.0, 420.0, 330.0, None);
+        std::fs::write(to, canvas_html(&[&a, &b], "Sample", "today", Opts::default(), &vec![], &mut Vid, &mut |_| None)).unwrap();
+    }
     #[test]
     fn cards_stand_where_they_are_and_a_frame_with_a_size_holds_its_members() {
         let frame = el("frame", "{\"title\":\"Shots <A>\",\"tint\":\"teal\",\"fixed\":true}", 100.0, 100.0, 400.0, 300.0, None);

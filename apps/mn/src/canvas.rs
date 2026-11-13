@@ -38,6 +38,8 @@ enum Act { /// a stroke being drawn: for the pen the smoother (fed the sheet's u
 
 pub struct Canvas {
     pub id: BlockId, pub els: Vec<Element>, pub sel: Vec<BlockId>,
+    /// the card whose video is playing, scrubbed or drawn on: its selection is not drawn (no outline, no corners) meanwhile
+    pub quiet: Option<BlockId>,
     /// the unit at the view's centre, and the zoom; `fit`: the camera still follows the content (nobody moved it)
     cam: (f64, f64, f64), fit: bool,
     /// something changed since it was last written to the collection
@@ -73,7 +75,7 @@ fn small(icon: &'static str, tip: &str) -> ActionButton { let mut b = ActionButt
 impl Canvas {
     pub fn new(id: BlockId, c: mn_store::Canvas) -> Canvas {
         let mut pc = ActionButton::new("", "Zoom to 100 %").size_s(); pc.label = Some("100 %".into());
-        Canvas { id, els: c.elements, sel: vec![], cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
+        Canvas { id, els: c.elements, sel: vec![], quiet: None, cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
             space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)"), tool: None, pen: [1.0, 0.0, 0.0, 1.0], pen_w: 6.0, pressure: None, inked: None, framing: false, ctrl: false, shift: false, guides: vec![], drop_at: None, hover: None, t0: Instant::now(), drawn: Default::default() }
     }
     /// As the collection keeps it.
@@ -384,7 +386,7 @@ impl Canvas {
     // -- the pointer and the keys
 
     fn handles(&self) -> Option<(BlockId, [(Rect, bool, bool); 4])> {
-        let [id] = self.sel[..] else { return None }; let r = self.on_screen(self.get(id).filter(|e| !e.locked)?); let h = HANDLE * self.scale;
+        let [id] = self.sel[..] else { return None }; if self.quiet == Some(id) { return None } let r = self.on_screen(self.get(id).filter(|e| !e.locked)?); let h = HANDLE * self.scale;
         let at = |x: f64, y: f64| Rect::from_center_size((x, y), (h, h));
         Some((id, [(at(r.x0, r.y0), true, true), (at(r.x1, r.y0), false, true), (at(r.x0, r.y1), true, false), (at(r.x1, r.y1), false, false)]))
     }
@@ -570,7 +572,8 @@ impl Canvas {
         if clip.is_some() { scene.pop_layer(); }
         for (id, h) in fits { self.fit_h.insert(id, h); }
         // the selection: an outline a card, the corners of the one card; the marquee
-        for id in &self.sel { if let Some(e) = self.get(*id) { scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &self.on_screen(e).inflate(1.0 * s, 1.0 * s)); } }
+        // (not around a card whose video is playing or being drawn on: what is being watched has no frame on it)
+        for id in &self.sel { if self.quiet == Some(*id) { continue } if let Some(e) = self.get(*id) { scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &self.on_screen(e).inflate(1.0 * s, 1.0 * s)); } }
         if self.edit.is_none() { if let Some((_, hs)) = self.handles() { for (h, ..) in hs { scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR), None, &h); scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &h); } } }
         // a locked card says so when it is selected; the lines a drag snapped to; the frame being made
         for e in self.els.iter().filter(|e| e.locked && self.sel.contains(&e.id)) { let r = self.on_screen(e); if let Some(g) = fonts.icon("lock-simple", (13.0 * s) as f32, accent) { let b = Rect::new(r.x1 - 22.0 * s, r.y0 + 4.0 * s, r.x1 - 4.0 * s, r.y0 + 22.0 * s); scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR).with_alpha(0.85), None, &RoundedRect::from_rect(b, 4.0 * s)); draw_layout(scene, &g, Affine::translate((b.center().x - g.width() as f64 / 2.0, b.center().y - g.height() as f64 / 2.0))); } }

@@ -421,6 +421,7 @@ impl App {
         if let Some(cv) = self.files.canvas.as_mut() { let live = self.files.card.as_ref().map(|c| c.el);
             let (cards, ed, store, others) = (&mut self.files.cards, &self.ed, self.store.as_ref(), &self.others);
             let mut note = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, k: f64, far: bool| card_pic(cards, ed, store, others, scene, fonts, media, e, r, k, s, far);
+            cv.quiet = self.player.as_ref().filter(|p| p.t.is_playing() || p.scrub || self.files.drawing).map(|p| p.id);
             let (ann, hide, vlive) = (self.player.as_ref().map(|p| &p.ann), self.files.hide_notes, live_video);
             let mut video = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, strip: Option<Rect>| { let me = vlive.filter(|m| m.id == e.id); paint::video_card(scene, fonts, media, &e.record, r, strip, me, ann.filter(|_| me.is_some()), hide, s); };
             if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s, live, &mut note, vlive.filter(|_| live.is_none()).map(|m| m.id), hole, &mut video) { g.window.request_redraw(); } }
@@ -463,7 +464,8 @@ impl App {
             if let Some((_, sid)) = self.files.psel.as_ref().filter(|p| p.0 == *id) { let now = self.ed.doc.get(*id).and_then(|b| match &b.kind { Kind::Media { descriptor } => serde_json::from_str::<serde_json::Value>(descriptor).ok(), _ => None }).unwrap_or(rec);
                 if let Some(l) = ink::page_lines(&now, ink::page_no(&now), size).into_iter().find(|l| l.s.id == *sid) { let b = at.transform_rect_bbox(ink::bounds(&l)).inflate(2.0 * s, 2.0 * s); scene.stroke(&kurbo::Stroke::new(1.5 * s).with_dashes(0.0, [4.0 * s, 3.0 * s]), kurbo::Affine::IDENTITY, paint::accent(), None, &b); } } }
         // the current picture: an outline, and a handle at each corner to resize it by
-        let current = (!self.blank && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
+        // (not while a drawing tool is armed: the picture is being drawn on, not arranged)
+        let current = (!self.blank && self.files.tool.is_none() && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
             .filter(|id| matches!(self.ed.doc.get(*id).map(|b| &b.kind), Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\""))).and_then(|id| l.rect(&self.ed.doc, id)).map(|r| r + off);
         if let Some(r) = current {
             let r = Rect::new(r.x0.round(), r.y0.round(), r.x1.round(), r.y1.round());
@@ -497,7 +499,9 @@ impl App {
                 min_ui::fonts::draw_layout(scene, &t, kurbo::Affine::translate((px + 8.0 * s, py + 4.0 * s)));
             }
         }
-        if !self.blank && picked.is_empty() && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
+        // no caret beside a media block that is being USED - its video playing, scrubbed or drawn on, text selected on its page, a drawing tool armed
+        let used = self.ed.selection().map(|x| x.focus.block).filter(|b| matches!(self.ed.doc.get(*b).map(|x| &x.kind), Some(Kind::Media { .. }))).is_some_and(|b| self.files.tool.is_some() || self.files.pdf.as_ref().is_some_and(|p| p.id == b) || self.player.as_ref().is_some_and(|p| p.id == b && (p.t.is_playing() || p.scrub || self.files.drawing)));
+        if !self.blank && !used && picked.is_empty() && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
@@ -1876,7 +1880,7 @@ impl App {
     }
     /// The picture that is current - the caret is on it, or it is the one selected block - with its box in the window.
     fn picture(&self) -> Option<(BlockId, Rect)> {
-        if self.blank || self.grab.as_ref().is_some_and(|g| g.dragging) || self.ed.run_len() != 1 { return None }
+        if self.blank || self.files.tool.is_some() || self.grab.as_ref().is_some_and(|g| g.dragging) || self.ed.run_len() != 1 { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         let id = self.ed.handle_block()?;
         match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\"") => {} _ => return None }
