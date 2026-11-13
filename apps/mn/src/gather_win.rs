@@ -138,7 +138,7 @@ impl Window {
         self.card = Rect::new(x0, y0, x0 + w, y0 + h);
         self.list = Rect::new(x0 + pad, y0 + pad + 104.0 * s, x0 + w - pad, y0 + h - pad - bh - 16.0 * s);
         // the rows, in the list's own coordinates first
-        let (gh, ah) = (30.0 * s, 46.0 * s); let mut at: Vec<(f64, f64, Row)> = vec![]; let mut y = 0.0;
+        let (gh, ah) = (32.0 * s, 52.0 * s); let mut at: Vec<(f64, f64, Row)> = vec![]; let mut y = 0.0;
         for k in Kind::ALL { let of: Vec<usize> = (0..self.assets.len()).filter(|i| self.assets[*i].kind == k).collect(); if of.is_empty() { continue }
             at.push((y, gh, Row::Group(k))); y += gh; for i in of { at.push((y, ah, Row::Asset(i))); y += ah; } y += 6.0 * s; }
         self.bar.set(self.list, y, s);
@@ -162,8 +162,8 @@ impl Window {
         let want: Vec<(usize, &str)> = self.rows.iter().filter_map(|(_, r)| match r { Row::Asset(i) => match self.phase { Phase::Review if self.assets[*i].problem.is_some() => Some((*i, "Locate\u{2026}")), Phase::Running | Phase::Done if self.state(*i) == FAILED => Some((*i, "Retry")), _ => None }, _ => None }).collect();
         self.row_btn.retain(|i, b| want.iter().any(|(k, l)| k == i && b.label == *l));
         for (i, l) in want { let b = self.row_btn.entry(i).or_insert_with(|| TextButton::new(l, Variant::Secondary).size_s()); let (bw, bhs) = b.measure(fonts, s);
-            let r = self.rows.iter().find(|(_, x)| *x == Row::Asset(i)).map(|(r, _)| *r).unwrap_or(Rect::ZERO); let cy = r.y0 + 32.0 * s;
-            b.rect = if r.y0 >= self.list.y0 - 1.0 && r.y1 <= self.list.y1 + 1.0 { Rect::new(r.x1 - 12.0 * s - bw, cy - bhs / 2.0, r.x1 - 12.0 * s, cy + bhs / 2.0) } else { Rect::ZERO }; }
+            let r = self.rows.iter().find(|(_, x)| *x == Row::Asset(i)).map(|(r, _)| *r).unwrap_or(Rect::ZERO); let cy = r.y0 + 35.0 * s;
+            b.rect = if r.y0 >= self.list.y0 - 1.0 && r.y1 <= self.list.y1 + 1.0 { Rect::new(r.x1 - 16.0 * s - bw, cy - bhs / 2.0, r.x1 - 16.0 * s, cy + bhs / 2.0) } else { Rect::ZERO }; }
     }
     fn row_at(&self, x: f64, y: f64) -> Option<Row> { if !self.list.contains(kurbo::Point::new(x, y)) { return None } self.rows.iter().find(|(r, _)| r.contains(kurbo::Point::new(x, y))).map(|(_, r)| *r) }
     fn toggle(&mut self, r: Row) {
@@ -219,7 +219,8 @@ impl Window {
         paint::rect(scene, view, t::DIALOG_SCRIM_COLOR);
         let rad = t::DIALOG_CORNER_RADIUS as f64 * s;
         for sh in t::POPOVER_SHADOW { scene.draw_blurred_rounded_rect(Affine::translate((sh.x as f64 * s, sh.y as f64 * s)), self.card.inflate(sh.spread as f64 * s, sh.spread as f64 * s), c(sh.color), rad, (sh.blur as f64 * s / 2.0).max(0.1)); }
-        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, c(t::DIALOG_BACKGROUND_COLOR), None, &RoundedRect::from_rect(self.card, rad));
+        // the card is layer 1; each file is a tile of layer 2 on it (the user 2026-11-13)
+        scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_LAYER_1_COLOR), None, &RoundedRect::from_rect(self.card, rad));
         let (x0, x1, y0) = (self.card.x0 + pad, self.card.x1 - pad, self.card.y0 + pad); let wide = x1 - x0;
         // a line of text, its left end at `x` and its middle at `cy`; its width
         let line = |scene: &mut Scene, fonts: &mut Fonts, text: &str, x: f64, cy: f64, size: f32, bold: bool, color: peniko::Color, room: f64, right: bool| -> f64 {
@@ -257,7 +258,7 @@ impl Window {
         let review = self.phase == Phase::Review; let cb = checkbox::size(s);
         for (r, row) in self.rows.clone() {
             if r.y1 < self.list.y0 || r.y0 > self.list.y1 { continue }
-            let mut x = r.x0 + 8.0 * s; let right = r.x1 - 12.0 * s;
+            let mut x = r.x0 + 8.0 * s; let right = r.x1 - 16.0 * s;
             match row {
                 Row::Group(k) => {
                     let of: Vec<&Asset> = self.assets.iter().filter(|a| a.kind == k).collect(); let cy = r.y0 + 18.0 * s;
@@ -267,8 +268,9 @@ impl Window {
                     line(scene, fonts, &format!("{} \u{00b7} {}", files(of.len()), gather::bytes(of.iter().map(|a| a.size).sum())), x + w + 10.0 * s, cy, t::BODY_SIZE_S, false, sub, 300.0 * s, false);
                 }
                 Row::Asset(i) => {
-                    let a = self.assets[i].clone(); let st = self.state(i); let (c1, c2) = (r.y0 + 14.0 * s, r.y0 + 32.0 * s);
-                    if review && self.hover == Some(row) && a.problem.is_none() { paint::rounded(scene, r.inset((0.0, -1.0 * s)), t::PICKER_CORNER_RADIUS as f64 * s, t::MENU_ITEM_HOVER_COLOR); }
+                    let a = self.assets[i].clone(); let st = self.state(i); let (c1, c2) = (r.y0 + 17.0 * s, r.y0 + 35.0 * s);
+                    paint::rounded(scene, r.inset((0.0, -2.0 * s)), t::CORNER_RADIUS_500 as f64 * s, if review && self.hover == Some(row) && a.problem.is_none() { t::HOVER_BACKGROUND_COLOR } else { t::BACKGROUND_LAYER_2_COLOR });
+                    x += 4.0 * s;
                     if review { checkbox::paint_box(scene, fonts, Rect::new(x, c1 - cb / 2.0, x + cb, c1 + cb / 2.0), Some(a.on), a.problem.is_none(), self.hover == Some(row), s); x += cb + 10.0 * s; }
                     let dim = !review && st == OFF;
                     if let Some(g) = fonts.icon(a.kind.icon(), t::ICON_SIZE_SMALL * s as f32, if dim { sub } else { ink }) { draw_layout(scene, &g, Affine::translate((x, c1 - g.height() as f64 / 2.0))); } x += t::ICON_SIZE_SMALL as f64 * s + 8.0 * s;
