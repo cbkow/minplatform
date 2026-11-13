@@ -52,6 +52,7 @@ mod export;
 mod gather;
 mod gather_win;
 mod site_win;
+mod transcode;
 mod search;
 mod canvas;
 mod ink;
@@ -762,7 +763,7 @@ impl App {
         let Some(path) = to else { let dlg = rfd::FileDialog::new().set_title(format!("Export as {kind}")).add_filter(kind, &[ext]).set_file_name(format!("{safe}{}.{ext}", if fmt == 4 { "-poster" } else if on_canvas { "-canvas" } else { "" })); self.panel(dlg, 0, move |me, p| me.export(fmt, p.into_iter().next())); return };
         let opts = *self.files.xopts.get_or_insert_with(export_settings);
         let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
-        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu }; let doc = &self.ed.doc;
+        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu, fresh: false }; let doc = &self.ed.doc;
         let when = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
         let text: Result<Vec<u8>, String> = if on_canvas {
             if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); }
@@ -791,7 +792,7 @@ impl App {
     fn copy_markdown(&mut self) {
         if self.blank || self.store.is_none() { return }
         let opts = *self.files.xopts.get_or_insert_with(export_settings); let title = self.note_title();
-        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu: None };
+        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu: None, fresh: false };
         let (text, what) = match self.ed.copy_blocks() {
             Some(clip) => { let tops: Vec<BlockId> = clip.iter().filter_map(|t| t.first().map(|b| b.id)).collect(); (export::markdown(clip.iter().flatten(), &tops, "", opts, &mut src, None), if tops.len() == 1 { "block".to_string() } else { format!("{} blocks", tops.len()) }) }
             None => (export::markdown(self.ed.doc.walk(), self.ed.doc.children(None), &title, opts, &mut src, None), "note".to_string()) };
@@ -845,7 +846,7 @@ impl App {
         let mut entries = vec![]; walk(&st.col, None, 0, &mut entries);
         if let Some(sb) = self.sidebar.as_ref() { for e in entries.iter_mut() { if let Some(r) = sb.row(e.id) { e.title = r.title.clone(); } } }
         let current = match (&self.files.canvas, &self.files.card) { (Some(cv), None) => Some(cv.id), _ if !self.blank => Some(st.note), _ => None };
-        self.files.site = Some(site_win::Window::open(entries, current, true)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+        self.files.site = Some(site_win::Window::open(entries, current, true, true)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn site_out(&mut self, out: site_win::Out) {
         use site_win::Out as O;
@@ -883,15 +884,15 @@ impl App {
         }
         let se = st.session.as_ref(); let (base, staged) = (se.and_then(|x| x.original().parent().map(|p| p.to_path_buf())), se.map(|x| x.media_dir()));
         let name = se.and_then(|x| x.original().file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Collection".into());
-        let files = w.files.on; let opts = *self.files.xopts.get_or_insert_with(export_settings);
-        let job = Job { pages, dest: dest.clone(), opts, files, name, when: jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), cards };
+        let files = w.files.on; let videos = w.videos.on; let opts = *self.files.xopts.get_or_insert_with(export_settings);
+        let job = Job { pages, dest: dest.clone(), opts, files, videos, name, when: jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), cards };
         let prog = std::sync::Arc::new(Progress::new(job.pages.len())); let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
         let settings = sessions_root().parent().unwrap_or(std::path::Path::new(".")).to_path_buf(); let p = prog.clone();
         let wake = || { if let Some(w) = WAKE.get() { w.wake_up(); } };
         let made = std::thread::Builder::new().name("mn-site".into()).spawn(move || {
             // media of its own for this piece of work: its decoders are not the window's
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { let mut media = media::Media::new(&settings, || {}); media.set_base(base.as_deref(), staged); let mut poster = video::Poster::default();
-                let mut src = export::Files { media: &mut media, poster: &mut poster, gpu }; export::site::write(&job, &mut src, &export::fonts(), &p, &wake) })).unwrap_or_else(|_| Err("The export stopped on an error of its own".into()));
+                let mut src = export::Files { media: &mut media, poster: &mut poster, gpu, fresh: true }; let mut ff = transcode::Ffmpeg::new(); export::site::write(&job, &mut src, Some(&mut ff), &export::fonts(), &p, &wake) })).unwrap_or_else(|_| Err("The export stopped on an error of its own".into()));
             if let Err(e) = r { *p.error.lock().unwrap() = Some(e); }
             p.over.store(true, std::sync::atomic::Ordering::Relaxed); wake();
         });

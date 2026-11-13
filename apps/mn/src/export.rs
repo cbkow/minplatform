@@ -39,7 +39,8 @@ pub struct Shot { pub pic: Option<Pic>, pub ink: Option<Ink>, /// what it is (a 
     pub head: String, /// the smaller line beside it ("page 3 of 12", "frame 240")
     pub sub: String, /// a note's words
     pub text: String, /// a video note: addressed or not
-    pub done: Option<bool> }
+    pub done: Option<bool>, /// a video note: the frame it stands on
+    pub frame: Option<i64> }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum What { Picture, Pdf, Video, File }
 pub struct Item { pub what: What, pub name: String, /// where the file is on this machine (empty: not known)
@@ -49,7 +50,11 @@ pub struct Item { pub what: What, pub name: String, /// where the file is on thi
     pub problem: Option<String>, /// the first is the block's own picture; a PDF's other drawn-on pages follow
     pub shots: Vec<Shot>, /// a video's notes
     pub notes: Vec<Shot>, /// where a reader of a web folder finds the file itself (a copy beside the pages)
-    pub href: Option<String> }
+    pub href: Option<String>, /// a web folder's playable copy of a video (row 340)
+    pub video: Option<Video> }
+/// A video as a page plays it: where its file is from the page, its rate and how many frames it has.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Video { pub src: String, pub fps: f64, pub frames: i64 }
 /// How much of a media block a writer wants.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mode { /// clean pictures and the drawings beside them
@@ -109,13 +114,13 @@ fn thumb(s: &Shot, cls: &str) -> String {
 }
 fn html_media(it: &Item, opts: Opts, out: &mut String) {
     let lines = |out: &mut String| { match &it.href { Some(h) => out.push_str(&format!("<a class=\"name\" href=\"{}\">{}</a>", esc(h), esc(&it.name))), None => out.push_str(&format!("<span class=\"name\">{}</span>", esc(&it.name))) }
-        if opts.paths && !it.path.is_empty() { out.push_str(&format!("<span class=\"path\">{}</span>", esc(&it.path))); }
+        if opts.paths && !it.path.is_empty() { out.push_str(&format!("<span class=\"path\" data-ui><code>{}</code><button class=\"copy\" type=\"button\" title=\"Copy the path\" aria-label=\"Copy the path\">{COPY_ICONS}</button></span>", esc(&it.path))); }
         if !it.meta.is_empty() { out.push_str(&format!("<span class=\"meta\">{}</span>", esc(&it.meta))); }
         if let Some(p) = &it.problem { out.push_str(&format!("<span class=\"meta bad\">{}</span>", esc(p))); } };
     match (it.what, it.shots.first().filter(|s| s.pic.is_some())) {
         (What::Picture, Some(s)) => out.push_str(&format!("<figure class=\"pic\"{}>{}</figure>\n", it.dw.map(|w| format!(" style=\"width:{}px\"", w.round())).unwrap_or_default(), thumb(s, "wide"))),
         (_, first) => {
-            out.push_str(&format!("<figure class=\"ref {}\">", match it.what { What::Picture => "picture", What::Pdf => "pdf", What::Video => "video", What::File => "file" }));
+            out.push_str(&format!("<figure class=\"ref {}\"{}>", match it.what { What::Picture => "picture", What::Pdf => "pdf", What::Video => "video", What::File => "file" }, it.video.as_ref().map(|v| format!(" data-video=\"{}\" data-fps=\"{}\" data-frames=\"{}\"", esc(&v.src), v.fps, v.frames)).unwrap_or_default()));
             if let Some(s) = first { out.push_str(&thumb(s, "wide")); }
             out.push_str("<figcaption>"); lines(out); out.push_str("</figcaption></figure>\n");
         }
@@ -124,8 +129,8 @@ fn html_media(it: &Item, opts: Opts, out: &mut String) {
     if !it.notes.is_empty() {
         out.push_str("<table class=\"vnotes\"><tbody>\n");
         for s in &it.notes {
-            out.push_str(&format!("<tr class=\"{}\"><td class=\"fr\">{}</td><td class=\"tc\"><div class=\"main\">{}</div><div class=\"sub\">{}</div></td><td class=\"tx\"><div class=\"text\">{}</div></td><td class=\"st\">{}</td></tr>\n",
-                if s.done == Some(true) { "done" } else { "open" }, thumb(s, ""), esc(&s.head), esc(&s.sub), if s.text.trim().is_empty() { "<span class=\"none\">No text</span>".to_string() } else { esc(s.text.trim_end()) },
+            out.push_str(&format!("<tr class=\"{}\"{}><td class=\"fr\">{}</td><td class=\"tc\"><div class=\"main\">{}</div><div class=\"sub\">{}</div></td><td class=\"tx\"><div class=\"text\">{}</div></td><td class=\"st\">{}</td></tr>\n",
+                if s.done == Some(true) { "done" } else { "open" }, s.frame.map(|f| format!(" data-frame=\"{f}\"")).unwrap_or_default(), thumb(s, ""), esc(&s.head), esc(&s.sub), if s.text.trim().is_empty() { "<span class=\"none\">No text</span>".to_string() } else { esc(s.text.trim_end()) },
                 match s.done { Some(true) => "<span class=\"state done\">Addressed</span>", Some(false) => "<span class=\"state\">Open</span>", None => "" }));
         }
         out.push_str("</tbody></table>\n");
@@ -240,8 +245,8 @@ pre{position:relative;margin:0 0 1em;padding:14px 16px;background:var(--l1);bord
 pre code{display:block;background:none;border:0;padding:0;white-space:pre;color:var(--g800)}
 pre .tools{position:absolute;top:6px;right:8px;display:flex;align-items:center;gap:6px;padding-left:8px;background:var(--l1);border-radius:var(--rs);user-select:none}
 pre .lang{font:11px/16px var(--sans);color:var(--g500)}
-pre .copy{display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--rs);background:none;color:var(--g500);cursor:pointer}pre .copy:hover{color:var(--g900);background:var(--l2)}
-pre .copy .ok,pre .copy.done .cp{display:none}pre .copy.done .ok{display:block;color:var(--g900)}
+.copy{display:flex;flex:none;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--rs);background:none;color:var(--g500);cursor:pointer}.copy:hover{color:var(--g900);background:var(--l2)}
+.copy .ok,.copy.done .cp{display:none}.copy.done .ok{display:block;color:var(--g900)}
 blockquote{margin:0 0 1em;padding:2px 0 2px 16px;border-left:3px solid var(--g400);color:var(--g700)}
 blockquote p:last-child{margin-bottom:0}
 hr{border:0;border-top:1px solid var(--g300);margin:1.6em 0}
@@ -268,7 +273,8 @@ figure.ref{background:var(--l1);border:1px solid var(--g300);border-radius:var(-
 figure.ref .thumb{border-radius:0}figure.ref .thumb::after{border:0;border-bottom:1px solid var(--g300);border-radius:0}
 figcaption{display:flex;flex-direction:column;gap:1px;padding:10px 14px}
 figcaption .name{font-weight:500;color:var(--g900);overflow-wrap:anywhere}
-figcaption .path{font:12px/18px var(--mono);color:var(--g600);word-break:break-all}
+figcaption .path{display:flex;align-items:center;gap:4px;margin:3px 0}
+figcaption .path code{flex:1;min-width:0;font:12px/18px var(--mono);padding:3px 8px;background:var(--l2);border:1px solid var(--g200);border-radius:var(--rs);color:var(--g700);word-break:break-all}
 figcaption .meta{font:12px/18px var(--mono);color:var(--g600)}
 figcaption .bad{color:#f76d74}
 .thumb{position:relative;border-radius:var(--rs);overflow:hidden;background:#000;cursor:zoom-in;outline:none;line-height:0;width:248px}
@@ -315,7 +321,7 @@ tr.done .text,tr.done td.tc .main{color:var(--g600)}
 @media (max-width:760px){main{padding:24px 16px 64px}.lanes{flex-direction:column;gap:0}table.vnotes td.fr{width:140px}table.vnotes .thumb,table.vnotes .nothumb{width:128px}table.vnotes td.st{display:none}}
 "#;
 /// Inside `@media print`, after the light tokens.
-const PRINT: &str = "#lb,pre .copy{display:none!important}main{padding:0;max-width:none}tr,figure,pre{break-inside:avoid}h1,h2,h3,h4,h5,h6{break-after:avoid}.thumb{background:none}\n";
+const PRINT: &str = "#lb,.copy{display:none!important}main{padding:0;max-width:none}tr,figure,pre{break-inside:avoid}h1,h2,h3,h4,h5,h6{break-after:avoid}.thumb{background:none}\n";
 
 /// QCView's export lightbox, for any picture of the page: click one; the arrows step, Esc closes, A hides the drawings.
 /// The copy button's two faces (the pages, the tick).
@@ -323,7 +329,7 @@ const COPY_ICONS: &str = r#"<svg class="cp" viewBox="0 0 24 24" width="15" heigh
 /// A code block's copy button (row 338): the code goes to the clipboard and the button shows a tick; where the browser
 /// keeps the clipboard from a page (some do for a file opened from disk), the code is selected instead, to be copied by hand.
 pub(crate) const COPY_SCRIPT: &str = r#"<script>
-document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('pre .copy');if(!b)return;var c=b.closest('pre').querySelector('code');
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('button.copy');if(!b)return;e.preventDefault();e.stopPropagation();var c=b.closest('pre,.path').querySelector('code');
 function ok(){b.classList.add('done');setTimeout(function(){b.classList.remove('done')},1200)}
 function byHand(){var r=document.createRange();r.selectNodeContents(c);var s=getSelection();s.removeAllRanges();s.addRange(r);try{if(document.execCommand('copy')){s.removeAllRanges();ok()}}catch(x){}}
 if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(c.textContent).then(ok,byHand)}else byHand()});
@@ -487,7 +493,8 @@ const LONGEST: u32 = 2560;
 /// A picture a browser shows as it is goes in whole up to this size; a larger one is reduced.
 const WHOLE: u64 = 12 << 20;
 
-pub struct Files<'a> { pub media: &'a mut crate::media::Media, pub poster: &'a mut crate::video::Poster, pub gpu: Option<(wgpu::Device, wgpu::Queue)> }
+pub struct Files<'a> { pub media: &'a mut crate::media::Media, pub poster: &'a mut crate::video::Poster, pub gpu: Option<(wgpu::Device, wgpu::Queue)>, /// the media is this piece of work's own and has read nothing yet (a web folder's thread): a clip's notes are read here and now
+    pub fresh: bool }
 
 fn encode(rgba: &[u8], w: u32, h: u32) -> Option<Pic> {
     if rgba.chunks_exact(4).any(|p| p[3] < 255) { return min_image::write::png_rgba8_bytes(rgba, w, h).ok().map(|bytes| Pic { bytes, mime: "image/png", ext: "png", w, h }) }
@@ -523,7 +530,7 @@ impl Source for Files<'_> {
         let name = rec.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string).or_else(|| path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "file".into());
         // a picture made of another file (a PSD, a RAW): the file it was made of is the one a reader would look for
         let shown = rec.get("preview").and_then(|p| p.get("src")).and_then(|s| self.media.locate(&serde_json::json!({ "src": s }).to_string())).or(path.clone());
-        let mut it = Item { what, name, path: shown.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), meta: String::new(), dw: rec.get("dw").and_then(Value::as_f64), problem: None, shots: vec![], notes: vec![], href: None };
+        let mut it = Item { what, name, path: shown.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), meta: String::new(), dw: rec.get("dw").and_then(Value::as_f64), problem: None, shots: vec![], notes: vec![], href: None, video: None };
         let (rw, rh) = (rec.get("w").and_then(Value::as_f64).unwrap_or(0.0), rec.get("h").and_then(Value::as_f64).unwrap_or(0.0));
         let there = path.as_ref().filter(|p| p.exists());
         match what {
@@ -560,12 +567,12 @@ impl Source for Files<'_> {
                 let dev = self.gpu.clone(); let frame = rec.get("frame").and_then(Value::as_i64).unwrap_or(0) as i32; let fps = rec.get("fps").and_then(Value::as_f64).unwrap_or(24.0);
                 let still = |me: &mut Self, f: i32| crate::video::still(path, f, STILL).map(|(px, meta)| me.poster.convert(dev.as_ref().map(|d| (&d.0, &d.1)), &px, &meta));
                 match still(self, frame) { Ok((rgba, w, h)) => { let mut s = self.shot(rgba, w, h, None, mode); s.head = it.name.clone(); s.sub = crate::video::timecode(frame as i64, fps); it.shots.push(s); } Err(e) => it.problem = Some(e) }
-                if opts.video_notes { let notes = self.media.notes(descriptor);
+                if opts.video_notes { let notes = if self.fresh { std::sync::Arc::new(qcv_notes::io::load(path).unwrap_or_default()) } else { self.media.notes(descriptor) };
                     for n in notes.iter() {
                         let strokes = qcv_notes::strokes::parse(n.annotation.as_ref());
                         let ink = (!strokes.is_empty() && rw > 0.0 && rh > 0.0).then(|| Ink { w: rw, h: rh, paths: crate::ink::svg_strokes(&strokes, rw, rh) });
                         let mut s = match still(self, n.frame as i32) { Ok((rgba, w, h)) => self.shot(rgba, w, h, ink, mode), Err(_) => Shot::default() };
-                        s.head = n.timecode.clone(); s.sub = format!("frame {}", n.frame); s.text = n.text.clone(); s.done = Some(n.addressed); it.notes.push(s);
+                        s.head = n.timecode.clone(); s.sub = format!("frame {}", n.frame); s.text = n.text.clone(); s.done = Some(n.addressed); s.frame = Some(n.frame as i64); it.notes.push(s);
                     } }
             }
         }
@@ -583,7 +590,7 @@ mod tests {
         let ink = (mode == Mode::Layers).then(|| Ink { w: 4.0, h: 2.0, paths: "<path d=\"M0 0L4 2\"/>".into() });
         let what = if d.contains("video") { What::Video } else if d.contains("pdf") { What::Pdf } else { What::Picture };
         Item { what, name: "shot one.png".into(), path: "/vol/shot one.png".into(), meta: if what == What::Picture { String::new() } else { "facts".into() }, dw: None, problem: None, shots: vec![Shot { pic, ink, head: "shot one.png".into(), ..Default::default() }],
-            notes: if what == What::Video { vec![Shot { head: "00:00:01:00".into(), sub: "frame 24".into(), text: "fix <this>".into(), done: Some(true), ..Default::default() }] } else { vec![] }, href: None } } }
+            notes: if what == What::Video { vec![Shot { head: "00:00:01:00".into(), sub: "frame 24".into(), text: "fix <this>".into(), done: Some(true), ..Default::default() }] } else { vec![] }, href: None, video: None } } }
     fn doc(list: Vec<(Kind, &str, Vec<(usize, usize, Mark)>)>) -> Doc {
         let mut d = Doc::new();
         for (i, (k, t, marks)) in list.into_iter().enumerate() { let id = BlockId::new(); d.insert(None, i, id, k, t).unwrap(); if !marks.is_empty() { let mut s = Spans::new(); for (a, b, m) in marks { s.put(a, b, m); } d.set_spans(id, s).unwrap(); } }
@@ -617,7 +624,7 @@ mod tests {
         assert!(h.contains("<ul><li>top<ul><li>under</li></ul>\n</li>\n<li class=\"task s2\"><span class=\"box\"></span>done</li></ul>"), "{h}");
         assert!(h.contains("<figure class=\"pic\"><div class=\"thumb wide\"") && h.contains("data:image/png;base64,AQID") && h.contains("<svg class=\"ink\" viewBox=\"0 0 4 2\""));
         assert!(h.contains("<figure class=\"ref video\">") && h.contains("fix &lt;this&gt;") && h.contains("Addressed") && !h.contains("/vol/shot one.png"), "paths are left out when asked");
-        let with = html(d.walk(), d.children(None), "n", "today", Opts::default(), &vec![], &mut Fake); assert!(with.contains("<span class=\"path\">/vol/shot one.png</span>"));
+        let with = html(d.walk(), d.children(None), "n", "today", Opts::default(), &vec![], &mut Fake); assert!(with.contains("<span class=\"path\" data-ui><code>/vol/shot one.png</code><button class=\"copy\"") && with.contains("navigator.clipboard"));
     }
     #[test]
     fn markdown_writes_pictures_through_the_sink_and_tables_as_pipes() {

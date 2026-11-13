@@ -2,7 +2,7 @@
 //! ticked in the collection's tree - then the pages as they are written, then how it ended. The writing itself is
 //! `export::site`, off this thread; this is its face. Made of min-ui's parts, as the Collect Media window is: the
 //! menu's rows (a tick for the choice), checkboxes, a switch, text buttons, the progress bar, the scroll bar.
-use crate::export::site::{Progress, DONE, WORKING};
+use crate::export::site::{Progress, DONE, FAILED, KEPT, SKIPPED, WORKING};
 use kurbo::{Affine, Rect, RoundedRect};
 use min_theme::tokens as t;
 use min_ui::{checkbox, fonts::draw_layout, menu, paint, progress, Button, Event, Family, Fonts, ScrollBar, Switch, TextButton, Variant};
@@ -24,7 +24,8 @@ pub struct Window {
     pub shown: bool, pub phase: Phase, pub scope: Scope, pub entries: Vec<Entry>,
     /// the note or canvas that is open (None: "This note" cannot be chosen)
     pub current: Option<BlockId>,
-    pub files: Switch, pub dest: Option<PathBuf>, pub prog: Option<Arc<Progress>>,
+    pub files: Switch, /// videos get a playable copy (row 340)
+    pub videos: Switch, pub dest: Option<PathBuf>, pub prog: Option<Arc<Progress>>,
     /// the pages being written: (their place in the job's pages, title, a canvas)
     pub pages: Vec<(usize, String, bool)>, pub note: String, pub failed: bool,
     bar: ScrollBar, b0: TextButton, b1: TextButton, scopes: [Rect; 3], rows: Vec<(Rect, usize)>, card: Rect, list: Rect, hover: Option<usize>, hover_scope: Option<usize>, scale: f64, drawn: Instant, started: Option<Instant>,
@@ -34,8 +35,8 @@ fn home(p: &std::path::Path) -> String { let s = p.to_string_lossy().into_owned(
 fn title_of(s: &str) -> &str { if s.trim().is_empty() { "Untitled" } else { s } }
 
 impl Window {
-    pub fn open(entries: Vec<Entry>, current: Option<BlockId>, files: bool) -> Window {
-        Window { shown: true, phase: Phase::Options, scope: if current.is_some() { Scope::This } else { Scope::All }, entries, current, files: Switch::new(files), dest: None, prog: None, pages: vec![], note: String::new(), failed: false,
+    pub fn open(entries: Vec<Entry>, current: Option<BlockId>, files: bool, videos: bool) -> Window {
+        Window { shown: true, phase: Phase::Options, scope: if current.is_some() { Scope::This } else { Scope::All }, entries, current, files: Switch::new(files), videos: Switch::new(videos), dest: None, prog: None, pages: vec![], note: String::new(), failed: false,
             bar: ScrollBar::default(), b0: TextButton::new("Cancel", Variant::Secondary), b1: TextButton::new("Export\u{2026}", Variant::Primary), scopes: [Rect::ZERO; 3], rows: vec![], card: Rect::ZERO, list: Rect::ZERO, hover: None, hover_scope: None, scale: 1.0, drawn: Instant::now(), started: None }
     }
     pub fn active(&self) -> bool { self.phase == Phase::Running }
@@ -48,9 +49,11 @@ impl Window {
     /// What the footer says while the window is put away.
     pub fn readout(&self) -> Option<String> {
         if self.shown { return None }
-        match self.phase { Phase::Running => { let (n, of) = self.counts(); Some(format!("Writing the web folder \u{2014} {n} of {of} pages \u{00b7} click to show")) } Phase::Done if !self.note.is_empty() => Some(format!("{} \u{00b7} click to show", self.note)), _ => None }
+        match self.phase { Phase::Running => { let (n, of) = self.counts(); let (v, vof, _) = self.video_counts(); Some(if n == of && vof > 0 { format!("Making the videos \u{2014} {v} of {vof} \u{00b7} click to show") } else { format!("Writing the web folder \u{2014} {n} of {of} pages \u{00b7} click to show") }) } Phase::Done if !self.note.is_empty() => Some(format!("{} \u{00b7} click to show", self.note)), _ => None }
     }
     fn counts(&self) -> (usize, usize) { (self.prog.as_ref().map(|p| self.pages.iter().filter(|x| p.states[x.0].load(Relaxed) == DONE).count()).unwrap_or(0), self.pages.len()) }
+    /// The videos: (made or kept, to be made, failed).
+    fn video_counts(&self) -> (usize, usize, usize) { let Some(p) = &self.prog else { return (0, 0, 0) }; let v = p.videos.lock().unwrap(); (v.iter().filter(|r| matches!(r.state, DONE | KEPT)).count(), v.iter().filter(|r| r.state != SKIPPED).count(), v.iter().filter(|r| r.state == FAILED).count()) }
     /// Between events: the writing ending.
     pub fn tick(&mut self) -> Out {
         if self.phase != Phase::Running { return Out::None } let Some(p) = self.prog.clone() else { return Out::None };
@@ -60,7 +63,8 @@ impl Window {
         match p.error.lock().unwrap().clone() {
             Some(e) if e == "Stopped" => { self.failed = true; self.note = format!("Stopped \u{2014} {n} of {of} pages were written; the folder is not complete"); }
             Some(e) => { self.failed = true; self.note = e; }
-            None => self.note = format!("{of} page{} written \u{00b7} {} \u{00b7} {} \u{00b7} {}", if of == 1 { "" } else { "s" }, media(p.media.load(Relaxed)), crate::gather::bytes(p.bytes.load(Relaxed)), crate::gather::span(took)),
+            None => { let (v, vof, bad) = self.video_counts(); let vids = if vof == 0 { String::new() } else if bad > 0 { format!(" \u{00b7} {v} of {vof} videos ({bad} failed)") } else { format!(" \u{00b7} {v} video{}", if v == 1 { "" } else { "s" }) };
+                self.note = format!("{of} page{} written{vids} \u{00b7} {} \u{00b7} {} \u{00b7} {}", if of == 1 { "" } else { "s" }, media(p.media.load(Relaxed)), crate::gather::bytes(p.bytes.load(Relaxed)), crate::gather::span(took)); }
         }
         Out::Redraw
     }
@@ -85,10 +89,10 @@ impl Window {
         let top = y0 + pad + if options { 66.0 * s + 3.0 * rh + 12.0 * s } else { 104.0 * s };
         if options { for i in 0..3 { let y = y0 + pad + 66.0 * s + i as f64 * rh; self.scopes[i] = Rect::new(x0 + pad, y, x0 + w - pad, y + rh); } } else { self.scopes = [Rect::ZERO; 3]; }
         self.list = Rect::new(x0 + pad, top, x0 + w - pad, y0 + h - pad - bh - 16.0 * s);
-        let row = 30.0 * s; let n = if options { self.entries.len() } else { self.pages.len() };
+        let row = 30.0 * s; let nv = self.prog.as_ref().map(|p| p.videos.lock().unwrap().len()).unwrap_or(0); let n = if options { self.entries.len() } else { self.pages.len() + nv };
         self.bar.set(self.list, n as f64 * row + 8.0 * s, s);
         // while it runs the page being written is kept in sight
-        if let (Phase::Running, Some(p)) = (self.phase, &self.prog) { if !self.bar.dragging() { if let Some(i) = self.pages.iter().position(|x| p.states[x.0].load(Relaxed) == WORKING) { let (a, z) = (i as f64 * row, (i + 2) as f64 * row); if z > self.bar.offset + self.list.height() { self.bar.offset = (z - self.list.height()).min(self.bar.max()); } else if a < self.bar.offset { self.bar.offset = a; } } } }
+        if let (Phase::Running, Some(p)) = (self.phase, &self.prog) { if !self.bar.dragging() { if let Some(i) = self.pages.iter().position(|x| p.states[x.0].load(Relaxed) == WORKING).or_else(|| p.videos.lock().unwrap().iter().position(|r| r.state == WORKING).map(|i| self.pages.len() + i)) { let (a, z) = (i as f64 * row, (i + 2) as f64 * row); if z > self.bar.offset + self.list.height() { self.bar.offset = (z - self.list.height()).min(self.bar.max()); } else if a < self.bar.offset { self.bar.offset = a; } } } }
         let off = self.bar.offset; self.rows = (0..n).map(|i| (Rect::new(self.list.x0, self.list.y0 + 4.0 * s + i as f64 * row - off, self.list.x1, self.list.y0 + 4.0 * s + (i + 1) as f64 * row - off), i)).collect();
         let (l0, l1, v1): (&str, &str, Variant) = match self.phase {
             Phase::Options => ("Cancel", "Export\u{2026}", Variant::Primary),
@@ -100,6 +104,7 @@ impl Window {
         self.b1.rect = Rect::new(x0 + w - pad - w1, by, x0 + w - pad, by + bh); self.b0.rect = Rect::new(self.b1.rect.x0 - 8.0 * s - w0, by, self.b1.rect.x0 - 8.0 * s, by + bh);
         let (sw, sh) = (t::SWITCH_TRACK_WIDTH as f64 * s, t::SWITCH_TRACK_HEIGHT as f64 * s);
         self.files.rect = if options { Rect::new(x0 + pad, by + (bh - sh) / 2.0, x0 + pad + sw, by + (bh + sh) / 2.0) } else { Rect::ZERO };
+        self.videos.rect = if options { self.files.rect + kurbo::Vec2::new(sw + 132.0 * s, 0.0) } else { Rect::ZERO };
     }
     fn row_at(&self, x: f64, y: f64) -> Option<usize> { let p = kurbo::Point::new(x, y); if !self.list.contains(p) { return None } self.rows.iter().find(|(r, _)| r.contains(p)).map(|(_, i)| *i) }
     fn press(&mut self, first: bool) -> Out {
@@ -115,7 +120,7 @@ impl Window {
         let (_, mine) = self.bar.event(e, now); if mine { return Out::Redraw }
         if !self.b0.label.is_empty() && self.b0.event(e, now).0 { return self.press(true) }
         if self.b1.event(e, now).0 { return self.press(false) }
-        if self.phase == Phase::Options { self.files.event(e, now); }
+        if self.phase == Phase::Options { self.files.event(e, now); self.videos.event(e, now); }
         match *e {
             Event::Move { x, y } => { self.hover = self.row_at(x, y); self.hover_scope = self.scopes.iter().position(|r| r.contains(kurbo::Point::new(x, y))); Out::Redraw }
             Event::Down { x, y, button: Button::Primary } if self.phase == Phase::Options => {
@@ -133,7 +138,7 @@ impl Window {
     pub fn wheel(&mut self, dy: f64) { self.bar.wheel(dy, Instant::now()); }
     /// Escape (`enter` false) or Enter.
     pub fn key(&mut self, enter: bool) -> Out { match (self.phase, enter) { (Phase::Options, true) => self.press(false), (Phase::Options, false) => Out::Close, (Phase::Running, false) => { self.shown = false; Out::Redraw } (Phase::Done, _) => Out::Close, _ => Out::None } }
-    pub fn animating(&self, now: Instant) -> bool { self.shown && (self.b0.animating(now) || self.b1.animating(now) || self.files.animating(now) || self.bar.animating(now)) }
+    pub fn animating(&self, now: Instant) -> bool { self.shown && (self.b0.animating(now) || self.b1.animating(now) || self.files.animating(now) || self.videos.animating(now) || self.bar.animating(now)) }
 
     pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, view: Rect, s: f64, now: Instant) {
         if !self.shown { return }
@@ -160,9 +165,11 @@ impl Window {
                 menu::row(scene, fonts, self.scopes[i], &labels[i], able, able && self.hover_scope == Some(i), Some(on), true, s); }
         } else {
             let (n, of) = self.counts(); let sy = y0 + 76.0 * s; let p = self.prog.clone();
-            let text = match self.phase { Phase::Running => format!("{n} of {of} pages \u{00b7} {} \u{00b7} {}", media(p.as_ref().map(|p| p.media.load(Relaxed)).unwrap_or(0)), crate::gather::bytes(p.as_ref().map(|p| p.bytes.load(Relaxed)).unwrap_or(0))), _ => self.note.clone() };
+            let (v, vof, _) = self.video_counts(); let vids = if vof > 0 { format!(" \u{00b7} {v} of {vof} videos") } else { String::new() };
+            let text = match self.phase { Phase::Running => format!("{n} of {of} pages{vids} \u{00b7} {} \u{00b7} {}", media(p.as_ref().map(|p| p.media.load(Relaxed)).unwrap_or(0)), crate::gather::bytes(p.as_ref().map(|p| p.bytes.load(Relaxed)).unwrap_or(0))), _ => self.note.clone() };
             line(scene, fonts, &text, x0, sy, t::BODY_SIZE_M, false, if self.failed { bad } else { ink }, wide, false);
-            progress::bar(scene, Rect::new(x0, sy + 14.0 * s, x1, sy + 14.0 * s + progress::height(s)), if of > 0 { n as f64 / of as f64 } else { 1.0 }, if self.phase == Phase::Done && !self.failed { progress::Tone::Positive } else if self.failed { progress::Tone::Negative } else { progress::Tone::Neutral });
+            let part: f64 = p.as_ref().map(|p| p.videos.lock().unwrap().iter().filter(|r| r.state != SKIPPED).map(|r| if matches!(r.state, DONE | KEPT | FAILED) { 1.0 } else { r.done as f64 }).sum()).unwrap_or(0.0);
+            progress::bar(scene, Rect::new(x0, sy + 14.0 * s, x1, sy + 14.0 * s + progress::height(s)), if of + vof > 0 { (n as f64 + part) / (of + vof) as f64 } else { 1.0 }, if self.phase == Phase::Done && !self.failed { progress::Tone::Positive } else if self.failed { progress::Tone::Negative } else { progress::Tone::Neutral });
         }
         paint::hline(scene, x0, x1, self.list.y0 - 1.0 * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM); paint::hline(scene, x0, x1, self.list.y1, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.list);
@@ -177,6 +184,16 @@ impl Window {
                 let dim = st == Some(false); let col = if dim { sub } else { ink };
                 if e.kind != DocKind::Folder { if let Some(g) = fonts.icon(icon_of(e.kind), t::ICON_SIZE_SMALL * s as f32, col) { draw_layout(scene, &g, Affine::translate((x, cy - g.height() as f64 / 2.0))); } x += t::ICON_SIZE_SMALL as f64 * s + 8.0 * s; }
                 line(scene, fonts, title_of(&e.title), x, cy, t::BODY_SIZE_M, e.kind == DocKind::Folder, col, r.x1 - 16.0 * s - x, false);
+            } else if i >= self.pages.len() {
+                // a video: its name, what is being done with it, how far it is
+                let Some(v) = self.prog.as_ref().and_then(|p| p.videos.lock().unwrap().get(i - self.pages.len()).cloned()) else { continue }; let mut x = r.x0 + 12.0 * s;
+                let col = if matches!(v.state, 0 | SKIPPED) { sub } else { ink };
+                if let Some(g) = fonts.icon("film-strip", t::ICON_SIZE_SMALL * s as f32, col) { draw_layout(scene, &g, Affine::translate((x, cy - g.height() as f64 / 2.0))); } x += t::ICON_SIZE_SMALL as f64 * s + 8.0 * s;
+                let (text, tone) = match v.state { WORKING => (format!("{:.0}%", v.done * 100.0), ink), DONE => ("Made".to_string(), sub), KEPT => ("Kept from before".to_string(), sub), FAILED => (v.why.clone(), bad), SKIPPED => (v.why.clone(), sub), _ => (if self.phase == Phase::Running { "Waiting" } else { "Not made" }.to_string(), sub) };
+                let wide_text = matches!(v.state, FAILED | SKIPPED); let col_w = if wide_text { (r.width() * 0.55).max(110.0 * s) } else { 190.0 * s };
+                line(scene, fonts, title_of(&v.name), x, cy, t::BODY_SIZE_M, false, col, r.x1 - col_w - 28.0 * s - x, false);
+                if v.state == WORKING { line(scene, fonts, &text, r.x1 - 16.0 * s - 120.0 * s - 8.0 * s, cy, t::BODY_SIZE_S, false, tone, 60.0 * s, true); progress::bar(scene, Rect::new(r.x1 - 16.0 * s - 120.0 * s, cy - progress::height(s) / 2.0, r.x1 - 16.0 * s, cy + progress::height(s) / 2.0), v.done as f64, progress::Tone::Neutral); }
+                else { line(scene, fonts, &text, r.x1 - 16.0 * s, cy, t::BODY_SIZE_S, false, tone, col_w, true); }
             } else {
                 let (at, title, canvas) = &self.pages[i]; let st = self.prog.as_ref().map(|p| p.states[*at].load(Relaxed)).unwrap_or(0); let mut x = r.x0 + 12.0 * s;
                 let col = if st == 0 { sub } else { ink };
@@ -187,7 +204,8 @@ impl Window {
         }
         scene.pop_layer();
         self.bar.paint(scene, now);
-        if options { self.files.paint(scene, s, now); line(scene, fonts, "Take PDFs and attached files along", self.files.rect.x1 + 10.0 * s, self.files.rect.center().y, t::BODY_SIZE_S, false, sub, (self.b0.rect.x0 - self.files.rect.x1 - 24.0 * s).max(20.0), false); }
+        if options { self.files.paint(scene, s, now); line(scene, fonts, "PDFs and files", self.files.rect.x1 + 10.0 * s, self.files.rect.center().y, t::BODY_SIZE_S, false, sub, 116.0 * s, false);
+            self.videos.paint(scene, s, now); line(scene, fonts, "Playable videos", self.videos.rect.x1 + 10.0 * s, self.videos.rect.center().y, t::BODY_SIZE_S, false, sub, (self.b0.rect.x0 - self.videos.rect.x1 - 24.0 * s).max(20.0), false); }
         if !self.b0.label.is_empty() { self.b0.paint(scene, fonts, s, now); } self.b1.paint(scene, fonts, s, now);
     }
 }

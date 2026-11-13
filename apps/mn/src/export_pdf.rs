@@ -265,7 +265,7 @@ mod tests {
     use super::*;
     struct Fake;
     impl Source for Fake { fn item(&mut self, _: &str, mode: Mode, _: Opts) -> Item { assert_eq!(mode, Mode::Paper);
-        Item { what: What::File, name: "brief.txt".into(), path: "/vol/brief.txt".into(), meta: "2 KB".into(), dw: None, problem: None, shots: vec![], notes: vec![], href: None } } }
+        Item { what: What::File, name: "brief.txt".into(), path: "/vol/brief.txt".into(), meta: "2 KB".into(), dw: None, problem: None, shots: vec![], notes: vec![], href: None, video: None } } }
     #[test]
     fn a_long_note_is_cut_between_lines_onto_pages_of_text() {
         let mut d = Doc::new(); let mut i = 0;
