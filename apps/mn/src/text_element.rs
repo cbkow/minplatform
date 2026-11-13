@@ -231,15 +231,6 @@ pub fn uninstall() { log_summary(); HOST.set(None); }
 fn post(element: *mut AnyObject, name: &NSString) { if !element.is_null() { unsafe { NSAccessibilityPostNotification(element, name); } } }
 /// After an edit (`text` true) or a selection change. NEVER after a scroll.
 pub fn changed(text: bool) { if text { post(TEXT.get(), ns_string!("AXValueChanged")); } post(TEXT.get(), ns_string!("AXSelectedTextChanged")); }
-/// ANOTHER note is in the page (a note opened, imported, a collection opened or closed): not an edit of the text that
-/// was there. Told as an edit alone, a writing tool keeps what it had flagged in the note before and draws those
-/// underlines over this one until its next check; so the text is taken out of focus and put back - as when a dialog
-/// has stood over it, which withdraws the underlines - around the change of value, and every rectangle is asked again.
-pub fn replaced() {
-    if OBSCURED.get() { changed(true); return }
-    let window: *mut AnyObject = unsafe { msg_send![VIEW.get(), window] }; post(window, ns_string!("AXFocusedUIElementChanged"));
-    let t = TEXT.get(); post(t, ns_string!("AXValueChanged")); post(t, ns_string!("AXFocusedUIElementChanged")); post(t, ns_string!("AXSelectedTextChanged")); post(t, ns_string!("AXLayoutChanged"));
-}
 /// The view scrolled: only the scroll bar says so (what a native scroll view does).
 pub fn scrolled() { post(BAR.get(), ns_string!("AXValueChanged")); }
 /// The window took focus: name the text as the focused element (unless something stands over the note).

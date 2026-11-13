@@ -696,7 +696,7 @@ impl App {
         self.autosave(); self.gather_drop();
         if let Some(st) = self.store.as_mut() { if let Some(s) = st.session.take() { if st.unpublished { drop(s) } else { let _ = s.close(); } } }
         self.store = None; self.sidebar = None; self.others.clear(); self.changed.clear(); self.status = None; self.ed = Editor::new(Doc::new()); self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = true; self.side_w = 0.0;
-        #[cfg(target_os = "macos")] { text_element::replaced(); self.geom_moved = Some(Instant::now()); }
+        #[cfg(target_os = "macos")] text_element::changed(true);
     }
     /// Opens (or, with `create`, starts) a collection in this window. A failure is said in a dialog.
     fn open_collection(&mut self, path: &std::path::Path, create: bool) {
@@ -706,7 +706,7 @@ impl App {
                 self.store = Some(store); self.sidebar = Some(sb); self.ed = Editor::new(doc); self.others.clear();
                 self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = false; self.recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
                 recent_add(path); self.sync_recent();
-                #[cfg(target_os = "macos")] { text_element::replaced(); self.geom_moved = Some(Instant::now()); }
+                #[cfg(target_os = "macos")] text_element::changed(true);
             }
             Err(e) => { use min_ui::text_button::Variant as V; let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); self.ask(Ask::Notice, &format!("Couldn\u{2019}t open \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
         }
@@ -2170,7 +2170,7 @@ impl App {
         let next = match self.others.remove(&id) { Some(e) => e, None => match st.col.load_note(id) { Ok(d) => Editor::new(d), Err(e) => { eprintln!("open: {e}"); return } } };
         let old = std::mem::replace(&mut self.ed, next); self.others.insert(st.note, old);
         st.note = id; self.layout = None; self.flat = None; self.scroll = 0.0; self.follow = false;
-        #[cfg(target_os = "macos")] { text_element::replaced(); self.geom_moved = Some(Instant::now()); }
+        #[cfg(target_os = "macos")] text_element::changed(true);
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// Cmd+N / Cmd+Shift+N: a note or a folder beside the selected entry (inside it, when that is a folder).
@@ -2710,8 +2710,7 @@ impl ApplicationHandler for App {
         { let want = self.video_current().is_none(); if let Some(g) = self.gpu.as_mut() { if g.ime_on != want { g.ime_on = want;
             if want { ime(g.window.as_ref().as_ref(), g.ime_area.or(Some(Rect::new(0.0, 0.0, 1.0, 1.0))), true); } else if let Err(e) = g.window.request_ime_update(winit::window::ImeRequest::Disable) { log::debug!("ime: {e}"); } } } }
         if std::mem::take(&mut self.files.vstop) { self.video_stop(); }
-        // (the note is laid out again - a picture's shape became known: where its text is has to be asked again)
-        if std::mem::take(&mut self.files.relay) { self.layout = None; self.geom_moved = Some(Instant::now()); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        if std::mem::take(&mut self.files.relay) { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         for c in std::mem::take(&mut self.later) { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         if let Some(at) = [self.bar.next_change(Instant::now()), self.foot.next_change(Instant::now()), self.sidebar.as_ref().and_then(|sb| sb.next_change(Instant::now()))].into_iter().flatten().min() { if Instant::now() >= at { if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         // (the queue is taken and let go BEFORE the commands run: one of them may put a system panel up, and a menu key
