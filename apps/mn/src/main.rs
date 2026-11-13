@@ -47,6 +47,7 @@ mod linkedit;
 mod findbar;
 mod search;
 mod canvas;
+mod ink;
 mod open;
 #[cfg(target_os = "macos")] mod imageio;
 #[cfg(target_os = "macos")]
@@ -304,7 +305,7 @@ impl App {
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
         self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
-        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some() && self.files.card.is_none(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown }) { g.window.request_redraw(); }
+        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some() && self.files.card.is_none(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown, ink: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|cv| { use canvas::Ink as I; use toolbar::Tool as T; toolbar::InkShown { tool: match cv.tool { None => T::DrawSelect, Some(I::Pen) => T::DrawPen, Some(I::Line) => T::DrawLine, Some(I::Arrow) => T::DrawArrow, Some(I::Rect) => T::DrawRect, Some(I::Oval) => T::DrawOval, Some(I::Eraser) => T::DrawErase }, pen: peniko::Color::new(cv.pen) } }) }) { g.window.request_redraw(); }
             let unsaved = self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some());
             // the readout: a save under way, a save that failed, what is not in the document yet, else the last outcome
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
@@ -383,6 +384,8 @@ impl App {
         }
         { let se = self.store.as_ref().and_then(|st| st.session.as_ref()); self.media.begin_frame(); self.media.set_base(se.and_then(|x| x.original().parent()), se.map(|x| x.media_dir())); }
         // a canvas in the page's place (row 322); its note cards are drawn from pictures kept of them, and the one being edited by the note's own layer, through its card
+        // MN_SPIN=1 (scripted): the canvas is panned a little at every frame and the frames are counted - how fast it draws (`all`: with everything in view)
+        if SPIN.get_or_init(|| std::env::var_os("MN_SPIN").is_some()).to_owned() { if let Some(cv) = self.files.canvas.as_mut() { let n = SPUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed); if n == 30 { *SPIN_T0.lock().unwrap() = Some(Instant::now()); } if n == 3 && std::env::var("MN_SPIN").is_ok_and(|v| v == "all") { cv.fit_all(); } cv.pan_by(if (n / 240) % 2 == 0 { 3.0 } else { -3.0 }, 0.0); g.window.request_redraw(); } }
         if let Some(cv) = self.files.canvas.as_mut() { let live = self.files.card.as_ref().map(|c| c.el);
             let (cards, ed, store, others) = (&mut self.files.cards, &self.ed, self.store.as_ref(), &self.others);
             let mut note = |scene: &mut vello::Scene, fonts: &mut min_ui::Fonts, media: &mut media::Media, e: &mn_store::Element, r: Rect, k: f64, far: bool| card_pic(cards, ed, store, others, scene, fonts, media, e, r, k, s, far);
@@ -667,7 +670,7 @@ impl App {
         let on_canvas = !over_ui && !self.files.card.as_ref().is_some_and(|c| Rect::new(c.rect.x0 - 40.0, c.rect.y0, c.rect.x1, c.rect.y1).contains(kurbo::Point::new(x, y))) && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(x, y))) && !self.bar.hit(x, y) && !self.foot.hit(x, y);
         let want = if self.files.row_drag.is_some_and(|d| d.2) { if self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(x, y))) { C::Copy } else { C::Grabbing } }
             else if self.sidebar.as_ref().is_some_and(|sb| sb.rail.is_dragging() || (!over_ui && sb.rail.splitter_hovered())) { C::ColResize }
-            else if on_canvas { match self.files.canvas.as_mut().map(|c| c.cursor(x, y)).unwrap_or(0) { 1 => if self.pressed { C::Grabbing } else { C::Grab }, 2 => C::NwseResize, 3 => C::NeswResize, _ => C::Default } }
+            else if on_canvas { match self.files.canvas.as_mut().map(|c| c.cursor(x, y)).unwrap_or(0) { 1 => if self.pressed { C::Grabbing } else { C::Grab }, 2 => C::NwseResize, 3 => C::NeswResize, 5 => C::Crosshair, _ => C::Default } }
             else if let Some(rz) = &self.files.resize { let _ = rz; C::EwResize }
             else if self.files.col_drag.is_some() || self.files.gap_drag.is_some() { C::ColResize }
             // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
@@ -744,7 +747,7 @@ impl App {
         if self.files.pal_pen {
             let chosen = match &out { colours::Out::Pick(v) => Some(v.clone()), colours::Out::Add(h) => Some(Some(h.clone())), _ => None };
             if let Some(v) = chosen { let c = v.as_deref().and_then(mn_layout::colour).map(|c| { let x = c.to_rgba8(); [x.r as f32 / 255.0, x.g as f32 / 255.0, x.b as f32 / 255.0, 1.0] }).unwrap_or([1.0, 0.0, 0.0, 1.0]);
-                self.files.pen = Some(c); if let Some(p) = self.player.as_mut() { p.ann.color = c; } self.pal.close(); self.files.pal_pen = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                self.files.pen = Some(c); if let Some(p) = self.player.as_mut() { p.ann.color = c; } if let Some(cv) = self.files.canvas.as_mut() { cv.pen = c; cv.restyle(Some(c), None); } save_pen_settings(self.files.pen, self.files.pen_w); self.pal.close(); self.files.pal_pen = false; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
             if !self.pal.is_open() { self.files.pal_pen = false; }
             if matches!(out, colours::Out::None | colours::Out::Redraw) { return } }
         let pick = |me: &mut App, v: Option<String>| { me.pal.close(); if let (mn_doc::MarkKind::Highlight, Some(c)) = (role, &v) { me.last_bg = c.clone(); }
@@ -911,6 +914,10 @@ impl App {
         use toolbar::Tool as T; use menu::Cmd as M; use mn_edit::BlockType as B;
         let now = self.now_ms();
         let block = |me: &mut App, b: B| { let d = me.ed.set_block_kind(b, now).unwrap_or(Dirty::Nothing); me.apply(d); };
+        // a canvas's drawing tools (row 324): armed and put down on the canvas itself
+        if self.files.card.is_none() { if let Some(cv) = self.files.canvas.as_mut() { use canvas::Ink as I;
+            if let Some(i) = match tool { T::DrawSelect => Some(None), T::DrawPen => Some(Some(I::Pen)), T::DrawLine => Some(Some(I::Line)), T::DrawArrow => Some(Some(I::Arrow)), T::DrawRect => Some(Some(I::Rect)), T::DrawOval => Some(Some(I::Oval)), T::DrawErase => Some(Some(I::Eraser)), _ => None } {
+                cv.arm(i); if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return } } }
         match tool {
             T::Bold => self.menu_cmd(M::Bold), T::Italic => self.menu_cmd(M::Italic), T::Underline => self.menu_cmd(M::Underline), T::Strike => self.menu_cmd(M::Strike), T::Code => self.menu_cmd(M::Code), T::Highlight => self.open_colours(mn_doc::MarkKind::Highlight, tool), T::Color => self.open_colours(mn_doc::MarkKind::Color, tool), T::ClearFormat => self.menu_cmd(M::ClearFormat),
             T::Paragraph => block(self, B::Paragraph), T::Bullet => block(self, B::Bullet), T::Numbered => block(self, B::Numbered), T::Task => block(self, B::Task), T::Quote => block(self, B::Quote), T::CodeBlock => block(self, B::Code),
@@ -928,6 +935,7 @@ impl App {
             T::DrawArrow => self.arm(qcv_annotate::Tool::Arrow), T::DrawLine => self.arm(qcv_annotate::Tool::Line), T::DrawErase => self.arm(qcv_annotate::Tool::Eraser),
             T::PenThinner | T::PenThicker => { let steps = [1.0f32, 2.0, 3.0, 4.0, 6.0, 9.0, 14.0, 22.0, 32.0, 48.0, 64.0]; let w = self.files.pen_w.unwrap_or(6.0); let i = steps.iter().position(|x| *x >= w).unwrap_or(4);
                 let j = if tool == T::PenThinner { i.saturating_sub(1) } else { (i + 1).min(steps.len() - 1) }; self.files.pen_w = Some(steps[j]); if let Some(p) = self.player.as_mut() { p.ann.width = steps[j]; }
+                if let Some(cv) = self.files.canvas.as_mut() { cv.pen_w = steps[j] as f64; cv.restyle(None, Some(steps[j] as f64)); } save_pen_settings(self.files.pen, self.files.pen_w);
                 self.notice = Some((format!("Line width {}", steps[j]), Instant::now() + std::time::Duration::from_secs(2))); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             T::PenColor => { self.files.pal_pen = true; self.open_colours(mn_doc::MarkKind::Color, tool); }
             T::NoteText | T::NoteDone | T::NoteDelete => { if let Some(id) = self.video_current() { if self.video_start(id, false) {
@@ -1641,7 +1649,7 @@ impl App {
                 for e in c.elements.iter_mut().filter(|e| e.kind == "text") { let Ok(nid) = st.col.create(Some(id), mn_store::DocKind::Note, "") else { continue }; let mut d = Doc::new();
                     for (i, line) in e.record.lines().enumerate() { d.insert(None, i, BlockId::new(), Kind::Paragraph, line).unwrap(); } if d.children(None).is_empty() { d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); }
                     if st.col.save_note(nid, &d).is_ok() { e.kind = "note".into(); e.record = nid.to_string(); e.h = e.h.max(200.0); turned = true; } }
-                let mut cv = canvas::Canvas::new(id, c); cv.dirty = turned; self.files.canvas = Some(cv); self.blank = true; self.files.cards.clear(); } Err(e) => eprintln!("open: {e}") }
+                let mut cv = canvas::Canvas::new(id, c); cv.dirty = turned; if self.files.pen.is_none() && self.files.pen_w.is_none() { (self.files.pen, self.files.pen_w) = pen_settings(); } cv.pen = self.files.pen.unwrap_or([1.0, 0.0, 0.0, 1.0]); cv.pen_w = self.files.pen_w.unwrap_or(6.0) as f64; self.files.canvas = Some(cv); self.blank = true; self.files.cards.clear(); } Err(e) => eprintln!("open: {e}") }
         if let Some(sb) = self.sidebar.as_mut() { sb.selected = Some(id); } if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// Files dropped or chosen for the open canvas: the place they go to (the view's centre when no point was kept).
@@ -1660,6 +1668,9 @@ impl App {
             Key::Named(NamedKey::ArrowLeft) if alt => cv.pdf_page(false), Key::Named(NamedKey::ArrowRight) if alt => cv.pdf_page(true),
             Key::Named(NamedKey::ArrowLeft) => { cv.nudge(-step, 0.0); true } Key::Named(NamedKey::ArrowRight) => { cv.nudge(step, 0.0); true }
             Key::Named(NamedKey::ArrowUp) => { cv.nudge(0.0, -step); true } Key::Named(NamedKey::ArrowDown) => { cv.nudge(0.0, step); true }
+            // the drawing tools, by the Qt app's keys (the same again puts the tool down; V: the pointer)
+            Key::Character(c) if !cmd && !alt && !self.ctrl => { use canvas::Ink as I; match c.to_lowercase().as_str() { "v" => { cv.arm(None); true } "p" => { cv.arm(Some(I::Pen)); true } "l" => { cv.arm(Some(I::Line)); true } "a" => { cv.arm(Some(I::Arrow)); true }
+                "r" => { cv.arm(Some(I::Rect)); true } "o" => { cv.arm(Some(I::Oval)); true } "e" => { cv.arm(Some(I::Eraser)); true } _ => false } }
             Key::Character(c) if cmd && !alt => match c.to_lowercase().as_str() {
                 "a" => { cv.select_all(); true } "d" => { let clip = cv.copy(); cv.paste(&clip, 24.0); true }
                 "c" | "x" => { if cv.editing() { let t = cv.field().and_then(|f| Some(f.text().to_string())); if let (Some(t), Some(cb)) = (t, self.clipboard.as_mut()) { let _ = cb.set_text(t); } } else { self.files.cclip = cv.copy(); if !self.files.cclip.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(self.files.cclip.iter().filter(|e| e.kind == "text").map(|e| e.record.clone()).collect::<Vec<_>>().join("\n")); } } if c.to_lowercase() == "x" { cv.delete(); } } true }
@@ -1976,6 +1987,7 @@ impl App {
     }
 
     fn finish(&mut self) {
+        if let Some(t0) = *SPIN_T0.lock().unwrap() { let n = SPUN.load(std::sync::atomic::Ordering::Relaxed).saturating_sub(30); let s = t0.elapsed().as_secs_f64(); println!("spin: {n} frames in {s:.2} s = {:.1} per second ({} elements)", n as f64 / s, self.files.canvas.as_ref().map(|c| c.els.len()).unwrap_or(0)); }
         self.autosave();
         if std::env::var_os("MN_SAVE_AT_EXIT").is_some() { self.save(); }   // for scripted checks
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
@@ -2146,6 +2158,7 @@ impl ApplicationHandler for App {
                 if matches!(which.as_str(), "3" | "4") { let notes: Vec<BlockId> = self.sidebar.as_ref().map(|sb| sb.rows.iter().filter(|r| r.kind == mn_store::DocKind::Note).map(|r| r.id).collect()).unwrap_or_default();
                     let mut first = None; if let Some(cv) = self.files.canvas.as_mut() { for (i, n) in notes.iter().take(2).enumerate() { let el = cv.add_note(*n, None); if let Some(e) = cv.els.iter_mut().find(|e| e.id == el) { e.x = i as f64 * 600.0; e.y = 0.0; } first = first.or(Some(el)); } cv.sel.clear(); }
                     if which == "4" { if let Some(el) = first { self.ensure(); self.card_enter(el); let t = self.now_ms(); let _ = self.ed.insert("Typed in the card. ", t); self.apply(Dirty::Structure); } } }
+                else if which == "5" { if let Some(cv) = self.files.canvas.as_mut() { cv.ink_demo(std::env::var("MN_INK").ok().and_then(|n| n.parse().ok()).unwrap_or(0)); if std::env::var_os("MN_INK_ERASE").is_some() { cv.arm(Some(canvas::Ink::Eraser)); } } }
                 else if let Some(cv) = self.files.canvas.as_mut() { cv.add_text("A text card on the canvas.\nTyped in place; its second line."); if which == "2" { cv.add_text("Selected alone: the corners show"); } } }
             if let Ok(v) = std::env::var("MN_ADD") { let at = if self.files.canvas.is_some() { self.files.canvas_at.set(None); Self::canvas_drop() } else { mn_edit::Drop { parent: None, index: 1, depth: None, beside: None } }; self.add_files(v.split(',').map(Into::into).collect(), at); }
             if let Ok(v) = std::env::var("MN_RELINK") { let blocks: Vec<(BlockId, String)> = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some((b.id, descriptor.clone())), _ => None }).collect();
@@ -2325,7 +2338,7 @@ impl ApplicationHandler for App {
                 if taken { return }
                 // a note's row dragged from the sidebar towards the canvas
                 if let Some((_, from, moved)) = self.files.row_drag.as_mut() { if !*moved && ((from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0) { *moved = true; } if *moved { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
-                if self.files.canvas.is_some() && self.files.card.is_none() { if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if cv.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, false, false, &mut g.fonts) { g.window.request_redraw(); } } self.set_cursor(); return }
+                if self.files.canvas.is_some() && self.files.card.is_none() { if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.pressure = pen_pressure(); if cv.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, false, false, &mut g.fonts) { g.window.request_redraw(); } } self.set_cursor(); return }
                 if self.table_bar_event(min_ui::Event::Move { x: position.x, y: position.y }) { return }
                 if self.files.find.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.find.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.find_out(out); if taken { self.set_cursor(); return } } }
                 if self.files.link.is_some() { let e = min_ui::Event::Move { x: position.x, y: position.y }; let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { self.set_cursor(); return } } }
@@ -2360,7 +2373,7 @@ impl ApplicationHandler for App {
                 // a canvas is open: the pointer is its own over the page's place (row 322)
                 // (a note edited in a card: a press outside the card leaves it - and is the canvas's; inside, it is the note's)
                 if state == ElementState::Pressed && !self.pressed { if let Some(c) = &self.files.card { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); if !Rect::new(c.rect.x0 - 40.0 * s, c.rect.y0, c.rect.x1, c.rect.y1).contains(kurbo::Point::new(position.x, position.y)) && !self.files.find.as_ref().is_some_and(|f| f.hit(position.x, position.y)) && self.files.link.is_none() && self.files.picker.is_none() { self.card_leave(); } } }
-                if self.files.canvas.is_some() && self.files.card.is_none() { self.pressed = state == ElementState::Pressed; let shift = self.mods.0; if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if state == ElementState::Pressed && !cv.rect.contains(kurbo::Point::new(position.x, position.y)) { return } cv.pointer(&e, false, shift, &mut g.fonts); g.window.request_redraw(); } self.canvas_asks(); self.set_cursor(); return }
+                if self.files.canvas.is_some() && self.files.card.is_none() { self.pressed = state == ElementState::Pressed; let shift = self.mods.0; if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { if state == ElementState::Pressed && !cv.rect.contains(kurbo::Point::new(position.x, position.y)) { return } cv.pressure = pen_pressure(); cv.pointer(&e, false, shift, &mut g.fonts); g.window.request_redraw(); } self.canvas_asks(); self.set_cursor(); return }
                 if self.table_bar_event(e) { return }
                 if self.files.picker.is_some() { let r = match (self.files.picker.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.choice_out(out); if taken { return } } }
                 if self.files.link.is_some() { let r = match (self.files.link.as_mut(), self.gpu.as_mut()) { (Some(p), Some(g)) => Some(p.pointer(&e, &mut g.fonts)), _ => None }; if let Some((out, taken)) = r { self.link_out(out); if taken { return } } }
@@ -2541,6 +2554,37 @@ fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) 
 /// The collections opened lately, newest first (a plain list beside the sessions; ten at most).
 /// The player's settings that are the app's (row 316): loop, speed, volume, muted - a small file beside the list of
 /// recent collections. Absent or unreadable: QCView's defaults (loop on, 1x, full volume, not muted).
+static SPIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static SPUN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SPIN_T0: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+/// The pen's colour and width, as last chosen (a canvas's ink and a video's drawings share them); kept beside the player's settings.
+fn pen_file() -> std::path::PathBuf { player_file().with_file_name("pen.json") }
+fn pen_settings() -> (Option<[f32; 4]>, Option<f32>) {
+    let v: serde_json::Value = std::fs::read_to_string(pen_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    (v.get("color").and_then(|c| c.as_array()).filter(|c| c.len() == 4).map(|c| [0, 1, 2, 3].map(|i| c[i].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32)), v.get("width").and_then(|w| w.as_f64()).filter(|w| (1.0..=64.0).contains(w)).map(|w| w as f32))
+}
+fn save_pen_settings(color: Option<[f32; 4]>, width: Option<f32>) {
+    let f = pen_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
+    let mut o = serde_json::Map::new(); if let Some(c) = color { o.insert("color".into(), serde_json::json!(c)); } if let Some(w) = width { o.insert("width".into(), serde_json::json!(w)); }
+    let _ = std::fs::write(f, serde_json::Value::Object(o).to_string());
+}
+/// The pressure of the pen behind the pointer event being handled (0 … 1). None: a mouse, or a pen that tells none.
+/// macOS: the window layer passes no pen pressure on, so it is read from the system's own event (a tablet's point rides
+/// on the mouse event it stands for). Windows: the window layer has it (`TabletToolData`) - taken up with the Windows leg.
+#[cfg(target_os = "macos")]
+fn pen_pressure() -> Option<f64> {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication]; if app.is_null() { return None }
+        let ev: *mut AnyObject = msg_send![app, currentEvent]; if ev.is_null() { return None }
+        // left mouse down / up / dragged only: `subtype` is defined for mouse events and raises on others
+        let kind: usize = msg_send![ev, type]; if !matches!(kind, 1 | 2 | 6) { return None }
+        let sub: i16 = msg_send![ev, subtype]; if sub != 1 { return None }
+        let p: f32 = msg_send![ev, pressure]; Some((p as f64).clamp(0.0, 1.0))
+    }
+}
+#[cfg(not(target_os = "macos"))]
+fn pen_pressure() -> Option<f64> { None }
 fn player_file() -> std::path::PathBuf { sessions_root().parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir).join("player.json") }
 fn player_settings() -> (bool, f64, f32, bool) {
     let v: serde_json::Value = std::fs::read_to_string(player_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();

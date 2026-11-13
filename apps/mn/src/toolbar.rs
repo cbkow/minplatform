@@ -53,12 +53,16 @@ impl Tool {
 }
 
 /// What the band needs to know to light and enable its buttons.
+/// What the band shows while a canvas is open (row 324): the armed drawing tool (`DrawSelect`: none - the pointer selects) and the pen's colour.
+#[derive(Clone, Copy, PartialEq)]
+pub struct InkShown { pub tool: Tool, pub pen: peniko::Color }
 pub struct Shown<'a> { pub state: &'a mn_edit::State, /// a canvas is open (pictures and files can be put on it)
     pub canvas: bool, pub has_note: bool, /// the caret is in a table's cell
-    pub in_cell: bool, pub video: Option<VideoShown> }
+    pub in_cell: bool, pub video: Option<VideoShown>, /// a canvas is open and no card of it is entered: its drawing set shows
+    pub ink: Option<InkShown> }
 
-pub struct Toolbar { /// the set that is not shown now (the text's while a video block is current, else the video's)
-    other: (Vec<ActionGroup>, Vec<Vec<Tool>>, usize), video: Option<VideoShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
+pub struct Toolbar { /// the three sets - the text's, a video block's, a canvas's (the one shown now is in `groups` / `tools` / `right_from`, its place here empty)
+    sets: [(Vec<ActionGroup>, Vec<Vec<Tool>>, usize); 3], cur: usize, video: Option<VideoShown>, ink: Option<InkShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
     right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64, /// the colours in effect at the caret for the two chips (Type, Background)
     chips: [Option<peniko::Color>; 2] }
 
@@ -76,7 +80,13 @@ impl Toolbar {
         // note's words, as the last of them; then how a line looks - its colour as a swatch (not a pen: it is no tool) and
         // its width; and, apart at the right end, what is done WITH the note - addressed, delete
         let video: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase, NoteText], vec![PenColor, PenThinner, PenThicker], vec![NoteDone, NoteDelete]];
-        Toolbar { other: (make(&video), video.clone(), 2), video: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
+        // a canvas's set (row 324): the pointer and the drawing tools with the Qt app's keys, how a line looks, what is put on the sheet
+        let canvas: Vec<Vec<Tool>> = vec![vec![DrawSelect, DrawPen, DrawLine, DrawArrow, DrawRect, DrawOval, DrawErase], vec![PenColor, PenThinner, PenThicker], vec![Image, File]];
+        let mut cgroups = make(&canvas);
+        for (b, tip) in cgroups[0].buttons.iter_mut().zip(["Select and move (V, or Esc)", "Pen (P) \u{2014} a tablet's pressure varies the line", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in cgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the selected ink's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
+        for (b, tip) in cgroups[2].buttons.iter_mut().zip(["Add pictures, videos or PDFs", "Add files"]) { b.tooltip = tip.to_string(); }
+        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 2), (cgroups, canvas.clone(), 3)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
@@ -102,10 +112,11 @@ impl Toolbar {
     /// Lights and enables the buttons from where the caret is and what the collection's state is.
     /// True: the set was swapped - it must be laid out before it is shown (the caller draws again).
     pub fn sync(&mut self, s: &Shown) -> bool {
-        let swapped = s.video.is_some() != self.video.is_some();
-        // the set follows what is current: a video block's tools, else the text's (the caller lays the band out again)
-        if s.video.is_some() != self.video.is_some() { std::mem::swap(&mut self.groups, &mut self.other.0); std::mem::swap(&mut self.tools, &mut self.other.1); std::mem::swap(&mut self.right_from, &mut self.other.2); }
-        self.video = s.video;
+        // the set follows what is current: a video block's tools, a canvas's, else the text's (the caller lays the band out again)
+        let which = if s.video.is_some() { 1 } else if s.ink.is_some() { 2 } else { 0 }; let swapped = which != self.cur;
+        if swapped { let put = (std::mem::take(&mut self.groups), std::mem::take(&mut self.tools), self.right_from); let (g, tl, r) = std::mem::take(&mut self.sets[which]); self.sets[self.cur] = put; self.groups = g; self.tools = tl; self.right_from = r; self.cur = which; }
+        self.video = s.video; self.ink = s.ink;
+        if let (Some(v), 2) = (s.ink, which) { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) { b.enabled = true; b.selected = *tool == v.tool; } } return swapped }
         if let Some(v) = s.video { for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (b, tool) in g.buttons.iter_mut().zip(set) {
             b.enabled = match tool { Tool::NoteDone | Tool::NoteDelete => v.on_note, _ => true };
             b.selected = Some(*tool) == v.tool || (*tool == Tool::NoteDone && v.on_note && v.addressed); } }
@@ -157,7 +168,10 @@ impl Toolbar {
         // the two colours of the text are SWATCHES, as the drawing colour is (the user 2026-11-12): Type is a disc of the
         // type's colour with the letter A on it (the default: the text's own colour); Background is a disc of the colour
         // behind the text - an empty ring when there is none
-        if self.video.is_none() {
+        // the pen's colour is a swatch too
+        if let Some(pen) = self.video.map(|v| v.pen).or(self.ink.map(|v| v.pen)).filter(|_| self.cur != 0) { let r = self.rect_of(Tool::PenColor); if r.width() > 1.0 { let disc = kurbo::Circle::new(r.center(), 9.0 * self.scale);
+            scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, pen, None, &disc); scene.stroke(&kurbo::Stroke::new(1.0 * self.scale), kurbo::Affine::IDENTITY, paint::color(t::DIVIDER_COLOR), None, &disc); } }
+        if self.cur == 0 {
             let (text, page, edge) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::BACKGROUND_BASE_COLOR), paint::color(t::DIVIDER_COLOR));
             let lit = self.groups.iter().zip(&self.tools).any(|(g, set)| set.iter().zip(&g.buttons).any(|(tool, b)| *tool == Tool::Color && b.enabled));
             let dim = |c: peniko::Color| if lit { c } else { c.multiply_alpha(0.35) };

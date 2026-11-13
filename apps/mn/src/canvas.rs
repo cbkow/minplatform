@@ -15,6 +15,8 @@ use peniko::{Color, Fill};
 use std::time::Instant;
 use vello::Scene;
 use crate::media::{Media, View as Pic};
+use crate::ink;
+use qcv_notes::{ink::Smoother, strokes::{self, Stroke as Shape, Tool as Kind}};
 
 pub const ZOOM: (f64, f64) = (0.05, 4.0);
 const HANDLE: f64 = 9.0;
@@ -22,7 +24,15 @@ const HANDLE: f64 = 9.0;
 const FAR: f64 = 0.12;
 fn c(k: min_theme::Color) -> Color { min_ui::paint::color(k) }
 
-enum Act { Pan { from: (f64, f64), cam: (f64, f64) }, Move { from: Point, orig: Vec<(BlockId, f64, f64)>, moved: bool }, Resize { id: BlockId, left: bool, top: bool, orig: Rect, keep: bool, moved: bool }, Marquee { from: Point, to: Point, add: bool } }
+/// The drawing tools (row 324). None of them armed: the pointer selects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ink { Pen, Line, Arrow, Rect, Oval, Eraser }
+
+enum Act { /// a stroke being drawn: for the pen the smoother (fed the sheet's units / 1000 - QCView's units on a picture 1000 wide)
+    /// and, after each sample, how many points it had made and the pen's pressure then; `pressed`: a pen that tells its pressure draws
+    Draw { tool: Ink, from: Point, to: Point, sm: Option<Smoother>, marks: Vec<(usize, f64)>, pressed: bool }, /// the eraser being rubbed (`stepped`: it has taken something - the history has its step)
+    Rub { last: Point, stepped: bool },
+    Pan { from: (f64, f64), cam: (f64, f64) }, Move { from: Point, orig: Vec<(BlockId, f64, f64)>, moved: bool }, Resize { id: BlockId, left: bool, top: bool, orig: Rect, keep: bool, moved: bool }, Marquee { from: Point, to: Point, add: bool } }
 
 pub struct Canvas {
     pub id: BlockId, pub els: Vec<Element>, pub sel: Vec<BlockId>,
@@ -41,6 +51,11 @@ pub struct Canvas {
     pub entered: Option<BlockId>, pub want_note: Option<Point>, /// a file's or a link's card is to be opened by the system
     pub opened: Option<BlockId>,
     zoom_out: ActionButton, zoom_pc: ActionButton, zoom_in: ActionButton, zoom_fit: ActionButton, b_hand: ActionButton,
+    /// the armed drawing tool; the pen's colour and width (the sheet's units); the pen's pressure at the pointer event being
+    /// handled (None: a mouse, or a pen that tells none)
+    pub tool: Option<Ink>, pub pen: [f32; 4], pub pen_w: f64, pub pressure: Option<f64>,
+    hover: Option<(f64, f64)>, t0: Instant, /// what each stroke paints as (by its box's size and its record's length; a restyle and the history drop theirs)
+    drawn: std::collections::HashMap<BlockId, ((u64, u64, usize), ink::Drawn)>,
 }
 
 /// A media record's kind (`file`, `pdf`, `video`; None: a picture).
@@ -52,7 +67,7 @@ impl Canvas {
     pub fn new(id: BlockId, c: mn_store::Canvas) -> Canvas {
         let mut pc = ActionButton::new("", "Zoom to 100 %").size_s(); pc.label = Some("100 %".into());
         Canvas { id, els: c.elements, sel: vec![], cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
-            space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)") }
+            space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)"), tool: None, pen: [1.0, 0.0, 0.0, 1.0], pen_w: 6.0, pressure: None, hover: None, t0: Instant::now(), drawn: Default::default() }
     }
     /// As the collection keeps it.
     pub fn stored(&self) -> mn_store::Canvas { mn_store::Canvas { elements: self.els.clone(), camera: (!self.fit).then_some(self.cam) } }
@@ -93,11 +108,13 @@ impl Canvas {
     fn step(&mut self) { self.undo.push(self.els.clone()); if self.undo.len() > 200 { self.undo.remove(0); } self.redo.clear(); self.dirty = true; }
     pub fn undo(&mut self) { self.edit_end(true); if let Some(p) = self.undo.pop() { self.redo.push(std::mem::replace(&mut self.els, p)); self.after_history(); } }
     pub fn redo(&mut self) { self.edit_end(true); if let Some(p) = self.redo.pop() { self.undo.push(std::mem::replace(&mut self.els, p)); self.after_history(); } }
-    fn after_history(&mut self) { self.dirty = true; let ids: Vec<BlockId> = self.els.iter().map(|e| e.id).collect(); self.sel.retain(|s| ids.contains(s)); }
+    fn after_history(&mut self) { self.dirty = true; self.drawn.clear(); let ids: Vec<BlockId> = self.els.iter().map(|e| e.id).collect(); self.sel.retain(|s| ids.contains(s)); }
     fn top_z(&self) -> i64 { self.els.iter().map(|e| e.z).max().unwrap_or(0) }
     fn get(&self, id: BlockId) -> Option<&Element> { self.els.iter().find(|e| e.id == id) }
     /// The element in front at a window point.
-    fn at(&self, x: f64, y: f64) -> Option<BlockId> { let mut v: Vec<&Element> = self.els.iter().collect(); v.sort_by_key(|e| e.z); v.into_iter().rev().find(|e| self.on_screen(e).contains(Point::new(x, y))).map(|e| e.id) }
+    fn at(&self, x: f64, y: f64) -> Option<BlockId> { let mut v: Vec<&Element> = self.els.iter().collect(); v.sort_by_key(|e| e.z); let (w, slack) = (self.to_world(x, y), 4.0 / self.cam.2);
+        // a stroke is hit on its drawn line, not anywhere in its box
+        v.into_iter().rev().find(|e| self.on_screen(e).contains(Point::new(x, y)) && (e.kind != "ink" || ink::read(e).is_some_and(|l| ink::hit(&l, w, slack)))).map(|e| e.id) }
     /// Something is put on the canvas with its centre at a window point (None: the view's centre); it is selected.
     pub fn add(&mut self, kind: &str, record: String, w: f64, h: f64, at: Option<(f64, f64)>, nth: usize) -> BlockId {
         let m = self.rect.center(); let p = at.map(|(x, y)| self.to_world(x, y)).unwrap_or(self.to_world(m.x, m.y)); let off = nth as f64 * 24.0;
@@ -148,6 +165,73 @@ impl Canvas {
         for (i, id) in all.drain(..).enumerate() { if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.z = i as i64 + 1; } }
     }
 
+    // -- ink (row 324)
+
+    fn secs(&self) -> f64 { self.t0.elapsed().as_secs_f64() }
+    /// A tool is armed (the same again, or None: put down - the pointer selects).
+    pub fn arm(&mut self, tool: Option<Ink>) { self.edit_end(true); self.act = None; self.tool = if self.tool == tool { None } else { tool }; if self.tool.is_some() { self.sel.clear(); } }
+    /// The eraser's reach on the sheet: half the pen's width, and never less than five points on the screen.
+    fn rub_r(&self) -> f64 { (self.pen_w / 2.0).max(5.0 / self.cam.2) }
+    /// The pressure at each of a pen line's `n` points, from what the pen told after each sample.
+    fn pressures(marks: &[(usize, f64)], n: usize) -> Vec<f64> {
+        let mut out = Vec::with_capacity(n); let (mut from, mut p0) = (0usize, marks.first().map(|m| m.1).unwrap_or(1.0));
+        for &(to, p) in marks { let to = to.min(n); let span = to.saturating_sub(from).max(1) as f64; for i in from..to { out.push(p0 + (p - p0) * ((i - from + 1) as f64 / span)); } from = from.max(to); p0 = p; }
+        out.resize(n, p0); out
+    }
+    /// The stroke a gesture makes, in the sheet's units (`pen`: the pen's line so far). None: too small to be one.
+    fn line_of(&self, tool: Ink, from: Point, to: Point, pen: Option<Vec<[f64; 2]>>, marks: &[(usize, f64)], pressed: bool) -> Option<ink::Line> {
+        let r = Rect::from_points(from, to); let small = r.width() < 2.0 && r.height() < 2.0;
+        let (kind, points, pressures) = match tool {
+            Ink::Pen => { let p = pen?; let z = pressed.then(|| Self::pressures(marks, p.len())); (Kind::Freehand, p, z) }
+            Ink::Line | Ink::Arrow => { if small { return None } (if tool == Ink::Line { Kind::Line } else { Kind::Arrow }, vec![[from.x, from.y], [to.x, to.y]], None) }
+            Ink::Rect => { if small { return None } (Kind::Rectangle, vec![[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]], None) }
+            Ink::Oval => { if small { return None } (Kind::Oval, vec![[r.center().x, r.center().y], [r.width() / 2.0, r.height() / 2.0]], None) }
+            Ink::Eraser => return None,
+        };
+        Some(ink::Line { s: Shape { id: strokes::new_id(), tool: kind, color: Shape::qcolor(self.pen), width: self.pen_w, filled: false, is_modeled: kind == Kind::Freehand, points }, pressures })
+    }
+    fn ink_el(l: &ink::Line, z: i64, parent: Option<BlockId>) -> Element { let (b, record) = ink::write(l); Element { id: BlockId::new(), kind: "ink".into(), x: b.x0, y: b.y0, w: b.width(), h: b.height(), z, parent, record } }
+    /// A drawn stroke becomes an element in front of everything (one step); it is NOT selected - the next stroke follows it.
+    pub fn ink_put(&mut self, mut l: ink::Line) {
+        if l.s.tool == Kind::Freehand {
+            let (p, z) = ink::reduce(&l.s.points, l.pressures.as_deref(), l.s.width, ink::KEEP); l.s.points = p; l.pressures = z;
+            // a tap: a dot, as heavy as the tap was
+            let first = l.s.points[0]; if l.s.points.iter().all(|q| (q[0] - first[0]).hypot(q[1] - first[1]) < 0.3) { l.pressures = l.pressures.map(|z| vec![z.iter().cloned().fold(0.0, f64::max)]); l.s.points = vec![first]; }
+        }
+        self.step(); let z = self.top_z() + 1; self.els.push(Self::ink_el(&l, z, None));
+    }
+    /// The eraser passes from `a` to `b` (the sheet's units): each freehand line loses what is under it and the rest stay as
+    /// lines of their own, in the old one's place in the stack; a shape goes whole. True: something went.
+    fn rub(&mut self, a: Point, b: Point, stepped: &mut bool) -> bool {
+        let r = self.rub_r(); let reach = Rect::from_points(a, b).inflate(r, r);
+        let hits: Vec<(usize, Vec<ink::Line>)> = self.els.iter().enumerate().filter(|(_, e)| e.kind == "ink" && reach.intersect(Rect::new(e.x, e.y, e.x + e.w, e.y + e.h)).area() > 0.0).filter_map(|(i, e)| ink::rub(&ink::read(e)?, a, b, r).map(|left| (i, left))).collect();
+        if hits.is_empty() { return false } if !*stepped { self.step(); *stepped = true; } self.dirty = true;
+        for (i, left) in hits.into_iter().rev() { let old = self.els.remove(i); self.drawn.remove(&old.id); self.sel.retain(|s| *s != old.id); for (n, l) in left.iter().enumerate() { self.els.insert(i + n, Self::ink_el(l, old.z, old.parent)); } }
+        true
+    }
+    /// The selected strokes take a colour and / or a width (one step). True: ink was selected.
+    pub fn restyle(&mut self, color: Option<[f32; 4]>, width: Option<f64>) -> bool {
+        let ids: Vec<BlockId> = self.els.iter().filter(|e| e.kind == "ink" && self.sel.contains(&e.id)).map(|e| e.id).collect(); if ids.is_empty() { return false } self.step();
+        for e in self.els.iter_mut().filter(|e| ids.contains(&e.id)) { let Some(mut l) = ink::read(e) else { continue }; if let Some(c) = color { l.s.color = Shape::qcolor(c); } if let Some(w) = width { l.s.width = w; }
+            let (b, record) = ink::write(&l); e.x = b.x0; e.y = b.y0; e.w = b.width(); e.h = b.height(); e.record = record; self.drawn.remove(&e.id); }
+        true
+    }
+    /// For scripted checks (`MN_CANVAS=5`): one of each kind of stroke - a pen's line swelling with its pressure among them - and
+    /// `more` pen lines scattered over the sheet (`MN_INK=<n>`: how the canvas draws with thousands of them).
+    pub fn ink_demo(&mut self, more: usize) {
+        let pen = (self.pen, self.pen_w); let mut put = |me: &mut Canvas, tool: Kind, color: [f32; 4], width: f64, points: Vec<[f64; 2]>, pressures: Option<Vec<f64>>| { me.ink_put(ink::Line { s: Shape { id: strokes::new_id(), tool, color: Shape::qcolor(color), width, filled: false, is_modeled: tool == Kind::Freehand, points }, pressures }); };
+        let wave: Vec<[f64; 2]> = (0..=200).map(|i| { let x = i as f64 * 3.0; [x, 60.0 * (x / 70.0).sin()] }).collect(); let swell: Vec<f64> = (0..=200).map(|i| (i as f64 / 200.0 * std::f64::consts::PI).sin()).collect();
+        put(self, Kind::Freehand, [0.92, 0.92, 0.92, 1.0], 14.0, wave.clone(), Some(swell)); put(self, Kind::Freehand, [0.9, 0.2, 0.2, 1.0], 6.0, wave.iter().map(|p| [p[0], p[1] + 120.0]).collect(), None);
+        put(self, Kind::Line, [0.2, 0.5, 0.9, 1.0], 4.0, vec![[0.0, 260.0], [260.0, 330.0]], None); put(self, Kind::Arrow, [0.2, 0.7, 0.3, 1.0], 6.0, vec![[320.0, 330.0], [600.0, 250.0]], None);
+        put(self, Kind::Rectangle, [0.95, 0.6, 0.1, 1.0], 3.0, vec![[0.0, 380.0], [240.0, 380.0], [240.0, 500.0], [0.0, 500.0]], None); put(self, Kind::Oval, [0.6, 0.3, 0.8, 1.0], 9.0, vec![[450.0, 440.0], [130.0, 60.0]], None);
+        let mut seed = 0x2545F4914F6CDD1Du64; let mut rnd = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed >> 11) as f64 / (1u64 << 53) as f64 };
+        for _ in 0..more { let (x, y, a, w) = (rnd() * 6000.0 - 2700.0, rnd() * 4000.0 + 600.0, rnd() * 6.28, 2.0 + rnd() * 8.0); let col = [rnd() as f32, rnd() as f32, rnd() as f32, 1.0];
+            let pts: Vec<[f64; 2]> = (0..=120).map(|i| { let s = i as f64; [x + a.cos() * s * 1.5 + 14.0 * (s / 9.0 + a).sin(), y + a.sin() * s * 1.5 + 14.0 * (s / 7.0).cos()] }).collect();
+            let z = (rnd() < 0.5).then(|| (0..=120).map(|i| (i as f64 / 120.0 * std::f64::consts::PI).sin()).collect()); put(self, Kind::Freehand, col, w, pts, z); }
+        (self.pen, self.pen_w) = pen; self.undo.clear(); self.sel.clear();
+    }
+    #[cfg(test)] fn inks(&self) -> Vec<ink::Line> { self.els.iter().filter_map(ink::read).collect() }
+
     // -- a text card's words
 
     fn edit_begin(&mut self, id: BlockId, fonts: &mut Fonts) {
@@ -170,16 +254,16 @@ impl Canvas {
         Some((id, [(at(r.x0, r.y0), true, true), (at(r.x1, r.y0), false, true), (at(r.x0, r.y1), true, false), (at(r.x1, r.y1), false, false)]))
     }
     fn buttons(&mut self) -> [&mut ActionButton; 5] { [&mut self.b_hand, &mut self.zoom_out, &mut self.zoom_pc, &mut self.zoom_in, &mut self.zoom_fit] }
-    /// What the pointer would do at a window point: 0 nothing special, 1 pan, 2 a corner (nwse), 3 a corner (nesw), 4 a control.
+    /// What the pointer would do at a window point: 0 nothing special, 1 pan, 2 a corner (nwse), 3 a corner (nesw), 4 a control, 5 draw.
     pub fn cursor(&mut self, x: f64, y: f64) -> u8 {
-        if self.buttons().iter().any(|b| b.hit(x, y)) { return 4 } if matches!(self.act, Some(Act::Pan { .. })) || self.space || self.hand { return 1 }
+        if self.buttons().iter().any(|b| b.hit(x, y)) { return 4 } if matches!(self.act, Some(Act::Pan { .. })) || self.space || self.hand { return 1 } if self.tool.is_some() { return 5 }
         if let Some(Act::Resize { left, top, .. }) = &self.act { return if left == top { 2 } else { 3 } }
         if self.edit.is_none() { if let Some((_, hs)) = self.handles() { if let Some((_, l, tp)) = hs.iter().find(|(r, ..)| r.inflate(3.0, 3.0).contains(Point::new(x, y))) { return if l == tp { 2 } else { 3 } } } }
         0
     }
     /// A pointer event in the canvas's view. `middle`: the middle button. True: draw again.
     pub fn pointer(&mut self, e: &Event, middle: bool, shift: bool, fonts: &mut Fonts) -> bool {
-        let now = Instant::now(); let m = self.rect.center();
+        let now = Instant::now(); let m = self.rect.center(); self.hover = e.pos();
         // the zoom's controls
         let mut did = None; for (i, b) in self.buttons().into_iter().enumerate() { if b.event(e, now) == Response::Clicked { did = Some(i); } }
         match did { Some(0) => { self.hand = !self.hand; return true } Some(1) => { self.zoom_by(1.0 / 2f64.sqrt(), (m.x, m.y)); return true } Some(2) => { self.zoom_to(1.0); return true } Some(3) => { self.zoom_by(2f64.sqrt(), (m.x, m.y)); return true } Some(4) => { self.fit_all(); return true } _ => {} }
@@ -190,12 +274,17 @@ impl Canvas {
         match *e {
             Event::Down { x, y, .. } => { let w = self.to_world(x, y);
                 if middle || self.space || self.hand { self.act = Some(Act::Pan { from: (x, y), cam: (self.cam.0, self.cam.1) }); return true }
+                // an armed tool takes the press wherever it lands: nothing under it is selected or moved
+                if let Some(tool) = self.tool { self.fit = false; self.sel.clear();
+                    if tool == Ink::Eraser { let mut stepped = false; self.rub(w, w, &mut stepped); self.act = Some(Act::Rub { last: w, stepped }); }
+                    else { let p = self.pressure; self.act = Some(Act::Draw { tool, from: w, to: w, sm: (tool == Ink::Pen).then(|| Smoother::begin([w.x / 1000.0, w.y / 1000.0], self.secs())), marks: vec![(1, p.unwrap_or(1.0))], pressed: p.is_some() }); }
+                    return true }
                 if let Some((id, hs)) = self.handles() { if let Some((_, left, top)) = hs.iter().find(|(r, ..)| r.inflate(3.0, 3.0).contains(Point::new(x, y))) { let el = self.get(id).unwrap();
                     self.act = Some(Act::Resize { id, left: *left, top: *top, orig: Rect::new(el.x, el.y, el.x + el.w, el.y + el.h), keep: el.kind == "media" && el.h > 60.0, moved: false }); return true } }
                 let hit = self.at(x, y);
                 let twice = self.last_click.is_some_and(|(t0, h)| h == hit && t0.elapsed().as_millis() < 420); self.last_click = if twice { None } else { Some((now, hit)) };
                 match hit {
-                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => { self.sel = vec![id]; self.entered = Some(id); } Some("link") => self.opened = Some(id), _ if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), _ => self.open(id) } }
+                    Some(id) if twice => { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("ink") => {} Some("note") => { self.sel = vec![id]; self.entered = Some(id); } Some("link") => self.opened = Some(id), _ if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), _ => self.open(id) } }
                     Some(id) => { if shift { if let Some(i) = self.sel.iter().position(|s| *s == id) { self.sel.remove(i); } else { self.sel.push(id); } } else if !self.sel.contains(&id) { self.sel = vec![id]; }
                         self.act = Some(Act::Move { from: w, orig: self.els.iter().filter(|e| self.sel.contains(&e.id)).map(|e| (e.id, e.x, e.y)).collect(), moved: false }); }
                     // twice on the empty sheet: a text card there, ready to be typed in
@@ -205,20 +294,27 @@ impl Canvas {
                 true }
             Event::Move { x, y } => { let w = self.to_world(x, y); let k = self.k();
                 match self.act.take() {
+                    Some(Act::Draw { tool, from, mut sm, mut marks, pressed, .. }) => { let p = self.pressure; let t = self.secs();
+                        if let Some(s) = sm.as_mut() { s.push([w.x / 1000.0, w.y / 1000.0], t); marks.push((s.points().len(), p.unwrap_or(1.0))); }
+                        self.act = Some(Act::Draw { tool, from, to: w, sm, marks, pressed: pressed || p.is_some() }); true }
+                    Some(Act::Rub { last, mut stepped }) => { self.rub(last, w, &mut stepped); self.act = Some(Act::Rub { last: w, stepped }); true }
                     Some(Act::Pan { from, cam }) => { self.cam.0 = cam.0 - (x - from.0) / k; self.cam.1 = cam.1 - (y - from.1) / k; self.fit = false; self.act = Some(Act::Pan { from, cam }); true }
                     Some(Act::Move { from, orig, moved }) => { let d = w - from; let go = moved || d.hypot() * k > 3.0 * self.scale;
                         if go { if !moved { self.step(); } for (id, ox, oy) in &orig { if let Some(e) = self.els.iter_mut().find(|e| e.id == *id) { e.x = (ox + d.x).round(); e.y = (oy + d.y).round(); } } }
                         self.act = Some(Act::Move { from, orig, moved: go }); go }
                     Some(Act::Resize { id, left, top, orig, keep, moved }) => { if !moved { self.step(); }
-                        let (mut x0, mut y0, mut x1, mut y1) = (orig.x0, orig.y0, orig.x1, orig.y1); if left { x0 = w.x.min(x1 - 40.0); } else { x1 = w.x.max(x0 + 40.0); } if top { y0 = w.y.min(y1 - 24.0); } else { y1 = w.y.max(y0 + 24.0); }
+                        let (mut x0, mut y0, mut x1, mut y1) = (orig.x0, orig.y0, orig.x1, orig.y1); let (mw, mh) = if self.get(id).is_some_and(|e| e.kind == "ink") { (2.0, 2.0) } else { (40.0, 24.0) }; if left { x0 = w.x.min(x1 - mw); } else { x1 = w.x.max(x0 + mw); } if top { y0 = w.y.min(y1 - mh); } else { y1 = w.y.max(y0 + mh); }
                         // a picture keeps its shape: the wider of the two pulls decides
                         if keep { let a = orig.width() / orig.height(); let (nw, nh) = (x1 - x0, y1 - y0); let (nw, nh) = if nw / a >= nh { (nw, nw / a) } else { (nh * a, nh) }; if left { x0 = x1 - nw; } else { x1 = x0 + nw; } if top { y0 = y1 - nh; } else { y1 = y0 + nh; } }
                         if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.x = x0.round(); e.y = y0.round(); e.w = (x1 - x0).round(); e.h = (y1 - y0).round(); }
                         self.act = Some(Act::Resize { id, left, top, orig, keep, moved: true }); true }
                     Some(Act::Marquee { from, add, .. }) => { self.act = Some(Act::Marquee { from, to: w, add }); true }
-                    None => false,
+                    // the eraser's ring follows the pointer
+                    None => self.tool == Some(Ink::Eraser),
                 } }
             Event::Up { .. } => { match self.act.take() {
+                    Some(Act::Draw { tool, from, to, sm, marks, pressed }) => { let t = self.secs(); let pen = sm.map(|s| s.end([to.x / 1000.0, to.y / 1000.0], t).into_iter().map(|p| [p[0] * 1000.0, p[1] * 1000.0]).collect());
+                        if let Some(l) = self.line_of(tool, from, to, pen, &marks, pressed) { self.ink_put(l); } true }
                     Some(Act::Marquee { from, to, add }) => { let r = Rect::from_points(from, to); if r.width() * self.k() > 3.0 || r.height() * self.k() > 3.0 { let hit: Vec<BlockId> = self.els.iter().filter(|e| r.intersect(Rect::new(e.x, e.y, e.x + e.w, e.y + e.h)).area() > 0.0).map(|e| e.id).collect(); if !add { self.sel.clear(); } for id in hit { if !self.sel.contains(&id) { self.sel.push(id); } } } true }
                     Some(_) => true, None => false } }
             _ => false,
@@ -226,10 +322,10 @@ impl Canvas {
     }
     /// A card is looked at larger: the camera goes to it (Escape goes back to where it was).
     pub fn open(&mut self, id: BlockId) { let Some(r) = self.bounds(Some(&[id])) else { return }; if self.back.is_none() { self.back = Some(self.cam); } let fit = self.fit; self.show(r.inflate(24.0, 24.0)); self.cam.2 = self.cam.2.max(ZOOM.0); self.fit = false; let _ = fit; self.sel = vec![id]; }
-    /// Escape: the words being typed are kept and the field closes; else the camera goes back; else nothing stays selected.
-    pub fn escape(&mut self) { if self.edit.is_some() { self.edit_end(true); } else if let Some(c) = self.back.take() { self.cam = c; } else { self.sel.clear(); } self.act = None; }
+    /// Escape: a stroke being drawn is given up; else the armed tool is put down; else the words being typed are kept and the field closes; else the camera goes back; else nothing stays selected.
+    pub fn escape(&mut self) { if matches!(self.act, Some(Act::Draw { .. } | Act::Rub { .. })) { self.act = None; return } if self.edit.is_none() && self.tool.is_some() { self.tool = None; return } if self.edit.is_some() { self.edit_end(true); } else if let Some(c) = self.back.take() { self.cam = c; } else { self.sel.clear(); } self.act = None; }
     /// Return: the one selected card is opened (a text card: typed in).
-    pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("note") => self.entered = Some(id), Some("link") => self.opened = Some(id), Some(_) if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), Some(_) => self.open(id), None => {} } } }
+    pub fn enter(&mut self, fonts: &mut Fonts) { if let [id] = self.sel[..] { match self.get(id).map(|e| e.kind.clone()).as_deref() { Some("text") => self.edit_begin(id, fonts), Some("ink") => {} Some("note") => self.entered = Some(id), Some("link") => self.opened = Some(id), Some(_) if self.get(id).and_then(kind_of).as_deref() == Some("file") => self.opened = Some(id), Some(_) => self.open(id), None => {} } } }
     /// A key for the text card being typed in. True: it was the card's.
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> bool {
         let Some((_, f)) = self.edit.as_mut() else { return false };
@@ -254,6 +350,9 @@ impl Canvas {
                 let a = fonts.layout_fit(head, Family::Sans, (13.0 * k).clamp(6.0, 40.0) as f32, 400.0, text, (r.width() - 20.0 * k).max(8.0)); draw_layout(scene, &a, Affine::translate((r.x0 + 10.0 * k, r.y0 + 8.0 * k)));
                 if !more.is_empty() && r.height() > 44.0 * k { let b = fonts.layout_fit(more, Family::Sans, (11.0 * k).clamp(5.0, 34.0) as f32, 400.0, dim, (r.width() - 20.0 * k).max(8.0)); draw_layout(scene, &b, Affine::translate((r.x0 + 10.0 * k, r.y0 + 10.0 * k + a.height() as f64))); } };
             match e.kind.as_str() {
+                "ink" => { let key = (e.w.to_bits(), e.h.to_bits(), e.record.len());
+                    if self.drawn.get(&e.id).is_none_or(|d| d.0 != key) { if let Some(l) = ink::read(e) { self.drawn.insert(e.id, (key, ink::drawn(&l, Point::new(e.x, e.y)))); } }
+                    if let Some((_, d)) = self.drawn.get(&e.id) { d.paint(scene, Affine::translate((r.x0, r.y0)) * Affine::scale(k)); } }
                 "link" => { scene.fill(Fill::NonZero, Affine::IDENTITY, panel, None, &round); if far { continue } let link = c(t::ACCENT_CONTENT_COLOR_DEFAULT); let mut x = r.x0 + 12.0 * k;
                     if let Some(g) = fonts.icon("link", (18.0 * k) as f32, link) { draw_layout(scene, &g, Affine::translate((x, r.center().y - g.height() as f64 / 2.0))); x += 26.0 * k; }
                     let l = fonts.layout_fit(&e.record, Family::Sans, (13.0 * k).clamp(5.0, 44.0) as f32, 400.0, link, (r.x1 - x - 10.0 * k).max(8.0)); draw_layout(scene, &l, Affine::translate((x, r.center().y - l.height() as f64 / 2.0))); }
@@ -287,6 +386,11 @@ impl Canvas {
         for id in &self.sel { if let Some(e) = self.get(*id) { scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &self.on_screen(e).inflate(1.0 * s, 1.0 * s)); } }
         if self.edit.is_none() { if let Some((_, hs)) = self.handles() { for (h, ..) in hs { scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR), None, &h); scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &h); } } }
         if let Some(Act::Marquee { from, to, .. }) = &self.act { let r = Rect::from_points(self.to_screen(*from), self.to_screen(*to)); scene.fill(Fill::NonZero, Affine::IDENTITY, accent.with_alpha(0.12), None, &r); scene.stroke(&Stroke::new(s.max(1.0)), Affine::IDENTITY, accent, None, &r); }
+        // the stroke being drawn, as it will be kept; the eraser's ring
+        if let Some(Act::Draw { tool, from, to, sm, marks, pressed }) = &self.act { let pen = sm.as_ref().map(|s| s.points().iter().map(|p| [p[0] * 1000.0, p[1] * 1000.0]).collect());
+            if let Some(l) = self.line_of(*tool, *from, *to, pen, marks, *pressed) { let o = self.to_screen(Point::ORIGIN); ink::drawn(&l, Point::ORIGIN).paint(scene, Affine::translate((o.x, o.y)) * Affine::scale(k)); } }
+        if self.tool == Some(Ink::Eraser) && !self.space && !self.hand { if let Some((x, y)) = self.hover.filter(|(x, y)| rect.contains(Point::new(*x, *y))) { let ring = kurbo::Circle::new((x, y), self.rub_r() * k);
+            scene.stroke(&Stroke::new(3.0 * s), Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR).with_alpha(0.6), None, &ring); scene.stroke(&Stroke::new(1.2 * s), Affine::IDENTITY, text, None, &ring); } }
         // the words being typed, at the card's place and at the zoom's size
         let place = self.edit.as_ref().and_then(|(id, _)| self.get(*id)).map(|e| self.on_screen(e));
         if let (Some((_, f)), Some(r)) = (self.edit.as_mut(), place) { f.layout(fonts, r, k); f.paint(scene, fonts, k); again |= f.animating(now); }
@@ -306,6 +410,30 @@ impl Canvas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn press(c: &mut Canvas, f: &mut Fonts, pts: &[(f64, f64)]) { let b = min_ui::Button::Primary; c.pointer(&Event::Down { x: pts[0].0, y: pts[0].1, button: b }, false, false, f); for p in &pts[1..] { c.pointer(&Event::Move { x: p.0, y: p.1 }, false, false, f); } let l = pts[pts.len() - 1]; c.pointer(&Event::Up { x: l.0, y: l.1, button: b }, false, false, f); }
+    #[test]
+    fn ink_is_drawn_picked_on_its_line_rubbed_out_restyled_and_brought_back() {
+        let mut c = sheet(); let mut f = Fonts::new(); c.cam = (500.0, 400.0, 1.0);   // a point of the window is the same point of the sheet
+        // a line, an arrow, a rectangle, an oval: each one element, none selected after it; a press that goes nowhere draws nothing
+        c.arm(Some(Ink::Line)); press(&mut c, &mut f, &[(100.0, 100.0), (300.0, 300.0)]); press(&mut c, &mut f, &[(50.0, 50.0), (50.5, 50.0)]);
+        c.arm(Some(Ink::Rect)); press(&mut c, &mut f, &[(400.0, 100.0), (600.0, 200.0)]); c.arm(Some(Ink::Oval)); press(&mut c, &mut f, &[(400.0, 300.0), (600.0, 400.0)]);
+        assert_eq!(c.els.len(), 3); assert!(c.sel.is_empty() && c.els.iter().all(|e| e.kind == "ink")); let l = c.inks(); let o = &l[2].s.points; assert!((o[0][0] - 500.0).abs() < 0.01 && (o[0][1] - 350.0).abs() < 0.01 && (o[1][0] - 100.0).abs() < 0.01 && (o[1][1] - 50.0).abs() < 0.01, "{o:?}"); assert_eq!(l[0].s.width, 6.0);
+        // the pen: a line through the samples, its pressure kept when the pen tells one, ending on the pointer
+        c.arm(Some(Ink::Pen)); c.pressure = Some(0.2); c.pointer(&Event::Down { x: 100.0, y: 600.0, button: min_ui::Button::Primary }, false, false, &mut f);
+        for i in 1..=40 { std::thread::sleep(std::time::Duration::from_millis(2)); c.pressure = Some(0.2 + 0.02 * i as f64); c.pointer(&Event::Move { x: 100.0 + 10.0 * i as f64, y: 600.0 }, false, false, &mut f); }
+        c.pointer(&Event::Up { x: 500.0, y: 600.0, button: min_ui::Button::Primary }, false, false, &mut f); c.pressure = None;
+        let pen = c.inks().pop().unwrap(); let (a, z) = (pen.s.points.clone(), pen.pressures.clone().unwrap()); assert!(a.len() >= 2 && a.len() == z.len() && (a[0][0] - 100.0).abs() < 0.01 && (a[a.len() - 1][0] - 500.0).abs() < 2.0, "{a:?}"); assert!(z[0] < 0.3 && z[z.len() - 1] > 0.9, "{z:?}");
+        // the pointer picks a stroke on its line - the diagonal's box alone is not the line
+        c.arm(None); assert!(c.tool.is_none()); assert_eq!(c.at(200.0, 201.0), Some(c.els[0].id)); assert_eq!(c.at(280.0, 120.0), None); assert_eq!(c.at(500.0, 150.0), None, "inside the rectangle's outline");
+        // restyled while selected: one step, the box follows the width
+        c.sel = vec![c.els[0].id]; let w0 = c.els[0].w; assert!(c.restyle(Some([0.0, 0.0, 1.0, 1.0]), Some(22.0))); let l = &c.inks()[0]; assert_eq!((l.s.width, l.s.color[2]), (22.0, 1.0)); assert_eq!(c.els[0].w, w0 + 16.0); assert!((l.s.points[1][0] - 300.0).abs() < 0.01); c.undo(); assert_eq!(c.inks()[0].s.width, 6.0);
+        // the eraser rubbed across the pen's line: two lines where one was, one step; across the rectangle's edge: it goes whole
+        c.sel.clear(); c.arm(Some(Ink::Eraser)); let n = c.undo.len(); press(&mut c, &mut f, &[(300.0, 560.0), (300.0, 600.0), (300.0, 640.0)]); assert_eq!(c.els.len(), 5); assert_eq!(c.undo.len(), n + 1);
+        let parts = c.inks(); assert!(parts[3].s.points.last().unwrap()[0] < 296.0 && parts[4].s.points[0][0] > 304.0 && parts[3].pressures.is_some());
+        press(&mut c, &mut f, &[(380.0, 150.0), (420.0, 150.0)]); assert_eq!(c.els.len(), 4); c.undo(); c.undo(); assert_eq!(c.els.len(), 4); assert_eq!(c.inks()[3].s.points.len(), a.len());
+        // Escape gives up the stroke being drawn, then puts the tool down
+        c.arm(Some(Ink::Pen)); c.pointer(&Event::Down { x: 10.0, y: 10.0, button: min_ui::Button::Primary }, false, false, &mut f); c.escape(); assert!(c.act.is_none() && c.tool == Some(Ink::Pen)); c.escape(); assert!(c.tool.is_none()); assert_eq!(c.els.len(), 4);
+    }
     fn sheet() -> Canvas { let mut c = Canvas::new(BlockId::new(), mn_store::Canvas::default()); c.rect = Rect::new(0.0, 0.0, 1000.0, 800.0); c.scale = 1.0; c.fit = false; c }
     #[test]
     fn things_are_put_on_moved_stacked_copied_and_brought_back() {

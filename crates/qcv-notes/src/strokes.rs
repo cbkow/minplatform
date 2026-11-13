@@ -55,8 +55,18 @@ pub fn to_data(strokes: &[Stroke]) -> Value {
     json!({ "version": "2.0", "coordinate_system": "normalized", "shapes": strokes.iter().map(Stroke::to_json).collect::<Vec<_>>() })
 }
 /// QCView `generateStrokeId`: "stroke-<ms since the epoch>-<1000..9999>".
+/// (Two ids asked for in the same millisecond differ: a count of the ids given stands in for QCView's random draw - without
+/// it the second stroke of a burst took the first one's id.)
 pub fn new_id() -> String {
+    static GIVEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let r = 1000 + (ms as u64).wrapping_mul(6364136223846793005).wrapping_add(std::process::id() as u64) % 9000;
+    let n = GIVEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let r = 1000 + (ms as u64).wrapping_mul(6364136223846793005).wrapping_add(std::process::id() as u64).wrapping_add(n) % 9000;
     format!("stroke-{ms}-{r}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ids_given_in_one_burst_differ() { let ids: Vec<String> = (0..500).map(|_| super::new_id()).collect(); let mut u = ids.clone(); u.sort(); u.dedup(); assert_eq!(u.len(), ids.len()); assert!(ids[0].starts_with("stroke-") && ids[0].rsplit('-').next().unwrap().len() == 4); }
 }
