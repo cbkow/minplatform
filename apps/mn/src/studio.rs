@@ -32,7 +32,13 @@ const AROUND: usize = 2;
 /// The widest a page's picture is made (the engine's pictures and the renderer's atlas both have limits).
 const WIDEST: u32 = 4096;
 
-struct Made { page: usize, width: u32, px: Result<(Vec<u8>, u32, u32), String> }
+struct Made { page: usize, width: u32, px: Result<(Vec<u8>, u32, u32), String>, /// for the strip of small pages
+    small: bool }
+
+/// The strip of small pages at a PDF's left (row 367b): its width, a small page's width, the room under one for its number.
+const STRIP_W: f64 = 148.0;
+const SMALL_W: f64 = 112.0;
+const SMALL_GAP: f64 = 26.0;
 
 /// How large the pages are shown: to the view's width (a PDF's first look: no wider than reads well), the whole page
 /// in the view (a picture's first look), or by a factor of the page's own units (1 = a PDF's point per logical point;
@@ -44,7 +50,9 @@ pub struct Studio {
     pub host: Host, path: PathBuf, name: String,
     /// every page's size in points; one entry (the record's own shape) until the file has been read
     sizes: Vec<(f32, f32)>, sizes_rx: Option<Receiver<Result<Vec<(f32, f32)>, String>>>,
-    pub scroll: f64, pub scroll_x: f64, pub rect: Rect, scale: f64, pub zoom: Zoom, /// when the zoom last changed: the sharp pictures are asked for once it has rested
+    pub scroll: f64, pub scroll_x: f64, /// the pages' place (the view less its strip)
+    pub rect: Rect, /// the whole view: the strip of small pages, the pages, the head
+    full: Rect, strip_scroll: f64, smalls: HashMap<usize, peniko::ImageBrush>, smalls_asked: std::collections::HashSet<usize>, strip_at: usize, scale: f64, pub zoom: Zoom, /// when the zoom last changed: the sharp pictures are asked for once it has rested
     zoomed: Instant, /// a picture, not a PDF: one page, whose picture the caller hands to `paint`
     pub picture: bool,
     pics: HashMap<usize, (u32, peniko::ImageBrush)>, asked: HashMap<usize, u32>, failed: HashMap<usize, String>,
@@ -64,7 +72,7 @@ impl Studio {
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
         let (tx, rx) = channel(); let (stx, srx) = channel();
         if read { let (p, w) = (path.clone(), wake.clone()); let _ = std::thread::Builder::new().name("mn-studio-sizes".into()).spawn(move || { let _ = stx.send(sizes(&p)); w(); }); }
-        Studio { host, path, name, sizes: vec![first], sizes_rx: read.then_some(srx), scroll: 0.0, scroll_x: 0.0, rect: Rect::ZERO, scale: 1.0, zoom: Zoom::Width, zoomed: Instant::now() - std::time::Duration::from_secs(1), picture: false, pics: HashMap::new(), asked: HashMap::new(), failed: HashMap::new(), tx, rx, wake,
+        Studio { host, path, name, sizes: vec![first], sizes_rx: read.then_some(srx), scroll: 0.0, scroll_x: 0.0, rect: Rect::ZERO, full: Rect::ZERO, strip_scroll: 0.0, smalls: HashMap::new(), smalls_asked: Default::default(), strip_at: usize::MAX, scale: 1.0, zoom: Zoom::Width, zoomed: Instant::now() - std::time::Duration::from_secs(1), picture: false, pics: HashMap::new(), asked: HashMap::new(), failed: HashMap::new(), tx, rx, wake,
             back: ActionButton::new("arrow-left", "Back (Esc)"), b_out: ActionButton::new("minus", "Zoom out").size_s(), b_in: ActionButton::new("plus", "Zoom in").size_s(), b_fit: ActionButton::new("arrows-in-simple", "Fit").size_s(), opened: Instant::now(), start: 0 }
     }
     /// A picture's view: one page of the picture's own size; nothing is read here (the caller hands its picture to `paint`).
@@ -72,6 +80,20 @@ impl Studio {
         let mut st = Studio::open_with(host, path, name, size, wake, false); st.picture = true; st.zoom = Zoom::Whole; st
     }
     pub fn pages(&self) -> usize { self.sizes.len() }
+    /// The whole view (presses anywhere in it are its own).
+    pub fn area(&self) -> Rect { self.full }
+    /// The strip of small pages: a PDF of more than one page has it.
+    fn strip(&self) -> Option<Rect> { (!self.picture && self.sizes.len() > 1).then(|| Rect::new(self.full.x0, self.full.y0 + 36.0 * self.scale, self.full.x0 + STRIP_W * self.scale, self.full.y1)) }
+    pub fn in_strip(&self, x: f64, y: f64) -> bool { self.strip().is_some_and(|r| r.contains(kurbo::Point::new(x, y))) }
+    /// The small pages' places in the strip's own space (y from its top), and the whole height.
+    fn strip_rows(&self) -> (Vec<Rect>, f64) {
+        let s = self.scale; let w = SMALL_W * s; let x = (STRIP_W * s - w) / 2.0; let mut y = 12.0 * s; let mut out = Vec::with_capacity(self.sizes.len());
+        for (pw, ph) in &self.sizes { let h = w * (*ph as f64 / (*pw as f64).max(1.0)); out.push(Rect::new(x, y, x + w, y + h)); y += h + SMALL_GAP * s; }
+        (out, y)
+    }
+    fn strip_limit(&mut self) { if let Some(r) = self.strip() { let (_, h) = self.strip_rows(); self.strip_scroll = self.strip_scroll.clamp(0.0, (h - r.height()).max(0.0)); } }
+    /// The wheel at a window point: over the strip it moves the strip, elsewhere the pages.
+    pub fn wheel_at(&mut self, x: f64, y: f64, dx: f64, dy: f64) { if self.in_strip(x, y) { self.strip_scroll += dy; self.strip_limit(); } else { self.wheel(dx, dy); } }
     /// The factor from a page's own units to the window's pixels.
     fn factor(&self) -> f64 {
         let s = self.scale; let margin = MARGIN * s; let widest = self.sizes.iter().map(|p| p.0).fold(1.0f32, f32::max) as f64; let tallest = self.sizes.iter().map(|p| p.1).fold(1.0f32, f32::max) as f64;
@@ -127,17 +149,20 @@ impl Studio {
     }
     /// A pointer event: true when Back was pressed.
     pub fn pointer(&mut self, e: &Event) -> bool { let now = Instant::now(); let mid = (self.rect.center().x, self.rect.center().y);
+        // a small page pressed: the pages go to it
+        if let (Event::Down { x, y, .. }, Some(sr)) = (e, self.strip()) { if sr.contains(kurbo::Point::new(*x, *y)) { let (rows, _) = self.strip_rows(); let ly = *y - sr.y0 + self.strip_scroll; if let Some(i) = rows.iter().position(|r| ly >= r.y0 - 4.0 && ly <= r.y1 + SMALL_GAP * self.scale - 4.0) { self.go_to(i); } return false } }
         if self.b_out.event(e, now) == Response::Clicked { self.zoom_by(1.0 / 1.25, mid); } if self.b_in.event(e, now) == Response::Clicked { self.zoom_by(1.25, mid); }
         if self.b_fit.event(e, now) == Response::Clicked { let z = if self.picture || self.zoom == Zoom::Width { Zoom::Whole } else { Zoom::Width }; self.zoom_to(z); }
         self.back.event(e, now) == Response::Clicked }
     /// The head's band (Back, the name): a press there is no press on a page.
-    pub fn in_head(&self, y: f64) -> bool { y < self.rect.y0 + 36.0 * self.scale }
+    pub fn in_head(&self, y: f64) -> bool { y < self.full.y0 + 36.0 * self.scale }
     /// What arrived from the helpers is taken up. True: draw again.
     pub fn poll(&mut self) -> bool {
         let mut again = false;
         if let Some(rx) = &self.sizes_rx { if let Ok(r) = rx.try_recv() { self.sizes_rx = None; again = true;
-            match r { Ok(s) if !s.is_empty() => { self.sizes = s; self.pics.clear(); self.asked.clear(); let at = self.start.min(self.sizes.len() - 1); self.go_to(at); } Ok(_) => {} Err(why) => { self.failed.insert(0, why); } } } }
+            match r { Ok(s) if !s.is_empty() => { self.sizes = s; self.pics.clear(); self.asked.clear(); self.smalls.clear(); self.smalls_asked.clear(); let at = self.start.min(self.sizes.len() - 1); self.go_to(at); } Ok(_) => {} Err(why) => { self.failed.insert(0, why); } } } }
         while let Ok(m) = self.rx.try_recv() { again = true; if std::env::var_os("MN_STUDIO_LOG").is_some() { eprintln!("studio: made page {} at {} ok {} (asked {:?})", m.page, m.width, m.px.is_ok(), self.asked.get(&m.page)); }
+            if m.small { if let Ok((px, w, h)) = m.px { self.smalls.insert(m.page, image_rgba8(w, h, px)); } continue }
             if self.asked.get(&m.page) != Some(&m.width) { continue }   // asked for at another width since
             match m.px { Ok((px, w, h)) => { self.pics.insert(m.page, (m.width, image_rgba8(w, h, px))); self.failed.remove(&m.page); } Err(why) => { self.failed.insert(m.page, why); } }
             self.asked.remove(&m.page); }
@@ -147,12 +172,13 @@ impl Studio {
         if self.asked.get(&page) == Some(&width) || self.pics.get(&page).is_some_and(|p| p.0 == width) || self.failed.contains_key(&page) { return }
         if std::env::var_os("MN_STUDIO_LOG").is_some() { eprintln!("studio: ask page {page} at {width}"); }
         self.asked.insert(page, width); let (tx, path, wake) = (self.tx.clone(), self.path.clone(), self.wake.clone());
-        let _ = std::thread::Builder::new().name("mn-studio-page".into()).spawn(move || { let px = crate::pdf::page(&path, page, width); let _ = tx.send(Made { page, width, px }); wake(); });
+        let _ = std::thread::Builder::new().name("mn-studio-page".into()).spawn(move || { let px = crate::pdf::page(&path, page, width); let _ = tx.send(Made { page, width, px, small: false }); wake(); });
     }
     /// Lays the view out in `rect` and paints it: the ground, the pages in view (white until their picture is made),
     /// each page's drawings (`ink`: the lines of a page, in the page's own record units, with the record's width for
     /// that page), the head with Back and the name. True: draw again (pictures are on their way).
     pub fn paint(&mut self, scene: &mut vello::Scene, fonts: &mut Fonts, rect: Rect, scale: f64, own: Option<&peniko::ImageBrush>, ink: &dyn Fn(usize, (f64, f64)) -> (Vec<crate::ink::Line>, f64, Option<Rect>)) -> bool {
+        self.full = rect; self.scale = scale; let strip = self.strip(); let rect = match strip { Some(sr) => Rect::new(sr.x1, rect.y0, rect.x1, rect.y1), None => rect };
         let resized = (rect.width() - self.rect.width()).abs() > 0.5; let at = if resized && self.rect.width() > 0.0 { Some(self.current()) } else { None };
         self.rect = rect; self.scale = scale; if let Some(p) = at { self.go_to(p); } self.limit();
         let mut again = self.poll(); let s = scale;
@@ -179,8 +205,28 @@ impl Studio {
             scene.stroke(&kurbo::Stroke::new(s.max(1.0)), Affine::IDENTITY, color(t::DIVIDER_COLOR), None, &r);
         }
         scene.pop_layer();
+        // the strip of small pages (row 367b): every page small, the one in view marked; a press goes to a page; it keeps the page in view in sight
+        if let Some(sr) = strip {
+            fill(scene, sr, color(t::BACKGROUND_LAYER_1_COLOR)); scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &sr);
+            let cur = self.current(); let (rows, _) = self.strip_rows();
+            if cur != self.strip_at { self.strip_at = cur; if let Some(r) = rows.get(cur) { let (top, bot) = (r.y0 - 12.0 * s, r.y1 + SMALL_GAP * s); if top < self.strip_scroll { self.strip_scroll = top; } else if bot > self.strip_scroll + sr.height() { self.strip_scroll = bot - sr.height(); } } self.strip_limit(); }
+            let seen: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| { let y0 = r.y0 - self.strip_scroll; y0 < sr.height() && r.y1 - self.strip_scroll > 0.0 }).map(|(i, _)| i).collect();
+            // (small pictures are kept for the rows near the ones in sight only: a long document has hundreds)
+            if let (Some(a), Some(z)) = (seen.first().copied(), seen.last().copied()) { self.smalls.retain(|p, _| *p + 40 >= a && *p <= z + 40); self.smalls_asked.retain(|p| *p + 40 >= a && *p <= z + 40); }
+            for i in seen { let r = rows[i] + kurbo::Vec2::new(sr.x0, sr.y0 - self.strip_scroll);
+                if i == cur { scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, color(t::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(Rect::new(r.x0 - 6.0 * s, r.y0 - 6.0 * s, r.x1 + 6.0 * s, r.y1 + (SMALL_GAP - 6.0) * s), 6.0 * s)); }
+                fill(scene, r, peniko::Color::WHITE);
+                match self.smalls.get(&i) { Some(b) => image(scene, b, r), None => { again = true;
+                    if self.smalls_asked.insert(i) { let (tx, path, wake, width) = (self.tx.clone(), self.path.clone(), self.wake.clone(), (SMALL_W * s).round().max(32.0) as u32);
+                        let _ = std::thread::Builder::new().name("mn-studio-small".into()).spawn(move || { let px = crate::pdf::page(&path, i, width); let _ = tx.send(Made { page: i, width, px, small: true }); wake(); }); } } }
+                if i == cur { scene.stroke(&kurbo::Stroke::new(1.5 * s), Affine::IDENTITY, color(t::ACCENT_BACKGROUND_COLOR_DEFAULT), None, &r); }
+                let n = fonts.layout(&(i + 1).to_string(), Family::Sans, (11.0 * s) as f32, if i == cur { 600.0 } else { 400.0 }, color(if i == cur { t::NEUTRAL_CONTENT_COLOR_DEFAULT } else { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT }));
+                draw_layout(scene, &n, Affine::translate((r.center().x - n.width() as f64 / 2.0, r.y1 + 3.0 * s))); }
+            scene.pop_layer();
+            scene.stroke(&kurbo::Stroke::new(s.max(1.0)), Affine::IDENTITY, color(t::DIVIDER_COLOR), None, &kurbo::Line::new((sr.x1, sr.y0), (sr.x1, sr.y1)));
+        }
         // the head: Back, the file's name, the page of pages
-        let head = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 36.0 * s); fill(scene, head, color(t::BACKGROUND_LAYER_1_COLOR));
+        let rect = self.full; let head = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 36.0 * s); fill(scene, head, color(t::BACKGROUND_LAYER_1_COLOR));
         let (bw, bh) = self.back.measure(fonts, s); self.back.rect = Rect::new(head.x0 + 8.0 * s, head.center().y - bh / 2.0, head.x0 + 8.0 * s + bw, head.center().y + bh / 2.0);
         let now = Instant::now(); self.back.paint(scene, fonts, s, now); again |= self.back.animating(now);
         let title = fonts.layout_fit(&self.name, Family::Sans, (13.0 * s) as f32, 500.0, color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), head.width() * 0.6);

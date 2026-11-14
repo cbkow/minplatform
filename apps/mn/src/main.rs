@@ -3413,7 +3413,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
                 if !self.ctx.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) };
-                    if self.mods.1 { st.zoom_by((1.0 + dy / 300.0).clamp(0.5, 2.0), self.pointer); } else if self.mods.0 { st.wheel(-dy, 0.0); } else { st.wheel(-dx, -dy); } g.window.request_redraw(); return } }
+                    if self.mods.1 { st.zoom_by((1.0 + dy / 300.0).clamp(0.5, 2.0), self.pointer); } else if self.mods.0 { st.wheel(-dy, 0.0); } else { st.wheel_at(self.pointer.0, self.pointer.1, -dx, -dy); } g.window.request_redraw(); return } }
                 if self.ctx.scrolls() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; self.ctx.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.maps.as_mut() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.site.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
@@ -3522,7 +3522,7 @@ impl ApplicationHandler for App {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Secondary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Secondary } };
                 if self.ctx.is_open() || self.pal.is_open() { self.chrome_pointer(e); }
-                else if self.files.studio.as_ref().is_some_and(|st| st.rect.contains(kurbo::Point::new(position.x, position.y))) { return }
+                else if self.files.studio.as_ref().is_some_and(|st| st.area().contains(kurbo::Point::new(position.x, position.y))) { return }
                 else if let Some((table, hit)) = self.board_at(position.x, position.y) { if state == ElementState::Pressed { self.ed.select_block(table);
                     if let (boardview::Hit::Card(lane, k), false) = (hit, self.reading) { if let Some(row) = mn_layout::board::build(&self.ed.doc, table).and_then(|b| b.lanes.get(lane).and_then(|l| l.cards.get(k)).map(|c| c.row)) {
                         use min_ui::menu::MenuItem as I; self.files.board_menu = Some((table, row)); self.files.tmenu = None; self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear();
@@ -3553,7 +3553,7 @@ impl ApplicationHandler for App {
                     else if let Some((parent, before, _, _)) = self.sidebar.as_ref().and_then(|sb| sb.drop_target(id, position.x, position.y)) { if let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) { match st.col.move_entry(id, parent, before) { Ok(true) => { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(id); if let Some(p) = parent { sb.unfold(p); } sb.set_tree(&st.col); sb.selected = Some(id); } Ok(false) => {} Err(e) => eprintln!("move: {e}") } } self.title(); }
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
                 // the PDF studio (row 362) has every press in its place (the band's and the footer's stay theirs)
-                if !self.ctx.is_open() && !self.pal.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { if st.rect.contains(kurbo::Point::new(position.x, position.y)) { let (back, head) = (st.pointer(&e), st.in_head(position.y)); if let Some(g) = &self.gpu { g.window.request_redraw(); } if back { self.studio_close(); return }
+                if !self.ctx.is_open() && !self.pal.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { if st.area().contains(kurbo::Point::new(position.x, position.y)) { let (back, head) = (st.pointer(&e), st.in_head(position.y) || st.in_strip(position.x, position.y)); if let Some(g) = &self.gpu { g.window.request_redraw(); } if back { self.studio_close(); return }
                     if state == ElementState::Released { if self.files.gest.is_some() { self.page_release(position.x, position.y); } } else if !head && !self.reading { self.page_press(position.x, position.y); }
                     return } } }
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }

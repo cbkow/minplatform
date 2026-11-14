@@ -1,0 +1,18 @@
+size 1280 800
+wait 1
+note Colour session
+wait 0.8
+add ${MN_DEMO_DIR}/Media/Long report (400 pages).pdf
+wait 2.5
+click 700 420
+wait 0.1
+click 700 420
+wait 2
+shot t-s1
+wheel 900 400 9000
+wait 1.5
+shot t-s2
+click 70 560
+wait 1.5
+shot t-s3
+quit
