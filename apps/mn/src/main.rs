@@ -295,7 +295,8 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     player: Option<Player>, /// the decoder's hardware device (asked for once)
     hw: Option<Option<qcv_player::HwDevice>>, /// the colour stage of videos' stills
     poster: video::Poster, files: Files, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
-    told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, shots: Option<shots::Shots>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+    told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, shots: Option<shots::Shots>, /// READING (row 358): the page cannot be changed; `refused_seen`: the editor's count of refused changes at the last look
+    reading: bool, refused_seen: u32, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -332,6 +333,10 @@ fn sample() -> Doc {
 
 impl App {
     fn redraw(&mut self) {
+        // reading (row 358): the editor in hand takes no change, the tools' band is put away, a canvas only moves; a change that was refused is answered once
+        self.ed.locked = self.reading; self.bar.reading = self.reading && self.store.is_some();
+        if let Some(cv) = self.files.canvas.as_mut() { if self.reading && !cv.reading { cv.sel.clear(); } cv.reading = self.reading && self.files.card.is_none(); }
+        if self.ed.refused != self.refused_seen { self.refused_seen = self.ed.refused; if self.reading { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); } }
         self.settle_timecode();
         self.canvas_save(false);
         self.find_refresh();
@@ -360,13 +365,13 @@ impl App {
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { text: &text, warn, link: (self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) || self.files.site.as_ref().is_some_and(|w| w.readout().is_some())) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { reading: self.reading, locked: false, text: &text, warn, link: (self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) || self.files.site.as_ref().is_some_and(|w| w.readout().is_some())) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
         if let (Some(c), Some(cv)) = (self.files.card.as_mut(), self.files.canvas.as_ref()) { if let Some(r) = cv.rect_of(c.el) { if r != c.rect { self.geom_moved = Some(Instant::now()); } c.rect = r; } }
         if let Some(sb) = self.sidebar.as_mut() { sb.defer_open = self.files.canvas.is_some() && self.files.card.is_none(); }
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.files.maps.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured(self.reading || (self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.files.maps.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -512,7 +517,7 @@ impl App {
                 if let Some(i) = g.fonts.icon("plus", (10.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
         }
         // the handle beside the caret's block; while it is dragged, the line where the blocks would land and how many they are
-        if let Some(hr) = (!self.blank).then(|| handle_rect_in(&self.ed, l, s, off)).flatten() {
+        if let Some(hr) = (!self.blank && !self.reading).then(|| handle_rect_in(&self.ed, l, s, off)).flatten() {
             let dragging = self.grab.as_ref().is_some_and(|x| x.dragging);
             if let Some(i) = g.fonts.icon("dots-six-vertical", (16.0 * s) as f32, if dragging { paint::text() } else { paint::subdued() }) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((hr.x0 + (hr.width() - i.width() as f64) / 2.0, hr.y0 + (hr.height() - i.height() as f64) / 2.0))); }
             if let Some(gr) = self.grab.as_ref().filter(|x| x.dragging) {
@@ -528,7 +533,7 @@ impl App {
         }
         // no caret beside a media block that is being USED - its video playing, scrubbed or drawn on, text selected on its page, a drawing tool armed
         let used = self.ed.selection().map(|x| x.focus.block).filter(|b| matches!(self.ed.doc.get(*b).map(|x| &x.kind), Some(Kind::Media { .. }))).is_some_and(|b| self.files.tool.is_some() || self.files.pdf.as_ref().is_some_and(|p| p.id == b) || self.player.as_ref().is_some_and(|p| p.id == b && (p.t.is_playing() || p.scrub || self.files.drawing)));
-        if !self.blank && !used && picked.is_empty() && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
+        if !self.blank && !self.reading && !used && picked.is_empty() && self.ed.selection().is_some_and(|x| x.is_caret()) { if let Some(c) = self.ed.caret_rect(l, (1.5 * s) as f32) { let c = c + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::caret(), None, &c);
             // the input method's candidate window follows the caret
             if g.ime_area != Some(c) { g.ime_area = Some(c); ime(g.window.as_ref().as_ref(), Some(c), false); } } }
         // over the page: the sidebar, then a question being asked
@@ -576,8 +581,18 @@ impl App {
     /// note that was only LOOKED AT is not written and does not count as changed (it did: every note left was saved
     /// whether touched or not, so opening notes marked them - user 2026-11-14). The note is compared with its stored
     /// form rather than trusted to a flag, so a change no flag recorded is still kept.
+    /// Reading on or off (row 358), and remembered for this collection on this machine. Going to reading puts away
+    /// whatever was open for a change: a tool, a popup, a note's words, picked blocks.
+    fn set_reading(&mut self, on: bool) {
+        if self.store.is_none() || self.reading == on { return }
+        if on { if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); } self.note_words_end(true); self.autosave(); self.files.tool = None; self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.resize = None; self.grab = None; if self.ed.in_blocks() { self.ed.toggle_blocks(); } }
+        self.reading = on; self.ed.locked = on; self.refused_seen = self.ed.refused;
+        if let Some(p) = self.store.as_ref().and_then(|st| st.session.as_ref()).map(|s| s.original().to_path_buf()) { if std::env::var_os("MN_NO_DIALOGS").is_none() { reading_keep(&p, on); } }
+        self.notice = Some((if on { "Reading \u{2014} the note cannot be changed".to_string() } else { "Editing".to_string() }, Instant::now() + std::time::Duration::from_secs(3)));
+        self.layout = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
     fn leaving(&mut self) {
-        if let Some(st) = self.store.as_mut() { if st.edited.is_none() && st.col.load_note(st.note).map(|d| d != self.ed.doc).unwrap_or(true) { st.edited = Some(Instant::now()); } }
+        if let Some(st) = self.store.as_mut() { if !self.reading && st.edited.is_none() && st.col.load_note(st.note).map(|d| d != self.ed.doc).unwrap_or(true) { st.edited = Some(Instant::now()); } }
         self.autosave();
     }
     fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
@@ -747,6 +762,7 @@ impl App {
             Ok((store, doc, recovered)) => {
                 let mut sb = sidebar::Sidebar::new(); sb.set_tree(&store.col);
                 self.store = Some(store); self.sidebar = Some(sb); self.ed = Editor::new(doc); self.others.clear();
+                self.reading = reading_at_open(path, create); self.files.tool = None;
                 self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = false; self.recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
                 recent_add(path); self.sync_recent();
                 #[cfg(target_os = "macos")] text_element::changed(true);
@@ -1608,6 +1624,7 @@ impl App {
     }
     /// The field a note's words are typed in opens on the playing video's note (Enter keeps them, Escape gives them up).
     fn note_words(&mut self) {
+        if self.reading { return }
         let Some((_, cur)) = self.video_geo() else { return }; let Some(p) = self.player.as_ref() else { return };
         let Some(n) = p.ann.note_at(&cur) else { return }; let Some(g) = self.gpu.as_mut() else { return };
         let mut f = min_ui::TextField::new(min_ui::Family::Sans, 12.0); f.placeholder = "Note\u{2026}".into(); f.set_text_end(&n.text.replace(['\n', '\r'], " "), &mut g.fonts); f.focused = true;
@@ -1659,6 +1676,7 @@ impl App {
     }
     /// The frame a video block stands on goes into its record (not a step of the history).
     fn video_keep(&mut self, id: BlockId, frame: i32) {
+        if self.reading { return }   // reading: where a video was left is not written into the note
         if let Some(cv) = self.files.canvas.as_mut().filter(|c| c.video_el(id).is_some()) { cv.set_frame(id, frame); return }
         let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) else { return };
         let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) else { return };
@@ -1857,6 +1875,7 @@ impl App {
         v.insert("page".into(), serde_json::json!(to));
         let _ = self.ed.doc.set_kind(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() });
         self.files.pdf = None;
+        if self.reading { if let Some(g) = &self.gpu { g.window.request_redraw(); } return }   // reading: the page shown is not written into the note
         if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -1989,7 +2008,8 @@ impl App {
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let s = g.window.scale_factor();
         let hit = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Task { depth, state } => Some((b.id, *depth, *state)), _ => None }).find(|(id, _, _)| l.text_origin(&self.ed.doc, *id).is_some_and(|(_, tx, ty)| Rect::new(tx - 22.0 * s, ty + s, tx - 4.0 * s, ty + 19.0 * s).contains(pt)));
         let Some((id, depth, state)) = hit else { return false };
-        let now = self.now_ms(); let d = self.ed.set_kinds(vec![(id, Kind::Task { depth, state: (state + 1) % 3 })], now).unwrap_or(Dirty::Nothing); self.apply(d);
+        let now = self.now_ms(); let was = std::mem::replace(&mut self.ed.locked, false);   // (a task is ticked in reading too - the user's word)
+        let d = self.ed.set_kinds(vec![(id, Kind::Task { depth, state: (state + 1) % 3 })], now).unwrap_or(Dirty::Nothing); self.ed.locked = was; self.apply(d);
         if let Some(g) = &self.gpu { g.window.request_redraw(); } true
     }
     fn code_press(&mut self, x: f64, y: f64) -> bool {
@@ -1998,7 +2018,7 @@ impl App {
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_mut()) else { return false }; let s = g.window.scale_factor();
         let hit = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Code { lang } => Some((b.id, lang.clone(), b.text.clone())), _ => None }).find_map(|(id, lang, text)| { let r = l.rect(&self.ed.doc, id)?; if !r.contains(pt) { return None }
             let (label, copy) = paint::code_tools(&mut g.fonts, r, &lang, s); if label.x0 < r.x0 + 4.0 * s { return None }
-            if copy.contains(pt) { Some((id, lang, Some(text))) } else if label.contains(pt) { Some((id, lang, None)) } else { None } });
+            if copy.contains(pt) { Some((id, lang, Some(text))) } else if label.contains(pt) && !self.reading { Some((id, lang, None)) } else { None } });
         let Some((id, lang, copy)) = hit else { return false };
         self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
         match copy {
@@ -2230,6 +2250,7 @@ impl App {
     /// Files go to the helpers to become blocks at `at`.
     fn add_files(&mut self, paths: Vec<std::path::PathBuf>, at: mn_edit::Drop) {
         if paths.is_empty() || (self.blank && self.files.canvas.is_none()) { return }
+        if self.reading { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); return }
         self.files.token += 1; self.files.pending.insert(self.files.token, at); self.media.add(self.files.token, paths);
     }
     // ── files dropped on the sidebar (row 345): a collection is opened, documents become notes, other files one note
@@ -2301,6 +2322,7 @@ impl App {
             M::PasteMarkdown => { let d = self.paste(Paste::Markdown); self.apply(d); }
             // the selected row's name (the open note's when nothing is selected); the sidebar is opened for it
             M::Rename => if let (Some(sb), Some(g), Some(st)) = (self.sidebar.as_mut(), self.gpu.as_mut(), self.store.as_ref()) { let id = sb.selected.unwrap_or(st.note); if sb.rail.collapsed { sb.rail.set_collapsed(false, Instant::now()); } sb.start_rename(id, &mut g.fonts); },
+            M::Reading => { let on = !self.reading; self.set_reading(on); }
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
@@ -2493,6 +2515,7 @@ impl App {
     }
     /// Cmd+N / Cmd+Shift+N: a note or a folder beside the selected entry (inside it, when that is a folder).
     fn new_entry(&mut self, kind: mn_store::DocKind) {
+        if kind != mn_store::DocKind::Folder { self.set_reading(false); }   // a note just made is for writing
         let (Some(st), Some(sb), Some(g)) = (self.store.as_mut(), self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
         let parent = sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
         let id = match st.col.create(parent, kind, if kind == mn_store::DocKind::Folder { "New folder" } else { "" }) { Ok(id) => id, Err(e) => { eprintln!("new: {e}"); return } };
@@ -2561,7 +2584,7 @@ impl App {
             // a press on a button is the button's to the end: the release must come back here, not go to the page
             if hit.is_some() || e.pos().is_some_and(|(x, y)| self.splash.iter().any(|b| b.hit(x, y))) { return true } }
         let (did, on_foot) = self.foot.event(&e, now);
-        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Readout => { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } else if let Some(w) = self.files.site.as_mut() { w.shown = true; } continue } footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+        if !did.is_empty() || on_foot { for d in did { self.menu_cmd(match d { footer::Do::Reading => menu::Cmd::Reading, footer::Do::Undo => menu::Cmd::Undo, footer::Do::Redo => menu::Cmd::Redo, footer::Do::Save => menu::Cmd::Save, footer::Do::Sidebar => menu::Cmd::Sidebar, footer::Do::Readout => { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } else if let Some(w) = self.files.site.as_mut() { w.shown = true; } continue } footer::Do::Find => { if self.files.find.is_some() { self.find_close(); } else { self.find_open(); } continue } }); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (tools, on_bar) = self.bar.event(&e, now);
         if !tools.is_empty() || on_bar { for tool in tools { self.tool(tool); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return false };
@@ -2577,7 +2600,7 @@ impl App {
     /// The handle (row 305): a grip in the margin beside the first line of the caret's block — of the first selected
     /// block when blocks are selected. It stands where the CARET is, never where the pointer is. Window coordinates.
     fn handle_rect(&self) -> Option<Rect> {
-        if self.blank { return None }
+        if self.blank || self.reading { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         handle_rect_in(&self.ed, l, s, origin(&self.files.card, self.side_w, self.top, self.scroll, s))
     }
@@ -2637,6 +2660,7 @@ impl App {
         if self.files.canvas.is_some() && cmd && matches!(key, Key::Named(NamedKey::Enter)) && self.files.card.is_none() { if let Some((_, note, _)) = self.card_note() { self.open_note(note); return } }
         if self.files.canvas.is_some() && self.files.card.is_none() && self.files.note_field.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) {
             if self.files.canvas.as_ref().is_some_and(|c| c.editing()) && cmd && !alt { if let Key::Character(c) = key { if c.to_lowercase() == "v" { let t = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()); if let (Some(t), Some(cv), Some(g)) = (t, self.files.canvas.as_mut(), self.gpu.as_mut()) { let k = min_ui::KeyEvent { key: min_ui::Key::Char(String::new()), text: Some(t), shift: false, cmd: false }; cv.key(&k, &mut g.fonts); g.window.request_redraw(); } return } } }
+            if self.reading && !matches!(key, Key::Character(c) if matches!(c.as_str(), "0" | "1" | "=" | "+" | "-")) { if text.is_some() && !cmd { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
             if self.canvas_key(key, ui_key()) { self.canvas_asks(); return } }
         // (a canvas has no page, but the sidebar is still the window's: Cmd+1 folds and opens it there too)
         if self.blank && cmd && !shift && !alt && matches!(key, Key::Character(c) if c == "1") { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_ref()) { sb.rail.toggle(Instant::now()); self.layout = None; g.window.request_redraw(); } return }
@@ -3233,7 +3257,9 @@ impl ApplicationHandler for App {
                             // frames, lining up, locking (row 327)
                             I::with_shortcut("Group", any && frame.is_none(), &k("\u{2318}G", "Ctrl+G")), I::with_shortcut("Ungroup", frame.is_some(), &k("\u{21e7}\u{2318}G", "Ctrl+Shift+G")), I::action("Rename Frame", frame.is_some()), I::action("Fit to Contents", frame.as_ref().is_some_and(|f| f.1)), I::action("Shape\u{2026}", frame.is_some()), I::action("Tint\u{2026}", frame.is_some()),
                             I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
-                else if state == ElementState::Pressed { self.context(position.x, position.y); }
+                else if state == ElementState::Pressed { self.context(position.x, position.y);
+                    // reading: of the page's menu only what changes nothing stays in reach
+                    if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path") { *enabled = false; } } } } }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
@@ -3266,13 +3292,13 @@ impl ApplicationHandler for App {
                     Some((id, d)) => { let twice = self.files.chip_click.is_some_and(|(t, b)| b == id && t.elapsed().as_millis() < 450); self.files.chip_click = if twice { None } else { Some((Instant::now(), id)) }; if twice { self.file_open(&d, false); return } }
                     None => self.files.chip_click = None } }
                 // a press on a chip in the text opens its picker (row 320)
-                if state == ElementState::Pressed && !self.mods.0 && !self.mods.1 && self.files.tool.is_none() && self.files.note_field.is_none() { if let Some(c) = self.chip_under(position.x, position.y) { self.chip_open(c, ""); return } }
+                if state == ElementState::Pressed && !self.reading && !self.mods.0 && !self.mods.1 && self.files.tool.is_none() && self.files.note_field.is_none() { if let Some(c) = self.chip_under(position.x, position.y) { self.chip_open(c, ""); return } }
                 // a code block's corner (row 338): its language's label opens the picker, its button copies its text
                 if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && self.code_press(position.x, position.y) { return }
                 if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && !self.mods.0 && !self.mods.1 && self.task_press(position.x, position.y) { return }
                 // Cmd + click on a link opens it (a plain click places the caret)
-                if state == ElementState::Pressed && self.mods.1 && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
-                if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }
+                if state == ElementState::Pressed && (self.mods.1 || self.reading) && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
+                if state == ElementState::Pressed && !self.blank && !self.reading && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }
                 // a note's words being typed: a press outside the field keeps them
                 if state == ElementState::Pressed && self.files.note_field.as_ref().is_some_and(|(_, _, f)| !f.hit(position.x, position.y)) { self.note_words_end(true); }
                 if self.files.note_field.is_some() { let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } }; if let (Some((_, _, f)), Some(g)) = (self.files.note_field.as_mut(), self.gpu.as_mut()) { f.pointer(&e, &mut g.fonts); g.window.request_redraw(); } return }
@@ -3326,7 +3352,7 @@ impl ApplicationHandler for App {
                     if had { if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
                 // a corner of the current picture: the drag resizes it (row 312)
                 if state == ElementState::Released && self.files.resize.is_some() { self.resize_end(true); return }
-                if state == ElementState::Pressed { if let Some((id, r, left, _)) = self.corner_at(position.x, position.y) {
+                if state == ElementState::Pressed && !self.reading { if let Some((id, r, left, _)) = self.corner_at(position.x, position.y) {
                     let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
                     let lane = self.ed.doc.get(id).and_then(|b| b.parent).and_then(|p| self.layout.as_ref().and_then(|l| l.rect(&self.ed.doc, p))).map(|p| p.width()).or(self.layout.as_ref().map(|l| l.width as f64)).unwrap_or(r.width());
                     if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { self.files.resize = Some(Resize { id, before: descriptor, from_x: position.x, width: r.width() / s, max: lane / s, left }); self.set_cursor(); return } } }
@@ -3337,13 +3363,13 @@ impl ApplicationHandler for App {
                     let now = (self.ed.doc.get(a).map(|x| x.kind.clone()), self.ed.doc.get(b).map(|x| x.kind.clone())); let _ = self.ed.doc.set_kind(a, ka.clone()); let _ = self.ed.doc.set_kind(b, kb.clone());
                     if let (Some(na), Some(nb)) = now { if na != ka { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(a, na), (b, nb)], t).unwrap_or(Dirty::Nothing); self.apply(d); } }
                     self.layout = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
-                if state == ElementState::Pressed && self.files.tool.is_none() { if let Some((a, b, free, total)) = self.column_gap_at(position.x, position.y) { if let (Some(ka), Some(kb)) = (self.ed.doc.get(a).map(|x| x.kind.clone()), self.ed.doc.get(b).map(|x| x.kind.clone())) {
+                if state == ElementState::Pressed && !self.reading && self.files.tool.is_none() { if let Some((a, b, free, total)) = self.column_gap_at(position.x, position.y) { if let (Some(ka), Some(kb)) = (self.ed.doc.get(a).map(|x| x.kind.clone()), self.ed.doc.get(b).map(|x| x.kind.clone())) {
                     self.files.gap_drag = Some((a, b, position.x, free, total, ka, kb)); self.set_cursor(); return } } }
                 if state == ElementState::Released { if let Some((table, _, _, _, before)) = self.files.col_drag.take() {
                     let now = self.ed.doc.get(table).map(|b| b.kind.clone()); let _ = self.ed.doc.set_kind(table, before.clone());
                     if let Some(new) = now.filter(|n| *n != before) { let t = self.now_ms(); let d = self.ed.set_kinds(vec![(table, new)], t).unwrap_or(Dirty::Nothing); self.apply(d); }
                     self.layout = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
-                if state == ElementState::Pressed { if let Some(ui) = self.table_ui() { let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
+                if state == ElementState::Pressed && !self.reading { if let Some(ui) = self.table_ui() { let pt = kurbo::Point::new(position.x, position.y); let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
                     if position.y >= ui.y.0 && position.y <= ui.y.1 { if let Some((col, _)) = ui.borders.iter().find(|(_, bx)| (bx - position.x).abs() <= 4.0 * s) {
                         if let (Some(Kind::Table { .. }), Some(l)) = (self.ed.doc.get(ui.table).map(|b| b.kind.clone()), self.layout.as_ref()) { let before = self.ed.doc.get(ui.table).unwrap().kind.clone();
                             let w = self.ed.doc.children(Some(ui.table)).first().and_then(|r| self.ed.doc.children(Some(*r)).get(*col)).and_then(|c| l.rect(&self.ed.doc, *c)).map(|q| q.width() / s).unwrap_or(160.0);
@@ -3525,6 +3551,25 @@ fn recent_clear() { let _ = std::fs::remove_file(recent_file()); }
 fn style() -> Style { let mut syntax = mn_layout::palette(&mn_layout::syntax::DARK); syntax[mn_layout::syntax::Tok::Comment.index()] = paint::subdued(); Style { text: paint::text(), link: paint::link(), syntax, ..Style::default() } }
 
 /// Where staged sessions live on this machine (row 272: never beside the file).
+/// Reading or editing, as this machine last left each collection (row 358): `reading.json` beside the sessions.
+const READING_HINT: &str = if cfg!(target_os = "macos") { "Reading \u{2014} press \u{2318}E to edit" } else { "Reading \u{2014} press Ctrl+E to edit" };
+fn reading_file() -> std::path::PathBuf { sessions_root().parent().unwrap_or(std::path::Path::new(".")).join("reading.json") }
+fn reading_known(path: &std::path::Path) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(reading_file()).ok()?).ok()?; v.get(path.to_string_lossy().as_ref())?.as_bool()
+}
+fn reading_keep(path: &std::path::Path, on: bool) {
+    let f = reading_file(); let mut v: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    v.insert(path.to_string_lossy().into_owned(), serde_json::Value::Bool(on)); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
+    let _ = std::fs::write(&f, serde_json::Value::Object(v).to_string());
+}
+/// How a collection opens: one just made is for writing; one that exists opens for READING unless this machine left
+/// it in editing. `MN_READING=0|1` says it outright; a scripted run (`MN_NO_DIALOGS`) edits unless told otherwise -
+/// every scripted check types.
+fn reading_at_open(path: &std::path::Path, created: bool) -> bool {
+    if let Ok(v) = std::env::var("MN_READING") { return v == "1" }
+    if created || std::env::var_os("MN_NO_DIALOGS").is_some() { return false }
+    reading_known(path).unwrap_or(true)
+}
 fn sessions_root() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("MN_SESSIONS_DIR") { return p.into() }
     let base = if cfg!(target_os = "macos") { std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support")) } else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from) } else { std::env::var_os("XDG_STATE_HOME").map(std::path::PathBuf::from).or(std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))) };
@@ -3641,7 +3686,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] mac_open::install();

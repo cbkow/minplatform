@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings,
+    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings, Reading,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -49,7 +49,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
             item("Copy as Markdown", sc_shift('c'), Cmd::CopyMarkdown), Node::Sep,
             Node::Check { label: "Include File Paths", cmd: Cmd::ExportPaths }, Node::Check { label: "Include Video Notes", cmd: Cmd::ExportVideoNotes },
         ]),
-        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
+        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Reading Mode", sc('e'), Cmd::Reading), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
     ]
 }
 

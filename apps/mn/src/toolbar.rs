@@ -65,7 +65,8 @@ pub struct Shown<'a> { pub state: &'a mn_edit::State, /// a canvas is open (pict
 
 pub struct Toolbar { /// the three sets - the text's, a video block's, a canvas's (the one shown now is in `groups` / `tools` / `right_from`, its place here empty)
     sets: [(Vec<ActionGroup>, Vec<Vec<Tool>>, usize); 4], cur: usize, video: Option<VideoShown>, ink: Option<InkShown>, groups: Vec<ActionGroup>, tools: Vec<Vec<Tool>>, /// the groups from here on sit at the right end when everything fits on one row
-    right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, scale: f64, /// the colours in effect at the caret for the two chips (Type, Background)
+    right_from: usize, pub rect: Rect, tooltips: Tooltips, pub hidden: bool, /// reading (row 358): the band is put away whatever `hidden` says
+    pub reading: bool, scale: f64, /// the colours in effect at the caret for the two chips (Type, Background)
     chips: [Option<peniko::Color>; 2] }
 
 impl Toolbar {
@@ -93,13 +94,13 @@ impl Toolbar {
         let mut pgroups = make(&page);
         for (b, tip) in pgroups[0].buttons.iter_mut().zip(["Pick a stroke (V) \u{2014} drag to move it, Delete to remove it; again to stop", "Pen (P) \u{2014} draws on the picture or the page; again to stop", "Line (L)", "Arrow (A)", "Rectangle (R)", "Oval (O)", "Eraser (E) \u{2014} rubs out what it passes over"]) { b.tooltip = tip.to_string(); }
         for (b, tip) in pgroups[1].buttons.iter_mut().zip(["Pen colour \u{2014} or the picked stroke's", "Thinner line", "Thicker line"]) { b.tooltip = tip.to_string(); }
-        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 2), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, scale: 1.0, chips: [None, None] }
+        Toolbar { sets: [Default::default(), (make(&video), video.clone(), 2), (cgroups, canvas.clone(), 3), (pgroups, page.clone(), 2)], cur: 0, video: None, ink: None, groups, right_from: sets.len(), tools: sets, rect: Rect::ZERO, tooltips: Tooltips::default(), hidden: false, reading: false, scale: 1.0, chips: [None, None] }
     }
     /// Places the band from `x0` to `x1` at `y`; returns its height (0 when hidden). The groups flow left to right and
     /// wrap; when they all fit on one row the last groups move to the right end.
     pub fn layout(&mut self, fonts: &mut Fonts, x0: f64, x1: f64, y: f64, scale: f64) -> f64 {
         self.scale = scale;
-        if self.hidden { self.rect = Rect::new(x0, y, x1, y); for g in &mut self.groups { for b in &mut g.buttons { b.rect = Rect::ZERO; } g.rect = Rect::ZERO; } return 0.0 }
+        if self.hidden || self.reading { self.rect = Rect::new(x0, y, x1, y); for g in &mut self.groups { for b in &mut g.buttons { b.rect = Rect::ZERO; } g.rect = Rect::ZERO; } return 0.0 }
         let (row, pad, gap) = (t::TRANSPORT_BAR_HEIGHT as f64 * scale, t::SPACING_100 as f64 * scale, t::SPACING_200 as f64 * scale);
         let widths: Vec<f64> = self.groups.iter_mut().map(|g| g.layout(fonts, 0.0, 0.0, scale)).collect();
         let button_h = self.groups.first().map(|g| g.rect.height()).unwrap_or(row);
@@ -154,10 +155,10 @@ impl Toolbar {
     }
     /// Where a tool's button is (the anchor of what it opens).
     pub fn rect_of(&self, tool: Tool) -> Rect { self.groups.iter().zip(&self.tools).find_map(|(g, set)| set.iter().position(|x| *x == tool).map(|i| g.buttons[i].rect)).unwrap_or(Rect::ZERO) }
-    pub fn hit(&self, x: f64, y: f64) -> bool { !self.hidden && self.rect.contains(kurbo::Point::new(x, y)) }
+    pub fn hit(&self, x: f64, y: f64) -> bool { !(self.hidden || self.reading) && self.rect.contains(kurbo::Point::new(x, y)) }
     /// A pointer event: the tools pressed, and whether the event was the band's.
     pub fn event(&mut self, e: &Event, now: Instant) -> (Vec<Tool>, bool) {
-        if self.hidden { return (vec![], false) }
+        if self.hidden || self.reading { return (vec![], false) }
         let mut out = vec![];
         for (g, set) in self.groups.iter_mut().zip(&self.tools) { for (i, r) in g.event(e, now) { if r == Response::Clicked { out.push(set[i]); } } }
         if matches!(e, Event::Down { .. }) { self.tooltips.pressed(now); }
@@ -168,7 +169,7 @@ impl Toolbar {
     pub fn tick(&mut self, now: Instant) -> bool { self.tooltips.tick(now) || self.groups.iter().any(|g| g.animating(now)) }
     pub fn next_change(&self, now: Instant) -> Option<Instant> { self.tooltips.next_change(now) }
     pub fn paint(&self, scene: &mut Scene, fonts: &mut Fonts, now: Instant) {
-        if self.hidden { return }
+        if self.hidden || self.reading { return }
         paint::rect(scene, self.rect, t::BAND_BACKGROUND_COLOR);
         paint::hline(scene, self.rect.x0, self.rect.x1, self.rect.y1 - t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_THICKNESS as f64 * self.scale, t::DIVIDER_COLOR);
         for g in &self.groups { g.paint(scene, fonts, self.scale, now); }

@@ -53,6 +53,11 @@ pub struct Editor {
     sel: Option<Selection>,
     /// whole rows (false) or whole columns (true) of a table are selected - while the selection is still this one
     whole: Option<(Selection, bool)>,
+    /// READING (row 358): no change is taken - every command that would change the note does nothing and is counted
+    /// in `refused`. The one funnel all changes pass (`commit`), undo, redo and compositions hold to it; the selection
+    /// still moves, so text can be selected and copied.
+    pub locked: bool,
+    pub refused: u32,
     /// the x a run of Up / Down moves keeps returning to
     goal_x: Option<f64>,
     /// the caret stands at a soft wrap and belongs to the END of the upper line (End put it there)
@@ -88,7 +93,7 @@ fn next_char(s: &str, at: usize) -> usize { s[at..].chars().next().map(|c| at + 
 fn paragraph(parent: Option<BlockId>, text: &str) -> Block { Block { id: BlockId::new(), parent, rank: Rank::first(), kind: Kind::Paragraph, text: text.into(), spans: Spans::new(), conflict: None, children: vec![] } }
 
 impl Editor {
-    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, whole: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None, commits: 0 } }
+    pub fn new(doc: Doc) -> Editor { Editor { doc, history: History::new(), sel: None, whole: None, goal_x: None, upstream: false, marks: vec![], redo_marks: vec![], armed: vec![], preedit: None, blocks: None, commits: 0, locked: false, refused: 0 } }
     pub fn selection(&self) -> Option<Selection> { self.sel }
     /// (new steps recorded so far, steps that can be undone): together they say whether the last step is still the one a caller remembers.
     pub fn stamp(&self) -> (u64, usize) { (self.commits, self.marks.len()) }
@@ -119,6 +124,7 @@ impl Editor {
     /// inside it (byte offsets). It is shown in place of the selection, underlined by the painter; nothing is recorded
     /// until [`Editor::commit_preedit`].
     pub fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>, now_ms: u64) -> Result<Dirty, ChangeError> {
+        if self.locked { if !text.is_empty() { self.refused += 1; } return Ok(Dirty::Nothing) }
         let mut dirty = Dirty::Nothing;
         let restored = self.end_preedit();
         if restored.is_none() && self.sel.is_some_and(|s| !s.is_caret()) { let mut b = self.batch(); let p = self.delete_selection(&mut b)?; dirty = self.commit(b, p, now_ms)?; }
@@ -265,6 +271,7 @@ impl Editor {
     }
     fn commit(&mut self, b: Batch, after: Option<Pos>, now_ms: u64) -> Result<Dirty, ChangeError> {
         if b.changes.is_empty() { if let Some(p) = after { self.sel = Some(Selection::caret(self.valid(p))); } return Ok(Dirty::Nothing) }
+        if self.locked { self.refused += 1; return Ok(Dirty::Nothing) }
         let structural = b.changes.iter().any(|c| matches!(c, Change::Insert { .. } | Change::Remove { .. } | Change::Move { .. }));
         let mut ids: Vec<BlockId> = b.changes.iter().filter_map(|c| match c { Change::Text { id, .. } | Change::Format { id, .. } | Change::Kind { id, .. } => Some(*id), _ => None }).collect(); ids.dedup();
         let before = self.sel; self.blocks = None; self.commits += 1;
@@ -471,12 +478,14 @@ impl Editor {
         self.commit(b, Some(Pos { block: first, at }), now_ms)
     }
     pub fn undo(&mut self) -> Result<Dirty, ChangeError> {
+        if self.locked { self.refused += 1; return Ok(Dirty::Nothing) }
         if self.end_preedit().is_some() { return Ok(Dirty::Structure) }
         if !self.history.undo(&mut self.doc)? { return Ok(Dirty::Nothing) }
         self.blocks = None;
         let m = self.marks.pop().unwrap_or((None, None)); self.sel = m.0.and_then(|s| self.live(s)); self.redo_marks.push(m); self.goal_x = None; Ok(Dirty::Structure)
     }
     pub fn redo(&mut self) -> Result<Dirty, ChangeError> {
+        if self.locked { self.refused += 1; return Ok(Dirty::Nothing) }
         if self.end_preedit().is_some() { return Ok(Dirty::Structure) }
         if !self.history.redo(&mut self.doc)? { return Ok(Dirty::Nothing) }
         self.blocks = None;
@@ -509,6 +518,17 @@ mod tests {
         fn mv(&mut self, m: Move, ext: bool) { self.e.move_caret(&self.l, m, ext); }
         fn pos(&self) -> (usize, usize) { let p = self.e.selection().unwrap().focus; (self.ids.iter().position(|x| *x == p.block).unwrap_or(99), p.at) }
         fn text(&self, i: usize) -> String { self.e.doc.get(self.ids[i]).map(|b| b.text.clone()).unwrap_or_else(|| "<gone>".into()) }
+    }
+
+    #[test]
+    fn a_locked_note_takes_no_change_but_its_text_can_still_be_selected() {
+        let mut t = setup(); t.at(0, 5); t.type_("!"); let before = t.e.doc.clone();
+        t.e.locked = true;
+        t.type_("x"); t.del(false); t.now += 1000; let _ = t.e.enter(t.now).unwrap(); let _ = t.e.undo().unwrap(); let _ = t.e.set_preedit("k", None, t.now).unwrap();
+        assert_eq!(t.e.doc, before, "nothing typed, removed, split, undone or composed changes a locked note");
+        assert_eq!(t.e.refused, 5);
+        t.at(0, 0); t.mv(Move::Right, true); assert_eq!(t.pos(), (0, 1), "the selection still moves");
+        t.e.locked = false; t.at(0, 6); t.type_("?"); assert_eq!(t.text(0), "Title!?");
     }
 
     #[test]

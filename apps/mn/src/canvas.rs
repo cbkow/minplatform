@@ -48,7 +48,8 @@ pub struct Canvas {
     /// a text card being typed in; the camera before a card was opened larger (Escape goes back to it)
     edit: Option<(BlockId, TextArea)>, back: Option<(f64, f64, f64)>,
     /// Space is held (a drag pans), the hand tool is on
-    pub space: bool, pub hand: bool, last_click: Option<(Instant, Option<BlockId>)>,
+    pub space: bool, pub hand: bool, /// reading (row 358): a press only moves the view - nothing is picked, moved, drawn or entered
+    pub reading: bool, last_click: Option<(Instant, Option<BlockId>)>,
     /// a note card's content height (the canvas's units), as last drawn: the card is no taller than what it holds
     fit_h: std::collections::HashMap<BlockId, f64>,
     /// asked for by a gesture, for the window to do: a note card is to be entered (its text edited in place); a note is to be made at this point of the sheet
@@ -76,7 +77,7 @@ impl Canvas {
     pub fn new(id: BlockId, c: mn_store::Canvas) -> Canvas {
         let mut pc = ActionButton::new("", "Zoom to 100 %").size_s(); pc.label = Some("100 %".into());
         Canvas { id, els: c.elements, sel: vec![], quiet: None, cam: c.camera.unwrap_or((0.0, 0.0, 1.0)), fit: c.camera.is_none(), dirty: false, rect: Rect::ZERO, scale: 1.0, act: None, undo: vec![], redo: vec![], edit: None, back: None,
-            space: false, hand: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)"), tool: None, pen: [1.0, 0.0, 0.0, 1.0], pen_w: 6.0, pressure: None, inked: None, framing: false, ctrl: false, shift: false, guides: vec![], drop_at: None, hover: None, t0: Instant::now(), drawn: Default::default() }
+            space: false, hand: false, reading: false, last_click: None, fit_h: Default::default(), entered: None, want_note: None, opened: None, zoom_out: small("minus", "Zoom out"), zoom_pc: pc, zoom_in: small("plus", "Zoom in"), zoom_fit: small("arrows-in-simple", "Fit everything"), b_hand: small("hand", "Pan (hold Space)"), tool: None, pen: [1.0, 0.0, 0.0, 1.0], pen_w: 6.0, pressure: None, inked: None, framing: false, ctrl: false, shift: false, guides: vec![], drop_at: None, hover: None, t0: Instant::now(), drawn: Default::default() }
     }
     /// As the collection keeps it.
     pub fn stored(&self) -> mn_store::Canvas { mn_store::Canvas { elements: self.els.clone(), camera: (!self.fit).then_some(self.cam) } }
@@ -395,7 +396,7 @@ impl Canvas {
     fn buttons(&mut self) -> [&mut ActionButton; 5] { [&mut self.b_hand, &mut self.zoom_out, &mut self.zoom_pc, &mut self.zoom_in, &mut self.zoom_fit] }
     /// What the pointer would do at a window point: 0 nothing special, 1 pan, 2 a corner (nwse), 3 a corner (nesw), 4 a control, 5 draw.
     pub fn cursor(&mut self, x: f64, y: f64) -> u8 {
-        if self.buttons().iter().any(|b| b.hit(x, y)) { return 4 } if matches!(self.act, Some(Act::Pan { .. })) || self.space || self.hand { return 1 } if self.tool.is_some() || self.framing { return 5 }
+        if self.buttons().iter().any(|b| b.hit(x, y)) { return 4 } if matches!(self.act, Some(Act::Pan { .. })) || self.space || self.hand || self.reading { return 1 } if self.tool.is_some() || self.framing { return 5 }
         if let Some(Act::Resize { left, top, .. }) = &self.act { return if left == top { 2 } else { 3 } }
         if self.edit.is_none() { if let Some((_, hs)) = self.handles() { if let Some((_, l, tp)) = hs.iter().find(|(r, ..)| r.inflate(3.0, 3.0).contains(Point::new(x, y))) { return if l == tp { 2 } else { 3 } } } }
         0
@@ -405,14 +406,14 @@ impl Canvas {
         let now = Instant::now(); let m = self.rect.center(); self.hover = e.pos(); self.shift = shift;
         // the zoom's controls
         let mut did = None; for (i, b) in self.buttons().into_iter().enumerate() { if b.event(e, now) == Response::Clicked { did = Some(i); } }
-        match did { Some(0) => { self.hand = !self.hand; return true } Some(1) => { self.zoom_by(1.0 / 2f64.sqrt(), (m.x, m.y)); return true } Some(2) => { self.zoom_to(1.0); return true } Some(3) => { self.zoom_by(2f64.sqrt(), (m.x, m.y)); return true } Some(4) => { self.fit_all(); return true } _ => {} }
+        match did { Some(0) => { if !self.reading { self.hand = !self.hand; } return true } Some(1) => { self.zoom_by(1.0 / 2f64.sqrt(), (m.x, m.y)); return true } Some(2) => { self.zoom_to(1.0); return true } Some(3) => { self.zoom_by(2f64.sqrt(), (m.x, m.y)); return true } Some(4) => { self.fit_all(); return true } _ => {} }
         if let Some((x, y)) = e.pos() { if self.act.is_none() && self.buttons().iter().any(|b| b.hit(x, y)) { return true } }
         // a text card being typed in takes what is in it; a press outside keeps the words
         if let Some((id, f)) = self.edit.as_mut() { let inside = e.pos().is_some_and(|(x, y)| f.hit(x, y)); let id = *id;
             if inside || f.dragging() { f.pointer(e, fonts); return true } if matches!(e, Event::Down { .. }) { self.edit_end(true); let _ = id; } }
         match *e {
             Event::Down { x, y, .. } => { let w = self.to_world(x, y);
-                if middle || self.space || self.hand { self.act = Some(Act::Pan { from: (x, y), cam: (self.cam.0, self.cam.1) }); return true }
+                if middle || self.space || self.hand || self.reading { self.act = Some(Act::Pan { from: (x, y), cam: (self.cam.0, self.cam.1) }); return true }
                 // the frame tool: a press and a drag make a frame of that size, a click an empty one
                 if self.framing { self.fit = false; self.act = Some(Act::Frame { from: w, to: w }); return true }
                 // an armed tool takes the press wherever it lands: nothing under it is selected or moved
@@ -595,7 +596,7 @@ impl Canvas {
         if self.els.is_empty() && self.edit.is_none() { let l = fonts.layout("Drop pictures, videos, PDFs or files here \u{2014} or double-click to type", Family::Sans, (14.0 * s) as f32, 400.0, dim); draw_layout(scene, &l, Affine::translate((rect.center().x - l.width() as f64 / 2.0, rect.center().y - l.height() as f64 / 2.0))); }
         scene.pop_layer();
         // the zoom's controls, at the view's bottom right (they are there without modifiers or a pinch: a remote desktop passes neither)
-        let pc = format!("{} %", (self.cam.2 * 100.0).round() as i64); self.zoom_pc.label = Some(pc); self.b_hand.selected = self.hand;
+        let pc = format!("{} %", (self.cam.2 * 100.0).round() as i64); self.zoom_pc.label = Some(pc); self.b_hand.selected = self.hand || self.reading;
         let b = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let (pw, _) = self.zoom_pc.measure(fonts, s); let widths = [b, b, pw.max(56.0 * s), b, b]; let total: f64 = widths.iter().sum::<f64>() + 4.0 * 2.0 * s;
         let bar = Rect::new(rect.x1 - 12.0 * s - total - 8.0 * s, rect.y1 - 12.0 * s - b - 8.0 * s, rect.x1 - 12.0 * s, rect.y1 - 12.0 * s);
         min_ui::paint::rounded(scene, bar, 8.0 * s, t::POPOVER_BORDER_COLOR); scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::POPOVER_BACKGROUND_COLOR), None, &RoundedRect::from_rect(bar.inset(-s), 7.0 * s));
