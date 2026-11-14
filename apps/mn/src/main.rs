@@ -56,6 +56,8 @@ mod mappings_win;
 mod transcode;
 #[cfg(target_os = "macos")]
 mod sparkle;
+#[cfg(target_os = "macos")]
+mod mac_open;
 mod search;
 mod canvas;
 mod ink;
@@ -877,6 +879,23 @@ impl App {
     fn gather_drop(&mut self) {
         let Some(w) = self.files.gather.take() else { return }; if let Some(r) = &w.run { r.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
         if let Some(snap) = &w.snap { let _ = std::fs::remove_file(snap.with_extension("out")); for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
+    }
+    /// A document the system handed over (row 352): a collection or a package is opened as File > Open opens it (the
+    /// question about what is not saved first); a `minnotes:///path/to/file.mnd` address names such a file. Anything
+    /// else is said to be no document of ours.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn os_open(&mut self, item: &str) {
+        let path: Option<std::path::PathBuf> = match item.strip_prefix("minnotes:") { Some(rest) => min_paths::url::file_url_to_path(&format!("file:{rest}")).map(Into::into), None => Some(item.into()) };
+        let ours = |p: &std::path::Path| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mnd") || x.eq_ignore_ascii_case(gather::PACKAGE));
+        println!("handed over: {item}");
+        // (scripted, MN_OPEN_LOG=<file>: what was handed over is written there at once - a windowed run's output is held back)
+        if let Some(f) = std::env::var_os("MN_OPEN_LOG") { use std::io::Write; if let Ok(mut o) = std::fs::OpenOptions::new().create(true).append(true).open(f) { let _ = writeln!(o, "handed over: {item}"); } }
+        match path.filter(|p| ours(p)) {
+            Some(p) if p.is_file() => { if self.store.as_ref().and_then(|st| st.session.as_ref()).is_some_and(|se| se.original() == p) { return } self.request_close(Pending::Open(p)) }
+            Some(p) => self.notice = Some((format!("{} was not found", p.display()), Instant::now() + std::time::Duration::from_secs(8))),
+            None => self.notice = Some(("That is not a minNotes collection or package".into(), Instant::now() + std::time::Duration::from_secs(6))),
+        }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     // -- path mappings (row 350): this machine's table of volumes, and the references it names
     /// The collection's references that are plain paths: what a mapping could come to cover.
@@ -3040,6 +3059,8 @@ impl ApplicationHandler for App {
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
         self.unpack_tick(); self.import_tick(); self.export_tick(false);
+        // what the system handed over (a double click on a document, a `minnotes:` address): row 352
+        #[cfg(target_os = "macos")] for item in mac_open::take() { self.os_open(&item); }
         // the updater starts with the first window (not in a scripted run: it asks the feed)
         #[cfg(target_os = "macos")] if self.gpu.is_some() && !self.files.updater_tried { self.files.updater_tried = true; if std::env::var_os("MN_NO_DIALOGS").is_none() { sparkle::start(); } } if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
@@ -3589,6 +3610,7 @@ fn main() {
     let app = App { player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
+    #[cfg(target_os = "macos")] mac_open::install();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     let _ = WAKE.set(el.create_proxy());
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { if menu::panel_takes(&ev.id) { return } MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
