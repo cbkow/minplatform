@@ -93,6 +93,31 @@ key Enter
 wait 0.3
 add ${MN_DEMO_DIR}/Media/Lantern study 01.png|${MN_DEMO_DIR}/Media/Lantern study 02.png|${MN_DEMO_DIR}/Media/Night key.jpg|${MN_DEMO_DIR}/Media/Harbour palette.png|${MN_DEMO_DIR}/Media/Texture pass.png|${MN_DEMO_DIR}/Media/Layout sketch.png
 wait 2.5
+# arranged as two rows of three (the cards are dragged), a note of the canvas's own, an arrow; then everything in view
+click 900 650
+down 839 400
+move 700 450
+move 400 500
+up 363 500
+down 998 400
+move 800 450
+up 522 500
+down 1156 400
+move 900 450
+up 680 500
+wait 0.3
+click 1252 739
+wait 0.8
+dclick 420 640
+wait 0.6
+type Warm against cool
+key Enter
+type The lanterns are the only warm light in the film.
+wait 0.3
+key Escape
+wait 0.3
+click 1252 739
+wait 0.8
 shot build-canvas
 note Welcome
 wait 1
