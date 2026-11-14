@@ -135,6 +135,17 @@ pub(crate) mod tests {
         for a in at { out.extend_from_slice(format!("{a:010} 00000 n \n").as_bytes()); }
         out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes()); out
     }
+    /// A measurement, not a check (`MN_PDF_BENCH=<file.pdf> cargo test -p mn --release pdf_bench -- --ignored --nocapture`):
+    /// how long a document takes to open, a page to draw at the widths a studio would ask for, and its text to be read.
+    #[test] #[ignore]
+    fn pdf_bench() {
+        let Some(path) = std::env::var_os("MN_PDF_BENCH").map(std::path::PathBuf::from) else { return };
+        let t = std::time::Instant::now(); let (n, w, h) = info(&path).unwrap(); println!("info: {n} pages {w}x{h} in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        for width in [240u32, 1200, 2400] { let mut ms = vec![];
+            for p in [0, n / 3, n / 2, n - 1] { let t = std::time::Instant::now(); let (px, pw, ph) = page(&path, p, width).unwrap(); ms.push(t.elapsed().as_secs_f64() * 1e3); let _ = (px.len(), pw, ph); }
+            println!("page at {width} px wide: {:?} ms", ms.iter().map(|m| (m * 10.0).round() / 10.0).collect::<Vec<_>>()); }
+        let t = std::time::Instant::now(); let mut chars = 0; for p in 0..n.min(50) { chars += text(&path, p).unwrap().chars.len(); } println!("text of {} pages: {chars} chars in {:.1} ms", n.min(50), t.elapsed().as_secs_f64() * 1e3);
+    }
     #[test]
     fn a_page_is_measured_drawn_and_read_with_its_characters_places() {
         let dir = std::env::temp_dir().join(format!("mn-pdf-test-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();
