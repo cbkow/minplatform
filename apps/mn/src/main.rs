@@ -206,7 +206,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// the open canvas is to be read again (a merge changed it)
     creload: bool,
     card: Option<Card>, cards: std::collections::HashMap<BlockId, CardPic>, row_drag: Option<(BlockId, (f64, f64), bool)>, cnotes: Vec<BlockId>,
-    canvas: Option<canvas::Canvas>, cclip: Vec<mn_store::Element>, canvas_at: std::cell::Cell<Option<(f64, f64)>>, cmenu: bool,
+    canvas: Option<canvas::Canvas>, cclip: Vec<mn_store::Element>, cclip_words: String, maps_renamed: Vec<(String, String)>, canvas_at: std::cell::Cell<Option<(f64, f64)>>, cmenu: bool,
     /// the search across the collection under way (the sidebar's field)
     search: Option<search::Search>,
     find: Option<findbar::FindBar>, hits: Vec<mn_edit::find::Hit>, hit_at: usize, found_for: Option<(String, bool, (u64, usize), BlockId)>,
@@ -926,7 +926,7 @@ impl App {
             O::None | O::Redraw => {}
             O::Close => self.files.maps = None,
             O::Pick(row) => self.panel(rfd::FileDialog::new().set_title("Choose the Volume\u{2019}s Root"), 3, move |me, p| if let (Some(p), Some(w), Some(g)) = (p.into_iter().next(), me.files.maps.as_mut(), me.gpu.as_mut()) { w.picked(row, &p, &mut g.fonts); }),
-            O::Done => { let Some(w) = self.files.maps.take() else { return }; let table = w.mappings();
+            O::Done => { let Some(w) = self.files.maps.take() else { return }; let table = w.mappings(); self.files.maps_renamed = w.renames();
                 let said = match self.maps_commit(table) { Ok(0) => "Path mappings saved".to_string(), Ok(1) => "Path mappings saved \u{2014} 1 reference is now named by its volume".to_string(), Ok(n) => format!("Path mappings saved \u{2014} {n} references are now named by their volume"), Err(e) => format!("The path mappings could not be saved \u{2014} {e}") };
                 println!("mappings: {said}"); self.notice = Some((said, Instant::now() + std::time::Duration::from_secs(8))); }
         }
@@ -942,7 +942,12 @@ impl App {
         std::fs::write(&tmp, serde_json::to_string_pretty(&table).map_err(|e| e.to_string())?).and_then(|_| std::fs::rename(&tmp, &file)).map_err(|e| e.to_string())?;
         self.media.set_mappings(table); self.layout = None; self.files.cards.clear();
         if self.store.is_none() { return Ok(0) }
-        let places = self.media.places(); let f = |d: &str| places.remapped(d);
+        // a volume that was renamed (or that carried an id of the old kind) is renamed in the references that name it, then plain paths a volume now covers are named by it
+        let renamed = std::mem::take(&mut self.files.maps_renamed);
+        let rename = |d: &str| -> Option<String> { if renamed.is_empty() { return None } let mut v: serde_json::Value = serde_json::from_str(d).ok()?; let mut hit = false;
+            let mut fix = |src: Option<&mut serde_json::Value>| { if let Some(o) = src.and_then(|s| s.as_object_mut()) { if let Some(new) = o.get("vol").and_then(|x| x.as_str()).and_then(|old| renamed.iter().find(|(a, _)| a == old)).map(|(_, b)| b.clone()) { o.insert("vol".into(), serde_json::Value::String(new)); hit = true; } } };
+            fix(v.get_mut("src")); fix(v.get_mut("preview").and_then(|p| p.get_mut("src"))); hit.then(|| v.to_string()) };
+        let places = self.media.places(); let f = |d: &str| match rename(d) { Some(r) => Some(places.remapped(&r).unwrap_or(r)), None => places.remapped(d) };
         if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.autosave();
         let now = self.now_ms(); let (mut skip, mut n) = (std::collections::HashSet::new(), 0);
         let of = |doc: &Doc| -> Vec<(BlockId, Kind)> { doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => f(descriptor).map(|d| (b.id, Kind::Media { descriptor: d })), _ => None }).collect() };
@@ -1976,6 +1981,17 @@ impl App {
         if let Some(c) = self.ed.chip_before_caret() { self.chip_open(c, ""); }
     }
     /// A press on a code block's corner (row 338): the label opens the language's picker, the button copies the block's text.
+    /// A press on a task's box takes it to its next state: to do, doing, done, and round again (row 355; until then
+    /// only the typed markers set a task's state). One step that can be undone. The caret stays where it was.
+    fn task_press(&mut self, x: f64, y: f64) -> bool {
+        if self.blank || self.modal() || y < self.top || x < self.side_w { return false }
+        let (nx, ny) = self.note_point((x, y)); let pt = kurbo::Point::new(nx, ny);
+        let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let s = g.window.scale_factor();
+        let hit = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Task { depth, state } => Some((b.id, *depth, *state)), _ => None }).find(|(id, _, _)| l.text_origin(&self.ed.doc, *id).is_some_and(|(_, tx, ty)| Rect::new(tx - 22.0 * s, ty + s, tx - 4.0 * s, ty + 19.0 * s).contains(pt)));
+        let Some((id, depth, state)) = hit else { return false };
+        let now = self.now_ms(); let d = self.ed.set_kinds(vec![(id, Kind::Task { depth, state: (state + 1) % 3 })], now).unwrap_or(Dirty::Nothing); self.apply(d);
+        if let Some(g) = &self.gpu { g.window.request_redraw(); } true
+    }
     fn code_press(&mut self, x: f64, y: f64) -> bool {
         if self.blank || self.modal() || y < self.top || x < self.side_w { return false }
         let (nx, ny) = self.note_point((x, y)); let pt = kurbo::Point::new(nx, ny);
@@ -2401,8 +2417,12 @@ impl App {
                 "a" => { cv.select_all(); true } "d" => { let clip = cv.copy(); cv.paste(&clip, 24.0); true }
                 // Cmd+G: a frame round the selection; Shift+Cmd+G: the frame goes, its cards stay (row 327)
                 "g" => { if shift { cv.ungroup(); } else { cv.group(); } true }
-                "c" | "x" => { if cv.editing() { let t = cv.field().and_then(|f| Some(f.text().to_string())); if let (Some(t), Some(cb)) = (t, self.clipboard.as_mut()) { let _ = cb.set_text(t); } } else { self.files.cclip = cv.copy(); if !self.files.cclip.is_empty() { self.block_clip = None; if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(self.files.cclip.iter().filter(|e| e.kind == "text").map(|e| e.record.clone()).collect::<Vec<_>>().join("\n")); } } if c.to_lowercase() == "x" { cv.delete(); } } true }
-                "v" => { if !self.files.cclip.is_empty() { let clip = self.files.cclip.clone(); cv.paste(&clip, 24.0); self.files.cclip = cv.copy(); }
+                "c" | "x" => { if cv.editing() { let t = cv.field().and_then(|f| Some(f.text().to_string())); if let (Some(t), Some(cb)) = (t, self.clipboard.as_mut()) { let _ = cb.set_text(t); } } else { self.files.cclip = cv.copy(); if !self.files.cclip.is_empty() { self.block_clip = None; 
+                    // the cards are the canvas's own clipboard only for as long as the system's still holds what was put there with them (their words, or their names): once anything else is copied anywhere, Cmd+V pastes THAT (it did not: cards once copied were pasted for ever after)
+                    let words = { let w = self.files.cclip.iter().map(|e| if e.kind == "text" { e.record.clone() } else { serde_json::from_str::<serde_json::Value>(&e.record).ok().and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string)).unwrap_or_default() }).filter(|t| !t.trim().is_empty()).collect::<Vec<_>>().join("\n"); if w.is_empty() { "\u{a0}".to_string() } else { w } };
+                    if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(words.clone()); } self.files.cclip_words = words; } if c.to_lowercase() == "x" { cv.delete(); } } true }
+                "v" => { if !self.files.cclip.is_empty() && self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).is_none_or(|t| t != self.files.cclip_words) { self.files.cclip.clear(); }
+                    if !self.files.cclip.is_empty() { let clip = self.files.cclip.clone(); cv.paste(&clip, 24.0); self.files.cclip = cv.copy(); }
                     else { let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).filter(|t| !t.trim().is_empty());
                         let paths = if self.store.is_some() { min_paths::clipboard::paste_paths().ok().filter(|p| !p.is_empty() && p.iter().all(|x| std::path::Path::new(x).exists())) } else { None };
                         if let Some(paths) = paths { self.files.canvas_at.set(None); self.add_files(paths.into_iter().map(Into::into).collect(), Self::canvas_drop()); }
@@ -3249,6 +3269,7 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && !self.mods.0 && !self.mods.1 && self.files.tool.is_none() && self.files.note_field.is_none() { if let Some(c) = self.chip_under(position.x, position.y) { self.chip_open(c, ""); return } }
                 // a code block's corner (row 338): its language's label opens the picker, its button copies its text
                 if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && self.code_press(position.x, position.y) { return }
+                if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && !self.mods.0 && !self.mods.1 && self.task_press(position.x, position.y) { return }
                 // Cmd + click on a link opens it (a plain click places the caret)
                 if state == ElementState::Pressed && self.mods.1 && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
                 if state == ElementState::Pressed && !self.blank && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }

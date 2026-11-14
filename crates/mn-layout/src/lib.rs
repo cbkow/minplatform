@@ -315,7 +315,8 @@ impl NoteLayout {
         while let Some(p) = up { let pb = self.boxes.get(&p)?; x += pb.x - self.scrolls.get(&p).copied().unwrap_or(0.0); y += pb.y; up = doc.get(p)?.parent; }
         Some(Rect::new(x as f64, y as f64, (x + b.w) as f64, (y + b.h) as f64))
     }
-    fn text_origin(&self, doc: &Doc, id: BlockId) -> Option<(&Layout<Brush>, f64, f64)> {
+    /// A text block's shaped text and where its first line starts, in the note's own space.
+    pub fn text_origin(&self, doc: &Doc, id: BlockId) -> Option<(&Layout<Brush>, f64, f64)> {
         let r = self.rect(doc, id)?;
         match &self.boxes.get(&id)?.part { Part::Text { layout, dx, dy } => Some((layout, r.x0 + *dx as f64, r.y0 + *dy as f64)), _ => None }
     }

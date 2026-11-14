@@ -38,8 +38,18 @@ impl Window {
             bar: ScrollBar::default(), card: Rect::ZERO, list: Rect::ZERO, scale: 1.0 }
     }
     /// The table as it stands in the window (a row with no root at all is left out).
+    /// A volume IS its name (row 356): a reference says "the volume Projects, then this path", and each machine's table
+    /// says where Projects is. So two machines that give a volume the same name agree without sharing a file. (Until
+    /// then a volume's identity was a random id made per row, per machine: a volume typed in on a second machine never
+    /// matched the first's references.) A row left without a name is called by its root's last folder.
+    fn name_of(r: &Row) -> String {
+        let v = |i: usize| r.f[i].text().trim().to_string(); if !v(0).is_empty() { return v(0) }
+        [v(2), v(1), v(3)].iter().filter_map(|root| root.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().map(str::to_string)).find(|n| !n.is_empty()).unwrap_or_else(|| "Volume".into())
+    }
+    /// The volumes whose name changed in this window (or that still carried an id of the old kind): (as references name it now, its name).
+    pub fn renames(&self) -> Vec<(String, String)> { self.rows.iter().filter(|r| !r.id.is_empty()).map(|r| (r.id.clone(), Self::name_of(r))).filter(|(a, b)| a != b).collect() }
     pub fn mappings(&self) -> Vec<Mapping> {
-        self.rows.iter().map(|r| { let v = |i: usize| r.f[i].text().trim().to_string(); Mapping { id: r.id.clone(), label: v(0), win: v(1), mac: v(2), lin: v(3), enabled: r.on.on } }).filter(|m| !(m.win.is_empty() && m.mac.is_empty() && m.lin.is_empty())).collect()
+        self.rows.iter().map(|r| { let v = |i: usize| r.f[i].text().trim().to_string(); Mapping { id: Self::name_of(r), label: Self::name_of(r), win: v(1), mac: v(2), lin: v(3), enabled: r.on.on } }).filter(|m| !(m.win.is_empty() && m.mac.is_empty() && m.lin.is_empty())).collect()
     }
     /// A folder was chosen for a row's root on this system.
     pub fn picked(&mut self, row: usize, path: &std::path::Path, fonts: &mut Fonts) { if let Some(r) = self.rows.get_mut(row) { r.f[here()].set_text_end(&path.to_string_lossy(), fonts); if r.f[0].text().trim().is_empty() { if let Some(n) = path.file_name() { r.f[0].set_text_end(&n.to_string_lossy(), fonts); } } } }
@@ -75,7 +85,7 @@ impl Window {
         self.done.rect = Rect::new(x0 + w - pad - wd, by, x0 + w - pad, by + bh); self.cancel.rect = Rect::new(self.done.rect.x0 - 8.0 * s - wc, by, self.done.rect.x0 - 8.0 * s, by + bh);
         self.add.rect = Rect::new(x0 + pad, by, x0 + pad + wa, by + bh);
     }
-    pub fn add_row(&mut self, fonts: &mut Fonts) { let m = Mapping { id: mn_doc::BlockId::new().to_string(), enabled: true, ..Default::default() }; self.rows.push(row_of(&m, fonts)); let n = self.rows.len() - 1; self.focus_on(Some((n, 0))); self.bar.offset = f64::MAX; }
+    pub fn add_row(&mut self, fonts: &mut Fonts) { let m = Mapping { id: String::new(), enabled: true, ..Default::default() }; self.rows.push(row_of(&m, fonts)); let n = self.rows.len() - 1; self.focus_on(Some((n, 0))); self.bar.offset = f64::MAX; }
     pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> Out {
         let now = Instant::now();
         let (_, mine) = self.bar.event(e, now); if mine { return Out::Redraw }
@@ -123,7 +133,7 @@ impl Window {
         let line = |scene: &mut Scene, fonts: &mut Fonts, text: &str, x: f64, cy: f64, size: f32, bold: bool, color: peniko::Color, room: f64| {
             let l = fonts.layout_fit(text, Family::Sans, size * s as f32, if bold { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, color, room.max(8.0)); draw_layout(scene, &l, Affine::translate((x, cy - l.height() as f64 / 2.0))); };
         line(scene, fonts, "Path Mappings", x0, y0 + 10.0 * s, t::DIALOG_TITLE_SIZE, true, ink, wide);
-        let about = "Name a shared volume's root on each system. A file added from such a volume is then recorded by the volume and its place on it, and is found on the other system. These are this machine's own; the first volume that matches a path names it.";
+        let about = "Name a shared volume's root on each system. A file added from such a volume is then recorded by the volume and its place on it, and is found on the other system. Give a volume the same name on every machine: the name is what a reference carries. The roots are this machine's own; the first volume that matches a path names it.";
         let l = fonts.layout_width(about, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, c(t::DIALOG_BODY_COLOR), Some(wide as f32)); draw_layout(scene, &l, Affine::translate((x0, y0 + 26.0 * s)));
         paint::hline(scene, x0, x1, self.list.y0 - 1.0 * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM); paint::hline(scene, x0, x1, self.list.y1, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.list);
