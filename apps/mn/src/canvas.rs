@@ -175,6 +175,8 @@ impl Canvas {
     }
     /// The one selected card, when it is of this kind of media (`file`, `pdf`, `video`).
     pub fn selected_media(&self, kind: &str) -> Option<&Element> { let [id] = self.sel[..] else { return None }; self.get(id).filter(|e| kind_of(e).as_deref() == Some(kind)) }
+    /// The one selected card when it shows a file (a picture, a video, a PDF, a file chip).
+    pub fn selected_any_media(&self) -> Option<&Element> { let [id] = self.sel[..] else { return None }; self.get(id).filter(|e| e.kind == "media") }
     /// Text from the clipboard becomes a text card at the view's centre.
     pub fn add_text(&mut self, text: &str) { self.edit_end(true); self.step(); let lines = text.lines().count().max(1) as f64; self.add("text", text.trim_end().to_string(), 280.0, (lines * 22.0 + 24.0).clamp(60.0, 480.0), None, 0); }
     /// A right press: the card under the pointer is selected, unless it is one of those selected already; none under it: nothing is.

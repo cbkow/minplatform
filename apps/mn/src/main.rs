@@ -169,7 +169,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
     gather: Option<gather_win::Window>, /// the web folder's window (row 339)
-    site: Option<site_win::Window>, site_test: bool, site_said: bool, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
+    site: Option<site_win::Window>, site_test: bool, ctx_test: bool, site_said: bool, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
     import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, code_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
@@ -1181,6 +1181,10 @@ impl App {
             let chip = (self.ed.block_selection().len() == 1).then(|| match self.ed.doc.get(hit).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if descriptor.contains("\"kind\":\"file\"") => Some(descriptor.clone()), _ => None }).flatten();
             let items = if let Some(d) = &chip { let st = self.media.file_state(d); self.files.locate = Some(hit);
                 let mut v = vec![I::action("Open", st.found), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, st.found), I::action("Copy Path", st.path.is_some()), I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } else { items };
+            // any other media with a file on this machine (a picture, a video, a PDF): shown in its folder, its path copied
+            let media = if chip.is_some() || self.ed.block_selection().len() != 1 { None } else { match self.ed.doc.get(hit).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => Some(descriptor.clone()), _ => None } };
+            let items = if let Some(d) = &media { let st = self.media.file_state(d); if st.path.is_some() { if self.files.locate.is_none() { self.files.locate = Some(hit); }
+                let mut v = vec![I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, st.found), I::action("Copy Path", true), I::Separator]; v.extend(items); v } else { items } } else { items };
             // a picture given a width of its own can go back to its own size
             let sized = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if descriptor.contains("\"dw\""));
             if sized { self.files.locate = Some(hit); }
@@ -1216,7 +1220,7 @@ impl App {
                 "Paste" => { self.canvas_key(&key("v"), min_ui::KeyEvent { key: min_ui::Key::Char("v".into()), text: None, shift: false, cmd: true }); } "Duplicate" => { self.canvas_key(&key("d"), min_ui::KeyEvent { key: min_ui::Key::Char("d".into()), text: None, shift: false, cmd: true }); }
                 "Delete" => { if let Some(cv) = self.files.canvas.as_mut() { cv.delete(); } } "Bring to Front" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(true); } } "Send to Back" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(false); } }
                 "Previous Page" | "Next Page" => { if let Some(cv) = self.files.canvas.as_mut() { cv.pdf_page(label == "Next Page"); } }
-                "Open File" | "Reveal in Finder" | "Show in Explorer" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_media("file")).map(|e| e.record.clone()) { self.file_open(&rec, label != "Open File"); } }
+                "Open File" | "Reveal in Finder" | "Show in Explorer" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { self.file_open(&rec, label != "Open File"); } }
                 "Open Note" => { if let Some((_, note, _)) = self.card_note() { self.mods = was; self.open_note(note); return } }
                 "Promote to Note" => { if let (Some((_, note, true)), Some(st)) = (self.card_note(), self.store.as_mut()) { let up = self.files.canvas.as_ref().and_then(|cv| st.col.entry(cv.id).ok().flatten()).and_then(|e| e.parent); if st.col.reparent(note, up).is_ok() { st.unpublished = true; self.changed.insert(note); if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } }
                 l if l.starts_with("Add Note") => { let (Some(st), Some(g)) = (self.store.as_ref(), self.gpu.as_mut()) else { self.mods = was; return };
@@ -1286,6 +1290,11 @@ impl App {
                 if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| b.kind.clone()) { if let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&descriptor) {
                     v.remove("dw"); let t = self.now_ms(); let d = self.ed.set_kinds(vec![(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() })], t).unwrap_or(Dirty::Nothing); self.apply(d); self.layout = None; } }
                 return }
+            // any media's file: shown in its folder, its path copied (the block is still to be located by the other rows)
+            if matches!(label.as_str(), "Reveal in Finder" | "Show in Explorer" | "Copy Path") { if let Some(d) = self.files.locate.and_then(|id| match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\":\"file\"") => Some(descriptor.clone()), _ => None }) {
+                self.files.locate = None;
+                if label == "Copy Path" { if let (Some(p), Some(cb)) = (self.media.file_state(&d).path, self.clipboard.as_mut()) { let _ = cb.set_text(p.to_string_lossy().into_owned()); self.block_clip = None; self.notice = Some(("Copied the path".into(), Instant::now() + std::time::Duration::from_secs(2))); } } else { self.file_open(&d, true); }
+                return } }
             // a file chip's own rows
             if let Some((id, d)) = self.files.locate.and_then(|id| match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if descriptor.contains("\"kind\":\"file\"") => Some((id, descriptor.clone())), _ => None }) {
                 match label.as_str() {
@@ -2780,6 +2789,8 @@ impl ApplicationHandler for App {
             if how != "show" { self.site_start(to.into()); }
         }
         if std::env::var_os("MN_SITE").is_some() { if let Some(w) = self.files.site.as_ref() { if w.phase == site_win::Phase::Done && !self.files.site_said { self.files.site_said = true; println!("site: {}", w.note); } } }
+        // (scripted, MN_CTX=<x>,<y>: the context menu is opened at a window point, as a right press there would)
+        if let (false, Ok(v), true) = (self.files.ctx_test, std::env::var("MN_CTX"), self.frames > 8 && self.layout.is_some() && !self.blank) { self.files.ctx_test = true; if let Some((x, y)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) { self.context(x, y); } }
         // (scripted, MN_CODE=lang|copy[:<n>]: the n-th code block's label or button is pressed as a pointer would)
         if let (false, Ok(v), true) = (self.files.code_test, std::env::var("MN_CODE"), self.frames > 4 && self.layout.is_some() && !self.blank && self.ed.doc.walk().iter().any(|b| matches!(b.kind, Kind::Code { .. }))) {
             self.files.code_test = true; let (what, n) = v.split_once(':').map(|(a, b)| (a.to_string(), b.parse().unwrap_or(0))).unwrap_or((v.clone(), 0usize));
@@ -2996,13 +3007,13 @@ impl ApplicationHandler for App {
                 else if state == ElementState::Pressed && self.files.card.as_ref().is_none_or(|c| !c.rect.contains(kurbo::Point::new(position.x, position.y))) && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(position.x, position.y)) && !self.bar.hit(position.x, position.y) && !self.foot.hit(position.x, position.y)) { use min_ui::menu::MenuItem as I; self.card_leave();
                     // the card under the pointer is selected (the selected ones stay when it is one of them), and the menu is theirs
                     if let Some(cv) = self.files.canvas.as_mut() { cv.pick_at(position.x, position.y); } let note = self.card_note();
-                    if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { let any = !cv.sel.is_empty(); let (pdf, file) = (cv.selected_media("pdf").is_some(), cv.selected_media("file").is_some()); let (frame, locked) = (cv.selected_frame(), cv.any_locked()); let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let mac = cfg!(target_os = "macos"); let k = |m: &str, o: &str| if mac { m.to_string() } else { o.to_string() };
+                    if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { let any = !cv.sel.is_empty(); let (pdf, file) = (cv.selected_media("pdf").is_some(), cv.selected_media("file").is_some()); let has_file = cv.selected_any_media().map(|e| e.record.clone()).is_some_and(|r| self.media.file_state(&r).found); let (frame, locked) = (cv.selected_frame(), cv.any_locked()); let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let mac = cfg!(target_os = "macos"); let k = |m: &str, o: &str| if mac { m.to_string() } else { o.to_string() };
                         self.files.cmenu = true; self.files.tmenu = None; self.files.lmenu = None; self.ctx_blocks = false; self.ctx_for = None; self.ctx_notes.clear(); self.files.canvas_at.set(Some((position.x, position.y)));
                         self.ctx.open_at(vec![I::with_shortcut("Cut", any, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", any, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", true, &k("\u{2318}V", "Ctrl+V")), I::with_shortcut("Duplicate", any, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", any, "\u{232b}"), I::Separator,
                             I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator,
                             // frames, lining up, locking (row 327)
                             I::with_shortcut("Group", any && frame.is_none(), &k("\u{2318}G", "Ctrl+G")), I::with_shortcut("Ungroup", frame.is_some(), &k("\u{21e7}\u{2318}G", "Ctrl+Shift+G")), I::action("Rename Frame", frame.is_some()), I::action("Fit to Contents", frame.as_ref().is_some_and(|f| f.1)), I::action("Shape\u{2026}", frame.is_some()), I::action("Tint\u{2026}", frame.is_some()),
-                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
+                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
                 else if state == ElementState::Pressed { self.context(position.x, position.y); }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {

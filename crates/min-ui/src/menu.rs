@@ -32,6 +32,11 @@ impl Menu {
         let w = self.items.iter().map(|it| match it { MenuItem::Action { label, shortcut, .. } => row_width(fonts, label, shortcut, gutter, false), MenuItem::Separator => 0.0 }).fold(t::MENU_MIN_WIDTH as f64, f64::max);
         let h: f64 = (0..self.items.len()).map(|i| self.row_h(i)).sum();
         self.popover.open_at_prefer(fonts, Rect::new(x, y, x, y), w, h, bounds, scale, Placement::Below);
+        // a menu that fits neither under nor over the point is moved to stand inside the window (it ran past the edge);
+        // one taller than the window starts at the window's top
+        let pad = t::POPOVER_PADDING as f64 * scale; let r = self.popover.rect;
+        let dy = if r.y1 > bounds.y1 - pad { (bounds.y1 - pad - r.y1).max(bounds.y0 + pad - r.y0) } else if r.y0 < bounds.y0 + pad { bounds.y0 + pad - r.y0 } else { 0.0 };
+        if dy != 0.0 { let v = kurbo::Vec2::new(0.0, dy); self.popover.rect = r + v; self.popover.content = self.popover.content + v; }
     }
     fn item_rect(&self, i: usize) -> Rect {
         let c = self.popover.content; let s = self.scale;
