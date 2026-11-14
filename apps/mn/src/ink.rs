@@ -143,8 +143,9 @@ pub struct Gesture { pub block: mn_doc::BlockId, pub page: usize, pub size: (f64
 impl Gesture {
     /// A press at `p`. `picked`: the stroke the pointer tool took (None with it: nothing was under it). `reach`: the eraser's.
     #[allow(clippy::too_many_arguments)]
-    pub fn press(pick: Pick, block: mn_doc::BlockId, descriptor: &str, rec: &Value, frame: Rect, p: Point, pressure: Option<f64>, reach: f64, slack: f64) -> (Gesture, Option<String>) {
-        let size = page_size(rec, frame); let page = page_no(rec); let lines = page_lines(rec, page, size); let t0 = std::time::Instant::now();
+    /// `on`: the page drawn on when it is not the one the record shows (the PDF view has every page; row 362).
+    pub fn press(pick: Pick, block: mn_doc::BlockId, descriptor: &str, rec: &Value, on: Option<usize>, frame: Rect, p: Point, pressure: Option<f64>, reach: f64, slack: f64) -> (Gesture, Option<String>) {
+        let size = page_size(rec, frame); let page = on.unwrap_or_else(|| page_no(rec)); let lines = page_lines(rec, page, size); let t0 = std::time::Instant::now();
         let mut g = Gesture { block, page, size, before: descriptor.to_string(), lines, changed: false, doing: Doing::Idle, t0 }; let mut picked = None;
         match pick {
             Pick::Select => { if let Some(l) = g.lines.iter().rev().find(|l| hit(l, p, slack)) { picked = Some(l.s.id.clone()); g.doing = Doing::Move { id: l.s.id.clone(), last: p }; } }
@@ -308,11 +309,11 @@ mod tests {
         let d4 = page_set(d, 0, size, &[]).unwrap(); let r4: Value = serde_json::from_str(&d4).unwrap(); assert!(r4["ink"].get("0").is_none() && r4["ink"].get("2").is_some());
         let one = r#"{"src":"a.png","w":800,"h":600}"#; let p = page_set(one, 0, (800.0, 600.0), &more).unwrap(); assert!(p.contains("\"ink\"")); assert_eq!(page_set(&p, 0, (800.0, 600.0), &[]).unwrap(), serde_json::from_str::<Value>(one).unwrap().to_string());
         // a gesture on the page: the pen draws a line (one more stroke), the eraser takes it, the pointer moves one
-        let (mut g, _) = Gesture::press(Pick::Draw(Ink::Line), mn_doc::BlockId::new(), d, &rec, frame, Point::new(100.0, 900.0), None, 5.0, 4.0); assert!(!g.drag(Point::new(400.0, 900.0), None, 5.0) && g.live([1.0, 0.0, 0.0, 1.0], 6.0).is_some()); assert!(g.release(Point::new(400.0, 900.0), [1.0, 0.0, 0.0, 1.0], 6.0, 2.0)); assert_eq!(g.lines.len(), 2);
+        let (mut g, _) = Gesture::press(Pick::Draw(Ink::Line), mn_doc::BlockId::new(), d, &rec, None, frame, Point::new(100.0, 900.0), None, 5.0, 4.0); assert!(!g.drag(Point::new(400.0, 900.0), None, 5.0) && g.live([1.0, 0.0, 0.0, 1.0], 6.0).is_some()); assert!(g.release(Point::new(400.0, 900.0), [1.0, 0.0, 0.0, 1.0], 6.0, 2.0)); assert_eq!(g.lines.len(), 2);
         let d5 = page_set(d, 2, size, &g.lines).unwrap(); let r5: Value = serde_json::from_str(&d5).unwrap();
-        let (mut g, _) = Gesture::press(Pick::Draw(Ink::Eraser), mn_doc::BlockId::new(), &d5, &r5, frame, Point::new(250.0, 850.0), None, 5.0, 4.0); assert!(g.drag(Point::new(250.0, 950.0), None, 5.0)); assert!(g.release(Point::new(250.0, 950.0), [1.0; 4], 6.0, 2.0)); assert_eq!(g.lines.len(), 1, "a shape goes whole");
-        let (mut g, picked) = Gesture::press(Pick::Select, mn_doc::BlockId::new(), d, &rec, frame, Point::new(300.0, 420.0), None, 5.0, 4.0); assert_eq!(picked.as_deref(), Some("s2")); assert!(g.drag(Point::new(310.0, 440.0), None, 5.0)); assert!(g.release(Point::new(310.0, 440.0), [1.0; 4], 6.0, 2.0)); assert_eq!(g.lines[0].s.points[0], [110.0, 160.0]);
-        let (g, picked) = Gesture::press(Pick::Select, mn_doc::BlockId::new(), d, &rec, frame, Point::new(900.0, 100.0), None, 5.0, 4.0); assert!(picked.is_none() && !g.changed);
+        let (mut g, _) = Gesture::press(Pick::Draw(Ink::Eraser), mn_doc::BlockId::new(), &d5, &r5, None, frame, Point::new(250.0, 850.0), None, 5.0, 4.0); assert!(g.drag(Point::new(250.0, 950.0), None, 5.0)); assert!(g.release(Point::new(250.0, 950.0), [1.0; 4], 6.0, 2.0)); assert_eq!(g.lines.len(), 1, "a shape goes whole");
+        let (mut g, picked) = Gesture::press(Pick::Select, mn_doc::BlockId::new(), d, &rec, None, frame, Point::new(300.0, 420.0), None, 5.0, 4.0); assert_eq!(picked.as_deref(), Some("s2")); assert!(g.drag(Point::new(310.0, 440.0), None, 5.0)); assert!(g.release(Point::new(310.0, 440.0), [1.0; 4], 6.0, 2.0)); assert_eq!(g.lines[0].s.points[0], [110.0, 160.0]);
+        let (g, picked) = Gesture::press(Pick::Select, mn_doc::BlockId::new(), d, &rec, None, frame, Point::new(900.0, 100.0), None, 5.0, 4.0); assert!(picked.is_none() && !g.changed);
     }
     #[test]
     fn a_point_is_on_the_line_not_merely_in_its_box() {

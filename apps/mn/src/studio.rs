@@ -3,9 +3,10 @@
 //! file, its drawings. Nothing new is stored, the tree does not change, and the note or canvas under it is not touched
 //! (its scroll, its camera, its editor stay as they are).
 //!
-//! STAGE 1 (this file so far): entering and leaving, the column at the width of the view, the wheel, the keys that
-//! scroll, the pages' own drawings shown. Later stages: the strip of small pages and zoom (2), drawing (3), selecting
-//! text (4), find (5).
+//! Built so far: entering and leaving, the column at the width of the view, the wheel, the keys that scroll, the
+//! pages' own drawings shown (stage 1); DRAWING on the page under the pointer with the tools a page has in a note
+//! (stage 3 - the gesture, its undo step and the tools' band are the note's own: `App::page_press` and its kin). Still
+//! to come: the strip of small pages and zoom (2), selecting text (4), find (5), drawing on a canvas's card (6).
 //!
 //! The pages are made here, not by `media.rs`: a page is asked of `pdf::page` on a helper thread at the width it is
 //! shown at, and only the pages near the view are kept (a page at this size is tens of megabytes; a long document
@@ -70,7 +71,7 @@ impl Studio {
     }
     fn limit(&mut self) { let (_, h) = self.column(); self.scroll = self.scroll.clamp(0.0, (h - self.rect.height()).max(0.0)); }
     /// The page whose picture holds a window point, with the page's rectangle in the window.
-    #[allow(dead_code)] pub fn page_at(&self, x: f64, y: f64) -> Option<(usize, Rect)> {
+    pub fn page_at(&self, x: f64, y: f64) -> Option<(usize, Rect)> {
         let (col, _) = self.column(); let off = kurbo::Vec2::new(self.rect.x0, self.rect.y0 - self.scroll);
         col.iter().enumerate().map(|(i, r)| (i, *r + off)).find(|(_, r)| r.contains(kurbo::Point::new(x, y)))
     }
@@ -90,6 +91,8 @@ impl Studio {
     }
     /// A pointer event: true when Back was pressed.
     pub fn pointer(&mut self, e: &Event) -> bool { self.back.event(e, Instant::now()) == Response::Clicked }
+    /// The head's band (Back, the name): a press there is no press on a page.
+    pub fn in_head(&self, y: f64) -> bool { y < self.rect.y0 + 36.0 * self.scale }
     /// What arrived from the helpers is taken up. True: draw again.
     pub fn poll(&mut self) -> bool {
         let mut again = false;
@@ -110,7 +113,7 @@ impl Studio {
     /// Lays the view out in `rect` and paints it: the ground, the pages in view (white until their picture is made),
     /// each page's drawings (`ink`: the lines of a page, in the page's own record units, with the record's width for
     /// that page), the head with Back and the name. True: draw again (pictures are on their way).
-    pub fn paint(&mut self, scene: &mut vello::Scene, fonts: &mut Fonts, rect: Rect, scale: f64, ink: &dyn Fn(usize, (f64, f64)) -> (Vec<crate::ink::Line>, f64)) -> bool {
+    pub fn paint(&mut self, scene: &mut vello::Scene, fonts: &mut Fonts, rect: Rect, scale: f64, ink: &dyn Fn(usize, (f64, f64)) -> (Vec<crate::ink::Line>, f64, Option<Rect>)) -> bool {
         let resized = (rect.width() - self.rect.width()).abs() > 0.5; let at = if resized && self.rect.width() > 0.0 { Some(self.current()) } else { None };
         self.rect = rect; self.scale = scale; if let Some(p) = at { self.go_to(p); } self.limit();
         let mut again = self.poll(); let s = scale;
@@ -126,9 +129,12 @@ impl Studio {
             match self.pics.get(&i) { Some((_, b)) => image(scene, b, r), None => { again = true;
                 if let Some(why) = self.failed.get(&i) { let l = fonts.layout_fit(why, Family::Sans, (13.0 * s) as f32, 400.0, peniko::Color::from_rgb8(120, 120, 120), r.width() - 32.0 * s); draw_layout(scene, &l, Affine::translate((r.x0 + 16.0 * s, r.y0 + 16.0 * s))); again = false; } } }
             // the page's drawings: stored in the record's own units for that page, shown at the page's size here
-            let (pw, ph) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0)); let (lines, rec_w) = ink(i, (pw as f64, ph as f64));
+            let (pw, ph) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0)); let (lines, rec_w, picked) = ink(i, (pw as f64, ph as f64));
             if !lines.is_empty() && rec_w > 0.0 { let k = r.width() / rec_w; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r);
-                for l in &lines { crate::ink::drawn(l, kurbo::Point::ORIGIN).paint(scene, Affine::translate((r.x0, r.y0)) * Affine::scale(k)); } scene.pop_layer(); }
+                for l in &lines { crate::ink::drawn(l, kurbo::Point::ORIGIN).paint(scene, Affine::translate((r.x0, r.y0)) * Affine::scale(k)); }
+                // the picked stroke's box
+                if let Some(b) = picked { let b = Rect::new(r.x0 + b.x0 * k, r.y0 + b.y0 * k, r.x0 + b.x1 * k, r.y0 + b.y1 * k).inflate(4.0 * s, 4.0 * s); scene.stroke(&kurbo::Stroke::new(1.5 * s), Affine::IDENTITY, color(t::ACCENT_BACKGROUND_COLOR_DEFAULT), None, &b); }
+                scene.pop_layer(); }
             scene.stroke(&kurbo::Stroke::new(s.max(1.0)), Affine::IDENTITY, color(t::DIVIDER_COLOR), None, &r);
         }
         scene.pop_layer();
