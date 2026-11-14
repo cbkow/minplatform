@@ -432,6 +432,17 @@ impl Places {
             "preview": { "src": self.reference(path), "format": format, "mtime": mtime_ms(&m), "size": m.len() as f64 } }))
     }
     /// As [`Self::picture`], for a file that will not stay (a fetched one): always copied.
+    /// A file another application kept with ITS document is kept with this collection under the same name (row 377: an
+    /// imported minNotes 2 document's records name their files so); one already there is left. `dir`: a folder of
+    /// clips' notes (`.qcview`) carried likewise.
+    pub fn adopt(&self, from: &Path, name: &str) -> Result<(), String> {
+        let dir = self.staged.as_ref().ok_or("the collection has no place for files yet")?;
+        if name.contains(['/', '\\']) || name.starts_with('.') { return Err("not a kept file's name".into()) }
+        let to = dir.join(name); if to.is_file() || self.base.as_ref().is_some_and(|b| b.join(SIDE).join(name).is_file()) { return Ok(()) }
+        if from.is_dir() { return carry(from, &to).map_err(|e| e.to_string()) }
+        std::fs::create_dir_all(dir).and_then(|_| std::fs::copy(from, &to)).map(|_| ()).map_err(|e| e.to_string())
+    }
+    pub fn adopt_notes(&self, from: &Path) { if let (Some(dir), true) = (self.staged.as_ref(), from.is_dir()) { let _ = carry(from, &dir.join(".qcview")); } }
     pub fn picture_copied(&self, path: &Path) -> Result<serde_json::Value, String> {
         let (w, h) = size_of(path)?; let (w, h) = if orientation(path) >= 5 { (h, w) } else { (w, h) };
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -485,7 +496,7 @@ pub fn publish(staged: &Path, side: &Path, also: &[PathBuf]) -> std::io::Result<
             if let Err(e) = std::fs::copy(&p, &tmp).and_then(|_| std::fs::rename(&tmp, &to)) { let _ = std::fs::remove_file(&tmp); return Err(e) }
         }
         // collected clips' notes (QCView's sidecar folders) go along with a Save As
-        if from != staged { let q = from.join(".qcview"); if q.is_dir() { carry(&q, &side.join(".qcview"))?; } }
+        { let q = from.join(".qcview"); if q.is_dir() { carry(&q, &side.join(".qcview"))?; } }   // (the waiting place too: an imported minNotes 2 package's clips bring their notes)
     }
     Ok(())
 }

@@ -44,6 +44,7 @@ mod psd;
 mod paste;
 mod import;
 mod import_office;
+mod import_old;
 mod xml;
 mod pdf;
 mod video;
@@ -185,6 +186,9 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     gather: Option<gather_win::Window>, /// the web folder's window (row 339)
     site: Option<site_win::Window>, site_test: bool, /// the path mappings' window (row 350)
     maps: Option<mappings_win::Window>, maps_test: bool, ctx_test: bool, site_said: bool, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
+    /// a minNotes 2 document (row 377): the one whose import is offered, the one being read (with its name), one that would not open at the start
+    old_offer: Option<std::path::PathBuf>, /// the empty first note of the collection made for an import: it goes when the pages have come
+    old_fresh: Option<BlockId>, old_import: Option<(std::sync::mpsc::Receiver<Result<import_old::Done, String>>, String)>, open_failed: Option<(std::path::PathBuf, String)>,
     import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, code_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
@@ -269,11 +273,14 @@ enum Ask {
     SaveFailed,
     /// an imported file's table is very large: Cancel / Attach File / Import First Rows
     ImportBig,
+    /// a minNotes 2 document was opened: Cancel / Import (row 377)
+    ImportOld,
 }
 
 /// What the collection is being closed for.
 #[derive(Clone, Debug, PartialEq)]
-enum Pending { Quit, Close, Open(std::path::PathBuf), /// a new collection with no document yet (row 368)
+enum Pending { Quit, Close, Open(std::path::PathBuf), /// a minNotes 2 document's pages into a new, untitled collection (row 377)
+    ImportOld(std::path::PathBuf), /// a new collection with no document yet (row 368)
     Untitled }
 
 struct App { /// the handle is held (row 305): where it was pressed, whether the pointer has moved far enough to be a drag, and where the blocks would land
@@ -930,7 +937,7 @@ impl App {
         use min_ui::text_button::Variant as V;
         if self.confirm.as_ref().is_some_and(|(a, _)| *a == Ask::Close) { return }
         // a package file is not opened as it is: it is unpacked to a folder first, and that is opened
-        if let Pending::Open(p) = &what { if p.extension().is_some_and(|x| x.eq_ignore_ascii_case(gather::PACKAGE)) { let p = p.clone(); self.unpack_open(p, None); return } }
+        if let Pending::Open(p) = &what { if p.extension().is_some_and(|x| x.eq_ignore_ascii_case(gather::PACKAGE)) { let p = p.clone(); if import_old::old_package(&p) { self.offer_old(p); } else { self.unpack_open(p, None); } return } }
         // a copy under way is not walked away from: it is stopped first, or waited for
         if self.files.gather.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } self.notice = Some(("Files are still being copied \u{2014} stop the copy or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.files.exporting.is_some() { self.notice = Some(("An export is still being written \u{2014} it will be done in a moment".into(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
@@ -949,6 +956,7 @@ impl App {
             Some(Pending::Quit) => self.quit = true,
             Some(Pending::Close) => self.end_session(),
             Some(Pending::Open(p)) => { self.end_session(); self.open_collection(&p, false); }
+            Some(Pending::ImportOld(p)) => { self.end_session(); self.open_untitled(None); self.files.old_fresh = self.store.as_ref().map(|st| st.note); self.import_old_start(p); }
             Some(Pending::Untitled) => { self.end_session(); self.open_untitled(None); }   // a new collection is written at once: its file exists from the start
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -993,9 +1001,68 @@ impl App {
                 recent_add(path); self.sync_recent();
                 #[cfg(target_os = "macos")] text_element::changed(true);
             }
-            Err(e) => { use min_ui::text_button::Variant as V; let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); self.ask(Ask::Notice, &format!("Couldn\u{2019}t open \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
+            Err(e) => self.open_refused(path, &e),
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// A file would not open as a collection: a minNotes 2 document is offered an import (row 377), anything else is said.
+    fn open_refused(&mut self, path: &std::path::Path, why: &str) {
+        if import_old::old_document(path) { self.offer_old(path.to_path_buf()); return }
+        use min_ui::text_button::Variant as V; let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.ask(Ask::Notice, &format!("Couldn\u{2019}t open \u{201c}{name}\u{201d}"), why, vec![("OK", V::Primary)]);
+    }
+    fn offer_old(&mut self, path: std::path::PathBuf) {
+        use min_ui::text_button::Variant as V; let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.files.old_offer = Some(path);
+        if std::env::var_os("MN_IMPORT_OLD").is_some() { self.answer(Ask::ImportOld, 1); return }   // (a scripted run says yes)
+        self.ask(Ask::ImportOld, &format!("\u{201c}{name}\u{201d} was made with minNotes 2"), "minNotes 3 can import its pages into a new collection. The old file is not changed. Things placed on its canvas outside a page are not imported.", vec![("Cancel", V::Secondary), ("Import", V::Primary)]);
+    }
+    /// A minNotes 2 document is read off this thread; its pages land in the open collection (`import_old_tick`).
+    fn import_old_start(&mut self, path: std::path::PathBuf) {
+        if self.store.is_none() || self.files.old_import.is_some() { return }
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || { let r = import_old::read(&path); let _ = tx.send(r); if let Some(w) = WAKE.get() { w.wake_up(); } });
+        self.notice = Some((format!("Importing {name}\u{2026}"), Instant::now() + std::time::Duration::from_secs(60)));
+        self.files.old_import = Some((rx, name)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    fn import_old_tick(&mut self) {
+        let Some((rx, _)) = self.files.old_import.as_ref() else { return };
+        let got = match rx.try_recv() { Ok(r) => r, Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => Err("The reader stopped.".into()) };
+        let name = self.files.old_import.take().map(|x| x.1).unwrap_or_default(); self.notice = None;
+        use min_ui::text_button::Variant as V;
+        let done = match got { Ok(d) => d, Err(e) => { eprintln!("import: {name}: {e}"); self.ask(Ask::Notice, &format!("Couldn\u{2019}t import \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); return } };
+        let places = self.media.places();
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        // one folder named after the old file, a note per page; what 2.x kept with the document comes along, and every record is looked for
+        let made = (|| -> Result<(BlockId, Vec<BlockId>, usize, usize), String> {
+            let folder = st.col.create(None, mn_store::DocKind::Folder, &done.name).map_err(|e| e.to_string())?; let (mut notes, mut missing, mut on_volumes) = (vec![], 0, 0);
+            for page in &done.pages {
+                for (rec, kept) in import_old::records(&page.doc) {
+                    if let (Some(name), Some(dir)) = (&kept, &done.media) { let _ = places.adopt(&dir.join(name), name); }
+                    let v: serde_json::Value = serde_json::from_str(&rec).unwrap_or_default(); let src = v.get("src").cloned().unwrap_or_default();
+                    if src.as_str().is_some_and(media::remote) { continue }
+                    if !places.locate(&src).is_ok_and(|p| p.exists()) { missing += 1; if src.is_object() { on_volumes += 1; } }
+                }
+                let id = st.col.create(Some(folder), mn_store::DocKind::Note, &page.title).map_err(|e| e.to_string())?; st.col.save_note(id, &page.doc).map_err(|e| e.to_string())?; notes.push(id);
+            }
+            if let Some(dir) = &done.media { places.adopt_notes(&dir.join(".qcview")); }
+            Ok((folder, notes, missing, on_volumes))
+        })();
+        let _ = std::fs::remove_dir_all(&done.work);
+        let (folder, notes, missing, on_volumes) = match made { Ok(x) => x, Err(e) => { eprintln!("import: {name}: {e}"); self.ask(Ask::Notice, &format!("Couldn\u{2019}t import \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); return } };
+        st.unpublished = true; st.edited_since_stage = true; sb.unfold(folder); sb.set_tree(&st.col); sb.focused = false; for id in &notes { self.changed.insert(*id); }
+        let repairs: usize = done.pages.iter().map(|p| p.repairs).sum(); let left = import_old::left_words(&done.left);
+        println!("imported minNotes 2: {} ({} pages, {} repairs, {} files not found, left on the canvas: {})", done.name, notes.len(), repairs, missing, if left.is_empty() { "nothing" } else { &left });
+        // the report: what came, what did not
+        let mut body = match notes.len() { 0 => "It had no pages.".to_string(), 1 => format!("1 page is now a note in the folder \u{201c}{}\u{201d}.", done.name), n => format!("{n} pages are now notes in the folder \u{201c}{}\u{201d}.", done.name) };
+        if missing > 0 { body.push_str(&match missing { 1 => " 1 file it refers to was not found".to_string(), n => format!(" {n} files it refers to were not found") }); body.push_str(if on_volumes > 0 { " \u{2014} File > Path Mappings\u{2026} says where its volumes are on this machine." } else { " \u{2014} Locate File in a block\u{2019}s menu points to it." }); }
+        if repairs > 0 { body.push_str(&match repairs { 1 => " 1 block had to be repaired.".to_string(), n => format!(" {n} blocks had to be repaired.") }); }
+        if !left.is_empty() { body.push_str(&format!(" Not imported from its canvas: {left}.")); }
+        body.push_str(" The old file was not changed.");
+        let fresh = self.files.old_fresh.take();
+        if let Some(id) = notes.first() { sb.selected = Some(*id); let id = *id; self.open_note(id);
+            if let Some(empty) = fresh.filter(|e| self.store.as_ref().and_then(|st| st.col.load_note(*e).ok()).is_some_and(|d| d.walk().iter().all(|b| b.text.trim().is_empty() && b.kind.is_text()))) { self.delete_entry(empty); if let Some(sb) = self.sidebar.as_mut() { sb.selected = Some(id); } } }
+        if std::env::var_os("MN_NO_DIALOGS").is_none() { self.ask(Ask::Notice, &format!("Imported \u{201c}{name}\u{201d}"), &body, vec![("OK", V::Primary)]); } else { self.notice = Some((format!("Imported {name}"), Instant::now() + std::time::Duration::from_secs(8))); }
     }
     /// A system file panel (row 328's fix): asked for on a thread of its own, answered later. The panel must NOT be run
     /// from inside an event of the window's loop - it runs a loop of its own, and winit panics when a wake-up from
@@ -1325,6 +1392,9 @@ impl App {
     /// These files are imported, one after another: each a new note beside the selected entry.
     fn import_files(&mut self, paths: Vec<std::path::PathBuf>) {
         if self.store.is_none() { return }
+        // a minNotes 2 document or package (row 377): its pages, into this collection
+        let (old, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| import_old::old_package(p) || import_old::old_document(p));
+        if let Some(p) = old.into_iter().next() { self.import_old_start(p); }
         let (known, other): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| import::family(p).is_some());
         if let Some(p) = other.first() { self.notice = Some((format!("{} is not a kind of file minNotes imports", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), Instant::now() + std::time::Duration::from_secs(8))); }
         self.files.import_wait.extend(known); self.import_next();
@@ -2594,7 +2664,7 @@ impl App {
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::ExportPoster => self.export(4, None), M::CopyMarkdown => self.copy_markdown(),
-            M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } self.panel(dlg, 2, |me, p| me.import_files(p)); } }
+            M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } dlg = dlg.add_filter("minNotes 2 document", &["mnd", gather::PACKAGE]); self.panel(dlg, 2, |me, p| me.import_files(p)); } }
             M::CheckForUpdates => { #[cfg(target_os = "macos")] sparkle::check_now(); }
             M::Licenses => match notices_file() { Some(p) => open::file(&p), None => { self.notice = Some(("The licences page comes with the packaged application".into(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } },
             M::ExportSite | M::CollectMedia | M::ExportPackage if self.untitled() => { self.notice = Some(("Save the collection first \u{2014} this is written beside its document".to_string(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -2618,6 +2688,8 @@ impl App {
             (Ask::DiscardRecovered, _) => self.offer_recovered(),
             (Ask::SaveFailed, 1) => self.save(),
             (Ask::ImportBig, i) => self.import_big(i),
+            (Ask::ImportOld, 1) => if let Some(p) = self.files.old_offer.take() { self.request_close(Pending::ImportOld(p)) },
+            (Ask::ImportOld, _) => self.files.old_offer = None,
             _ => {}
         }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -3504,7 +3576,8 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
-        self.unpack_tick(); self.import_tick(); self.export_tick(false);
+        self.unpack_tick(); self.import_tick(); self.import_old_tick(); self.export_tick(false);
+        if self.gpu.is_some() { if let Some((p, why)) = self.files.open_failed.take() { self.open_refused(&p, &why); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
         // what the system handed over (a double click on a document, a `minnotes:` address): row 352
         #[cfg(target_os = "macos")] for item in mac_open::take() { self.os_open(&item); }
         // the updater starts with the first window (not in a scripted run: it asks the feed)
@@ -4124,15 +4197,24 @@ fn main() {
     // (scripted, MN_VNOTES=<clip>: three notes are written into the clip's sidecar - no pictures - so that a video with notes can be shown without real footage)
     if let Ok(clip) = std::env::var("MN_VNOTES") { let mk = |frame: i64, text: &str, addressed: bool| { let mut n = qcv_notes::Note::default(); n.frame = frame; n.timestamp_seconds = frame as f64 / 24.0; n.timecode = video::timecode(frame, 24.0); n.text = text.into(); n.addressed = addressed; n };
         if let Err(e) = qcv_notes::io::save(std::path::Path::new(&clip), &[mk(24, "too dark here", false), mk(84, "fixed", true), mk(168, "", false)]) { eprintln!("MN_VNOTES: {e}"); } }
-    let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample", "--shots", "--shots-out"];
+    // `--make-v2-sample <file.mnd>`: a small minNotes 2 document with synthetic content and a picture kept beside it - what the import's scripted runs are pointed at (row 377)
+    if let Some(p) = arg("--make-v2-sample").map(std::path::PathBuf::from) {
+        let _ = std::fs::remove_file(&p); let side = p.parent().unwrap_or(std::path::Path::new(".")).join(media::OLD_SIDE);
+        let made = std::fs::create_dir_all(&side).map_err(|e| e.to_string()).and_then(|_| mn_store::old::write_sample(&p).map_err(|e| e.to_string())).and_then(|_| {
+            let (w, h) = (160u32, 90u32); let px: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [(x * 255 / w) as u8, (y * 255 / h) as u8, 120, 255])).collect();
+            let f = std::fs::File::create(side.join("kept.png")).map_err(|e| e.to_string())?; let mut e = png::Encoder::new(f, w, h); e.set_color(png::ColorType::Rgba); e.set_depth(png::BitDepth::Eight);
+            e.write_header().and_then(|mut wr| wr.write_image_data(&px)).map_err(|e| e.to_string()) });
+        match made { Ok(()) => { println!("made {}", p.display()); return } Err(e) => { eprintln!("{e}"); std::process::exit(2) } }
+    }
+    let options_with_value = ["--v2", "--make-v2-sample", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample", "--shots", "--shots-out"];
     let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
-    let mut store = None; let mut recovered = false;
+    let mut store = None; let mut recovered = false; let mut open_failed = None;
     let opened = file.map(|path| {
-        let (st, doc, rec) = open_store(&path, args.iter().any(|a| a == "--new"), arg("--note")).unwrap_or_else(|e| { eprintln!("{}: {e}", path.display()); std::process::exit(2) });
-        recent_add(&path); store = Some(st); recovered = rec; doc
-    });
+        // (a file that does not open no longer ends the application: a double-clicked minNotes 2 document is how its users first meet this one - the window comes up and says so, row 377)
+        match open_store(&path, args.iter().any(|a| a == "--new"), arg("--note")) { Ok((st, doc, rec)) => { recent_add(&path); store = Some(st); recovered = rec; Some(doc) } Err(e) => { eprintln!("{}: {e}", path.display()); open_failed = Some((path, e)); None } }
+    }).flatten();
     // nothing was asked for: a collection that was never saved, left by an earlier run, is taken up again (row 368)
-    let opened = opened.or_else(|| { if std::env::var_os("MN_NO_DIALOGS").is_some() || arg("--v2").is_some() || arg("--text").is_some() || args.iter().any(|a| a == "--sample") { return None }
+    let opened = opened.or_else(|| { if open_failed.is_some() || std::env::var_os("MN_NO_DIALOGS").is_some() || arg("--v2").is_some() || arg("--text").is_some() || args.iter().any(|a| a == "--sample") { return None }
         let left = mn_store::staging::leftovers(&sessions_root()).into_iter().find(|l| l.untitled())?; let (st, doc, rec) = open_untitled(Some(left)).ok()?; store = Some(st); recovered = rec; Some(doc) });
     // with nothing to open the window is blank; `--sample` shows the built-in note
     let blank = opened.is_none() && arg("--v2").is_none() && arg("--text").is_none() && !args.iter().any(|a| a == "--sample");
@@ -4156,12 +4238,13 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, menubar: menu::InWindowMenu::wanted().then(menu::InWindowMenu::new), alt_clean: false, guide: None, guide_stash: None, reading_user: false, guide_tried: false, pinned: std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("always-on-top").is_file()), guide_on: std::env::var("MN_GUIDE_ON").is_ok_and(|v| v == "1"), shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let mut app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, menubar: menu::InWindowMenu::wanted().then(menu::InWindowMenu::new), alt_clean: false, guide: None, guide_stash: None, reading_user: false, guide_tried: false, pinned: std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("always-on-top").is_file()), guide_on: std::env::var("MN_GUIDE_ON").is_ok_and(|v| v == "1"), shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] mac_open::install();
     // a menu command (chosen, or its key pressed) must wake the loop: nothing else may be due when it arrives
     let _ = WAKE.set(el.create_proxy());
     #[cfg(target_os = "macos")] { let proxy = el.create_proxy(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { if menu::panel_takes(&ev.id) { return } MENU_EVENTS.lock().unwrap().push(ev); proxy.wake_up(); })); }
+    app.files.open_failed = open_failed;
     el.run_app(app).unwrap();
 }

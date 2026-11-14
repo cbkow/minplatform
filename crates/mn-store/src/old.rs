@@ -57,3 +57,43 @@ pub fn read_pages(path: &Path) -> Result<Vec<Page>, Gate> {
     pages[0].blocks.append(&mut orphans);
     Ok(pages)
 }
+
+/// Is this (a STAGED copy of) a minNotes 2.0 document - the one kind of earlier file that is imported (row 377)?
+pub fn is_v2(path: &Path) -> bool {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).ok().and_then(|db| marks(&db)).is_some_and(|(f, v)| f == "mnd2" && v <= 2)
+}
+
+/// What lies on a 2.0 file's canvas beside its pages, counted by kind: an import of the pages leaves these behind, and says so.
+pub fn leftovers(path: &Path) -> Vec<(String, i64)> {
+    let Ok(db) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else { return vec![] };
+    db.prepare("SELECT kind, count(*) FROM elements WHERE kind <> 'page' GROUP BY kind ORDER BY kind").and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()).unwrap_or_default()
+}
+
+/// A small 2.0 document with synthetic content, as the old application writes one (its DDL): two pages - a heading, text
+/// with a mark, a task, a table of two columns, a picture kept with the document, a file named by a path - and three
+/// things on the canvas outside the pages. For the import's tests and scripted runs; never a user's file.
+pub fn write_sample(path: &Path) -> rusqlite::Result<()> {
+    let db = Connection::open(path)?;
+    db.execute_batch("CREATE TABLE blocks (id TEXT PRIMARY KEY, rank TEXT NOT NULL, depth INTEGER NOT NULL DEFAULT 0, type TEXT NOT NULL, attrs TEXT, content TEXT NOT NULL DEFAULT '', created INTEGER, modified INTEGER, page_id TEXT);
+        CREATE TABLE doc_meta (id INTEGER PRIMARY KEY CHECK (id = 1), title TEXT, schema_version INTEGER, app_version TEXT, created INTEGER, modified INTEGER, last_cursor TEXT, page_width INTEGER, format TEXT);
+        CREATE TABLE elements (id TEXT PRIMARY KEY, kind TEXT NOT NULL, x REAL NOT NULL DEFAULT 0, y REAL NOT NULL DEFAULT 0, w REAL NOT NULL DEFAULT 0, h REAL NOT NULL DEFAULT 0, z INTEGER NOT NULL DEFAULT 0, parent_id TEXT, json TEXT NOT NULL DEFAULT '{}', created INTEGER, modified INTEGER);
+        INSERT INTO doc_meta (id, schema_version, app_version, created, modified, format) VALUES (1, 2, '2.0.6', 1, 1, 'mnd2');")?;
+    let id = |n: u128| mn_doc::BlockId::from_u128((0x0190_0000_0000u128 << 80) + n).to_string();
+    db.execute("INSERT INTO elements (id, kind, z, created) VALUES (?1, 'page', 0, 1), (?2, 'page', 1, 2), (?3, 'media', 2, 3), (?4, 'media', 3, 4), (?5, 'text', 4, 5)", rusqlite::params![id(1), id(2), id(3), id(4), id(5)])?;
+    let rows: &[(u128, &str, i64, &str, Option<&str>, &str, u128)] = &[
+        (10, "B", 0, "heading", Some(r#"{"level":1}"#), "Shot list", 1),
+        (11, "D", 0, "paragraph", Some(r#"{"spans":[{"s":4,"e":8,"k":"bold"}]}"#), "The reel is locked on Friday.", 1),
+        (12, "F", 0, "task_item", Some(r#"{"state":2}"#), "Send the harbour shots", 1),
+        (13, "H", 0, "task_item", None, "Book the mix", 1),
+        (14, "J", 0, "split", Some(r#"{"ratios":[0.5,0.5]}"#), "", 1),
+        (15, "L", 0, "paragraph", Some(r#"{"cell":0}"#), "left column", 1),
+        (16, "N", 0, "paragraph", Some(r#"{"cell":1}"#), "right column", 1),
+        (17, "P", 0, "media", None, r#"{"h":90,"name":"kept.png","src":".minnotes/kept.png","w":160}"#, 1),
+        (20, "B", 0, "paragraph", None, "Delivery notes", 2),
+        (21, "D", 0, "list_item", None, "ProRes 4444", 2),
+        (22, "F", 1, "list_item", None, "Rec. 709", 2),
+        (23, "H", 0, "media", None, r#"{"ext":"xlsx","kind":"file","name":"Budget.xlsx","src":"/nowhere/Budget.xlsx"}"#, 2),
+    ];
+    for (n, rank, depth, kind, attrs, content, page) in rows { db.execute("INSERT INTO blocks (id, rank, depth, type, attrs, content, created, modified, page_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 1, ?7)", rusqlite::params![id(*n), rank, depth, kind, attrs, content, id(*page)])?; }
+    Ok(())
+}
