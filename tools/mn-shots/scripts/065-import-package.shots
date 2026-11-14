@@ -1,0 +1,29 @@
+# import.md, packages.md, web-folder.md
+size 1280 800
+wait 1
+import ${MN_DEMO_DIR}/Notes/Shot log.csv
+wait 2.5
+shot mn3-import-large-table
+key Escape
+wait 0.6
+package ${MN_DEMO_DIR}/Work/out/Tidewater.mnpkg
+wait 1.5
+shot mn3-package-window
+key Escape
+wait 0.6
+menu CollectMedia
+wait 1.2
+gathergo
+shot mn3-collect-media-progress
+wait 3
+key Escape
+wait 0.5
+note Review - Reel 2
+wait 0.8
+menu ExportSite
+wait 0.8
+site ${MN_DEMO_DIR}/Work/out/site
+wait 1.2
+shot mn3-web-folder-progress
+wait 0.5
+quit

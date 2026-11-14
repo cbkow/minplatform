@@ -16,4 +16,9 @@ copy; MN_SITE="$X/site,all" "$BIN" "$D/Work/Tidewater.mnd" --seconds 25 > /dev/n
 shot mn3-export-html-note "file://$X/Delivery specs.html"
 shot mn3-export-html-video "file://$X/Review - Reel 2.html"
 shot mn3-web-folder-browser "file://$X/site/index.html"
+shot mn3-web-folder-video "file://$X/site/notes/review-reel-2.html"
+# a canvas as a page: exported by a script of the harness (the canvas is opened, then written out)
+copy; printf 'size 1280 800\nwait 1\ncanvas Moodboard\nwait 1.5\nexport 0 %s/Moodboard.html\nwait 3\nquit\n' "$X" > "$W/canvas-export.shots"
+"$BIN" "$D/Work/Tidewater.mnd" --shots "$W/canvas-export.shots" --shots-out "$W/build" > /dev/null 2>&1
+shot mn3-export-canvas-html "file://$X/Moodboard.html"
 ls "$X" "$X/site" | head -30

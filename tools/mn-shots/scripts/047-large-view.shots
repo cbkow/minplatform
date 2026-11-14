@@ -1,0 +1,13 @@
+# media.md: the large view of a PDF
+size 1280 800
+wait 1
+note Delivery specs
+wait 1.5
+dclick 700 330
+wait 2
+wheel 700 400 260
+wait 1.5
+move 700 780
+wait 0.3
+shot mn3-large-view-pdf
+quit

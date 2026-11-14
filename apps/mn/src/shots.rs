@@ -15,6 +15,11 @@
 //!   move X Y              the pointer goes there                    leave          the pointer leaves the window
 //!   down X Y / up X Y     a primary press / release                 click X Y      both      dclick X Y   twice
 //!   rclick X Y            the secondary button, pressed and released
+//!   package FILE          Export Collection as Package to this file: its review window
+//!   gathergo              Start, in the open Collect Media / package window
+//!   site FOLDER           the open (or a new) web folder window started into this folder
+//!   columnkind N          the caret's column becomes a choice (1), check (2) or timecode (3) column
+//!   export N FILE         the open note or canvas exported (0 HTML, 1 Markdown, 2 Word, 3 PDF, 4 poster)
 //!   drop A|B|...          files dropped on the sidebar / the first window
 //!   wheel X Y DY          the wheel at a point, in logical pixels (positive scrolls the page down)
 //!   hwheel X Y DX         a sideways wheel at a point (positive shows what is further right)
@@ -112,6 +117,14 @@ impl crate::App {
                     self.key(&key, text.as_deref()); self.mods = was; }
                 // files dropped on the sidebar (or on the first window, which takes them the same way): the drop's own routine, without the system's drag
                 "drop" => { self.side_drop(tail.split('|').map(std::path::PathBuf::from).collect(), None); }
+                // the windows that ask the system for a place first, given the place: the package's review; Start in the open Collect Media / package window; a web folder started
+                "package" => { self.gather_open(crate::gather::What::Package, Some(tail.into())); }
+                "gathergo" => { if let Some(w) = self.files.gather.as_mut() { w.go(); } }
+                "site" => { if self.files.site.is_none() { self.site_open(); } self.site_start(tail.into()); }
+                // the caret's column made a kind (1 choice, 2 check, 3 timecode), as its menu does, without the question
+                "columnkind" => { self.column_kind(num(0) as u8, true); }
+                // what is open exported to a file (0 HTML, 1 Markdown, 2 Word, 3 PDF, 4 the canvas's poster), without the system's panel
+                "export" => { let (n, path) = tail.split_once(' ').unwrap_or((&tail, "")); self.export(n.parse().unwrap_or(0), Some(path.into())); }
                 "type" => { let was = self.mods; self.mods = (false, false, false); for c in tail.chars() { let s = c.to_string(); self.key(&Key::Character(s.as_str().into()), Some(&s)); } self.mods = was; }
                 "shot" => { let crop = (rest.len() >= 5).then(|| [num(1), num(2), num(3), num(4)]); self.shots.as_mut().unwrap().pending = Some((rest.first().unwrap_or(&"shot").to_string(), crop, 0)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 "quit" => { self.shots.as_mut().unwrap().done = true; self.shots_quit(el); return }

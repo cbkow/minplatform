@@ -1,0 +1,20 @@
+# tables.md: a table shown as a board (the demo's Status column is made a choice column first)
+size 1280 800
+wait 1
+note Schedule
+wait 0.8
+click 640 169
+wait 0.4
+columnkind 1
+wait 0.8
+click 640 169
+wait 0.4
+key Escape
+wait 0.4
+shot mn3-table-board-button 270 56 560 190
+click 721 102
+wait 1
+move 1000 700
+wait 0.4
+shot mn3-table-board 240 32 1040 736
+quit

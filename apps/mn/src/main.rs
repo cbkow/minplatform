@@ -946,7 +946,8 @@ impl App {
         self.canvas_save(true);   // what was moved or drawn on the open canvas counts as a change to ask about
         if self.unpublished() {
             let name = self.doc_name();
-            self.ask(Ask::Close, &format!("Save changes to \u{201c}{name}\u{201d}?"), "Your changes will be lost if you don\u{2019}t save them.", vec![("Cancel", V::Secondary), ("Don\u{2019}t Save", V::Secondary), ("Save", V::Primary)]);
+            let title = if self.untitled() { "Save this new collection?".to_string() } else { format!("Save changes to \u{201c}{name}\u{201d}?") };   // (an untitled collection has no file whose name could be said)
+            self.ask(Ask::Close, &title, if self.untitled() { "It has not been saved to a document yet. It will be lost if you don\u{2019}t save it." } else { "Your changes will be lost if you don\u{2019}t save them." }, vec![("Cancel", V::Secondary), ("Don\u{2019}t Save", V::Secondary), ("Save", V::Primary)]);
         } else { self.proceed(); }
     }
     /// Nothing stands in the way of closing the collection any more: do what it was closed for.
@@ -957,7 +958,7 @@ impl App {
             Some(Pending::Close) => self.end_session(),
             Some(Pending::Open(p)) => { self.end_session(); self.open_collection(&p, false); }
             Some(Pending::ImportOld(p)) => { self.end_session(); self.open_untitled(None); self.files.old_fresh = self.store.as_ref().map(|st| st.note); self.import_old_start(p); }
-            Some(Pending::Untitled) => { self.end_session(); self.open_untitled(None); }   // a new collection is written at once: its file exists from the start
+            Some(Pending::Untitled) => { self.end_session(); self.open_untitled(None); }   // a new collection has no document yet (row 368): it is staged until its first save
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
