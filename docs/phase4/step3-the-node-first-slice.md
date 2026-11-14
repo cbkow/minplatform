@@ -45,6 +45,43 @@ On the private farm (`tools/mr-conform/farm.sh start 2`, then `farm.sh port`): t
 
   No process was left after any of them.
 
+## The worker's wire, 0.5.11 beside the port (the same day)
+
+`mr-conform lead` makes the harness the LEADER of a private farm of one worker: it enters the phonebook with the tag
+`leader`, answers what a worker asks, files everything it is sent, and puts the worker through nine scenarios with a
+renderer that has no shell in it (`mr-conform fake-render`, the same on every system, which starts a helper process).
+Run against a 0.5.11 node on macOS, against the port on macOS, and against the port on Windows.
+
+| Scenario | 0.5.11 sends its leader | The port sends | The same? |
+|---|---|---|---|
+| a chunk renders | frame batches, then `complete` {node, job, frames, `elapsed_ms` 0, `exit_code` 0, the epoch} | the same | yes |
+| assigned with no epoch | the same bodies without `edit_epoch` | the same | yes |
+| the renderer fails | `failed` with `error` `""` | the same | yes |
+| `render/abort` | nothing after the abort | nothing | yes |
+| the job turns `cancelled` in the list | `failed` | `failed` | yes |
+| the job leaves the list | `failed` | `failed` | yes |
+| a frame report answered "stale" | nothing more | nothing more | yes |
+| a second assignment while rendering; a bad id; a body that is not JSON | 409 `busy` to all three | 409 `busy` to all three (after a correction: the port read the body first) | yes |
+| the node is stopped | `failed` | `failed` | yes |
+
+Differences that remain, none visible to a leader's bookkeeping:
+- 0.5.11 takes 2.1 s from an assignment to "rendering" (it starts its agent); the port 0.1 s.
+- 0.5.11 sends frame batches of one or two and may send the last AFTER `complete`; the port sends what it has before
+  `complete`.
+- 0.5.11 also asks its leader for the suspended nodes every 3 s (its interface shows them); the port has no interface
+  yet.
+- 0.5.11's requests carry `User-Agent: cpp-httplib/0.18.3` and `Accept-Encoding: gzip, deflate`; the port's do not.
+
+**Helpers left behind.** On macOS 0.5.11 kills a render's process group only when it kills the render. A renderer
+that ends by itself leaves whatever it started running: after the nine scenarios four helper processes were still
+alive. (On Windows the job object ends them as the agent exits.) The port's leash now ends the group when the renderer
+ends, on every system: nine scenarios, no process left, on macOS and on Windows. This is a change from 0.5.x on macOS,
+of the kind row 389 allows (only that machine sees it); it is the owner's to veto.
+
+**Windows.** `tools/mr-conform/port-alone.ps1` runs the port on a Windows machine with a scratch farm in a local
+folder and the stand-in leader: the nine scenarios give the same reports as on macOS, no process is left, and the
+leash's job object is what kills. (Found on the way: the node id was made from `/dev/urandom`; fixed.)
+
 ## Not in this slice
 
 - Leading: no database, no dispatch, no snapshot. The node refuses to start without the tag `noleader`; if it finds
@@ -52,5 +89,5 @@ On the private farm (`tools/mr-conform/farm.sh start 2`, then `farm.sh port`): t
 - UDP heartbeats (1.6); the stale-listing rule for a share that caches (1.2, steps 3, 4 and 6); the address towards
   the share's host (1.4, step 2); the restart signal (1.3).
 - Local staging (4.11); the GPU's name in the record (sent empty); routes 31-38; submissions from the drop box.
-- Windows: it compiles for Windows and the leash's job is S13's, but nothing of the node has run there yet.
+- Windows: the worker's side has run there under the stand-in leader (above); a farm on a real share, with paths translated between systems, has not.
 - The real data folder: this build runs only where `--data` points. It has never been started against a real farm.
