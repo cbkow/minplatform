@@ -1397,6 +1397,12 @@ impl App {
             // a wide table's bar: the arrow, not the text pointer (while its thumb is dragged too, wherever the pointer goes)
             else if self.files.pbar.dragging() || (!over_ui && !self.blank && self.files.card.is_none() && self.files.pbar.hovered()) || self.files.tbars.values().any(|b| b.dragging() || (!over_ui && !self.blank && b.hovered())) { C::Default }
             else if self.grab.as_ref().is_some_and(|x| x.dragging) { C::Grabbing }
+            // a board (row 365): a card is taken hold of, its buttons are pressed - while editing; a table's "Show as Board" likewise
+            else if self.files.board_drag.is_some_and(|d| d.3) { C::Grabbing }
+            else if !self.reading && self.board_at(x, y).is_some_and(|b| matches!(b.1, boardview::Hit::Card(..))) { C::Grab }
+            else if !self.reading && self.board_at(x, y).is_some_and(|b| matches!(b.1, boardview::Hit::ToTable | boardview::Hit::Add(_))) { C::Pointer }
+            else if self.board_at(x, y).is_some() { C::Default }
+            else if self.table_ui().is_some_and(|ui| ui.board.is_some_and(|b| b.0.contains(kurbo::Point::new(x, y)))) { C::Pointer }
             else if over_ui || self.blank { C::Default }
             // Cmd held over a link: it would open
             else if self.mods.1 && self.link_under(x, y).is_some() { C::Pointer }
@@ -3408,7 +3414,7 @@ impl ApplicationHandler for App {
                 // sideways (a trackpad's own, or the wheel with Shift) over a table wider than its place: the table scrolls inside its block
                 let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) };
                 let side = if self.mods.0 && dx == 0.0 { dy } else if dx.abs() > dy.abs() { dx } else { 0.0 };
-                if side != 0.0 { let (nx, ny) = self.note_point(self.pointer); let over = self.layout.as_ref().and_then(|l| { let (id, _) = l.hit(&self.ed.doc, nx, ny)?; let t = l.wide_table_of(&self.ed.doc, id)?; let r = l.rect(&self.ed.doc, t)?; (ny >= r.y0 && ny <= r.y1).then(|| (t, l.table_scroll(t))) });
+                if side != 0.0 { let (nx, ny) = self.note_point(self.pointer); let over = self.layout.as_ref().and_then(|l| { let (id, _) = l.hit(&self.ed.doc, nx, ny)?; let t = if l.table_scroll(id).is_some() { id } else { l.wide_table_of(&self.ed.doc, id)? };   /* (a board is its table's own box: the hit IS the table) */ let r = l.rect(&self.ed.doc, t)?; (ny >= r.y0 && ny <= r.y1).then(|| (t, l.table_scroll(t))) });
                     if let Some((t, Some((full, vis, at)))) = over { let to = (at as f64 - side).clamp(0.0, (full - vis).max(0.0) as f64); self.files.tscroll.insert(t, to as f32); let map = self.files.tscroll.clone(); if let Some(l) = self.layout.as_mut() { l.set_table_scrolls(&map); }
                         if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 self.scroll -= dy;
@@ -3450,8 +3456,8 @@ impl ApplicationHandler for App {
                 // a card of a board being dragged (row 365): where it would land follows the pointer
                 if let Some((table, _, from, moved, _)) = self.files.board_drag { let now_moved = moved || (from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0;
                     let drop = if now_moved { self.board_drop(table, position.x, position.y) } else { None }; if let Some(d) = self.files.board_drag.as_mut() { d.3 = now_moved; d.4 = drop; }
-                    if now_moved { if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
-                { let over = self.board_at(position.x, position.y); if over != self.files.board_hover { self.files.board_hover = over; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
+                    if now_moved { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
+                { let over = self.board_at(position.x, position.y); if over != self.files.board_hover { self.files.board_hover = over; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
                 // (a row of the tree being dragged has the pointer before the chrome does: the tree would take the moves as its own)
                 if let Some((_, from, moved)) = self.files.row_drag.as_mut() { if !*moved && ((from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0) { *moved = true; } if *moved { let id = self.files.row_drag.map(|d| d.0); if let (Some(id), Some(sb)) = (id, self.sidebar.as_mut()) { let t = sb.drop_target(id, position.x, position.y); sb.drop_row = t.and_then(|t| t.2); sb.drop_line = t.and_then(|t| t.3); } self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if let Some((a, b, from, free, total, ka, kb)) = self.files.gap_drag.clone() { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);

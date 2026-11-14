@@ -15,6 +15,7 @@
 //!   down X Y / up X Y     a primary press / release                 click X Y      both      dclick X Y   twice
 //!   rclick X Y            the secondary button, pressed and released
 //!   wheel X Y DY          the wheel at a point, in logical pixels (positive scrolls the page down)
+//!   hwheel X Y DX         a sideways wheel at a point (positive shows what is further right)
 //!   key [mods+]NAME       a key: Enter Tab Escape Backspace Delete Up Down Left Right Home End Space, or one character;
 //!                         mods are cmd, shift, alt joined by `+` (cmd+b, shift+Down)
 //!   type TEXT             characters, as typing them. NOTE: `key Space` types a space - a person's Space on a video
@@ -100,6 +101,7 @@ impl crate::App {
                 "click" | "dclick" => { moved(self, pt(0)); for _ in 0..if cmd == "dclick" { 2 } else { 1 } { button(self, pt(0), ElementState::Pressed, MouseButton::Left); button(self, pt(0), ElementState::Released, MouseButton::Left); } }
                 "rclick" => { moved(self, pt(0)); button(self, pt(0), ElementState::Pressed, MouseButton::Right); button(self, pt(0), ElementState::Released, MouseButton::Right); }
                 "wheel" => { moved(self, pt(0)); self.window_event(el, wid, WindowEvent::MouseWheel { device_id: None, delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, -num(2) * scale)), phase: winit::event::TouchPhase::Moved, source: winit::event::ScrollSource::Wheel }); }
+                "hwheel" => { moved(self, pt(0)); self.window_event(el, wid, WindowEvent::MouseWheel { device_id: None, delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(-num(2) * scale, 0.0)), phase: winit::event::TouchPhase::Moved, source: winit::event::ScrollSource::Wheel }); }
                 "key" => { let mut parts: Vec<&str> = tail.split('+').collect(); let name = if tail.ends_with('+') { "+" } else { parts.pop().unwrap_or("") };
                     let key = named(name).unwrap_or_else(|| Key::Character(name.into())); let was = self.mods;
                     self.mods = (parts.contains(&"shift"), parts.contains(&"cmd"), parts.contains(&"alt"));
