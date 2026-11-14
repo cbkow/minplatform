@@ -3549,6 +3549,8 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && self.files.board_edit.is_some() && !self.files.board_edit.as_ref().is_some_and(|x| x.3.hit(position.x, position.y)) { self.board_edit_end(true); }
                 if let Some((table, hit)) = self.board_at(position.x, position.y) { if state == ElementState::Pressed { use boardview::Hit as H;
                     self.ed.select_block(table);
+                    // reading: the board is looked at, not changed - and says so when something of it is pressed (it did nothing, without a word: user 2026-11-14)
+                    if self.reading && matches!(hit, H::ToTable | H::Add(_) | H::Card(..)) { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); }
                     match hit {
                         H::ToTable if !self.reading => self.board_set(table, None),
                         H::Add(lane) if !self.reading => self.board_add_card(table, lane),
