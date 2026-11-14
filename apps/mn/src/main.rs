@@ -884,8 +884,8 @@ impl App {
         }
         let se = st.session.as_ref(); let (base, staged) = (se.and_then(|x| x.original().parent().map(|p| p.to_path_buf())), se.map(|x| x.media_dir()));
         let name = se.and_then(|x| x.original().file_stem().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "Collection".into());
-        let files = w.files.on; let videos = w.videos.on; let opts = *self.files.xopts.get_or_insert_with(export_settings);
-        let job = Job { pages, dest: dest.clone(), opts, files, videos, name, when: jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), cards };
+        let files = w.files.on; let videos = w.videos.on; let password = w.password().or_else(|| std::env::var("MN_SITE_PW").ok().filter(|p| !p.is_empty())); let opts = *self.files.xopts.get_or_insert_with(export_settings);
+        let job = Job { pages, dest: dest.clone(), opts, files, videos, password, name, when: jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string(), cards };
         let prog = std::sync::Arc::new(Progress::new(job.pages.len())); let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
         let settings = sessions_root().parent().unwrap_or(std::path::Path::new(".")).to_path_buf(); let p = prog.clone();
         let wake = || { if let Some(w) = WAKE.get() { w.wake_up(); } };
@@ -2351,7 +2351,7 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
-        if self.files.site.as_ref().is_some_and(|w| w.shown) { let out = self.files.site.as_mut().map(|w| w.pointer(&e)).unwrap_or(site_win::Out::None); self.site_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
+        if self.files.site.as_ref().is_some_and(|w| w.shown) { let out = match (self.files.site.as_mut(), self.gpu.as_mut()) { (Some(w), Some(g)) => w.pointer(&e, &mut g.fonts), _ => site_win::Out::None }; self.site_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = self.files.gather.as_mut().map(|w| w.pointer(&e)).unwrap_or(gather_win::Out::None); self.gather_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // the colour palette: while it is open every event is its own
         if self.pal.is_open() { if let Some(g) = self.gpu.as_mut() { let out = self.pal.event(&e, &mut g.fonts, now); self.colour_out(out); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
@@ -2420,6 +2420,12 @@ impl App {
         if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
+        }
+        // the web folder's password: its field takes what is typed (a paste too; Escape and Enter stay the window's)
+        if self.files.site.as_ref().is_some_and(|w| w.typing()) && !matches!(key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
+            let pasted = if cmd && matches!(key, Key::Character(c) if c.to_lowercase() == "v") { Some(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()) } else { None };
+            if let (Some(w), Some(g)) = (self.files.site.as_mut(), self.gpu.as_mut()) { match pasted { Some(t) => { w.pass.paste(t.lines().next().unwrap_or(""), &mut g.fonts); } None => { w.pass.key(&ui_key(), &mut g.fonts); } } g.window.request_redraw(); }
+            return
         }
         if self.files.site.as_ref().is_some_and(|w| w.shown) { let out = match key { Key::Named(NamedKey::Escape) => self.files.site.as_mut().map(|w| w.key(false)), Key::Named(NamedKey::Enter) => self.files.site.as_mut().map(|w| w.key(true)), _ => None }; if let Some(o) = out { self.site_out(o); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = match key { Key::Named(NamedKey::Escape) => self.files.gather.as_mut().map(|w| w.key(false)), Key::Named(NamedKey::Enter) => self.files.gather.as_mut().map(|w| w.key(true)), _ => None }; if let Some(o) = out { self.gather_out(o); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
@@ -3159,6 +3165,8 @@ impl ApplicationHandler for App {
                 let out = match (ev, self.files.find.as_mut(), self.gpu.as_mut()) { (Some(ev), Some(p), Some(g)) => p.ime(&ev, &mut g.fonts), _ => findbar::Out::None }; self.find_out(out); }
             WindowEvent::Ime(e) if self.files.link.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(p), Some(g)) = (ev, self.files.link.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
+            WindowEvent::Ime(e) if self.files.site.as_ref().is_some_and(|w| w.typing()) => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
+                if let (Some(ev), Some(w), Some(g)) = (ev, self.files.site.as_mut(), self.gpu.as_mut()) { w.pass.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.picker.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(p), Some(g)) = (ev, self.files.picker.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.note_field.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };

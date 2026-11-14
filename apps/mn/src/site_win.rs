@@ -5,7 +5,7 @@
 use crate::export::site::{Progress, DONE, FAILED, KEPT, SKIPPED, WORKING};
 use kurbo::{Affine, Rect, RoundedRect};
 use min_theme::tokens as t;
-use min_ui::{checkbox, fonts::draw_layout, menu, paint, progress, Button, Event, Family, Fonts, ScrollBar, Switch, TextButton, Variant};
+use min_ui::{checkbox, fonts::draw_layout, menu, paint, progress, Button, Event, Family, Fonts, ScrollBar, Switch, TextButton, TextField, Variant};
 use mn_doc::BlockId;
 use mn_store::DocKind;
 use std::{path::PathBuf, sync::{atomic::Ordering::Relaxed, Arc}, time::{Duration, Instant}};
@@ -25,7 +25,8 @@ pub struct Window {
     /// the note or canvas that is open (None: "This note" cannot be chosen)
     pub current: Option<BlockId>,
     pub files: Switch, /// videos get a playable copy (row 340)
-    pub videos: Switch, pub dest: Option<PathBuf>, pub prog: Option<Arc<Progress>>,
+    pub videos: Switch, /// the password the pages are sealed with (row 342); empty: none
+    pub pass: TextField, pub dest: Option<PathBuf>, pub prog: Option<Arc<Progress>>,
     /// the pages being written: (their place in the job's pages, title, a canvas)
     pub pages: Vec<(usize, String, bool)>, pub note: String, pub failed: bool,
     bar: ScrollBar, b0: TextButton, b1: TextButton, scopes: [Rect; 3], rows: Vec<(Rect, usize)>, card: Rect, list: Rect, hover: Option<usize>, hover_scope: Option<usize>, scale: f64, drawn: Instant, started: Option<Instant>,
@@ -36,9 +37,12 @@ fn title_of(s: &str) -> &str { if s.trim().is_empty() { "Untitled" } else { s } 
 
 impl Window {
     pub fn open(entries: Vec<Entry>, current: Option<BlockId>, files: bool, videos: bool) -> Window {
-        Window { shown: true, phase: Phase::Options, scope: if current.is_some() { Scope::This } else { Scope::All }, entries, current, files: Switch::new(files), videos: Switch::new(videos), dest: None, prog: None, pages: vec![], note: String::new(), failed: false,
+        Window { shown: true, phase: Phase::Options, scope: if current.is_some() { Scope::This } else { Scope::All }, entries, current, files: Switch::new(files), videos: Switch::new(videos), pass: { let mut f = TextField::new(Family::Sans, t::BODY_SIZE_M).secret(); f.placeholder = "Password (optional)".into(); f }, dest: None, prog: None, pages: vec![], note: String::new(), failed: false,
             bar: ScrollBar::default(), b0: TextButton::new("Cancel", Variant::Secondary), b1: TextButton::new("Export\u{2026}", Variant::Primary), scopes: [Rect::ZERO; 3], rows: vec![], card: Rect::ZERO, list: Rect::ZERO, hover: None, hover_scope: None, scale: 1.0, drawn: Instant::now(), started: None }
     }
+    pub fn password(&self) -> Option<String> { Some(self.pass.text().to_string()).filter(|p| !p.is_empty()) }
+    /// The password's field has the keys.
+    pub fn typing(&self) -> bool { self.shown && self.phase == Phase::Options && self.pass.focused }
     pub fn active(&self) -> bool { self.phase == Phase::Running }
     /// What goes, in the collection's order.
     pub fn chosen(&self) -> Vec<BlockId> {
@@ -88,7 +92,8 @@ impl Window {
         let options = self.phase == Phase::Options;
         let top = y0 + pad + if options { 66.0 * s + 3.0 * rh + 12.0 * s } else { 104.0 * s };
         if options { for i in 0..3 { let y = y0 + pad + 66.0 * s + i as f64 * rh; self.scopes[i] = Rect::new(x0 + pad, y, x0 + w - pad, y + rh); } } else { self.scopes = [Rect::ZERO; 3]; }
-        self.list = Rect::new(x0 + pad, top, x0 + w - pad, y0 + h - pad - bh - 16.0 * s);
+        self.list = Rect::new(x0 + pad, top, x0 + w - pad, y0 + h - pad - bh - 16.0 * s - if options { 52.0 * s } else { 0.0 });
+        if options { let fy = self.list.y1 + 10.0 * s; self.pass.layout(fonts, Rect::new(x0 + pad, fy, x0 + pad + 220.0 * s, fy + 32.0 * s), s); }
         let row = 30.0 * s; let nv = self.prog.as_ref().map(|p| p.videos.lock().unwrap().len()).unwrap_or(0); let n = if options { self.entries.len() } else { self.pages.len() + nv };
         self.bar.set(self.list, n as f64 * row + 8.0 * s, s);
         // while it runs the page being written is kept in sight
@@ -115,8 +120,9 @@ impl Window {
             (Phase::Done, true) => Out::Reveal, (Phase::Done, false) => Out::Close,
         }
     }
-    pub fn pointer(&mut self, e: &Event) -> Out {
+    pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> Out {
         let now = Instant::now();
+        if self.phase == Phase::Options { match *e { Event::Down { x, y, .. } => { self.pass.focused = self.pass.hit(x, y); if self.pass.focused { self.pass.pointer(e, fonts); return Out::Redraw } } _ => if self.pass.focused { self.pass.pointer(e, fonts); } } }
         let (_, mine) = self.bar.event(e, now); if mine { return Out::Redraw }
         if !self.b0.label.is_empty() && self.b0.event(e, now).0 { return self.press(true) }
         if self.b1.event(e, now).0 { return self.press(false) }
@@ -204,6 +210,12 @@ impl Window {
         }
         scene.pop_layer();
         self.bar.paint(scene, now);
+        if options {
+            self.pass.paint(scene, fonts, s);
+            let n = self.pass.text().chars().count();
+            let hint = if n == 0 { "With a password the pages are sealed and ask for it. Pictures and videos are not sealed: they get names nobody can guess." } else if n < 12 { "Short: 12 characters or more is safer. It cannot be recovered \u{2014} a forgotten password means exporting again." } else { "It cannot be recovered \u{2014} a forgotten password means exporting again. Pictures and videos are not sealed." };
+            let hx = self.pass.rect.x1 + 14.0 * s; let l = fonts.layout_width(hint, Family::Sans, (11.0 * s) as f32, t::FONT_WEIGHT_REGULAR as f32, sub, Some((x1 - hx) as f32)); draw_layout(scene, &l, Affine::translate((hx, self.pass.rect.center().y - l.height() as f64 / 2.0)));
+        }
         if options { self.files.paint(scene, s, now); line(scene, fonts, "PDFs and files", self.files.rect.x1 + 10.0 * s, self.files.rect.center().y, t::BODY_SIZE_S, false, sub, 116.0 * s, false);
             self.videos.paint(scene, s, now); line(scene, fonts, "Playable videos", self.videos.rect.x1 + 10.0 * s, self.videos.rect.center().y, t::BODY_SIZE_S, false, sub, (self.b0.rect.x0 - self.videos.rect.x1 - 24.0 * s).max(20.0), false); }
         if !self.b0.label.is_empty() { self.b0.paint(scene, fonts, s, now); } self.b1.paint(scene, fonts, s, now);
