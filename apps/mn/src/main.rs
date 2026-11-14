@@ -447,7 +447,8 @@ impl App {
             if cv.paint(scene, &mut g.fonts, &mut self.media, Rect::new(view.x0.max(self.side_w), view.y0.max(self.top), view.x1, if self.foot.rect.height() > 0.0 { self.foot.rect.y0.min(view.y1) } else { view.y1 }), s, live, &mut note, vlive.filter(|_| live.is_none()).map(|m| m.id), hole, &mut video) { g.window.request_redraw(); } }
         let carded = self.files.card.as_ref().map(|c| c.rect);
         if let Some(r) = carded { scene.push_clip_layer(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, &Rect::new(r.x0 - 40.0 * s, r.y0, r.x1, r.y1).intersect(Rect::new(self.side_w, self.top, w as f64, self.foot.rect.y0.max(self.top)))); }
-        let picked = self.ed.block_selection();
+        // (nothing of the note is marked while a canvas, or no note, is in its place: a block picked before the canvas was opened drew its band over it)
+        let picked = if self.blank { Default::default() } else { self.ed.block_selection() };
         for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
         // find (row 321): every occurrence is marked, the current one more strongly; under the text, as the selection is
@@ -2611,6 +2612,8 @@ impl App {
             if self.canvas_key(key, ui_key()) { self.canvas_asks(); return } }
         // (a canvas has no page, but the sidebar is still the window's: Cmd+1 folds and opens it there too)
         if self.blank && cmd && !shift && !alt && matches!(key, Key::Character(c) if c == "1") { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_ref()) { sb.rail.toggle(Instant::now()); self.layout = None; g.window.request_redraw(); } return }
+        // (with no page - a canvas, or no note - a field of the sidebar still has the keys: a canvas could not be renamed, nor the tree searched, while one was open)
+        if self.blank && !cmd && self.sidebar.as_ref().is_some_and(|sb| sb.typing()) { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { let a = sb.key(&ui_key(), &mut g.fonts); g.window.request_redraw(); if let Some(a) = a { self.act(a); } } return }
         if self.blank { return }
         // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
         if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {

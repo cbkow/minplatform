@@ -32,6 +32,28 @@ wait 2
 add ${MN_DEMO_DIR}/Media/Budget.xlsx|${MN_DEMO_DIR}/Media/Temp score.wav
 wait 2
 shot build-specs
+# the meetings folder (made at the top level: the selection is a top-level note)
+note Welcome
+wait 0.5
+menu NewFolder
+type Meetings
+key Enter
+wait 0.3
+import ${MN_DEMO_DIR}/Notes/Kickoff.md|${MN_DEMO_DIR}/Notes/Colour session.md
+wait 2
+# the canvas: the sidebar's New canvas button, named, then pictures dropped on it
+click 80 82
+wait 0.5
+click 180 24
+wait 0.5
+menu Rename
+wait 0.2
+type Moodboard
+key Enter
+wait 0.3
+add ${MN_DEMO_DIR}/Media/Lantern study 01.png|${MN_DEMO_DIR}/Media/Lantern study 02.png|${MN_DEMO_DIR}/Media/Night key.jpg|${MN_DEMO_DIR}/Media/Harbour palette.png|${MN_DEMO_DIR}/Media/Texture pass.png|${MN_DEMO_DIR}/Media/Layout sketch.png
+wait 2.5
+shot build-canvas
 note Welcome
 wait 1
 shot build-welcome

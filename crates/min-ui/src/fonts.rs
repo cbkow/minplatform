@@ -39,7 +39,7 @@ impl Fonts {
     /// As `layout`, wrapping at `max_width` physical pixels when given.
     pub fn layout_width(&mut self, text: &str, family: Family, size_px: f32, weight: f32, color: Color, max_width: Option<f32>) -> Layout<Brush> {
         let name = self.family_name(family).to_string();
-        // Geist has no ⌘ / ⌥ (they drew as boxes in tooltips and the shortcuts card): those two come from Phosphor's
+        // Geist has no ⌘ / ⌥ / ⌃ / ⌫ (they drew as boxes in tooltips and the shortcuts card): those two come from Phosphor's
         // `command` / `option`, swapped in as ranges of the icon family
         let (text, marks) = mac_glyphs(text, family);
         let text = text.as_str();
@@ -102,10 +102,10 @@ pub fn ui_locale() -> Option<parley::Language> {
 
 /// `text` with ⌘ / ⌥ swapped for Phosphor's glyphs, and the byte ranges they occupy (none for the icon family).
 fn mac_glyphs(text: &str, family: Family) -> (String, Vec<std::ops::Range<usize>>) {
-    if family == Family::Icon || !text.contains(['⌘', '⌥']) { return (text.to_string(), vec![]) }
+    if family == Family::Icon || !text.contains(['⌘', '⌥', '⌃', '⌫']) { return (text.to_string(), vec![]) }
     let mut out = String::with_capacity(text.len()); let mut marks = vec![];
     for ch in text.chars() {
-        let sub = match ch { '⌘' => min_theme::icons::glyph("command"), '⌥' => min_theme::icons::glyph("option"), _ => None };
+        let sub = match ch { '⌘' => min_theme::icons::glyph("command"), '⌥' => min_theme::icons::glyph("option"), '⌃' => min_theme::icons::glyph("control"), '⌫' => min_theme::icons::glyph("backspace"), _ => None };
         match sub { Some(g) => { let at = out.len(); out.push(g); marks.push(at..out.len()); } None => out.push(ch) }
     }
     (out, marks)

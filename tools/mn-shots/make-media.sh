@@ -9,7 +9,7 @@ FF="ffmpeg -nostdin -hide_banner -loglevel error -y"
 still() { [ -f "$M/Media/$1" ] || $FF -f lavfi -i "$2" -frames:v 1 "$M/Media/$1"; }
 still "Lantern study 01.png" "gradients=size=1600x900:c0=0x1b2a49:c1=0xf2a65a:c2=0xd95d39:nb_colors=3:x0=0:y0=0:x1=1600:y1=900:seed=7"
 still "Lantern study 02.png" "gradients=size=1600x900:c0=0x0b3954:c1=0x087e8b:c2=0xbfd7ea:nb_colors=3:x0=1600:y0=0:x1=0:y1=900:seed=11"
-still "Harbour palette.png"  "gradients=size=1200x1200:c0=0x2d3142:c1=0x4f5d75:c2=0xef8354:c3=0xffffff:nb_colors=4:type=radial:x0=600:y0=600:x1=1200:y1=1200:seed=3"
+[ -f "$M/Media/Harbour palette.png" ] || $FF -f lavfi -i "color=c=0x1b2a49:s=240x600" -f lavfi -i "color=c=0x087e8b:s=240x600" -f lavfi -i "color=c=0xbfd7ea:s=240x600" -f lavfi -i "color=c=0xf2a65a:s=240x600" -f lavfi -i "color=c=0xd95d39:s=240x600" -filter_complex hstack=inputs=5 -frames:v 1 "$M/Media/Harbour palette.png"
 still "Texture pass.png"     "mandelbrot=size=1600x900:start_scale=0.012:start_x=-0.743643887:start_y=-0.131825904:maxiter=400,hue=h=200:s=0.7"
 still "Layout sketch.png"    "cellauto=size=1200x800:rule=90:random_seed=5,negate,format=gray"
 still "Night key.jpg"        "gradients=size=1920x1080:c0=0x03071e:c1=0x370617:c2=0xe85d04:nb_colors=3:x0=0:y0=1080:x1=1920:y1=0:seed=21"
