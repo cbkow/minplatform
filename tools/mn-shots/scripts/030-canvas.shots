@@ -13,11 +13,26 @@ click 1100 600
 move 900 600
 wait 0.3
 shot mn3-canvas-zoom-box 1040 680 240 100
+wait 0.7
 down 330 60
 move 800 150
 up 1190 235
-wait 0.3
+wait 0.6
 key cmd+g
+wait 0.8
+rclick 372 86
 wait 0.5
-shot t-frame-1
+shot mn3-canvas-frame-menu
+key Escape
+wait 0.6
+click 1100 650
+wait 0.7
+dclick 1000 560
+wait 0.8
+type Harbour at dusk
+key Enter
+wait 0.6
+type Warm practicals, cool sky
+wait 0.6
+shot mn3-canvas-note-card
 quit

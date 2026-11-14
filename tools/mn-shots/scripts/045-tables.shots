@@ -1,0 +1,10 @@
+# tables.md
+size 1280 800
+wait 1
+note Schedule
+wait 0.8
+click 700 250
+wait 0.6
+move 1100 600
+shot mn3-table-schedule 240 0 1040 520
+quit

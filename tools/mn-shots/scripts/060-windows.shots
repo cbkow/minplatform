@@ -1,0 +1,27 @@
+# web-folder.md, packages.md
+size 1280 800
+wait 1
+note Review - Reel 2
+wait 1
+menu ExportSite
+wait 0.8
+shot mn3-web-folder-window
+key Escape
+wait 0.6
+menu CollectMedia
+wait 1.2
+shot mn3-collect-media-review
+key Escape
+wait 0.6
+menu PathMappings
+wait 0.6
+click 380 680
+wait 0.4
+type Projects
+key Tab
+type P:\
+key Tab
+type /Users/Shared/minNotes Demo
+wait 0.6
+shot mn3-path-mappings 140 60 1000 700
+quit

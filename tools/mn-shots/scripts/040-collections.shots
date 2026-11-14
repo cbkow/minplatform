@@ -1,0 +1,38 @@
+# collections.md, saving.md
+size 1280 800
+wait 1
+note Welcome
+wait 0.8
+click 900 150
+move 1000 600
+wait 0.4
+shot mn3-sidebar-tree
+rclick 95 134
+wait 0.4
+shot mn3-sidebar-context-menu 0 0 560 420
+key Escape
+wait 0.6
+click 60 24
+wait 0.3
+type harbour
+wait 1.2
+shot mn3-sidebar-search 0 0 560 420
+key Escape
+wait 0.6
+note Kickoff
+wait 0.6
+click 700 160
+wait 0.6
+key End
+type  and the editor
+wait 0.6
+note Schedule
+wait 0.8
+click 430 300
+wait 0.6
+type !
+wait 0.5
+move 1000 650
+shot mn3-unsaved-dot-and-readout
+shot mn3-footer 0 730 1280 70
+quit

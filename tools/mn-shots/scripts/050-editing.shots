@@ -1,0 +1,40 @@
+# editing.md
+size 1280 800
+wait 1
+note Welcome
+wait 0.8
+click 520 460
+wait 0.6
+move 900 600
+shot mn3-toolbar 240 0 1040 200
+rclick 500 290
+wait 0.4
+shot mn3-block-menu 240 60 900 620
+key Escape
+wait 0.6
+dclick 760 125
+wait 0.6
+click 769 16
+wait 0.5
+shot mn3-colour-palette 240 0 1040 330
+key Escape
+wait 0.6
+note Delivery specs
+wait 1
+wheel 700 400 590
+wait 0.6
+click 1166 99
+wait 0.6
+shot mn3-code-block-language 240 40 1040 520
+key Escape
+wait 0.6
+note Review - Reel 2
+wait 1
+click 600 125
+wait 0.6
+key cmd+f
+wait 0.4
+type harbour
+wait 0.8
+shot mn3-find-bar 240 0 1040 330
+quit

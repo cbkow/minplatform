@@ -15,17 +15,35 @@ key Escape
 note Welcome
 wait 1
 wheel 700 400 420
-wait 0.5
-click 700 500
-wait 0.5
-shot t-draw-1
+wait 0.6
+click 700 300
+wait 0.7
+click 360 16
+wait 0.6
+down 560 380
+move 640 320
+up 720 260
+wait 0.6
+click 392 16
+wait 0.6
+down 900 180
+move 1000 260
+up 1100 330
+wait 0.6
+click 264 16
+wait 0.6
+move 1150 560
+shot mn3-drawing-toolbar 240 0 1040 500
 note Review - Reel 2
 wait 1.5
 wheel 700 400 70
-wait 0.3
+wait 0.6
 click 700 400
-wait 0.5
+wait 0.6
 key Space
-wait 0.3
-shot t-video-1
+wait 0.6
+click 422 730
+wait 1
+move 1150 300
+shot mn3-video-notes
 quit
