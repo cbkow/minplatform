@@ -565,7 +565,10 @@ impl App {
                 let picked = psel.zip(spage).filter(|(_, sp)| sp.0 == page).and_then(|((_, sid), _)| lines.iter().find(|l| l.s.id == *sid).map(ink::bounds));
                 (lines, rec_w, picked) };
             let area = Rect::new(0.0, self.top, w as f64, if self.foot.rect.height() > 0.0 { self.foot.rect.y0 } else { h as f64 });
-            if let Some(st) = self.files.studio.as_mut() { if st.paint(scene, &mut g.fonts, area, s, &ink) { g.window.request_redraw(); } }
+            // (a picture's view is handed the picture as the note has it - made for the size it is shown at here)
+            let own = match self.files.studio.as_ref().filter(|st| st.picture) { Some(st) => { let d = rec.to_string(); let k = st.percent() / 100.0; let (pw, ph) = (rec.get("w").and_then(|v| v.as_f64()).unwrap_or(1.0) * k, rec.get("h").and_then(|v| v.as_f64()).unwrap_or(1.0) * k);
+                match self.media.view(&d, pw.max(64.0), ph.max(64.0)) { media::View::Ready { brush, .. } => Some(brush.clone()), _ => None } } None => None };
+            if let Some(st) = self.files.studio.as_mut() { if st.paint(scene, &mut g.fonts, area, s, own.as_ref(), &ink) { g.window.request_redraw(); } }
         }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
@@ -614,16 +617,23 @@ impl App {
         let d = match host {
             studio::Host::Block(id) => match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => descriptor.clone(), _ => return None },
             studio::Host::Card(id) => self.files.canvas.as_ref()?.els.iter().find(|e| e.id == id)?.record.clone() };
-        d.contains("\"kind\":\"pdf\"").then_some(d)
+        (d.contains("\"kind\":\"pdf\"") || !d.contains("\"kind\"")).then_some(d)   // a PDF, or a picture (a record without a kind)
+    }
+    /// The picture block of the note under a window point (a record without a kind: not a video, a PDF or a file's chip).
+    fn picture_under(&self, x: f64, y: f64) -> Option<BlockId> {
+        if self.blank || self.modal() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
+        let l = self.layout.as_ref()?; let (nx, ny) = self.note_point((x, y)); let (id, _) = l.hit(&self.ed.doc, nx, ny)?;
+        match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\"") => l.rect(&self.ed.doc, id).filter(|r| r.contains(kurbo::Point::new(nx, ny))).map(|_| id), _ => None }
     }
     fn studio_open(&mut self, host: studio::Host) {
         let Some(d) = self.studio_record(host) else { return };
-        let Some(path) = self.media.locate(&d).filter(|p| p.is_file()) else { self.notice = Some(("The PDF's file was not found".to_string(), Instant::now() + std::time::Duration::from_secs(5))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return };
+        let Some(path) = self.media.locate(&d).filter(|p| p.is_file()) else { self.notice = Some(("The file was not found".to_string(), Instant::now() + std::time::Duration::from_secs(5))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return };
         if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); } self.note_words_end(true); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.pdf = None; self.files.tool = None;
         let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
         let (w, h) = (rec.get("w").and_then(|v| v.as_f64()).unwrap_or(612.0), rec.get("h").and_then(|v| v.as_f64()).unwrap_or(792.0));
         let name = rec.get("name").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        let mut st = studio::Studio::open(host, path, name, (w as f32, h as f32), || { if let Some(p) = WAKE.get() { p.wake_up(); } });
+        let mut st = if d.contains("\"kind\":\"pdf\"") { studio::Studio::open(host, path, name, (w as f32, h as f32), || { if let Some(p) = WAKE.get() { p.wake_up(); } }) }
+            else { studio::Studio::open_picture(host, path, name, (w as f32, h as f32), || { if let Some(p) = WAKE.get() { p.wake_up(); } }) };
         st.start = rec.get("page").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         self.files.studio_scroll = self.scroll;
         self.files.studio = Some(st); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
@@ -1428,8 +1438,9 @@ impl App {
             let media = if chip.is_some() || self.ed.block_selection().len() != 1 { None } else { match self.ed.doc.get(hit).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => Some(descriptor.clone()), _ => None } };
             let items = if let Some(d) = &media { let st = self.media.file_state(d); if st.path.is_some() { if self.files.locate.is_none() { self.files.locate = Some(hit); }
                 let mut v = vec![I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, st.found), I::action("Copy Path", true), I::Separator]; v.extend(items); v } else { items } } else { items };
-            // a PDF: its studio (row 362) - also while reading
-            let items = match &media { Some(d) if d.contains("\"kind\":\"pdf\"") => { self.files.studio_for = Some(hit); let mut v = vec![I::action("Open PDF", self.media.file_state(d).found), I::Separator]; v.extend(items); v } _ => { self.files.studio_for = None; items } };
+            // a PDF or a picture: its large view (rows 362, 363) - also while reading
+            let items = match &media { Some(d) if d.contains("\"kind\":\"pdf\"") => { self.files.studio_for = Some(hit); let mut v = vec![I::action("Open PDF", self.media.file_state(d).found), I::Separator]; v.extend(items); v }
+                Some(d) if !d.contains("\"kind\"") => { self.files.studio_for = Some(hit); let mut v = vec![I::action("Open Image", !self.media.is_missing(d)), I::Separator]; v.extend(items); v } _ => { self.files.studio_for = None; items } };
             // a video or a PDF whose file is not where its record says (row 361): it is pointed at the file again, as a picture and a chip can be
             let items = match &media { Some(d) if (d.contains("\"kind\":\"video\"") || d.contains("\"kind\":\"pdf\"")) && !self.media.file_state(d).found => { self.files.locate = Some(hit); let mut v = vec![I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } _ => items };
             // a picture given a width of its own can go back to its own size
@@ -1554,7 +1565,7 @@ impl App {
                         self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let Some(file) = p.first() { let rec = me.media.file_record(file); let t = me.now_ms(); let dd = me.ed.set_kinds(vec![(id, Kind::Media { descriptor: rec })], t).unwrap_or(Dirty::Nothing); me.apply(dd); me.layout = None; });
                         return }
                     _ => {} } }
-            if label == "Open PDF" { if let Some(id) = self.files.studio_for.take() { self.files.locate = None; self.studio_open(studio::Host::Block(id)); } return }
+            if label == "Open PDF" || label == "Open Image" { if let Some(id) = self.files.studio_for.take() { self.files.locate = None; self.studio_open(studio::Host::Block(id)); } return }
             if label.starts_with("Locate File") {
                 let Some(id) = self.files.locate.take() else { return };
                 if let Some(d) = match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if descriptor.contains("\"kind\":\"video\"") || descriptor.contains("\"kind\":\"pdf\"") => Some(descriptor.clone()), _ => None } {
@@ -2742,6 +2753,7 @@ impl App {
         if self.files.studio.is_some() && !self.modal() && !self.ctx.is_open() {
             if !self.reading && self.page_key(key) { if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
             if matches!(key, Key::Named(NamedKey::Escape)) { self.studio_close(); return }
+            if cmd { if let (Key::Character(c), Some(st)) = (key, self.files.studio.as_mut()) { let mid = (st.rect.center().x, st.rect.center().y); let did = match c.as_str() { "0" => { st.zoom_to(if st.picture { studio::Zoom::Whole } else { studio::Zoom::Width }); true } "9" => { st.zoom_to(studio::Zoom::Whole); true } "=" | "+" => { st.zoom_by(1.25, mid); true } "-" => { st.zoom_by(0.8, mid); true } _ => false }; if did { if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
             let pass = cmd && matches!(key, Key::Character(c) if matches!(c.to_lowercase().as_str(), "s" | "r" | "q" | "w" | "o" | "/" | "z"));
             if !pass {
                 let k = match key { Key::Named(NamedKey::PageDown) => "PageDown", Key::Named(NamedKey::PageUp) => "PageUp", Key::Named(NamedKey::ArrowDown) => "Down", Key::Named(NamedKey::ArrowUp) => "Up", Key::Named(NamedKey::Home) => "Home", Key::Named(NamedKey::End) => "End", Key::Character(c) if c == " " => "Space", _ => "" };
@@ -3287,7 +3299,8 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
-                if !self.ctx.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; st.wheel(-dy); g.window.request_redraw(); return } }
+                if !self.ctx.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) };
+                    if self.mods.1 { st.zoom_by((1.0 + dy / 300.0).clamp(0.5, 2.0), self.pointer); } else if self.mods.0 { st.wheel(-dy, 0.0); } else { st.wheel(-dx, -dy); } g.window.request_redraw(); return } }
                 if self.ctx.scrolls() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; self.ctx.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.maps.as_mut() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.site.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
@@ -3384,6 +3397,7 @@ impl ApplicationHandler for App {
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Middle), .. } if self.files.canvas.is_some() => { self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 if let (Some(cv), Some(g)) = (self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.pointer(&e, true, false, &mut g.fonts); g.window.request_redraw(); } self.set_cursor(); }
+            WindowEvent::PinchGesture { delta, .. } if self.files.studio.is_some() => { let at = self.pointer; if let Some(st) = self.files.studio.as_mut() { st.zoom_by((1.0 + delta).clamp(0.5, 2.0), at); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::PinchGesture { delta, .. } if self.files.canvas.is_some() => { self.card_leave(); let at = self.pointer; if let Some(cv) = self.files.canvas.as_mut() { cv.zoom_by((1.0 + delta).clamp(0.5, 2.0), at); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Right), .. } => {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
@@ -3402,7 +3416,7 @@ impl ApplicationHandler for App {
                             I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open PDF", cv.selected_any_media().is_some_and(|e| e.record.contains("\"kind\":\"pdf\""))), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::action("Copy Path", has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
                 else if state == ElementState::Pressed { self.context(position.x, position.y);
                     // reading: of the page's menu only what changes nothing stays in reach
-                    if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path" | "Previous Page" | "Next Page" | "Open PDF") { *enabled = false; } } } } }
+                    if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path" | "Previous Page" | "Next Page" | "Open PDF" | "Open Image") { *enabled = false; } } } } }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
@@ -3499,6 +3513,8 @@ impl ApplicationHandler for App {
                             let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
                             self.files.pdf = Some(PdfSel { id, a: at, b: at, drag: true }); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
                     if had { if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
+                // a second press on a picture soon after the first: its large view (row 363) - not while a page tool is armed (the presses draw)
+                if state == ElementState::Pressed && self.files.pick.is_none() && self.files.tool.is_none() { if let Some(id) = self.picture_under(position.x, position.y) { let twice = self.files.pdf_click.is_some_and(|(t, b)| b == id && t.elapsed().as_millis() < 450); self.files.pdf_click = if twice { None } else { Some((Instant::now(), id)) }; if twice { self.studio_open(studio::Host::Block(id)); return } } }
                 // a corner of the current picture: the drag resizes it (row 312)
                 if state == ElementState::Released && self.files.resize.is_some() { self.resize_end(true); return }
                 if state == ElementState::Pressed && !self.reading { if let Some((id, r, left, _)) = self.corner_at(position.x, position.y) {

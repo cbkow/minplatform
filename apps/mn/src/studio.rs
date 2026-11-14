@@ -34,14 +34,22 @@ const WIDEST: u32 = 4096;
 
 struct Made { page: usize, width: u32, px: Result<(Vec<u8>, u32, u32), String> }
 
+/// How large the pages are shown: to the view's width (a PDF's first look: no wider than reads well), the whole page
+/// in the view (a picture's first look), or by a factor of the page's own units (1 = a PDF's point per logical point;
+/// a picture's pixel per physical pixel).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Zoom { Width, Whole, By(f64) }
+
 pub struct Studio {
     pub host: Host, path: PathBuf, name: String,
     /// every page's size in points; one entry (the record's own shape) until the file has been read
     sizes: Vec<(f32, f32)>, sizes_rx: Option<Receiver<Result<Vec<(f32, f32)>, String>>>,
-    pub scroll: f64, pub rect: Rect, scale: f64,
+    pub scroll: f64, pub scroll_x: f64, pub rect: Rect, scale: f64, pub zoom: Zoom, /// when the zoom last changed: the sharp pictures are asked for once it has rested
+    zoomed: Instant, /// a picture, not a PDF: one page, whose picture the caller hands to `paint`
+    pub picture: bool,
     pics: HashMap<usize, (u32, peniko::ImageBrush)>, asked: HashMap<usize, u32>, failed: HashMap<usize, String>,
     tx: Sender<Made>, rx: Receiver<Made>, wake: std::sync::Arc<dyn Fn() + Send + Sync>,
-    back: ActionButton, opened: Instant, /// the page to begin at, once the file's pages are known
+    back: ActionButton, b_out: ActionButton, b_in: ActionButton, b_fit: ActionButton, opened: Instant, /// the page to begin at, once the file's pages are known
     pub start: usize,
 }
 
@@ -51,25 +59,53 @@ pub fn sizes(path: &std::path::Path) -> Result<Vec<(f32, f32)>, String> { crate:
 
 impl Studio {
     /// `first`: the page's shape as the record has it, shown until the file's own pages are known; `page`: where to begin.
-    pub fn open(host: Host, path: PathBuf, name: String, first: (f32, f32), wake: impl Fn() + Send + Sync + 'static) -> Studio {
+    pub fn open(host: Host, path: PathBuf, name: String, first: (f32, f32), wake: impl Fn() + Send + Sync + 'static) -> Studio { Studio::open_with(host, path, name, first, wake, true) }
+    fn open_with(host: Host, path: PathBuf, name: String, first: (f32, f32), wake: impl Fn() + Send + Sync + 'static, read: bool) -> Studio {
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
         let (tx, rx) = channel(); let (stx, srx) = channel();
-        { let (p, w) = (path.clone(), wake.clone()); let _ = std::thread::Builder::new().name("mn-studio-sizes".into()).spawn(move || { let _ = stx.send(sizes(&p)); w(); }); }
-        Studio { host, path, name, sizes: vec![first], sizes_rx: Some(srx), scroll: 0.0, rect: Rect::ZERO, scale: 1.0, pics: HashMap::new(), asked: HashMap::new(), failed: HashMap::new(), tx, rx, wake,
-            back: ActionButton::new("arrow-left", "Back (Esc)"), opened: Instant::now(), start: 0 }
+        if read { let (p, w) = (path.clone(), wake.clone()); let _ = std::thread::Builder::new().name("mn-studio-sizes".into()).spawn(move || { let _ = stx.send(sizes(&p)); w(); }); }
+        Studio { host, path, name, sizes: vec![first], sizes_rx: read.then_some(srx), scroll: 0.0, scroll_x: 0.0, rect: Rect::ZERO, scale: 1.0, zoom: Zoom::Width, zoomed: Instant::now() - std::time::Duration::from_secs(1), picture: false, pics: HashMap::new(), asked: HashMap::new(), failed: HashMap::new(), tx, rx, wake,
+            back: ActionButton::new("arrow-left", "Back (Esc)"), b_out: ActionButton::new("minus", "Zoom out").size_s(), b_in: ActionButton::new("plus", "Zoom in").size_s(), b_fit: ActionButton::new("arrows-in-simple", "Fit").size_s(), opened: Instant::now(), start: 0 }
+    }
+    /// A picture's view: one page of the picture's own size; nothing is read here (the caller hands its picture to `paint`).
+    pub fn open_picture(host: Host, path: PathBuf, name: String, size: (f32, f32), wake: impl Fn() + Send + Sync + 'static) -> Studio {
+        let mut st = Studio::open_with(host, path, name, size, wake, false); st.picture = true; st.zoom = Zoom::Whole; st
     }
     pub fn pages(&self) -> usize { self.sizes.len() }
-    /// The column: each page's rectangle in the view's own space (y from the column's top), and its whole height.
-    fn column(&self) -> (Vec<Rect>, f64) {
-        let s = self.scale; let (gap, margin) = (GAP * s, MARGIN * s);
-        let widest = self.sizes.iter().map(|p| p.0).fold(1.0f32, f32::max) as f64;
-        // fit width: the widest page fills the view - but no wider than a page reads well at (until the zoom of stage 2 gives the choice)
-        let k = ((self.rect.width() - 2.0 * margin).max(100.0 * s)).min(900.0 * s) / widest;
+    /// The factor from a page's own units to the window's pixels.
+    fn factor(&self) -> f64 {
+        let s = self.scale; let margin = MARGIN * s; let widest = self.sizes.iter().map(|p| p.0).fold(1.0f32, f32::max) as f64; let tallest = self.sizes.iter().map(|p| p.1).fold(1.0f32, f32::max) as f64;
+        let (vw, vh) = ((self.rect.width() - 2.0 * margin).max(100.0 * s), (self.rect.height() - (36.0 + 2.0 * GAP) * s).max(100.0 * s));
+        match self.zoom { Zoom::Width => vw.min(900.0 * s) / widest, Zoom::Whole => (vw / widest).min(vh / tallest), Zoom::By(z) => if self.picture { z } else { z * s } }
+    }
+    /// The zoom as a person reads it: 100 = a PDF at its paper size on the screen, a picture pixel for pixel.
+    pub fn percent(&self) -> f64 { let k = self.factor(); if self.picture { k * 100.0 } else { k / self.scale * 100.0 } }
+    /// Zoom by a factor about a point of the window (what is under it stays under it); the view's fit is given up.
+    pub fn zoom_by(&mut self, by: f64, at: (f64, f64)) {
+        let k0 = self.factor(); let unit = if self.picture { 1.0 } else { self.scale };
+        let z = (k0 * by / unit).clamp(0.05, 16.0); let k1 = z * unit; if (k1 - k0).abs() < 1e-9 { return }
+        let (col0, _) = self.column(); let (ax, ay) = (at.0 - self.rect.x0, at.1 - self.rect.y0);
+        // the page under the point, and where in it the point is (as a fraction): it is found again after the change
+        let hit = col0.iter().enumerate().find(|(_, r)| ay + self.scroll <= r.y1).map(|(i, r)| (i, (ax - r.x0) / r.width().max(1.0), (ay + self.scroll - r.y0) / r.height().max(1.0)));
+        self.zoom = Zoom::By(z); self.zoomed = Instant::now();
+        if let Some((i, fx, fy)) = hit { let (col1, _) = self.column_raw(); if let Some(r) = col1.get(i) { self.scroll = r.y0 + fy * r.height() - ay; self.scroll_x = r.x0 + fx * r.width() - ax; } }
+        self.limit();
+    }
+    pub fn zoom_to(&mut self, z: Zoom) { let at = self.current(); self.zoom = z; self.zoomed = Instant::now(); self.scroll_x = 0.0; self.go_to(at); }
+    /// The column: each page's rectangle in the view's own space (y from the column's top; x moved by the sideways
+    /// scroll when the pages are wider than the view), and its whole height.
+    fn column(&self) -> (Vec<Rect>, f64) { let (mut col, h) = self.column_raw(); if self.scroll_x != 0.0 { for r in col.iter_mut() { *r = *r - kurbo::Vec2::new(self.scroll_x, 0.0); } } (col, h) }
+    fn column_raw(&self) -> (Vec<Rect>, f64) {
+        let s = self.scale; let (gap, margin) = (GAP * s, MARGIN * s); let k = self.factor();
         let mut y = gap + 36.0 * s; let mut out = Vec::with_capacity(self.sizes.len());
-        for (w, h) in &self.sizes { let (pw, ph) = (*w as f64 * k, *h as f64 * k); let x = (self.rect.width() - pw) / 2.0; out.push(Rect::new(x, y, x + pw, y + ph)); y += ph + gap; }
+        for (w, h) in &self.sizes { let (pw, ph) = (*w as f64 * k, *h as f64 * k); let x = if pw + 2.0 * margin <= self.rect.width() { (self.rect.width() - pw) / 2.0 } else { margin }; out.push(Rect::new(x, y, x + pw, y + ph)); y += ph + gap; }
+        // one page that is shorter than the view stands in its middle
+        if out.len() == 1 && y < self.rect.height() { let d = (self.rect.height() - y) / 2.0; out[0] = out[0] + kurbo::Vec2::new(0.0, d); }
         (out, y)
     }
-    fn limit(&mut self) { let (_, h) = self.column(); self.scroll = self.scroll.clamp(0.0, (h - self.rect.height()).max(0.0)); }
+    /// How far the pages reach past the view sideways.
+    fn over_x(&self) -> f64 { let (col, _) = self.column_raw(); let m = MARGIN * self.scale; (col.iter().map(|r| r.x1).fold(0.0, f64::max) + m - self.rect.width()).max(0.0) }
+    fn limit(&mut self) { let (_, h) = self.column(); self.scroll = self.scroll.clamp(0.0, (h - self.rect.height()).max(0.0)); self.scroll_x = self.scroll_x.clamp(0.0, self.over_x()); }
     /// The page whose picture holds a window point, with the page's rectangle in the window.
     pub fn page_at(&self, x: f64, y: f64) -> Option<(usize, Rect)> {
         let (col, _) = self.column(); let off = kurbo::Vec2::new(self.rect.x0, self.rect.y0 - self.scroll);
@@ -78,7 +114,7 @@ impl Studio {
     /// The page most of the view shows (for the readout).
     pub fn current(&self) -> usize { let (col, _) = self.column(); let mid = self.scroll + self.rect.height() * 0.5; col.iter().position(|r| r.y1 >= mid).unwrap_or(col.len().saturating_sub(1)) }
     pub fn go_to(&mut self, page: usize) { let (col, _) = self.column(); if let Some(r) = col.get(page) { self.scroll = r.y0 - GAP * self.scale; self.limit(); } }
-    pub fn wheel(&mut self, dy: f64) { self.scroll += dy; self.limit(); }
+    pub fn wheel(&mut self, dx: f64, dy: f64) { self.scroll += dy; self.scroll_x += dx; self.limit(); }
     /// A key that moves the view (`PageDown`, `PageUp`, `Down`, `Up`, `Home`, `End`, `Space`): true when it was one.
     pub fn key(&mut self, what: &str, shift: bool) -> bool {
         let (page, line) = (self.rect.height() * 0.9, 60.0 * self.scale);
@@ -90,7 +126,10 @@ impl Studio {
         self.limit(); true
     }
     /// A pointer event: true when Back was pressed.
-    pub fn pointer(&mut self, e: &Event) -> bool { self.back.event(e, Instant::now()) == Response::Clicked }
+    pub fn pointer(&mut self, e: &Event) -> bool { let now = Instant::now(); let mid = (self.rect.center().x, self.rect.center().y);
+        if self.b_out.event(e, now) == Response::Clicked { self.zoom_by(1.0 / 1.25, mid); } if self.b_in.event(e, now) == Response::Clicked { self.zoom_by(1.25, mid); }
+        if self.b_fit.event(e, now) == Response::Clicked { let z = if self.picture || self.zoom == Zoom::Width { Zoom::Whole } else { Zoom::Width }; self.zoom_to(z); }
+        self.back.event(e, now) == Response::Clicked }
     /// The head's band (Back, the name): a press there is no press on a page.
     pub fn in_head(&self, y: f64) -> bool { y < self.rect.y0 + 36.0 * self.scale }
     /// What arrived from the helpers is taken up. True: draw again.
@@ -113,7 +152,7 @@ impl Studio {
     /// Lays the view out in `rect` and paints it: the ground, the pages in view (white until their picture is made),
     /// each page's drawings (`ink`: the lines of a page, in the page's own record units, with the record's width for
     /// that page), the head with Back and the name. True: draw again (pictures are on their way).
-    pub fn paint(&mut self, scene: &mut vello::Scene, fonts: &mut Fonts, rect: Rect, scale: f64, ink: &dyn Fn(usize, (f64, f64)) -> (Vec<crate::ink::Line>, f64, Option<Rect>)) -> bool {
+    pub fn paint(&mut self, scene: &mut vello::Scene, fonts: &mut Fonts, rect: Rect, scale: f64, own: Option<&peniko::ImageBrush>, ink: &dyn Fn(usize, (f64, f64)) -> (Vec<crate::ink::Line>, f64, Option<Rect>)) -> bool {
         let resized = (rect.width() - self.rect.width()).abs() > 0.5; let at = if resized && self.rect.width() > 0.0 { Some(self.current()) } else { None };
         self.rect = rect; self.scale = scale; if let Some(p) = at { self.go_to(p); } self.limit();
         let mut again = self.poll(); let s = scale;
@@ -123,10 +162,12 @@ impl Studio {
         let seen: Vec<usize> = col.iter().enumerate().filter(|(_, r)| { let r = **r + off; r.y1 > rect.y0 && r.y0 < rect.y1 }).map(|(i, _)| i).collect();
         let (lo, hi) = (seen.first().copied().unwrap_or(0).saturating_sub(AROUND), (seen.last().copied().unwrap_or(0) + AROUND).min(col.len().saturating_sub(1)));
         self.pics.retain(|p, _| *p >= lo && *p <= hi); self.asked.retain(|p, _| *p >= lo && *p <= hi);
-        for i in lo..=hi { let Some(r) = col.get(i) else { continue }; let width = (r.width().round() as u32).clamp(64, WIDEST); self.ask(i, width); }
+        // (while the zoom is changing the pictures held are shown at the new size; the sharp ones are asked for once it has rested)
+        let rested = self.zoomed.elapsed().as_millis() >= 150; if !rested { again = true; }
+        if !self.picture && rested { for i in lo..=hi { let Some(r) = col.get(i) else { continue }; let width = (r.width().round() as u32).clamp(64, WIDEST); self.ask(i, width); } }
         for i in seen { let r = col[i] + off;
             fill(scene, r, peniko::Color::WHITE);
-            match self.pics.get(&i) { Some((_, b)) => image(scene, b, r), None => { again = true;
+            match own.filter(|_| self.picture).or(self.pics.get(&i).map(|p| &p.1)) { Some(b) => image(scene, b, r), None => { again = true;
                 if let Some(why) = self.failed.get(&i) { let l = fonts.layout_fit(why, Family::Sans, (13.0 * s) as f32, 400.0, peniko::Color::from_rgb8(120, 120, 120), r.width() - 32.0 * s); draw_layout(scene, &l, Affine::translate((r.x0 + 16.0 * s, r.y0 + 16.0 * s))); again = false; } } }
             // the page's drawings: stored in the record's own units for that page, shown at the page's size here
             let (pw, ph) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0)); let (lines, rec_w, picked) = ink(i, (pw as f64, ph as f64));
@@ -144,8 +185,13 @@ impl Studio {
         let now = Instant::now(); self.back.paint(scene, fonts, s, now); again |= self.back.animating(now);
         let title = fonts.layout_fit(&self.name, Family::Sans, (13.0 * s) as f32, 500.0, color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), head.width() * 0.6);
         draw_layout(scene, &title, Affine::translate((self.back.rect.x1 + 10.0 * s, head.center().y - title.height() as f64 / 2.0)));
-        let n = format!("{} / {}", self.current() + 1, self.pages()); let nl = fonts.layout(&n, Family::Sans, (12.0 * s) as f32, 400.0, color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
-        draw_layout(scene, &nl, Affine::translate((head.x1 - 14.0 * s - nl.width() as f64, head.center().y - nl.height() as f64 / 2.0)));
+        // the zoom, at the head's right: out, the figure, in, fit
+        let mut x = head.x1 - 10.0 * s; for b in [&mut self.b_fit, &mut self.b_in] { let (w, h) = b.measure(fonts, s); b.rect = Rect::new(x - w, head.center().y - h / 2.0, x, head.center().y + h / 2.0); x -= w + 2.0 * s; }
+        let pc = fonts.layout(&format!("{} %", self.percent().round() as i64), Family::Sans, (12.0 * s) as f32, 500.0, color(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); x -= pc.width() as f64 + 6.0 * s; draw_layout(scene, &pc, Affine::translate((x, head.center().y - pc.height() as f64 / 2.0))); x -= 6.0 * s;
+        { let (w, h) = self.b_out.measure(fonts, s); self.b_out.rect = Rect::new(x - w, head.center().y - h / 2.0, x, head.center().y + h / 2.0); x -= w + 14.0 * s; }
+        for b in [&self.b_out, &self.b_in, &self.b_fit] { b.paint(scene, fonts, s, now); again |= b.animating(now); }
+        let n = if self.picture { String::new() } else { format!("{} / {}", self.current() + 1, self.pages()) }; let nl = fonts.layout(&n, Family::Sans, (12.0 * s) as f32, 400.0, color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
+        draw_layout(scene, &nl, Affine::translate((x - nl.width() as f64, head.center().y - nl.height() as f64 / 2.0)));
         scene.stroke(&kurbo::Stroke::new(s.max(1.0)), Affine::IDENTITY, color(t::DIVIDER_COLOR), None, &kurbo::Line::new((head.x0, head.y1), (head.x1, head.y1)));
         let _ = self.opened; again
     }
