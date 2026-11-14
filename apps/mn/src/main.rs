@@ -1,3 +1,5 @@
+// Windows: a windowed application - no console window opens with it (row 373); started from a terminal it still prints there
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! minNotes on the platform — step 2 (canon rows 286, 287): ONE note, laid out by `mn-layout`, drawn into the UI layer
 //! over QCView's presenter (the window surface the embedded player will draw its HDR picture into), edited through
 //! `mn-edit`: click, drag and double-click select; the arrows (Alt = by word, Cmd / Ctrl = line and note ends, Shift
@@ -4055,6 +4057,7 @@ static WAKE: std::sync::OnceLock<winit::event_loop::EventLoopProxy> = std::sync:
 #[cfg(target_os = "macos")] static MENU_EVENTS: std::sync::Mutex<Vec<muda::MenuEvent>> = std::sync::Mutex::new(Vec::new());
 
 fn main() {
+    #[cfg(windows)] { unsafe extern "system" { fn AttachConsole(process: u32) -> i32; } unsafe { let _ = AttachConsole(u32::MAX); } }   // (ATTACH_PARENT_PROCESS: a terminal that launched us takes the prints)
     let _ = STARTED.set(Instant::now()); startup_log("main");
     env_logger::init();
     // a panic is written down where it can be found afterwards (an application opened from the Finder has no terminal):

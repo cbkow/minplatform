@@ -38,7 +38,7 @@ fn front(text: &str) -> (String, i64, &str) {
 
 /// The page's text as the importer should read it: pictures by their full path, pages by the guide's own address.
 fn prepared(body: &str, src: &Path) -> String {
-    let images = src.join("images").to_string_lossy().replace(' ', "%20");
+    let images = src.join("images").to_string_lossy().replace('\\', "/").replace(' ', "%20");   // (forward slashes on Windows too: a backslash is Markdown's escape)
     let mut out = String::with_capacity(body.len() + 256); let mut rest = body;
     while let Some(i) = rest.find("](") {
         out.push_str(&rest[..i + 2]); rest = &rest[i + 2..];
@@ -54,8 +54,8 @@ fn prepared(body: &str, src: &Path) -> String {
 /// The guide's collection for these pages: opened when it was already built from them, built otherwise.
 pub fn open(src: &Path, settings: &Path) -> Result<Guide, String> {
     let stamp = std::fs::read_to_string(src.join("STAMP")).unwrap_or_default().trim().chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect::<String>();
-    // (BUILD: raised when the way the collection is made changes, so that one made the old way is made again - 2: the pictures are kept)
-    const BUILD: u32 = 2;
+    // (BUILD: raised when the way the collection is made changes, so that one made the old way is made again - 2: the pictures are kept; 3: a guide built on Windows while its pictures were missing is made again)
+    const BUILD: u32 = 3;
     let dir = settings.join("guide").join(if stamp.is_empty() { "dev".to_string() } else { format!("{BUILD}-{stamp}") });
     let file = dir.join(format!("{NAME}.mnd"));
     // (without a stamp - the source tree - it is built afresh each time, so an edited page shows)
