@@ -131,14 +131,17 @@ fn card_pic(cards: &mut std::collections::HashMap<BlockId, CardPic>, ed: &Editor
     scene.push_clip_layer(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, &r); scene.append(&p.scene, Some(kurbo::Affine::translate((r.x0, r.y0)) * kurbo::Affine::scale(k / s))); scene.pop_layer();
     (p.h, p.again)
 }
-struct TableUi { table: BlockId, row: Rect, col: Rect, add_row: Rect, add_col: Rect, borders: Vec<(usize, f64)>, y: (f64, f64) }
+struct TableUi { table: BlockId, row: Rect, col: Rect, add_row: Rect, add_col: Rect, /// "Show as Board" - only where the table has a choice or a check column to be shown by (and which that would be)
+    board: Option<(Rect, usize)>, borders: Vec<(usize, f64)>, y: (f64, f64) }
 fn table_ui(ed: &Editor, l: &NoteLayout, s: f64, off: kurbo::Vec2) -> Option<TableUi> {
     let (table, r, c) = ed.table_pos()?; let rows = ed.doc.children(Some(table)); let cells = ed.doc.children(Some(*rows.get(r)?));
     let (t, rr, cr) = (l.rect(&ed.doc, table)? + off, l.rect(&ed.doc, rows[r])? + off, l.rect(&ed.doc, *cells.get(c)?)? + off);
     let h = 18.0 * s;
     // in a table scrolled sideways the column's handle stands over the part of the column that shows, and only the borders in view are taken
     let cx = ((cr.x0.max(t.x0) + cr.x1.min(t.x1)) / 2.0).clamp(t.x0 + 12.0 * s, (t.x1 - 12.0 * s).max(t.x0 + 12.0 * s));
-    Some(TableUi { table, row: Rect::new(t.x0 - h - 3.0 * s, rr.center().y - h / 2.0, t.x0 - 3.0 * s, rr.center().y + h / 2.0), // the column's handle sits ON the table's top edge (above it the block before would be in its way)
+    // the way to the board (row 365): a tab on the table's top edge at its right end - the twin of the board's own "Show as Table"; by the caret's column when that is a choice or a check column, else by the first that is
+    let board = match ed.doc.get(table).map(|b| &b.kind) { Some(Kind::Table { columns, .. }) => { let can = |i: &usize| matches!(columns.get(*i).map(|c| &c.kind), Some(ColumnKind::Choice { .. } | ColumnKind::Check)); Some(c).filter(can).or((0..columns.len()).find(can)).map(|i| (Rect::new(t.x1 - 112.0 * s, t.y0 - 25.0 * s, t.x1, t.y0 - 3.0 * s), i)) } _ => None };
+    Some(TableUi { table, board, row: Rect::new(t.x0 - h - 3.0 * s, rr.center().y - h / 2.0, t.x0 - 3.0 * s, rr.center().y + h / 2.0), // the column's handle sits ON the table's top edge (above it the block before would be in its way)
         col: Rect::new(cx - 12.0 * s, t.y0 - 7.0 * s, cx + 12.0 * s, t.y0 + 7.0 * s),
         add_row: Rect::new(t.x0, t.y1 + 3.0 * s, t.x1, t.y1 + 15.0 * s), add_col: Rect::new(t.x1 + 3.0 * s, t.y0, t.x1 + 15.0 * s, t.y1),
         borders: cells.iter().enumerate().filter_map(|(i, cell)| l.rect(&ed.doc, *cell).map(|q| (i, q.x1 + off.x))).filter(|(_, x)| *x >= t.x0 - 1.0 && *x <= t.x1 + 1.0).collect(), y: (t.y0, t.y1) })
@@ -544,6 +547,8 @@ impl App {
         if let Some(ui) = (!self.blank && !self.reading && self.files.picker.is_none()).then(|| table_ui(&self.ed, l, s, off)).flatten() {
             scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(ui.col, 7.0 * s));
             for (r, icon) in [(ui.row, "dots-six-vertical"), (ui.col, "dots-six")] { if let Some(i) = g.fonts.icon(icon, (16.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
+            if let Some((r, _)) = ui.board { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(r, min_theme::tokens::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s));
+                let lb = g.fonts.layout("Show as Board", min_ui::Family::Sans, (12.0 * s) as f32, 500.0, min_ui::paint::color(min_theme::tokens::NEUTRAL_CONTENT_COLOR_DEFAULT)); min_ui::fonts::draw_layout(scene, &lb, kurbo::Affine::translate((r.center().x - lb.width() as f64 / 2.0, r.center().y - lb.height() as f64 / 2.0))); }
             for r in [ui.add_row, ui.add_col] { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(r, 3.0 * s));
                 if let Some(i) = g.fonts.icon("plus", (10.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
         }
@@ -3654,6 +3659,7 @@ impl ApplicationHandler for App {
                         if let (Some(Kind::Table { .. }), Some(l)) = (self.ed.doc.get(ui.table).map(|b| b.kind.clone()), self.layout.as_ref()) { let before = self.ed.doc.get(ui.table).unwrap().kind.clone();
                             let w = self.ed.doc.children(Some(ui.table)).first().and_then(|r| self.ed.doc.children(Some(*r)).get(*col)).and_then(|c| l.rect(&self.ed.doc, *c)).map(|q| q.width() / s).unwrap_or(160.0);
                             self.files.col_drag = Some((ui.table, *col, position.x, w, before)); self.set_cursor(); return } } }
+                    if let Some((_, col)) = ui.board.filter(|b| b.0.contains(pt)) { self.board_set(ui.table, Some(col)); return }
                     if ui.row.contains(pt) || ui.col.contains(pt) { let column = ui.col.contains(pt); let shift = self.mods.0; self.ed.select_line(column, shift); if !shift { self.table_menu(column, position.x, position.y); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                     if ui.add_row.contains(pt) || ui.add_col.contains(pt) { let column = ui.add_col.contains(pt); let now = self.now_ms();
                         // the caret goes to the table's last row (its last column) first: the new one follows it
