@@ -1,0 +1,21 @@
+# blank
+# a check, not a picture of the manual (3.0.1): over the FIRST window the Path Mappings fields take keys as the system
+# sends them, and the menu's Select All reaches the field (the word typed after it replaces the first)
+size 1280 800
+wait 1
+menu PathMappings
+wait 0.8
+click 380 690
+wait 0.5
+oskey Wrong
+wait 0.3
+oskey cmd+a
+wait 0.3
+oskey Projects
+wait 0.5
+click 600 279
+wait 0.3
+oskey /Volumes/Projects
+wait 0.5
+shot check-maps-typing
+quit

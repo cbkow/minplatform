@@ -2649,7 +2649,8 @@ impl App {
     fn menu_cmd(&mut self, c: menu::Cmd) {
         use menu::Cmd as M;
         if let (Some(cv), true) = (self.files.canvas.as_mut().filter(|_| self.files.card.is_none()), matches!(c, M::Undo | M::Redo)) { if c == M::Undo { cv.undo() } else { cv.redo() } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
-        if self.modal() && c != M::Quit { return }
+        // under a window of ours the menu's Cut, Copy, Paste and Select All are its field's (macOS: the menu takes those keys before the window sees them); every other command waits
+        if self.modal() && c != M::Quit { if matches!(c, M::Cut | M::Copy | M::Paste | M::PastePlain | M::SelectAll) { if let Some((ch, _)) = menu::key_of(&c) { let m = self.mods; self.mods = (false, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; } } return }
         match c {
             M::Quit => self.request_close(Pending::Quit),
             M::CloseCollection => if self.store.is_some() { self.request_close(Pending::Close) },
@@ -3068,7 +3069,8 @@ impl App {
         // where there is no native menu to take them, the file commands' keys are run here
         if cmd && cfg!(not(target_os = "macos")) { if let Key::Character(c) = key { let m = match (c.to_lowercase().as_str(), shift, alt) { ("o", false, false) => Some(menu::Cmd::Open), ("w", false, false) => Some(menu::Cmd::CloseCollection), ("q", false, false) => Some(menu::Cmd::Quit), ("s", true, false) => Some(menu::Cmd::SaveAs), ("n", false, true) => Some(menu::Cmd::NewCollection), _ => None }; if let Some(m) = m { self.menu_cmd(m); return } } }
         // (an open canvas has no page - `blank` - and its keys are taken below; nothing after them is for it)
-        if self.blank && self.files.canvas.is_none() { return }
+        // (but a window of ours over the FIRST window - Path Mappings, a question - has its keys all the same: 3.0.1)
+        if self.blank && self.files.canvas.is_none() && !self.modal() && !self.pal.is_open() { return }
         // what lies over the page takes keys first: a question, a name being edited, then the tree when it has the focus
         let ui_key = || { use min_ui::{Key as K, Named as N};
             let k = match key { Key::Named(NamedKey::Escape) => K::Named(N::Escape), Key::Named(NamedKey::Enter) => K::Named(N::Enter), Key::Named(NamedKey::Tab) => K::Named(N::Tab), Key::Named(NamedKey::Backspace) => K::Named(N::Backspace), Key::Named(NamedKey::Delete) => K::Named(N::Delete),
@@ -3084,6 +3086,8 @@ impl App {
         // the path mappings' window: its fields take what is typed (a paste too); Tab, Enter and Escape are the window's
         if self.files.maps.is_some() {
             let pasted = if cmd && matches!(key, Key::Character(c) if c.to_lowercase() == "v") { Some(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()) } else { None };
+            // Cmd+C and Cmd+X: the field's selected text
+            if cmd { if let Key::Character(c) = key { let c = c.to_lowercase(); if c == "c" || c == "x" { let t = match (self.files.maps.as_mut(), self.gpu.as_mut()) { (Some(w), Some(g)) => w.field().and_then(|f| f.copy(c == "x", &mut g.fonts)), _ => None }; if let (Some(t), Some(cb)) = (t, self.clipboard.as_mut()) { let _ = cb.set_text(t); self.block_clip = None; } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
             let out = match (self.files.maps.as_mut(), self.gpu.as_mut()) { (Some(w), Some(g)) => match pasted { Some(t) => { if let Some(f) = w.field() { f.paste(t.lines().next().unwrap_or(""), &mut g.fonts); } mappings_win::Out::Redraw } None => w.key(&ui_key(), &mut g.fonts) }, _ => mappings_win::Out::None };
             self.maps_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return
         }

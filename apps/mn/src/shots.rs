@@ -128,6 +128,8 @@ impl crate::App {
                 // what is open exported to a file (0 HTML, 1 Markdown, 2 Word, 3 PDF, 4 the canvas's poster), without the system's panel
                 "export" => { let (n, path) = tail.split_once(' ').unwrap_or((&tail, "")); self.export(n.parse().unwrap_or(0), Some(path.into())); }
                 "type" => { let was = self.mods; self.mods = (false, false, false); for c in tail.chars() { let s = c.to_string(); self.key(&Key::Character(s.as_str().into()), Some(&s)); } self.mods = was; }
+                // a key as the system sends it (macOS): through winit and the text input, and for Cmd through the menu - what `key` and `type` go around
+                "oskey" => { #[cfg(target_os = "macos")] { let (cmd, t) = match tail.strip_prefix("cmd+") { Some(t) => (true, t.to_string()), None => (false, tail.clone()) }; for c in t.chars() { crate::text_element::os_key(&c.to_string(), cmd); } } }
                 "shot" => { let crop = (rest.len() >= 5).then(|| [num(1), num(2) + mh, num(3), num(4)]); self.shots.as_mut().unwrap().pending = Some((rest.first().unwrap_or(&"shot").to_string(), crop, 0)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 "quit" => { self.shots.as_mut().unwrap().done = true; self.shots_quit(el); return }
                 other => eprintln!("shots: unknown command '{other}'"),

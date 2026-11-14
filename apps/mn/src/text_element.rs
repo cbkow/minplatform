@@ -247,3 +247,18 @@ pub fn set_obscured(on: bool) {
 /// the window was resized or moved. (A scroll is told by the scroll bar alone — spike S9; this is the other case, where
 /// every range's rectangle has to be asked again.)
 pub fn relaid() { let t = TEXT.get(); post(t, ns_string!("AXMoved")); post(t, ns_string!("AXResized")); post(t, ns_string!("AXLayoutChanged")); }
+
+/// (scripted checks) One key press made as the SYSTEM makes it - an `NSEvent` handed to the view's `keyDown:` - so that
+/// a check goes through winit and the system's text input as a real key does. Nothing is sent to the desktop: the event
+/// is given to this window's own view. `cmd`: with the Command key, through the main menu's key equivalents first.
+pub fn os_key(ch: &str, cmd: bool) {
+    let view = VIEW.get(); if view.is_null() { return }
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window]; let number: isize = msg_send![window, windowNumber];
+        let flags: usize = if cmd { 1 << 20 } else { 0 }; let nil: *mut AnyObject = std::ptr::null_mut();
+        let s = NSString::from_str(ch);
+        let e: *mut AnyObject = msg_send![objc2::class!(NSEvent), keyEventWithType: 10usize, location: NSPoint::new(0.0, 0.0), modifierFlags: flags, timestamp: 0.0f64, windowNumber: number, context: nil, characters: &*s, charactersIgnoringModifiers: &*s, isARepeat: false, keyCode: 0u16];
+        if cmd { let app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication]; let menu: *mut AnyObject = msg_send![app, mainMenu]; let took: bool = msg_send![menu, performKeyEquivalent: e]; if took { return } }
+        let _: () = msg_send![view, keyDown: e];
+    }
+}
