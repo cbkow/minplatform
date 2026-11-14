@@ -54,7 +54,9 @@ fn prepared(body: &str, src: &Path) -> String {
 /// The guide's collection for these pages: opened when it was already built from them, built otherwise.
 pub fn open(src: &Path, settings: &Path) -> Result<Guide, String> {
     let stamp = std::fs::read_to_string(src.join("STAMP")).unwrap_or_default().trim().chars().filter(|c| c.is_ascii_alphanumeric()).take(40).collect::<String>();
-    let dir = settings.join("guide").join(if stamp.is_empty() { "dev".to_string() } else { stamp.clone() });
+    // (BUILD: raised when the way the collection is made changes, so that one made the old way is made again - 2: the pictures are kept)
+    const BUILD: u32 = 2;
+    let dir = settings.join("guide").join(if stamp.is_empty() { "dev".to_string() } else { format!("{BUILD}-{stamp}") });
     let file = dir.join(format!("{NAME}.mnd"));
     // (without a stamp - the source tree - it is built afresh each time, so an edited page shows)
     if stamp.is_empty() || !file.is_file() { let _ = std::fs::remove_dir_all(&dir); build(src, &dir, &file).inspect_err(|_| { let _ = std::fs::remove_dir_all(&dir); })?;
@@ -81,7 +83,7 @@ fn build(src: &Path, dir: &Path, file: &Path) -> Result<(), String> {
     pages.sort();
     // the pictures are kept with the guide's collection (the importer's own way), then named by their full path: a
     // record that says "kept with the collection" would be looked for beside the USER's document
-    let places = crate::media::Places::at(Some(dir.to_path_buf())); let kept = dir.join(crate::media::SIDE);
+    let kept = dir.join(crate::media::SIDE); let places = crate::media::Places::at(Some(dir.to_path_buf())).staged_in(kept.clone());
     let mut col = Collection::open(file).map_err(|e| e.to_string())?;
     let folder = col.create(None, DocKind::Folder, NAME).map_err(|e| e.to_string())?;
     let mut list = String::new();

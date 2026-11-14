@@ -334,7 +334,7 @@ impl Media {
 
 impl Places {
     /// The places of a collection in `base` with nothing waiting and no mapped volumes.
-    #[cfg(test)] pub fn staged_in(mut self, dir: PathBuf) -> Places { self.staged = Some(dir); self }
+    pub fn staged_in(mut self, dir: PathBuf) -> Places { self.staged = Some(dir); self }
     pub fn at(base: Option<PathBuf>) -> Places { Places { base, staged: None, mappings: vec![] } }
     /// Where a descriptor's `src` is on this machine. Err: why it cannot be looked for.
     pub fn locate(&self, src: &serde_json::Value) -> Result<PathBuf, String> {
