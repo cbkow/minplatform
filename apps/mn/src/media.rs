@@ -196,6 +196,9 @@ impl Media {
     /// Where a block's file is on this machine (None: its record names none that can be looked for).
     /// Where files are, for work off this thread.
     pub fn places(&self) -> Places { self.places.clone() }
+    /// The path mappings in use, and a new table put in their place (row 350): every picture is looked for again.
+    pub fn mappings(&self) -> Vec<min_paths::map::Mapping> { self.places.mappings.clone() }
+    pub fn set_mappings(&mut self, m: Vec<min_paths::map::Mapping>) { self.places.mappings = m; self.entries.clear(); self.files.clear(); self.total = 0; self.queue.jobs.lock().unwrap().clear(); }
     pub fn locate(&self, descriptor: &str) -> Option<PathBuf> { let v: serde_json::Value = serde_json::from_str(descriptor).ok()?; self.places.locate(v.get("src")?).ok() }
     /// The characters of the page a PDF block shows, once its page has been drawn (None: not yet, or none to read).
     pub fn page_text(&self, descriptor: &str) -> Option<Arc<crate::pdf::PageText>> {
@@ -354,6 +357,15 @@ impl Places {
             (Ref::Vol { vol, rel }, _) => Err(format!("on a volume this machine has no path for ({vol}): {}", rel.join("/"))),
             (Ref::Abs(s), _) => Ok(PathBuf::from(s)),
         }
+    }
+    /// A record whose file is named by a plain path that a mapping now covers, named by the volume instead (row 350);
+    /// None when nothing changes (a file kept with the collection, a web address, a path no mapping covers).
+    pub fn remapped(&self, descriptor: &str) -> Option<String> {
+        let mut v: serde_json::Value = serde_json::from_str(descriptor).ok()?; let o = v.as_object_mut()?; let mut hit = false;
+        let fix = |s: &serde_json::Value| -> Option<serde_json::Value> { let p = s.as_str()?; if p.is_empty() || p.starts_with(".minnotes/") || remote(p) { return None } let r = self.reference(Path::new(p)); r.is_object().then_some(r) };
+        if let Some(n) = o.get("src").and_then(&fix) { o.insert("src".into(), n); hit = true; }
+        if let Some(p) = o.get_mut("preview").and_then(|p| p.as_object_mut()) { if let Some(n) = p.get("src").and_then(&fix) { p.insert("src".into(), n); hit = true; } }
+        hit.then(|| v.to_string())
     }
     /// How `path` is named in a record when the file stays where it is: under a mapped volume, or as it is.
     fn reference(&self, path: &Path) -> serde_json::Value {

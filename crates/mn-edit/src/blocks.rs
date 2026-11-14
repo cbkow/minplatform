@@ -325,6 +325,18 @@ impl Editor {
         if let Some(m) = self.marks.last_mut() { m.1 = self.sel; }
         Ok(dirty)
     }
+    /// An empty block above or below the selected blocks (the caret's block when none is selected), the caret in it, as
+    /// one undo step (row 349). Beside a list item it is an item of that kind at that depth; elsewhere a paragraph. It is
+    /// a sibling in the same container: in a cell, a column, a list.
+    pub fn insert_beside(&mut self, below: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((parent, i, j)) = self.run() else { return Ok(Dirty::Nothing) };
+        let kind = match self.doc.children(parent).get(if below { j } else { i }).and_then(|id| self.doc.get(*id)).map(|b| &b.kind) {
+            Some(Kind::Bullet { depth }) => Kind::Bullet { depth: *depth }, Some(Kind::Numbered { depth }) => Kind::Numbered { depth: *depth }, Some(Kind::Task { depth, .. }) => Kind::Task { depth: *depth, state: 0 }, _ => Kind::Paragraph };
+        let dirty = self.insert_blocks(&Drop { parent, index: if below { j + 1 } else { i }, depth: None, beside: None }, vec![kind], now_ms)?;
+        if dirty == Dirty::Nothing { return Ok(dirty) }
+        if let Some((id, _)) = self.blocks.take() { self.sel = Some(crate::Selection::caret(crate::Pos { block: id, at: 0 })); if let Some(m) = self.marks.last_mut() { m.1 = self.sel; } }
+        Ok(dirty)
+    }
     /// Blocks get new kinds (a picture's record pointing at its file again), as one undo step.
     pub fn set_kinds(&mut self, kinds: Vec<(BlockId, Kind)>, now_ms: u64) -> Result<Dirty, ChangeError> {
         let mut b = self.batch();

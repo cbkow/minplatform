@@ -82,6 +82,29 @@ impl Editor {
         let para = paragraph(None, ""); let id = para.id; let mut b = self.batch(); b.push(Change::Insert { index: if down { i + 1 } else { 0 }, blocks: vec![para] })?;
         self.commit(b, Some(Pos { block: id, at: 0 }), now_ms + mn_doc::change::JOIN_MS + 1)
     }
+    /// Up / Down at a column's edge leaves the columns (row 351; the user 2026-11-13: "an escape hatch from column
+    /// layouts like we did for tables"). Call it after a caret move that started at `from`: when the move hopped
+    /// SIDEWAYS - from one column into its neighbour, which is where "the next block" is in the tree - the caret goes
+    /// instead to what is under (over) the columns, and where nothing is, a paragraph is made there for it. Columns
+    /// that are STACKED (a narrow page shows them one under another: `stacked`) are left alone - there the neighbour
+    /// IS under. None: the move was not such a hop.
+    pub fn leave_column(&mut self, from: Pos, down: bool, stacked: &dyn Fn(BlockId) -> bool, now_ms: u64) -> Result<Option<Dirty>, ChangeError> {
+        let Some(to) = self.sel.filter(|s| s.is_caret()).map(|s| s.focus) else { return Ok(None) };
+        let col_of = |me: &Editor, mut id: BlockId| -> Option<BlockId> { loop { let b = me.doc.get(id)?; if matches!(b.kind, Kind::Column { .. }) { return Some(id) } id = b.parent?; } };
+        let (Some(a), Some(b)) = (col_of(self, from.block), col_of(self, to.block)) else { return Ok(None) };
+        let (pa, pb) = (self.doc.get(a).and_then(|x| x.parent), self.doc.get(b).and_then(|x| x.parent));
+        let Some(cols) = pa.filter(|_| a != b && pa == pb) else { return Ok(None) };
+        if stacked(cols) { return Ok(None) }
+        let parent = self.doc.get(cols).and_then(|x| x.parent); let sibs = self.doc.children(parent).to_vec(); let Some(i) = sibs.iter().position(|x| *x == cols) else { return Ok(None) };
+        match if down { sibs.get(i + 1).copied() } else { i.checked_sub(1).map(|k| sibs[k]) } {
+            Some(n) => { let mut id = n; while let Some(c) = self.doc.get(id).and_then(|b| if down { b.children.first() } else { b.children.last() }.copied()) { id = c; }
+                let at = if down { 0 } else { self.doc.get(id).map(end_of).unwrap_or(0) };
+                self.set_selection(Some(crate::Selection::caret(Pos { block: id, at }))); Ok(Some(Dirty::Nothing)) }
+            None if parent.is_none() => self.exit_container(down, now_ms).map(Some),
+            // columns inside something else, at its edge: the caret stays where it was
+            None => { self.set_selection(Some(crate::Selection::caret(from))); Ok(Some(Dirty::Nothing)) }
+        }
+    }
     /// Backspace in the one empty paragraph a column holds: the column goes (the caret to the end of the column before
     /// it, or the start of the one after). None: not that case.
     pub(crate) fn column_backspace(&mut self, now_ms: u64) -> Result<Option<Dirty>, ChangeError> {
@@ -127,5 +150,24 @@ mod tests {
         let c = Change::removal(&e.doc, last).unwrap(); let mut b = e.batch(); b.push(c).unwrap(); let keep = e.selection().map(|s| s.focus); e.commit(b, keep, 65_000).unwrap(); assert_eq!(e.doc.children(None).len(), n - 1);
         assert_ne!(e.exit_container(true, 73_000).unwrap(), Dirty::Nothing); assert_eq!(e.doc.children(None).len(), n); let f = e.selection().unwrap().focus; assert_eq!(Some(&f.block), e.doc.children(None).last()); assert_eq!(e.doc.get(f.block).unwrap().kind, Kind::Paragraph);
         assert_eq!(e.exit_container(true, 81_000).unwrap(), Dirty::Nothing);
+    }
+    #[test]
+    fn up_or_down_at_a_columns_edge_leaves_the_columns_instead_of_hopping_sideways() {
+        let mut d = Doc::new(); let ids: Vec<BlockId> = ["a", "b", "c", "d"].iter().enumerate().map(|(i, t)| { let id = BlockId::new(); d.insert(None, i, id, Kind::Paragraph, *t).unwrap(); id }).collect();
+        let mut e = Editor::new(d); let at = |e: &mut Editor, id: BlockId, at: usize| e.set_selection(Some(Selection::caret(Pos { block: id, at })));
+        // a [b|c] d
+        at(&mut e, ids[2], 0); e.toggle_blocks(); e.drop_blocks(&Drop { parent: None, index: 1, depth: None, beside: Some((ids[1], 1)) }, 1_000).unwrap();
+        let side = |_: BlockId| false;
+        // Down from b's column: the tree's next block is c (the next column) - the caret goes to d instead
+        at(&mut e, ids[2], 0); assert_eq!(e.leave_column(Pos { block: ids[1], at: 1 }, true, &side, 2_000).unwrap(), Some(Dirty::Nothing)); assert_eq!(e.selection().unwrap().focus, Pos { block: ids[3], at: 0 });
+        // Up from c's column: the tree's block before is b - the caret goes to a's end
+        at(&mut e, ids[1], 1); assert!(e.leave_column(Pos { block: ids[2], at: 0 }, false, &side, 3_000).unwrap().is_some()); assert_eq!(e.selection().unwrap().focus, Pos { block: ids[0], at: 1 });
+        // a move inside one column, and columns shown stacked, are left alone
+        at(&mut e, ids[1], 0); assert_eq!(e.leave_column(Pos { block: ids[1], at: 1 }, true, &side, 4_000).unwrap(), None);
+        at(&mut e, ids[2], 0); assert_eq!(e.leave_column(Pos { block: ids[1], at: 1 }, true, &|_| true, 5_000).unwrap(), None);
+        // with nothing under the columns a paragraph is made there
+        let c = Change::removal(&e.doc, ids[3]).unwrap(); let mut b = e.batch(); b.push(c).unwrap(); e.commit(b, None, 6_000).unwrap(); let n = e.doc.children(None).len();
+        at(&mut e, ids[2], 0); assert!(e.leave_column(Pos { block: ids[1], at: 1 }, true, &side, 90_000).unwrap().is_some_and(|d| d != Dirty::Nothing));
+        assert_eq!(e.doc.children(None).len(), n + 1); let f = e.selection().unwrap().focus; assert_eq!(Some(&f.block), e.doc.children(None).last());
     }
 }

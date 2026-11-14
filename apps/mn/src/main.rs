@@ -52,6 +52,7 @@ mod export;
 mod gather;
 mod gather_win;
 mod site_win;
+mod mappings_win;
 mod transcode;
 #[cfg(target_os = "macos")]
 mod sparkle;
@@ -171,7 +172,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// and - worked out between events - the current block that can be drawn on (its frame in the window, its record) and what the toolbar shows of it
     cv_test: bool, /// Collect Media or the package: its window (row 332), and the scripted check of it has been started
     gather: Option<gather_win::Window>, /// the web folder's window (row 339)
-    site: Option<site_win::Window>, site_test: bool, ctx_test: bool, site_said: bool, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
+    site: Option<site_win::Window>, site_test: bool, /// the path mappings' window (row 350)
+    maps: Option<mappings_win::Window>, maps_test: bool, ctx_test: bool, site_said: bool, gather_test: bool, next_test: bool, /// files being imported (row 335): the one being read, those waiting, and one held for the large table's question
     import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, code_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
@@ -361,7 +363,7 @@ impl App {
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured((self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.files.maps.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -539,6 +541,7 @@ impl App {
         if self.bar.tick(now) { g.window.request_redraw(); }
         if let Some(w) = self.files.gather.as_mut() { w.paint(scene, &mut g.fonts, view, s, now); if w.animating(now) { g.window.request_redraw(); } }
         if let Some(w) = self.files.site.as_mut() { w.paint(scene, &mut g.fonts, view, s, now); if w.animating(now) { g.window.request_redraw(); } }
+        if let Some(w) = self.files.maps.as_mut() { w.paint(scene, &mut g.fonts, view, s, now); if w.animating(now) { g.window.request_redraw(); } }
         if let Some((_, d)) = self.confirm.as_mut() { d.layout(&mut g.fonts, view, s); d.paint(scene, &mut g.fonts, s, view, now); if d.animating(now) { g.window.request_redraw(); } }
         g.ui.render(&g.presenter.engine.device, &g.presenter.engine.queue);
         let window = g.window.clone();
@@ -683,7 +686,7 @@ impl App {
         if c.len() <= 60 { name } else { format!("{}\u{2026}{}", c[..36].iter().collect::<String>(), c[c.len() - 20..].iter().collect::<String>()) }
     }
     /// A dialog or the copy's window is over the page: nothing under it takes events.
-    fn modal(&self) -> bool { self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) }
+    fn modal(&self) -> bool { self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.files.maps.is_some() }
     fn unpublished(&self) -> bool { self.store.as_ref().is_some_and(|st| st.unpublished || st.edited.is_some()) }
     /// The collection is to be closed — for quitting, for another collection, or just closed. With changes that are not
     /// in the document, the Qt app's question is put first.
@@ -748,7 +751,7 @@ impl App {
     fn panel(&mut self, dlg: rfd::FileDialog, kind: u8, then: impl FnOnce(&mut App, Vec<std::path::PathBuf>) + 'static) {
         if std::env::var_os("MN_NO_DIALOGS").is_some() || self.files.panel_then.is_some() { return }
         self.files.panel_then = Some(Box::new(then));
-        std::thread::spawn(move || { let got = match kind { 0 => dlg.save_file().into_iter().collect(), 1 => dlg.pick_file().into_iter().collect(), _ => dlg.pick_files().unwrap_or_default() };
+        std::thread::spawn(move || { let got = match kind { 0 => dlg.save_file().into_iter().collect(), 1 => dlg.pick_file().into_iter().collect(), 3 => dlg.pick_folder().into_iter().collect(), _ => dlg.pick_files().unwrap_or_default() };
             *PANEL_DONE.lock().unwrap() = Some(got); if let Some(w) = WAKE.get() { w.wake_up(); } });
     }
     fn sync_export_checks(&mut self) { let o = *self.files.xopts.get_or_insert_with(export_settings); #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_ref() { m.set_check(&menu::Cmd::ExportPaths, o.paths); m.set_check(&menu::Cmd::ExportVideoNotes, o.video_notes); } let _ = o; }
@@ -874,6 +877,55 @@ impl App {
     fn gather_drop(&mut self) {
         let Some(w) = self.files.gather.take() else { return }; if let Some(r) = &w.run { r.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
         if let Some(snap) = &w.snap { let _ = std::fs::remove_file(snap.with_extension("out")); for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", snap.display())); } }
+    }
+    // -- path mappings (row 350): this machine's table of volumes, and the references it names
+    /// The collection's references that are plain paths: what a mapping could come to cover.
+    fn plain_refs(&self) -> Vec<String> {
+        let mut recs: Vec<String> = self.store.as_ref().map(|st| gather::descriptors(&st.col)).unwrap_or_default();
+        recs.extend(self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => Some(descriptor.clone()), _ => None }));
+        let mut out: Vec<String> = recs.iter().filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok()).flat_map(|v| [v.get("src").cloned(), v.get("preview").and_then(|p| p.get("src")).cloned()]).flatten()
+            .filter_map(|s| s.as_str().map(str::to_string)).filter(|p| !p.is_empty() && !p.starts_with(".minnotes/") && !media::remote(p)).collect();
+        out.sort(); out.dedup(); out
+    }
+    fn maps_open(&mut self) {
+        let refs = self.plain_refs(); let now = self.media.mappings();
+        if let Some(g) = self.gpu.as_mut() { self.files.maps = Some(mappings_win::Window::open(&now, refs, &mut g.fonts)); g.window.request_redraw(); }
+    }
+    fn maps_out(&mut self, out: mappings_win::Out) {
+        use mappings_win::Out as O;
+        match out {
+            O::None | O::Redraw => {}
+            O::Close => self.files.maps = None,
+            O::Pick(row) => self.panel(rfd::FileDialog::new().set_title("Choose the Volume\u{2019}s Root"), 3, move |me, p| if let (Some(p), Some(w), Some(g)) = (p.into_iter().next(), me.files.maps.as_mut(), me.gpu.as_mut()) { w.picked(row, &p, &mut g.fonts); }),
+            O::Done => { let Some(w) = self.files.maps.take() else { return }; let table = w.mappings();
+                let said = match self.maps_commit(table) { Ok(0) => "Path mappings saved".to_string(), Ok(1) => "Path mappings saved \u{2014} 1 reference is now named by its volume".to_string(), Ok(n) => format!("Path mappings saved \u{2014} {n} references are now named by their volume"), Err(e) => format!("The path mappings could not be saved \u{2014} {e}") };
+                println!("mappings: {said}"); self.notice = Some((said, Instant::now() + std::time::Duration::from_secs(8))); }
+        }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The table is written to this machine's settings and used from now on; references by a plain path that a volume
+    /// now covers are named by the volume - in the open note as one step that can be undone, in the rest of the
+    /// collection as it is saved. How many changed.
+    fn maps_commit(&mut self, table: Vec<min_paths::map::Mapping>) -> Result<usize, String> {
+        let file = sessions_root().parent().unwrap_or(std::path::Path::new(".")).join("mappings.json");
+        if let Some(d) = file.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+        let tmp = file.with_extension("json.part");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&table).map_err(|e| e.to_string())?).and_then(|_| std::fs::rename(&tmp, &file)).map_err(|e| e.to_string())?;
+        self.media.set_mappings(table); self.layout = None; self.files.cards.clear();
+        if self.store.is_none() { return Ok(0) }
+        let places = self.media.places(); let f = |d: &str| places.remapped(d);
+        if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.autosave();
+        let now = self.now_ms(); let (mut skip, mut n) = (std::collections::HashSet::new(), 0);
+        let of = |doc: &Doc| -> Vec<(BlockId, Kind)> { doc.walk().iter().filter_map(|b| match &b.kind { Kind::Media { descriptor } => f(descriptor).map(|d| (b.id, Kind::Media { descriptor: d })), _ => None }).collect() };
+        let ch = of(&self.ed.doc);
+        if !ch.is_empty() { n += ch.len(); match self.ed.set_kinds(ch, now) { Ok(d) => { self.apply(d); self.layout = None; } Err(e) => return Err(format!("{e:?}")) } self.autosave(); }
+        let Some(st) = self.store.as_mut() else { return Ok(n) }; skip.insert(st.note);
+        for (id, ed) in self.others.iter_mut() { skip.insert(*id); let ch = of(&ed.doc); if ch.is_empty() { continue }
+            n += ch.len(); ed.set_kinds(ch, now).map_err(|e| format!("{e:?}"))?; st.col.save_note(*id, &ed.doc).map_err(|e| e.to_string())?; self.changed.insert(*id); }
+        if let Some(cv) = self.files.canvas.as_mut() { skip.insert(cv.id); let k = cv.set_records(&f); if k > 0 { cv.dirty = true; n += k; } }
+        let rest = gather::rewrite_collection_with(&mut st.col, &f, &skip)?; n += rest;
+        if n > 0 { st.unpublished = true; st.edited_since_stage = true; self.canvas_save(true); }
+        Ok(n)
     }
     /// "Export as Web Folder" (row 339): its window, on what is to go.
     fn site_open(&mut self) {
@@ -1209,6 +1261,8 @@ impl App {
             let mac = cfg!(target_os = "macos"); let k = |m: &str, w: &str| if mac { m.to_string() } else { w.to_string() };
             let items = vec![I::with_shortcut("Cut", true, &k("\u{2318}X", "Ctrl+X")), I::with_shortcut("Copy", true, &k("\u{2318}C", "Ctrl+C")), I::with_shortcut("Paste", true, &k("\u{2318}V", "Ctrl+V")), I::Separator,
                 I::with_shortcut("Duplicate", true, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", true, "\u{232b}"), I::Separator,
+                // an empty block beside the selection (row 349)
+                I::with_shortcut("Insert Block Above", true, &k("\u{2325}\u{2318}\u{2191}", "Ctrl+Alt+Up")), I::with_shortcut("Insert Block Below", true, &k("\u{2325}\u{2318}\u{2193}", "Ctrl+Alt+Down")), I::Separator,
                 I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", "")), I::Separator, I::action("Move to Note\u{2026}", true), I::action("Copy to Note\u{2026}", true)];
             // a picture whose file was not found can be pointed at it again
             let lost = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if self.media.is_missing(descriptor));
@@ -1352,7 +1406,8 @@ impl App {
             let d = match label.as_str() {
                 "Cut" => { self.menu_cmd(menu::Cmd::Cut); return } "Copy" => { self.menu_cmd(menu::Cmd::Copy); return } "Paste" => { self.menu_cmd(menu::Cmd::Paste); return }
                 "Duplicate" => self.ed.duplicate_blocks(now), "Delete" => self.ed.delete_blocks(now),
-                "Move Up" => self.ed.move_blocks(false, now), "Move Down" => self.ed.move_blocks(true, now), _ => return }.unwrap_or(Dirty::Nothing);
+                "Move Up" => self.ed.move_blocks(false, now), "Move Down" => self.ed.move_blocks(true, now),
+                "Insert Block Above" => { self.follow = true; self.ed.insert_beside(false, now) } "Insert Block Below" => { self.follow = true; self.ed.insert_beside(true, now) } _ => return }.unwrap_or(Dirty::Nothing);
             self.apply(d); return
         }
         match (label.as_str(), self.ctx_for) {
@@ -2208,7 +2263,7 @@ impl App {
             M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } self.panel(dlg, 2, |me, p| me.import_files(p)); } }
             M::CheckForUpdates => { #[cfg(target_os = "macos")] sparkle::check_now(); }
             M::Licenses => match notices_file() { Some(p) => open::file(&p), None => { self.notice = Some(("The licences page comes with the packaged application".into(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } },
-            M::ExportSite => self.site_open(), M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
+            M::ExportSite => self.site_open(), M::PathMappings => self.maps_open(), M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
         }
@@ -2442,6 +2497,7 @@ impl App {
             if let Some(i) = pressed { self.confirm = None; self.answer(id, i); }
             return true
         }
+        if self.files.maps.is_some() { let out = match (self.files.maps.as_mut(), self.gpu.as_mut()) { (Some(w), Some(g)) => w.pointer(&e, &mut g.fonts), _ => mappings_win::Out::None }; self.maps_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         if self.files.site.as_ref().is_some_and(|w| w.shown) { let out = match (self.files.site.as_mut(), self.gpu.as_mut()) { (Some(w), Some(g)) => w.pointer(&e, &mut g.fonts), _ => site_win::Out::None }; self.site_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         if self.files.gather.as_ref().is_some_and(|w| w.shown) { let out = self.files.gather.as_mut().map(|w| w.pointer(&e)).unwrap_or(gather_win::Out::None); self.gather_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return true }
         // the colour palette: while it is open every event is its own
@@ -2511,6 +2567,12 @@ impl App {
         if let (Some((id, d)), Some(g)) = (self.confirm.as_mut(), self.gpu.as_mut()) {
             let id = *id; let r = if matches!(key, Key::Named(NamedKey::Escape)) { Some(0) } else { d.key(&ui_key(), &mut g.fonts) }; g.window.request_redraw();
             if let Some(i) = r { self.confirm = None; self.answer(id, i); } return
+        }
+        // the path mappings' window: its fields take what is typed (a paste too); Tab, Enter and Escape are the window's
+        if self.files.maps.is_some() {
+            let pasted = if cmd && matches!(key, Key::Character(c) if c.to_lowercase() == "v") { Some(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()) } else { None };
+            let out = match (self.files.maps.as_mut(), self.gpu.as_mut()) { (Some(w), Some(g)) => match pasted { Some(t) => { if let Some(f) = w.field() { f.paste(t.lines().next().unwrap_or(""), &mut g.fonts); } mappings_win::Out::Redraw } None => w.key(&ui_key(), &mut g.fonts) }, _ => mappings_win::Out::None };
+            self.maps_out(out); if let Some(g) = &self.gpu { g.window.request_redraw(); } return
         }
         // the web folder's password: its field takes what is typed (a paste too; Escape and Enter stay the window's)
         if self.files.site.as_ref().is_some_and(|w| w.typing()) && !matches!(key, Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)) {
@@ -2603,6 +2665,7 @@ impl App {
             // the selected blocks (the caret's block when none are); with blocks selected Up / Down step, Shift grows,
             // Enter returns to the text, Backspace removes, and typing does nothing
             Key::Named(NamedKey::Escape) => { self.ed.toggle_blocks(); Dirty::Nothing }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if alt && cmd && !ctrl && !shift => { self.follow = true; self.ed.insert_beside(matches!(key, Key::Named(NamedKey::ArrowDown)), now).unwrap_or(Dirty::Nothing) }
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if ctrl && cmd => { self.follow = true; self.ed.move_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), now).unwrap_or(Dirty::Nothing) }
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if blocks && !cmd && !alt => { self.ed.step_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), shift); self.follow = true; Dirty::Nothing }
             Key::Named(NamedKey::Enter) if blocks => { self.ed.toggle_blocks(); Dirty::Nothing }
@@ -2616,8 +2679,9 @@ impl App {
             Key::Named(NamedKey::ArrowLeft) => { self.ed.move_caret(l, mv(Move::Left, Move::WordLeft, Move::LineStart), shift); Dirty::Nothing }
             Key::Named(NamedKey::ArrowRight) => { self.ed.move_caret(l, mv(Move::Right, Move::WordRight, Move::LineEnd), shift); Dirty::Nothing }
             // Up / Down that can go no further in a table or in columns at the note's very start / end: a paragraph is made beyond it (the way out)
-            Key::Named(NamedKey::ArrowUp) => { let was = self.ed.selection(); self.ed.move_caret(l, mv(Move::Up, Move::Up, Move::DocStart), shift); if !shift && self.ed.selection() == was { self.follow = true; self.ed.exit_container(false, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
-            Key::Named(NamedKey::ArrowDown) => { let was = self.ed.selection(); self.ed.move_caret(l, mv(Move::Down, Move::Down, Move::DocEnd), shift); if !shift && self.ed.selection() == was { self.follow = true; self.ed.exit_container(true, now).unwrap_or(Dirty::Nothing) } else { Dirty::Nothing } }
+            // (at a column's edge Up / Down leave the columns rather than hop into the neighbouring column: row 351)
+            Key::Named(NamedKey::ArrowUp) => { let was = self.ed.selection(); self.ed.move_caret(l, mv(Move::Up, Move::Up, Move::DocStart), shift); if !shift && self.ed.selection() == was { self.follow = true; self.ed.exit_container(false, now).unwrap_or(Dirty::Nothing) } else if let (false, false, Some(w)) = (shift, cmd, was.filter(|w| w.is_caret())) { match self.ed.leave_column(w.focus, false, &|id| l.is_stacked(id), now) { Ok(Some(dd)) => { self.follow = true; dd } _ => Dirty::Nothing } } else { Dirty::Nothing } }
+            Key::Named(NamedKey::ArrowDown) => { let was = self.ed.selection(); self.ed.move_caret(l, mv(Move::Down, Move::Down, Move::DocEnd), shift); if !shift && self.ed.selection() == was { self.follow = true; self.ed.exit_container(true, now).unwrap_or(Dirty::Nothing) } else if let (false, false, Some(w)) = (shift, cmd, was.filter(|w| w.is_caret())) { match self.ed.leave_column(w.focus, true, &|id| l.is_stacked(id), now) { Ok(Some(dd)) => { self.follow = true; dd } _ => Dirty::Nothing } } else { Dirty::Nothing } }
             Key::Named(NamedKey::Home) => { self.ed.move_caret(l, if cmd { Move::DocStart } else { Move::LineStart }, shift); Dirty::Nothing }
             Key::Named(NamedKey::End) => { self.ed.move_caret(l, if cmd { Move::DocEnd } else { Move::LineEnd }, shift); Dirty::Nothing }
             // Cmd+Enter in a table: a row below the caret's
@@ -2875,6 +2939,9 @@ impl ApplicationHandler for App {
         if let (false, Ok(p), true) = (self.files.export_test, std::env::var("MN_EXPORT_NOW"), self.frames > 8 && self.store.is_some() && !self.blank) { self.files.export_test = true; self.files.export_t0 = Some((Instant::now(), self.frames)); self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else { 0 }, Some(p.into())); }
         if let (Some((t0, f0)), None) = (self.files.export_t0, &self.files.exporting) { self.files.export_t0 = None; println!("export now: {:.2} s, {} frames drawn meanwhile; {}", t0.elapsed().as_secs_f64(), self.frames - f0, self.notice.as_ref().map(|n| n.0.as_str()).unwrap_or("")); }
         if self.files.export_t0.is_some() { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        // (scripted, MN_MAPS=show | <label>=<root on this system>: the path mappings' window is opened; with a root, a volume is added and Done pressed)
+        if let (false, Ok(v), true) = (self.files.maps_test, std::env::var("MN_MAPS"), self.frames > 8 && self.store.is_some()) { self.files.maps_test = true; self.maps_open();
+            if let Some((label, root)) = v.split_once('=') { if let (Some(w), Some(g)) = (self.files.maps.as_mut(), self.gpu.as_mut()) { w.add_row(&mut g.fonts); w.picked(0, std::path::Path::new(root), &mut g.fonts); let _ = label; } if std::env::var_os("MN_MAPS_DONE").is_some() { self.maps_out(mappings_win::Out::Done); } } }
         // (scripted, MN_SIDE_DROP=<file>[:<file>…]: the files are dropped on the sidebar, on no row)
         if let (false, Ok(v), true) = (self.files.side_test, std::env::var("MN_SIDE_DROP"), self.frames > 8 && self.store.is_some()) { self.files.side_test = true; self.side_drop(v.split(':').map(std::path::PathBuf::from).collect(), None); }
         // (scripted, MN_CTX=<x>,<y>: the context menu is opened at a window point, as a right press there would)
@@ -3002,6 +3069,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
                 if self.ctx.scrolls() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; self.ctx.wheel(-dy); g.window.request_redraw(); return }
+                if let Some(w) = self.files.maps.as_mut() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.site.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.gather.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
@@ -3273,6 +3341,8 @@ impl ApplicationHandler for App {
                 let out = match (ev, self.files.find.as_mut(), self.gpu.as_mut()) { (Some(ev), Some(p), Some(g)) => p.ime(&ev, &mut g.fonts), _ => findbar::Out::None }; self.find_out(out); }
             WindowEvent::Ime(e) if self.files.link.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(p), Some(g)) = (ev, self.files.link.as_mut(), self.gpu.as_mut()) { p.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
+            WindowEvent::Ime(e) if self.files.maps.as_ref().is_some_and(|w| w.typing()) => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
+                if let (Some(ev), Some(w), Some(g)) = (ev, self.files.maps.as_mut(), self.gpu.as_mut()) { if let Some(f) = w.field() { f.ime(&ev, &mut g.fonts); } g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.site.as_ref().is_some_and(|w| w.typing()) => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(w), Some(g)) = (ev, self.files.site.as_mut(), self.gpu.as_mut()) { w.pass.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
             WindowEvent::Ime(e) if self.files.picker.is_some() => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };

@@ -151,13 +151,16 @@ pub fn descriptors(col: &mn_store::Collection) -> Vec<String> {
 }
 /// The references of a whole collection are pointed at the copies, but for the notes and canvases in `skip` (those
 /// the window holds open, which it changes itself). How many records changed.
-pub fn rewrite_collection(col: &mut mn_store::Collection, map: &HashMap<String, String>, skip: &HashSet<BlockId>) -> Result<usize, String> {
+pub fn rewrite_collection(col: &mut mn_store::Collection, map: &HashMap<String, String>, skip: &HashSet<BlockId>) -> Result<usize, String> { rewrite_collection_with(col, &|d| rewrite(d, map), skip) }
+/// The same with any rule for a record (None: it stays as it is).
+pub fn rewrite_collection_with(col: &mut mn_store::Collection, f: &dyn Fn(&str) -> Option<String>, skip: &HashSet<BlockId>) -> Result<usize, String> {
     let mut n = 0;
     for e in entries(col) { if skip.contains(&e.id) { continue } match e.kind {
-        mn_store::DocKind::Note => { let mut doc = col.load_note(e.id).map_err(|x| x.to_string())?; let ch = rewritten(&doc, map); if ch.is_empty() { continue }
+        mn_store::DocKind::Note => { let mut doc = col.load_note(e.id).map_err(|x| x.to_string())?;
+            let ch: Vec<(BlockId, mn_doc::Kind)> = doc.walk().iter().filter_map(|b| match &b.kind { mn_doc::Kind::Media { descriptor } => f(descriptor).map(|d| (b.id, mn_doc::Kind::Media { descriptor: d })), _ => None }).collect(); if ch.is_empty() { continue }
             n += ch.len(); for (id, k) in ch { doc.set_kind(id, k).map_err(|x| format!("{x:?}"))?; } col.save_note(e.id, &doc).map_err(|x| x.to_string())?; }
         mn_store::DocKind::Canvas => { let mut c = col.load_canvas(e.id).map_err(|x| x.to_string())?; let mut hit = 0;
-            for x in c.elements.iter_mut().filter(|x| x.kind == "media") { if let Some(r) = rewrite(&x.record, map) { x.record = r; hit += 1; } }
+            for x in c.elements.iter_mut().filter(|x| x.kind == "media") { if let Some(r) = f(&x.record) { x.record = r; hit += 1; } }
             if hit > 0 { n += hit; col.save_canvas(e.id, &c).map_err(|x| x.to_string())?; } }
         mn_store::DocKind::Folder => {} } }
     Ok(n)

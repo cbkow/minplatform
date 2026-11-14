@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses,
+    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -29,7 +29,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
         ("File", vec![
             item("New Collection…", sc_alt('n'), Cmd::NewCollection), item("New Note", sc('n'), Cmd::NewNote), item("New Folder", sc_shift('n'), Cmd::NewFolder), item("Rename", None, Cmd::Rename), Node::Sep,
             item("Open…", sc('o'), Cmd::Open), Node::Recent, item("Import…", None, Cmd::Import), Node::Sep,
-            item("Save", sc('s'), Cmd::Save), item("Save As…", sc_shift('s'), Cmd::SaveAs), item("Collect Media…", None, Cmd::CollectMedia), Node::Sep,
+            item("Save", sc('s'), Cmd::Save), item("Save As…", sc_shift('s'), Cmd::SaveAs), item("Collect Media…", None, Cmd::CollectMedia), item("Path Mappings…", None, Cmd::PathMappings), Node::Sep,
             item("Close Collection", sc('w'), Cmd::CloseCollection),
         ]),
         ("Edit", vec![

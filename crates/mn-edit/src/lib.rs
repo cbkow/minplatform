@@ -893,6 +893,18 @@ mod tests {
         e.undo().unwrap(); assert_eq!(grid(&e)[0].len(), 2);
     }
     #[test]
+    fn a_block_is_inserted_above_or_below_with_the_caret_in_it_and_keeps_to_its_list() {
+        let mut t = blank(); t.keys("one\n- a\n- b");
+        let n = t.e.doc.children(None).len();
+        t.e.insert_beside(true, 9_000_000).unwrap();
+        let kids = t.e.doc.children(None).to_vec(); assert_eq!(kids.len(), n + 1);
+        let last = t.e.doc.get(*kids.last().unwrap()).unwrap(); assert!(matches!(last.kind, Kind::Bullet { depth: 0 }) && last.text.is_empty());
+        assert!(!t.e.in_blocks() && t.e.selection().is_some_and(|s| s.focus.block == last.id && s.focus.at == 0));
+        t.e.insert_beside(false, 9_100_000).unwrap(); t.keys("x");
+        let kids = t.e.doc.children(None).to_vec(); assert_eq!((kids.len(), t.e.doc.get(kids[kids.len() - 2]).unwrap().text.as_str()), (n + 2, "x"));
+        t.e.undo(); t.e.undo(); 
+    }
+    #[test]
     fn blocks_from_another_note_are_appended_as_one_step_and_the_stamp_tells_edits_from_undo() {
         let mut a = Doc::new(); let x = add(&mut a, None, Kind::Bullet { depth: 0 }, "X"); add(&mut a, None, Kind::Bullet { depth: 1 }, "x1"); add(&mut a, None, Kind::Paragraph, "stay");
         let mut src = Editor::new(a); src.set_selection(Some(Selection::caret(Pos { block: x, at: 0 }))); src.toggle_blocks();
