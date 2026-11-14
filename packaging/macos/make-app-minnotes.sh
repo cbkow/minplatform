@@ -5,7 +5,7 @@
 # copied into Contents/Frameworks (@rpath ids; a Homebrew library is REFUSED), FFmpeg's program in Contents/Helpers
 # (the web folder's videos are made with it - `transcode.rs`), and an ad hoc signature so the bundle runs on this
 # machine. The Developer ID signature, notarization and the DMG are the user's (sign-macos.sh's way).
-# NOT in the bundle yet: Sparkle (the application has no updater of its own yet) and the third-party notices.
+# Sparkle (the updater; 2.x's feed and key are in Info.plist) and the third-party notices are in it (canon row 348).
 # Run from the repo root:  zsh packaging/macos/make-app-minnotes.sh
 set -euo pipefail
 ROOT="$PWD"; APP="$ROOT/target/dist/minNotes.app"; C="$APP/Contents"; ICONS="$ROOT/apps/mn/assets/icons"
@@ -53,11 +53,17 @@ for bin in "$EXE" "$C/Helpers/ffmpeg"; do
   for rp in $(otool -l "$bin" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}'); do install_name_tool -delete_rpath "$rp" "$bin" 2> /dev/null; done   # the build machine's paths
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$bin" 2> /dev/null
 done
+# Sparkle (tools/sparkle/fetch.sh): the framework whole, symlinks kept; the application loads it at run time
+[ -d "$ROOT/external/sparkle/Sparkle.framework" ] || { echo "run tools/sparkle/fetch.sh first: the release carries its updater" >&2; exit 1; }
+ditto "$ROOT/external/sparkle/Sparkle.framework" "$FW/Sparkle.framework"
+# the third-party notices: generated for this bundle; it FAILS if a shipped binary has no entry or a crate's licence is
+# not an accepted one. minNotes > Licenses opens it.
+python3 "$ROOT/packaging/notices/make_notices.py" macos --app mn --out "$C/Resources/THIRD-PARTY-NOTICES.html" --stage "$APP"
 leaks=0
 for f in "$EXE" "$C/Helpers/ffmpeg" "$FW"/*.dylib; do
   for dep in $(deps_of "$f"); do echo "LEAK ${f:t} -> $dep" >&2; leaks=1; done
   m="$(vtool -show-build "$f" | awk '$1=="minos"{print $2}')"; [ "$m" = "13.0" ] || { echo "minos $m: ${f:t}" >&2; leaks=1; }
 done
 [ $leaks = 0 ] || exit 1
-codesign --force -s - "$FW"/*.dylib "$C/Helpers"/* 2> /dev/null; codesign --force -s - "$APP" 2> /dev/null
+codesign --force -s - "$FW"/*.dylib "$C/Helpers"/* 2> /dev/null; codesign --force --deep -s - "$FW/Sparkle.framework" 2> /dev/null; codesign --force -s - "$APP" 2> /dev/null
 echo "built $APP - $(ls "$FW" | wc -l | tr -d ' ') dylibs, $(du -sh "$APP" | cut -f1)"

@@ -53,6 +53,8 @@ mod gather;
 mod gather_win;
 mod site_win;
 mod transcode;
+#[cfg(target_os = "macos")]
+mod sparkle;
 mod search;
 mod canvas;
 mod ink;
@@ -176,7 +178,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// files dragged over the SIDEBAR (row 345): the row under them (None: no row - the top); what was dropped there and is being fetched; where imported notes go; files that become one note once the imports are in
     /// a note or a canvas being written out, off this thread (row 346): its end, and the file's name
     exporting: Option<(std::sync::mpsc::Receiver<Result<(), String>>, String)>,
-    side_drag: Option<Option<BlockId>>, side_fetches: std::collections::HashMap<AsyncRequestSerial, Option<BlockId>>, import_parent: Option<Option<BlockId>>, side_media: Option<(Vec<std::path::PathBuf>, Option<BlockId>)>, side_test: bool, export_test: bool, export_t0: Option<(Instant, u32)>,
+    side_drag: Option<Option<BlockId>>, side_fetches: std::collections::HashMap<AsyncRequestSerial, Option<BlockId>>, import_parent: Option<Option<BlockId>>, side_media: Option<(Vec<std::path::PathBuf>, Option<BlockId>)>, side_test: bool, updater_tried: bool, export_test: bool, export_t0: Option<(Instant, u32)>,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -2204,6 +2206,8 @@ impl App {
             M::ToolbarWide => { self.bar_wide = !self.bar_wide; self.layout = None; }
             M::ExportHtml => self.export(0, None), M::ExportMarkdown => self.export(1, None), M::ExportDocx => self.export(2, None), M::ExportPdf => self.export(3, None), M::ExportPoster => self.export(4, None), M::CopyMarkdown => self.copy_markdown(),
             M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } self.panel(dlg, 2, |me, p| me.import_files(p)); } }
+            M::CheckForUpdates => { #[cfg(target_os = "macos")] sparkle::check_now(); }
+            M::Licenses => match notices_file() { Some(p) => open::file(&p), None => { self.notice = Some(("The licences page comes with the packaged application".into(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } },
             M::ExportSite => self.site_open(), M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
@@ -2968,7 +2972,9 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
-        self.unpack_tick(); self.import_tick(); self.export_tick(false); if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
+        self.unpack_tick(); self.import_tick(); self.export_tick(false);
+        // the updater starts with the first window (not in a scripted run: it asks the feed)
+        #[cfg(target_os = "macos")] if self.gpu.is_some() && !self.files.updater_tried { self.files.updater_tried = true; if std::env::var_os("MN_NO_DIALOGS").is_none() { sparkle::start(); } } if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
         if self.files.site.is_some() { let out = self.files.site.as_mut().map(|w| w.tick()).unwrap_or(site_win::Out::None); self.site_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
@@ -3332,6 +3338,13 @@ fn metric_paper() -> bool { use objc2::{class, msg_send, runtime::AnyObject}; un
 #[cfg(not(target_os = "macos"))]
 fn metric_paper() -> bool { false }
 fn export_file() -> std::path::PathBuf { player_file().with_file_name("export.json") }
+/// The third-party notices that ship with the application (row 348): in the bundle's Resources (macOS), beside the
+/// program (Windows); a run from the source tree shows the page generated last, when there is one.
+fn notices_file() -> Option<std::path::PathBuf> {
+    const NAME: &str = "THIRD-PARTY-NOTICES.html";
+    let exe = std::env::current_exe().ok()?; let here = exe.parent()?;
+    [here.join("../Resources").join(NAME), here.join(NAME)].into_iter().chain(here.ancestors().map(|a| a.join("packaging/notices/generated").join(if cfg!(windows) { "minnotes-THIRD-PARTY-NOTICES-windows.html" } else { "minnotes-THIRD-PARTY-NOTICES-macos.html" }))).find(|p| p.is_file())
+}
 fn export_settings() -> export::Opts {
     let v: serde_json::Value = std::fs::read_to_string(export_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
     export::Opts { paths: v.get("paths").and_then(|x| x.as_bool()).unwrap_or(true), video_notes: v.get("videoNotes").and_then(|x| x.as_bool()).unwrap_or(true) }

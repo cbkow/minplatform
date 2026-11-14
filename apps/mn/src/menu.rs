@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import,
+    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -100,7 +100,10 @@ mod native {
             let quit = MenuItem::new("Quit minNotes", true, accel(Sc { shift: false, alt: false, key: 'q' }));
             ids.insert(quit.id().clone(), Cmd::Quit);
             let about = AboutMetadata { name: Some("minNotes".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
-            let _ = app.append_items(&[&PredefinedMenuItem::about(Some("About minNotes"), Some(about)), &PredefinedMenuItem::separator(), &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
+            // the updater's check (Sparkle shows its own window) and the third-party notices that ship with the application (row 348)
+            let (updates, licenses) = (MenuItem::new("Check for Updates\u{2026}", true, None), MenuItem::new("Licenses\u{2026}", true, None));
+            ids.insert(updates.id().clone(), Cmd::CheckForUpdates); ids.insert(licenses.id().clone(), Cmd::Licenses);
+            let _ = app.append_items(&[&PredefinedMenuItem::about(Some("About minNotes"), Some(about)), &updates, &licenses, &PredefinedMenuItem::separator(), &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
             let _ = menu.append(&app);
             let mut recent = None; let mut checks = vec![];
             for (title, nodes) in spec() {

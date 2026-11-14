@@ -64,7 +64,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
-objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSRange", "NSUserDefaults", "objc2-core-foundation"] }
+objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSRange", "NSUserDefaults", "NSBundle", "objc2-core-foundation"] }
 muda = { version = "0.21", default-features = false }
 objc2-app-kit = { workspace = true, features = ["NSWindow", "NSResponder", "NSApplication"] }
 # HEIC and camera RAW through the system's decoders (ImageIO)
