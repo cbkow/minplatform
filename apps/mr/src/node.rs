@@ -40,6 +40,12 @@ pub struct Node {
 }
 
 fn fingerprint(secret: &str) -> String { use sha2::Digest; if secret.is_empty() { return String::new() } sha2::Sha256::digest(secret.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect() }
+/// Twelve lowercase hex characters from the system's randomness (1.1).
+fn new_id() -> Result<String, String> {
+    #[cfg(unix)] { let mut b = [0u8; 6]; std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b)).map_err(|e| format!("no random bytes for a node id: {e}"))?; return Ok(b.iter().map(|x| format!("{x:02x}")).collect()) }
+    // (elsewhere: the standard library's hasher is keyed from the system's random source for each new state)
+    #[cfg(not(unix))] { use std::hash::{BuildHasher, Hasher}; let mut h = std::collections::hash_map::RandomState::new().build_hasher(); h.write_u64(now_ms()); h.write_u32(std::process::id()); Ok(format!("{:012x}", h.finish() & 0xffff_ffff_ffff)) }
+}
 /// An id that is one plain path segment (it names a folder on the share).
 fn plain_segment(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', '\0']) && !s.contains("..") }
 fn host_name() -> String {
@@ -65,8 +71,7 @@ impl Node {
         // the node's id (1.1): twelve characters in node_id.txt, made once
         let idf = data.join("node_id.txt");
         let id = match std::fs::read_to_string(&idf).ok().map(|t| t.lines().next().unwrap_or("").to_string()).filter(|t| t.len() == 12) { Some(id) => id,
-            None => { let mut b = [0u8; 6]; std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b)).map_err(|e| format!("no random bytes for a node id: {e}"))?;
-                let id: String = b.iter().map(|x| format!("{x:02x}")).collect(); std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
+            None => { let id = new_id()?; std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
         let root = cfg["sync_root"].as_str().unwrap_or(""); if root.is_empty() || !Path::new(root).is_dir() { return Err("the sync root is not set, or is not a folder that is there".into()) }
         let farm = Path::new(root).join("MinRender-v2");
         let secret = std::fs::read_to_string(farm.join("farm.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["api_secret"].as_str().map(str::to_string)).filter(|s| !s.is_empty()).ok_or("there is no farm at the sync root yet (this build joins a farm; it does not make one)")?;
