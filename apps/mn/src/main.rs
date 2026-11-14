@@ -572,6 +572,14 @@ impl App {
         true
     }
     /// The note as it stands goes into the staged work copy (autosave never touches the real file — row 272).
+    /// The note in the editor is about to be left (another note, a canvas, a card): what was changed in it is kept. A
+    /// note that was only LOOKED AT is not written and does not count as changed (it did: every note left was saved
+    /// whether touched or not, so opening notes marked them - user 2026-11-14). The note is compared with its stored
+    /// form rather than trusted to a flag, so a change no flag recorded is still kept.
+    fn leaving(&mut self) {
+        if let Some(st) = self.store.as_mut() { if st.edited.is_none() && st.col.load_note(st.note).map(|d| d != self.ed.doc).unwrap_or(true) { st.edited = Some(Instant::now()); } }
+        self.autosave();
+    }
     fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
         if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(st.note); } Err(e) => eprintln!("autosave: {e}") }
             if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } self.title(); }
@@ -2358,8 +2366,8 @@ impl App {
     /// A canvas of the collection is opened in the page's place (the note stays as it is behind it).
     fn open_canvas(&mut self, id: BlockId) {
         if self.files.canvas.as_ref().is_some_and(|c| c.id == id) { return } self.canvas_leave();
-        let Some(st) = self.store.as_mut() else { return }; if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
-        st.edited.get_or_insert_with(Instant::now); self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
+        if self.store.is_none() { return } if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
+        self.leaving(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
         let Some(st) = self.store.as_mut() else { return };
         match st.col.load_canvas(id) { Ok(mut c) => { let mut turned = false;
                 for e in c.elements.iter_mut().filter(|e| e.kind == "text") { let Ok(nid) = st.col.create(Some(id), mn_store::DocKind::Note, "") else { continue }; let mut d = Doc::new();
@@ -2421,7 +2429,7 @@ impl App {
     /// The entered card is left: its note is kept, and the canvas has the keys again.
     fn card_leave(&mut self) {
         if self.files.card.take().is_none() { return } if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
-        if let Some(st) = self.store.as_mut() { st.edited.get_or_insert_with(Instant::now); } self.autosave(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
+        self.leaving(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
         self.blank = true; self.layout = None; self.scroll = 0.0; if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// A note of the canvas's own is made at a point of the sheet (its top left), with these lines; `enter`: and entered.
@@ -2455,7 +2463,7 @@ impl App {
     fn swap_note(&mut self, id: BlockId) {
         let Some(st) = self.store.as_mut() else { return }; if st.note == id { return }
         if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
-        st.edited.get_or_insert_with(Instant::now); self.autosave();
+        self.leaving();
         let Some(st) = self.store.as_mut() else { return };
         let next = match self.others.remove(&id) { Some(e) => e, None => match st.col.load_note(id) { Ok(d) => Editor::new(d), Err(e) => { eprintln!("open: {e}"); return } } };
         let old = std::mem::replace(&mut self.ed, next); self.others.insert(st.note, old);
