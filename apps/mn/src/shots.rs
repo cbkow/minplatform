@@ -15,6 +15,7 @@
 //!   move X Y              the pointer goes there                    leave          the pointer leaves the window
 //!   down X Y / up X Y     a primary press / release                 click X Y      both      dclick X Y   twice
 //!   rclick X Y            the secondary button, pressed and released
+//!   drop A|B|...          files dropped on the sidebar / the first window
 //!   wheel X Y DY          the wheel at a point, in logical pixels (positive scrolls the page down)
 //!   hwheel X Y DX         a sideways wheel at a point (positive shows what is further right)
 //!   key [mods+]NAME       a key: Enter Tab Escape Backspace Delete Up Down Left Right Home End Space, or one character;
@@ -109,6 +110,8 @@ impl crate::App {
                     self.mods = (parts.contains(&"shift"), parts.contains(&"cmd"), parts.contains(&"alt"));
                     let text = match &key { Key::Character(c) if !self.mods.1 => Some(c.to_string()), _ => None };
                     self.key(&key, text.as_deref()); self.mods = was; }
+                // files dropped on the sidebar (or on the first window, which takes them the same way): the drop's own routine, without the system's drag
+                "drop" => { self.side_drop(tail.split('|').map(std::path::PathBuf::from).collect(), None); }
                 "type" => { let was = self.mods; self.mods = (false, false, false); for c in tail.chars() { let s = c.to_string(); self.key(&Key::Character(s.as_str().into()), Some(&s)); } self.mods = was; }
                 "shot" => { let crop = (rest.len() >= 5).then(|| [num(1), num(2), num(3), num(4)]); self.shots.as_mut().unwrap().pending = Some((rest.first().unwrap_or(&"shot").to_string(), crop, 0)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 "quit" => { self.shots.as_mut().unwrap().done = true; self.shots_quit(el); return }

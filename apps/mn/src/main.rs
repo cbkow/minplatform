@@ -461,7 +461,7 @@ impl App {
         }
         if self.blank && self.files.canvas.is_none() {
             // no collection: the window says what to do (the theme's subdued text, centred)
-            let lines = [("No collection is open", 18.0, paint::text()), (if cfg!(target_os = "macos") { "New Collection\u{2026} (\u{2325}\u{2318}N) or Open\u{2026} (\u{2318}O)" } else { "New Collection\u{2026} (Ctrl+Alt+N) or Open\u{2026} (Ctrl+O)" }, 13.0, paint::subdued())];
+            let lines = [("No collection is open", 18.0, paint::text()), (if cfg!(target_os = "macos") { "New Collection\u{2026} (\u{2325}\u{2318}N), Open\u{2026} (\u{2318}O), or drop a file here" } else { "New Collection\u{2026} (Ctrl+Alt+N), Open\u{2026} (Ctrl+O), or drop a file here" }, 13.0, paint::subdued())];
             let mut y = h as f64 / 2.0 - 50.0 * s;
             for (text, size, color) in lines { let t = g.fonts.layout(text, min_ui::Family::Sans, (size * s) as f32, 400.0, color); min_ui::fonts::draw_layout(scene, &t, kurbo::Affine::translate(((w as f64 - t.width() as f64) / 2.0, y))); y += t.height() as f64 + 8.0 * s; }
             // the two ways in, as buttons (the theme's text buttons)
@@ -2592,7 +2592,10 @@ impl App {
     // ── files dropped on the sidebar (row 345): a collection is opened, documents become notes, other files one note
     /// The sidebar's drop place under a window point: the row there (None inside: no row). None: not over the sidebar.
     fn side_drop_at(&self, x: f64, y: f64) -> Option<Option<BlockId>> {
-        if self.modal() || self.store.is_none() || y < self.top || self.foot.hit(x, y) { return None }
+        if self.modal() { return None }
+        // (no collection open - the first window: the whole window takes files, as the sidebar does; row 378)
+        if self.store.is_none() { return Some(None) }
+        if y < self.top || self.foot.hit(x, y) { return None }
         let sb = self.sidebar.as_ref()?; if !sb.rail.hit(x, y) { return None }
         Some(sb.id_at(x, y))
     }
@@ -2604,11 +2607,13 @@ impl App {
     }
     /// Files were dropped on the sidebar, on `target`'s row (a folder takes them in; beside a note; None: the top).
     fn side_drop(&mut self, paths: Vec<std::path::PathBuf>, target: Option<BlockId>) {
-        if paths.is_empty() || self.store.is_none() { return }
+        if paths.is_empty() { return }
         let ext = |p: &std::path::Path| p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         // a collection or a package is opened (the first of them; nothing else of the drop is taken) - by the way every
         // collection is opened, which asks about what is not saved and tells the desktop the text is another's
         if let Some(c) = paths.iter().find(|p| p.is_file() && (ext(p) == "mnd" || ext(p) == gather::PACKAGE)) { let c = c.clone(); if paths.len() > 1 { self.notice = Some(("Opening the collection \u{2014} the other files were left".into(), Instant::now() + std::time::Duration::from_secs(6))); } self.request_close(Pending::Open(c)); return }
+        // dropped on the first window (no collection): a new, untitled one is made for them (rows 368, 378)
+        if self.store.is_none() { self.open_untitled(None); if self.store.is_none() { return } }
         let parent = target.and_then(|t| self.sidebar.as_ref().and_then(|sb| sb.row(t))).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
         let (docs, other): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.is_file() && import::family(p).is_some());
         if !other.is_empty() { self.files.side_media = Some((other, parent)); }
