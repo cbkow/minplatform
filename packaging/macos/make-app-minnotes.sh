@@ -14,6 +14,8 @@ MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release -p mn
 rm -rf "$APP"; mkdir -p "$C/MacOS" "$C/Resources" "$C/Frameworks" "$C/Helpers"
 cp "$ROOT/target/release/minNotes" "$C/MacOS/minNotes"
 cp "$ROOT/LICENSE" "$C/Resources/LICENSE" 2> /dev/null || echo "note: no LICENSE at the repo root"
+# the User Guide (row 359): the manual's pages, as tools/mn-shots/sync-guide.sh copied them
+[ -f "$ROOT/apps/mn/guide/index.md" ] && cp -R "$ROOT/apps/mn/guide" "$C/Resources/guide" || echo "note: no User Guide (run tools/mn-shots/sync-guide.sh)"
 
 # the icons: minnotes.icns from the 1024 master (macOS 13-25), Assets.car from the layered .icon (macOS 26; needs full Xcode)
 SET="$ROOT/target/dist/minnotes.iconset"; rm -rf "$SET"; mkdir -p "$SET"

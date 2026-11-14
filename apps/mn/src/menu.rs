@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings, Reading,
+    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings, Reading, UserGuide, ShortcutsPage,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -49,14 +49,15 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
             item("Copy as Markdown", sc_shift('c'), Cmd::CopyMarkdown), Node::Sep,
             Node::Check { label: "Include File Paths", cmd: Cmd::ExportPaths }, Node::Check { label: "Include Video Notes", cmd: Cmd::ExportVideoNotes },
         ]),
-        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Reading Mode", sc('e'), Cmd::Reading), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
+        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Reading Mode", sc('r'), Cmd::Reading), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
+        ("Help", vec![item("User Guide", None, Cmd::UserGuide), item("Keyboard Shortcuts", sc('/'), Cmd::ShortcutsPage)]),
     ]
 }
 
 /// The key a command is run by in the window's key handler: (character, with Shift). None: it has a routine of its own.
 pub fn key_of(c: &Cmd) -> Option<(char, bool)> {
     Some(match c { Cmd::NewNote => ('n', false), Cmd::NewFolder => ('n', true), Cmd::Save => ('s', false), Cmd::Undo => ('z', false), Cmd::Redo => ('z', true), Cmd::Cut => ('x', false), Cmd::Copy => ('c', false), Cmd::Paste => ('v', false), Cmd::PastePlain => ('v', true), Cmd::SelectAll => ('a', false),
-        Cmd::Bold => ('b', false), Cmd::Italic => ('i', false), Cmd::Underline => ('u', false), Cmd::Strike => ('x', true), Cmd::Code => ('e', false), Cmd::Highlight => ('h', true), Cmd::ClearFormat => ('\\', false), Cmd::Sidebar => ('1', false), _ => return None })
+        Cmd::Bold => ('b', false), Cmd::Italic => ('i', false), Cmd::Underline => ('u', false), Cmd::Strike => ('x', true), Cmd::Code => ('e', false), Cmd::Highlight => ('h', true), Cmd::ClearFormat => ('\\', false), Cmd::Sidebar => ('1', false), Cmd::Reading => ('r', false), Cmd::ShortcutsPage => ('/', false), _ => return None })
 }
 
 #[cfg(target_os = "macos")]

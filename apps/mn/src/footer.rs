@@ -26,7 +26,7 @@ impl Footer {
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}{}", if k.starts_with("Shift+") { "\u{21e7}" } else { "" }, k.trim_start_matches("Shift+")) } else { format!("Ctrl+{k}") };
         let b = |icon: &'static str, tip: String, on: bool| ActionButton::new(icon, &tip).enabled(on);
         let group = ActionGroup::new(vec![
-            b("book-open", format!("Reading: the note cannot be changed ({})", key("E")), true),
+            b("book-open", format!("Reading: the note cannot be changed ({})", key("R")), true),
             b("magnifying-glass", format!("Find in this note ({})", key("F")), true),
             b("arrow-counter-clockwise", format!("Undo ({})", key("Z")), true), b("arrow-clockwise", format!("Redo ({})", key("Shift+Z")), true),
             b("floppy-disk", format!("Save ({})", key("S")), true),

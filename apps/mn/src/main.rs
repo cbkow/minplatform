@@ -59,6 +59,7 @@ mod sparkle;
 #[cfg(target_os = "macos")]
 mod mac_open;
 mod shots;
+mod guide;
 mod search;
 mod canvas;
 mod ink;
@@ -296,7 +297,8 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     hw: Option<Option<qcv_player::HwDevice>>, /// the colour stage of videos' stills
     poster: video::Poster, files: Files, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
     told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, shots: Option<shots::Shots>, /// READING (row 358): the page cannot be changed; `refused_seen`: the editor's count of refused changes at the last look
-    reading: bool, refused_seen: u32, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+    reading: bool, refused_seen: u32, /// THE USER GUIDE (row 359): its collection; the user's own editor while a page of the guide is in the window; what `reading` was before; it was looked for
+    guide: Option<guide::Guide>, guide_stash: Option<Editor>, reading_user: bool, guide_tried: bool, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -334,6 +336,7 @@ fn sample() -> Doc {
 impl App {
     fn redraw(&mut self) {
         // reading (row 358): the editor in hand takes no change, the tools' band is put away, a canvas only moves; a change that was refused is answered once
+        self.guide_ensure();
         self.ed.locked = self.reading; self.bar.reading = self.reading && self.store.is_some();
         if let Some(cv) = self.files.canvas.as_mut() { if self.reading && !cv.reading { cv.sel.clear(); } cv.reading = self.reading && self.files.card.is_none(); }
         if self.ed.refused != self.refused_seen { self.refused_seen = self.ed.refused; if self.reading { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); } }
@@ -365,7 +368,7 @@ impl App {
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
-            self.foot.sync(&footer::Shown { reading: self.reading, locked: false, text: &text, warn, link: (self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) || self.files.site.as_ref().is_some_and(|w| w.readout().is_some())) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
+            self.foot.sync(&footer::Shown { reading: self.reading, locked: self.guide.as_ref().is_some_and(|g| g.shown.is_some()), text: &text, warn, link: (self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) || self.files.site.as_ref().is_some_and(|w| w.readout().is_some())) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
         if let (Some(c), Some(cv)) = (self.files.card.as_mut(), self.files.canvas.as_ref()) { if let Some(r) = cv.rect_of(c.el) { if r != c.rect { self.geom_moved = Some(Instant::now()); } c.rect = r; } }
         if let Some(sb) = self.sidebar.as_mut() { sb.defer_open = self.files.canvas.is_some() && self.files.card.is_none(); }
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
@@ -453,7 +456,7 @@ impl App {
         let carded = self.files.card.as_ref().map(|c| c.rect);
         if let Some(r) = carded { scene.push_clip_layer(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, &Rect::new(r.x0 - 40.0 * s, r.y0, r.x1, r.y1).intersect(Rect::new(self.side_w, self.top, w as f64, self.foot.rect.y0.max(self.top)))); }
         // (nothing of the note is marked while a canvas, or no note, is in its place: a block picked before the canvas was opened drew its band over it)
-        let picked = if self.blank { Default::default() } else { self.ed.block_selection() };
+        let picked = if self.blank || self.reading { Default::default() } else { self.ed.block_selection() };   // (reading: a media block that was clicked shows no band, no outline, no corners - user 2026-11-14)
         for id in &picked { if let Some(r) = l.rect(&self.ed.doc, *id) { let r = kurbo::Rect::new(-8.0 * s, r.y0 - 2.0 * s, l.width as f64 + 8.0 * s, r.y1 + 2.0 * s) + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &kurbo::RoundedRect::from_rect(r, 4.0 * s)); } }
         for r in self.ed.selection_rects(l) { if self.blank || !picked.is_empty() { break } scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, paint::selection(), None, &(r + off)); }
         // find (row 321): every occurrence is marked, the current one more strongly; under the text, as the selection is
@@ -497,7 +500,7 @@ impl App {
                 if let Some(l) = ink::page_lines(&now, ink::page_no(&now), size).into_iter().find(|l| l.s.id == *sid) { let b = at.transform_rect_bbox(ink::bounds(&l)).inflate(2.0 * s, 2.0 * s); scene.stroke(&kurbo::Stroke::new(1.5 * s).with_dashes(0.0, [4.0 * s, 3.0 * s]), kurbo::Affine::IDENTITY, paint::accent(), None, &b); } } }
         // the current picture: an outline, and a handle at each corner to resize it by
         // (not while a drawing tool is armed: the picture is being drawn on, not arranged)
-        let current = (!self.blank && self.files.tool.is_none() && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
+        let current = (!self.blank && !self.reading && self.files.tool.is_none() && !self.grab.as_ref().is_some_and(|x| x.dragging) && self.ed.run_len() == 1).then(|| self.ed.handle_block()).flatten()
             .filter(|id| matches!(self.ed.doc.get(*id).map(|b| &b.kind), Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\""))).and_then(|id| l.rect(&self.ed.doc, id)).map(|r| r + off);
         if let Some(r) = current {
             let r = Rect::new(r.x0.round(), r.y0.round(), r.x1.round(), r.y1.round());
@@ -510,7 +513,7 @@ impl App {
         // a composition is underlined where it stands
         if let Some((id, a, b)) = self.ed.preedit() { for r in l.range_rects(&self.ed.doc, id, a, b) { let r = r + off; scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, peniko::Color::WHITE, None, &Rect::new(r.x0, r.y1 - 1.5 * s, r.x1, r.y1)); } }
         // the caret's table: its row's and its column's handles, and the strips that add a row and a column at the end
-        if let Some(ui) = (!self.blank && self.files.picker.is_none()).then(|| table_ui(&self.ed, l, s, off)).flatten() {
+        if let Some(ui) = (!self.blank && !self.reading && self.files.picker.is_none()).then(|| table_ui(&self.ed, l, s, off)).flatten() {
             scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(ui.col, 7.0 * s));
             for (r, icon) in [(ui.row, "dots-six-vertical"), (ui.col, "dots-six")] { if let Some(i) = g.fonts.icon(icon, (16.0 * s) as f32, paint::subdued()) { min_ui::fonts::draw_layout(scene, &i, kurbo::Affine::translate((r.center().x - i.width() as f64 / 2.0, r.center().y - i.height() as f64 / 2.0))); } }
             for r in [ui.add_row, ui.add_col] { scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::BACKGROUND_LAYER_2_COLOR), None, &kurbo::RoundedRect::from_rect(r, 3.0 * s));
@@ -541,7 +544,7 @@ impl App {
         self.bar.paint(scene, &mut g.fonts, now); self.foot.paint(scene, &mut g.fonts, now);
         if let Some(sb) = self.sidebar.as_mut() {
             let mut changed = self.changed.clone(); if let Some(st) = self.store.as_ref() { if st.edited.is_some() { changed.insert(st.note); } }
-            sb.paint(scene, &mut g.fonts, self.files.canvas.as_ref().map(|c| c.id).or(self.store.as_ref().map(|st| st.note)), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
+            sb.paint(scene, &mut g.fonts, self.guide.as_ref().and_then(|g| g.shown).or(self.files.canvas.as_ref().map(|c| c.id)).or(self.store.as_ref().map(|st| st.note)), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
             sb.paint_tooltip(scene, &mut g.fonts, view, now); }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
@@ -583,7 +586,46 @@ impl App {
     /// form rather than trusted to a flag, so a change no flag recorded is still kept.
     /// Reading on or off (row 358), and remembered for this collection on this machine. Going to reading puts away
     /// whatever was open for a change: a tool, a popup, a note's words, picked blocks.
+    // ── the User Guide (row 359) ──
+    fn guide_shown(&self) -> bool { self.guide.as_ref().is_some_and(|g| g.shown.is_some()) }
+    /// The guide is looked for once, and its rows given to the sidebar (which is made anew with each collection).
+    fn guide_ensure(&mut self) {
+        if !self.guide_tried { self.guide_tried = true;
+            let settings = sessions_root().parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+            match guide::source() { Some(src) => match guide::open(&src, &settings) { Ok(g) => { println!("guide: {} pages", g.pages.len()); self.guide = Some(g); } Err(e) => eprintln!("guide: {e}") }, None => {} } }
+        if let (Some(g), Some(sb), Some(st)) = (self.guide.as_ref(), self.sidebar.as_mut(), self.store.as_ref()) { if sb.guide.is_empty() { let pages: Vec<(BlockId, String)> = g.pages.iter().map(|p| (p.0, p.2.clone())).collect(); sb.set_guide(g.folder, &pages); sb.set_tree(&st.col); } }
+    }
+    /// Help > User Guide, Cmd+/: the guide's folder is unfolded and this page of it shown.
+    fn guide_show(&mut self, slug: &str) {
+        self.guide_ensure();
+        let Some((id, folder)) = self.guide.as_ref().and_then(|g| g.pages.iter().find(|p| p.1 == slug).or(g.pages.first()).map(|p| (p.0, g.folder))) else { self.notice = Some(("The User Guide did not come with this copy of minNotes".to_string(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return };
+        if self.store.is_none() { self.notice = Some(("Open or make a collection: the User Guide is shown beside it".to_string(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+        if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.unfold(folder); sb.set_tree(&st.col); if sb.rail.collapsed { self.later.push(menu::Cmd::Sidebar); } }
+        self.guide_open(id);
+    }
+    /// A page of the guide comes into the window: the user's note is kept first and its editor put aside - the page is
+    /// in an editor of its own, locked, and nothing that saves a note runs while it is shown.
+    fn guide_open(&mut self, id: BlockId) {
+        if self.store.is_none() { return }
+        let Some(doc) = self.guide.as_ref().and_then(|g| g.col.load_note(id).ok()) else { return };
+        self.canvas_leave(); self.video_stop(); self.find_close(); self.note_words_end(true); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.tool = None; self.files.pdf = None;
+        if !self.guide_shown() { if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); } self.leaving(); self.reading_user = self.reading; let old = std::mem::replace(&mut self.ed, Editor::new(doc)); self.guide_stash = Some(old); }
+        else { self.ed = Editor::new(doc); }
+        if let Some(g) = self.guide.as_mut() { g.shown = Some(id); }
+        self.reading = true; self.ed.locked = true; self.refused_seen = 0; self.blank = false; self.layout = None; self.flat = None; self.scroll = 0.0; self.follow = false;
+        if let Some(sb) = self.sidebar.as_mut() { sb.selected = Some(id); }
+        #[cfg(target_os = "macos")] text_element::changed(true);
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The guide's page leaves the window and the user's own note is in the editor again; true when one was shown.
+    fn guide_leave(&mut self) -> bool {
+        let Some(g) = self.guide.as_mut() else { return false }; if g.shown.take().is_none() { return false }
+        self.video_stop(); self.find_close(); self.files.pdf = None;
+        if let Some(e) = self.guide_stash.take() { self.ed = e; }
+        self.reading = self.reading_user; self.ed.locked = self.reading; self.refused_seen = self.ed.refused; self.notice = None; self.layout = None; self.flat = None; self.scroll = 0.0; true
+    }
     fn set_reading(&mut self, on: bool) {
+        if self.guide_shown() { self.notice = Some(("The User Guide can only be read".to_string(), Instant::now() + std::time::Duration::from_secs(4))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.store.is_none() || self.reading == on { return }
         if on { if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); } self.note_words_end(true); self.autosave(); self.files.tool = None; self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.resize = None; self.grab = None; if self.ed.in_blocks() { self.ed.toggle_blocks(); } }
         self.reading = on; self.ed.locked = on; self.refused_seen = self.ed.refused;
@@ -592,10 +634,12 @@ impl App {
         self.layout = None; self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn leaving(&mut self) {
+        if self.guide_shown() { return }
         if let Some(st) = self.store.as_mut() { if !self.reading && st.edited.is_none() && st.col.load_note(st.note).map(|d| d != self.ed.doc).unwrap_or(true) { st.edited = Some(Instant::now()); } }
         self.autosave();
     }
-    fn autosave(&mut self) { if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
+    fn autosave(&mut self) { if self.guide_shown() { return }   // a page of the guide is in the editor: it is never written anywhere (the user's note was kept before it came)
+        if self.ed.preedit().is_some() { return }   // a composition's text is not the note's yet
         if let Some(st) = self.store.as_mut() { if st.edited.take().is_some() { match st.col.save_note(st.note, &self.ed.doc) { Ok(()) => { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(st.note); } Err(e) => eprintln!("autosave: {e}") }
             if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } self.title(); }
     /// Save (rows 285, 293): the note goes to the staged copy, a complete new file is made THERE, and a helper thread
@@ -762,7 +806,7 @@ impl App {
             Ok((store, doc, recovered)) => {
                 let mut sb = sidebar::Sidebar::new(); sb.set_tree(&store.col);
                 self.store = Some(store); self.sidebar = Some(sb); self.ed = Editor::new(doc); self.others.clear();
-                self.reading = reading_at_open(path, create); self.files.tool = None;
+                self.reading = reading_at_open(path, create); self.files.tool = None; self.guide_stash = None; if let Some(g) = self.guide.as_mut() { g.shown = None; }
                 self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = false; self.recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
                 recent_add(path); self.sync_recent();
                 #[cfg(target_os = "macos")] text_element::changed(true);
@@ -1224,6 +1268,7 @@ impl App {
     /// The selected blocks (the caret's block with its children) go to the END of another note (row 307): moved, or
     /// with `copy` copied. The other note gets them as one undo step of its own; here they are removed as one step.
     fn blocks_to_note(&mut self, to: BlockId, copy: bool) {
+        if self.guide_shown() || self.guide.as_ref().is_some_and(|g| g.has(to)) { return }
         let now = self.now_ms();
         if !self.ed.in_blocks() && !self.ed.toggle_blocks() { return }
         let Some(clip) = self.ed.copy_blocks() else { return }; let n = self.ed.run_len();
@@ -1339,7 +1384,7 @@ impl App {
         self.ctx_blocks = false;
         let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{k}\u{2318}N") } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
-        self.ctx_for = sb.id_at(x, y);
+        self.ctx_for = sb.id_at(x, y); if self.ctx_for.is_some_and(|id| sb.is_guide(id)) { self.ctx_for = None; return }   // (the guide's rows have no menu: nothing of it can be renamed, deleted or added to)
         if let Some(id) = self.ctx_for { sb.selected = Some(id); sb.focused = true; }
         let mut items = vec![];
         if self.ctx_for.is_some() { items.push(I::with_shortcut("Rename", true, "\u{21b5}")); items.push(I::Separator); }
@@ -1391,7 +1436,7 @@ impl App {
             self.mods = was; if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a link's menu (row 320)
         if let Some(u) = self.files.lmenu.take() { let now = self.now_ms();
-            match label.as_str() { "Open Link" => { open::url(&u); } "Copy Link" => { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(u); } self.block_clip = None; }
+            match label.as_str() { "Open Link" => { if u.starts_with(guide::LINK) { if let Some(id) = self.guide.as_ref().and_then(|g| g.page(&u)) { self.guide_open(id); } } else { open::url(&u); } } "Copy Link" => { if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(u); } self.block_clip = None; }
                 "Remove Link" => { let d = self.ed.remove_link(now).unwrap_or(Dirty::Nothing); self.apply(d); } _ => self.link_open() }
             if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         // a table's row or column menu (row 317)
@@ -2003,7 +2048,7 @@ impl App {
     /// A press on a task's box takes it to its next state: to do, doing, done, and round again (row 355; until then
     /// only the typed markers set a task's state). One step that can be undone. The caret stays where it was.
     fn task_press(&mut self, x: f64, y: f64) -> bool {
-        if self.blank || self.modal() || y < self.top || x < self.side_w { return false }
+        if self.blank || self.guide_shown() || self.modal() || y < self.top || x < self.side_w { return false }
         let (nx, ny) = self.note_point((x, y)); let pt = kurbo::Point::new(nx, ny);
         let (Some(l), Some(g)) = (self.layout.as_ref(), self.gpu.as_ref()) else { return false }; let s = g.window.scale_factor();
         let hit = self.ed.doc.walk().iter().filter_map(|b| match &b.kind { Kind::Task { depth, state } => Some((b.id, *depth, *state)), _ => None }).find(|(id, _, _)| l.text_origin(&self.ed.doc, *id).is_some_and(|(_, tx, ty)| Rect::new(tx - 22.0 * s, ty + s, tx - 4.0 * s, ty + 19.0 * s).contains(pt)));
@@ -2134,7 +2179,7 @@ impl App {
         None
     }
     fn table_ui(&self) -> Option<TableUi> {
-        if self.blank || self.modal() || self.files.picker.is_some() { return None }
+        if self.blank || self.reading || self.modal() || self.files.picker.is_some() { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         table_ui(&self.ed, l, s, origin(&self.files.card, self.side_w, self.top, self.scroll, s))
     }
@@ -2165,7 +2210,7 @@ impl App {
     }
     /// The picture that is current - the caret is on it, or it is the one selected block - with its box in the window.
     fn picture(&self) -> Option<(BlockId, Rect)> {
-        if self.blank || self.files.tool.is_some() || self.grab.as_ref().is_some_and(|g| g.dragging) || self.ed.run_len() != 1 { return None }
+        if self.blank || self.reading || self.files.tool.is_some() || self.grab.as_ref().is_some_and(|g| g.dragging) || self.ed.run_len() != 1 { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor();
         let id = self.ed.handle_block()?;
         match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if !descriptor.contains("\"kind\"") => {} _ => return None }
@@ -2322,6 +2367,7 @@ impl App {
             M::PasteMarkdown => { let d = self.paste(Paste::Markdown); self.apply(d); }
             // the selected row's name (the open note's when nothing is selected); the sidebar is opened for it
             M::Rename => if let (Some(sb), Some(g), Some(st)) = (self.sidebar.as_mut(), self.gpu.as_mut(), self.store.as_ref()) { let id = sb.selected.unwrap_or(st.note); if sb.rail.collapsed { sb.rail.set_collapsed(false, Instant::now()); } sb.start_rename(id, &mut g.fonts); },
+            M::UserGuide => self.guide_show("index"), M::ShortcutsPage => self.guide_show("shortcuts"),
             M::Reading => { let on = !self.reading; self.set_reading(on); }
             M::Toolbar => { self.bar.hidden = !self.bar.hidden; self.layout = None; }
             M::Footer => { self.foot.hidden = !self.foot.hidden; self.layout = None; }
@@ -2403,6 +2449,7 @@ impl App {
     fn canvas_leave(&mut self) { if self.files.canvas.is_none() { return } self.video_stop(); self.card_leave(); self.files.cards.clear(); if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.files.canvas = None; self.blank = self.store.is_none(); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
     /// A canvas of the collection is opened in the page's place (the note stays as it is behind it).
     fn open_canvas(&mut self, id: BlockId) {
+        self.guide_leave();
         if self.files.canvas.as_ref().is_some_and(|c| c.id == id) { return } self.canvas_leave();
         if self.store.is_none() { return } if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
         self.leaving(); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None;
@@ -2503,7 +2550,8 @@ impl App {
     }
     /// The editor becomes this note's (the one it held is kept beside it).
     fn swap_note(&mut self, id: BlockId) {
-        let Some(st) = self.store.as_mut() else { return }; if st.note == id { return }
+        let left = self.guide_leave();
+        let Some(st) = self.store.as_mut() else { return }; if st.note == id { if left { #[cfg(target_os = "macos")] text_element::changed(true); self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
         self.leaving();
         let Some(st) = self.store.as_mut() else { return };
@@ -2515,33 +2563,37 @@ impl App {
     }
     /// Cmd+N / Cmd+Shift+N: a note or a folder beside the selected entry (inside it, when that is a folder).
     fn new_entry(&mut self, kind: mn_store::DocKind) {
+        if kind != mn_store::DocKind::Folder && self.guide_leave() { self.layout = None; }
         if kind != mn_store::DocKind::Folder { self.set_reading(false); }   // a note just made is for writing
         let (Some(st), Some(sb), Some(g)) = (self.store.as_mut(), self.sidebar.as_mut(), self.gpu.as_mut()) else { return };
-        let parent = sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
+        let parent = sb.selected.filter(|s| !sb.is_guide(*s)).or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
         let id = match st.col.create(parent, kind, if kind == mn_store::DocKind::Folder { "New folder" } else { "" }) { Ok(id) => id, Err(e) => { eprintln!("new: {e}"); return } };
         if kind == mn_store::DocKind::Note { let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); let _ = st.col.save_note(id, &d); }
         st.unpublished = true; sb.set_tree(&st.col); sb.selected = Some(id); self.changed.insert(id);
         if kind == mn_store::DocKind::Folder { sb.start_rename(id, &mut g.fonts); g.window.request_redraw(); } else if kind == mn_store::DocKind::Canvas { sb.focused = false; self.open_canvas(id); } else { sb.focused = false; self.open_note(id); self.ed.select_all(); }
     }
     fn rename_entry(&mut self, id: BlockId, name: &str) {
+        if self.guide.as_ref().is_some_and(|g| g.has(id)) { return }
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
         if st.col.rename(id, name).is_ok() { st.unpublished = true; sb.set_tree(&st.col); self.changed.insert(id); }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// Asks before deleting (the entry leaves the file at the next publish).
     fn ask_delete(&mut self, id: BlockId) {
+        if self.guide.as_ref().is_some_and(|g| g.has(id)) { return }
         let Some(row) = self.sidebar.as_ref().and_then(|sb| sb.row(id)) else { return };
         let body = if row.kind == mn_store::DocKind::Folder { "The folder and everything in it will be removed from the collection." } else { "The note will be removed from the collection." };
         let mut d = min_ui::dialog::Dialog::new(&format!("Delete \u{201c}{}\u{201d}?", row.title), body, vec![("Cancel", min_ui::text_button::Variant::Secondary), ("Delete", min_ui::text_button::Variant::Negative)]);
         d.show(); self.confirm = Some((Ask::Delete(id), d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn delete_entry(&mut self, id: BlockId) {
+        if self.guide.as_ref().is_some_and(|g| g.has(id)) { return }
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
         if let Err(e) = st.col.remove(id) { eprintln!("delete: {e}"); return }
         st.unpublished = true; sb.set_tree(&st.col); sb.selected = None; self.others.retain(|k, _| sb.row(*k).is_some()); self.changed.retain(|k| sb.row(*k).is_some());
         // the open note went with it: another one opens, or a new one is made
         if sb.row(st.note).is_none() {
-            let next = sb.rows.iter().find(|r| r.kind == mn_store::DocKind::Note).map(|r| r.id);
+            let next = sb.rows.iter().find(|r| r.kind == mn_store::DocKind::Note && !sb.is_guide(r.id)).map(|r| r.id);
             self.others.remove(&st.note);
             match next { Some(n) => { let gone = st.note; self.open_note(n); self.others.remove(&gone); }
                 None => { st.note = BlockId::new(); self.new_entry(mn_store::DocKind::Note); } }
@@ -2556,6 +2608,7 @@ impl App {
                     if let Some(f) = self.files.find.as_mut() { f.blur(); f.case = false; } self.files.found_for = None; self.find_refresh(); if !self.files.hits.is_empty() { self.files.hit_at = ord.min(self.files.hits.len() - 1); self.find_show(); } }
                 if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::NewCanvas => self.new_entry(mn_store::DocKind::Canvas),
+            sidebar::Act::Open(id) if self.guide.as_ref().is_some_and(|g| g.has(id)) => { if self.guide.as_ref().is_some_and(|g| g.folder != id) { self.guide_open(id); } }
             sidebar::Act::Open(id) => { match self.sidebar.as_ref().and_then(|sb| sb.row(id)).map(|r| r.kind) { Some(mn_store::DocKind::Note) => self.open_note(id), Some(mn_store::DocKind::Canvas) => self.open_canvas(id), _ => {} } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::Fold(id) => { if let (Some(sb), Some(st)) = (self.sidebar.as_mut(), self.store.as_ref()) { sb.toggle_fold(id); sb.set_tree(&st.col); } if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             sidebar::Act::NewNote => self.new_entry(mn_store::DocKind::Note), sidebar::Act::NewFolder => self.new_entry(mn_store::DocKind::Folder),
@@ -3297,7 +3350,7 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && self.code_press(position.x, position.y) { return }
                 if state == ElementState::Pressed && self.files.tool.is_none() && self.files.note_field.is_none() && !self.mods.0 && !self.mods.1 && self.task_press(position.x, position.y) { return }
                 // Cmd + click on a link opens it (a plain click places the caret)
-                if state == ElementState::Pressed && (self.mods.1 || self.reading) && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
+                if state == ElementState::Pressed && (self.mods.1 || self.reading) && !self.mods.0 && self.files.tool.is_none() { if let Some(u) = self.link_under(position.x, position.y) { if u.starts_with(guide::LINK) { if let Some(id) = self.guide.as_ref().and_then(|g| g.page(&u)) { self.guide_open(id); } return } if !open::url(&u) { self.notice = Some((format!("This link is not one minNotes opens: {u}"), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return } }
                 if state == ElementState::Pressed && !self.blank && !self.reading && !self.mods.0 && self.files.note_field.is_none() && self.files.tool.is_none() && self.typed_click() { return }
                 // a note's words being typed: a press outside the field keeps them
                 if state == ElementState::Pressed && self.files.note_field.as_ref().is_some_and(|(_, _, f)| !f.hit(position.x, position.y)) { self.note_words_end(true); }
@@ -3552,7 +3605,7 @@ fn style() -> Style { let mut syntax = mn_layout::palette(&mn_layout::syntax::DA
 
 /// Where staged sessions live on this machine (row 272: never beside the file).
 /// Reading or editing, as this machine last left each collection (row 358): `reading.json` beside the sessions.
-const READING_HINT: &str = if cfg!(target_os = "macos") { "Reading \u{2014} press \u{2318}E to edit" } else { "Reading \u{2014} press Ctrl+E to edit" };
+const READING_HINT: &str = if cfg!(target_os = "macos") { "Reading \u{2014} press \u{2318}R to edit" } else { "Reading \u{2014} press Ctrl+R to edit" };
 fn reading_file() -> std::path::PathBuf { sessions_root().parent().unwrap_or(std::path::Path::new(".")).join("reading.json") }
 fn reading_known(path: &std::path::Path) -> Option<bool> {
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(reading_file()).ok()?).ok()?; v.get(path.to_string_lossy().as_ref())?.as_bool()
@@ -3686,7 +3739,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, guide: None, guide_stash: None, reading_user: false, guide_tried: false, shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] mac_open::install();

@@ -19,6 +19,7 @@ const CARET: f64 = t::RAIL_SECTION_CHEVRON_SIZE as f64;
 /// A line of a search result under its note's row.
 const SNIP: f64 = 22.0;
 
+#[derive(Clone)]
 pub struct Row { pub id: BlockId, pub parent: Option<BlockId>, pub depth: usize, pub kind: DocKind, pub title: String, pub named: bool, pub has_children: bool }
 pub enum Act { None, Redraw, /// the header's buttons
     NewNote, NewFolder, NewCanvas, Open(BlockId), Renamed(BlockId, String), /// fold or unfold this folder
@@ -31,7 +32,8 @@ pub enum Nav { Up, Down, Left, Right }
 pub struct Sidebar {
     /// a note's row that dragged blocks would go to: outlined (row 307)
     pub drop_row: Option<BlockId>,
-    pub rail: Rail, pub rows: Vec<Row>, folded: HashSet<BlockId>, pub selected: Option<BlockId>,
+    pub rail: Rail, pub rows: Vec<Row>, /// the User Guide's rows (row 359): its folder, then its pages - shown after the collection's own, and no part of it
+    pub guide: Vec<Row>, folded: HashSet<BlockId>, pub selected: Option<BlockId>,
     /// keys go to the tree (Enter renames, Delete deletes) rather than to the note
     pub focused: bool,
     /// the header: a search field for the collection (shown, not built yet), new note, new folder
@@ -48,7 +50,7 @@ impl Sidebar {
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
         let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("bounding-box", "New canvas"), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
         let mut query = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); query.placeholder = "Search".into();
-        Sidebar { defer_open: false, pressed_row: None, query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
+        Sidebar { defer_open: false, pressed_row: None, query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, guide: vec![], rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
     pub fn set_tree(&mut self, col: &Collection) {
         fn walk(col: &Collection, parent: Option<BlockId>, depth: usize, folded: &HashSet<BlockId>, out: &mut Vec<Row>) {
@@ -61,8 +63,17 @@ impl Sidebar {
                 if e.kind == DocKind::Folder && !folded.contains(&e.id) { walk(col, Some(e.id), depth + 1, folded, out); }
             }
         }
-        let mut rows = vec![]; walk(col, None, 0, &self.folded, &mut rows); self.rows = rows;
+        let mut rows = vec![]; walk(col, None, 0, &self.folded, &mut rows);
+        if let Some(f) = self.guide.first() { let open = !self.folded.contains(&f.id); rows.extend(self.guide.iter().take(if open { usize::MAX } else { 1 }).cloned()); }
+        self.rows = rows;
     }
+    /// The guide's rows are given (once): its folder starts folded.
+    pub fn set_guide(&mut self, folder: BlockId, pages: &[(BlockId, String)]) {
+        self.guide = std::iter::once(Row { id: folder, parent: None, depth: 0, kind: DocKind::Folder, title: "User Guide".into(), named: true, has_children: true }).chain(pages.iter().map(|(id, t)| Row { id: *id, parent: Some(folder), depth: 1, kind: DocKind::Note, title: t.clone(), named: true, has_children: false })).collect();
+        self.folded.insert(folder);
+    }
+    pub fn is_guide(&self, id: BlockId) -> bool { self.guide.iter().any(|r| r.id == id) }
+    pub fn unfold(&mut self, id: BlockId) { self.folded.remove(&id); }
     pub fn toggle_fold(&mut self, id: BlockId) { if !self.folded.remove(&id) { self.folded.insert(id); } }
     /// An arrow key with the tree focused: Up / Down move the selection (a note is opened as it is reached), Left folds
     /// a folder or goes to the parent, Right unfolds.
