@@ -173,6 +173,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     import: Option<Importing>, import_wait: Vec<std::path::PathBuf>, import_big: Option<(import::Done, std::path::PathBuf)>, import_test: bool, code_test: bool, unpack: Option<Unpack>, /// the export's options (read from the settings when first wanted)
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
+    /// files dragged over the SIDEBAR (row 345): the row under them (None: no row - the top); what was dropped there and is being fetched; where imported notes go; files that become one note once the imports are in
+    side_drag: Option<Option<BlockId>>, side_fetches: std::collections::HashMap<AsyncRequestSerial, Option<BlockId>>, import_parent: Option<Option<BlockId>>, side_media: Option<(Vec<std::path::PathBuf>, Option<BlockId>)>, side_test: bool,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -1003,7 +1005,7 @@ impl App {
     /// What was read becomes a note beside the selected entry (inside it, when that is a folder), named after the file, and is opened.
     fn import_land(&mut self, done: import::Done) {
         let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
-        let parent = sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
+        let parent = match self.files.import_parent { Some(p) => p, None => sb.selected.or(Some(st.note)).and_then(|s| sb.row(s)).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent }) };
         let made = st.col.create(parent, mn_store::DocKind::Note, &done.title).and_then(|id| st.col.save_note(id, &import::doc_of(&done.clip)).map(|_| id));
         let id = match made { Ok(id) => id, Err(e) => { eprintln!("import: {e}"); use min_ui::text_button::Variant as V; self.ask(Ask::Notice, &format!("Couldn\u{2019}t import \u{201c}{}\u{201d}", done.title), &e.to_string(), vec![("OK", V::Primary)]); return } };
         st.unpublished = true; st.edited_since_stage = true; sb.set_tree(&st.col); sb.selected = Some(id); sb.focused = false; self.changed.insert(id);
@@ -2095,6 +2097,49 @@ impl App {
         if paths.is_empty() || (self.blank && self.files.canvas.is_none()) { return }
         self.files.token += 1; self.files.pending.insert(self.files.token, at); self.media.add(self.files.token, paths);
     }
+    // ── files dropped on the sidebar (row 345): a collection is opened, documents become notes, other files one note
+    /// The sidebar's drop place under a window point: the row there (None inside: no row). None: not over the sidebar.
+    fn side_drop_at(&self, x: f64, y: f64) -> Option<Option<BlockId>> {
+        if self.modal() || self.store.is_none() || y < self.top || self.foot.hit(x, y) { return None }
+        let sb = self.sidebar.as_ref()?; if !sb.rail.hit(x, y) { return None }
+        Some(sb.id_at(x, y))
+    }
+    /// The row files would go to is outlined while they are over the sidebar.
+    fn side_drag_set(&mut self, at: Option<Option<BlockId>>) {
+        if at == self.files.side_drag { return }
+        self.files.side_drag = at; if let Some(sb) = self.sidebar.as_mut() { sb.drop_row = at.flatten(); }
+        if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// Files were dropped on the sidebar, on `target`'s row (a folder takes them in; beside a note; None: the top).
+    fn side_drop(&mut self, paths: Vec<std::path::PathBuf>, target: Option<BlockId>) {
+        if paths.is_empty() || self.store.is_none() { return }
+        let ext = |p: &std::path::Path| p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        // a collection or a package is opened (the first of them; nothing else of the drop is taken) - by the way every
+        // collection is opened, which asks about what is not saved and tells the desktop the text is another's
+        if let Some(c) = paths.iter().find(|p| p.is_file() && (ext(p) == "mnd" || ext(p) == gather::PACKAGE)) { let c = c.clone(); if paths.len() > 1 { self.notice = Some(("Opening the collection \u{2014} the other files were left".into(), Instant::now() + std::time::Duration::from_secs(6))); } self.request_close(Pending::Open(c)); return }
+        let parent = target.and_then(|t| self.sidebar.as_ref().and_then(|sb| sb.row(t))).and_then(|r| if r.kind == mn_store::DocKind::Folder { Some(r.id) } else { r.parent });
+        let (docs, other): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.is_file() && import::family(p).is_some());
+        if !other.is_empty() { self.files.side_media = Some((other, parent)); }
+        if !docs.is_empty() { self.files.import_parent = Some(parent); self.files.import_wait.extend(docs); self.import_next(); }
+        self.side_media_tick();
+    }
+    /// Once no import is under way: the other files of a sidebar drop become ONE new note (named for the first), opened
+    /// as any note is - `open_note`, so what the desktop holds of the note before is given up - and the files are added to it.
+    fn side_media_tick(&mut self) {
+        if self.files.import.is_some() || !self.files.import_wait.is_empty() || self.files.import_big.is_some() { return }
+        self.files.import_parent = None;
+        if self.modal() { return }
+        let Some((paths, parent)) = self.files.side_media.take() else { return };
+        let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) else { return };
+        let title = paths.first().and_then(|p| p.file_stem()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let made = st.col.create(parent, mn_store::DocKind::Note, &title).and_then(|id| { let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").map_err(|e| mn_store::Error::Corrupt(format!("{e:?}")))?; st.col.save_note(id, &d).map(|_| id) });
+        let id = match made { Ok(id) => id, Err(e) => { eprintln!("drop: {e}"); self.notice = Some(("A note could not be made for the files".into(), Instant::now() + std::time::Duration::from_secs(6))); return } };
+        st.unpublished = true; st.edited_since_stage = true; sb.set_tree(&st.col); sb.selected = Some(id); sb.focused = false; self.changed.insert(id);
+        let n = paths.len(); self.notice = Some((if n == 1 { format!("Made a note of {title}") } else { format!("Made a note of {n} files") }, Instant::now() + std::time::Duration::from_secs(6)));
+        println!("side drop: a note of {n} file(s)");
+        self.open_note(id);
+        self.add_files(paths, mn_edit::Drop { parent: None, index: 0, depth: None, beside: None });
+    }
     /// The page's drop place under a window point (None: over the bars, the sidebar, a dialog, or no note).
     fn file_drop_at(&self, x: f64, y: f64) -> Option<(mn_edit::Drop, Rect)> {
         // over an open canvas: the files go where the pointer is (no line is shown)
@@ -2789,6 +2834,8 @@ impl ApplicationHandler for App {
             if how != "show" { self.site_start(to.into()); }
         }
         if std::env::var_os("MN_SITE").is_some() { if let Some(w) = self.files.site.as_ref() { if w.phase == site_win::Phase::Done && !self.files.site_said { self.files.site_said = true; println!("site: {}", w.note); } } }
+        // (scripted, MN_SIDE_DROP=<file>[:<file>…]: the files are dropped on the sidebar, on no row)
+        if let (false, Ok(v), true) = (self.files.side_test, std::env::var("MN_SIDE_DROP"), self.frames > 8 && self.store.is_some()) { self.files.side_test = true; self.side_drop(v.split(':').map(std::path::PathBuf::from).collect(), None); }
         // (scripted, MN_CTX=<x>,<y>: the context menu is opened at a window point, as a right press there would)
         if let (false, Ok(v), true) = (self.files.ctx_test, std::env::var("MN_CTX"), self.frames > 8 && self.layout.is_some() && !self.blank) { self.files.ctx_test = true; if let Some((x, y)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) { self.context(x, y); } }
         // (scripted, MN_CODE=lang|copy[:<n>]: the n-th code block's label or button is pressed as a pointer would)
@@ -2884,7 +2931,7 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
-        self.unpack_tick(); self.import_tick();
+        self.unpack_tick(); self.import_tick(); if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
         if self.files.site.is_some() { let out = self.files.site.as_mut().map(|w| w.tick()).unwrap_or(site_win::Out::None); self.site_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
@@ -2936,23 +2983,29 @@ impl ApplicationHandler for App {
             // files dragged in from outside (row 310): a line shows where they would land; over anything but the page they are refused
             WindowEvent::DragEntered { id: tid, position } => {
                 let files = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false);
-                self.files.drag = if files { position.and_then(|p| self.file_drop_at(p.x, p.y)) } else { None };
-                el.set_valid_dnd_actions(tid, if files && (position.is_none() || self.files.drag.is_some()) { &[DndAction::Copy] } else { &[] }).ok();
+                let side = if files { position.and_then(|p| self.side_drop_at(p.x, p.y)) } else { None }; self.side_drag_set(side);
+                self.files.drag = if files && side.is_none() { position.and_then(|p| self.file_drop_at(p.x, p.y)) } else { None };
+                el.set_valid_dnd_actions(tid, if files && (position.is_none() || self.files.drag.is_some() || side.is_some()) { &[DndAction::Copy] } else { &[] }).ok();
                 if let Some(g) = &self.gpu { g.window.request_redraw(); }
             }
             WindowEvent::DragPosition { id: tid, position, .. } => {
                 let files = el.data_transfer(tid).map(|dt| dt.has_type(&TypeHint::UriList)).unwrap_or(false);
-                let at = if files { self.file_drop_at(position.x, position.y) } else { None };
-                el.set_valid_dnd_actions(tid, if at.is_some() { &[DndAction::Copy] } else { &[] }).ok();
+                let side = if files { self.side_drop_at(position.x, position.y) } else { None }; self.side_drag_set(side);
+                let at = if files && side.is_none() { self.file_drop_at(position.x, position.y) } else { None };
+                el.set_valid_dnd_actions(tid, if at.is_some() || side.is_some() { &[DndAction::Copy] } else { &[] }).ok();
                 if at != self.files.drag { self.files.drag = at; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             }
-            WindowEvent::DragLeft { .. } => { self.files.drag = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+            WindowEvent::DragLeft { .. } => { self.side_drag_set(None); self.files.drag = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::DragDropped { id: tid, .. } => {
-                if let Some((at, _)) = self.files.drag.take() { if let Ok(serial) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.files.fetches.insert(serial, at); } }
+                if let Some(target) = self.files.side_drag { self.side_drag_set(None); self.files.drag = None; if let Ok(serial) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.files.side_fetches.insert(serial, target); } }
+                else if let Some((at, _)) = self.files.drag.take() { if let Ok(serial) = el.fetch_data_transfer(tid, &TypeHint::UriList) { self.files.fetches.insert(serial, at); } }
                 if let Some(g) = &self.gpu { g.window.request_redraw(); }
             }
             WindowEvent::DataTransferReceived { serial, value, .. } => {
-                if let Some(at) = self.files.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() {
+                if let Some(target) = self.files.side_fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() {
+                    let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| if u.starts_with("file:") { min_paths::url::file_url_to_path(u) } else if u.contains("://") { None } else { Some(u.to_string()) }).map(Into::into).collect();
+                    self.side_drop(paths, target); } }
+                else if let Some(at) = self.files.fetches.remove(&serial) { if let Ok(uris) = value.try_as_uris() {
                     let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| if u.starts_with("file:") { min_paths::url::file_url_to_path(u) } else if u.contains("://") { None } else { Some(u.to_string()) }).map(Into::into).collect();
                     self.add_files(paths, at); } }
             }

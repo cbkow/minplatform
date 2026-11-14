@@ -230,7 +230,7 @@ pub fn uninstall() { log_summary(); HOST.set(None); }
 
 fn post(element: *mut AnyObject, name: &NSString) { if !element.is_null() { unsafe { NSAccessibilityPostNotification(element, name); } } }
 /// After an edit (`text` true) or a selection change. NEVER after a scroll.
-pub fn changed(text: bool) { if text { post(TEXT.get(), ns_string!("AXValueChanged")); } post(TEXT.get(), ns_string!("AXSelectedTextChanged")); }
+pub fn changed(text: bool) { if text { key_log("post AXValueChanged (the text is another's, or was edited)".into()); } if text { post(TEXT.get(), ns_string!("AXValueChanged")); } post(TEXT.get(), ns_string!("AXSelectedTextChanged")); }
 /// The view scrolled: only the scroll bar says so (what a native scroll view does).
 pub fn scrolled() { post(BAR.get(), ns_string!("AXValueChanged")); }
 /// The window took focus: name the text as the focused element (unless something stands over the note).
