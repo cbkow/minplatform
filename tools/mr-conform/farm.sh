@@ -3,7 +3,8 @@
 # a 0.5.x build, each with its own home, temporary folder, port and node id, one scratch share, loopback addresses, UDP
 # off. Nothing here can reach a real farm: another share, other ports, 127.0.0.1 only. The real installation's data
 # folder is never used (each node's HOME is a scratch folder).
-#   sh tools/mr-conform/farm.sh start [N]     (default 2; needs MR_HEADLESS = the path of a `minrender-headless` build)
+#   sh tools/mr-conform/farm.sh start [N]     (default 2; needs MR_HEADLESS = the path of a `minrender-headless` build;
+#                                              MR_TAGS='"noleader"' gives every node that tag)
 #   sh tools/mr-conform/farm.sh port          the Rust node (target/release/minRender) joins the running farm
 #   sh tools/mr-conform/farm.sh stop
 #   sh tools/mr-conform/farm.sh config <n>    prints the path of node n's config.json (for `mr-conform record --config`)
@@ -19,14 +20,14 @@ case "$1" in
     rm -rf "$W"; mkdir -p "$W/share"
     i=1; while [ "$i" -le "$N" ]; do
       d="$(data $i)"; mkdir -p "$d" "$W/n$i/t"
-      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":%d,"node_stopped":false,"tags":[],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" $((8430 + i)) $((4330 + i)) > "$d/config.json"
+      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" $((8430 + i)) $((4330 + i)) "${MR_TAGS:-}" > "$d/config.json"
       HOME="$W/n$i" TMPDIR="$W/n$i/t" "$MR_HEADLESS" > "$W/n$i/out.log" 2>&1 &
       echo $! >> "$W/pids"; i=$((i + 1)); sleep 1
     done
     echo "started $N nodes; ports 8431..$((8430 + N)); share $W/share" ;;
   port)
     # the Rust node joins a running private farm as one more node (a follower: the tag `noleader`)
-    [ -f "$W/pids" ] || { echo "start a farm first"; exit 1; }
+    [ -f "$W/share/MinRender-v2/farm.json" ] || { echo "start a farm first (the port joins a farm; it does not make one)"; exit 1; }
     BIN="${MR_PORT:-$PWD/target/release/minRender}"; [ -x "$BIN" ] || { echo "build it first: cargo build --release -p mr"; exit 1; }
     d="$W/p/data"; mkdir -p "$d"
     printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":["noleader"],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" > "$d/config.json"

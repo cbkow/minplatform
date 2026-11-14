@@ -115,10 +115,12 @@ impl Node {
             ("POST", "/api/node/restart") => Response::error(500, "restart_failed"),
             // (there is no separate agent to restart: the leash is started anew for every chunk)
             ("POST", "/api/agent/restart") => Response::ok(),
-            ("POST", "/api/dispatch/assign") => { let v = match body() { Ok(v) => v, Err(r) => return r };
+            // (a busy or stopped node says so before it reads the body: seen of 0.5.11, which answers `busy` even to a body that is not JSON)
+            ("POST", "/api/dispatch/assign") => { if self.work.lock().unwrap().running.is_some() { return Response::error(409, "busy") } if self.stopped.load(Ordering::Relaxed) { return Response::error(409, "stopped") }
+                let v = match body() { Ok(v) => v, Err(r) => return r };
                 let (Some(m), Some(a), Some(b)) = (v.get("manifest").filter(|m| m.is_object()), v["frame_start"].as_i64(), v["frame_end"].as_i64()) else { return Response::error(400, "the assignment lacks a manifest or its frames") };
                 let mut w = self.work.lock().unwrap();
-                if w.running.is_some() { return Response::error(409, "busy") } if self.stopped.load(Ordering::Relaxed) { return Response::error(409, "stopped") }
+                if w.running.is_some() { return Response::error(409, "busy") }
                 if !plain_segment(m["job_id"].as_str().unwrap_or("")) { return Response::error(400, "invalid_job_id") }
                 w.queue.push_back(Assignment { manifest: m.clone(), start: a, end: b, epoch: v["edit_epoch"].as_i64() }); w.busy = true; Response::ok() }
             ("POST", "/api/render/abort") => { let v = match body() { Ok(v) => v, Err(r) => return r }; let Some(job) = v["job_id"].as_str() else { return Response::error(400, "the request names no job") };

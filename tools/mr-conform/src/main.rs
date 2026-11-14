@@ -237,6 +237,118 @@ fn drive(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------------------- leading
+/// A stand-in renderer with no shell in it, so that it is the same on every system:
+///   mr-conform fake-render <first> <last> <ok|fail> <seconds a frame> <folder>
+/// It writes `<folder>/<pid>.renderer`, starts one helper (which writes `<pid>.helper` and sleeps), prints one
+/// `Saved:` line a frame, and ends with 0 - or, for `fail`, prints a complaint and ends with 3.
+fn fake_render(args: &[String]) -> ! {
+    let n = |i: usize| args.get(i).cloned().unwrap_or_default(); let dir = n(5);
+    if n(0) == "fake-helper" { let _ = std::fs::write(Path::new(&n(1)).join(format!("{}.helper", std::process::id())), b""); std::thread::sleep(Duration::from_secs(300)); std::process::exit(0) }
+    let _ = std::fs::create_dir_all(&dir); let _ = std::fs::write(Path::new(&dir).join(format!("{}.renderer", std::process::id())), b"");
+    let _ = std::process::Command::new(std::env::current_exe().unwrap()).args(["fake-helper", &dir]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    if n(3) == "fail" { eprintln!("Unable to open the scene"); std::process::exit(3) }
+    let (a, b, nap) = (n(1).parse::<i64>().unwrap_or(1), n(2).parse::<i64>().unwrap_or(1), n(4).parse::<f64>().unwrap_or(0.5));
+    for f in a..=b { std::thread::sleep(Duration::from_secs_f64(nap)); println!("Saved: '{dir}/f_{f:04}.exr'"); let _ = std::io::stdout().flush(); }
+    std::process::exit(0)
+}
+fn alive(pid: u32) -> bool {
+    if cfg!(windows) { std::process::Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())).unwrap_or(false) }
+    else { std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().map(|o| { let t = String::from_utf8_lossy(&o.stdout); let t = t.trim(); !t.is_empty() && !t.starts_with('Z') }).unwrap_or(false) }
+}
+/// Part 3: the harness LEADS a private farm of one worker, to see the wire as a worker sends it. It writes itself into
+/// the phonebook with the tag `leader`, answers the routes a worker calls, files every request that reaches it, and
+/// puts the worker through seven scenarios. Refuses any share that is not under a folder named `mr-farm`.
+///   mr-conform lead --share <sync root> --port <N> --out <dir>
+fn lead(args: &[String]) -> Result<(), String> {
+    use std::sync::{Arc, Mutex};
+    let share = arg(args, "--share").ok_or("--share <sync root of a private farm>")?; let port: u16 = arg(args, "--port").and_then(|p| p.parse().ok()).ok_or("--port <N>")?; let out = PathBuf::from(arg(args, "--out").ok_or("--out <dir>")?);
+    if !share.replace('\\', "/").contains("/mr-farm/") { return Err("this is not a private farm (a share under a folder named mr-farm): refused".into()) }
+    let farm = Path::new(&share).join("MinRender-v2"); let secret = serde_json::from_str::<Value>(&std::fs::read_to_string(farm.join("farm.json")).map_err(|e| format!("farm.json: {e}"))?).ok().and_then(|v| v["api_secret"].as_str().map(str::to_string)).ok_or("no secret")?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?; let me_id = "000000lead00".to_string(); let bearer = format!("Bearer {secret}");
+    let my_dir = farm.join("nodes").join(&me_id); std::fs::create_dir_all(&my_dir).map_err(|e| e.to_string())?;
+    let stamp = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    std::fs::write(my_dir.join("endpoint.json"), serde_json::to_string_pretty(&json!({ "node_id": me_id, "ip": "127.0.0.1", "port": port, "timestamp_ms": stamp() })).unwrap()).map_err(|e| e.to_string())?;
+    // what the stand-in leader holds: the jobs it lists, whether frame reports are called stale, everything it was sent
+    struct Lead { jobs: Vec<Value>, stale: bool, got: Vec<(String, String, Value)>, n: usize }
+    let st = Arc::new(Mutex::new(Lead { jobs: Vec::new(), stale: false, got: Vec::new(), n: 0 }));
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("port {port}: {e}"))?;
+    { let (st, out, bearer, me_id) = (st.clone(), out.clone(), bearer.clone(), me_id.clone()); std::thread::spawn(move || for mut s in listener.incoming().flatten() {
+        let _ = s.set_read_timeout(Some(Duration::from_secs(5))); let (mut buf, mut tmp) = (Vec::new(), [0u8; 8192]);
+        let cut = loop { if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") { break Some(i) } match s.read(&mut tmp) { Ok(0) | Err(_) => break None, Ok(n) => buf.extend_from_slice(&tmp[..n]) } };
+        let Some(cut) = cut else { continue }; let head = String::from_utf8_lossy(&buf[..cut]).into_owned(); let mut lines = head.split("\r\n");
+        let mut first = lines.next().unwrap_or("").split(' '); let (method, path) = (first.next().unwrap_or("").to_string(), first.next().unwrap_or("").to_string());
+        let headers: Vec<(String, String)> = lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())).collect();
+        let len: usize = headers.iter().find(|(k, _)| k == "content-length").and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
+        let mut body = buf[cut + 4..].to_vec(); while body.len() < len { match s.read(&mut tmp) { Ok(0) | Err(_) => break, Ok(n) => body.extend_from_slice(&tmp[..n]) } }
+        let auth = match headers.iter().find(|(k, _)| k == "authorization") { None => "none", Some((_, v)) if *v == bearer => "good", Some(_) => "wrong" };
+        let text = String::from_utf8_lossy(&body).into_owned(); let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let mut g = st.lock().unwrap();
+        let reply = match (method.as_str(), path.as_str()) {
+            ("GET", "/api/status") => json!({ "node_id": me_id, "hostname": "conformance", "os": if cfg!(windows) { "windows" } else { "macos" }, "app_version": "0.5.11", "gpu_name": "", "cpu_cores": 1, "ram_mb": 1024, "node_state": "stopped", "render_state": "idle", "active_job": "", "active_chunk": "", "priority": 100,
+                "tags": ["leader"], "capabilities": ["job_edit", "edit_result", "edit_epoch", "edit_commands", "chunk_stop"], "endpoint": format!("127.0.0.1:{port}"), "secret_fingerprint": "", "agent_health": "ok", "alert_reason": "", "ready_for_work": false,
+                "is_local": true, "is_alive": true, "is_leader": false, "last_seen_ms": 0, "has_udp_contact": false, "failed_polls": 0 }).to_string(),
+            ("GET", "/api/jobs") => Value::Array(g.jobs.clone()).to_string(),
+            ("GET", "/api/nodes/suspended") => "[]".to_string(),
+            ("POST", "/api/dispatch/frame-complete") if g.stale => json!({ "status": "stale", "stale": true }).to_string(),
+            _ => json!({ "status": "ok" }).to_string() };
+        // the polls are counted, not filed one by one; everything else is filed
+        if method == "GET" { let k = format!("GET {path}"); if !g.got.iter().any(|(m, _, _)| *m == k) { g.got.push((k, auth.to_string(), json!({ "headers": headers.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>() }))); } }
+        else { g.n += 1; let _ = std::fs::write(out.join(format!("in-{:03}{}.json", g.n, path.replace('/', "-"))), serde_json::to_string_pretty(&json!({ "method": method, "path": path, "auth": auth, "headers": headers.iter().filter(|(k, _)| k != "authorization").map(|(k, v)| json!([k, v])).collect::<Vec<_>>(), "body": parsed.clone() })).unwrap());
+            g.got.push((format!("{method} {path}"), auth.to_string(), parsed)); }
+        drop(g);
+        let _ = s.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{reply}", reply.len()).as_bytes()); let _ = s.flush();
+    }); }
+    // the worker: the one other node in the phonebook; wait until it holds this stand-in for the leader
+    let worker = (0..120).find_map(|_| { std::thread::sleep(Duration::from_millis(500));
+        std::fs::read_dir(farm.join("nodes")).ok()?.flatten().filter(|d| d.file_name() != me_id.as_str()).find_map(|d| { let v: Value = serde_json::from_str(&std::fs::read_to_string(d.path().join("endpoint.json")).ok()?).ok()?; let e = format!("{}:{}", v["ip"].as_str()?, v["port"].as_u64()?);
+            let peers: Value = serde_json::from_slice(&http(&e, "GET", "/api/peers", Some(&bearer), None).ok()?.body).ok()?;
+            peers.as_array()?.iter().any(|p| p["node_id"] == json!(me_id) && p["is_leader"] == json!(true) && p["is_alive"] == json!(true)).then_some(e) }) }).ok_or("no worker took this stand-in for its leader within a minute")?;
+    println!("the worker at {worker} follows the stand-in leader");
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?.to_string_lossy().into_owned(); let pids = Path::new(&share).parent().unwrap_or(Path::new(".")).join("pids-lead"); let _ = std::fs::remove_dir_all(&pids);
+    let manifest = |id: &str, mode: &str, nap: &str| json!({ "_version": 1, "job_id": id, "template_id": "conformance", "submitted_by": me_id, "submitted_os": if cfg!(windows) { "windows" } else { "macos" }, "submitted_at_ms": stamp(),
+        "cmd": { "macos": exe, "windows": exe, "linux": exe }, "flags": [{ "flag": "fake-render", "value": "{chunk_start}" }, { "flag": "", "value": "{chunk_end}" }, { "flag": "", "value": mode }, { "flag": "", "value": nap }, { "flag": "", "value": pids.to_string_lossy() }],
+        "frame_start": 1, "frame_end": 1000, "chunk_size": 10, "max_retries": 3, "timeout_seconds": null, "output_dir": null, "progress": { "patterns": [], "error_patterns": [], "completion_pattern": { "regex": "Saved: '?(.+)'?" } },
+        "output_detection": { "stdout_regex": null, "path_group": 1, "validation": "exists_nonzero", "info": "" }, "process": { "working_dir": null }, "environment": {}, "tags_required": [] });
+    let summary = |id: &str, state: &str| json!({ "job_id": id, "template_id": "conformance", "current_state": state, "priority": 50, "submitted_at_ms": 0, "submitted_by": me_id, "frame_start": 1, "frame_end": 1000, "chunk_size": 10, "total_chunks": 100,
+        "completed_chunks": 0, "failed_chunks": 0, "rendering_chunks": 1, "pending_chunks": 99, "stopped_chunks": 0, "first_assigned_ms": 0, "last_completed_ms": 0 });
+    let send = |name: &str, path: &str, body: Value| -> u16 { let a = http(&worker, "POST", path, Some(&bearer), Some(&body.to_string())); let (s, b) = a.map(|a| (a.status, String::from_utf8_lossy(&a.body).into_owned())).unwrap_or((0, String::new()));
+        println!("  -> {name}: {s} {b}"); let _ = std::fs::write(out.join(format!("out-{name}.json")), serde_json::to_string_pretty(&json!({ "path": path, "status": s, "answer": b })).unwrap()); s };
+    let state_of = || serde_json::from_slice::<Value>(&http(&worker, "GET", "/api/status", None, None).map(|a| a.body).unwrap_or_default()).unwrap_or(Value::Null);
+    let wait = |what: &dyn Fn() -> bool, secs: u64| -> Option<f64> { let t = Instant::now(); while t.elapsed() < Duration::from_secs(secs) { if what() { return Some(t.elapsed().as_secs_f64()) } std::thread::sleep(Duration::from_millis(100)); } None };
+    let rendering = || state_of()["render_state"] == json!("rendering"); let idle = || { let s = state_of(); s["render_state"] == json!("idle") && s["ready_for_work"] == json!(true) };
+    let left = || std::fs::read_dir(&pids).map(|d| d.flatten().filter_map(|e| e.file_name().to_string_lossy().split_once('.').and_then(|(p, _)| p.parse::<u32>().ok())).filter(|p| alive(*p)).count()).unwrap_or(0);
+    let mut report = Vec::<String>::new();
+    let mut scenario = |name: &str, mode: &str, nap: &str, first: i64, last: i64, epoch: Option<i64>, act: &dyn Fn(&str)| {
+        let id = format!("lead-{name}"); let mark = st.lock().unwrap().got.len(); { let mut g = st.lock().unwrap(); g.jobs = vec![summary(&id, "active")]; g.stale = false; }
+        println!("{name}"); let mut body = json!({ "manifest": manifest(&id, mode, nap), "frame_start": first, "frame_end": last }); if let Some(e) = epoch { body["edit_epoch"] = json!(e); }
+        send(&format!("{name}-assign"), "/api/dispatch/assign", body);
+        let began = wait(&rendering, 15); act(&id); let ended = wait(&idle, 40); std::thread::sleep(Duration::from_millis(2500));
+        let g = st.lock().unwrap(); let sent: Vec<String> = g.got[mark..].iter().filter(|(m, _, _)| m.starts_with("POST")).map(|(m, auth, b)| { let mut keys: Vec<String> = b.as_object().map(|o| o.iter().map(|(k, v)| format!("{k}:{}", match v { Value::Array(a) => format!("[{}]", a.len()), Value::String(s) if k == "error" => format!("\"{s}\""), Value::Number(n) if k != "frame_start" && k != "frame_end" => n.to_string(), v => kind(v).to_string() })).collect()).unwrap_or_default(); keys.sort();
+            format!("{} ({auth}) {{{}}}", m.trim_start_matches("POST /api/dispatch/"), keys.join(", ")) }).collect();
+        drop(g);
+        let line = format!("| {name} | {} | {} | {} | {} |", began.map(|t| format!("{t:.1} s")).unwrap_or("never".into()), ended.map(|t| format!("{t:.1} s")).unwrap_or("never".into()), if sent.is_empty() { "nothing".to_string() } else { sent.join("<br>") }, left());
+        println!("  {line}"); report.push(line);
+    };
+    let pause = |s: f64| std::thread::sleep(Duration::from_secs_f64(s));
+    scenario("renders", "ok", "0.4", 1, 4, Some(0), &|_| {});
+    scenario("renders-no-epoch", "ok", "0.4", 5, 6, None, &|_| {});
+    scenario("fails", "fail", "0", 1, 2, Some(0), &|_| {});
+    scenario("aborted", "ok", "1", 1, 30, Some(0), &|id| { pause(3.2); send("aborted-abort", "/api/render/abort", json!({ "job_id": id, "reason": "chunk stopped" })); });
+    scenario("cancelled-in-the-list", "ok", "1", 1, 30, Some(0), &|id| { pause(3.2); st.lock().unwrap().jobs = vec![summary(id, "cancelled")]; });
+    scenario("gone-from-the-list", "ok", "1", 1, 30, Some(0), &|_| { pause(3.2); st.lock().unwrap().jobs.clear(); });
+    scenario("called-stale", "ok", "1", 1, 30, Some(4), &|_| { pause(1.0); st.lock().unwrap().stale = true; });
+    scenario("busy-and-bad", "ok", "1", 1, 6, Some(0), &|id| { pause(1.5); send("busy-second-assign", "/api/dispatch/assign", json!({ "manifest": manifest(id, "ok", "1"), "frame_start": 7, "frame_end": 8 }));
+        send("bad-id-assign", "/api/dispatch/assign", json!({ "manifest": manifest("../climb", "ok", "1"), "frame_start": 1, "frame_end": 1 })); send("not-json-assign", "/api/dispatch/assign", json!("nothing")); send("abort-other-job", "/api/render/abort", json!({ "job_id": "another" })); });
+    scenario("node-stopped", "ok", "1", 1, 30, Some(0), &|_| { pause(3.2); send("node-stop", "/api/node/stop", json!({})); });
+    send("node-start", "/api/node/start", json!({}));
+    let g = st.lock().unwrap(); let polls: Vec<String> = g.got.iter().filter(|(m, _, _)| m.starts_with("GET")).map(|(m, a, _)| format!("{m} ({a})")).collect(); drop(g);
+    let text = format!("| scenario | rendering after | idle after | what the worker sent the leader | processes left |\n|---|---|---|---|---|\n{}\n\nThe worker's polls of its leader: {}\n", report.join("\n"), polls.join(", "));
+    let _ = std::fs::write(out.join("table.md"), &text); println!("\n{text}");
+    let _ = std::fs::remove_file(my_dir.join("endpoint.json"));
+    Ok(())
+}
+
 // --------------------------------------------------------------------------------------------------------- checking
 /// A key's type in the contract. `Opt`: may be absent.
 #[derive(Clone, Copy)]
@@ -330,6 +442,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(|s| s.as_str()) {
         Some("record") => record(&args).map(|_| true),
+        Some("fake-render") | Some("fake-helper") => fake_render(&args),
+        Some("lead") => lead(&args).map(|_| true),
+        // a private farm's folder with nothing in it but a secret, for a machine that has no 0.5.x build to make one
+        Some("make-farm") => (|| { let share = arg(&args, "--share").ok_or("--share <dir>")?; if !share.replace('\\', "/").contains("/mr-farm/") { return Err("not under a folder named mr-farm: refused".to_string()) }
+            let farm = Path::new(&share).join("MinRender-v2"); std::fs::create_dir_all(farm.join("nodes")).map_err(|e| e.to_string())?;
+            let seed = format!("{:?}{}", std::time::SystemTime::now(), std::process::id()); let mut h: u64 = 0xcbf29ce484222325; let mut secret = String::new();
+            for i in 0..4u64 { for b in seed.bytes().chain(i.to_le_bytes()) { h = (h ^ b as u64).wrapping_mul(0x100000001b3); } secret.push_str(&format!("{h:016x}")); }
+            std::fs::write(farm.join("farm.json"), serde_json::to_string_pretty(&json!({ "_version": 1, "protocol_version": 2, "created_by": "conformance", "created_at_ms": 0, "last_example_update": "", "api_secret": secret })).unwrap()).map_err(|e| e.to_string())?; Ok(true) })(),
         Some("drive") => drive(&args).map(|_| true),
         Some("check") => match args.get(1) { Some(d) => check(Path::new(d)), None => Err("check <dir>".into()) },
         _ => Err("mr-conform record --config <config.json> --out <dir> [--max-jobs N] | drive --config <a private farm node's config.json> --out <dir> | check <dir>".into()) };

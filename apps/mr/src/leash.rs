@@ -31,7 +31,11 @@ pub fn run(cmd: &[String]) -> ! {
         #[cfg(unix)] kill_group(id);
         #[cfg(windows)] os::kill(job);
         std::process::exit(KILLED) });
-    std::process::exit(child.wait().ok().and_then(|s| s.code()).unwrap_or(1))
+    let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(1);
+    // the renderer has ended by itself: what it started and left behind ends with it. (On Windows the job does this
+    // as the leash exits; 0.5.x on macOS left such helpers running after every chunk - seen 2026-11-14.)
+    #[cfg(unix)] kill_group(id);
+    std::process::exit(code)
 }
 /// Every process of a group, at once; nothing can catch or ignore it.
 #[cfg(unix)]
