@@ -9,7 +9,7 @@ pub enum Cmd {
     Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
     Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat,
     Sidebar, Toolbar, ToolbarWide, Footer,
-    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings, Reading, UserGuide, ShortcutsPage, GuideToggle,
+    ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, CheckForUpdates, Licenses, PathMappings, Reading, UserGuide, ShortcutsPage, GuideToggle, Pin,
 }
 
 /// A shortcut: its key, always with Cmd (macOS) / Ctrl.
@@ -20,7 +20,8 @@ const fn sc_shift(key: char) -> Option<Sc> { Some(Sc { shift: true, alt: false, 
 const fn sc_alt(key: char) -> Option<Sc> { Some(Sc { shift: false, alt: true, key }) }
 
 pub enum Node { Item { label: &'static str, sc: Option<Sc>, cmd: Cmd }, /// an item with a tick (an option that stays)
-    Check { label: &'static str, cmd: Cmd }, Recent, Sep }
+    Check { label: &'static str, cmd: Cmd }, /// a ticked item with a key of its own
+    CheckKey { label: &'static str, sc: Option<Sc>, cmd: Cmd }, Recent, Sep }
 fn item(label: &'static str, sc: Option<Sc>, cmd: Cmd) -> Node { Node::Item { label, sc, cmd } }
 
 /// The menus, left to right.
@@ -49,7 +50,7 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
             item("Copy as Markdown", sc_shift('c'), Cmd::CopyMarkdown), Node::Sep,
             Node::Check { label: "Include File Paths", cmd: Cmd::ExportPaths }, Node::Check { label: "Include Video Notes", cmd: Cmd::ExportVideoNotes },
         ]),
-        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Reading Mode", sc('r'), Cmd::Reading), item("Show / Hide the User Guide", None, Cmd::GuideToggle), Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
+        ("View", vec![item("Sidebar", sc('1'), Cmd::Sidebar), item("Toolbar", sc('2'), Cmd::Toolbar), item("Footer", sc('3'), Cmd::Footer), Node::Sep, item("Reading Mode", sc('r'), Cmd::Reading), item("Show / Hide the User Guide", None, Cmd::GuideToggle), Node::Sep, Node::CheckKey { label: "Always on Top", sc: sc_alt('t'), cmd: Cmd::Pin }, Node::Sep, item("Toolbar Over the Page / Across the Window", None, Cmd::ToolbarWide)]),
         ("Help", vec![item("User Guide", None, Cmd::UserGuide), item("Keyboard Shortcuts", sc('/'), Cmd::ShortcutsPage)]),
     ]
 }
@@ -112,6 +113,7 @@ mod native {
                 for n in nodes { match n {
                     Node::Item { label, sc, cmd } => { let i = MenuItem::new(label, true, sc.and_then(accel)); ids.insert(i.id().clone(), cmd); let _ = sub.append(&i); }
                     Node::Check { label, cmd } => { let i = CheckMenuItem::new(label, true, false, None); ids.insert(i.id().clone(), cmd.clone()); let _ = sub.append(&i); checks.push((cmd, i)); }
+                    Node::CheckKey { label, sc, cmd } => { let i = CheckMenuItem::new(label, true, false, sc.and_then(accel)); ids.insert(i.id().clone(), cmd.clone()); let _ = sub.append(&i); checks.push((cmd, i)); }
                     Node::Recent => { let s = Submenu::new("Open Recent", true); let _ = sub.append(&s); recent = Some(s); }
                     Node::Sep => { let _ = sub.append(&PredefinedMenuItem::separator()); }
                 } }

@@ -46,7 +46,7 @@ fn menu_cmd(name: &str) -> Option<crate::menu::Cmd> {
     use crate::menu::Cmd::*;
     [NewCollection, Open, ClearRecent, Save, SaveAs, CloseCollection, NewNote, NewFolder, Rename, Undo, Redo, Cut, Copy, Paste, PastePlain, PasteMarkdown, SelectAll,
      Bold, Italic, Underline, Strike, Code, Highlight, ClearFormat, Sidebar, Toolbar, ToolbarWide, Footer,
-     ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, Licenses, PathMappings, Reading, UserGuide, ShortcutsPage, GuideToggle]
+     ExportHtml, ExportSite, ExportMarkdown, ExportDocx, ExportPdf, ExportPoster, CopyMarkdown, ExportPaths, ExportVideoNotes, ExportPackage, CollectMedia, Import, Licenses, PathMappings, Reading, UserGuide, ShortcutsPage, GuideToggle, Pin]
         .into_iter().find(|c| format!("{c:?}") == name)
 }
 
