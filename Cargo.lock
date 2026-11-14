@@ -4261,6 +4261,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "s12-killmatrix"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "windows",
+]
+
+[[package]]
 name = "s3-text"
 version = "0.0.0"
 dependencies = [

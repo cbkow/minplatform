@@ -1,0 +1,17 @@
+[package]
+name = "s12-killmatrix"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# S12 - the kill matrix (docs/spikes/S12-kill-matrix.md): a synthetic renderer and three ways of supervising it (today's
+# mr-agent, one process, one executable with a leash), killed in six ways. A spike; it dies with its verdict.
+[[bin]]
+name = "s12"
+path = "src/main.rs"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO"] }
