@@ -5,7 +5,8 @@
 # folder is never used (each node's HOME is a scratch folder).
 #   sh tools/mr-conform/farm.sh start [N]     (default 2; needs MR_HEADLESS = the path of a `minrender-headless` build;
 #                                              MR_TAGS='"noleader"' gives every node that tag)
-#   sh tools/mr-conform/farm.sh port          the Rust node (target/release/minRender) joins the running farm
+#   sh tools/mr-conform/farm.sh port          the Rust node (target/release/minRender) joins the running farm, as a
+#                                              follower (tag `noleader`); MR_PORT_TAGS='' lets it lead, MR_PORT_TAGS='"leader"' makes it
 #   sh tools/mr-conform/farm.sh stop
 #   sh tools/mr-conform/farm.sh config <n>    prints the path of node n's config.json (for `mr-conform record --config`)
 # Everything lives under target/mr-farm (ignored).
@@ -30,7 +31,7 @@ case "$1" in
     [ -f "$W/share/MinRender-v2/farm.json" ] || { echo "start a farm first (the port joins a farm; it does not make one)"; exit 1; }
     BIN="${MR_PORT:-$PWD/target/release/minRender}"; [ -x "$BIN" ] || { echo "build it first: cargo build --release -p mr"; exit 1; }
     d="$W/p/data"; mkdir -p "$d"
-    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":["noleader"],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" > "$d/config.json"
+    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" "${MR_PORT_TAGS-\"noleader\"}" > "$d/config.json"
     "$BIN" --data "$d" --no-window < /dev/null > "$W/p/out.log" 2>&1 &
     echo $! >> "$W/pids"; echo "the port joined on port 8439; its config: $d/config.json" ;;
   stop)

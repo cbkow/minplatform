@@ -2,9 +2,9 @@
 //! and the one chunk it renders at a time. Every rule here is a line of docs/phase4/step0-contracts.md (section
 //! numbers in the comments) or something `tools/mr-conform` saw a 0.5.11 node do (step2-conformance.md).
 //!
-//! This first slice FOLLOWS: it joins, answers, polls, renders what a leader assigns and reports it. It does not lead
-//! (no database yet), so `main` insists on the tag `noleader`.
+//! It follows or leads as the election says: what only a leader holds and does is `lead.rs`.
 use crate::http::{self, Request, Response};
+use crate::lead::{Candidate, Effect, Lead};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, Write};
@@ -36,7 +36,8 @@ struct Work { queue: VecDeque<Assignment>, running: Option<Running>, /// from an
 pub struct Node {
     pub id: String, data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
-    reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, i_lead: AtomicBool,
+    reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
+    lead: Mutex<Option<Lead>>,
 }
 
 fn fingerprint(secret: &str) -> String { use sha2::Digest; if secret.is_empty() { return String::new() } sha2::Sha256::digest(secret.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect() }
@@ -78,9 +79,8 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or("")), tags, hostname: host_name(),
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), i_lead: AtomicBool::new(false) }))
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None) }))
     }
-    pub fn tags(&self) -> &[String] { &self.tags }
     fn endpoint_file(&self) -> PathBuf { self.farm.join("nodes").join(&self.id).join("endpoint.json") }
     /// The phonebook entry (1.2): a temporary file, then a rename; every write carries a new time.
     fn write_endpoint(&self) { let f = self.endpoint_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
@@ -130,11 +130,43 @@ impl Node {
                 w.queue.push_back(Assignment { manifest: m.clone(), start: a, end: b, epoch: v["edit_epoch"].as_i64() }); w.busy = true; Response::ok() }
             ("POST", "/api/render/abort") => { let v = match body() { Ok(v) => v, Err(r) => return r }; let Some(job) = v["job_id"].as_str() else { return Response::error(400, "the request names no job") };
                 log(format!("abort asked for a job ({})", v["reason"].as_str().unwrap_or("job edited"))); self.cut(Some(job), Cut::Abandon); self.work.lock().unwrap().queue.retain(|a| a.manifest["job_id"].as_str() != Some(job)); Response::ok() }
-            // what only a leader answers (2.5), and this node is not one
-            (_, p) if p == "/api/jobs" || p.starts_with("/api/jobs/") && !p.contains("/task-output") || p.starts_with("/api/chunks/") || p == "/api/nodes/suspended" || p.starts_with("/api/nodes/") && p.ends_with("/unsuspend")
-                || matches!(p, "/api/dispatch/frame-complete" | "/api/dispatch/complete" | "/api/dispatch/failed") => not_leader(),
+            // what only a leader answers (2.5): by the leader's own routine while this node leads, with a refusal otherwise
+            (m, p) if self.lead.lock().unwrap().is_some() && leader_route(p) => match self.lead_answer(m, p, &q.body) { Some(r) => r, None => Response::empty(404) },
+            (_, p) if leader_route(p) => not_leader(),
             _ => Response::empty(404),
         }
+    }
+    /// A leader's route, answered here (this node leads). What the answer set off is done after the lock is let go.
+    fn lead_answer(self: &Arc<Self>, method: &str, path: &str, body: &[u8]) -> Option<Response> {
+        let (r, fx) = self.lead.lock().unwrap().as_mut()?.handle(method, path, body)?; self.effects(fx); Some(r)
+    }
+    fn effects(self: &Arc<Self>, fx: Vec<Effect>) {
+        for e in fx { match e {
+            Effect::CutOwn(job, fail) => self.cut(Some(&job), if fail { Cut::Fail } else { Cut::Abandon }),
+            Effect::Abort(nodes, job, reason) => { let targets: Vec<String> = { let p = self.peers.lock().unwrap(); nodes.iter().filter_map(|n| p.get(n).map(|p| p.endpoint.clone())).collect() };
+                for t in targets { let (secret, body) = (self.secret.clone(), json!({ "job_id": job, "reason": reason }).to_string()); std::thread::spawn(move || { let _ = http::call(&t, "POST", "/api/render/abort", Some(&secret), Some(&body), Duration::from_secs(3), Duration::from_secs(10)); }); } }
+            Effect::RemoveJobDir(id) => { let d = self.farm.join("jobs").join(&id); std::thread::spawn(move || { if d.is_dir() && std::fs::remove_dir_all(&d).is_err() { std::thread::sleep(Duration::from_millis(250)); let _ = std::fs::remove_dir_all(&d); } }); }
+            Effect::Dispatch { node, manifest, start, end, epoch } => {
+                if node == self.id { let mut w = self.work.lock().unwrap(); w.queue.push_back(Assignment { manifest, start, end, epoch: Some(epoch) }); w.busy = true; continue }
+                let Some(to) = self.peers.lock().unwrap().get(&node).map(|p| p.endpoint.clone()) else { continue }; let me = self.clone();
+                // (the manifest goes as it is: translating its paths for a peer on another system is not built yet)
+                std::thread::spawn(move || { let job = manifest["job_id"].as_str().unwrap_or("").to_string(); let body = json!({ "manifest": manifest, "frame_start": start, "frame_end": end, "edit_epoch": epoch }).to_string();
+                    let ok = http::call(&to, "POST", "/api/dispatch/assign", Some(&me.secret), Some(&body), Duration::from_millis(500), Duration::from_secs(2)).is_some_and(|(s, _)| s == 200);
+                    if !ok { if let Some(l) = me.lead.lock().unwrap().as_mut() { l.revert(job, start, end); } } }); }
+        } }
+    }
+    /// Something for the leader: handed over directly when this node leads, sent otherwise. `None`: no answer.
+    fn to_leader(self: &Arc<Self>, path: &str, body: &str) -> Option<(u16, Vec<u8>)> {
+        if self.lead.lock().unwrap().is_some() { return self.lead_answer("POST", path, body.as_bytes()).map(|r| (r.status, r.body)) }
+        let l = self.leader()?; http::call(&l, "POST", path, Some(&self.secret), Some(body), Duration::from_secs(2), Duration::from_secs(5))
+    }
+    /// The leader's cycle (4.6), when this node leads.
+    fn lead_cycle(self: &Arc<Self>) {
+        let mut nodes: Vec<Candidate> = self.peers.lock().unwrap().iter().map(|(id, p)| { let r = p.record.as_ref();
+            Candidate { id: id.clone(), alive: p.alive, can_work: r.is_some_and(|r| r["node_state"] != json!("stopped") && r["ready_for_work"] != json!(false)), rendering: r.is_some_and(|r| r["render_state"] == json!("rendering")), needs_attention: r.is_some_and(|r| r.get("agent_health").is_some_and(|h| h != &json!("ok"))),
+                tags: r.and_then(|r| r["tags"].as_array()).map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default() } }).collect();
+        { let w = self.work.lock().unwrap(); nodes.push(Candidate { id: self.id.clone(), alive: true, can_work: !self.stopped.load(Ordering::Relaxed) && !w.busy, rendering: w.running.is_some(), needs_attention: false, tags: self.tags.clone() }); }
+        let fx = match self.lead.lock().unwrap().as_mut() { Some(l) => l.cycle(&nodes, &self.farm), None => return }; self.effects(fx);
     }
     /// The node is stopped or started (4.12): kept in the config; a render under way is ended and reported as failed.
     fn set_stopped(&self, on: bool) {
@@ -185,7 +217,11 @@ impl Node {
         let mut best = (key(&self.tags, &self.id), None::<String>);
         for (id, p) in peers.iter().filter(|(_, p)| p.alive) { let k = key(&tags_of(p), id); if k < best.0 { best = (k, Some(id.clone())); } }
         for (id, p) in peers.iter_mut() { p.leader = best.1.as_deref() == Some(id.as_str()); }
-        let lead = best.1.is_none(); if lead && !self.i_lead.swap(lead, Ordering::Relaxed) { log("this node would lead now, and this build cannot: it holds no jobs and answers as a follower"); } else { self.i_lead.store(lead, Ordering::Relaxed); }
+        let lead = best.1.is_none(); drop(peers);
+        // taking over, or giving way (3.4): the database is opened only while this node leads
+        let mut l = self.lead.lock().unwrap();
+        if lead && l.is_none() { match Lead::take_over(&self.data, &self.farm, &self.id) { Ok(x) => { *l = Some(x); log("this node leads now"); } Err(e) => log(format!("this node should lead, and its database could not be opened: {e}")) } }
+        else if !lead && l.is_some() { *l = None; log("another node leads now"); }
     }
 
     // ---------------------------------------------------------------------------------------------------- the render
@@ -222,9 +258,9 @@ impl Node {
         let (mut lines, mut flushed, mut matches, mut frames, mut sent) = (Vec::<String>::new(), Instant::now(), 0i64, Vec::<i64>::new(), Instant::now());
         let flush = |lines: &mut Vec<String>| { if lines.is_empty() { return } if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&logf) { for l in lines.iter() { let _ = writeln!(f, "{l}"); } } lines.clear(); };
         // frames done, in batches (2.3): an answer that says "stale" ends the render without a report
-        let send_frames = |frames: &mut Vec<i64>| -> bool { if frames.is_empty() { return true } let Some(leader) = self.leader() else { return true };
+        let send_frames = |frames: &mut Vec<i64>| -> bool { if frames.is_empty() { return true }
             let mut v = json!({ "node_id": self.id, "job_id": job, "frames": frames }); if let Some(e) = a.epoch { v["edit_epoch"] = json!(e); }
-            match http::call(&leader, "POST", "/api/dispatch/frame-complete", Some(&self.secret), Some(&v.to_string()), Duration::from_secs(2), Duration::from_secs(5)) {
+            match self.to_leader("/api/dispatch/frame-complete", &v.to_string()) {
                 Some((200, b)) => { frames.clear(); !String::from_utf8_lossy(&b).contains("\"stale\"") } _ => true } };
         loop {
             match rx.recv_timeout(Duration::from_millis(100)) {
@@ -259,14 +295,18 @@ impl Node {
         { let (me, stop) = (self.clone(), self.stop.clone()); std::thread::spawn(move || http::serve(listener, stop, move |q| me.answer(q))); }
         // the peers, every 3 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.cycle(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
+        // the leader's cycle, every 2 s, while this node leads
+        { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.lead_cycle(); for _ in 0..20 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) {
             let next = me.reports.lock().unwrap().front().cloned();
             let Some((path, body)) = next else { std::thread::sleep(Duration::from_millis(100)); continue };
-            let ok = me.leader().and_then(|l| http::call(&l, "POST", &path, Some(&me.secret), Some(&body), Duration::from_secs(2), Duration::from_secs(5))).is_some_and(|(s, _)| s == 200);
+            let ok = me.to_leader(&path, &body).is_some_and(|(s, _)| s == 200);
             if ok { me.reports.lock().unwrap().pop_front(); } else { for _ in 0..50 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } } }); }
         // the jobs list, while rendering (2.6): a job that is gone from it, or cancelled, is killed at once and reported failed
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { std::thread::sleep(Duration::from_secs(2));
+            // (a leader ends its own render of a cancelled or deleted job as it takes the command)
+            if me.lead.lock().unwrap().is_some() { continue }
             let Some(job) = me.work.lock().unwrap().running.as_ref().map(|r| r.job.clone()) else { continue }; let Some(l) = me.leader() else { continue };
             let Some(list) = http::call(&l, "GET", "/api/jobs", Some(&me.secret), None, Duration::from_millis(500), Duration::from_secs(1)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v.as_array().cloned()) else { continue };
             if !list.iter().any(|j| j["job_id"].as_str() == Some(&job) && j["current_state"] != json!("cancelled")) { log("the job is cancelled or gone: the render is killed"); me.cut(Some(&job), Cut::Fail); } }); }
@@ -278,10 +318,14 @@ impl Node {
         }
         // leaving: a render is killed, the leader is told once if it answers, the phonebook entry is taken away
         self.cut(None, Cut::Fail); std::thread::sleep(Duration::from_millis(150));
-        if let Some(l) = self.leader() { for (path, body) in self.reports.lock().unwrap().drain(..) { let _ = http::call(&l, "POST", &path, Some(&self.secret), Some(&body), Duration::from_secs(1), Duration::from_secs(2)); } }
+        let last: Vec<(String, String)> = self.reports.lock().unwrap().drain(..).collect(); for (path, body) in last { let _ = self.to_leader(&path, &body); }
         let _ = std::fs::remove_file(self.endpoint_file());
         Ok(())
     }
+}
+/// The routes only a leader answers (2.5, rows 9-30).
+fn leader_route(p: &str) -> bool {
+    p == "/api/jobs" || p.starts_with("/api/jobs/") && !p.contains("/task-output") || p.starts_with("/api/chunks/") || p == "/api/nodes/suspended" || p.starts_with("/api/nodes/") && p.ends_with("/unsuspend") || matches!(p, "/api/dispatch/frame-complete" | "/api/dispatch/complete" | "/api/dispatch/failed")
 }
 /// A peer's record whose read keys have the right types (2.4): anything else counts as a failed poll.
 fn peer_record_is_sound(r: &Value) -> bool {
