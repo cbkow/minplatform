@@ -4,6 +4,7 @@
 # off. Nothing here can reach a real farm: another share, other ports, 127.0.0.1 only. The real installation's data
 # folder is never used (each node's HOME is a scratch folder).
 #   sh tools/mr-conform/farm.sh start [N]     (default 2; needs MR_HEADLESS = the path of a `minrender-headless` build)
+#   sh tools/mr-conform/farm.sh port          the Rust node (target/release/minRender) joins the running farm
 #   sh tools/mr-conform/farm.sh stop
 #   sh tools/mr-conform/farm.sh config <n>    prints the path of node n's config.json (for `mr-conform record --config`)
 # Everything lives under target/mr-farm (ignored).
@@ -23,10 +24,18 @@ case "$1" in
       echo $! >> "$W/pids"; i=$((i + 1)); sleep 1
     done
     echo "started $N nodes; ports 8431..$((8430 + N)); share $W/share" ;;
+  port)
+    # the Rust node joins a running private farm as one more node (a follower: the tag `noleader`)
+    [ -f "$W/pids" ] || { echo "start a farm first"; exit 1; }
+    BIN="${MR_PORT:-$PWD/target/release/minRender}"; [ -x "$BIN" ] || { echo "build it first: cargo build --release -p mr"; exit 1; }
+    d="$W/p/data"; mkdir -p "$d"
+    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":["noleader"],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" > "$d/config.json"
+    "$BIN" --data "$d" --no-window < /dev/null > "$W/p/out.log" 2>&1 &
+    echo $! >> "$W/pids"; echo "the port joined on port 8439; its config: $d/config.json" ;;
   stop)
     [ -f "$W/pids" ] || { echo "no farm is running"; exit 0; }
     while read -r p; do kill "$p" 2>/dev/null || true; done < "$W/pids"; sleep 2
     while read -r p; do kill -9 "$p" 2>/dev/null || true; done < "$W/pids"; rm -f "$W/pids"; echo stopped ;;
   config) echo "$(data "$2")/config.json" ;;
-  *) echo "farm.sh start [N] | stop | config <n>"; exit 1 ;;
+  *) echo "farm.sh start [N] | port | stop | config <n>"; exit 1 ;;
 esac

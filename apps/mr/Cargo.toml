@@ -1,0 +1,23 @@
+[package]
+name = "mr"
+version = "0.6.0"
+edition = "2024"
+publish = false
+
+# minRender, the port (Phase 4; canon rows 385-393): ONE executable - the node, and, started again with `--leash`, the
+# small process that owns a render's process tree (rows 387-388). Its contract with a 0.5.x farm is
+# docs/phase4/step0-contracts.md; `tools/mr-conform` holds it to that.
+[[bin]]
+name = "minRender"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+regex = "1"
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_SystemInformation"] }
