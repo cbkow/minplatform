@@ -37,7 +37,8 @@ pub struct Node {
     pub id: String, data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
-    lead: Mutex<Option<Lead>>,
+    lead: Mutex<Option<Lead>>, /// this machine's table of shared roots (5.3)
+    mappings: Vec<min_paths::map::Mapping>,
 }
 
 fn fingerprint(secret: &str) -> String { use sha2::Digest; if secret.is_empty() { return String::new() } sha2::Sha256::digest(secret.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect() }
@@ -79,7 +80,8 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or("")), tags, hostname: host_name(),
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None) }))
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None),
+            mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
     fn endpoint_file(&self) -> PathBuf { self.farm.join("nodes").join(&self.id).join("endpoint.json") }
     /// The phonebook entry (1.2): a temporary file, then a rename; every write carries a new time.
@@ -147,14 +149,17 @@ impl Node {
                 for t in targets { let (secret, body) = (self.secret.clone(), json!({ "job_id": job, "reason": reason }).to_string()); std::thread::spawn(move || { let _ = http::call(&t, "POST", "/api/render/abort", Some(&secret), Some(&body), Duration::from_secs(3), Duration::from_secs(10)); }); } }
             Effect::RemoveJobDir(id) => { let d = self.farm.join("jobs").join(&id); std::thread::spawn(move || { if d.is_dir() && std::fs::remove_dir_all(&d).is_err() { std::thread::sleep(Duration::from_millis(250)); let _ = std::fs::remove_dir_all(&d); } }); }
             Effect::Dispatch { node, manifest, start, end, epoch } => {
-                if node == self.id { let mut w = self.work.lock().unwrap(); w.queue.push_back(Assignment { manifest, start, end, epoch: Some(epoch) }); w.busy = true; continue }
-                let Some(to) = self.peers.lock().unwrap().get(&node).map(|p| p.endpoint.clone()) else { continue }; let me = self.clone();
-                // (the manifest goes as it is: translating its paths for a peer on another system is not built yet)
+                // (0.5.x translates nothing when the leader gives itself a chunk, so a leader on another system than the
+                // submitter's runs the job with the wrong paths; here its own chunks are translated like any node's)
+                if node == self.id { let manifest = self.translated(manifest, OS); let mut w = self.work.lock().unwrap(); w.queue.push_back(Assignment { manifest, start, end, epoch: Some(epoch) }); w.busy = true; continue }
+                let Some((to, os)) = self.peers.lock().unwrap().get(&node).map(|p| (p.endpoint.clone(), p.record.as_ref().and_then(|r| r["os"].as_str()).unwrap_or("").to_string())) else { continue }; let me = self.clone();
+                let manifest = self.translated(manifest, &os);
                 std::thread::spawn(move || { let job = manifest["job_id"].as_str().unwrap_or("").to_string(); let body = json!({ "manifest": manifest, "frame_start": start, "frame_end": end, "edit_epoch": epoch }).to_string();
                     let ok = http::call(&to, "POST", "/api/dispatch/assign", Some(&me.secret), Some(&body), Duration::from_millis(500), Duration::from_secs(2)).is_some_and(|(s, _)| s == 200);
                     if !ok { if let Some(l) = me.lead.lock().unwrap().as_mut() { l.revert(job, start, end); } } }); }
         } }
     }
+    fn translated(&self, m: Value, worker_os: &str) -> Value { translate_manifest(m, worker_os, &self.mappings) }
     /// Something for the leader: handed over directly when this node leads, sent otherwise. `None`: no answer.
     fn to_leader(self: &Arc<Self>, path: &str, body: &str) -> Option<(u16, Vec<u8>)> {
         if self.lead.lock().unwrap().is_some() { return self.lead_answer("POST", path, body.as_bytes()).map(|r| (r.status, r.body)) }
@@ -164,8 +169,10 @@ impl Node {
     fn lead_cycle(self: &Arc<Self>) {
         let mut nodes: Vec<Candidate> = self.peers.lock().unwrap().iter().map(|(id, p)| { let r = p.record.as_ref();
             Candidate { id: id.clone(), alive: p.alive, can_work: r.is_some_and(|r| r["node_state"] != json!("stopped") && r["ready_for_work"] != json!(false)), rendering: r.is_some_and(|r| r["render_state"] == json!("rendering")), needs_attention: r.is_some_and(|r| r.get("agent_health").is_some_and(|h| h != &json!("ok"))),
-                tags: r.and_then(|r| r["tags"].as_array()).map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default() } }).collect();
-        { let w = self.work.lock().unwrap(); nodes.push(Candidate { id: self.id.clone(), alive: true, can_work: !self.stopped.load(Ordering::Relaxed) && !w.busy, rendering: w.running.is_some(), needs_attention: false, tags: self.tags.clone() }); }
+                tags: r.and_then(|r| r["tags"].as_array()).map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+                active: r.filter(|r| r["render_state"] == json!("rendering")).map(|r| (r["active_job"].as_str().unwrap_or("").to_string(), r["active_chunk"].as_str().unwrap_or("").to_string())) } }).collect();
+        { let w = self.work.lock().unwrap(); nodes.push(Candidate { id: self.id.clone(), alive: true, can_work: !self.stopped.load(Ordering::Relaxed) && !w.busy, rendering: w.running.is_some(), needs_attention: false, tags: self.tags.clone(),
+            active: w.running.as_ref().map(|r| (r.job.clone(), if r.start == r.end { format!("f{}", r.start) } else { format!("f{}-{}", r.start, r.end) })) }); }
         let fx = match self.lead.lock().unwrap().as_mut() { Some(l) => l.cycle(&nodes, &self.farm), None => return }; self.effects(fx);
     }
     /// The node is stopped or started (4.12): kept in the config; a render under way is ended and reported as failed.
@@ -322,6 +329,33 @@ impl Node {
         let _ = std::fs::remove_file(self.endpoint_file());
         Ok(())
     }
+}
+/// A manifest's paths for a node on another system than the submitter's (7.6): every flag value that is text, and the
+/// output folder, through the LEADER's mappings - the first that matches wins, and separators are made the target's in
+/// every value, path or not. Nothing else is touched. With no mappings, or the same system: as it is.
+fn translate_manifest(mut m: Value, worker_os: &str, mappings: &[min_paths::map::Mapping]) -> Value {
+    use min_paths::{map::translate, Os}; let tag = |o: &str| match o { "windows" => Some(Os::Win), "macos" => Some(Os::Mac), "linux" => Some(Os::Lin), _ => None };
+    let from = m["submitted_os"].as_str().unwrap_or("").to_string(); if from == worker_os || mappings.is_empty() { return m }
+    let (Some(src), Some(dst)) = (tag(&from), tag(worker_os)) else { return m };
+    if let Some(flags) = m["flags"].as_array_mut() { for f in flags { if let Some(v) = f["value"].as_str() { f["value"] = json!(translate(src, dst, v, mappings)); } } }
+    if let Some(d) = m["output_dir"].as_str() { m["output_dir"] = json!(translate(src, dst, d, mappings)); }
+    m
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn maps() -> Vec<min_paths::map::Mapping> { vec![min_paths::map::Mapping { id: String::new(), label: "Projects".into(), win: "P:\\jobs".into(), mac: "/Volumes/projects/jobs".into(), lin: String::new(), enabled: true }] }
+    #[test] fn a_windows_manifest_for_a_mac_worker() {
+        let m = json!({ "submitted_os": "windows", "cmd": { "windows": "C:\\blender.exe" }, "flags": [{ "flag": "-b", "value": null }, { "flag": "", "value": "P:\\jobs\\show\\scene.blend" }, { "flag": "-F", "value": "OPEN_EXR_MULTILAYER" }, { "flag": "", "value": "{chunk_start}" }], "output_dir": "p:\\JOBS\\show\\out", "process": { "working_dir": "P:\\jobs" } });
+        let t = translate_manifest(m, "macos", &maps());
+        assert_eq!(t["flags"][1]["value"], json!("/Volumes/projects/jobs/show/scene.blend")); assert_eq!(t["flags"][0]["value"], Value::Null);
+        assert_eq!(t["flags"][2]["value"], json!("OPEN_EXR_MULTILAYER")); assert_eq!(t["flags"][3]["value"], json!("{chunk_start}"));
+        assert_eq!(t["output_dir"], json!("/Volumes/projects/jobs/show/out"));   // a Windows root is matched whatever its case
+        assert_eq!(t["cmd"]["windows"], json!("C:\\blender.exe")); assert_eq!(t["process"]["working_dir"], json!("P:\\jobs"));   // never translated
+    }
+    #[test] fn a_root_ends_on_a_folder_boundary() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "P:\\jobs-old\\a.blend" }] }); assert_eq!(translate_manifest(m, "macos", &maps())["flags"][0]["value"], json!("P:/jobs-old/a.blend")); }
+    #[test] fn the_same_system_and_no_mappings_change_nothing() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "a/b" }] });
+        assert_eq!(translate_manifest(m.clone(), "windows", &maps()), m); assert_eq!(translate_manifest(m.clone(), "macos", &[]), m); }
 }
 /// The routes only a leader answers (2.5, rows 9-30).
 fn leader_route(p: &str) -> bool {

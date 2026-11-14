@@ -18,14 +18,16 @@ pub enum Effect { /// this node's own render of a job is ended; true: reported a
     RemoveJobDir(String), /// a chunk is handed to a node (this one included)
     Dispatch { node: String, manifest: Value, start: i64, end: i64, epoch: i64 } }
 /// A node as the dispatch sees it.
-pub struct Candidate { pub id: String, pub alive: bool, pub can_work: bool, pub rendering: bool, pub needs_attention: bool, pub tags: Vec<String> }
+pub struct Candidate { pub id: String, pub alive: bool, pub can_work: bool, pub rendering: bool, pub needs_attention: bool, pub tags: Vec<String>, /// what it says it renders now: (job, chunk label), when it renders
+    pub active: Option<(String, String)> }
 struct Failures { count: u32, first_ms: u64, last_ms: u64, suspended: bool }
 struct Report { node: String, job: String, start: i64, end: i64, epoch: i64 }
 
 pub struct Lead {
     db: Connection, me: String, submissions: Vec<(Value, i64)>, completes: Vec<Report>, fails: Vec<Report>, reverts: Vec<(String, i64, i64)>, frames: Vec<(String, i64, Vec<i64>)>,
     tracker: BTreeMap<String, Failures>, dispatched: BTreeMap<String, Instant>, /// the list as `GET /api/jobs` gives it: made every cycle, so it trails a command by up to two seconds (seen of 0.5.11)
-    list: Option<String>, last_snapshot: Instant, data: PathBuf,
+    list: Option<String>, last_snapshot: Instant, data: PathBuf, /// chunks whose holder is alive and not rendering them, and since when (row 396)
+    orphaned: BTreeMap<i64, Instant>,
 }
 fn safe_segment(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', ':']) }
 fn chunks_of(a: i64, b: i64, size: i64) -> Vec<(i64, i64)> { let mut v = Vec::new(); if size <= 0 || a > b { return v } let mut f = a; while f <= b { v.push((f, (f + size - 1).min(b))); f += size; } v }
@@ -66,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
         // the additive steps, each tried on every open (a database of an older leader lacks some of these)
         for m in ["ALTER TABLE chunks ADD COLUMN completed_frames TEXT NOT NULL DEFAULT '[]'", "ALTER TABLE chunks ADD COLUMN failed_on TEXT NOT NULL DEFAULT '[]'", "ALTER TABLE jobs ADD COLUMN sort_key INTEGER",
             "UPDATE jobs SET sort_key = submitted_at_ms WHERE sort_key IS NULL", "ALTER TABLE jobs ADD COLUMN edit_epoch INTEGER NOT NULL DEFAULT 0", "ALTER TABLE chunks ADD COLUMN edit_epoch INTEGER NOT NULL DEFAULT 0"] { let _ = db.execute(m, []); }
-        Ok(Lead { db, me: me.to_string(), submissions: Vec::new(), completes: Vec::new(), fails: Vec::new(), reverts: Vec::new(), frames: Vec::new(), tracker: BTreeMap::new(), dispatched: BTreeMap::new(), list: None, last_snapshot: Instant::now(), data: data.to_path_buf() })
+        Ok(Lead { db, me: me.to_string(), submissions: Vec::new(), completes: Vec::new(), fails: Vec::new(), reverts: Vec::new(), frames: Vec::new(), tracker: BTreeMap::new(), dispatched: BTreeMap::new(), list: None, last_snapshot: Instant::now(), data: data.to_path_buf(), orphaned: BTreeMap::new() })
     }
     fn manifest(&self, id: &str) -> Option<Value> { self.db.query_row("SELECT manifest_json FROM jobs WHERE job_id = ?", [id], |r| r.get::<_, String>(0)).optional().ok().flatten().and_then(|t| serde_json::from_str(&t).ok()) }
     fn exists(&self, id: &str) -> bool { self.db.query_row("SELECT 1 FROM jobs WHERE job_id = ?", [id], |_| Ok(())).optional().ok().flatten().is_some() }
@@ -197,8 +199,23 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
             for f in frames { if let Some((id, text)) = self.db.query_row("SELECT id, completed_frames FROM chunks WHERE job_id = ? AND frame_start <= ?2 AND frame_end >= ?2", params![job, f], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).optional().ok().flatten() {
                 let mut v = ints(&text); if !v.contains(&f) { v.push(f); v.sort(); let _ = self.db.execute("UPDATE chunks SET completed_frames = ? WHERE id = ?", params![serde_json::to_string(&v).unwrap(), id]); } } } }
         // chunks held by a node that is dead, or alive and asking for attention, come back (no retry is counted)
-        let held: Vec<(i64, String)> = self.db.prepare("SELECT id, assigned_to FROM chunks WHERE state = 'assigned' AND assigned_to IS NOT NULL").and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()).unwrap_or_default();
-        for (id, who) in held { if nodes.iter().find(|n| n.id == who).is_none_or(|n| !n.alive || n.needs_attention) { let _ = self.db.execute("UPDATE chunks SET state = 'pending', assigned_to = NULL, assigned_at_ms = NULL WHERE id = ?", [id]); } }
+        let held: Vec<(i64, String, String, i64, i64, i64)> = self.db.prepare("SELECT id, assigned_to, job_id, frame_start, frame_end, COALESCE(assigned_at_ms, 0) FROM chunks WHERE state = 'assigned' AND assigned_to IS NOT NULL").and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?.collect()).unwrap_or_default();
+        let mut still = BTreeMap::new();
+        for (id, who, job, a, b, at) in held {
+            let node = nodes.iter().find(|n| n.id == who);
+            if node.is_none_or(|n| !n.alive || n.needs_attention) { let _ = self.db.execute("UPDATE chunks SET state = 'pending', assigned_to = NULL, assigned_at_ms = NULL WHERE id = ?", [id]); continue }
+            // A chunk whose holder is ALIVE and is not rendering it (ruled 2026-11-14, row 396). It happens at a
+            // takeover: the holder finished the chunk and told the old leader, which died before its next snapshot;
+            // the holder never says it again, and under 0.5.x the chunk stays `assigned` for ever. Here: a holder that
+            // has been free, or rendering something else, for twelve seconds (four of its polls) on a chunk given out
+            // at least fifteen seconds ago gives the chunk back to the queue. No retry is counted.
+            let n = node.unwrap(); let label = if a == b { format!("f{a}") } else { format!("f{a}-{b}") };
+            let renders_it = n.active.as_ref().is_some_and(|(j, c)| *j == job && *c == label); let waiting = !n.rendering && !n.can_work && n.active.is_none();
+            if renders_it || waiting && self.dispatched.contains_key(&who) || now.saturating_sub(at as u64) < 15_000 { continue }
+            let since = *self.orphaned.get(&id).unwrap_or(&Instant::now()); still.insert(id, since);
+            if since.elapsed().as_secs() >= 12 { eprintln!("a chunk of {job} was held by a node that is not rendering it: returned to the queue"); let _ = self.db.execute("UPDATE chunks SET state = 'pending', assigned_to = NULL, assigned_at_ms = NULL WHERE id = ?", [id]); still.remove(&id); }
+        }
+        self.orphaned = still;
         // active jobs with nothing left to do are completed, or failed if a chunk is
         let active: Vec<String> = self.db.prepare("SELECT job_id FROM jobs WHERE current_state = 'active'").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).unwrap_or_default();
         for job in active { let (open, failed): (i64, i64) = self.db.query_row("SELECT COALESCE(SUM(state NOT IN ('completed', 'failed', 'stopped')), 0), COALESCE(SUM(state = 'failed'), 0) FROM chunks WHERE job_id = ?", [&job], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((1, 0));

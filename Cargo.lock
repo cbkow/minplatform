@@ -2635,6 +2635,7 @@ name = "mr"
 version = "0.6.0"
 dependencies = [
  "libc",
+ "min-paths",
  "regex",
  "rusqlite",
  "serde_json",

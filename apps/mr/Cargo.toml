@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 regex = "1"
 sha2 = "0.10"
 rusqlite = { workspace = true }
+min-paths = { path = "../../crates/min-paths" }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
