@@ -864,7 +864,7 @@ impl App {
                 // the footer says how it went; a dialog only when there is something to look at (both versions of a paragraph kept)
                 self.status = Some((if merged.is_some() { "Saved \u{2014} merged with someone else\u{2019}s changes" } else { "Saved" }.to_string(), false));
                 if !self.unpublished() { self.changed.clear(); }
-                if outside > 0 { self.notice = Some((format!("Saved \u{2014} {outside} file{} referenced outside the collection: File \u{25b8} Collect Media\u{2026} brings them in", if outside == 1 { " is" } else { "s are" }), Instant::now() + std::time::Duration::from_secs(10))); }
+                if outside > 0 { self.notice = Some((format!("Saved \u{2014} {outside} file{} referenced outside the collection: File > Collect Media\u{2026} brings them in", if outside == 1 { " is" } else { "s are" }), Instant::now() + std::time::Duration::from_secs(10))); }
                 if std::mem::take(&mut self.close_after_save) && !self.unpublished() && doubled == 0 { self.proceed(); }
                 else if doubled > 0 { use min_ui::text_button::Variant as V;
                     let body = if doubled > 0 { format!("Someone else saved this document while you were working. Their changes have been merged with yours. {doubled} paragraph(s) were changed by both of you: both versions are kept, the second marked, for you to choose between.") } else { "Someone else saved this document while you were working. Their changes have been merged with yours.".to_string() };

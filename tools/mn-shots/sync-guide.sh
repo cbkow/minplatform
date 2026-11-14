@@ -7,6 +7,8 @@ set -e
 cd "$(dirname "$0")/../.."
 SRC="${1:-../minNotes-3.0/docs}"; G=apps/mn/guide
 [ -f "$SRC/index.md" ] || { echo "no manual at $SRC"; exit 1; }
+# every character of the pages must be in the application's own faces (row 376)
+python3 tools/mn-shots/check-glyphs.py "$SRC" || { echo "the pages use characters the application's faces do not have"; exit 1; }
 rm -rf "$G"; mkdir -p "$G/images"
 cp "$SRC"/*.md "$G/"
 # only the pictures the pages name, at 1280 across (the pictures are taken at 2560)
