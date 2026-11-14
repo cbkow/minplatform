@@ -691,7 +691,7 @@ impl App {
     fn board_at(&self, x: f64, y: f64) -> Option<(BlockId, boardview::Hit)> {
         if self.blank || self.modal() || self.bar.hit(x, y) || self.foot.hit(x, y) || x < self.side_w || y < self.top { return None }
         let (l, g) = (self.layout.as_ref()?, self.gpu.as_ref()?); let s = g.window.scale_factor(); let off = origin(&self.files.card, self.side_w, self.top, self.scroll, s);
-        boards_in(&self.ed.doc, l, off).into_iter().find(|(_, r, _)| r.contains(kurbo::Point::new(x, y))).and_then(|(t, r, sx)| { let b = mn_layout::board::build(&self.ed.doc, t)?; let p = mn_layout::board::place(&b); Some((t, boardview::hit(&b, &p, (r.x0 - sx, r.y0), s, x, y, r.width()))) })
+        boards_in(&self.ed.doc, l, off).into_iter().find(|(_, r, _)| r.contains(kurbo::Point::new(x, y))).and_then(|(t, r, sx)| { let b = mn_layout::board::build(&self.ed.doc, t)?; let p = mn_layout::board::place(&b); Some((t, boardview::hit(&b, &p, (r.x0 - sx, r.y0), r.x0, s, x, y, r.width()))) })
     }
     // ── the PDF studio (row 362) ──
     /// The record of the studio's PDF as its owner has it NOW (the note's block or the canvas's card): read each time,

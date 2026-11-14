@@ -21,9 +21,12 @@ pub enum Hit { /// the bar's "Show as Table"
 /// The "Show as Table" button's place in the bar, from the board's top left (logical points -> the caller scales).
 fn to_table(width: f64) -> Rect { Rect::new((width - 118.0).max(0.0), 5.0, width, 29.0) }
 
-pub fn hit(b: &Board, p: &Placed, origin: (f64, f64), s: f64, x: f64, y: f64, visible_w: f64) -> Hit {
+/// `fixed_x`: the block's own left edge - the bar does not move with the sideways scroll, so its button is found from
+/// there (it was looked for from the SCROLLED origin: once the board had been scrolled sideways the button was dead
+/// where it stood, and alive somewhere to its left).
+pub fn hit(b: &Board, p: &Placed, origin: (f64, f64), fixed_x: f64, s: f64, x: f64, y: f64, visible_w: f64) -> Hit {
     let (lx, ly) = ((x - origin.0) / s, (y - origin.1) / s); let pt = kurbo::Point::new(lx, ly);
-    if ly < board::BAR { return if to_table(visible_w / s - (0.0)).contains(kurbo::Point::new((x - origin.0) / s, ly)) { Hit::ToTable } else { Hit::Bar } }
+    if ly < board::BAR { return if to_table(visible_w / s).contains(kurbo::Point::new((x - fixed_x) / s, ly)) { Hit::ToTable } else { Hit::Bar } }
     for (i, (lane, cards)) in p.lanes.iter().enumerate() { if !lane.contains(pt) { continue }
         if ly < lane.y0 + board::HEAD { return Hit::Head(i) }
         if let Some(k) = cards.iter().position(|c| c.contains(pt)) { return Hit::Card(i, k) }
