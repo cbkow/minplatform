@@ -85,13 +85,15 @@ impl crate::App {
             let mut w = line.split_whitespace(); let cmd = w.next().unwrap_or(""); let rest: Vec<&str> = w.collect();
             let num = |i: usize| rest.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
             let Some((scale, wid)) = self.gpu.as_ref().map(|g| (g.window.scale_factor(), g.window.id())) else { self.shots.as_mut().unwrap().at -= 1; return };
-            let pt = |i: usize| winit::dpi::PhysicalPosition::new(num(i) * scale, num(i + 1) * scale);
+            // (Windows' menu bar is a strip above everything a script names: the window is that much taller and every point that much lower, so one script serves both systems)
+            let mh = if self.menubar.is_some() { min_theme::tokens::MENU_BAR_HEIGHT as f64 } else { 0.0 };
+            let pt = |i: usize| winit::dpi::PhysicalPosition::new(num(i) * scale, (num(i + 1) + mh) * scale);
             let tail = line[cmd.len()..].trim().to_string();
             println!("shots: {line}");
             let moved = |me: &mut Self, p| me.window_event(el, wid, WindowEvent::PointerMoved { device_id: None, position: p, primary: true, source: PointerSource::Mouse });
             let button = |me: &mut Self, p, state, b| me.window_event(el, wid, WindowEvent::PointerButton { device_id: None, state, position: p, primary: true, button: ButtonSource::Mouse(b), is_macos_activation_click: false });
             match cmd {
-                "size" => { if let Some(g) = self.gpu.as_mut() { let _ = g.window.request_surface_size(winit::dpi::LogicalSize::new(num(0), num(1)).into()); } self.shots.as_mut().unwrap().wait_until = Some(now + Duration::from_millis(500)); return }
+                "size" => { if let Some(g) = self.gpu.as_mut() { let _ = g.window.request_surface_size(winit::dpi::LogicalSize::new(num(0), num(1) + mh).into()); } self.shots.as_mut().unwrap().wait_until = Some(now + Duration::from_millis(500)); return }
                 "wait" => { self.shots.as_mut().unwrap().wait_until = Some(now + Duration::from_secs_f64(num(0))); return }
                 "open" => self.request_close(crate::Pending::Open(tail.into())),
                 "note" => match self.shots_find(&tail, mn_store::DocKind::Note) { Some(id) => { self.open_note(id); self.blank = false; self.scroll = 0.0; self.layout = None; } None => eprintln!("shots: no note named '{tail}'") },
@@ -126,7 +128,7 @@ impl crate::App {
                 // what is open exported to a file (0 HTML, 1 Markdown, 2 Word, 3 PDF, 4 the canvas's poster), without the system's panel
                 "export" => { let (n, path) = tail.split_once(' ').unwrap_or((&tail, "")); self.export(n.parse().unwrap_or(0), Some(path.into())); }
                 "type" => { let was = self.mods; self.mods = (false, false, false); for c in tail.chars() { let s = c.to_string(); self.key(&Key::Character(s.as_str().into()), Some(&s)); } self.mods = was; }
-                "shot" => { let crop = (rest.len() >= 5).then(|| [num(1), num(2), num(3), num(4)]); self.shots.as_mut().unwrap().pending = Some((rest.first().unwrap_or(&"shot").to_string(), crop, 0)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                "shot" => { let crop = (rest.len() >= 5).then(|| [num(1), num(2) + mh, num(3), num(4)]); self.shots.as_mut().unwrap().pending = Some((rest.first().unwrap_or(&"shot").to_string(), crop, 0)); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
                 "quit" => { self.shots.as_mut().unwrap().done = true; self.shots_quit(el); return }
                 other => eprintln!("shots: unknown command '{other}'"),
             }
