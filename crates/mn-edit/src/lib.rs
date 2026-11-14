@@ -11,6 +11,7 @@ use mn_doc::{Block, BlockId, Change, ChangeError, Doc, History, Kind, Mark, Rank
 mod markdown;
 mod blocks;
 mod table;
+mod board;
 pub mod typed;
 pub mod cells;
 mod columns;

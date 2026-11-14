@@ -13,6 +13,7 @@ use min_ui::fonts::{Family, Fonts};
 use mn_doc::{Block, BlockId, ColumnSpec, Doc, FlatText, Kind, Mark};
 use parley::{Affinity, Alignment, AlignmentOptions, Cursor, FontFamily, FontFamilyName, FontStyle, FontWeight, Layout, LineHeight, Selection, StyleProperty};
 pub mod syntax;
+pub mod board;
 use peniko::{Brush, Color};
 
 /// The metrics, in LOGICAL pixels (multiplied by the scale at layout). The defaults are the Qt app's numbers
@@ -156,6 +157,15 @@ impl NoteLayout {
                 Part::Container
             }
             Kind::Column { .. } => { for c in doc.children(Some(id)) { self.assign(doc, fonts, *c, 0.0, w); } Part::Container }
+            // a table shown as a board (row 365) is ONE box: its lanes and cards are the application's to paint, and its
+            // rows and cells have no place of their own (nothing in them can be pointed at or typed into while it is a
+            // board). Wider than its place, it is scrolled sideways inside it as a wide table is.
+            Kind::Table { .. } if board::build(doc, id).is_some() => {
+                let (bw, bh) = board::build(doc, id).map(|b| board::size(&b)).unwrap_or((0.0, 0.0)); let (full, h) = (self.px(bw as f32), self.px(bh as f32)); let over = full > w + 0.5;
+                self.boxes.insert(id, Box { x, y: 0.0, w: if over { w } else { full.max(1.0) }, h: h + if over { self.px(TABLE_BAR) } else { 0.0 }, part: Part::Media });
+                if over { self.wide.insert(id, full); } else { self.wide.remove(&id); }
+                return
+            }
             Kind::Table { columns, .. } => {
                 let widths = self.column_widths(doc, fonts, id, columns);
                 for row in doc.children(Some(id)) {

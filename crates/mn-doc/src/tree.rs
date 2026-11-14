@@ -40,8 +40,11 @@ pub struct ColumnSpec {
     pub bg: String,
     pub fg: String,
     pub kind: ColumnKind,
+    /// The table is shown as a BOARD grouped by this column (row 365): a lane for each of its values, the rows as
+    /// cards. Only a choice or a check column can; the first that says so is the one.
+    pub board: bool,
 }
-impl Default for ColumnSpec { fn default() -> Self { ColumnSpec { width: None, align: 0, bg: String::new(), fg: String::new(), kind: ColumnKind::Text } } }
+impl Default for ColumnSpec { fn default() -> Self { ColumnSpec { width: None, align: 0, bg: String::new(), fg: String::new(), kind: ColumnKind::Text, board: false } } }
 impl Kind {
     pub fn column() -> Kind { Kind::Column { width: 0.0 } }
     pub fn table() -> Kind { Kind::Table { header_rows: 0, columns: vec![] } }

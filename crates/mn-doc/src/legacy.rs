@@ -81,7 +81,7 @@ fn column_spec(v: &Value) -> ColumnSpec {
         3 => ColumnKind::Timecode { fps: o.get("fps").and_then(Value::as_f64).unwrap_or(24.0) },
         _ => ColumnKind::Text,
     };
-    ColumnSpec { width: o.get("w").and_then(Value::as_u64).map(|w| w as u32), align: o.get("a").and_then(Value::as_u64).unwrap_or(0).min(2) as u8, bg: str_of(o, "bg"), fg: str_of(o, "fg"), kind }
+    ColumnSpec { width: o.get("w").and_then(Value::as_u64).map(|w| w as u32), align: o.get("a").and_then(Value::as_u64).unwrap_or(0).min(2) as u8, bg: str_of(o, "bg"), fg: str_of(o, "fg"), kind, board: false }
 }
 
 /// Converts one page's blocks (in the page's order) into a note.

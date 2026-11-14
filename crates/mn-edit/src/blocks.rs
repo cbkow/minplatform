@@ -53,6 +53,8 @@ impl Editor {
         self.sel = Some(Selection { anchor: Pos { block: f, at: 0 }, focus: Pos { block: l, at: end } });
         self.goal_x = None; self.upstream = false; self.armed.clear();
     }
+    /// This one block is the selection, whole (a table shown as a board is picked this way: nothing inside it is in reach).
+    pub fn select_block(&mut self, id: BlockId) { if self.preedit.is_some() || self.doc.get(id).is_none() { return } self.blocks = Some((id, id)); self.span_blocks(); }
     /// Escape: from a caret or a text selection to whole blocks (the caret's block; the blocks a selection touches when
     /// they are siblings) — and from whole blocks back to a caret at the end of the last. True: blocks are now selected.
     pub fn toggle_blocks(&mut self) -> bool {

@@ -35,6 +35,7 @@ pub fn encode(b: &Block) -> (&'static str, Option<String>, String) {
                     ColumnKind::Check => { o.insert("k".into(), json!(2)); }
                     ColumnKind::Timecode { fps } => { o.insert("k".into(), json!(3)); o.insert("fps".into(), json!(fps)); }
                 }
+                if c.board { o.insert("b".into(), json!(1)); }   // written only when set: a table that is no board is stored as it always was
                 Value::Object(o)
             }).collect()));
             "table"
@@ -73,7 +74,7 @@ pub fn decode(name: &str, attrs: Option<&str>, text: String) -> (Kind, String, S
             let Some(o) = c.as_object() else { return ColumnSpec::default() };
             ColumnSpec { width: o.get("w").and_then(Value::as_u64).map(|w| w as u32), align: n(o, "a").clamp(0, 2) as u8, bg: s(o, "bg"), fg: s(o, "fg"), kind: match n(o, "k") {
                 1 => ColumnKind::Choice { options: o.get("o").and_then(Value::as_array).map(|v| v.iter().filter_map(Value::as_object).map(|x| ChoiceOption { id: s(x, "id"), label: s(x, "l"), color: s(x, "c") }).collect()).unwrap_or_default() },
-                2 => ColumnKind::Check, 3 => ColumnKind::Timecode { fps: o.get("fps").and_then(Value::as_f64).unwrap_or(24.0) }, _ => ColumnKind::Text } }
+                2 => ColumnKind::Check, 3 => ColumnKind::Timecode { fps: o.get("fps").and_then(Value::as_f64).unwrap_or(24.0) }, _ => ColumnKind::Text }, board: n(o, "b") == 1 }
         }).collect()).unwrap_or_default() },
         "row" => Kind::Row { bg: s(&a, "bg"), fg: s(&a, "fg") },
         "cell" => Kind::Cell { bg: s(&a, "bg"), fg: s(&a, "fg") },
