@@ -12,7 +12,8 @@ BIN="${MN_BIN:-target/release/minNotes}"; [ -x "$BIN" ] || cargo build --release
 export MN_NO_AUDIO=1 MN_NO_DIALOGS=1 MN_SESSIONS_DIR="$W/sessions"
 if [ "$1" = build ]; then
   sh tools/mn-shots/make-media.sh
-  rm -rf "$MN_DEMO_DIR/Tidewater.mnd" "$MN_DEMO_DIR/minNotes Media" "$W/sessions"
+  # (the clips' notes are kept beside them, in .qcview: a build starts without them, or every build would add its notes again)
+  rm -rf "$MN_DEMO_DIR/Tidewater.mnd" "$MN_DEMO_DIR/minNotes Media" "$MN_DEMO_DIR/Media/.qcview" "$W/sessions"
   "$BIN" "$MN_DEMO_DIR/Tidewater.mnd" --new --shots tools/mn-shots/scripts/000-build.shots --shots-out "$W/build" | grep -E "^(shots: (wrote|no |unknown)|imported|saved)" || true
   exit 0
 fi
@@ -24,5 +25,6 @@ for s in tools/mn-shots/scripts/*.shots; do
   rm -rf "$MN_DEMO_DIR/Work" "$W/sessions"; mkdir -p "$MN_DEMO_DIR/Work"
   cp "$MN_DEMO_DIR/Tidewater.mnd" "$MN_DEMO_DIR/Work/Tidewater.mnd"; [ -d "$MN_DEMO_DIR/minNotes Media" ] && cp -R "$MN_DEMO_DIR/minNotes Media" "$MN_DEMO_DIR/Work/"
   echo "== $n"
-  "$BIN" "$MN_DEMO_DIR/Work/Tidewater.mnd" --shots "$s" --shots-out "$OUT" | grep -E "^shots: (wrote|no |unknown)" || true
+  if head -1 "$s" | grep -q '^# blank'; then "$BIN" --shots "$s" --shots-out "$OUT" | grep -E "^shots: (wrote|no |unknown)" || true
+  else "$BIN" "$MN_DEMO_DIR/Work/Tidewater.mnd" --shots "$s" --shots-out "$OUT" | grep -E "^shots: (wrote|no |unknown)" || true; fi
 done

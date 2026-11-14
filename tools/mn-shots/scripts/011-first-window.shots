@@ -1,0 +1,7 @@
+# blank
+# installation.md: the application started with no collection (run.sh starts it without a file for a "# blank" script)
+size 1280 800
+wait 1
+move 1000 700
+shot mn3-first-window
+quit

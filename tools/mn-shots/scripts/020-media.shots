@@ -1,0 +1,31 @@
+# media.md
+size 1280 800
+wait 1
+note Delivery specs
+wait 1.5
+click 900 100
+move 1100 500
+shot mn3-media-blocks
+wheel 700 400 4000
+wait 0.5
+rclick 512 646
+wait 0.4
+shot mn3-media-menu
+key Escape
+note Welcome
+wait 1
+wheel 700 400 420
+wait 0.5
+click 700 500
+wait 0.5
+shot t-draw-1
+note Review - Reel 2
+wait 1.5
+wheel 700 400 70
+wait 0.3
+click 700 400
+wait 0.5
+key Space
+wait 0.3
+shot t-video-1
+quit

@@ -1,0 +1,10 @@
+# index.md: the Welcome note with the whole tree
+size 1280 800
+wait 1
+note Welcome
+wait 1
+click 900 150
+move 1000 600
+wait 0.5
+shot mn3-home
+quit

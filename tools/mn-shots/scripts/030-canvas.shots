@@ -1,0 +1,23 @@
+# canvas.md
+size 1280 800
+wait 1
+canvas Moodboard
+wait 1.5
+key cmd+0
+wait 0.8
+click 480 150
+move 1000 700
+wait 0.3
+shot mn3-canvas-overview
+click 1100 600
+move 900 600
+wait 0.3
+shot mn3-canvas-zoom-box 1040 680 240 100
+down 330 60
+move 800 150
+up 1190 235
+wait 0.3
+key cmd+g
+wait 0.5
+shot t-frame-1
+quit
