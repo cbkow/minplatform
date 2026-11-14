@@ -58,6 +58,7 @@ mod transcode;
 mod sparkle;
 #[cfg(target_os = "macos")]
 mod mac_open;
+mod shots;
 mod search;
 mod canvas;
 mod ink;
@@ -294,7 +295,7 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     player: Option<Player>, /// the decoder's hardware device (asked for once)
     hw: Option<Option<qcv_player::HwDevice>>, /// the colour stage of videos' stills
     poster: video::Poster, files: Files, #[cfg(target_os = "macos")] menu: Option<menu::AppMenu>, ed: Editor, mods: (bool, bool, bool), pointer: (f64, f64), pressed: bool, last_click: Option<(Instant, f64, f64)>, clipboard: Option<arboard::Clipboard>, accent_popup: bool, /// where the page sat when the desktop was last told, and since when it has been somewhere else
-    told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
+    told_geom: (f64, f64), geom_moved: Option<Instant>, follow: bool, flat: Option<mn_doc::FlatText>, last_scroll: f64, layout: Option<NoteLayout>, gpu: Option<Gpu>, scroll: f64, seconds: f32, shot: Option<String>, shots: Option<shots::Shots>, t0: Option<Instant>, frames: u32, draw_ms: Vec<f32> }
 
 fn sample() -> Doc {
     let mut d = Doc::new();
@@ -2837,6 +2838,7 @@ impl ApplicationHandler for App {
         startup_log("fonts loaded");
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
+        self.shots_step(el);
         if let Some(t0) = self.t0.filter(|t| t.elapsed().as_millis() < 1500) { let now = Instant::now(); let at = *self.warm_at.get_or_insert(t0 + std::time::Duration::from_millis(250));
             if now >= at { self.warm_at = Some(now + std::time::Duration::from_millis(250)); if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(at)); } }
         if let Some((_, until)) = &self.notice { if Instant::now() >= *until { self.notice = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } else { el.set_control_flow(ControlFlow::WaitUntil(*until)); } }
@@ -3383,7 +3385,7 @@ impl ApplicationHandler for App {
                     match d { Dirty::Structure => self.layout = None, Dirty::Blocks(ids) => if let (Some(l), Some(g)) = (self.layout.as_mut(), self.gpu.as_mut()) { for id in ids { l.update_block(&self.ed.doc, &mut g.fonts, id); } }, Dirty::Nothing => {} }
                     self.flat = None; self.follow = true; if let Some(g) = &self.gpu { g.window.request_redraw(); }
                 } else { self.apply(d); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
-            WindowEvent::RedrawRequested => { let first = !self.drawn; if first { startup_log("first frame: begin"); } self.redraw(); if first { self.drawn = true; startup_log("first frame: presented"); }
+            WindowEvent::RedrawRequested => { let first = !self.drawn; if first { startup_log("first frame: begin"); } self.redraw(); self.shots_capture(); if first { self.drawn = true; startup_log("first frame: presented"); }
                 if self.warm > 0 { self.warm -= 1; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
             _ => {}
         }
@@ -3578,7 +3580,7 @@ fn main() {
     // (scripted, MN_VNOTES=<clip>: three notes are written into the clip's sidecar - no pictures - so that a video with notes can be shown without real footage)
     if let Ok(clip) = std::env::var("MN_VNOTES") { let mk = |frame: i64, text: &str, addressed: bool| { let mut n = qcv_notes::Note::default(); n.frame = frame; n.timestamp_seconds = frame as f64 / 24.0; n.timecode = video::timecode(frame, 24.0); n.text = text.into(); n.addressed = addressed; n };
         if let Err(e) = qcv_notes::io::save(std::path::Path::new(&clip), &[mk(24, "too dark here", false), mk(84, "fixed", true), mk(168, "", false)]) { eprintln!("MN_VNOTES: {e}"); } }
-    let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample"];
+    let options_with_value = ["--v2", "--text", "--seconds", "--shot", "--scroll", "--note", "--make-sample", "--shots", "--shots-out"];
     let file = args.iter().enumerate().skip(1).find(|(i, a)| !a.starts_with("--") && !options_with_value.contains(&args[i - 1].as_str()) && !(args.get(i.wrapping_sub(2)).is_some_and(|x| x == "--v2"))).map(|(_, a)| std::path::PathBuf::from(a));
     let mut store = None; let mut recovered = false;
     let opened = file.map(|path| {
@@ -3607,7 +3609,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] mac_open::install();

@@ -1,0 +1,40 @@
+# builds the demo collection (run on a new, empty collection: `run.sh build` does that)
+size 1280 800
+wait 1
+# the new collection's first note
+click 700 130
+type Inbox
+key Enter
+type Loose thoughts land here first and are moved to their note later.
+key Enter
+type Ask Jonas about the boat rig
+key Enter
+type Find a second reference for the workshop interior
+import ${MN_DEMO_DIR}/Notes/Welcome.md
+wait 1.5
+menu NewFolder
+type Production
+key Enter
+wait 0.3
+import ${MN_DEMO_DIR}/Notes/Schedule.md|${MN_DEMO_DIR}/Notes/Review - Reel 2.md|${MN_DEMO_DIR}/Notes/Delivery specs.md|${MN_DEMO_DIR}/Notes/Look references.md
+wait 3
+note Review - Reel 2
+wait 0.5
+add @2 ${MN_DEMO_DIR}/Media/Reel 2 - harbour v003.mp4
+wait 2
+add ${MN_DEMO_DIR}/Media/Reel 2 - harbour v002.mp4
+wait 2
+shot build-review
+note Delivery specs
+wait 0.5
+add @2 ${MN_DEMO_DIR}/Media/Delivery spec.pdf
+wait 2
+add ${MN_DEMO_DIR}/Media/Budget.xlsx|${MN_DEMO_DIR}/Media/Temp score.wav
+wait 2
+shot build-specs
+note Welcome
+wait 1
+shot build-welcome
+menu Save
+wait 1
+quit
