@@ -181,7 +181,9 @@ impl Sealer {
     pub fn new(password: &str, salt: Option<[u8; 16]>) -> Result<Sealer, String> {
         use ring::rand::SecureRandom;
         let salt = match salt { Some(s) => s, None => { let mut s = [0u8; 16]; ring::rand::SystemRandom::new().fill(&mut s).map_err(|_| "No random numbers could be had")?; s } };
-        let mut key = [0u8; 32]; ring::pbkdf2::derive(ring::pbkdf2::PBKDF2_HMAC_SHA256, std::num::NonZeroU32::new(ROUNDS).unwrap(), &salt, password.as_bytes(), &mut key);
+        let mut key = [0u8; 32]; // (the same letters can be typed as different code points - an accent joined to its letter or following it: both sides bring the password to NFC first, or a phone's keyboard and a desktop's would make different keys of one password)
+        let password = icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(password);
+        ring::pbkdf2::derive(ring::pbkdf2::PBKDF2_HMAC_SHA256, std::num::NonZeroU32::new(ROUNDS).unwrap(), &salt, password.as_bytes(), &mut key);
         let names = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key), b"names").as_ref());
         Ok(Sealer { key, names, salt })
     }
@@ -500,7 +502,7 @@ function gcmOpen(key,d){if(d.length<28)return null;var W=expand(key),ct=d.subarr
  for(i=0;i<n;i+=16){c[12]=ctr>>>24;c[13]=(ctr>>>16)&255;c[14]=(ctr>>>8)&255;c[15]=ctr&255;ctr++;enc(W,c,ks);for(j=0;j<16&&i+j<n;j++)out[i+j]=ct[i+j]^ks[j]}
  return out}
 // -- the page --
-function derive(pass){var p=utf8(pass),salt=b64(P.s);
+function derive(pass){if(pass.normalize)pass=pass.normalize('NFC');var p=utf8(pass),salt=b64(P.s);
  if(fast)return crypto.subtle.importKey('raw',p,'PBKDF2',false,['deriveBits']).then(function(k){return crypto.subtle.deriveBits({name:'PBKDF2',salt:salt,iterations:P.n,hash:'SHA-256'},k,256)}).then(function(b){return new Uint8Array(b)});
  return new Promise(function(ok){setTimeout(function(){ok(pbkdf2(p,salt,P.n))},30)})}
 function open(key,d){

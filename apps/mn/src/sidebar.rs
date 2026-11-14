@@ -31,7 +31,8 @@ pub enum Nav { Up, Down, Left, Right }
 
 pub struct Sidebar {
     /// a note's row that dragged blocks would go to: outlined (row 307)
-    pub drop_row: Option<BlockId>,
+    pub drop_row: Option<BlockId>, /// a dragged row would go BETWEEN rows here: the line's height in the window and where it begins
+    pub drop_line: Option<(f64, f64)>,
     pub rail: Rail, pub rows: Vec<Row>, /// the User Guide's rows (row 359): its folder, then its pages - shown after the collection's own, and no part of it
     pub guide: Vec<Row>, folded: HashSet<BlockId>, pub selected: Option<BlockId>,
     /// keys go to the tree (Enter renames, Delete deletes) rather than to the note
@@ -50,7 +51,7 @@ impl Sidebar {
         let key = |k: &str| if cfg!(target_os = "macos") { format!("{}\u{2318}N", k) } else { format!("Ctrl+{}N", if k.is_empty() { "" } else { "Shift+" }) };
         let head = ActionGroup::new(vec![ActionButton::new("note-pencil", &format!("New note ({})", key(""))), ActionButton::new("bounding-box", "New canvas"), ActionButton::new("folder-simple-plus", &format!("New folder ({})", key("\u{21e7}")))]).compact();
         let mut query = TextField::new(Family::Sans, t::RAIL_LABEL_SIZE); query.placeholder = "Search".into();
-        Sidebar { defer_open: false, pressed_row: None, query, results: None, scanning: false, rhover: None, drop_row: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, guide: vec![], rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
+        Sidebar { defer_open: false, pressed_row: None, query, results: None, scanning: false, rhover: None, drop_row: None, drop_line: None, head, search: Rect::ZERO, tooltips: Tooltips::default(), rail, guide: vec![], rows: vec![], folded: HashSet::new(), selected: None, focused: false, hover: None, rename: None, last_down: None, scale: 1.0 } }
     /// Reads the tree again (after a create, a rename, a delete, a merge).
     pub fn set_tree(&mut self, col: &Collection) {
         fn walk(col: &Collection, parent: Option<BlockId>, depth: usize, folded: &HashSet<BlockId>, out: &mut Vec<Row>) {
@@ -97,6 +98,25 @@ impl Sidebar {
     }
     fn row_rect(&self, i: usize) -> Rect { let c = self.rail.content_rect(); let y = c.y0 + i as f64 * ROW * self.scale - self.rail.scroll; Rect::new(c.x0, y, c.x1, y + ROW * self.scale) }
     fn row_at(&self, x: f64, y: f64) -> Option<usize> { let c = self.rail.content_rect(); if !c.contains(kurbo::Point::new(x, y)) { return None } let i = ((y - c.y0 + self.rail.scroll) / (ROW * self.scale)).floor(); (i >= 0.0 && (i as usize) < self.rows.len()).then_some(i as usize) }
+    /// Where a row dragged to a window point would go (row 364): (its new parent, the sibling it goes before - None: the
+    /// end), and what shows it - a folder to be lit, or a line between rows. A folder's middle takes the row IN; the upper
+    /// and lower parts of any row put it before or after that row; below the last row is the end of the top level. Never
+    /// onto itself, into the guide, or (the store says) into something under itself.
+    pub fn drop_target(&self, moving: BlockId, x: f64, y: f64) -> Option<(Option<BlockId>, Option<BlockId>, Option<BlockId>, Option<(f64, f64)>)> {
+        let c = self.rail.content_rect(); if !c.contains(kurbo::Point::new(x, y)) || self.results.is_some() { return None }
+        let own: Vec<&Row> = self.rows.iter().filter(|r| !self.is_guide(r.id)).collect(); let indent = |d: usize| c.x0 + (INDENT * d as f64 + 6.0) * self.scale;
+        let Some(i) = self.row_at(x, y).filter(|i| *i < own.len()) else { let last = own.len().checked_sub(1).map(|i| self.row_rect(i).y1).unwrap_or(c.y0); return (y >= last).then_some((None, None, None, Some((last, indent(0))))) };
+        let (row, r) = (own[i], self.row_rect(i)); if row.id == moving { return None }
+        let f = (y - r.y0) / r.height().max(1.0);
+        if row.kind == DocKind::Folder && (0.28..=0.72).contains(&f) { return Some((Some(row.id), None, Some(row.id), None)) }
+        if f < 0.5 { return Some((row.parent, Some(row.id), None, Some((r.y0, indent(row.depth))))) }
+        // after this row: before the next of its siblings that is not the row being moved, or at the end; the line
+        // stands under everything an open folder shows
+        let sibs: Vec<&&Row> = own.iter().filter(|n| n.parent == row.parent).collect(); let at = sibs.iter().position(|n| n.id == row.id).unwrap_or(0);
+        let next = sibs[at + 1..].iter().find(|n| n.id != moving).map(|n| n.id);
+        let below = own[i + 1..].iter().take_while(|n| n.depth > row.depth).count();
+        Some((row.parent, next, None, Some((self.row_rect(i + below).y1, indent(row.depth)))))
+    }
     /// The row under a window point (the context menu's target).
     pub fn id_at(&self, x: f64, y: f64) -> Option<BlockId> { self.row_at(x, y).map(|i| self.rows[i].id) }
     /// The pointer is over the name being edited (the I-beam's place in the tree).

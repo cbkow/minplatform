@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 ring = "0.17"
+icu_normalizer = "2"   # the web folder's password is brought to one Unicode form (NFC) before the key is made of it (row 364)
 mn-doc = { path = "../../crates/mn-doc" }
 mn-layout = { path = "../../crates/mn-layout" }
 mn-store = { path = "../../crates/mn-store" }

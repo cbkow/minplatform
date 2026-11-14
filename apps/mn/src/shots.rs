@@ -17,7 +17,8 @@
 //!   wheel X Y DY          the wheel at a point, in logical pixels (positive scrolls the page down)
 //!   key [mods+]NAME       a key: Enter Tab Escape Backspace Delete Up Down Left Right Home End Space, or one character;
 //!                         mods are cmd, shift, alt joined by `+` (cmd+b, shift+Down)
-//!   type TEXT             characters, as typing them
+//!   type TEXT             characters, as typing them. NOTE: `key Space` types a space - a person's Space on a video
+//!                         plays it (that key is taken before the editor sees it); to play or pause in a script, click the video.
 //!   shot NAME [X Y W H]   save the window (or a logical-pixel crop of it) as <out>/NAME.png
 //!   quit
 use std::time::{Duration, Instant};

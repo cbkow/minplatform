@@ -155,6 +155,23 @@ impl Collection {
             .map(|(parent, kind, title)| Entry { id, parent: parent.and_then(|p| BlockId::parse(&p)), kind: DocKind::parse(&kind), title }))
     }
     /// An entry goes under another parent (None: the top), after what is there.
+    /// An entry goes under `parent`, before the sibling `before` (None: at the end). A folder is never put into itself
+    /// or into something under it (false: nothing was moved).
+    pub fn move_entry(&self, id: BlockId, parent: Option<BlockId>, before: Option<BlockId>) -> Result<bool, Error> {
+        if before == Some(id) { return Ok(false) }
+        let mut up = parent; while let Some(p) = up { if p == id { return Ok(false) } up = self.entry(p)?.and_then(|e| e.parent); }
+        let mut s = self.db.prepare("SELECT id, rank FROM documents WHERE parent IS ?1 AND id != ?2 ORDER BY rank, rowid")?;
+        let sibs: Vec<(String, String)> = s.query_map(params![parent.map(|p| p.to_string()), id.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        let at = before.and_then(|b| sibs.iter().position(|x| x.0 == b.to_string())).unwrap_or(sibs.len());
+        let rank_of = |i: usize| sibs.get(i).and_then(|x| Rank::parse(&x.1).ok());
+        let (a, b) = (at.checked_sub(1).and_then(rank_of), rank_of(at));
+        let rank = match Rank::between(a.as_ref(), b.as_ref()) { Ok(r) => r, Err(_) => {
+            // ranks that are equal or out of order (an old file): the siblings are ranked afresh, then the place is found again
+            let fresh = mn_doc::rank::spread(sibs.len() + 1); let mut k = 0;
+            for (i, x) in sibs.iter().enumerate() { if i == at { k += 1; } self.db.execute("UPDATE documents SET rank = ?2 WHERE id = ?1", params![x.0, fresh[k].as_str()])?; k += 1; }
+            fresh[at].clone() } };
+        self.db.execute("UPDATE documents SET parent = ?2, rank = ?3, modified = ?4 WHERE id = ?1", params![id.to_string(), parent.map(|p| p.to_string()), rank.as_str(), now_ms()])?; Ok(true)
+    }
     pub fn reparent(&self, id: BlockId, parent: Option<BlockId>) -> Result<(), Error> {
         let last: Option<String> = self.db.query_row("SELECT rank FROM documents WHERE parent IS ?1 ORDER BY rank DESC LIMIT 1", [parent.map(|p| p.to_string())], |r| r.get(0)).optional()?;
         let rank = match last.as_deref().and_then(|r| Rank::parse(r).ok()) { Some(r) => r.after(), None => Rank::first() };

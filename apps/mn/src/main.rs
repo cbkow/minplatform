@@ -551,6 +551,7 @@ impl App {
         if let Some(sb) = self.sidebar.as_mut() {
             let mut changed = self.changed.clone(); if let Some(st) = self.store.as_ref() { if st.edited.is_some() { changed.insert(st.note); } }
             sb.paint(scene, &mut g.fonts, self.guide.as_ref().and_then(|g| g.shown).or(self.files.canvas.as_ref().map(|c| c.id)).or(self.store.as_ref().map(|st| st.note)), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
+            if let Some((y, x0)) = sb.drop_line { let c = sb.rail.content_rect(); scene.fill(peniko::Fill::NonZero, kurbo::Affine::IDENTITY, min_ui::paint::color(min_theme::tokens::ACCENT_BACKGROUND_COLOR_DEFAULT), None, &Rect::new(x0, y - s, c.x1 - 6.0 * s, y + s)); }
             sb.paint_tooltip(scene, &mut g.fonts, view, now); }
         // the PDF studio (row 362): over the page AND the sidebar, between the band's place and the footer
         if let Some(host) = self.files.studio.as_ref().map(|st| st.host) {
@@ -699,7 +700,7 @@ impl App {
     }
     fn leaving(&mut self) {
         if self.guide_shown() { return }
-        if let Some(st) = self.store.as_mut() { if !self.reading && st.edited.is_none() && st.col.load_note(st.note).map(|d| d != self.ed.doc).unwrap_or(true) { st.edited = Some(Instant::now()); } }
+        if let Some(st) = self.store.as_mut() { if !self.reading && st.edited.is_none() && st.col.load_note(st.note).map(|d| !same_but_view(&d, &self.ed.doc)).unwrap_or(true) { st.edited = Some(Instant::now()); } }
         self.autosave();
     }
     fn autosave(&mut self) { if self.guide_shown() { return }   // a page of the guide is in the editor: it is never written anywhere (the user's note was kept before it came)
@@ -1807,7 +1808,7 @@ impl App {
         if v.get("frame").and_then(|f| f.as_i64()).unwrap_or(0) == frame as i64 { return }
         v.insert("frame".into(), serde_json::json!(frame));
         let _ = self.ed.doc.set_kind(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() });
-        if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
+        // (not a change to be saved by itself - row 364: `leaving` leaves it out of what it compares; it is written when the note is next saved for another reason)
     }
     /// The playing video stops being the playing one: its block keeps the frame it stood on and shows a poster again.
     fn video_stop(&mut self) {
@@ -2007,7 +2008,7 @@ impl App {
         let _ = self.ed.doc.set_kind(id, Kind::Media { descriptor: serde_json::Value::Object(v).to_string() });
         self.files.pdf = None;
         if self.reading { if let Some(g) = &self.gpu { g.window.request_redraw(); } return }   // reading: the page shown is not written into the note
-        if let Some(st) = self.store.as_mut() { let first = st.edited.is_none() && !st.unpublished; st.edited = Some(Instant::now()); if first { self.title(); } }
+        // (as a video's frame: not a change to be saved by itself - row 364)
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// A pointer event goes to the wide tables' bars first: true when a bar took it (a press on its thumb, a drag).
@@ -2280,7 +2281,7 @@ impl App {
                 .into_iter().chain({ let k = cols.get(c).map(|x| x.kind.clone()).unwrap_or(ColumnKind::Text); let tick = |on: bool, l: &str| I::action(&if on { format!("\u{2713} {l}") } else { l.to_string() }, true);
                     let mut v = vec![tick(k == ColumnKind::Text, "Text Column"), tick(matches!(k, ColumnKind::Choice { .. }), "Choice Column"), tick(k == ColumnKind::Check, "Check Column"), tick(matches!(k, ColumnKind::Timecode { .. }), "Timecode Column")];
                     if matches!(k, ColumnKind::Choice { .. }) { v.push(I::Separator); v.push(I::action("Edit Options\u{2026}", true)); }
-                    if let ColumnKind::Timecode { fps } = k { v.push(I::Separator); for r in [23.976, 24.0, 25.0, 29.97, 30.0, 60.0] { v.push(tick((fps - r).abs() < 0.005, &format!("{r} fps"))); } }
+                    if let ColumnKind::Timecode { fps } = k { v.push(I::Separator); for r in [23.976, 24.0, 25.0, 29.97, 30.0, 59.94, 60.0] { v.push(tick((fps - r).abs() < 0.005, &format!("{r} fps"))); } }
                     v }).chain([I::Separator, I::action("Delete Column", cols.len() > 1)]).collect() }
         else { vec![I::action("Insert Row Above", true), I::action("Insert Row Below", true), I::Separator, I::action("Move Row Up", r > 0), I::action("Move Row Down", r + 1 < rows), I::action("Duplicate Row", true), I::Separator,
                 I::action(if head > 0 { "No Header Row" } else { "First Row Is a Header" }, true), I::Separator, I::action("Delete Row", rows > 1)] };
@@ -3356,6 +3357,8 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); }
             WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y);
                 if self.files.resize.is_some() { self.resize_to(position.x); return }
+                // (a row of the tree being dragged has the pointer before the chrome does: the tree would take the moves as its own)
+                if let Some((_, from, moved)) = self.files.row_drag.as_mut() { if !*moved && ((from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0) { *moved = true; } if *moved { let id = self.files.row_drag.map(|d| d.0); if let (Some(id), Some(sb)) = (id, self.sidebar.as_mut()) { let t = sb.drop_target(id, position.x, position.y); sb.drop_row = t.and_then(|t| t.2); sb.drop_line = t.and_then(|t| t.3); } self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if let Some((a, b, from, free, total, ka, kb)) = self.files.gap_drag.clone() { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0);
                     if let (Kind::Column { width: wa }, Kind::Column { width: wb }) = (ka, kb) { let min = (mn_layout::COLUMN_MIN as f64 * s / free.max(1.0)) as f32 * total; let both = wa + wb;
                         if both > 2.0 * min { let na = (wa + ((position.x - from) / free.max(1.0)) as f32 * total).clamp(min, both - min); let _ = self.ed.doc.set_kind(a, Kind::Column { width: na }); let _ = self.ed.doc.set_kind(b, Kind::Column { width: both - na }); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
@@ -3382,7 +3385,6 @@ impl ApplicationHandler for App {
                 self.set_cursor();
                 if taken { return }
                 // a note's row dragged from the sidebar towards the canvas
-                if let Some((_, from, moved)) = self.files.row_drag.as_mut() { if !*moved && ((from.0 - position.x).abs() > 5.0 || (from.1 - position.y).abs() > 5.0) { *moved = true; } if *moved { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 if self.files.gest.is_some() { self.page_drag(position.x, position.y); return }
                 // a canvas's video (row 326): its line being scrubbed, its frame being drawn on
                 if self.files.canvas.is_some() && self.files.card.is_none() {
@@ -3422,9 +3424,12 @@ impl ApplicationHandler for App {
                 self.pointer = (position.x, position.y);
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Primary } };
                 // a note's row pressed while a canvas is open may be dragged onto it: it becomes a card where it is let go (row 322, stage 2)
-                if state == ElementState::Pressed && self.files.canvas.is_some() && self.files.card.is_none() && !self.modal() && !self.ctx.is_open() { self.files.row_drag = self.sidebar.as_ref().filter(|sb| sb.rail.hit(position.x, position.y) && !sb.typing()).and_then(|sb| sb.id_at(position.x, position.y)).filter(|id| self.sidebar.as_ref().and_then(|sb| sb.row(*id)).is_some_and(|r| r.kind == mn_store::DocKind::Note)).map(|id| (id, (position.x, position.y), false)); }
-                if state == ElementState::Released { if let Some((id, _, moved)) = self.files.row_drag.take() { if moved { if let Some(sb) = self.sidebar.as_mut() { sb.pressed_row = None; }
-                    if let Some(cv) = self.files.canvas.as_mut().filter(|c| c.rect.contains(kurbo::Point::new(position.x, position.y))) { cv.add_note(id, Some((position.x, position.y))); }
+                if state == ElementState::Pressed && !self.modal() && !self.ctx.is_open() && self.files.studio.is_none() { self.files.row_drag = self.sidebar.as_ref().filter(|sb| sb.rail.hit(position.x, position.y) && !sb.typing()).and_then(|sb| sb.id_at(position.x, position.y)).filter(|id| self.sidebar.as_ref().is_some_and(|sb| !sb.is_guide(*id))).map(|id| (id, (position.x, position.y), false)); }
+                if state == ElementState::Released { if let Some((id, _, moved)) = self.files.row_drag.take() { if moved { if let Some(sb) = self.sidebar.as_mut() { sb.pressed_row = None; sb.drop_row = None; sb.drop_line = None; }
+                    let is_note = self.sidebar.as_ref().and_then(|sb| sb.row(id)).is_some_and(|r| r.kind == mn_store::DocKind::Note);
+                    if let Some(cv) = self.files.canvas.as_mut().filter(|c| is_note && self.files.card.is_none() && c.rect.contains(kurbo::Point::new(position.x, position.y))) { cv.add_note(id, Some((position.x, position.y))); }
+                    // let go over the tree: the row goes there (row 364)
+                    else if let Some((parent, before, _, _)) = self.sidebar.as_ref().and_then(|sb| sb.drop_target(id, position.x, position.y)) { if let (Some(st), Some(sb)) = (self.store.as_mut(), self.sidebar.as_mut()) { match st.col.move_entry(id, parent, before) { Ok(true) => { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(id); if let Some(p) = parent { sb.unfold(p); } sb.set_tree(&st.col); sb.selected = Some(id); } Ok(false) => {} Err(e) => eprintln!("move: {e}") } } self.title(); }
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
                 // the PDF studio (row 362) has every press in its place (the band's and the footer's stay theirs)
                 if !self.ctx.is_open() && !self.pal.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { if st.rect.contains(kurbo::Point::new(position.x, position.y)) { let (back, head) = (st.pointer(&e), st.in_head(position.y)); if let Some(g) = &self.gpu { g.window.request_redraw(); } if back { self.studio_close(); return }
@@ -3716,6 +3721,16 @@ fn recent_clear() { let _ = std::fs::remove_file(recent_file()); }
 fn style() -> Style { let mut syntax = mn_layout::palette(&mn_layout::syntax::DARK); syntax[mn_layout::syntax::Tok::Comment.index()] = paint::subdued(); Style { text: paint::text(), link: paint::link(), syntax, ..Style::default() } }
 
 /// Where staged sessions live on this machine (row 272: never beside the file).
+/// Two notes say the same thing: they may differ only in how media was last LOOKED AT - the frame a video stands on,
+/// the page a PDF shows (row 364: playing a video or turning a page is not a change to save).
+fn same_but_view(a: &Doc, b: &Doc) -> bool {
+    if a == b { return true }
+    let strip = |d: &Doc| -> Doc { let mut d = d.clone(); let fixes: Vec<(BlockId, Kind)> = d.walk().iter().filter_map(|x| { let Kind::Media { descriptor } = &x.kind else { return None }; if !descriptor.contains("\"frame\"") && !descriptor.contains("\"page\"") { return None }
+        let mut v: serde_json::Value = serde_json::from_str(descriptor).ok()?; let o = v.as_object_mut()?; o.remove("frame"); o.remove("page"); Some((x.id, Kind::Media { descriptor: v.to_string() })) }).collect(); for (id, k) in fixes { let _ = d.set_kind(id, k); } d };
+    let (x, y) = (strip(a), strip(b));
+    if x != y && std::env::var_os("MN_DIFF_LOG").is_some() { for (p, q) in x.walk().iter().zip(y.walk().iter()) { if p != q { eprintln!("differs:\n  stored {:?} {:?}\n  now    {:?} {:?}", p.kind, p.text, q.kind, q.text); } } if x.walk().len() != y.walk().len() { eprintln!("differs: {} blocks stored, {} now", x.walk().len(), y.walk().len()); } }
+    x == y
+}
 /// Reading or editing, as this machine last left each collection (row 358): `reading.json` beside the sessions.
 const READING_HINT: &str = if cfg!(target_os = "macos") { "Reading \u{2014} press \u{2318}R to edit" } else { "Reading \u{2014} press Ctrl+R to edit" };
 fn reading_file() -> std::path::PathBuf { sessions_root().parent().unwrap_or(std::path::Path::new(".")).join("reading.json") }
