@@ -22,14 +22,17 @@ fn arg(args: &[String], k: &str) -> Option<String> { args.iter().position(|a| a 
 struct Answer { status: u16, headers: Vec<(String, String)>, body: Vec<u8>, ms: u128 }
 /// One `GET` over a new connection, as a 0.5.x node makes its calls (HTTP/1.1, no TLS). `auth` is the whole value of
 /// the Authorization header, when there is one.
-fn get(endpoint: &str, path: &str, auth: Option<&str>) -> Result<Answer, String> {
+fn get(endpoint: &str, path: &str, auth: Option<&str>) -> Result<Answer, String> { http(endpoint, "GET", path, auth, None) }
+/// Any method; a body is sent as JSON text, as the application sends its own.
+fn http(endpoint: &str, method: &str, path: &str, auth: Option<&str>, body: Option<&str>) -> Result<Answer, String> {
     let t = Instant::now();
     let addr = endpoint.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("no address")?;
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|e| e.to_string())?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {endpoint}\r\nAccept: */*\r\nConnection: close\r\n");
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {endpoint}\r\nAccept: */*\r\nConnection: close\r\n");
     if let Some(a) = auth { req.push_str(&format!("Authorization: {a}\r\n")); }
-    req.push_str("\r\n");
+    if method != "GET" && method != "DELETE" { let b = body.unwrap_or(""); req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", b.len())); }
+    req.push_str("\r\n"); if method != "GET" && method != "DELETE" { req.push_str(body.unwrap_or("")); }
     s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
     let mut raw = Vec::new(); s.read_to_end(&mut raw).map_err(|e| e.to_string())?;
     let cut = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("no header end")?;
@@ -53,15 +56,16 @@ fn dechunk(b: &[u8]) -> Vec<u8> {
 struct Rec { out: PathBuf, n: usize, secret: String }
 impl Rec {
     /// Sends one request and files the answer. `auth`: none | good | wrong | lowercase | twospaces | basic.
-    fn ask(&mut self, name: &str, target: &str, endpoint: &str, path: &str, auth: &str) -> Option<(u16, Vec<u8>)> {
+    fn ask(&mut self, name: &str, target: &str, endpoint: &str, path: &str, auth: &str) -> Option<(u16, Vec<u8>)> { self.send(name, target, endpoint, "GET", path, auth, None) }
+    fn send(&mut self, name: &str, target: &str, endpoint: &str, method: &str, path: &str, auth: &str, body: Option<&str>) -> Option<(u16, Vec<u8>)> {
         let header = match auth { "good" => Some(format!("Bearer {}", self.secret)), "wrong" => Some(format!("Bearer {}", "0".repeat(self.secret.len().max(1)))), "lowercase" => Some(format!("bearer {}", self.secret)),
             "twospaces" => Some(format!("Bearer  {}", self.secret)), "basic" => Some(format!("Basic {}", self.secret)), _ => None };
         self.n += 1; let file = self.out.join(format!("{:03}-{name}.json", self.n));
-        let (v, r) = match get(endpoint, path, header.as_deref()) {
+        let (v, r) = match http(endpoint, method, path, header.as_deref(), body) {
             Ok(a) => { let keep = &a.body[..a.body.len().min(2 << 20)];
-                (json!({ "name": name, "target": target, "method": "GET", "path": path, "auth": auth, "status": a.status, "headers": a.headers.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
+                (json!({ "name": name, "target": target, "method": method, "request_body": body, "path": path, "auth": auth, "status": a.status, "headers": a.headers.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
                     "body_len": a.body.len(), "body": String::from_utf8_lossy(keep), "ms": a.ms as u64 }), Some((a.status, a.body))) }
-            Err(e) => (json!({ "name": name, "target": target, "method": "GET", "path": path, "auth": auth, "error": e }), None) };
+            Err(e) => (json!({ "name": name, "target": target, "method": method, "request_body": body, "path": path, "auth": auth, "error": e }), None) };
         // (the secret can only be in a body if a node echoed it; it is taken out whatever happens)
         let text = serde_json::to_string_pretty(&v).unwrap().replace(&self.secret, "<redacted>");
         let _ = std::fs::write(&file, text);
@@ -139,6 +143,100 @@ fn record(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------------------- driving
+/// Part 2: what a leader does with commands, on a PRIVATE farm only (tools/mr-conform/farm.sh). It submits synthetic
+/// jobs whose "renderer" is a shell script, sends every job command, and files each answer and each change of state.
+/// It refuses any farm that is not on the loopback address under a folder named `mr-farm`.
+fn drive(args: &[String]) -> Result<(), String> {
+    let config = PathBuf::from(arg(args, "--config").ok_or("--config <config.json of a private farm's node>")?); let out = PathBuf::from(arg(args, "--out").ok_or("--out <dir>")?);
+    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(&config).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let root = cfg["sync_root"].as_str().unwrap_or("").to_string();
+    if cfg["ip_override"] != json!("127.0.0.1") || !root.replace('\\', "/").contains("/mr-farm/") { return Err("this is not a private farm (loopback address, a share under a folder named mr-farm): refused".into()) }
+    let farm = Path::new(&root).join("MinRender-v2"); let port = cfg["http_port"].as_u64().unwrap_or(0);
+    let secret = serde_json::from_str::<Value>(&std::fs::read_to_string(farm.join("farm.json")).map_err(|e| e.to_string())?).ok().and_then(|v| v["api_secret"].as_str().map(str::to_string)).ok_or("no secret")?;
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let me = format!("127.0.0.1:{port}"); let bearer = format!("Bearer {secret}"); let mut r = Rec { out: out.clone(), n: 0, secret };
+    // the leader: this node, or the one its refusal names
+    let first = get(&me, "/api/jobs", Some(&bearer))?; let at = if first.status == 200 { me.clone() } else { serde_json::from_slice::<Value>(&first.body).ok().and_then(|v| v["leader_endpoint"].as_str().map(str::to_string)).ok_or("no leader known yet")? };
+    if !at.starts_with("127.0.0.1:") { return Err("the leader is not on the loopback address: refused".into()) }
+    let my_id = get(&me, "/api/status", None).ok().and_then(|a| serde_json::from_slice::<Value>(&a.body).ok()).and_then(|v| v["node_id"].as_str().map(str::to_string)).unwrap_or_default();
+    // the synthetic renderer: <first frame> <last frame> <output pattern> <ok|fail> <seconds per frame>
+    let work = Path::new(&root).parent().unwrap_or(Path::new(".")).join("render"); let _ = std::fs::create_dir_all(&work); let script = work.join("fake-render.sh");
+    std::fs::write(&script, "#!/bin/sh\ns=$1; e=$2; d=$(dirname \"$3\"); mkdir -p \"$d\"\nif [ \"$4\" = fail ]; then echo \"Unable to open the scene\"; exit 3; fi\ni=$s; while [ $i -le $e ]; do sleep $5; f=\"$d/f_$(printf %04d $i).exr\"; echo data > \"$f\"; echo \"Saved: '$f'\"; i=$((i+1)); done\n").map_err(|e| e.to_string())?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let manifest = |id: &str, a: i64, b: i64, chunk: i64, mode: &str, nap: &str, retries: i64| { let o = work.join(id).join("f_####.exr").to_string_lossy().into_owned(); json!({
+        "_version": 1, "job_id": id, "template_id": "conformance", "submitted_by": my_id, "submitted_os": "macos", "submitted_at_ms": stamp, "cmd": { "macos": "/bin/sh" },
+        "flags": [{ "flag": "", "value": script.to_string_lossy() }, { "flag": "", "value": "{chunk_start}" }, { "flag": "", "value": "{chunk_end}" }, { "flag": "", "value": o, "is_output": true }, { "flag": "", "value": mode }, { "flag": "", "value": nap }],
+        "frame_start": a, "frame_end": b, "chunk_size": chunk, "max_retries": retries, "timeout_seconds": null, "output_dir": work.join(id).to_string_lossy(),
+        "progress": { "patterns": [], "error_patterns": [], "completion_pattern": { "info": "one line per frame", "regex": "Saved: '?(.+)'?" } },
+        "output_detection": { "stdout_regex": "Saved: '?([^']+)'?", "path_group": 1, "validation": "exists_nonzero", "info": "" }, "process": { "working_dir": null }, "environment": {}, "tags_required": [] }) };
+    // a job's detail is filed each time what it shows changes: the job's state, each chunk's state, how many frames are done
+    fn watch(r: &mut Rec, at: &str, bearer: &str, label: &str, id: &str, secs: u64, done: &dyn Fn(&Value) -> bool) -> Option<Value> {
+        let (t, mut last, mut n, mut seen) = (Instant::now(), String::new(), 0, None);
+        while t.elapsed() < Duration::from_secs(secs) {
+            if let Some(v) = get(at, &format!("/api/jobs/{id}"), Some(bearer)).ok().filter(|a| a.status == 200).and_then(|a| serde_json::from_slice::<Value>(&a.body).ok()) {
+                let digest = format!("{}|{}", v["current_state"], v["chunks"].as_array().map(|c| c.iter().map(|x| format!("{}:{}:{}", x["state"].as_str().unwrap_or(""), x["completed_frames"].as_array().map(|f| f.len()).unwrap_or(0), x["retry_count"])).collect::<Vec<_>>().join(",")).unwrap_or_default());
+                if digest != last { last = digest; n += 1; r.ask(&format!("{label}-{n:02}-detail"), "leader", at, &format!("/api/jobs/{id}"), "good"); }
+                let stop = done(&v); seen = Some(v); if stop { break }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        seen
+    }
+    let state = |v: &Value| v["current_state"].as_str().unwrap_or("").to_string();
+    let chunk_in = |v: &Value, st: &str| v["chunks"].as_array().and_then(|c| c.iter().find(|x| x["state"] == json!(st)).and_then(|x| x["id"].as_i64()));
+    let cmd = |r: &mut Rec, name: &str, method: &str, path: &str, body: Option<String>| r.send(name, "leader", &at, method, path, "good", body.as_deref());
+    // -- what a submission may not be
+    r.send("submit-no-token", "leader", &at, "POST", "/api/jobs", "none", Some(&json!({ "manifest": manifest("conf-x", 1, 2, 1, "ok", "0.1", 3) }).to_string()));
+    cmd(&mut r, "submit-not-json", "POST", "/api/jobs", Some("{ this is not json".into()));
+    cmd(&mut r, "submit-without-a-manifest", "POST", "/api/jobs", Some("{}".into()));
+    cmd(&mut r, "submit-bad-id", "POST", "/api/jobs", Some(json!({ "manifest": manifest("../climb", 1, 2, 1, "ok", "0.1", 3) }).to_string()));
+    // -- A: a job that just renders - 12 frames in chunks of 3
+    let a = format!("conf-a-{stamp}");
+    cmd(&mut r, "submit-a", "POST", "/api/jobs", Some(json!({ "manifest": manifest(&a, 1, 12, 3, "ok", "0.3", 3), "priority": 50 }).to_string()));
+    cmd(&mut r, "submit-a-again", "POST", "/api/jobs", Some(json!({ "manifest": manifest(&a, 1, 12, 3, "ok", "0.3", 3), "priority": 50 }).to_string()));
+    watch(&mut r, &at, &bearer, "a", &a, 90, &|v| state(v) == "completed");
+    r.ask("jobs-after-a", "leader", &at, "/api/jobs", "good"); r.ask("a-manifest", "leader", &at, &format!("/api/jobs/{a}/manifest"), "good"); r.ask("a-task-output", "leader", &at, &format!("/api/jobs/{a}/task-output"), "good");
+    // -- B: a slow job, and every command sent to it - 40 frames in chunks of 5, a second a frame
+    let b = format!("conf-b-{stamp}");
+    cmd(&mut r, "submit-b", "POST", "/api/jobs", Some(json!({ "manifest": manifest(&b, 1, 40, 5, "ok", "1", 3) }).to_string()));
+    watch(&mut r, &at, &bearer, "b-start", &b, 30, &|v| chunk_in(v, "assigned").is_some());
+    cmd(&mut r, "cmd-pause", "POST", &format!("/api/jobs/{b}/pause"), Some(String::new()));
+    watch(&mut r, &at, &bearer, "b-paused", &b, 12, &|_| false);
+    cmd(&mut r, "cmd-resume", "POST", &format!("/api/jobs/{b}/resume"), Some(String::new()));
+    let v = watch(&mut r, &at, &bearer, "b-resumed", &b, 20, &|v| chunk_in(v, "assigned").is_some());
+    if let Some(id) = v.as_ref().and_then(|v| chunk_in(v, "assigned")) { cmd(&mut r, "cmd-chunk-stop", "POST", "/api/chunks/stop", Some(json!({ "chunk_id": id }).to_string()));
+        watch(&mut r, &at, &bearer, "b-chunk-stopped", &b, 6, &|_| false);
+        cmd(&mut r, "cmd-chunk-reassign", "POST", "/api/chunks/reassign", Some(json!({ "chunk_id": id }).to_string())); watch(&mut r, &at, &bearer, "b-chunk-requeued", &b, 4, &|_| false); }
+    cmd(&mut r, "cmd-chunk-stop-unknown", "POST", "/api/chunks/stop", Some(json!({ "chunk_id": 99999999 }).to_string()));
+    cmd(&mut r, "cmd-chunk-stop-no-body", "POST", "/api/chunks/stop", Some(String::new()));
+    cmd(&mut r, "cmd-priority", "POST", &format!("/api/jobs/{b}/priority"), Some(json!({ "priority": 10 }).to_string()));
+    cmd(&mut r, "cmd-move", "POST", &format!("/api/jobs/{b}/move"), Some(json!({ "target": a, "position": "before" }).to_string()));
+    cmd(&mut r, "cmd-move-onto-itself", "POST", &format!("/api/jobs/{b}/move"), Some(json!({ "target": b }).to_string()));
+    r.ask("jobs-after-move", "leader", &at, "/api/jobs", "good");
+    cmd(&mut r, "cmd-cancel", "POST", &format!("/api/jobs/{b}/cancel"), Some(String::new()));
+    watch(&mut r, &at, &bearer, "b-cancelled", &b, 8, &|_| false);
+    cmd(&mut r, "cmd-requeue", "POST", &format!("/api/jobs/{b}/requeue"), Some(String::new()));
+    watch(&mut r, &at, &bearer, "b-requeued", &b, 8, &|_| false);
+    cmd(&mut r, "cmd-cancel-again", "POST", &format!("/api/jobs/{b}/cancel"), Some(String::new()));
+    cmd(&mut r, "cmd-archive", "POST", &format!("/api/jobs/{b}/archive"), Some(String::new()));
+    r.ask("jobs-after-archive", "leader", &at, "/api/jobs", "good"); r.ask("b-archived-detail", "leader", &at, &format!("/api/jobs/{b}"), "good");
+    cmd(&mut r, "cmd-delete", "DELETE", &format!("/api/jobs/{b}"), None);
+    r.ask("job-that-does-not-exist", "leader", &at, &format!("/api/jobs/{b}"), "good");
+    cmd(&mut r, "cmd-pause-a-job-that-is-gone", "POST", &format!("/api/jobs/{b}/pause"), Some(String::new()));
+    // -- C: a job whose renderer fails every time - 4 frames in chunks of 2, two tries
+    let c = format!("conf-c-{stamp}");
+    cmd(&mut r, "submit-c", "POST", "/api/jobs", Some(json!({ "manifest": manifest(&c, 1, 4, 2, "fail", "0", 2) }).to_string()));
+    watch(&mut r, &at, &bearer, "c", &c, 90, &|v| state(v) == "failed" || v["chunks"].as_array().is_some_and(|c| !c.is_empty() && c.iter().all(|x| x["state"] == json!("failed"))));
+    r.ask("suspended-after-c", "leader", &at, "/api/nodes/suspended", "good"); r.ask("jobs-after-c", "leader", &at, "/api/jobs", "good");
+    cmd(&mut r, "cmd-retry-failed", "POST", &format!("/api/jobs/{c}/retry-failed"), Some(String::new()));
+    watch(&mut r, &at, &bearer, "c-retried", &c, 6, &|_| false);
+    cmd(&mut r, "cmd-delete-c", "DELETE", &format!("/api/jobs/{c}"), None); cmd(&mut r, "cmd-delete-a", "DELETE", &format!("/api/jobs/{a}"), None);
+    r.ask("jobs-at-the-end", "leader", &at, "/api/jobs", "good");
+    println!("{} requests recorded on the private farm in {}", r.n, out.display());
+    Ok(())
+}
+
 // --------------------------------------------------------------------------------------------------------- checking
 /// A key's type in the contract. `Opt`: may be absent.
 #[derive(Clone, Copy)]
@@ -198,9 +296,14 @@ fn check(dir: &Path) -> Result<bool, String> {
             "config" => if want(&mut o, 200) { json_ok(&mut o); if let Some(b) = &body { for k in ["sync_root", "http_port", "node_id", "hostname", "cpu_cores", "ram_mb", "gpu_name", "farm_running", "farm_path", "farm_error", "is_leader"] { if b.get(k).is_none() { o.bad(&what, format!("key `{k}` is missing")); } } } },
             "node-log" => if want(&mut o, 200) { json_ok(&mut o); if !body.as_ref().is_some_and(|b| is(b, T::StrArr)) { o.bad(&what, "not an array of strings".into()); } },
             "task-output-of-a-path-that-climbs" => { if !err(&mut o, 400, "invalid_path") { o.bad(&what, format!("status {status}, the contract says 400 invalid_path")); } },
-            "jobs" => { if !not_leader(&mut o) && want(&mut o, 200) { if text.is_empty() { o.note(&what, "an empty body (the leader had not refreshed yet)".into()); } else { json_ok(&mut o); match body.as_ref().and_then(|b| b.as_array()) { Some(a) => for j in a { o.object(&what, j, SUMMARY); one_of(&mut o, &what, j, "current_state", &["active", "paused", "cancelled", "completed", "failed"]); }, None => o.bad(&what, "not an array".into()) } } } },
+            "submit-no-token" => { if !err(&mut o, 401, "unauthorized") { o.bad(&what, format!("status {status}, the contract says 401")); } },
+            "submit-bad-id" => { if !err(&mut o, 400, "invalid_job_id") { o.bad(&what, format!("status {status}, the contract says 400 invalid_job_id")); } },
+            "submit-not-json" | "submit-without-a-manifest" | "cmd-chunk-stop-no-body" => { if status != 400 || body.as_ref().map(|b| b["error"].is_string()) != Some(true) { o.bad(&what, format!("status {status}, the contract says 400 with an error text")); } },
+            "cmd-move-onto-itself" => { if !err(&mut o, 409, "move_rejected") { o.bad(&what, format!("status {status}, the contract says 409 move_rejected")); } },
+            n if n.starts_with("submit-") || n.starts_with("cmd-") => if want(&mut o, 200) { json_ok(&mut o); if body.as_ref().map(|b| b["status"] == json!("ok")) != Some(true) { o.bad(&what, "the answer is not {\"status\":\"ok\"}".into()); } },
+            n if n.starts_with("suspended") && n != "suspended-on-a-follower" => if want(&mut o, 200) { json_ok(&mut o); match body.as_ref().and_then(|b| b.as_array()) { Some(a) => for s in a { o.object(&what, s, SUSPENDED); }, None => o.bad(&what, "not an array".into()) } },
+            n if n == "jobs" || n.starts_with("jobs-") => { if !not_leader(&mut o) && want(&mut o, 200) { if text.is_empty() { o.note(&what, "an empty body (the leader had not refreshed yet)".into()); } else { json_ok(&mut o); match body.as_ref().and_then(|b| b.as_array()) { Some(a) => for j in a { o.object(&what, j, SUMMARY); one_of(&mut o, &what, j, "current_state", &["active", "paused", "cancelled", "completed", "failed"]); }, None => o.bad(&what, "not an array".into()) } } } },
             "suspended-on-a-follower" | "job-detail-on-a-follower" => { if !not_leader(&mut o) { o.bad(&what, format!("status {status}, the contract says 503 not_leader")); } },
-            "suspended" => if want(&mut o, 200) { json_ok(&mut o); match body.as_ref().and_then(|b| b.as_array()) { Some(a) => for s in a { o.object(&what, s, SUSPENDED); }, None => o.bad(&what, "not an array".into()) } },
             "job-that-does-not-exist" | "manifest-of-a-job-that-does-not-exist" => { if !err(&mut o, 404, "not_found") { o.bad(&what, format!("status {status}, the contract says 404 not_found")); } },
             n if n.ends_with("-detail") => if want(&mut o, 200) { json_ok(&mut o); if let Some(b) = &body { o.object(&what, b, DETAIL); if let Some(cs) = b["chunks"].as_array() { for (i, c) in cs.iter().enumerate() { if i < 3 || i + 1 == cs.len() { o.object(&what, c, CHUNK); } one_of(&mut o, &what, c, "state", &["pending", "assigned", "completed", "failed", "stopped", "partial"]); }
                 if !cs.windows(2).all(|w| w[0]["frame_start"].as_i64() <= w[1]["frame_start"].as_i64()) { o.bad(&what, "chunks are not ordered by frame_start".into()); } } } },
@@ -227,7 +330,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(|s| s.as_str()) {
         Some("record") => record(&args).map(|_| true),
+        Some("drive") => drive(&args).map(|_| true),
         Some("check") => match args.get(1) { Some(d) => check(Path::new(d)), None => Err("check <dir>".into()) },
-        _ => Err("mr-conform record --config <config.json> --out <dir> [--max-jobs N] | check <dir>".into()) };
+        _ => Err("mr-conform record --config <config.json> --out <dir> [--max-jobs N] | drive --config <a private farm node's config.json> --out <dir> | check <dir>".into()) };
     match r { Ok(true) => {} Ok(false) => std::process::exit(1), Err(e) => { eprintln!("mr-conform: {e}"); std::process::exit(2) } }
 }
