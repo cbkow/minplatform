@@ -12,6 +12,7 @@
 *.exr
 *.png
 !packaging/windows/msix/images/*.png
+!packaging/windows/msix-minnotes/images/*.png
 # the application's icon and the User Guide's pictures (synthetic demo) are part of the build
 !apps/mn/assets/icons/*.png
 !apps/mn/guide/images/*.png

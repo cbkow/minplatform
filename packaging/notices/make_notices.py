@@ -44,7 +44,8 @@ def main():
     ports = dict(l.strip().split("=", 1) for l in read(ROOT, "tools/deps/vcpkg-windows.pin").splitlines() if "=" in l and not l.startswith(("#", "BASELINE")))
     if plat == "windows":
         claimed = {c["vcpkg"] for c in comps if c.get("vcpkg")}
-        if claimed != set(ports): die("components.json and tools/deps/vcpkg-windows.pin name different vcpkg ports: " + ", ".join(sorted(claimed ^ set(ports))))
+        # (the whole family's page claims every pinned port; an application that ships fewer - minNotes has no OpenColorIO - claims some of them)
+        if (claimed != set(ports)) if app == "qcv" else not claimed <= set(ports): die("components.json and tools/deps/vcpkg-windows.pin name different vcpkg ports: " + ", ".join(sorted(claimed ^ set(ports))))
 
     # FFmpeg's linked-in libraries
     if plat == "macos":
