@@ -174,7 +174,9 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     xopts: Option<export::Opts>, /// what follows a file panel's answer (one panel at a time)
     panel_then: Option<Box<dyn FnOnce(&mut App, Vec<std::path::PathBuf>)>>, pick: Option<ink::Pick>, gest: Option<ink::Gesture>, psel: Option<(BlockId, String)>, iblock: Option<(BlockId, Rect, String)>, ishown: Option<toolbar::InkShown>, ink_test: bool,
     /// files dragged over the SIDEBAR (row 345): the row under them (None: no row - the top); what was dropped there and is being fetched; where imported notes go; files that become one note once the imports are in
-    side_drag: Option<Option<BlockId>>, side_fetches: std::collections::HashMap<AsyncRequestSerial, Option<BlockId>>, import_parent: Option<Option<BlockId>>, side_media: Option<(Vec<std::path::PathBuf>, Option<BlockId>)>, side_test: bool,
+    /// a note or a canvas being written out, off this thread (row 346): its end, and the file's name
+    exporting: Option<(std::sync::mpsc::Receiver<Result<(), String>>, String)>,
+    side_drag: Option<Option<BlockId>>, side_fetches: std::collections::HashMap<AsyncRequestSerial, Option<BlockId>>, import_parent: Option<Option<BlockId>>, side_media: Option<(Vec<std::path::PathBuf>, Option<BlockId>)>, side_test: bool, export_test: bool, export_t0: Option<(Instant, u32)>,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -343,6 +345,7 @@ impl App {
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
             let (text, warn) = if self.store.is_none() { (String::new(), false) } else if self.saving.is_some() { ("Saving\u{2026}".to_string(), false) }
                 else if let Some((t, true)) = &self.status { (t.clone(), true) }
+                else if let Some((_, n)) = &self.files.exporting { (format!("Exporting {n}\u{2026}"), false) }
                 else if let Some(i) = &self.files.import { (format!("Importing {}\u{2026}", i.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()), false) }
                 else if let Some(u) = &self.files.unpack { (format!("Unpacking {} \u{2014} {}%", u.name, if u.total > 0 { u.done.load(std::sync::atomic::Ordering::Relaxed) * 100 / u.total } else { 0 }), false) }
                 else if let Some(t) = self.files.gather.as_ref().and_then(|w| w.readout()) { (t, false) }
@@ -689,6 +692,7 @@ impl App {
         if let Pending::Open(p) = &what { if p.extension().is_some_and(|x| x.eq_ignore_ascii_case(gather::PACKAGE)) { let p = p.clone(); self.unpack_open(p, None); return } }
         // a copy under way is not walked away from: it is stopped first, or waited for
         if self.files.gather.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.gather.as_mut() { w.shown = true; } self.notice = Some(("Files are still being copied \u{2014} stop the copy or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+        if self.files.exporting.is_some() { self.notice = Some(("An export is still being written \u{2014} it will be done in a moment".into(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if self.files.site.as_ref().is_some_and(|w| w.active()) { if let Some(w) = self.files.site.as_mut() { w.shown = true; } self.notice = Some(("A web folder is still being written \u{2014} stop it or let it finish first".into(), Instant::now() + std::time::Duration::from_secs(8))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         self.after_close = Some(what);
         self.canvas_save(true);   // what was moved or drawn on the open canvas counts as a change to ask about
@@ -763,31 +767,60 @@ impl App {
         let (ext, kind) = match fmt { 1 => ("md", "Markdown"), 2 => ("docx", "Word Document"), 3 => ("pdf", "PDF"), 4 => ("png", "PNG"), _ => ("html", "HTML") };
         let safe: String = title.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\n' | '\r') { '-' } else { c }).collect();
         let Some(path) = to else { let dlg = rfd::FileDialog::new().set_title(format!("Export as {kind}")).add_filter(kind, &[ext]).set_file_name(format!("{safe}{}.{ext}", if fmt == 4 { "-poster" } else if on_canvas { "-canvas" } else { "" })); self.panel(dlg, 0, move |me, p| me.export(fmt, p.into_iter().next())); return };
+        // one at a time: the file being written is said in the footer
+        if self.files.exporting.is_some() { self.notice = Some(("An export is still being written \u{2014} one at a time".into(), soon(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         let opts = *self.files.xopts.get_or_insert_with(export_settings);
         let gpu = self.gpu.as_ref().map(|g| (g.presenter.engine.device.clone(), g.presenter.engine.queue.clone()));
-        let mut src = export::Files { media: &mut self.media, poster: &mut self.poster, gpu, fresh: false }; let doc = &self.ed.doc;
         let when = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M").to_string();
-        let text: Result<Vec<u8>, String> = if on_canvas {
+        // what goes out is taken HERE, as it stands now (the note goes on being typed in while it is written): the note's
+        // blocks, or the canvas's cards with the notes they show. The writing is off this thread (row 346), with media
+        // of its own - a long note with clips and PDFs held the window for as long as it took.
+        enum What { Note(Doc), Canvas(Vec<mn_store::Element>, std::collections::HashMap<BlockId, (String, Doc)>) }
+        let what = if on_canvas {
             if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); }
-            let (cv, store, sidebar) = (self.files.canvas.as_ref().expect("a canvas"), self.store.as_ref(), self.sidebar.as_ref()); let els = cv.ordered();
-            let mut note = |id: BlockId| { let st = store?; let doc = st.col.load_note(id).ok()?; Some((sidebar.and_then(|sb| sb.row(id)).map(|r| r.title.clone()).unwrap_or_default(), doc)) };
-            if fmt == 4 { export::canvas_poster(&els, &mut src, &mut note) } else { Ok(export::canvas_html(&els, &title, &when, opts, &export::fonts(), &mut src, &mut note).into_bytes()) }
-        } else if fmt == 2 { export::docx(doc.walk(), doc.children(None), &title, opts, &mut src) } else if fmt == 3 { export::pdf(doc, &title, &style(), opts, metric_paper(), &mut src) } else if md {
-            // pictures go to `<name>.assets/` beside the file, each under its own name (a second of a name gets a number)
-            let dir = path.with_extension("assets"); let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "assets".into());
-            let mut used = std::collections::HashSet::new();
-            let mut sink = |name: &str, p: &export::Pic| -> Option<String> {
-                let stem: String = name.rsplit_once('.').map(|x| x.0).unwrap_or(name).chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect(); let stem = if stem.is_empty() { "picture".to_string() } else { stem };
-                let mut file = format!("{stem}.{}", p.ext); let mut n = 2; while !used.insert(file.to_lowercase()) { file = format!("{stem}-{n}.{}", p.ext); n += 1; }
-                std::fs::create_dir_all(&dir).ok()?; std::fs::write(dir.join(&file), &p.bytes).ok()?; Some(format!("{folder}/{file}")) };
-            Ok(export::markdown(doc.walk(), doc.children(None), &title, opts, &mut src, Some(&mut sink)).into_bytes())
-        } else { Ok(export::html(doc.walk(), doc.children(None), &title, &when, opts, &export::fonts(), &mut src).into_bytes()) };
-        // written beside and moved into place: a reader never sees half a file
-        let tmp = path.with_extension(format!("{ext}.part"));
-        let done = text.map_err(std::io::Error::other).and_then(|bytes| std::fs::write(&tmp, bytes)).and_then(|_| std::fs::rename(&tmp, &path));
+            let (cv, store, sidebar) = (self.files.canvas.as_ref().expect("a canvas"), self.store.as_ref(), self.sidebar.as_ref());
+            let els: Vec<mn_store::Element> = cv.ordered().into_iter().cloned().collect(); let mut cards = std::collections::HashMap::new();
+            for e in els.iter().filter(|e| e.kind == "note") { if let (Some(id), Some(st)) = (BlockId::parse(&e.record), store) { if let Ok(d) = st.col.load_note(id) { cards.insert(id, (sidebar.and_then(|sb| sb.row(id)).map(|r| r.title.clone()).unwrap_or_default(), d)); } } }
+            What::Canvas(els, cards)
+        } else { What::Note(self.ed.doc.clone()) };
+        let se = self.store.as_ref().and_then(|st| st.session.as_ref()); let (base, staged) = (se.and_then(|x| x.original().parent().map(|p| p.to_path_buf())), se.map(|x| x.media_dir()));
+        let settings = sessions_root().parent().unwrap_or(std::path::Path::new(".")).to_path_buf(); let (look, metric) = (style(), metric_paper());
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.notice = Some(match done { Ok(()) => (format!("Exported {name}"), soon(6)), Err(e) => { let _ = std::fs::remove_file(&tmp); (format!("Export failed \u{2014} {e}"), soon(12)) } });
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>(); let to = path.clone();
+        let made = std::thread::Builder::new().name("mn-export".into()).spawn(move || {
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+                let mut media = media::Media::new(&settings, || {}); media.set_base(base.as_deref(), staged); let mut poster = video::Poster::default();
+                let mut src = export::Files { media: &mut media, poster: &mut poster, gpu, fresh: true };
+                let bytes: Vec<u8> = match &what {
+                    What::Canvas(els, cards) => { let refs: Vec<&mn_store::Element> = els.iter().collect(); let mut note = |id: BlockId| cards.get(&id).cloned();
+                        if fmt == 4 { export::canvas_poster(&refs, &mut src, &mut note)? } else { export::canvas_html(&refs, &title, &when, opts, &export::fonts(), &mut src, &mut note).into_bytes() } }
+                    What::Note(doc) => if fmt == 2 { export::docx(doc.walk(), doc.children(None), &title, opts, &mut src)? } else if fmt == 3 { export::pdf(doc, &title, &look, opts, metric, &mut src)? } else if md {
+                        // pictures go to `<name>.assets/` beside the file, each under its own name (a second of a name gets a number)
+                        let dir = to.with_extension("assets"); let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "assets".into());
+                        let mut used = std::collections::HashSet::new();
+                        let mut sink = |name: &str, p: &export::Pic| -> Option<String> {
+                            let stem: String = name.rsplit_once('.').map(|x| x.0).unwrap_or(name).chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' }).collect(); let stem = if stem.is_empty() { "picture".to_string() } else { stem };
+                            let mut file = format!("{stem}.{}", p.ext); let mut n = 2; while !used.insert(file.to_lowercase()) { file = format!("{stem}-{n}.{}", p.ext); n += 1; }
+                            std::fs::create_dir_all(&dir).ok()?; std::fs::write(dir.join(&file), &p.bytes).ok()?; Some(format!("{folder}/{file}")) };
+                        export::markdown(doc.walk(), doc.children(None), &title, opts, &mut src, Some(&mut sink)).into_bytes()
+                    } else { export::html(doc.walk(), doc.children(None), &title, &when, opts, &export::fonts(), &mut src).into_bytes() },
+                };
+                // written beside and moved into place: a reader never sees half a file
+                let tmp = to.with_extension(format!("{ext}.part"));
+                std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &to)).map_err(|e| { let _ = std::fs::remove_file(&tmp); e.to_string() })
+            })).unwrap_or_else(|_| Err("it stopped on an error of its own".into()));
+            let _ = tx.send(r); if let Some(w) = WAKE.get() { w.wake_up(); }
+        });
+        match made { Ok(_) => self.files.exporting = Some((rx, name)), Err(e) => self.notice = Some((format!("Export failed \u{2014} {e}"), soon(12))) }
         if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// An export's end is said in the footer. `wait`: until it has ended (a scripted run, which ends itself after it).
+    fn export_tick(&mut self, wait: bool) {
+        let Some((rx, name)) = self.files.exporting.as_ref() else { return };
+        let got = if wait { rx.recv().map_err(|_| ()) } else { match rx.try_recv() { Ok(r) => Ok(r), Err(std::sync::mpsc::TryRecvError::Empty) => return, Err(_) => Err(()) } };
+        let soon = |s: u64| Instant::now() + std::time::Duration::from_secs(s);
+        self.notice = Some(match got { Ok(Ok(())) => (format!("Exported {name}"), soon(6)), Ok(Err(e)) => (format!("Export failed \u{2014} {e}"), soon(12)), Err(()) => ("Export failed \u{2014} it stopped".to_string(), soon(12)) });
+        self.files.exporting = None; if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     /// Shift+Cmd+C: the selected blocks - the whole note when none are - on the clipboard as Markdown. Nothing is written
     /// anywhere: a picture is named where it is.
@@ -2621,7 +2654,7 @@ impl App {
         if let Ok(spec) = std::env::var("MN_UNPACK") { if let Some((a, f)) = spec.split_once(':') { self.unpack_open(a.into(), Some(f.into())); let t = Instant::now(); while self.files.unpack.is_some() && t.elapsed().as_secs() < 300 { self.unpack_tick(); std::thread::sleep(std::time::Duration::from_millis(5)); } } }
         if let Some(u) = self.files.unpack.take() { u.stop.store(true, std::sync::atomic::Ordering::Relaxed); }
         // (scripted, MN_EXPORT=<a.html>[:<b.md>]: the open note is exported there as the run ends)
-        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else if p.ends_with(".png") { 4 } else { 0 }, Some(p.into())); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
+        if let Ok(list) = std::env::var("MN_EXPORT") { for p in list.split(':') { self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else if p.ends_with(".png") { 4 } else { 0 }, Some(p.into())); self.export_tick(true); if let Some((t, _)) = &self.notice { println!("export: {t}"); } } }
         // a save under way is waited for (it is short unless the document's place does not answer; then 20 s at most)
         let t = Instant::now(); while self.saving.is_some() && t.elapsed().as_secs() < 20 { if let Some(step) = self.saver.poll() { self.save_step(step); } else { std::thread::sleep(std::time::Duration::from_millis(5)); } }
         if self.saving.take().is_some() { self.saver.abandon(); eprintln!("save: no answer from the document's place; your changes are kept on this machine"); }
@@ -2834,6 +2867,10 @@ impl ApplicationHandler for App {
             if how != "show" { self.site_start(to.into()); }
         }
         if std::env::var_os("MN_SITE").is_some() { if let Some(w) = self.files.site.as_ref() { if w.phase == site_win::Phase::Done && !self.files.site_said { self.files.site_said = true; println!("site: {}", w.note); } } }
+        // (scripted, MN_EXPORT_NOW=<file>: the open note is exported there while the run goes on - to see the window stay alive)
+        if let (false, Ok(p), true) = (self.files.export_test, std::env::var("MN_EXPORT_NOW"), self.frames > 8 && self.store.is_some() && !self.blank) { self.files.export_test = true; self.files.export_t0 = Some((Instant::now(), self.frames)); self.export(if p.ends_with(".md") { 1 } else if p.ends_with(".docx") { 2 } else if p.ends_with(".pdf") { 3 } else { 0 }, Some(p.into())); }
+        if let (Some((t0, f0)), None) = (self.files.export_t0, &self.files.exporting) { self.files.export_t0 = None; println!("export now: {:.2} s, {} frames drawn meanwhile; {}", t0.elapsed().as_secs_f64(), self.frames - f0, self.notice.as_ref().map(|n| n.0.as_str()).unwrap_or("")); }
+        if self.files.export_t0.is_some() { if let Some(g) = &self.gpu { g.window.request_redraw(); } }
         // (scripted, MN_SIDE_DROP=<file>[:<file>…]: the files are dropped on the sidebar, on no row)
         if let (false, Ok(v), true) = (self.files.side_test, std::env::var("MN_SIDE_DROP"), self.frames > 8 && self.store.is_some()) { self.files.side_test = true; self.side_drop(v.split(':').map(std::path::PathBuf::from).collect(), None); }
         // (scripted, MN_CTX=<x>,<y>: the context menu is opened at a window point, as a right press there would)
@@ -2931,7 +2968,7 @@ impl ApplicationHandler for App {
         if self.recovered && self.gpu.is_some() && self.confirm.is_none() && self.frames > 0 { self.recovered = false; self.offer_recovered(); }
         // a save's steps come back from the helper thread
         if let Some(step) = self.saver.poll() { self.save_step(step); }
-        self.unpack_tick(); self.import_tick(); if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
+        self.unpack_tick(); self.import_tick(); self.export_tick(false); if self.files.side_media.is_some() || self.files.import_parent.is_some() { self.side_media_tick(); }
         if self.files.gather.is_some() { let out = self.files.gather.as_mut().map(|w| w.tick()).unwrap_or(gather_win::Out::None); self.gather_out(out); }
         if self.files.site.is_some() { let out = self.files.site.as_mut().map(|w| w.tick()).unwrap_or(site_win::Out::None); self.site_out(out); }
         if let Some(sv) = &self.saving { if sv.started.elapsed().as_secs() >= 20 && self.saver.waiting().is_some_and(|w| w.as_secs() >= 20) {
