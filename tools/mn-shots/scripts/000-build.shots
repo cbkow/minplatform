@@ -24,6 +24,46 @@ add @2 ${MN_DEMO_DIR}/Media/Reel 2 - harbour v003.mp4
 wait 2
 add ${MN_DEMO_DIR}/Media/Reel 2 - harbour v002.mp4
 wait 2
+# notes and drawings on the clip: it is played and paused, taken to a frame on its bar, drawn on, and a note typed
+key cmd+Up
+wait 0.5
+click 700 400
+wait 0.5
+key Space
+wait 0.3
+click 560 693
+wait 0.6
+click 360 16
+down 620 560
+move 700 500
+move 780 440
+up 800 420
+wait 0.3
+click 488 16
+wait 0.3
+type Too dark in this corner
+key Enter
+wait 0.5
+click 800 724
+wait 0.6
+click 392 16
+down 900 300
+move 1000 380
+up 1100 430
+wait 0.3
+click 488 16
+wait 0.3
+type Hold the lantern glow two frames longer
+key Enter
+wait 0.5
+click 1010 724
+wait 0.6
+click 488 16
+wait 0.3
+type Horizon drifts in the last second
+key Enter
+wait 0.5
+click 264 16
 shot build-review
 note Delivery specs
 wait 0.5
