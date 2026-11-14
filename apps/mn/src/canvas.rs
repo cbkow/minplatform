@@ -171,6 +171,12 @@ impl Canvas {
     pub fn video_strip(&self, id: BlockId) -> Option<Rect> { let (r, _) = self.video_el(id)?; let s = self.scale; Some(Rect::new(r.x0, r.y1 + 6.0 * s, r.x1.max(r.x0 + 300.0 * s), r.y1 + 6.0 * s + mn_layout::VIDEO_STRIP as f64 * s)) }
     pub fn selected_video(&self) -> Option<BlockId> { if self.edit.is_some() { return None } self.selected_media("video").map(|e| e.id) }
     /// The frame a video card stands on goes into its record (not a step of the history).
+    /// A card's record is replaced (its drawings, made in the large view: rows 362, 367). `step`: as one step of the
+    /// canvas's history - the record as it stands now is what an undo brings back.
+    pub fn put_record(&mut self, id: BlockId, record: String, step: bool) {
+        if !self.els.iter().any(|e| e.id == id) { return } if step { self.step(); }
+        if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.record = record; } self.drawn.remove(&id); self.dirty = true;
+    }
     pub fn set_frame(&mut self, id: BlockId, frame: i32) {
         let Some(e) = self.els.iter_mut().find(|e| e.id == id) else { return }; let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&e.record) else { return };
         if v.get("frame").and_then(|f| f.as_i64()).unwrap_or(0) == frame as i64 { return } v.insert("frame".into(), serde_json::json!(frame)); e.record = serde_json::Value::Object(v).to_string(); self.dirty = true;

@@ -354,7 +354,7 @@ impl App {
         // (a table shown as a board has no cell to stand in: a caret that came into one - by an arrow key, an undo - picks the table whole instead)
         if !self.blank && !self.ed.in_blocks() { if let Some(t) = self.ed.selection().and_then(|x| { let mut up = self.ed.doc.get(x.focus.block).and_then(|b| b.parent); let mut n = 0; while let (Some(p), true) = (up, n < 6) { if matches!(self.ed.doc.get(p).map(|b| &b.kind), Some(Kind::Table { columns, .. }) if mn_layout::board::column(columns).is_some()) { return Some(p) } up = self.ed.doc.get(p).and_then(|b| b.parent); n += 1; } None }) { self.ed.select_block(t); } }
         if self.files.studio.as_ref().is_some_and(|st| self.studio_record(st.host).is_none()) { self.files.studio = None; }   // its owner went (deleted, undone away)
-        self.ed.locked = self.reading; self.bar.reading = (self.reading || self.files.studio.as_ref().is_some_and(|st| matches!(st.host, studio::Host::Card(_)))) && self.store.is_some();
+        self.ed.locked = self.reading; self.bar.reading = self.reading && self.store.is_some();
         if let Some(cv) = self.files.canvas.as_mut() { if self.reading && !cv.reading { cv.sel.clear(); } cv.reading = self.reading && self.files.card.is_none(); }
         if self.ed.refused != self.refused_seen { self.refused_seen = self.ed.refused; if self.reading { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); } }
         self.settle_timecode();
@@ -371,7 +371,7 @@ impl App {
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
         self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
-        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some() && self.files.card.is_none(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown, ink: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|cv| { use canvas::Ink as I; use toolbar::Tool as T; toolbar::InkShown { page: false, tool: Some(match cv.tool { None if cv.framing => T::Frame, None => T::DrawSelect, Some(I::Pen) => T::DrawPen, Some(I::Line) => T::DrawLine, Some(I::Arrow) => T::DrawArrow, Some(I::Rect) => T::DrawRect, Some(I::Oval) => T::DrawOval, Some(I::Eraser) => T::DrawErase }), pen: peniko::Color::new(cv.pen) } }).or(self.files.ishown) }) { g.window.request_redraw(); }
+        { let st = self.ed.state(); if self.bar.sync(&toolbar::Shown { state: &st, canvas: self.files.canvas.is_some() && self.files.card.is_none() && self.files.studio.is_none(), has_note: !self.blank, in_cell: self.ed.selection().is_some_and(|x| self.ed.cell_of(x.focus.block).is_some()), video: self.files.vshown, ink: self.files.canvas.as_ref().filter(|_| self.files.card.is_none() && self.files.studio.is_none()).map(|cv| { use canvas::Ink as I; use toolbar::Tool as T; toolbar::InkShown { page: false, tool: Some(match cv.tool { None if cv.framing => T::Frame, None => T::DrawSelect, Some(I::Pen) => T::DrawPen, Some(I::Line) => T::DrawLine, Some(I::Arrow) => T::DrawArrow, Some(I::Rect) => T::DrawRect, Some(I::Oval) => T::DrawOval, Some(I::Eraser) => T::DrawErase }), pen: peniko::Color::new(cv.pen) } }).or(self.files.ishown) }) { g.window.request_redraw(); }
             let unsaved = self.store.as_ref().is_some_and(|x| x.unpublished || x.edited.is_some());
             // the readout: a save under way, a save that failed, what is not in the document yet, else the last outcome
             let n = self.changed.len() + self.store.as_ref().is_some_and(|x| x.edited.is_some() && !self.changed.contains(&x.note)) as usize;
@@ -1579,7 +1579,7 @@ impl App {
                 "Delete" => { if let Some(cv) = self.files.canvas.as_mut() { cv.delete(); } } "Bring to Front" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(true); } } "Send to Back" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(false); } }
                 "Previous Page" | "Next Page" => { if let Some(cv) = self.files.canvas.as_mut() { cv.pdf_page(label == "Next Page"); } }
                 "Open File" | "Reveal in Finder" | "Show in Explorer" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { self.file_open(&rec, label != "Open File"); } }
-                "Open PDF" => { if let Some(id) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).filter(|e| e.record.contains("\"kind\":\"pdf\"")).map(|e| e.id) { self.mods = was; self.studio_open(studio::Host::Card(id)); return } }
+                "Open PDF" | "Open Image" => { if let Some(id) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).filter(|e| e.record.contains("\"kind\":\"pdf\"") || !e.record.contains("\"kind\"")).map(|e| e.id) { self.mods = was; self.studio_open(studio::Host::Card(id)); return } }
                 "Copy Path" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { if let (Some(p), Some(cb)) = (self.media.file_state(&rec).path, self.clipboard.as_mut()) { let _ = cb.set_text(p.to_string_lossy().into_owned()); self.block_clip = None; self.files.cclip.clear(); } } }
                 "Open Note" => { if let Some((_, note, _)) = self.card_note() { self.mods = was; self.open_note(note); return } }
                 "Promote to Note" => { if let (Some((_, note, true)), Some(st)) = (self.card_note(), self.store.as_mut()) { let up = self.files.canvas.as_ref().and_then(|cv| st.col.entry(cv.id).ok().flatten()).and_then(|e| e.parent); if st.col.reparent(note, up).is_ok() { st.unpublished = true; self.changed.insert(note); if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } }
@@ -1698,7 +1698,7 @@ impl App {
         let now = self.now_ms();
         let block = |me: &mut App, b: B| { let d = me.ed.set_block_kind(b, now).unwrap_or(Dirty::Nothing); me.apply(d); };
         // a canvas's drawing tools (row 324): armed and put down on the canvas itself
-        if self.files.card.is_none() { if let Some(cv) = self.files.canvas.as_mut() { use canvas::Ink as I;
+        if self.files.card.is_none() && self.files.studio.is_none() { if let Some(cv) = self.files.canvas.as_mut() { use canvas::Ink as I;
             if let Some(i) = match tool { T::DrawSelect => Some(None), T::DrawPen => Some(Some(I::Pen)), T::DrawLine => Some(Some(I::Line)), T::DrawArrow => Some(Some(I::Arrow)), T::DrawRect => Some(Some(I::Rect)), T::DrawOval => Some(Some(I::Oval)), T::DrawErase => Some(Some(I::Eraser)), _ => None } {
                 cv.arm(i); if let Some(g) = &self.gpu { g.window.request_redraw(); } self.set_cursor(); return }
             // the Frame button: with cards selected it frames them at once (as Cmd+G); with none it arms the frame tool
@@ -2014,7 +2014,7 @@ impl App {
     /// The current block when it can be drawn on (row 325): a picture, or a PDF - its page's frame in the window, its record.
     fn ink_block(&self) -> Option<(BlockId, Rect, String)> {
         // the PDF view (row 362): its block, and the page under the pointer (or the one last drawn on); a canvas's card is not drawn on there yet
-        if let Some(st) = self.files.studio.as_ref() { let studio::Host::Block(id) = st.host else { return None }; if self.reading || self.modal() { return None }
+        if let Some(st) = self.files.studio.as_ref() { let (studio::Host::Block(id) | studio::Host::Card(id)) = st.host; if self.reading || self.modal() { return None }
             let d = self.studio_record(st.host)?; let frame = st.page_at(self.pointer.0, self.pointer.1).filter(|_| !st.in_head(self.pointer.1)).map(|p| p.1).or(self.files.spage.map(|p| p.1)).unwrap_or(Rect::ZERO); return Some((id, frame, d)) }
         if self.blank || self.modal() || (self.files.canvas.is_some() && self.files.card.is_none()) { return None }
         if let Some((id, r)) = self.picture() { if let Some(Kind::Media { descriptor }) = self.ed.doc.get(id).map(|b| &b.kind) { return Some((id, r, descriptor.clone())) } }
@@ -2031,7 +2031,11 @@ impl App {
         self.files.iblock = Some((id, frame, d)); self.files.gest = Some(g); self.page_show(); if let Some(g) = &self.gpu { g.window.request_redraw(); } true
     }
     /// The page's strokes as the gesture has them now go into the record, outside the history (the release makes the one step).
-    fn page_show(&mut self) { let Some(g) = &self.files.gest else { return }; if !g.changed { return } if let Some(d) = ink::page_set(&g.before, g.page, g.size, &g.lines) { let _ = self.ed.doc.set_kind(g.block, Kind::Media { descriptor: d }); } }
+    /// The large view is a canvas card's, and this is that card (rows 362, 367): its drawings are written to the card.
+    fn ink_card(&self, block: BlockId) -> bool { matches!(self.files.studio.as_ref().map(|st| st.host), Some(studio::Host::Card(id)) if id == block) }
+    /// A record being drawn on is shown as it stands (outside any history).
+    fn ink_put(&mut self, block: BlockId, d: String) { if self.ink_card(block) { if let Some(cv) = self.files.canvas.as_mut() { cv.put_record(block, d, false); } } else { let _ = self.ed.doc.set_kind(block, Kind::Media { descriptor: d }); } }
+    fn page_show(&mut self) { let Some(g) = &self.files.gest else { return }; if !g.changed { return } let block = g.block; if let Some(d) = ink::page_set(&g.before, g.page, g.size, &g.lines) { self.ink_put(block, d); } }
     fn page_point(&self, x: f64, y: f64) -> Option<(kurbo::Point, f64, f64)> { let g = self.files.gest.as_ref()?; let (_, frame, _) = self.files.iblock.as_ref()?; let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); let k = g.size.0 / frame.width().max(1e-9); Some((kurbo::Point::new((x - frame.x0) * k, (y - frame.y0) * k), k, s)) }
     fn page_drag(&mut self, x: f64, y: f64) {
         let Some((p, k, s)) = self.page_point(x, y) else { return }; let reach = (self.pen_now().1 / 2.0).max(5.0) * s * k;
@@ -2040,10 +2044,12 @@ impl App {
     /// The release: the record goes back to what it was and, when the page's strokes changed, takes them as ONE step of the note's history.
     fn page_release(&mut self, x: f64, y: f64) {
         let Some((p, k, s)) = self.page_point(x, y) else { self.files.gest = None; return }; let (pen, w) = self.pen_now(); let Some(mut g) = self.files.gest.take() else { return };
-        let changed = g.release(p, pen, w * s * k, 2.0 * s * k); let _ = self.ed.doc.set_kind(g.block, Kind::Media { descriptor: g.before.clone() });
+        let changed = g.release(p, pen, w * s * k, 2.0 * s * k); self.ink_put(g.block, g.before.clone());
         if changed { self.page_keep(g.block, &g.before, g.page, g.size, &g.lines); } if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
     fn page_keep(&mut self, block: BlockId, before: &str, page: usize, size: (f64, f64), lines: &[ink::Line]) {
+        // a canvas card's (the large view): one step of the CANVAS's history
+        if self.ink_card(block) { if let Some(d) = ink::page_set(before, page, size, lines) { if d != before { if let Some(cv) = self.files.canvas.as_mut() { cv.put_record(block, d, true); } } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
         if let Some(d) = ink::page_set(before, page, size, lines) { if d != before { let t = self.now_ms(); let dd = self.ed.set_kinds(vec![(block, Kind::Media { descriptor: d })], t).unwrap_or(Dirty::Nothing); self.apply(dd); } }
     }
     /// The picked stroke is changed (None from `f`: removed) - one step. True: there was one.
@@ -2061,7 +2067,7 @@ impl App {
         let (_, cmd, alt) = self.mods; if cmd || alt || self.ctrl || self.files.vshown.is_some() || self.files.link.is_some() || self.files.picker.is_some() || self.files.find.is_some() || self.sidebar.as_ref().is_some_and(|sb| sb.typing()) { return false }
         if self.ink_block().is_none() { return false } use ink::{Ink as I, Pick as P};
         let done = match key {
-            Key::Named(NamedKey::Escape) => { if let Some(g) = self.files.gest.take() { let _ = self.ed.doc.set_kind(g.block, Kind::Media { descriptor: g.before }); true } else if self.files.psel.take().is_some() { true } else { self.files.pick.take().is_some() } }
+            Key::Named(NamedKey::Escape) => { if let Some(g) = self.files.gest.take() { self.ink_put(g.block, g.before); true } else if self.files.psel.take().is_some() { true } else { self.files.pick.take().is_some() } }
             Key::Named(NamedKey::Backspace | NamedKey::Delete) if self.files.psel.is_some() => self.page_picked(|_| false),
             Key::Character(c) => { let to = match c.to_lowercase().as_str() { "v" => Some(P::Select), "p" => Some(P::Draw(I::Pen)), "l" => Some(P::Draw(I::Line)), "a" => Some(P::Draw(I::Arrow)), "r" => Some(P::Draw(I::Rect)), "o" => Some(P::Draw(I::Oval)), "e" => Some(P::Draw(I::Eraser)), _ => None };
                 match to { Some(p) => { self.files.pick = if self.files.pick == Some(p) { None } else { Some(p) }; self.files.psel = None; true } None => false } }
@@ -3530,7 +3536,7 @@ impl ApplicationHandler for App {
                             I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator,
                             // frames, lining up, locking (row 327)
                             I::with_shortcut("Group", any && frame.is_none(), &k("\u{2318}G", "Ctrl+G")), I::with_shortcut("Ungroup", frame.is_some(), &k("\u{21e7}\u{2318}G", "Ctrl+Shift+G")), I::action("Rename Frame", frame.is_some()), I::action("Fit to Contents", frame.as_ref().is_some_and(|f| f.1)), I::action("Shape\u{2026}", frame.is_some()), I::action("Tint\u{2026}", frame.is_some()),
-                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open PDF", cv.selected_any_media().is_some_and(|e| e.record.contains("\"kind\":\"pdf\""))), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::action("Copy Path", has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
+                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open PDF", cv.selected_any_media().is_some_and(|e| e.record.contains("\"kind\":\"pdf\""))), I::action("Open Image", cv.selected_any_media().is_some_and(|e| !e.record.contains("\"kind\""))), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::action("Copy Path", has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
                 else if state == ElementState::Pressed { self.context(position.x, position.y);
                     // reading: of the page's menu only what changes nothing stays in reach
                     if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path" | "Previous Page" | "Next Page" | "Open PDF" | "Open Image") { *enabled = false; } } } } }
