@@ -2479,7 +2479,7 @@ dependencies = [
 
 [[package]]
 name = "mn"
-version = "0.0.1"
+version = "3.0.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",
