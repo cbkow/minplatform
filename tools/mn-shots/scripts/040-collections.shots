@@ -24,7 +24,7 @@ wait 0.6
 click 700 160
 wait 0.6
 key End
-type  and the editor
+type , cut to music
 wait 0.6
 note Schedule
 wait 0.8

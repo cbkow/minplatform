@@ -7,4 +7,16 @@ click 700 250
 wait 0.6
 move 1100 600
 shot mn3-table-schedule 240 0 1040 520
+click 643 238
+wait 0.6
+click 645 115
+wait 0.6
+move 1100 650
+shot mn3-table-column-menu 240 0 1040 660
+click 737 489
+wait 0.8
+click 643 238
+wait 0.8
+move 1100 650
+shot mn3-table-choice-picker 240 0 1040 560
 quit

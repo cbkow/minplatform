@@ -40,7 +40,7 @@ impl Tool {
             Tool::DrawArrow => ("arrow-up-right", None, "Arrow", ""), Tool::DrawLine => ("line-segment", None, "Line", ""), Tool::DrawErase => ("eraser", None, "Erase a drawing", ""),
             Tool::PenColor => ("", None, "The colour of what is drawn", ""), Tool::PenThinner => ("minus", None, "Thinner line", ""), Tool::PenThicker => ("plus", None, "Thicker line", ""),
             Tool::NoteText => ("chat-text", None, "Write a note on this frame", ""), Tool::NoteDone => ("check-circle", None, "Mark the note addressed", ""), Tool::NoteDelete => ("trash", None, "Delete the note", ""),
-            Tool::Table => ("table", None, "Table (Tab: the next cell; \u{2318}\u{21b5}: a row below)", ""), Tool::Columns => ("columns", None, "Columns \u{2014} a column beside this block (again: one more)", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Frame => ("frame-corners", None, "Frame", ""), Tool::Chip => ("tag", None, "Choice", ""),
+            Tool::Table => ("table", None, if cfg!(target_os = "macos") { "Table (Tab: the next cell; \u{2318}\u{21b5}: a row below)" } else { "Table (Tab: the next cell; Ctrl+Enter: a row below)" }, ""), Tool::Columns => ("columns", None, "Columns \u{2014} a column beside this block (again: one more)", ""), Tool::Divider => ("minus", None, "Divider", ""), Tool::Image => ("image", None, "Picture", ""), Tool::File => ("paperclip", None, "File", ""), Tool::Frame => ("frame-corners", None, "Frame", ""), Tool::Chip => ("tag", None, "Choice", ""),
         }
     }
     fn tooltip(self) -> String {

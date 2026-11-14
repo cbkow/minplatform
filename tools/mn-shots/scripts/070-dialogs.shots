@@ -1,0 +1,15 @@
+# saving.md: the question at closing with changes not saved
+size 1280 800
+wait 1
+note Kickoff
+wait 0.6
+click 700 160
+wait 0.6
+key End
+type , cut to music
+wait 0.5
+menu CloseCollection
+wait 0.8
+shot mn3-dialog-save-changes 240 140 800 460
+key Escape
+quit

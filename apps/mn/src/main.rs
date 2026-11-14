@@ -1035,7 +1035,7 @@ impl App {
     fn site_open(&mut self) {
         if let Some(w) = self.files.site.as_mut() { if w.active() { w.shown = true; if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
         let Some(st) = self.store.as_ref() else { return };
-        fn walk(c: &mn_store::Collection, parent: Option<BlockId>, depth: usize, out: &mut Vec<site_win::Entry>) { for e in c.list(parent).unwrap_or_default() { let id = e.id; out.push(site_win::Entry { id, parent: e.parent, depth, kind: e.kind, title: e.title, on: false }); walk(c, Some(id), depth + 1, out); } }
+        fn walk(c: &mn_store::Collection, parent: Option<BlockId>, depth: usize, out: &mut Vec<site_win::Entry>) { for e in c.list(parent).unwrap_or_default() { let id = e.id; let canvas = e.kind == mn_store::DocKind::Canvas; out.push(site_win::Entry { id, parent: e.parent, depth, kind: e.kind, title: e.title, on: false }); if !canvas { walk(c, Some(id), depth + 1, out); } } }   // (a canvas's own notes are its cards, shown on its page: they are no pages of their own - each was listed as an "Untitled" page under the canvas)
         let mut entries = vec![]; walk(&st.col, None, 0, &mut entries);
         if let Some(sb) = self.sidebar.as_ref() { for e in entries.iter_mut() { if let Some(r) = sb.row(e.id) { e.title = r.title.clone(); } } }
         let current = match (&self.files.canvas, &self.files.card) { (Some(cv), None) => Some(cv.id), _ if !self.blank => Some(st.note), _ => None };
@@ -1398,7 +1398,7 @@ impl App {
         if let Some(id) = self.ctx_for { sb.selected = Some(id); sb.focused = true; }
         let mut items = vec![];
         if self.ctx_for.is_some() { items.push(I::with_shortcut("Rename", true, "\u{21b5}")); items.push(I::Separator); }
-        items.push(I::with_shortcut("New Note", true, &key(""))); items.push(I::with_shortcut("New Folder", true, &key("\u{21e7}")));
+        items.push(I::with_shortcut("New Note", true, &key(""))); items.push(I::action("New Canvas", true)); items.push(I::with_shortcut("New Folder", true, &key("\u{21e7}")));
         if self.ctx_for.is_some() { items.push(I::Separator); items.push(I::with_shortcut("Delete\u{2026}", true, "\u{232b}")); }
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor();
         self.ctx.open_at(items, &mut g.fonts, x, y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s);
@@ -1417,6 +1417,7 @@ impl App {
                 "Delete" => { if let Some(cv) = self.files.canvas.as_mut() { cv.delete(); } } "Bring to Front" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(true); } } "Send to Back" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(false); } }
                 "Previous Page" | "Next Page" => { if let Some(cv) = self.files.canvas.as_mut() { cv.pdf_page(label == "Next Page"); } }
                 "Open File" | "Reveal in Finder" | "Show in Explorer" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { self.file_open(&rec, label != "Open File"); } }
+                "Copy Path" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { if let (Some(p), Some(cb)) = (self.media.file_state(&rec).path, self.clipboard.as_mut()) { let _ = cb.set_text(p.to_string_lossy().into_owned()); self.block_clip = None; self.files.cclip.clear(); } } }
                 "Open Note" => { if let Some((_, note, _)) = self.card_note() { self.mods = was; self.open_note(note); return } }
                 "Promote to Note" => { if let (Some((_, note, true)), Some(st)) = (self.card_note(), self.store.as_mut()) { let up = self.files.canvas.as_ref().and_then(|cv| st.col.entry(cv.id).ok().flatten()).and_then(|e| e.parent); if st.col.reparent(note, up).is_ok() { st.unpublished = true; self.changed.insert(note); if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } }
                 l if l.starts_with("Add Note") => { let (Some(st), Some(g)) = (self.store.as_ref(), self.gpu.as_mut()) else { self.mods = was; return };
@@ -1517,7 +1518,7 @@ impl App {
         }
         match (label.as_str(), self.ctx_for) {
             ("Rename", Some(id)) => if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { sb.start_rename(id, &mut g.fonts); },
-            ("New Note", _) => self.new_entry(mn_store::DocKind::Note), ("New Folder", _) => self.new_entry(mn_store::DocKind::Folder),
+            ("New Note", _) => self.new_entry(mn_store::DocKind::Note), ("New Folder", _) => self.new_entry(mn_store::DocKind::Folder), ("New Canvas", _) => self.new_entry(mn_store::DocKind::Canvas),
             (_, Some(id)) => self.ask_delete(id),
             _ => {}
         }
@@ -2593,7 +2594,7 @@ impl App {
     fn ask_delete(&mut self, id: BlockId) {
         if self.guide.as_ref().is_some_and(|g| g.has(id)) { return }
         let Some(row) = self.sidebar.as_ref().and_then(|sb| sb.row(id)) else { return };
-        let body = if row.kind == mn_store::DocKind::Folder { "The folder and everything in it will be removed from the collection." } else { "The note will be removed from the collection." };
+        let body = if row.kind == mn_store::DocKind::Folder { "The folder and everything in it will be removed from the collection." } else if row.kind == mn_store::DocKind::Canvas { "The canvas and its own notes will be removed from the collection." } else { "The note will be removed from the collection." };
         let mut d = min_ui::dialog::Dialog::new(&format!("Delete \u{201c}{}\u{201d}?", row.title), body, vec![("Cancel", min_ui::text_button::Variant::Secondary), ("Delete", min_ui::text_button::Variant::Negative)]);
         d.show(); self.confirm = Some((Ask::Delete(id), d)); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -2730,6 +2731,7 @@ impl App {
         if self.blank && cmd && !shift && !alt && matches!(key, Key::Character(c) if c == "1") { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_ref()) { sb.rail.toggle(Instant::now()); self.layout = None; g.window.request_redraw(); } return }
         // (with no page - a canvas, or no note - a field of the sidebar still has the keys: a canvas could not be renamed, nor the tree searched, while one was open)
         if self.blank && !cmd && self.sidebar.as_ref().is_some_and(|sb| sb.typing()) { if let (Some(sb), Some(g)) = (self.sidebar.as_mut(), self.gpu.as_mut()) { let a = sb.key(&ui_key(), &mut g.fonts); g.window.request_redraw(); if let Some(a) = a { self.act(a); } } return }
+        if self.blank && cmd && !alt && self.store.is_some() && matches!(key, Key::Character(c) if c.to_lowercase() == "n") { self.new_entry(if shift { mn_store::DocKind::Folder } else { mn_store::DocKind::Note }); return }   // (a canvas has no page, but a note or a folder is still made from it)
         if self.blank { return }
         // a popup's field (the link's editor, a picker, a note's words): Cmd+V / C / X are the field's - the clipboard is the window's
         if cmd && !alt { if let Key::Character(c) = key { let c = c.to_lowercase(); if matches!(c.as_str(), "v" | "c" | "x") {
@@ -3320,7 +3322,7 @@ impl ApplicationHandler for App {
                             I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator,
                             // frames, lining up, locking (row 327)
                             I::with_shortcut("Group", any && frame.is_none(), &k("\u{2318}G", "Ctrl+G")), I::with_shortcut("Ungroup", frame.is_some(), &k("\u{21e7}\u{2318}G", "Ctrl+Shift+G")), I::action("Rename Frame", frame.is_some()), I::action("Fit to Contents", frame.as_ref().is_some_and(|f| f.1)), I::action("Shape\u{2026}", frame.is_some()), I::action("Tint\u{2026}", frame.is_some()),
-                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
+                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::action("Copy Path", has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
                 else if state == ElementState::Pressed { self.context(position.x, position.y);
                     // reading: of the page's menu only what changes nothing stays in reach
                     if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path") { *enabled = false; } } } } }
@@ -3523,7 +3525,7 @@ fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) 
     let session = match &left {
         Some(l) => { println!("recovered work: unsaved changes from an earlier session of {} are taken up again", path.display()); staging::Session::resume(l).map_err(|e| e.to_string())? }
         // a path with nothing at it is NOT quietly a new collection (on a share it may be a missing mount)
-        None => if create { staging::Session::create(&root, path) } else { staging::Session::open(&root, path) }.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "Nothing is at this place. Is its drive or share connected? (A new collection is made with New Collection\u{2026}, or --new.)".to_string() } else { e.to_string() })?,
+        None => if create { staging::Session::create(&root, path) } else { staging::Session::open(&root, path) }.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "Nothing is at this place. Is its drive or share connected? (A new collection is made with New Collection\u{2026})".to_string() } else { e.to_string() })?,
     };
     let mut col = Collection::open(&session.work()).map_err(|e| e.to_string())?;
     fn notes(c: &Collection, parent: Option<BlockId>, out: &mut Vec<mn_store::Entry>) { for e in c.list(parent).unwrap_or_default() { if e.kind == DocKind::Note { out.push(e.clone()); } notes(c, Some(e.id), out); } }
