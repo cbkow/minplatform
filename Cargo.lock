@@ -2583,6 +2583,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mr-conform"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "muda"
 version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
