@@ -379,6 +379,14 @@ pub fn from_markdown_with(text: &str, local: bool) -> Clip {
             if indents.last().is_none_or(|i| *i < indent) { indents.push(indent); }
             let depth = (indents.len() - 1).min(8) as u8; let body = body.trim_start();
             let (kind, body) = match body.get(..4) { Some("[ ] ") => (Kind::Task { depth, state: 0 }, &body[4..]), Some("[x] " | "[X] ") => (Kind::Task { depth, state: 2 }, &body[4..]), Some("[/] ") => (Kind::Task { depth, state: 1 }, &body[4..]), _ => (if numbered { Kind::Numbered { depth } } else { Kind::Bullet { depth } }, body) };
+            // the item's text may run on over the following lines (a source wrapped at a width): they are the item's until an
+            // empty line or the start of something else - they were taken for paragraphs, which also cut a numbered list in pieces
+            let mut body = body.to_string();
+            while let Some(n) = lines.peek() { let nt = n.trim_start(); let d = nt.bytes().take_while(|c| c.is_ascii_digit()).count(); let h = nt.bytes().take_while(|c| *c == b'#').count();
+                let starts = nt.is_empty() || nt.starts_with("```") || nt.starts_with("~~~") || nt.starts_with('>') || ((1..=6).contains(&h) && nt[h..].starts_with(' ')) || nt.starts_with("- ") || nt.starts_with("* ") || nt.starts_with("+ ")
+                    || ((1..=9).contains(&d) && (nt[d..].starts_with(". ") || nt[d..].starts_with(") "))) || (nt.len() >= 3 && nt.chars().all(|c| matches!(c, '-' | '*' | '_' | ' ')));
+                if starts { break }
+                let hard = body.ends_with("  ") || body.ends_with('\\'); let kept = body.trim_end().trim_end_matches('\\').len(); body.truncate(kept); body.push(if hard { '\n' } else { ' ' }); body.push_str(nt); lines.next(); }
             let (x, s) = inline(body.trim()); if !x.is_empty() { out.push(vec![block(kind, x, s)]); } continue
         }
         if para.is_empty() { indents.clear(); }
@@ -435,5 +443,10 @@ mod tests {
         assert!(c[0][0].spans.covers(6, 9, &Mark::Italic)); let p = &c[1][0];
         assert!(p.spans.covers(21, 25, &Mark::Bold) && p.spans.covers(27, 32, &Mark::Code) && p.spans.covers(34, 40, &Mark::Link("https://example.com".into())));
         assert_eq!(p.spans.as_slice().len(), 3, "the word's underscores are not marks");
+    }
+    #[test]
+    fn a_list_items_text_runs_on_over_wrapped_lines() {
+        let c = from_markdown("1. **Install.** Get it from the\n   [page](https://example.com); see\n   more.\n2. Second\nlazy line\n- bullet\n  wrapped\n\nAfter");
+        assert_eq!(kinds(&c), [(Kind::Numbered { depth: 0 }, "Install. Get it from the page; see more."), (Kind::Numbered { depth: 0 }, "Second lazy line"), (Kind::Bullet { depth: 0 }, "bullet wrapped"), (Kind::Paragraph, "After")]);
     }
 }
