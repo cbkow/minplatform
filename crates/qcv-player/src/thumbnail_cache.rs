@@ -32,6 +32,8 @@ pub const HOVER_REQUEST_THROTTLE_MS: u64 = 16;
 pub const PREFETCH_STRIDE: i32 = 6;
 /// `SWS_POINT` (swscale.h): nearest-neighbour — fast for thumbs
 const SWS_POINT: i32 = 0x10;
+/// `SWS_BICUBIC` (swscale.h): a smooth reduction, for frames that are kept (a video made of them)
+const SWS_BICUBIC: i32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ThumbKey { pub source_path: String, pub source_frame: i32 }
@@ -306,19 +308,43 @@ impl ThumbLoader for VideoThumbLoader {
             }
         }
         if best.is_null() { return None }
-        let out = unsafe { let mut c = VideoThumbLoaderSws { sws: self.sws, sws_key: self.sws_key, range: self.range }; let o = c.convert(best, max_size); self.sws = c.sws; self.sws_key = c.sws_key; o };
+        let out = unsafe { let mut c = VideoThumbLoaderSws { sws: self.sws, sws_key: self.sws_key, range: self.range, flags: SWS_POINT }; let o = c.convert(best, max_size); self.sws = c.sws; self.sws_key = c.sws_key; o };
         unsafe { ff::av_frame_free(&mut best); }
         out
     }
 }
+/// Every frame of a file, in the order it is shown, as the thumbnails' samples (R'G'B' code values at 16 bits, the
+/// screen's matrix and range rules) - reduced to fit a longest side with a smooth filter. For a video made of a
+/// file's frames after they have passed the colour stage (minNotes' web folder: an HDR picture brought to standard
+/// range, canon row 343). Software decoding, without the decoder's shortcuts.
+pub struct FrameReader { session: Session, sws: VideoThumbLoaderSws, eof: bool }
+unsafe impl Send for FrameReader {}
+impl Drop for FrameReader { fn drop(&mut self) { unsafe { if !self.sws.sws.is_null() { ff::sws_freeContext(self.sws.sws); } } } }
+impl FrameReader {
+    pub fn open(path: &str) -> Option<FrameReader> {
+        let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: None, fast: false, live: None }).ok()?;
+        Some(FrameReader { session, sws: VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range: crate::rgb_range::RangeOverride::Auto, flags: SWS_BICUBIC }, eof: false })
+    }
+    pub fn info(&self) -> &min_ffmpeg::SessionInfo { &self.session.info }
+    /// The next frame, its longer side `max_size` at most (0: as it is); None at the file's end (or where it cannot be read on).
+    pub fn next_frame(&mut self, max_size: u32) -> Option<ThumbPixels> {
+        loop {
+            match self.session.receive_raw() {
+                RecvRaw::Frame(fr) => return unsafe { self.sws.convert(fr, max_size) },
+                RecvRaw::Eof | RecvRaw::Error(_) => return None,
+                RecvRaw::Again => { if self.eof { return None } match self.session.read_and_send() { Read::Sent => {} Read::Eof => self.eof = true, Read::Error(_) => return None } }
+            }
+        }
+    }
+}
 /// An RGBA8 thumbnail from any planar AVFrame with a one-shot swscale context (the scrub cache's peek path).
 pub unsafe fn rgba_thumb_from_avframe(fr: *mut ff::AVFrame, max_size: u32, range: crate::rgb_range::RangeOverride) -> Option<ThumbPixels> { unsafe {
-    let mut tmp = VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range };
+    let mut tmp = VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range, flags: SWS_POINT };
     let out = tmp.convert(fr, max_size);
     if !tmp.sws.is_null() { ff::sws_freeContext(tmp.sws); }
     out
 } }
-struct VideoThumbLoaderSws { sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32), range: crate::rgb_range::RangeOverride }
+struct VideoThumbLoaderSws { sws: *mut ff::SwsContext, sws_key: (i32, i32, i32, i32, i32), range: crate::rgb_range::RangeOverride, flags: i32 }
 impl VideoThumbLoaderSws {
     unsafe fn convert(&mut self, fr: *mut ff::AVFrame, max_size: u32) -> Option<ThumbPixels> { unsafe {
         let (w, h) = ((*fr).width, (*fr).height);
@@ -328,7 +354,7 @@ impl VideoThumbLoaderSws {
         let key = (w, h, (*fr).format, ow, oh);
         if self.sws.is_null() || self.sws_key != key {
             if !self.sws.is_null() { ff::sws_freeContext(self.sws); }
-            self.sws = ff::sws_getContext(w, h, std::mem::transmute::<i32, ff::AVPixelFormat>((*fr).format), ow, oh, ff::AVPixelFormat::AV_PIX_FMT_RGB48LE, SWS_POINT, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
+            self.sws = ff::sws_getContext(w, h, std::mem::transmute::<i32, ff::AVPixelFormat>((*fr).format), ow, oh, ff::AVPixelFormat::AV_PIX_FMT_RGB48LE, self.flags, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null());
             if self.sws.is_null() { return None }
             // the screen's matrix + range rules (yuv_planar: tagged, else BT.709 at every size; the range tag, untagged →
             // limited) — swscale's own default was BT.601 with the range taken from the pixel format (canon row 216)

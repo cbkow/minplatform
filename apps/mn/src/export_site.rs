@@ -68,7 +68,7 @@ pub trait Videos {
     fn make(&mut self, path: &Path, clip: &Clip, out: &Path, stop: &AtomicBool, done: &dyn Fn(f32)) -> Result<(), String>;
 }
 /// What changes a playable copy when it changes (a copy of an earlier export made otherwise is made again).
-const RECIPE: &str = "h264-1920-v1";
+const RECIPE: &str = "h264-1920-v2";
 impl Progress {
     pub fn new(pages: usize) -> Progress { Progress { states: (0..pages).map(|_| AtomicU8::new(QUEUED)).collect(), stop: AtomicBool::new(false), over: AtomicBool::new(false), error: Mutex::new(None), media: AtomicU64::new(0), bytes: AtomicU64::new(0), videos: Mutex::new(vec![]) } }
     #[cfg(test)] pub fn count(&self, state: u8) -> usize { self.states.iter().filter(|s| s.load(Relaxed) == state).count() }

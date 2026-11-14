@@ -892,7 +892,7 @@ impl App {
         let made = std::thread::Builder::new().name("mn-site".into()).spawn(move || {
             // media of its own for this piece of work: its decoders are not the window's
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { let mut media = media::Media::new(&settings, || {}); media.set_base(base.as_deref(), staged); let mut poster = video::Poster::default();
-                let mut src = export::Files { media: &mut media, poster: &mut poster, gpu, fresh: true }; let mut ff = transcode::Ffmpeg::new(); export::site::write(&job, &mut src, Some(&mut ff), &export::fonts(), &p, &wake) })).unwrap_or_else(|_| Err("The export stopped on an error of its own".into()));
+                let mut ff = transcode::Ffmpeg::new(gpu.clone()); let mut src = export::Files { media: &mut media, poster: &mut poster, gpu, fresh: true }; export::site::write(&job, &mut src, Some(&mut ff), &export::fonts(), &p, &wake) })).unwrap_or_else(|_| Err("The export stopped on an error of its own".into()));
             if let Err(e) = r { *p.error.lock().unwrap() = Some(e); }
             p.over.store(true, std::sync::atomic::Ordering::Relaxed); wake();
         });
