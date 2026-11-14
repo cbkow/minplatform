@@ -31,6 +31,9 @@ pub struct Session { original: PathBuf, dir: PathBuf, stamp: Option<Stamp>, _loc
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Leftover { pub dir: PathBuf, pub original: PathBuf, pub work: PathBuf, pub work_modified_ns: u128 }
 
+impl Leftover { /// what was left is a collection that was never saved anywhere
+    pub fn untitled(&self) -> bool { self.original.parent() == Some(self.dir.as_path()) } }
+
 fn write_origin(dir: &Path, original: &Path, stamp: Option<Stamp>) -> io::Result<()> {
     let (size, mtime) = stamp.map(|s| (s.size as i128, s.mtime_ns as i128)).unwrap_or((-1, -1));
     let tmp = dir.join("origin.tmp");
@@ -55,6 +58,17 @@ impl Session {
         if !fs::metadata(parent)?.is_dir() { return Err(io::Error::new(io::ErrorKind::NotFound, "the folder is not there")) }
         Session::start(root, original)
     }
+    /// A collection that has no document yet (row 368): it lives in its session until it is first saved somewhere. Its
+    /// "original" is a name inside the session's own folder - a place nothing is ever put - so everything that goes by
+    /// the original (the name shown, "never published") holds without a special case.
+    pub fn untitled(root: &Path) -> io::Result<Session> {
+        let dir = root.join(uuid::Uuid::new_v4().simple().to_string()); fs::create_dir_all(&dir)?;
+        let lock = File::create(dir.join("lock"))?; lock.try_lock().map_err(io::Error::other)?;
+        let original = dir.join("Untitled.mnd"); write_origin(&dir, &original, None)?;
+        Ok(Session { original, dir, stamp: None, _lock: lock })
+    }
+    /// It has not been saved anywhere yet.
+    pub fn is_untitled(&self) -> bool { self.original.parent() == Some(self.dir.as_path()) }
     fn start(root: &Path, original: &Path) -> io::Result<Session> {
         let dir = root.join(uuid::Uuid::new_v4().simple().to_string());
         fs::create_dir_all(&dir)?;
@@ -176,6 +190,22 @@ mod tests {
     use std::io::Write;
     fn scratch(name: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("mn-store-{name}-{}", uuid::Uuid::new_v4().simple())); fs::create_dir_all(d.join("share")).unwrap(); fs::create_dir_all(d.join("staging")).unwrap(); d }
     fn put(path: &Path, s: &str) -> io::Result<()> { let mut f = File::create(path)?; f.write_all(s.as_bytes()) }
+
+    #[test]
+    fn a_collection_with_no_document_lives_in_its_session_until_it_is_saved_somewhere() {
+        let root = scratch("untitled"); let d = root.join("docs"); fs::create_dir_all(&d).unwrap();
+        let mut s = Session::untitled(&root.join("sessions")).unwrap();
+        assert!(s.is_untitled() && !s.original().exists() && matches!(s.probe(), Original::Same), "nothing is at its place, and that is as it should be");
+        fs::write(s.work(), b"work").unwrap();
+        // left by a crash it is offered back, and known for what it is
+        let dir = s.work().parent().unwrap().to_path_buf(); drop(s);
+        let left = leftovers(&root.join("sessions")); assert_eq!(left.len(), 1); assert!(left[0].untitled());
+        s = Session::resume(&left[0]).unwrap(); assert!(s.is_untitled());
+        // saved somewhere: it is an ordinary collection from then on
+        let to = d.join("Pickups.mnd"); s.save_as(&to, |tmp| fs::write(tmp, b"published")).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"published"); assert!(!s.is_untitled() && s.original() == to);
+        let _ = dir;
+    }
 
     #[test]
     fn the_original_is_only_ever_replaced_whole() {

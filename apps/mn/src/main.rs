@@ -271,7 +271,8 @@ enum Ask {
 
 /// What the collection is being closed for.
 #[derive(Clone, Debug, PartialEq)]
-enum Pending { Quit, Close, Open(std::path::PathBuf), New(std::path::PathBuf) }
+enum Pending { Quit, Close, Open(std::path::PathBuf), /// a new collection with no document yet (row 368)
+    Untitled }
 
 struct App { /// the handle is held (row 305): where it was pressed, whether the pointer has moved far enough to be a drag, and where the blocks would land
     drawn: bool, /// frames still owed after the first: a frame presented before the window is on screen is not shown, and nothing else asks for another until the pointer moves (the user 2026-11-11)
@@ -383,6 +384,7 @@ impl App {
                 else if let Some(t) = self.files.gather.as_ref().and_then(|w| w.readout()) { (t, false) }
                 else if let Some(t) = self.files.site.as_ref().and_then(|w| w.readout()) { (t, false) }
                 else if let Some((t, _)) = self.notice.as_ref().filter(|(_, until)| now < *until) { (t.clone(), false) }
+                else if self.store.as_ref().and_then(|st| st.session.as_ref()).is_some_and(|x| x.is_untitled()) { ("Untitled \u{2014} not saved to a document yet".to_string(), false) }
                 else if unsaved { (match n { 0 => "Changes not saved to the document".to_string(), 1 => "1 note changed \u{2014} not saved to the document".to_string(), n => format!("{n} notes changed \u{2014} not saved to the document") }, false) }
                 else { (self.status.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| "Saved".to_string()), false) };
             self.foot.sync(&footer::Shown { pinned: self.pinned, reading: self.reading, locked: self.guide.as_ref().is_some_and(|g| g.shown.is_some()), text: &text, warn, link: (self.files.gather.as_ref().is_some_and(|w| w.readout().is_some()) || self.files.site.as_ref().is_some_and(|w| w.readout().is_some())) && self.saving.is_none() && !self.status.as_ref().is_some_and(|x| x.1), finding: self.files.find.is_some(), has_note: !self.blank || self.files.canvas.is_some(), has_file: self.store.is_some(), sidebar_open: self.sidebar.as_ref().is_some_and(|sb| !sb.rail.collapsed), can_undo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_undo()).unwrap_or(st.can_undo), can_redo: self.files.canvas.as_ref().filter(|_| self.files.card.is_none()).map(|c| c.can_redo()).unwrap_or(st.can_redo), unsaved, saving: self.saving.is_some() }); }
@@ -805,6 +807,8 @@ impl App {
     /// cannot be reached; the work stays on this machine.
     fn save(&mut self) {
         if self.saving.is_some() { return }
+        // a collection with no document yet (row 368): its first Save asks where it goes
+        if self.untitled() { self.save_as(); return }
         // an open canvas's last changes go into the collection first
         if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true);
         self.autosave();
@@ -940,7 +944,7 @@ impl App {
             Some(Pending::Quit) => self.quit = true,
             Some(Pending::Close) => self.end_session(),
             Some(Pending::Open(p)) => { self.end_session(); self.open_collection(&p, false); }
-            Some(Pending::New(p)) => { self.end_session(); self.open_collection(&p, true); self.save(); }   // a new collection is written at once: its file exists from the start
+            Some(Pending::Untitled) => { self.end_session(); self.open_untitled(None); }   // a new collection is written at once: its file exists from the start
         }
         self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
     }
@@ -957,6 +961,23 @@ impl App {
         #[cfg(target_os = "macos")] text_element::changed(true);
     }
     /// Opens (or, with `create`, starts) a collection in this window. A failure is said in a dialog.
+    /// A collection with no document yet comes into the window (row 368): in editing, the caret in its empty note.
+    fn open_untitled(&mut self, left: Option<mn_store::staging::Leftover>) {
+        match open_untitled(left) {
+            Ok((store, doc, recovered)) => {
+                let mut sb = sidebar::Sidebar::new(); sb.set_tree(&store.col);
+                self.store = Some(store); self.sidebar = Some(sb); self.ed = Editor::new(doc); self.others.clear(); self.changed.clear();
+                self.reading = std::env::var("MN_READING").is_ok_and(|v| v == "1"); self.files.tool = None; self.files.studio = None; self.guide_stash = None; if let Some(g) = self.guide.as_mut() { g.shown = None; }
+                self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = false; self.recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
+                if let Some(first) = self.ed.doc.walk().iter().find(|b| !b.kind.is_container()).map(|b| b.id) { self.ed.set_selection(Some(mn_edit::Selection::caret(mn_edit::Pos { block: first, at: 0 }))); }
+                #[cfg(target_os = "macos")] text_element::changed(true);
+            }
+            Err(e) => { use min_ui::text_button::Variant as V; self.ask(Ask::Notice, "Couldn\u{2019}t make a new collection", &e, vec![("OK", V::Primary)]); }
+        }
+        self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The collection has no document yet.
+    fn untitled(&self) -> bool { self.store.as_ref().and_then(|st| st.session.as_ref()).is_some_and(|s| s.is_untitled()) }
     fn open_collection(&mut self, path: &std::path::Path, create: bool) {
         match open_store(path, create, None) {
             Ok((store, doc, recovered)) => {
@@ -1379,7 +1400,8 @@ impl App {
     fn save_as(&mut self) {
         if self.saving.is_some() || self.store.is_none() { return }
         let dlg = rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name(self.doc_name());
-        self.panel(dlg, 0, |me, p| if let Some(p) = p.into_iter().next() { me.save_as_to(p) });
+        // (the panel left without a place: whatever waited on this save - closing, quitting - is given up, not done unsaved)
+        self.panel(dlg, 0, |me, p| match p.into_iter().next() { Some(p) => me.save_as_to(p), None => { me.close_after_save = false; me.after_close = None; } });
     }
     fn save_as_to(&mut self, path: std::path::PathBuf) {
         if self.saving.is_some() || self.store.is_none() { return }
@@ -2553,10 +2575,8 @@ impl App {
             M::Open => self.panel(rfd::FileDialog::new().add_filter("minNotes collection or package", &["mnd", gather::PACKAGE]), 1, |me, p| if let Some(p) = p.into_iter().next() { me.request_close(Pending::Open(p)) }),
             M::OpenRecent(p) => self.request_close(Pending::Open(p.into())),
             M::ClearRecent => { recent_clear(); self.sync_recent(); }
-            M::NewCollection => self.panel(rfd::FileDialog::new().add_filter("minNotes collection", &["mnd"]).set_file_name("Untitled.mnd"), 0, |me, p| if let Some(p) = p.into_iter().next() {
-                // the system's dialog has asked about replacing: a new collection starts where nothing is, so an old file is moved aside by name, never deleted
-                if p.exists() { let aside = p.with_extension(format!("replaced-{}.mnd", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))); let _ = std::fs::rename(&p, aside); }
-                me.request_close(Pending::New(p)) }),
+            // New Collection (row 368): one is there at once, with no document yet - where it goes is asked at its first Save
+            M::NewCollection => self.request_close(Pending::Untitled),
             M::SaveAs => self.save_as(),
             M::PasteMarkdown => { let d = self.paste(Paste::Markdown); self.apply(d); }
             // the selected row's name (the open note's when nothing is selected); the sidebar is opened for it
@@ -2572,6 +2592,7 @@ impl App {
             M::Import => { if self.store.is_some() { let mut dlg = rfd::FileDialog::new().add_filter("Documents", &import::extensions()); for (name, exts) in import::FILTERS { dlg = dlg.add_filter(name, exts); } self.panel(dlg, 2, |me, p| me.import_files(p)); } }
             M::CheckForUpdates => { #[cfg(target_os = "macos")] sparkle::check_now(); }
             M::Licenses => match notices_file() { Some(p) => open::file(&p), None => { self.notice = Some(("The licences page comes with the packaged application".into(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } } },
+            M::ExportSite | M::CollectMedia | M::ExportPackage if self.untitled() => { self.notice = Some(("Save the collection first \u{2014} this is written beside its document".to_string(), Instant::now() + std::time::Duration::from_secs(6))); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             M::ExportSite => self.site_open(), M::PathMappings => self.maps_open(), M::CollectMedia => self.gather_open(gather::What::Collect, None), M::ExportPackage => self.gather_open(gather::What::Package, None),
             M::ExportPaths => self.export_toggle(true), M::ExportVideoNotes => self.export_toggle(false),
             other => if let Some((ch, shift)) = menu::key_of(&other) { let m = self.mods; self.mods = (shift, true, false); self.key(&Key::Character(ch.to_string().as_str().into()), None); self.mods = m; },
@@ -2607,8 +2628,9 @@ impl App {
     fn discard_recovered(&mut self) {
         let Some(st) = self.store.as_mut() else { return };
         let Some(session) = st.session.take() else { return };
-        let path = session.original().to_path_buf(); let root = sessions_root();
+        let path = session.original().to_path_buf(); let root = sessions_root(); let untitled = session.is_untitled();
         let _ = session.close();
+        if untitled { self.store = None; self.sidebar = None; self.blank = true; self.layout = None; self.changed.clear(); self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return }   // (a collection that was never saved has no document to go back to: it is closed)
         let opened = mn_store::staging::Session::open(&root, &path).and_then(|s| mn_store::Collection::open(&s.work()).map(|c| (s, c)).map_err(std::io::Error::other));
         match opened {
             Ok((session, col)) => {
@@ -2982,6 +3004,8 @@ impl App {
                 Key::Named(k @ (NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::ArrowLeft | NamedKey::ArrowRight)) => { let n = match k { NamedKey::ArrowUp => sidebar::Nav::Up, NamedKey::ArrowDown => sidebar::Nav::Down, NamedKey::ArrowLeft => sidebar::Nav::Left, _ => sidebar::Nav::Right }; let a = sb.nav(n); self.act(a); if let Some(sb) = self.sidebar.as_mut() { sb.focused = true; } return }
                 _ => {} } } if !cmd { return } }
         }
+        // (a key that comes before the next frame is drawn finds the note changed and not yet laid out - Enter, then a letter at once: the layout is made here rather than the key dropped; keys typed fast after Enter, a paste of keys, a script's, were LOST)
+        if self.layout.is_none() { self.ensure(); }
         let Some(l) = self.layout.as_ref() else { return };
         let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
         let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
@@ -3779,8 +3803,16 @@ impl ApplicationHandler for App {
 
 /// Opens a collection through a staged session (rows 272, 288): the store, the note to show, and whether work from an
 /// earlier session was found and taken up. `create`: nothing is at the path yet and a new collection starts there.
+/// A collection with no document yet (row 368): a new one, or the one an earlier run left unsaved (taken up again).
+fn open_untitled(left: Option<mn_store::staging::Leftover>) -> Result<(Store, Doc, bool), String> {
+    use mn_store::staging; let root = sessions_root(); std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let session = match &left { Some(l) => staging::Session::resume(l), None => staging::Session::untitled(&root) }.map_err(|e| e.to_string())?;
+    let path = session.original().to_path_buf(); let (mut st, doc, _) = store_of(session, &path, None, left.is_some())?;
+    // (one nothing was typed into is closed without a question: it counts as changed only once something is)
+    st.unpublished = left.is_some(); Ok((st, doc, left.is_some()))
+}
 fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) -> Result<(Store, Doc, bool), String> {
-    use mn_store::{staging, Collection, DocKind};
+    use mn_store::staging;
     let root = sessions_root();
     let left = staging::leftovers(&root).into_iter().find(|l| l.original == path);
     let session = match &left {
@@ -3788,6 +3820,10 @@ fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) 
         // a path with nothing at it is NOT quietly a new collection (on a share it may be a missing mount)
         None => if create { staging::Session::create(&root, path) } else { staging::Session::open(&root, path) }.map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "Nothing is at this place. Is its drive or share connected? (A new collection is made with New Collection\u{2026})".to_string() } else { e.to_string() })?,
     };
+    let (mut st, doc, rec) = store_of(session, path, note_title, left.is_some())?; st.unpublished = left.is_some() || create; Ok((st, doc, rec))
+}
+fn store_of(session: mn_store::staging::Session, path: &std::path::Path, note_title: Option<String>, recovered: bool) -> Result<(Store, Doc, bool), String> {
+    use mn_store::{Collection, DocKind};
     let mut col = Collection::open(&session.work()).map_err(|e| e.to_string())?;
     fn notes(c: &Collection, parent: Option<BlockId>, out: &mut Vec<mn_store::Entry>) { for e in c.list(parent).unwrap_or_default() { if e.kind == DocKind::Note { out.push(e.clone()); } notes(c, Some(e.id), out); } }
     let mut all = vec![]; notes(&col, None, &mut all);
@@ -3795,7 +3831,7 @@ fn open_store(path: &std::path::Path, create: bool, note_title: Option<String>) 
     let (note, title) = match entry { Some(e) => (e.id, e.title), None => { let id = col.create(None, DocKind::Note, "").map_err(|e| e.to_string())?; let mut d = Doc::new(); d.insert(None, 0, BlockId::new(), Kind::Paragraph, "").unwrap(); col.save_note(id, &d).map_err(|e| e.to_string())?; (id, String::new()) } };
     let doc = col.load_note(note).map_err(|e| e.to_string())?;
     println!("opened {} — note {:?}: {} blocks; first text: {:?}", path.display(), title, doc.len(), doc.walk().iter().find(|b| b.kind.is_text()).map(|b| b.text.chars().take(60).collect::<String>()).unwrap_or_default());
-    Ok((Store { session: Some(session), col, note, title, edited: None, unpublished: left.is_some() || create, edited_since_stage: false }, doc, left.is_some()))
+    Ok((Store { session: Some(session), col, note, title, edited: None, unpublished: recovered, edited_since_stage: false }, doc, recovered))
 }
 
 /// The collections opened lately, newest first (a plain list beside the sessions; ten at most).
@@ -4005,6 +4041,9 @@ fn main() {
         let (st, doc, rec) = open_store(&path, args.iter().any(|a| a == "--new"), arg("--note")).unwrap_or_else(|e| { eprintln!("{}: {e}", path.display()); std::process::exit(2) });
         recent_add(&path); store = Some(st); recovered = rec; doc
     });
+    // nothing was asked for: a collection that was never saved, left by an earlier run, is taken up again (row 368)
+    let opened = opened.or_else(|| { if std::env::var_os("MN_NO_DIALOGS").is_some() || arg("--v2").is_some() || arg("--text").is_some() || args.iter().any(|a| a == "--sample") { return None }
+        let left = mn_store::staging::leftovers(&sessions_root()).into_iter().find(|l| l.untitled())?; let (st, doc, rec) = open_untitled(Some(left)).ok()?; store = Some(st); recovered = rec; Some(doc) });
     // with nothing to open the window is blank; `--sample` shows the built-in note
     let blank = opened.is_none() && arg("--v2").is_none() && arg("--text").is_none() && !args.iter().any(|a| a == "--sample");
     let doc = if let Some(d) = opened { d } else { match arg("--v2") {

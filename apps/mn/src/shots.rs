@@ -10,6 +10,7 @@
 //!   note TITLE            show the note with this title            canvas TITLE   open the canvas with this title
 //!   import PATH|PATH...   files imported as notes (File > Import)   add [@N] PATH|PATH...  files added to the note (at its end, or
 //!                         before its Nth block) or put on the open canvas, as a drop does.  `${NAME}` is the environment's.
+//!   saveas PATH           save the collection there (what File > Save As does once its panel has a place)
 //!   menu NAME             a menu command by its `menu::Cmd` name (Sidebar, ExportSite, PathMappings, ...)
 //!   move X Y              the pointer goes there                    leave          the pointer leaves the window
 //!   down X Y / up X Y     a primary press / release                 click X Y      both      dclick X Y   twice
@@ -89,6 +90,7 @@ impl crate::App {
                 "open" => self.request_close(crate::Pending::Open(tail.into())),
                 "note" => match self.shots_find(&tail, mn_store::DocKind::Note) { Some(id) => { self.open_note(id); self.blank = false; self.scroll = 0.0; self.layout = None; } None => eprintln!("shots: no note named '{tail}'") },
                 "canvas" => match self.shots_find(&tail, mn_store::DocKind::Canvas) { Some(id) => self.open_canvas(id), None => eprintln!("shots: no canvas named '{tail}'") },
+                "saveas" => self.save_as_to(tail.clone().into()),
                 "import" => self.import_files(tail.split('|').map(|p| p.trim().into()).collect()),
                 "add" => { let (at, list) = match tail.strip_prefix('@').and_then(|t| t.split_once(' ')) { Some((n, l)) => (n.parse::<usize>().ok(), l.to_string()), None => (None, tail.clone()) };
                     let drop = if self.files.canvas.is_some() { self.files.canvas_at.set(None); Self::canvas_drop() } else { mn_edit::Drop { parent: None, index: at.unwrap_or(self.ed.doc.children(None).len()), depth: None, beside: None } };
