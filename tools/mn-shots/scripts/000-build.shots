@@ -25,7 +25,7 @@ wait 2
 add ${MN_DEMO_DIR}/Media/Reel 2 - harbour v002.mp4
 wait 2
 # notes and drawings on the clip: it is played and paused, taken to a frame on its bar, drawn on, and a note typed
-key cmd+Up
+key cmd+Home
 wait 0.5
 click 700 400
 wait 0.5

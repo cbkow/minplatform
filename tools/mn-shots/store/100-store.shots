@@ -1,7 +1,7 @@
-# The Microsoft Store's screenshots (1920 x 1080 with the window's menu bar). Written for Windows at 100 % scale, run
+# The Microsoft Store's screenshots (1920 x 1080: 1056 and the menu bar's 24). Written for Windows at 100 % scale, run
 # on a copy of the demo collection (tools/mn-shots/store/README.md). The harness makes the window taller by the menu
 # bar and lowers every point by it, so the points below are the manual's.
-size 1920 1058
+size 1920 1056
 wait 1.5
 note Welcome
 wait 1.2
@@ -9,7 +9,15 @@ shot store-1-note
 note Review - Reel 2
 wait 1.5
 click 700 400
-wait 0.8
+wait 0.7
+click 700 400
+wait 0.6
+wheel 700 500 330
+wait 1
+click 330 776
+wait 1.2
+move 1500 300
+wait 0.4
 shot store-2-video
 note Schedule
 wait 1
@@ -37,8 +45,6 @@ note Delivery specs
 wait 1.5
 dclick 700 330
 wait 2.5
-wheel 900 500 200
-wait 1.5
 move 900 1040
 wait 0.3
 shot store-5-pdf
