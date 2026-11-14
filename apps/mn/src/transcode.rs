@@ -16,13 +16,13 @@ use std::{io::{BufRead, BufReader, Read}, path::{Path, PathBuf}, process::{Comma
 /// The longer side of a playable copy, at most.
 pub const LONGEST: u32 = 1920;
 
-/// FFmpeg's program: named by `MN_FFMPEG`, beside the application, or - a build run from the source tree - in the
-/// tree's `external/ffmpeg/<os>/bin`.
+/// FFmpeg's program: named by `MN_FFMPEG`, beside the application (on macOS in the bundle's `Helpers`, where QCView's
+/// release keeps it), or - a build run from the source tree - in the tree's `external/ffmpeg/<os>/bin`.
 pub fn ffmpeg() -> Option<PathBuf> {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     if let Some(p) = std::env::var_os("MN_FFMPEG").map(PathBuf::from).filter(|p| p.is_file()) { return Some(p) }
     let me = std::env::current_exe().ok()?; let here = me.parent()?;
-    for p in [here.join(exe), here.join("../Frameworks").join(exe), here.join("../Resources").join(exe)] { if p.is_file() { return Some(p) } }
+    for p in [here.join(exe), here.join("../Helpers").join(exe), here.join("../Frameworks").join(exe), here.join("../Resources").join(exe)] { if p.is_file() { return Some(p) } }
     let os = if cfg!(target_os = "macos") { "macos-arm64" } else if cfg!(windows) { "win64" } else { "linux" };
     here.ancestors().map(|a| a.join("external/ffmpeg").join(os).join("bin").join(exe)).find(|p| p.is_file())
 }
