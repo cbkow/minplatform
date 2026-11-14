@@ -2644,7 +2644,7 @@ impl ApplicationHandler for App {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.gpu.is_some() { return }
         startup_log("event loop running; creating the window");
-        let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(WindowAttributes::default().with_title("minNotes").with_surface_size(LogicalSize::new(1000.0, 760.0))).expect("window"));
+        let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(WindowAttributes::default().with_title("minNotes").with_surface_size({ let (w, h) = std::env::var("MN_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))).unwrap_or((1000.0, 760.0)); LogicalSize::new(w, h) })).expect("window"));
         startup_log("window created");
         let instance = Presenter::instance();
         let surface = instance.create_surface(window.clone()).expect("surface");
@@ -2911,6 +2911,7 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
+                if self.ctx.scrolls() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; self.ctx.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.site.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.gather.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(sb) = self.sidebar.as_mut() { if sb.rail.hit(self.pointer.0, self.pointer.1) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; sb.rail.wheel(-dy, Instant::now()); g.window.request_redraw(); return } }
