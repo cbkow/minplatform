@@ -521,6 +521,22 @@ mod tests {
     }
 
     #[test]
+    fn a_block_kept_twice_is_settled_by_keeping_one_or_both_or_by_the_other_going() {
+        let mut t = setup(); let (a, b) = (t.ids[1], t.ids[2]); t.e.doc.set_conflict(b, Some(a)).unwrap();
+        assert_eq!((t.e.conflict_twin(a), t.e.conflict_twin(b), t.e.conflict_twin(t.ids[0])), (Some((b, b)), Some((a, b)), None));
+        // the first is kept: the marked copy goes, as one step; undone, it is back without its mark
+        assert_eq!(t.e.resolve_conflict(a, false, 1000).unwrap(), Dirty::Structure); assert!(t.e.doc.get(b).is_none());
+        t.e.undo().unwrap(); assert_eq!(t.e.doc.get(b).unwrap().conflict, None);
+        // the marked copy is kept: the first goes and the mark with it
+        t.e.doc.set_conflict(b, Some(a)).unwrap(); t.e.resolve_conflict(b, false, 9000).unwrap(); assert!(t.e.doc.get(a).is_none()); assert_eq!(t.e.doc.get(b).unwrap().conflict, None);
+        t.e.undo().unwrap();
+        // both are kept: only the mark goes
+        t.e.doc.set_conflict(b, Some(a)).unwrap(); t.e.resolve_conflict(a, true, 20000).unwrap(); assert!(t.e.doc.get(a).is_some() && t.e.doc.get(b).unwrap().conflict.is_none());
+        // the other version was deleted by hand: the mark has nothing left to say
+        t.e.doc.set_conflict(b, Some(BlockId::new())).unwrap(); assert_eq!(t.e.sweep_conflicts(), vec![b]); assert_eq!(t.e.doc.get(b).unwrap().conflict, None);
+    }
+
+    #[test]
     fn a_locked_note_takes_no_change_but_its_text_can_still_be_selected() {
         let mut t = setup(); t.at(0, 5); t.type_("!"); let before = t.e.doc.clone();
         t.e.locked = true;

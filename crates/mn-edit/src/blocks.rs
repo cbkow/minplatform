@@ -111,6 +111,28 @@ impl Editor {
     }
     /// The selected blocks go (Backspace, Delete, the second half of Cut), as one undo step. The caret lands at the
     /// start of what followed them, else at the end of what came before; a container left empty gets an empty paragraph.
+    // ── a paragraph kept twice by a merge (rows 285, 361): the second carries the mark, naming the first ──
+    /// The other version of a block a merge kept twice: (the other one, the one that carries the mark).
+    pub fn conflict_twin(&self, id: BlockId) -> Option<(BlockId, BlockId)> {
+        if let Some(o) = self.doc.get(id).and_then(|b| b.conflict) { return self.doc.get(o).map(|_| (o, id)) }
+        self.doc.walk().iter().find(|b| b.conflict == Some(id)).map(|b| (b.id, b.id))
+    }
+    /// One version is kept: the other is removed (one step, undone as any) - or, with `both`, both stay and only the
+    /// mark goes. The mark is no part of the history: it is cleared for good.
+    pub fn resolve_conflict(&mut self, keep: BlockId, both: bool, now_ms: u64) -> Result<Dirty, ChangeError> {
+        let Some((twin, marked)) = self.conflict_twin(keep) else { return Ok(Dirty::Nothing) };
+        if self.locked { self.refused += 1; return Ok(Dirty::Nothing) }
+        let _ = self.doc.set_conflict(marked, None);
+        if both { return Ok(Dirty::Blocks(vec![marked])) }
+        let mut b = self.batch(); let c = Change::removal(&b.scratch, twin)?; b.push(c)?;
+        let d = self.commit(b, Some(Pos { block: keep, at: 0 }), now_ms)?; Ok(if d == Dirty::Nothing { Dirty::Blocks(vec![marked]) } else { d })
+    }
+    /// Marks whose other version is no longer in the note are cleared (it was deleted: there is nothing left to choose
+    /// between - the mark used to stay for ever). The blocks whose mark went.
+    pub fn sweep_conflicts(&mut self) -> Vec<BlockId> {
+        let gone: Vec<BlockId> = self.doc.walk().iter().filter(|b| b.conflict.is_some_and(|o| self.doc.get(o).is_none())).map(|b| b.id).collect();
+        for id in &gone { let _ = self.doc.set_conflict(*id, None); } gone
+    }
     pub fn delete_blocks(&mut self, now_ms: u64) -> Result<Dirty, ChangeError> {
         if self.blocks.is_none() { return Ok(Dirty::Nothing) }
         let Some((parent, i, j)) = self.run() else { return Ok(Dirty::Nothing) };

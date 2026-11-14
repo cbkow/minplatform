@@ -239,6 +239,13 @@ impl Media {
         self.files.insert(key, (std::time::Instant::now(), st.clone())); st
     }
     /// The record of a file chip that points at `path` (a chip located again).
+    /// A video's or a PDF's record pointed at the file where it is now (row 361): its place and name change, what was
+    /// known of it (size, rate, pages, the page or frame it stood on, its drawings) stays - it is the same file, moved.
+    pub fn moved_record(&self, descriptor: &str, path: &Path) -> Option<String> {
+        let mut v: serde_json::Value = serde_json::from_str(descriptor).ok()?; let o = v.as_object_mut()?;
+        o.insert("src".into(), self.places.reference(path)); o.insert("name".into(), serde_json::json!(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        Some(v.to_string())
+    }
     pub fn file_record(&self, path: &Path) -> String {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let mut v = serde_json::json!({ "kind": "file", "src": self.places.reference(path), "name": name, "ext": path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default() });

@@ -157,7 +157,8 @@ impl Canvas {
         let Ok(serde_json::Value::Object(mut v)) = serde_json::from_str::<serde_json::Value>(&e.record) else { return false };
         let (page, pages) = (v.get("page").and_then(|p| p.as_u64()).unwrap_or(0) as i64, v.get("pages").and_then(|p| p.as_u64()).unwrap_or(1).max(1) as i64);
         let to = (page + if forward { 1 } else { -1 }).clamp(0, pages - 1); if to == page { return true }
-        v.insert("page".into(), serde_json::json!(to)); let rec = serde_json::Value::Object(v).to_string(); self.step(); if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.record = rec; } true
+        v.insert("page".into(), serde_json::json!(to)); let rec = serde_json::Value::Object(v).to_string(); if !self.reading { self.step(); }   // (reading: the page shown is not a change to the canvas)
+        if let Some(e) = self.els.iter_mut().find(|e| e.id == id) { e.record = rec; } true
     }
     // -- a video's card (row 326): it plays in the card, on the window's one player
 
@@ -398,7 +399,7 @@ impl Canvas {
     pub fn cursor(&mut self, x: f64, y: f64) -> u8 {
         if self.buttons().iter().any(|b| b.hit(x, y)) { return 4 } if matches!(self.act, Some(Act::Pan { .. })) || self.space || self.hand || self.reading { return 1 } if self.tool.is_some() || self.framing { return 5 }
         if let Some(Act::Resize { left, top, .. }) = &self.act { return if left == top { 2 } else { 3 } }
-        if self.edit.is_none() { if let Some((_, hs)) = self.handles() { if let Some((_, l, tp)) = hs.iter().find(|(r, ..)| r.inflate(3.0, 3.0).contains(Point::new(x, y))) { return if l == tp { 2 } else { 3 } } } }
+        if self.edit.is_none() && !self.reading { if let Some((_, hs)) = self.handles() { if let Some((_, l, tp)) = hs.iter().find(|(r, ..)| r.inflate(3.0, 3.0).contains(Point::new(x, y))) { return if l == tp { 2 } else { 3 } } } }
         0
     }
     /// A pointer event in the canvas's view. `middle`: the middle button. True: draw again.
@@ -471,7 +472,10 @@ impl Canvas {
                     // the eraser's ring follows the pointer
                     None => self.tool == Some(Ink::Eraser),
                 } }
-            Event::Up { .. } => { self.guides.clear(); let joins = self.drop_at.take(); let w = self.hover.map(|(x, y)| self.to_world(x, y));
+            Event::Up { .. } => {
+                // reading: a press that did not move is a CLICK on a card - it becomes the chosen one, so that a video's bar and notes and a PDF's pages are in reach (nothing can be moved: every press pans)
+                if self.reading { if let (Some(Act::Pan { from, .. }), Some((x, y))) = (&self.act, self.hover) { if (x - from.0).abs() < 3.0 && (y - from.1).abs() < 3.0 { self.sel = self.at(x, y).into_iter().collect(); } } }
+                self.guides.clear(); let joins = self.drop_at.take(); let w = self.hover.map(|(x, y)| self.to_world(x, y));
                 match self.act.take() {
                     // let go: the cards that were dragged join the frame under the pointer, or leave theirs over none (a member that
                     // travelled with its frame stays its member)
@@ -577,7 +581,7 @@ impl Canvas {
         // the selection: an outline a card, the corners of the one card; the marquee
         // (not around a card whose video is playing or being drawn on: what is being watched has no frame on it)
         for id in &self.sel { if self.quiet == Some(*id) { continue } if let Some(e) = self.get(*id) { scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &self.on_screen(e).inflate(1.0 * s, 1.0 * s)); } }
-        if self.edit.is_none() { if let Some((_, hs)) = self.handles() { for (h, ..) in hs { scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR), None, &h); scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &h); } } }
+        if self.edit.is_none() && !self.reading { if let Some((_, hs)) = self.handles() { for (h, ..) in hs { scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR), None, &h); scene.stroke(&Stroke::new(1.5 * s), Affine::IDENTITY, accent, None, &h); } } }
         // a locked card says so when it is selected; the lines a drag snapped to; the frame being made
         for e in self.els.iter().filter(|e| e.locked && self.sel.contains(&e.id)) { let r = self.on_screen(e); if let Some(g) = fonts.icon("lock-simple", (13.0 * s) as f32, accent) { let b = Rect::new(r.x1 - 22.0 * s, r.y0 + 4.0 * s, r.x1 - 4.0 * s, r.y0 + 22.0 * s); scene.fill(Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_BASE_COLOR).with_alpha(0.85), None, &RoundedRect::from_rect(b, 4.0 * s)); draw_layout(scene, &g, Affine::translate((b.center().x - g.width() as f64 / 2.0, b.center().y - g.height() as f64 / 2.0))); } }
         for (upright, at) in &self.guides { let p = self.to_screen(Point::new(*at, *at)); let l = if *upright { Rect::new(p.x - s / 2.0, rect.y0, p.x + s / 2.0, rect.y1) } else { Rect::new(rect.x0, p.y - s / 2.0, rect.x1, p.y + s / 2.0) }; scene.fill(Fill::NonZero, Affine::IDENTITY, accent.with_alpha(0.7), None, &l); }
