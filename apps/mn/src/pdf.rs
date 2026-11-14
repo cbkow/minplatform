@@ -37,6 +37,10 @@ fn open(path: &Path) -> Result<hayro::hayro_syntax::Pdf, String> { hayro::hayro_
 pub fn info(path: &Path) -> Result<(usize, f32, f32), String> {
     fenced(|| { let pdf = open(path)?; let pages = pdf.pages(); let first = pages.iter().next().ok_or("the PDF has no pages")?; let (w, h) = first.render_dimensions(); Ok((pages.len(), w, h)) })
 }
+/// Every page's size in points, in order (the studio's column is laid out from them: pages may differ in shape).
+pub fn sizes(path: &Path) -> Result<Vec<(f32, f32)>, String> {
+    fenced(|| { let pdf = open(path)?; Ok(pdf.pages().iter().map(|p| p.render_dimensions()).collect()) })
+}
 /// A page as opaque RGBA (on white), `width` pixels wide (its height follows); `page` past the end is the last.
 pub fn page(path: &Path, page: usize, width: u32) -> Result<(Vec<u8>, u32, u32), String> {
     fenced(|| {
@@ -140,6 +144,7 @@ pub(crate) mod tests {
     #[test] #[ignore]
     fn pdf_bench() {
         let Some(path) = std::env::var_os("MN_PDF_BENCH").map(std::path::PathBuf::from) else { return };
+        for p in 0..sizes(&path).unwrap().len().min(4) { let (px, pw, ph) = page(&path, p, 400).unwrap(); println!("page {p}: {pw}x{ph}, {} pixels not white", px.chunks(4).filter(|c| c[0] < 250 || c[1] < 250 || c[2] < 250).count()); }
         let t = std::time::Instant::now(); let (n, w, h) = info(&path).unwrap(); println!("info: {n} pages {w}x{h} in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
         for width in [240u32, 1200, 2400] { let mut ms = vec![];
             for p in [0, n / 3, n / 2, n - 1] { let t = std::time::Instant::now(); let (px, pw, ph) = page(&path, p, width).unwrap(); ms.push(t.elapsed().as_secs_f64() * 1e3); let _ = (px.len(), pw, ph); }

@@ -60,6 +60,7 @@ mod sparkle;
 mod mac_open;
 mod shots;
 mod guide;
+mod studio;
 mod search;
 mod canvas;
 mod ink;
@@ -185,6 +186,8 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// a note or a canvas being written out, off this thread (row 346): its end, and the file's name
     exporting: Option<(std::sync::mpsc::Receiver<Result<(), String>>, String)>,
     side_drag: Option<Option<BlockId>>, side_fetches: std::collections::HashMap<AsyncRequestSerial, Option<BlockId>>, import_parent: Option<Option<BlockId>>, side_media: Option<(Vec<std::path::PathBuf>, Option<BlockId>)>, side_test: bool, updater_tried: bool, export_test: bool, export_t0: Option<(Instant, u32)>,
+    /// the PDF studio (row 362): one PDF shown large over the page and the sidebar
+    studio: Option<studio::Studio>,
     pdf: Option<PdfSel>, resize: Option<Resize>, drag: Option<(mn_edit::Drop, Rect)>, fetches: std::collections::HashMap<AsyncRequestSerial, mn_edit::Drop>, pending: std::collections::HashMap<u64, mn_edit::Drop>, token: u64, locate: Option<BlockId>, relay: bool, vstop: bool, /// videos whose clips have notes (their blocks carry the row), the notes' drawings and captions hidden, when the notes were last asked to be read again
     noted: std::collections::HashSet<BlockId>, hide_notes: bool, notes_at: Option<Instant>,
     /// drawing on a video's frame: the tool that is armed (None: a click on the picture plays), the pen's colour and width
@@ -207,7 +210,7 @@ struct Files { /// the camera when Space went down over a canvas (unchanged at i
     /// the open canvas is to be read again (a merge changed it)
     creload: bool,
     card: Option<Card>, cards: std::collections::HashMap<BlockId, CardPic>, row_drag: Option<(BlockId, (f64, f64), bool)>, cnotes: Vec<BlockId>,
-    canvas: Option<canvas::Canvas>, cclip: Vec<mn_store::Element>, cclip_words: String, conflict_for: Option<BlockId>, maps_renamed: Vec<(String, String)>, canvas_at: std::cell::Cell<Option<(f64, f64)>>, cmenu: bool,
+    canvas: Option<canvas::Canvas>, cclip: Vec<mn_store::Element>, cclip_words: String, conflict_for: Option<BlockId>, studio_for: Option<BlockId>, pdf_click: Option<(Instant, BlockId)>, maps_renamed: Vec<(String, String)>, canvas_at: std::cell::Cell<Option<(f64, f64)>>, cmenu: bool,
     /// the search across the collection under way (the sidebar's field)
     search: Option<search::Search>,
     find: Option<findbar::FindBar>, hits: Vec<mn_edit::find::Hit>, hit_at: usize, found_for: Option<(String, bool, (u64, usize), BlockId)>,
@@ -338,7 +341,8 @@ impl App {
     fn redraw(&mut self) {
         // reading (row 358): the editor in hand takes no change, the tools' band is put away, a canvas only moves; a change that was refused is answered once
         self.guide_ensure();
-        self.ed.locked = self.reading; self.bar.reading = self.reading && self.store.is_some();
+        if self.files.studio.as_ref().is_some_and(|st| self.studio_record(st.host).is_none()) { self.files.studio = None; }   // its owner went (deleted, undone away)
+        self.ed.locked = self.reading; self.bar.reading = (self.reading || self.files.studio.is_some()) && self.store.is_some();
         if let Some(cv) = self.files.canvas.as_mut() { if self.reading && !cv.reading { cv.sel.clear(); } cv.reading = self.reading && self.files.card.is_none(); }
         if self.ed.refused != self.refused_seen { self.refused_seen = self.ed.refused; if self.reading { self.notice = Some((READING_HINT.to_string(), Instant::now() + std::time::Duration::from_secs(4))); } }
         self.settle_timecode();
@@ -375,7 +379,7 @@ impl App {
         let page_w = match &self.files.card { Some(c) => (c.rect.width() - 2.0 * CARD_PAD * s).max(120.0 * s), None => (w as f64 - self.side_w - 2.0 * MARGIN * s).max(320.0 * s) };
         // the page moved or changed width without a scroll or an edit (the sidebar, the window): the desktop is told once it rests
         if (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3) != self.told_geom { self.told_geom = (self.side_w, page_w + (self.top + self.bottom * 1e-3) * 1e-3); self.geom_moved = Some(now); }
-        #[cfg(target_os = "macos")] text_element::set_obscured(self.reading || (self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.files.maps.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
+        #[cfg(target_os = "macos")] text_element::set_obscured(self.reading || self.files.studio.is_some() || (self.files.canvas.is_some() && self.files.card.is_none()) || self.confirm.is_some() || self.files.gather.as_ref().is_some_and(|w| w.shown) || self.files.site.as_ref().is_some_and(|w| w.shown) || self.files.maps.is_some() || self.pal.is_open() || self.ctx.is_open() || self.sidebar.as_ref().is_some_and(|sb| sb.renaming()));
         if self.layout.as_ref().is_none_or(|l| (l.width as f64 - page_w).abs() > 0.5 || (l.scale as f64 - s).abs() > 1e-6) { { let mut nl = NoteLayout::build_media(&self.ed.doc, &mut g.fonts, &style(), page_w as f32, s as f32, self.files.turned.clone(), self.files.noted.clone()); nl.set_table_scrolls(&self.files.tscroll); self.layout = Some(nl); } }
         // MN_DEMO=1 (for `--shot` self-checks; no input is sent): the app types into its own first paragraph and selects
         // from the heading into the first list item
@@ -547,6 +551,14 @@ impl App {
             let mut changed = self.changed.clone(); if let Some(st) = self.store.as_ref() { if st.edited.is_some() { changed.insert(st.note); } }
             sb.paint(scene, &mut g.fonts, self.guide.as_ref().and_then(|g| g.shown).or(self.files.canvas.as_ref().map(|c| c.id)).or(self.store.as_ref().map(|st| st.note)), &changed, now); if sb.rail.animating(now) || sb.tick(now) { g.window.request_redraw(); }
             sb.paint_tooltip(scene, &mut g.fonts, view, now); }
+        // the PDF studio (row 362): over the page AND the sidebar, between the band's place and the footer
+        if let Some(host) = self.files.studio.as_ref().map(|st| st.host) {
+            let rec: serde_json::Value = match host { studio::Host::Block(id) => match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => serde_json::from_str(descriptor).ok(), _ => None }, studio::Host::Card(id) => self.files.canvas.as_ref().and_then(|cv| cv.els.iter().find(|e| e.id == id)).and_then(|e| serde_json::from_str(&e.record).ok()) }.unwrap_or_default();
+            let rec_w = rec.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let ink = |page: usize, size: (f64, f64)| -> (Vec<ink::Line>, f64) { if rec_w <= 0.0 || size.0 <= 0.0 { return (vec![], 0.0) } (ink::page_lines(&rec, page, (rec_w, rec_w * size.1 / size.0)), rec_w) };
+            let area = Rect::new(0.0, self.top, w as f64, if self.foot.rect.height() > 0.0 { self.foot.rect.y0 } else { h as f64 });
+            if let Some(st) = self.files.studio.as_mut() { if st.paint(scene, &mut g.fonts, area, s, &ink) { g.window.request_redraw(); } }
+        }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
         self.pal.paint(scene, &mut g.fonts, paint::page(), now);
@@ -587,6 +599,28 @@ impl App {
     /// form rather than trusted to a flag, so a change no flag recorded is still kept.
     /// Reading on or off (row 358), and remembered for this collection on this machine. Going to reading puts away
     /// whatever was open for a change: a tool, a popup, a note's words, picked blocks.
+    // ── the PDF studio (row 362) ──
+    /// The record of the studio's PDF as its owner has it NOW (the note's block or the canvas's card): read each time,
+    /// so an undo or a merge underneath is what is shown. None: the owner is gone, or no longer a PDF.
+    fn studio_record(&self, host: studio::Host) -> Option<String> {
+        let d = match host {
+            studio::Host::Block(id) => match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => descriptor.clone(), _ => return None },
+            studio::Host::Card(id) => self.files.canvas.as_ref()?.els.iter().find(|e| e.id == id)?.record.clone() };
+        d.contains("\"kind\":\"pdf\"").then_some(d)
+    }
+    fn studio_open(&mut self, host: studio::Host) {
+        let Some(d) = self.studio_record(host) else { return };
+        let Some(path) = self.media.locate(&d).filter(|p| p.is_file()) else { self.notice = Some(("The PDF's file was not found".to_string(), Instant::now() + std::time::Duration::from_secs(5))); if let Some(g) = &self.gpu { g.window.request_redraw(); } return };
+        if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); } self.note_words_end(true); self.video_stop(); self.find_close(); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.pdf = None; self.files.tool = None;
+        let rec: serde_json::Value = serde_json::from_str(&d).unwrap_or_default();
+        let (w, h) = (rec.get("w").and_then(|v| v.as_f64()).unwrap_or(612.0), rec.get("h").and_then(|v| v.as_f64()).unwrap_or(792.0));
+        let name = rec.get("name").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let mut st = studio::Studio::open(host, path, name, (w as f32, h as f32), || { if let Some(p) = WAKE.get() { p.wake_up(); } });
+        st.start = rec.get("page").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        self.files.studio = Some(st); self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); }
+    }
+    /// The studio is left: the note or the canvas under it is as it was (nothing of theirs was moved).
+    fn studio_close(&mut self) { if self.files.studio.take().is_some() { self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } }
     // ── the User Guide (row 359) ──
     fn guide_shown(&self) -> bool { self.guide.as_ref().is_some_and(|g| g.shown.is_some()) }
     /// The guide is looked for once, and its rows given to the sidebar (which is made anew with each collection).
@@ -616,7 +650,7 @@ impl App {
     /// A page of the guide comes into the window: the user's note is kept first and its editor put aside - the page is
     /// in an editor of its own, locked, and nothing that saves a note runs while it is shown.
     fn guide_open(&mut self, id: BlockId) {
-        if self.store.is_none() { return }
+        if self.store.is_none() { return } self.studio_close();
         let Some(doc) = self.guide.as_ref().and_then(|g| g.col.load_note(id).ok()) else { return };
         self.canvas_leave(); self.video_stop(); self.find_close(); self.note_words_end(true); self.files.link = None; self.files.picker = None; self.files.picker_chip = None; self.files.picker_lang = None; self.files.tool = None; self.files.pdf = None;
         if !self.guide_shown() { if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); } self.leaving(); self.reading_user = self.reading; let old = std::mem::replace(&mut self.ed, Editor::new(doc)); self.guide_stash = Some(old); }
@@ -816,7 +850,7 @@ impl App {
             Ok((store, doc, recovered)) => {
                 let mut sb = sidebar::Sidebar::new(); sb.set_tree(&store.col);
                 self.store = Some(store); self.sidebar = Some(sb); self.ed = Editor::new(doc); self.others.clear();
-                self.reading = reading_at_open(path, create); self.files.tool = None; self.guide_stash = None; if let Some(g) = self.guide.as_mut() { g.shown = None; }
+                self.reading = reading_at_open(path, create); self.files.tool = None; self.files.studio = None; self.guide_stash = None; if let Some(g) = self.guide.as_mut() { g.shown = None; }
                 self.layout = None; self.flat = None; self.scroll = 0.0; self.blank = false; self.recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
                 recent_add(path); self.sync_recent();
                 #[cfg(target_os = "macos")] text_element::changed(true);
@@ -1384,6 +1418,8 @@ impl App {
             let media = if chip.is_some() || self.ed.block_selection().len() != 1 { None } else { match self.ed.doc.get(hit).map(|b| &b.kind) { Some(Kind::Media { descriptor }) => Some(descriptor.clone()), _ => None } };
             let items = if let Some(d) = &media { let st = self.media.file_state(d); if st.path.is_some() { if self.files.locate.is_none() { self.files.locate = Some(hit); }
                 let mut v = vec![I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, st.found), I::action("Copy Path", true), I::Separator]; v.extend(items); v } else { items } } else { items };
+            // a PDF: its studio (row 362) - also while reading
+            let items = match &media { Some(d) if d.contains("\"kind\":\"pdf\"") => { self.files.studio_for = Some(hit); let mut v = vec![I::action("Open in Studio", self.media.file_state(d).found), I::Separator]; v.extend(items); v } _ => { self.files.studio_for = None; items } };
             // a video or a PDF whose file is not where its record says (row 361): it is pointed at the file again, as a picture and a chip can be
             let items = match &media { Some(d) if (d.contains("\"kind\":\"video\"") || d.contains("\"kind\":\"pdf\"")) && !self.media.file_state(d).found => { self.files.locate = Some(hit); let mut v = vec![I::action("Locate File\u{2026}", true), I::Separator]; v.extend(items); v } _ => items };
             // a picture given a width of its own can go back to its own size
@@ -1422,6 +1458,7 @@ impl App {
                 "Delete" => { if let Some(cv) = self.files.canvas.as_mut() { cv.delete(); } } "Bring to Front" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(true); } } "Send to Back" => { if let Some(cv) = self.files.canvas.as_mut() { cv.restack(false); } }
                 "Previous Page" | "Next Page" => { if let Some(cv) = self.files.canvas.as_mut() { cv.pdf_page(label == "Next Page"); } }
                 "Open File" | "Reveal in Finder" | "Show in Explorer" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { self.file_open(&rec, label != "Open File"); } }
+                "Open in Studio" => { if let Some(id) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).filter(|e| e.record.contains("\"kind\":\"pdf\"")).map(|e| e.id) { self.mods = was; self.studio_open(studio::Host::Card(id)); return } }
                 "Copy Path" => { if let Some(rec) = self.files.canvas.as_ref().and_then(|cv| cv.selected_any_media()).map(|e| e.record.clone()) { if let (Some(p), Some(cb)) = (self.media.file_state(&rec).path, self.clipboard.as_mut()) { let _ = cb.set_text(p.to_string_lossy().into_owned()); self.block_clip = None; self.files.cclip.clear(); } } }
                 "Open Note" => { if let Some((_, note, _)) = self.card_note() { self.mods = was; self.open_note(note); return } }
                 "Promote to Note" => { if let (Some((_, note, true)), Some(st)) = (self.card_note(), self.store.as_mut()) { let up = self.files.canvas.as_ref().and_then(|cv| st.col.entry(cv.id).ok().flatten()).and_then(|e| e.parent); if st.col.reparent(note, up).is_ok() { st.unpublished = true; self.changed.insert(note); if let Some(sb) = self.sidebar.as_mut() { sb.set_tree(&st.col); } } } }
@@ -1507,6 +1544,7 @@ impl App {
                         self.panel(rfd::FileDialog::new().set_title("Locate File"), 1, move |me, p| if let Some(file) = p.first() { let rec = me.media.file_record(file); let t = me.now_ms(); let dd = me.ed.set_kinds(vec![(id, Kind::Media { descriptor: rec })], t).unwrap_or(Dirty::Nothing); me.apply(dd); me.layout = None; });
                         return }
                     _ => {} } }
+            if label == "Open in Studio" { if let Some(id) = self.files.studio_for.take() { self.files.locate = None; self.studio_open(studio::Host::Block(id)); } return }
             if label.starts_with("Locate File") {
                 let Some(id) = self.files.locate.take() else { return };
                 if let Some(d) = match self.ed.doc.get(id).map(|b| &b.kind) { Some(Kind::Media { descriptor }) if descriptor.contains("\"kind\":\"video\"") || descriptor.contains("\"kind\":\"pdf\"") => Some(descriptor.clone()), _ => None } {
@@ -2467,9 +2505,10 @@ impl App {
         let changed = cv.dirty; match st.col.save_canvas(cv.id, &cv.stored()) { Ok(()) => { cv.dirty = false; if changed { st.unpublished = true; st.edited_since_stage = true; self.changed.insert(cv.id); self.title(); } } Err(e) => eprintln!("canvas: {e}") }
     }
     /// The canvas gives the page's place back to the note.
-    fn canvas_leave(&mut self) { if self.files.canvas.is_none() { return } self.video_stop(); self.card_leave(); self.files.cards.clear(); if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.files.canvas = None; self.blank = self.store.is_none(); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+    fn canvas_leave(&mut self) { if self.files.canvas.is_none() { return } if matches!(self.files.studio.as_ref().map(|st| st.host), Some(studio::Host::Card(_))) { self.files.studio = None; } self.video_stop(); self.card_leave(); self.files.cards.clear(); if let Some(cv) = self.files.canvas.as_mut() { cv.edit_end(true); } self.canvas_save(true); self.files.canvas = None; self.blank = self.store.is_none(); self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
     /// A canvas of the collection is opened in the page's place (the note stays as it is behind it).
     fn open_canvas(&mut self, id: BlockId) {
+        self.studio_close();
         self.guide_leave();
         if self.files.canvas.as_ref().is_some_and(|c| c.id == id) { return } self.canvas_leave();
         if self.store.is_none() { return } if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
@@ -2571,6 +2610,7 @@ impl App {
     }
     /// The editor becomes this note's (the one it held is kept beside it).
     fn swap_note(&mut self, id: BlockId) {
+        self.studio_close();
         let left = self.guide_leave();
         let Some(st) = self.store.as_mut() else { return }; if st.note == id { if left { #[cfg(target_os = "macos")] text_element::changed(true); self.title(); if let Some(g) = &self.gpu { g.window.request_redraw(); } } return }
         if self.ed.preedit().is_some() { let _ = self.ed.set_preedit("", None, 0); }
@@ -2681,6 +2721,14 @@ impl App {
     fn note_point(&self, p: (f64, f64)) -> (f64, f64) { let s = self.gpu.as_ref().map(|g| g.window.scale_factor()).unwrap_or(1.0); { let o = origin(&self.files.card, self.side_w, self.top, self.scroll, s); (p.0 - o.x, p.1 - o.y) } }
     fn key(&mut self, key: &Key, text: Option<&str>) {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
+        // the PDF studio (row 362): Escape leaves it, the keys that scroll scroll it, and NOTHING else reaches the note hidden under it (but Save, Reading, the window's own keys)
+        if self.files.studio.is_some() && !self.modal() && !self.ctx.is_open() {
+            if matches!(key, Key::Named(NamedKey::Escape)) { self.studio_close(); return }
+            let pass = cmd && matches!(key, Key::Character(c) if matches!(c.to_lowercase().as_str(), "s" | "r" | "q" | "w" | "o" | "/"));
+            if !pass {
+                let k = match key { Key::Named(NamedKey::PageDown) => "PageDown", Key::Named(NamedKey::PageUp) => "PageUp", Key::Named(NamedKey::ArrowDown) => "Down", Key::Named(NamedKey::ArrowUp) => "Up", Key::Named(NamedKey::Home) => "Home", Key::Named(NamedKey::End) => "End", Key::Character(c) if c == " " => "Space", _ => "" };
+                if let Some(st) = self.files.studio.as_mut() { if !cmd { st.key(k, shift); } }
+                let _ = (alt, text); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
         // Enter after a typed address: the address becomes a link first (row 320)
         if matches!(key, Key::Named(NamedKey::Enter)) && !cmd && !self.blank && !self.modal() && self.files.link.is_none() && self.files.picker.is_none() && self.files.note_field.is_none() && !self.ctx.is_open() { let d = self.ed.autolink(false, now).unwrap_or(Dirty::Nothing); if d != Dirty::Nothing { self.apply(d); } }
         if self.files.resize.is_some() { if matches!(key, Key::Named(NamedKey::Escape)) { self.resize_end(false); } return }
@@ -3221,6 +3269,7 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => { self.layout = None; if let Some(g) = &self.gpu { g.window.request_redraw(); } }
             WindowEvent::MouseWheel { delta, .. } => if let Some(g) = &self.gpu {
                 let s = g.window.scale_factor();
+                if !self.ctx.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; st.wheel(-dy); g.window.request_redraw(); return } }
                 if self.ctx.scrolls() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; self.ctx.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.maps.as_mut() { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
                 if let Some(w) = self.files.site.as_mut().filter(|w| w.shown) { let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.wheel(-dy); g.window.request_redraw(); return }
@@ -3322,6 +3371,7 @@ impl ApplicationHandler for App {
                 // an open menu takes the press (outside it: it closes); otherwise a press over the tree opens one
                 let e = if state == ElementState::Pressed { min_ui::Event::Down { x: position.x, y: position.y, button: min_ui::Button::Secondary } } else { min_ui::Event::Up { x: position.x, y: position.y, button: min_ui::Button::Secondary } };
                 if self.ctx.is_open() || self.pal.is_open() { self.chrome_pointer(e); }
+                else if self.files.studio.as_ref().is_some_and(|st| st.rect.contains(kurbo::Point::new(position.x, position.y))) { return }
                 else if state == ElementState::Pressed && self.files.card.as_ref().is_none_or(|c| !c.rect.contains(kurbo::Point::new(position.x, position.y))) && self.files.canvas.as_ref().is_some_and(|c| c.rect.contains(kurbo::Point::new(position.x, position.y)) && !self.bar.hit(position.x, position.y) && !self.foot.hit(position.x, position.y)) { use min_ui::menu::MenuItem as I; self.card_leave();
                     // the card under the pointer is selected (the selected ones stay when it is one of them), and the menu is theirs
                     if let Some(cv) = self.files.canvas.as_mut() { cv.pick_at(position.x, position.y); } let note = self.card_note();
@@ -3331,10 +3381,10 @@ impl ApplicationHandler for App {
                             I::with_shortcut("Bring to Front", any, &k("\u{2318}]", "Ctrl+]")), I::with_shortcut("Send to Back", any, &k("\u{2318}[", "Ctrl+[")), I::Separator,
                             // frames, lining up, locking (row 327)
                             I::with_shortcut("Group", any && frame.is_none(), &k("\u{2318}G", "Ctrl+G")), I::with_shortcut("Ungroup", frame.is_some(), &k("\u{21e7}\u{2318}G", "Ctrl+Shift+G")), I::action("Rename Frame", frame.is_some()), I::action("Fit to Contents", frame.as_ref().is_some_and(|f| f.1)), I::action("Shape\u{2026}", frame.is_some()), I::action("Tint\u{2026}", frame.is_some()),
-                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::action("Copy Path", has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
+                            I::Separator, I::action("Align\u{2026}", cv.sel.len() >= 2), I::action(if locked { "Unlock" } else { "Lock" }, any), I::Separator, I::with_shortcut("Previous Page", pdf, &k("\u{2325}\u{2190}", "Alt+Left")), I::with_shortcut("Next Page", pdf, &k("\u{2325}\u{2192}", "Alt+Right")), I::action("Open in Studio", cv.selected_any_media().is_some_and(|e| e.record.contains("\"kind\":\"pdf\""))), I::action("Open File", file), I::action(if mac { "Reveal in Finder" } else { "Show in Explorer" }, has_file), I::action("Copy Path", has_file), I::Separator, I::action("Add Note\u{2026}", true), I::with_shortcut("Open Note", note.is_some(), &k("\u{2318}\u{21a9}", "Ctrl+Enter")), I::action("Promote to Note", note.is_some_and(|n| n.2)), I::Separator, I::with_shortcut("Select All", true, &k("\u{2318}A", "Ctrl+A")), I::with_shortcut("Fit Everything", true, &k("\u{2318}0", "Ctrl+0"))], &mut g.fonts, position.x, position.y, kurbo::Rect::new(0.0, 0.0, w as f64, h as f64), s); g.window.request_redraw(); } }
                 else if state == ElementState::Pressed { self.context(position.x, position.y);
                     // reading: of the page's menu only what changes nothing stays in reach
-                    if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path" | "Previous Page" | "Next Page") { *enabled = false; } } } } }
+                    if self.reading && !self.sidebar.as_ref().is_some_and(|sb| sb.rail.hit(position.x, position.y)) { for it in self.ctx.items.iter_mut() { if let min_ui::menu::MenuItem::Action { label, enabled, .. } = it { if !matches!(label.as_str(), "Copy" | "Open" | "Open Link" | "Copy Link" | "Open File" | "Reveal in Finder" | "Show in Explorer" | "Copy Path" | "Previous Page" | "Next Page" | "Open in Studio") { *enabled = false; } } } } }
             }
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => {
                 self.pointer = (position.x, position.y);
@@ -3344,6 +3394,8 @@ impl ApplicationHandler for App {
                 if state == ElementState::Released { if let Some((id, _, moved)) = self.files.row_drag.take() { if moved { if let Some(sb) = self.sidebar.as_mut() { sb.pressed_row = None; }
                     if let Some(cv) = self.files.canvas.as_mut().filter(|c| c.rect.contains(kurbo::Point::new(position.x, position.y))) { cv.add_note(id, Some((position.x, position.y))); }
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
+                // the PDF studio (row 362) has every press in its place (the band's and the footer's stay theirs)
+                if !self.ctx.is_open() && !self.pal.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { if st.rect.contains(kurbo::Point::new(position.x, position.y)) { let back = st.pointer(&e); if let Some(g) = &self.gpu { g.window.request_redraw(); } if back { self.studio_close(); } return } } }
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
                 // a canvas is open: the pointer is its own over the page's place (row 322)
                 // (a note edited in a card: a press outside the card leaves it - and is the canvas's; inside, it is the note's)
@@ -3420,6 +3472,8 @@ impl ApplicationHandler for App {
                 if state == ElementState::Pressed { let had = self.files.pdf.take().is_some();
                     if let Some((id, page, strip, _)) = self.pdf_under(position.x, position.y) {
                         if strip.contains(kurbo::Point::new(position.x, position.y)) { self.pdf_turn(id, if position.x < strip.center().x { -1 } else { 1 }); return }
+                        // a second press on the page soon after the first: its studio (row 362)
+                        if page.contains(kurbo::Point::new(position.x, position.y)) && self.files.tool.is_none() { let twice = self.files.pdf_click.is_some_and(|(t, b)| b == id && t.elapsed().as_millis() < 450); self.files.pdf_click = if twice { None } else { Some((Instant::now(), id)) }; if twice { self.studio_open(studio::Host::Block(id)); return } }
                         if page.contains(kurbo::Point::new(position.x, position.y)) { if let Some(at) = self.pdf_char(id, position.x, position.y) {
                             // the block becomes the current one, then the drag is the page's
                             let (nx, ny) = self.note_point(self.pointer); if let Some(l) = self.layout.as_ref() { self.ed.point(l, nx, ny, false); }
