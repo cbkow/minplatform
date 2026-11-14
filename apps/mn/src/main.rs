@@ -3238,7 +3238,22 @@ impl ApplicationHandler for App {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.gpu.is_some() { return }
         startup_log("event loop running; creating the window");
-        let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(WindowAttributes::default().with_title("minNotes").with_surface_size({ let (w, h) = std::env::var("MN_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))).unwrap_or((1000.0, 760.0)); LogicalSize::new(w, h) })).expect("window"));
+        #[allow(unused_mut)] let mut attrs = WindowAttributes::default().with_title("minNotes").with_surface_size({ let (w, h) = std::env::var("MN_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?)))).unwrap_or((1000.0, 760.0)); LogicalSize::new(w, h) });
+        // Windows' two icons, as QCView's (rows 248, 372): the title bar's small one is the macOS icon, the taskbar's and Alt+Tab's the exe's own
+        // resource (build.rs, id 1); the caption takes the menu row's colour on Windows 11, so the window is one surface from its top edge down
+        #[cfg(windows)] {
+            use winit::platform::windows::{WinIcon, WindowAttributesWindows};
+            let small = (|| { let mut d = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/icons/minNotesMacOS-64.png")[..])); d.set_transformations(png::Transformations::EXPAND | png::Transformations::ALPHA | png::Transformations::STRIP_16);
+                let mut rd = d.read_info().ok()?; let mut buf = vec![0u8; rd.output_buffer_size()]; let info = rd.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
+                if info.color_type != png::ColorType::Rgba { return None } winit::icon::RgbaIcon::new(buf, info.width, info.height).ok().map(winit::icon::Icon::from) })();
+            attrs = attrs.with_window_icon(small);
+            let big = WinIcon::from_resource(1, None).ok().map(winit::icon::Icon::from);
+            let c8 = |c: min_theme::Color| winit::platform::windows::Color::from_rgb((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
+            use min_theme::tokens as tk;
+            attrs = attrs.with_theme(Some(winit::window::Theme::Dark));
+            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big).with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
+        }
+        let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(attrs).expect("window"));
         startup_log("window created");
         let instance = Presenter::instance();
         let surface = instance.create_surface(window.clone()).expect("surface");

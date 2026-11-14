@@ -72,3 +72,7 @@ objc2-app-kit = { workspace = true, features = ["NSWindow", "NSResponder", "NSAp
 objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
 objc2-core-graphics = { workspace = true, features = ["CGImage", "CGContext", "CGBitmapContext", "CGColorSpace", "CGGeometry"] }
 objc2-core-foundation = { workspace = true, features = ["CFURL", "CFDictionary", "CFNumber", "CFString", "CFBase", "CFCGTypes"] }
+
+# the exe's icon, version details and long-path manifest on Windows (build.rs; row 372)
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

@@ -2526,6 +2526,7 @@ dependencies = [
  "vello",
  "wgpu",
  "winit 0.31.0-beta.4",
+ "winresource",
  "zip",
 ]
 
