@@ -295,7 +295,8 @@ struct App { /// the handle is held (row 305): where it was pressed, whether the
     ctx: min_ui::menu::Menu, ctx_for: Option<BlockId>, /// the menu is the page's (blocks), not the tree's
     ctx_blocks: bool,
     /// commands to run at the loop's next idle step
-    later: Vec<menu::Cmd>, foot: footer::Footer, /// the footer's height, physical px
+    later: Vec<menu::Cmd>, /// the in-window menu bar (Windows; row 370) and Alt's tap: down and up with nothing between
+    menubar: Option<menu::InWindowMenu>, alt_clean: bool, foot: footer::Footer, /// the footer's height, physical px
     bottom: f64, /// the last save's outcome for the footer's readout (text, a warning)
     status: Option<(String, bool)>, /// the notes with something that is not in the document yet (the tree's dots, the readout's count)
     changed: std::collections::HashSet<BlockId>,
@@ -367,8 +368,10 @@ impl App {
         let (w, h) = g.presenter.size(); let s = g.window.scale_factor(); let now = Instant::now();
         // the sidebar takes its width off the page (it slides when it folds, so the page follows frame by frame)
         // the band: across the window (the sidebar starts below it) or over the page only (beside the sidebar)
-        if self.bar_wide { self.top = self.bar.layout(&mut g.fonts, 0.0, w as f64, 0.0, s); self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(self.top, h as f64, s, now)).unwrap_or(0.0); }
-        else { self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(0.0, h as f64, s, now)).unwrap_or(0.0); self.top = self.bar.layout(&mut g.fonts, self.side_w, w as f64, 0.0, s); }
+        // (Windows, row 370: the menu bar is a strip of the window's own, above them both)
+        let menu_h = match self.menubar.as_mut() { Some(mb) => { let o = self.files.xopts.unwrap_or_else(export_settings); mb.sync([o.paths, o.video_notes, self.pinned], &mut g.fonts); mb.bar.layout(&mut g.fonts, 0.0, 0.0, w as f64, Rect::new(0.0, 0.0, w as f64, h as f64), s); mb.bar.rect.height() } None => 0.0 };
+        if self.bar_wide { self.top = menu_h + self.bar.layout(&mut g.fonts, 0.0, w as f64, menu_h, s); self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(self.top, h as f64, s, now)).unwrap_or(0.0); }
+        else { self.side_w = self.sidebar.as_mut().map(|sb| sb.layout(menu_h, h as f64, s, now)).unwrap_or(0.0); self.top = menu_h + self.bar.layout(&mut g.fonts, self.side_w, w as f64, menu_h, s); }
         // the sidebar's caret floats over the page's top left corner: it is hit before the band
 
         self.bottom = self.foot.layout(&mut g.fonts, self.side_w, w as f64, h as f64, s);
@@ -603,6 +606,7 @@ impl App {
         }
         self.bar.paint_tooltip(scene, &mut g.fonts, view, now); self.foot.paint_tooltip(scene, &mut g.fonts, view, now);
         if self.ctx.is_open() { self.ctx.paint(scene, &mut g.fonts, s); }
+        if let Some(mb) = self.menubar.as_ref() { mb.bar.paint(scene, &mut g.fonts, s); mb.bar.paint_menus(scene, &mut g.fonts, s); }
         self.pal.paint(scene, &mut g.fonts, paint::page(), now);
         if self.foot.tick(now) { g.window.request_redraw(); }
         if self.bar.tick(now) { g.window.request_redraw(); }
@@ -1395,7 +1399,7 @@ impl App {
             Some(Err(e)) => { let name = u.name.clone(); self.files.unpack = None; eprintln!("unpack: {e}"); use min_ui::text_button::Variant as V; self.ask(Ask::Notice, &format!("Couldn\u{2019}t unpack \u{201c}{name}\u{201d}"), &e, vec![("OK", V::Primary)]); }
         }
     }
-    fn sync_recent(&mut self) { #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_mut() { m.set_recent(&recent_list()); } }
+    fn sync_recent(&mut self) { #[cfg(target_os = "macos")] if let Some(m) = self.menu.as_mut() { m.set_recent(&recent_list()); } if let Some(mb) = self.menubar.as_mut() { mb.set_recent(recent_list()); } }
     /// Save As: the collection is published at a place the user picks, which becomes its document.
     fn save_as(&mut self) {
         if self.saving.is_some() || self.store.is_none() { return }
@@ -1542,7 +1546,7 @@ impl App {
                 I::with_shortcut("Duplicate", true, &k("\u{2318}D", "Ctrl+D")), I::with_shortcut("Delete", true, "\u{232b}"), I::Separator,
                 // an empty block beside the selection (row 349)
                 I::with_shortcut("Insert Block Above", true, &k("\u{2325}\u{2318}\u{2191}", "Ctrl+Alt+Up")), I::with_shortcut("Insert Block Below", true, &k("\u{2325}\u{2318}\u{2193}", "Ctrl+Alt+Down")), I::Separator,
-                I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", "")), I::Separator, I::action("Move to Note\u{2026}", true), I::action("Copy to Note\u{2026}", true)];
+                I::with_shortcut("Move Up", true, &k("\u{2303}\u{2318}\u{2191}", "Alt+Shift+Up")), I::with_shortcut("Move Down", true, &k("\u{2303}\u{2318}\u{2193}", "Alt+Shift+Down")), I::Separator, I::action("Move to Note\u{2026}", true), I::action("Copy to Note\u{2026}", true)];
             // a picture whose file was not found can be pointed at it again
             let lost = self.ed.block_selection().len() == 1 && matches!(self.ed.doc.get(hit).map(|b| &b.kind), Some(Kind::Media { descriptor }) if self.media.is_missing(descriptor));
             self.files.locate = lost.then_some(hit);
@@ -2834,6 +2838,68 @@ impl App {
             sidebar::Act::NewNote => self.new_entry(mn_store::DocKind::Note), sidebar::Act::NewFolder => self.new_entry(mn_store::DocKind::Folder),
             sidebar::Act::Renamed(id, name) => self.rename_entry(id, &name) }
     }
+    /// The in-window menu bar (Windows; row 370) is offered an event before anything else: an open menu takes every
+    /// pointer event (a press outside it closes it and goes no further), the strip its own; Alt tapped alone or F10
+    /// give it the keys, Alt+letter opens a menu; and - there being no system menu - a key with Ctrl that the menus
+    /// name runs its command, as the macOS menu's key equivalents do. True: the event is dealt with.
+    fn menu_bar_takes(&mut self, event: &WindowEvent) -> bool {
+        use min_ui::{BarKey, Button, Event as E, Named as N};
+        let quiet = self.modal() || self.pal.is_open() || self.ctx.is_open();
+        let mut chosen = None; let mut taken = false;
+        let pointer = match event {
+            WindowEvent::PointerMoved { position, .. } => Some(E::Move { x: position.x, y: position.y }),
+            WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => Some(if *state == ElementState::Pressed { E::Down { x: position.x, y: position.y, button: Button::Primary } } else { E::Up { x: position.x, y: position.y, button: Button::Primary } }),
+            _ => None };
+        if let Some(e) = pointer {
+            // (a drag begun in the page - a selection, a scroll bar - is never the bar's, wherever it passes or ends)
+            if matches!(e, E::Down { .. }) { self.alt_clean = false; }
+            let open = self.menubar.as_ref().is_some_and(|m| m.bar.is_active());
+            if quiet || (!open && self.pressed && !matches!(e, E::Down { .. })) { return false }
+            if let (Some(mb), Some(g)) = (self.menubar.as_mut(), self.gpu.as_mut()) {
+                let (id, dirty, consumed) = mb.bar.event(&e, &mut g.fonts); if dirty || consumed { g.window.request_redraw(); }
+                chosen = id.and_then(|i| mb.cmd(i)); taken = consumed;
+                if consumed { if let Some(p) = e.pos() { self.pointer = p; } if self.cursor != winit::cursor::CursorIcon::Default { self.cursor = winit::cursor::CursorIcon::Default; g.window.set_cursor(winit::cursor::Cursor::Icon(self.cursor)); } if self.cursor_hidden { g.window.set_cursor_visible(true); self.cursor_hidden = false; } }
+            }
+        } else { match event {
+            // any other press, the wheel: an open menu closes and the event goes no further
+            WindowEvent::PointerButton { state: ElementState::Pressed, .. } | WindowEvent::MouseWheel { .. } => { self.alt_clean = false; if let Some(mb) = self.menubar.as_mut() { if mb.bar.is_open() { mb.bar.cancel(); taken = true; } } }
+            // a menu never outlives the window's focus or its size
+            WindowEvent::Focused(false) | WindowEvent::SurfaceResized(_) => { self.alt_clean = false; if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
+            WindowEvent::KeyboardInput { event, .. } => {
+                use winit::keyboard::PhysicalKey;
+                let pressed = event.state.is_pressed(); let (shift, cmd, alt) = self.mods;
+                let active = self.menubar.as_ref().is_some_and(|m| m.bar.is_active());
+                // the letter or digit of the physical key: Alt+F and Ctrl+Alt+N are found on any layout
+                let plain = match event.physical_key { PhysicalKey::Code(c) => { let n = format!("{c:?}"); n.strip_prefix("Key").or(n.strip_prefix("Digit")).filter(|l| l.len() == 1).and_then(|l| l.chars().next()).map(|ch| ch.to_ascii_lowercase()) } _ => None };
+                let k = if matches!(event.logical_key, Key::Named(NamedKey::Alt)) {
+                    if pressed { if !event.repeat { self.alt_clean = !cmd && !shift; } None } else if std::mem::take(&mut self.alt_clean) && !quiet { Some(BarKey::AltTap) } else { None }
+                } else if !pressed { None } else {
+                    self.alt_clean = false;
+                    if quiet { None }
+                    else if matches!(event.logical_key, Key::Named(NamedKey::F10)) && !cmd && !shift { Some(BarKey::F10) }
+                    else if alt && !cmd && !shift && plain.is_some_and(|c| c.is_ascii_alphabetic()) { plain.map(BarKey::Alt) }
+                    else if !active { None }
+                    else { Some(match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => BarKey::Named(N::Escape), Key::Named(NamedKey::Enter) => BarKey::Named(N::Enter), Key::Named(NamedKey::ArrowUp) => BarKey::Named(N::Up), Key::Named(NamedKey::ArrowDown) => BarKey::Named(N::Down),
+                        Key::Named(NamedKey::ArrowLeft) => BarKey::Named(N::Left), Key::Named(NamedKey::ArrowRight) => BarKey::Named(N::Right), Key::Character(c) if c.as_str() == " " => BarKey::Space,
+                        Key::Character(c) if !cmd => c.chars().next().map(|ch| BarKey::Char(ch.to_ascii_lowercase())).unwrap_or(BarKey::Other), _ => BarKey::Other }) }
+                };
+                if let (Some(k), Some(mb), Some(g)) = (k, self.menubar.as_mut(), self.gpu.as_mut()) {
+                    let (id, dirty, consumed) = mb.bar.key(&k, &mut g.fonts); if dirty || consumed { g.window.request_redraw(); }
+                    chosen = id.and_then(|i| mb.cmd(i)); taken = consumed;
+                }
+                // the menus' keys (not on macOS, whose own menu takes them; not under a window of ours, whose fields have Ctrl+V and the like)
+                // (Ctrl+Alt that TYPES something is AltGr - a Polish n-acute, a German at-sign - and no command)
+                let altgr = cmd && alt && event.text.as_ref().is_some_and(|t| !t.chars().any(|c| c.is_control()));
+                if !taken && pressed && cmd && !altgr && cfg!(not(target_os = "macos")) && !self.modal() {
+                    let ch = plain.or(match &event.logical_key { Key::Character(c) => c.chars().next().map(|c| c.to_ascii_lowercase()), _ => None });
+                    if let Some(c) = ch.and_then(|ch| menu::shortcut(ch, shift, alt)) { chosen = Some(c); taken = true; }
+                }
+            }
+            _ => {} } }
+        if let Some(c) = chosen { self.menu_cmd(c); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
+        taken
+    }
     /// A pointer event for whatever lies over the page. True: it was taken (the note must not act on it).
     fn chrome_pointer(&mut self, e: min_ui::Event) -> bool {
         let now = Instant::now();
@@ -3007,8 +3073,12 @@ impl App {
         // (a key that comes before the next frame is drawn finds the note changed and not yet laid out - Enter, then a letter at once: the layout is made here rather than the key dropped; keys typed fast after Enter, a paste of keys, a script's, were LOST)
         if self.layout.is_none() { self.ensure(); }
         let Some(l) = self.layout.as_ref() else { return };
-        let mv = |m: Move, by_word: Move, by_end: Move| if cmd { by_end } else if alt { by_word } else { m };
-        let (ctrl, blocks) = (self.ctrl, self.ed.in_blocks());
+        // the caret's keys are the system's: macOS - Option by word, Cmd to the line's / the note's ends; Windows - Ctrl by word, Home / End for the ends
+        let mac = cfg!(target_os = "macos");
+        let mv = |m: Move, by_word: Move, by_end: Move| if mac { if cmd { by_end } else if alt { by_word } else { m } } else if cmd { by_word } else { m };
+        // (Windows' Ctrl IS the command key: it is no third modifier there - Ctrl+Alt+Up could never insert a block; the blocks are moved by Alt+Shift+Up / Down)
+        let (ctrl, blocks) = (self.ctrl && mac, self.ed.in_blocks());
+        let moves = if mac { ctrl && cmd } else { alt && shift && !cmd };
         // Option+Cmd+C: a choice chip at the caret; Option+Down just after a chip: its picker (row 320)
         if let Key::Character(c) = key { if cmd && alt && !shift && matches!(c.to_lowercase().as_str(), "c" | "\u{e7}") { self.chip_insert(); return } }
         if matches!(key, Key::Named(NamedKey::ArrowDown)) && alt && !cmd && !shift && !self.ed.in_blocks() { if let Some(c) = self.ed.chip_before_caret() { self.chip_open(c, ""); return } }
@@ -3044,7 +3114,7 @@ impl App {
             // Enter returns to the text, Backspace removes, and typing does nothing
             Key::Named(NamedKey::Escape) => { self.ed.toggle_blocks(); Dirty::Nothing }
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if alt && cmd && !ctrl && !shift => { self.follow = true; self.ed.insert_beside(matches!(key, Key::Named(NamedKey::ArrowDown)), now).unwrap_or(Dirty::Nothing) }
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if ctrl && cmd => { self.follow = true; self.ed.move_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), now).unwrap_or(Dirty::Nothing) }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if moves => { self.follow = true; self.ed.move_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), now).unwrap_or(Dirty::Nothing) }
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) if blocks && !cmd && !alt => { self.ed.step_blocks(matches!(key, Key::Named(NamedKey::ArrowDown)), shift); self.follow = true; Dirty::Nothing }
             Key::Named(NamedKey::Enter) if blocks => { self.ed.toggle_blocks(); Dirty::Nothing }
             Key::Named(NamedKey::Backspace | NamedKey::Delete) if blocks => self.ed.delete_blocks(now).unwrap_or(Dirty::Nothing),
@@ -3190,7 +3260,7 @@ impl ApplicationHandler for App {
         #[cfg(target_os = "macos")] if let Some(v) = ns_view { text_element::install(self as *mut App as *mut dyn text_element::TextHost, v.cast()); }
         // the request is REFUSED (silently) unless every capability asked for comes with its first value: the caret's area
         ime(window.as_ref().as_ref(), Some(Rect::new(0.0, 0.0, 1.0, 1.0)), true);
-        #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); } self.sync_export_checks(); if self.pinned { self.set_pinned(true, false); }   // (as this machine left it: row 366)
+        #[cfg(target_os = "macos")] { let mut m = menu::AppMenu::new(); m.menu.init_for_nsapp(); m.set_recent(&recent_list()); self.menu = Some(m); } self.sync_recent(); self.sync_export_checks(); if self.pinned { self.set_pinned(true, false); }   // (as this machine left it: row 366)
         startup_log("text element, input method, menu ready");
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None, ime_on: true }); self.t0 = Some(Instant::now()); self.title();
         startup_log("fonts loaded");
@@ -3436,6 +3506,7 @@ impl ApplicationHandler for App {
         if self.seconds > 0.0 { if let Some(t0) = self.t0 { let dl = t0 + std::time::Duration::from_secs_f32(self.seconds); if Instant::now() >= dl { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); return } el.set_control_flow(ControlFlow::WaitUntil(dl)); } }
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if self.menubar.is_some() && self.menu_bar_takes(&event) { return }
         match event {
             WindowEvent::CloseRequested => { self.autosave(); self.request_close(Pending::Quit); if self.quit { #[cfg(target_os = "macos")] text_element::uninstall(); self.finish(); el.exit(); } }
             WindowEvent::Occluded(false) => { self.warm = self.warm.max(2); if let Some(g) = &self.gpu { g.window.request_redraw(); } }
@@ -3764,7 +3835,9 @@ impl ApplicationHandler for App {
                 let text = event.text.as_ref().map(|t| t.to_string());
                 // typing into the note hides the pointer until it moves again
                 if text.is_some() && !self.mods.1 && !self.blank && !self.cursor_hidden && self.cursor == winit::cursor::CursorIcon::Text { if let Some(g) = &self.gpu { g.window.set_cursor_visible(false); self.cursor_hidden = true; } }
-                self.key(&event.logical_key, text.as_deref()); }
+                // (Windows: AltGr arrives as Ctrl+Alt with the character it types - that is typing, not a command)
+                let was = self.mods; if cfg!(not(target_os = "macos")) && was.1 && was.2 && text.as_ref().is_some_and(|t| !t.chars().any(|c| c.is_control())) { self.mods = (was.0, false, false); }
+                self.key(&event.logical_key, text.as_deref()); self.mods = was; }
             // composed text is never a video block's (its text input is off; one that still arrives is dropped)
             WindowEvent::Ime(e) if self.files.canvas.is_some() && self.files.card.is_none() && !self.sidebar.as_ref().is_some_and(|sb| sb.typing()) => { let ev = match &e { winit::event::Ime::Preedit(t, c) => Some(min_ui::ImeEvent::Preedit(t.clone(), *c)), winit::event::Ime::Commit(t) => Some(min_ui::ImeEvent::Commit(t.clone())), _ => None };
                 if let (Some(ev), Some(cv), Some(g)) = (ev, self.files.canvas.as_mut(), self.gpu.as_mut()) { cv.ime(&ev, &mut g.fonts); g.window.request_redraw(); } }
@@ -4066,7 +4139,7 @@ fn main() {
     let recovered = recovered && std::env::var_os("MN_NO_DIALOGS").is_none();
     #[cfg(target_os = "macos")] menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let sidebar = store.as_ref().map(|st| { let mut sb = sidebar::Sidebar::new(); sb.set_tree(&st.col); sb });
-    let app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, guide: None, guide_stash: None, reading_user: false, guide_tried: false, pinned: std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("always-on-top").is_file()), guide_on: std::env::var("MN_GUIDE_ON").map(|v| v == "1").unwrap_or_else(|_| std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("guide-shown").is_file())), shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
+    let app = App { reading: store.as_ref().is_some_and(|st| reading_at_open(&st.session.as_ref().map(|s| s.original().to_path_buf()).unwrap_or_default(), args.iter().any(|a| a == "--new"))), refused_seen: 0, menubar: menu::InWindowMenu::wanted().then(menu::InWindowMenu::new), alt_clean: false, guide: None, guide_stash: None, reading_user: false, guide_tried: false, pinned: std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("always-on-top").is_file()), guide_on: std::env::var("MN_GUIDE_ON").map(|v| v == "1").unwrap_or_else(|_| std::env::var_os("MN_NO_DIALOGS").is_none() && sessions_root().parent().is_some_and(|d| d.join("guide-shown").is_file())), shots: arg("--shots").and_then(|p| shots::Shots::load(&p, arg("--shots-out"))), player: None, hw: None, poster: video::Poster::default(), files: Files::default(), media: media::Media::new(sessions_root().parent().unwrap_or(std::path::Path::new(".")), || { if let Some(p) = WAKE.get() { p.wake_up(); } }), drawn: false, warm: 4, warm_at: None, grab: None, moved: None, notice: None, ctx_notes: vec![], shown_blocks: false, block_clip: None, ctrl: false, cursor: winit::cursor::CursorIcon::Default, cursor_hidden: false, pal: colours::Colours::new(), last_bg: "yellow".to_string(), show_pal: std::env::var("MN_PALETTE").ok(), ctx: min_ui::menu::Menu::new(), ctx_for: None, ctx_blocks: false, later: vec![], foot: footer::Footer::new(), bottom: 0.0, status: None, changed: Default::default(), splash: [min_ui::text_button::TextButton::new("New Collection\u{2026}", min_ui::text_button::Variant::Primary), min_ui::text_button::TextButton::new("Open\u{2026}", min_ui::text_button::Variant::Secondary)], bar: toolbar::Toolbar::new(), bar_wide: std::env::var("MN_TOOLBAR").as_deref() == Ok("window"), top: 0.0, saver: mn_store::share::Worker::new(), saving: None, store, sidebar, others: Default::default(), side_w: 0.0, confirm: None, quit: false, close_after_save: false, recovered, blank, after_close: None, #[cfg(target_os = "macos")] menu: None, ed: Editor::new(doc), mods: (false, false, false), pointer: (0.0, 0.0), pressed: false, last_click: None, clipboard: arboard::Clipboard::new().ok(), accent_popup: false, told_geom: (0.0, 0.0), geom_moved: None, follow: false, flat: None, last_scroll: 0.0, layout: None, gpu: None, scroll: arg("--scroll").and_then(|v| v.parse().ok()).unwrap_or(0.0), seconds: arg("--seconds").and_then(|v| v.parse().ok()).unwrap_or(0.0), shot: arg("--shot"), t0: None, frames: 0, draw_ms: vec![] };
     startup_log("arguments read, collection opened (if any)");
     let el = EventLoop::new().unwrap();
     #[cfg(target_os = "macos")] mac_open::install();

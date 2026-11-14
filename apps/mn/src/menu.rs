@@ -1,7 +1,8 @@
 //! The menu bar (canon row 296): ONE definition ([`spec`]) of minNotes' menus, as QCView's `menu.rs` has it.
 //! macOS: the native menu through `muda` — a shortcut is its item's key equivalent, so AppKit takes the key and the
 //! command comes back as a menu event (nothing fires twice). Windows: the in-window bar (`min_ui::MenuBar`, row 194) is
-//! to be built from the same `spec` with the Windows build; until then the window's own key handler runs the shortcuts.
+//! built from the same `spec` ([`InWindowMenu`], row 370), and the window's key handler runs the shortcuts from `spec` too
+//! ([`shortcut`]) - there is no system menu to take them.
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -59,6 +60,54 @@ pub fn spec() -> Vec<(&'static str, Vec<Node>)> {
 pub fn key_of(c: &Cmd) -> Option<(char, bool)> {
     Some(match c { Cmd::NewNote => ('n', false), Cmd::NewFolder => ('n', true), Cmd::Save => ('s', false), Cmd::Undo => ('z', false), Cmd::Redo => ('z', true), Cmd::Cut => ('x', false), Cmd::Copy => ('c', false), Cmd::Paste => ('v', false), Cmd::PastePlain => ('v', true), Cmd::SelectAll => ('a', false),
         Cmd::Bold => ('b', false), Cmd::Italic => ('i', false), Cmd::Underline => ('u', false), Cmd::Strike => ('x', true), Cmd::Code => ('e', false), Cmd::Highlight => ('h', true), Cmd::ClearFormat => ('\\', false), Cmd::Sidebar => ('1', false), Cmd::Reading => ('r', false), Cmd::ShortcutsPage => ('/', false), _ => return None })
+}
+
+impl Sc {
+    /// Windows' spelling: "Ctrl+Shift+N".
+    pub fn label(&self) -> String { format!("Ctrl+{}{}{}", if self.shift { "Shift+" } else { "" }, if self.alt { "Alt+" } else { "" }, self.key.to_ascii_uppercase()) }
+}
+
+/// The command a key with Ctrl runs where there is no system menu (row 370): the same keys the macOS menu takes.
+pub fn shortcut(key: char, shift: bool, alt: bool) -> Option<Cmd> {
+    for (_, nodes) in spec() { for n in nodes { if let Node::Item { sc: Some(s), cmd, .. } | Node::CheckKey { sc: Some(s), cmd, .. } = n { if s.key == key && s.shift == shift && s.alt == alt { return Some(cmd) } } } }
+    None
+}
+
+/// The in-window bar (Windows; row 370): `spec` as a `min_ui::MenuBar`, made again when the recent list or a tick changes.
+/// What macOS keeps in its application menu is here too: Exit at the foot of File, Licenses under Help.
+pub struct InWindowMenu { pub bar: min_ui::MenuBar, cmds: Vec<Cmd>, recent: Vec<String>, state: Option<(Vec<String>, [bool; 3])> }
+
+impl InWindowMenu {
+    /// Windows always; macOS with `MN_MENU_BAR=1` (a look at the bar without a Windows machine).
+    pub fn wanted() -> bool { cfg!(not(target_os = "macos")) || std::env::var_os("MN_MENU_BAR").is_some() }
+    pub fn new() -> InWindowMenu { InWindowMenu { bar: min_ui::MenuBar::new(vec![]), cmds: vec![], recent: vec![], state: None } }
+    pub fn cmd(&self, id: u32) -> Option<Cmd> { self.cmds.get(id as usize).cloned() }
+    pub fn set_recent(&mut self, list: Vec<String>) { self.recent = list; }
+    /// The ticks as they now are: (file paths in exports, video notes in exports, always on top).
+    pub fn sync(&mut self, checks: [bool; 3], fonts: &mut min_ui::Fonts) {
+        if self.state.as_ref().is_some_and(|(r, c)| *r == self.recent && *c == checks) { return }
+        self.state = Some((self.recent.clone(), checks));
+        use min_ui::{BarItem, BarMenu};
+        let mut cmds: Vec<Cmd> = vec![];
+        let mut id = |c: Cmd| { cmds.push(c); (cmds.len() - 1) as u32 };
+        let on = |c: &Cmd| match c { Cmd::ExportPaths => checks[0], Cmd::ExportVideoNotes => checks[1], Cmd::Pin => checks[2], _ => false };
+        let key = |sc: Option<Sc>| sc.map(|s| s.label()).unwrap_or_default();
+        let mut menus: Vec<BarMenu> = spec().into_iter().map(|(title, nodes)| BarMenu { title: match title { "Format" => "F&ormat".to_string(), "Export" => "E&xport".to_string(), t => format!("&{t}") }, items: nodes.into_iter().map(|n| match n {
+            Node::Item { label, sc, cmd } => BarItem::Action { id: id(cmd), label: label.into(), enabled: true, shortcut: key(sc), checked: None },
+            Node::Check { label, cmd } => { let c = on(&cmd); BarItem::Action { id: id(cmd), label: label.into(), enabled: true, shortcut: String::new(), checked: Some(c) } }
+            Node::CheckKey { label, sc, cmd } => { let c = on(&cmd); BarItem::Action { id: id(cmd), label: label.into(), enabled: true, shortcut: key(sc), checked: Some(c) } }
+            Node::Recent => {
+                let mut items: Vec<BarItem> = self.recent.iter().map(|path| BarItem::action(id(Cmd::OpenRecent(path.clone())), &path.rsplit(['/', '\\']).next().unwrap_or(path).replace('&', "&&"), true, "")).collect();
+                if items.is_empty() { items.push(BarItem::action(u32::MAX, "(none)", false, "")); } else { items.push(BarItem::Separator); items.push(BarItem::action(id(Cmd::ClearRecent), "Clear Menu", true, "")); }
+                BarItem::Sub { label: "Open Recent".into(), enabled: true, items }
+            }
+            Node::Sep => BarItem::Separator,
+        }).collect() }).collect();
+        if let Some(file) = menus.first_mut() { file.items.push(BarItem::Separator); file.items.push(BarItem::action(id(Cmd::Quit), "Exit", true, "Alt+F4")); }
+        if let Some(help) = menus.last_mut() { help.items.push(BarItem::Separator); help.items.push(BarItem::action(id(Cmd::Licenses), "Licenses\u{2026}", true, "")); help.items.push(BarItem::Separator); help.items.push(BarItem::action(u32::MAX, concat!("minNotes ", env!("CARGO_PKG_VERSION")), false, "")); }
+        self.cmds = cmds;
+        self.bar.set_menus(menus, fonts);
+    }
 }
 
 #[cfg(target_os = "macos")]
