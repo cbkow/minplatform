@@ -3332,6 +3332,8 @@ impl ApplicationHandler for App {
             attrs = attrs.with_theme(Some(winit::window::Theme::Dark));
             attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_taskbar_icon(big).with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
         }
+        // Windows shows a new window white until its first frame: it is made unseen, the first frame is drawn, then it is shown (as QCView's, row 382)
+        if cfg!(windows) { attrs = attrs.with_visible(false); }
         let window: Arc<Box<dyn Window>> = Arc::new(el.create_window(attrs).expect("window"));
         startup_log("window created");
         let instance = Presenter::instance();
@@ -3358,6 +3360,8 @@ impl ApplicationHandler for App {
         startup_log("text element, input method, menu ready");
         self.gpu = Some(Gpu { window, presenter, ui, fonts: Fonts::new(), ime_area: None, ime_on: true }); self.t0 = Some(Instant::now()); self.title();
         startup_log("fonts loaded");
+        // the first frame, then the window (Windows: see where it is made unseen)
+        if cfg!(windows) { self.redraw(); if let Some(g) = self.gpu.as_ref() { g.window.set_visible(true); g.window.request_redraw(); } }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         self.shots_step(el);
