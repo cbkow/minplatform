@@ -46,6 +46,21 @@ const SMALL_GAP: f64 = 26.0;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Zoom { Width, Whole, By(f64) }
 
+/// Find through a PDF's pages (row 367d): the words, where they were found (page, first and last character), the one
+/// stood on, how far the reading of the pages has come.
+pub struct Find { pub field: min_ui::TextField, query: String, pub hits: Vec<(usize, usize, usize)>, pub at: usize, read: usize, turn: std::sync::Arc<std::sync::atomic::AtomicU64>, rx: Option<Receiver<(u64, usize, Vec<(usize, usize)>)>> }
+
+/// A page's characters as one run of lower-case letters without spaces, each letter's place in it mapped back to its
+/// character: a PDF gives glyphs, with or without spaces between words, so the words asked for are matched the same way.
+fn matches(text: &crate::pdf::PageText, needle: &str) -> Vec<(usize, usize)> {
+    let needle: Vec<char> = needle.chars().filter(|c| !c.is_whitespace()).flat_map(|c| c.to_lowercase()).collect(); if needle.is_empty() { return vec![] }
+    let (mut hay, mut map) = (Vec::new(), Vec::new());
+    for (i, c) in text.chars.iter().enumerate() { for ch in c.text.chars().filter(|c| !c.is_whitespace()).flat_map(|c| c.to_lowercase()) { hay.push(ch); map.push(i); } }
+    let mut out = vec![]; let mut i = 0;
+    while i + needle.len() <= hay.len() { if hay[i..i + needle.len()] == needle[..] { out.push((map[i], map[i + needle.len() - 1])); i += needle.len(); } else { i += 1; } }
+    out
+}
+
 pub struct Studio {
     pub host: Host, path: PathBuf, name: String,
     /// every page's size in points; one entry (the record's own shape) until the file has been read
@@ -57,6 +72,9 @@ pub struct Studio {
     pub picture: bool,
     pics: HashMap<usize, (u32, peniko::ImageBrush)>, asked: HashMap<usize, u32>, failed: HashMap<usize, String>,
     tx: Sender<Made>, rx: Receiver<Made>, wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+    /// pages' text, read when first wanted (selecting; row 367c)
+    texts: HashMap<usize, std::sync::Arc<crate::pdf::PageText>>, /// the text selected: (page, where it began, where it ends), and a drag is extending it
+    pub sel: Option<(usize, usize, usize)>, selecting: bool, pub find: Option<Find>,
     back: ActionButton, b_out: ActionButton, b_in: ActionButton, b_fit: ActionButton, opened: Instant, /// the page to begin at, once the file's pages are known
     pub start: usize,
 }
@@ -72,7 +90,7 @@ impl Studio {
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
         let (tx, rx) = channel(); let (stx, srx) = channel();
         if read { let (p, w) = (path.clone(), wake.clone()); let _ = std::thread::Builder::new().name("mn-studio-sizes".into()).spawn(move || { let _ = stx.send(sizes(&p)); w(); }); }
-        Studio { host, path, name, sizes: vec![first], sizes_rx: read.then_some(srx), scroll: 0.0, scroll_x: 0.0, rect: Rect::ZERO, full: Rect::ZERO, strip_scroll: 0.0, smalls: HashMap::new(), smalls_asked: Default::default(), strip_at: usize::MAX, scale: 1.0, zoom: Zoom::Width, zoomed: Instant::now() - std::time::Duration::from_secs(1), picture: false, pics: HashMap::new(), asked: HashMap::new(), failed: HashMap::new(), tx, rx, wake,
+        Studio { host, path, name, sizes: vec![first], sizes_rx: read.then_some(srx), scroll: 0.0, scroll_x: 0.0, rect: Rect::ZERO, full: Rect::ZERO, strip_scroll: 0.0, smalls: HashMap::new(), smalls_asked: Default::default(), strip_at: usize::MAX, scale: 1.0, zoom: Zoom::Width, zoomed: Instant::now() - std::time::Duration::from_secs(1), picture: false, pics: HashMap::new(), asked: HashMap::new(), failed: HashMap::new(), tx, rx, wake, texts: HashMap::new(), sel: None, selecting: false, find: None,
             back: ActionButton::new("arrow-left", "Back (Esc)"), b_out: ActionButton::new("minus", "Zoom out").size_s(), b_in: ActionButton::new("plus", "Zoom in").size_s(), b_fit: ActionButton::new("arrows-in-simple", "Fit").size_s(), opened: Instant::now(), start: 0 }
     }
     /// A picture's view: one page of the picture's own size; nothing is read here (the caller hands its picture to `paint`).
@@ -80,6 +98,57 @@ impl Studio {
         let mut st = Studio::open_with(host, path, name, size, wake, false); st.picture = true; st.zoom = Zoom::Whole; st
     }
     pub fn pages(&self) -> usize { self.sizes.len() }
+    // ── selecting a page's text (row 367c) ──
+    fn text_of(&mut self, page: usize) -> Option<std::sync::Arc<crate::pdf::PageText>> {
+        if self.picture { return None } if let Some(t) = self.texts.get(&page) { return Some(t.clone()) }
+        let t = std::sync::Arc::new(crate::pdf::text(&self.path, page).ok()?); if self.texts.len() > 64 { self.texts.clear(); } self.texts.insert(page, t.clone()); Some(t)
+    }
+    /// The character of a page at a window point: (the page, the character).
+    fn char_at(&mut self, x: f64, y: f64, page: Option<usize>) -> Option<(usize, usize)> {
+        let (col, _) = self.column(); let off = kurbo::Vec2::new(self.rect.x0, self.rect.y0 - self.scroll);
+        let i = match page { Some(p) => p, None => col.iter().position(|r| (*r + off).contains(kurbo::Point::new(x, y)))? }; let r = *col.get(i)? + off;
+        let t = self.text_of(i)?; let k = t.w as f64 / r.width().max(1.0); t.at(((x - r.x0) * k) as f32, ((y - r.y0) * k) as f32).map(|c| (i, c))
+    }
+    /// A press on a page with no tool in hand: a selection begins at the character there. True: there was text to begin at.
+    pub fn select_press(&mut self, x: f64, y: f64) -> bool { match self.char_at(x, y, None) { Some((p, c)) => { self.sel = Some((p, c, c)); self.selecting = true; true } None => { self.sel = None; false } } }
+    pub fn selecting(&self) -> bool { self.selecting }
+    pub fn select_drag(&mut self, x: f64, y: f64) { if let Some((p, a, _)) = self.sel { if let Some((_, c)) = self.char_at(x, y, Some(p)) { self.sel = Some((p, a, c)); } } }
+    /// The drag ends; a press that did not move selects nothing.
+    pub fn select_end(&mut self) { self.selecting = false; if self.sel.is_some_and(|(_, a, b)| a == b) { self.sel = None; } }
+    /// Every character of the page in view.
+    pub fn select_all(&mut self) { let p = self.current(); if let Some(t) = self.text_of(p) { if !t.chars.is_empty() { self.sel = Some((p, 0, t.chars.len() - 1)); } } }
+    pub fn selected_text(&mut self) -> Option<String> { let (p, a, b) = self.sel?; let t = self.text_of(p)?; Some(t.words(a, b)).filter(|s| !s.is_empty()) }
+    // ── find (row 367d) ──
+    /// The find field is opened (or given the keys again); the words in it are looked for through every page on a helper thread.
+    pub fn find_open(&mut self, fonts: &mut Fonts) {
+        if self.picture { return }
+        match self.find.as_mut() { Some(f) => { f.field.focused = true; f.field.select_all(fonts); } None => { let mut field = min_ui::TextField::new(Family::Sans, 12.0); field.placeholder = "Find in this PDF\u{2026}".into(); field.set_text_end("", fonts); field.focused = true;
+            self.find = Some(Find { field, query: String::new(), hits: vec![], at: 0, read: 0, turn: Default::default(), rx: None }); } }
+    }
+    pub fn find_close(&mut self) { if let Some(f) = self.find.take() { f.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed); } }
+    pub fn finding(&self) -> bool { self.find.as_ref().is_some_and(|f| f.field.focused) }
+    /// A key to the find field. Enter goes to the next place found (Shift: the one before).
+    pub fn find_key(&mut self, k: &min_ui::KeyEvent, fonts: &mut Fonts) {
+        let Some(f) = self.find.as_mut() else { return };
+        if matches!(k.key, min_ui::Key::Named(min_ui::Named::Enter)) { self.find_step(!k.shift); return }
+        f.field.key(k, fonts); let q = f.field.text().trim().to_string(); if q == f.query { return }
+        f.query = q.clone(); f.hits.clear(); f.at = 0; f.read = 0; let turn = f.turn.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if q.chars().filter(|c| !c.is_whitespace()).count() == 0 { f.rx = None; return }
+        let (tx, rx) = channel(); f.rx = Some(rx); let (path, wake, flag, n) = (self.path.clone(), self.wake.clone(), f.turn.clone(), self.sizes.len());
+        let _ = std::thread::Builder::new().name("mn-studio-find".into()).spawn(move || { for p in 0..n { if flag.load(std::sync::atomic::Ordering::Relaxed) != turn { return }
+            let found = crate::pdf::text(&path, p).map(|t| matches(&t, &q)).unwrap_or_default(); if tx.send((turn, p, found)).is_err() { return } if p % 8 == 7 || p + 1 == n { wake(); } } });
+    }
+    /// To the next place found, or the one before; the pages scroll to it.
+    pub fn find_step(&mut self, forward: bool) {
+        let Some(f) = self.find.as_mut() else { return }; if f.hits.is_empty() { return }
+        f.at = if forward { (f.at + 1) % f.hits.len() } else { (f.at + f.hits.len() - 1) % f.hits.len() }; let (p, a, _) = f.hits[f.at];
+        self.find_show(p, a);
+    }
+    fn find_show(&mut self, page: usize, ch: usize) {
+        let (col, _) = self.column(); let Some(r) = col.get(page).copied() else { return };
+        let y = self.text_of(page).and_then(|t| t.chars.get(ch).map(|c| c.y as f64 / t.w as f64 * r.width())).unwrap_or(0.0);
+        self.scroll = r.y0 + y - self.rect.height() * 0.35; self.limit();
+    }
     /// The whole view (presses anywhere in it are its own).
     pub fn area(&self) -> Rect { self.full }
     /// The strip of small pages: a PDF of more than one page has it.
@@ -161,6 +230,9 @@ impl Studio {
         let mut again = false;
         if let Some(rx) = &self.sizes_rx { if let Ok(r) = rx.try_recv() { self.sizes_rx = None; again = true;
             match r { Ok(s) if !s.is_empty() => { self.sizes = s; self.pics.clear(); self.asked.clear(); self.smalls.clear(); self.smalls_asked.clear(); let at = self.start.min(self.sizes.len() - 1); self.go_to(at); } Ok(_) => {} Err(why) => { self.failed.insert(0, why); } } } }
+        if let Some(f) = self.find.as_mut() { let turn = f.turn.load(std::sync::atomic::Ordering::Relaxed); let mut first = None;
+            if let Some(rx) = &f.rx { while let Ok((g, p, found)) = rx.try_recv() { if g != turn { continue } again = true; f.read = p + 1; let was = f.hits.is_empty(); f.hits.extend(found.into_iter().map(|(a, b)| (p, a, b))); if was && !f.hits.is_empty() { first = Some((f.hits[0].0, f.hits[0].1)); } } }
+            if let Some((p, a)) = first { self.find_show(p, a); } }
         while let Ok(m) = self.rx.try_recv() { again = true; if std::env::var_os("MN_STUDIO_LOG").is_some() { eprintln!("studio: made page {} at {} ok {} (asked {:?})", m.page, m.width, m.px.is_ok(), self.asked.get(&m.page)); }
             if m.small { if let Ok((px, w, h)) = m.px { self.smalls.insert(m.page, image_rgba8(w, h, px)); } continue }
             if self.asked.get(&m.page) != Some(&m.width) { continue }   // asked for at another width since
@@ -195,6 +267,11 @@ impl Studio {
             fill(scene, r, peniko::Color::WHITE);
             match own.filter(|_| self.picture).or(self.pics.get(&i).map(|p| &p.1)) { Some(b) => image(scene, b, r), None => { again = true;
                 if let Some(why) = self.failed.get(&i) { let l = fonts.layout_fit(why, Family::Sans, (13.0 * s) as f32, 400.0, peniko::Color::from_rgb8(120, 120, 120), r.width() - 32.0 * s); draw_layout(scene, &l, Affine::translate((r.x0 + 16.0 * s, r.y0 + 16.0 * s))); again = false; } } }
+            // the text selected on this page, and the places found on it (the one stood on stronger)
+            { let mut marks: Vec<(usize, usize, peniko::Color)> = vec![];
+                if let Some(f) = &self.find { for (n, (p, a, b)) in f.hits.iter().enumerate() { if *p == i { marks.push((*a, *b, if n == f.at { peniko::Color::from_rgba8(255, 170, 0, 150) } else { peniko::Color::from_rgba8(255, 220, 0, 80) })); } } }
+                if let Some((p, a, b)) = self.sel { if p == i { marks.push((a.min(b), a.max(b), peniko::Color::from_rgba8(64, 105, 253, 90))); } }
+                if !marks.is_empty() { if let Some(t) = self.text_of(i) { let k = r.width() / t.w as f64; for (a, b, c) in marks { for (x0, y0, x1, y1) in t.rects(a, b) { fill(scene, Rect::new(r.x0 + x0 as f64 * k, r.y0 + y0 as f64 * k, r.x0 + x1 as f64 * k, r.y0 + y1 as f64 * k), c); } } } } }
             // the page's drawings: stored in the record's own units for that page, shown at the page's size here
             let (pw, ph) = self.sizes.get(i).copied().unwrap_or((1.0, 1.0)); let (lines, rec_w, picked) = ink(i, (pw as f64, ph as f64));
             if !lines.is_empty() && rec_w > 0.0 { let k = r.width() / rec_w; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r);
@@ -236,6 +313,10 @@ impl Studio {
         let pc = fonts.layout(&format!("{} %", self.percent().round() as i64), Family::Sans, (12.0 * s) as f32, 500.0, color(t::NEUTRAL_CONTENT_COLOR_DEFAULT)); x -= pc.width() as f64 + 6.0 * s; draw_layout(scene, &pc, Affine::translate((x, head.center().y - pc.height() as f64 / 2.0))); x -= 6.0 * s;
         { let (w, h) = self.b_out.measure(fonts, s); self.b_out.rect = Rect::new(x - w, head.center().y - h / 2.0, x, head.center().y + h / 2.0); x -= w + 14.0 * s; }
         for b in [&self.b_out, &self.b_in, &self.b_fit] { b.paint(scene, fonts, s, now); again |= b.animating(now); }
+        if let Some(f) = self.find.as_mut() { let fw = 220.0 * s; let fr = Rect::new(x - fw, head.y0 + 5.0 * s, x, head.y1 - 5.0 * s); f.field.layout(fonts, fr, s); f.field.paint(scene, fonts, s); x -= fw + 10.0 * s;
+            let said = if f.query.is_empty() { String::new() } else if f.hits.is_empty() { if f.read < self.sizes.len() { format!("reading page {} of {}", f.read + 1, self.sizes.len()) } else { "not found".to_string() } } else { format!("{} of {}{}", f.at + 1, f.hits.len(), if f.read < self.sizes.len() { "\u{2026}" } else { "" }) };
+            let cl = fonts.layout(&said, Family::Sans, (12.0 * s) as f32, 400.0, color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)); draw_layout(scene, &cl, Affine::translate((x - cl.width() as f64, head.center().y - cl.height() as f64 / 2.0))); x -= cl.width() as f64 + 14.0 * s;
+            if f.rx.is_some() && f.read < self.sizes.len() && !f.query.is_empty() { again = true; } }
         let n = if self.picture { String::new() } else { format!("{} / {}", self.current() + 1, self.pages()) }; let nl = fonts.layout(&n, Family::Sans, (12.0 * s) as f32, 400.0, color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         draw_layout(scene, &nl, Affine::translate((x - nl.width() as f64, head.center().y - nl.height() as f64 / 2.0)));
         scene.stroke(&kurbo::Stroke::new(s.max(1.0)), Affine::IDENTITY, color(t::DIVIDER_COLOR), None, &kurbo::Line::new((head.x0, head.y1), (head.x1, head.y1)));

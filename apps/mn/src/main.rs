@@ -2860,8 +2860,21 @@ impl App {
         let (shift, cmd, alt) = self.mods; let now = self.now_ms();
         // the PDF studio (row 362): Escape leaves it, the keys that scroll scroll it, and NOTHING else reaches the note hidden under it (but Save, Reading, the window's own keys)
         if self.files.studio.is_some() && !self.modal() && !self.ctx.is_open() {
+            // find through the PDF (row 367d): Cmd+F opens its field; while it has the keys they are its own (Enter: the next place; Escape: it closes)
+            if cmd && !alt && matches!(key, Key::Character(c) if c.to_lowercase() == "f") { if let (Some(st), Some(g)) = (self.files.studio.as_mut(), self.gpu.as_mut()) { st.find_open(&mut g.fonts); g.window.request_redraw(); } return }
+            if cmd && !alt && matches!(key, Key::Character(c) if c.to_lowercase() == "g") { if let Some(st) = self.files.studio.as_mut() { st.find_step(!shift); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+            if self.files.studio.as_ref().is_some_and(|st| st.finding()) { use min_ui::{Key as K, Named as N};
+                if matches!(key, Key::Named(NamedKey::Escape)) { if let Some(st) = self.files.studio.as_mut() { st.find_close(); } }
+                else { let k = match key { Key::Named(NamedKey::Enter) => K::Named(N::Enter), Key::Named(NamedKey::Backspace) => K::Named(N::Backspace), Key::Named(NamedKey::Delete) => K::Named(N::Delete), Key::Named(NamedKey::ArrowLeft) => K::Named(N::Left), Key::Named(NamedKey::ArrowRight) => K::Named(N::Right), Key::Named(NamedKey::Home) => K::Named(N::Home), Key::Named(NamedKey::End) => K::Named(N::End), Key::Character(c) => K::Char(c.to_string()), _ => K::Char(String::new()) };
+                    if let (Some(st), Some(g)) = (self.files.studio.as_mut(), self.gpu.as_mut()) { st.find_key(&min_ui::KeyEvent { key: k, text: text.map(|t| t.to_string()), shift, cmd }, &mut g.fonts); } }
+                if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+            // the text selected: Cmd+C copies it, Cmd+A takes the whole page in view (row 367c)
+            if cmd && !alt { if let Key::Character(c) = key { match c.to_lowercase().as_str() {
+                "c" => { let t = self.files.studio.as_mut().and_then(|st| st.selected_text()); if let (Some(t), Some(cb)) = (t, self.clipboard.as_mut()) { let _ = cb.set_text(t); self.block_clip = None; } return }
+                "a" => { if let Some(st) = self.files.studio.as_mut() { st.select_all(); } if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
+                _ => {} } } }
             if !self.reading && self.page_key(key) { if let Some(g) = &self.gpu { g.window.request_redraw(); } return }
-            if matches!(key, Key::Named(NamedKey::Escape)) { self.studio_close(); return }
+            if matches!(key, Key::Named(NamedKey::Escape)) { if self.files.studio.as_ref().is_some_and(|st| st.sel.is_some() || st.find.is_some()) { if let Some(st) = self.files.studio.as_mut() { if st.sel.take().is_none() { st.find_close(); } } if let Some(g) = &self.gpu { g.window.request_redraw(); } return } self.studio_close(); return }
             if cmd { if let (Key::Character(c), Some(st)) = (key, self.files.studio.as_mut()) { let mid = (st.rect.center().x, st.rect.center().y); let did = match c.as_str() { "0" => { st.zoom_to(if st.picture { studio::Zoom::Whole } else { studio::Zoom::Width }); true } "9" => { st.zoom_to(studio::Zoom::Whole); true } "=" | "+" => { st.zoom_by(1.25, mid); true } "-" => { st.zoom_by(0.8, mid); true } _ => false }; if did { if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
             let pass = cmd && matches!(key, Key::Character(c) if matches!(c.to_lowercase().as_str(), "s" | "r" | "q" | "w" | "o" | "/" | "z"));
             if !pass {
@@ -3503,6 +3516,7 @@ impl ApplicationHandler for App {
                 if taken { return }
                 // a note's row dragged from the sidebar towards the canvas
                 if self.files.gest.is_some() { self.page_drag(position.x, position.y); return }
+                if let Some(st) = self.files.studio.as_mut() { if st.selecting() { st.select_drag(position.x, position.y); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } }
                 // a canvas's video (row 326): its line being scrubbed, its frame being drawn on
                 if self.files.canvas.is_some() && self.files.card.is_none() {
                     if self.player.as_ref().is_some_and(|p| p.scrub) { self.video_scrub(position.x); return }
@@ -3554,7 +3568,11 @@ impl ApplicationHandler for App {
                     self.set_cursor(); if let Some(g) = &self.gpu { g.window.request_redraw(); } return } } }
                 // the PDF studio (row 362) has every press in its place (the band's and the footer's stay theirs)
                 if !self.ctx.is_open() && !self.pal.is_open() && !self.modal() { if let Some(st) = self.files.studio.as_mut() { if st.area().contains(kurbo::Point::new(position.x, position.y)) { let (back, head) = (st.pointer(&e), st.in_head(position.y) || st.in_strip(position.x, position.y)); if let Some(g) = &self.gpu { g.window.request_redraw(); } if back { self.studio_close(); return }
-                    if state == ElementState::Released { if self.files.gest.is_some() { self.page_release(position.x, position.y); } } else if !head && !self.reading { self.page_press(position.x, position.y); }
+                    if state == ElementState::Released { if self.files.gest.is_some() { self.page_release(position.x, position.y); } if let Some(st) = self.files.studio.as_mut() { st.select_end(); } }
+                    else if !head { let drew = !self.reading && self.page_press(position.x, position.y);
+                        // no tool in hand (or reading): the press begins a selection of the page's text (row 367c)
+                        if !drew { if let Some(st) = self.files.studio.as_mut() { if let Some(f) = st.find.as_mut() { f.field.focused = false; } st.select_press(position.x, position.y); } } }
+                    else if let (Some(st), Some(g)) = (self.files.studio.as_mut(), self.gpu.as_mut()) { if let Some(f) = st.find.as_mut() { let inside = f.field.hit(position.x, position.y); f.field.focused = inside; if inside { f.field.pointer(&e, &mut g.fonts); } } }
                     return } } }
                 if !(self.pressed && state == ElementState::Released) && self.chrome_pointer(e) { self.set_cursor(); return }
                 // a canvas is open: the pointer is its own over the page's place (row 322)
