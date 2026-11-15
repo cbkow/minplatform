@@ -11,6 +11,7 @@ Cargo.lock hash and the pinned vcpkg ports go into a sidecar (.check) that make-
 
   python3 packaging/notices/make_notices.py macos   --out <file> [--stage <qcview.app>]
   python3 packaging/notices/make_notices.py windows --out <file>          (also writes <file>.check)
+  ... --app mr      minRender's page (canon row 426): no FFmpeg, no colour management - the image libraries, the fonts, its crates
   ... --app mn      minNotes' page (canon row 348): its own crates, and only the components it ships (an entry of
                     components.json with "apps" is for those applications alone)
 """
@@ -19,7 +20,8 @@ import fnmatch, html, json, os, re, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(os.path.dirname(HERE))
 SOURCE_REPO = "https://github.com/cbkow/minplatform"
 # per application: its name, its manifest's folder, where its releases are, how its tags are spelled
-APPS = {"qcv": ("QCView", "apps/qcv", "https://github.com/cbkow/QCView-Player/releases", "v"), "mn": ("minNotes", "apps/mn", "https://github.com/cbkow/minNotes/releases", "minnotes-v")}
+APPS = {"qcv": ("QCView", "apps/qcv", "https://github.com/cbkow/QCView-Player/releases", "v"), "mn": ("minNotes", "apps/mn", "https://github.com/cbkow/minNotes/releases", "minnotes-v"),
+        "mr": ("minRender", "apps/mr", "https://github.com/cbkow/MinRender/releases", "minrender-v")}
 TRIPLE = {"macos": "aarch64-apple-darwin", "windows": "x86_64-pc-windows-msvc"}
 
 def die(msg): print("notices: " + msg, file=sys.stderr); sys.exit(1)

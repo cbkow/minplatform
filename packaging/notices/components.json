@@ -25,6 +25,10 @@
         "ffprobe",
         "ffmpeg.exe",
         "ffprobe.exe"
+      ],
+      "apps": [
+        "qcv",
+        "mn"
       ]
     },
     {
@@ -173,6 +177,10 @@
       "files": [
         "libImath*.dylib",
         "Imath-*.dll"
+      ],
+      "apps": [
+        "qcv",
+        "mn"
       ]
     },
     {
@@ -287,6 +295,10 @@
       ],
       "files": [
         "bz2.dll"
+      ],
+      "apps": [
+        "qcv",
+        "mn"
       ]
     },
     {
@@ -316,7 +328,11 @@
         "dav1d-COPYING.txt"
       ],
       "note": "Linked into FFmpeg.",
-      "files": []
+      "files": [],
+      "apps": [
+        "qcv",
+        "mn"
+      ]
     },
     {
       "name": "SRT (Secure Reliable Transport)",
@@ -330,7 +346,11 @@
         "srt-LICENSE.txt"
       ],
       "note": "Linked into FFmpeg, unmodified; its source is at the address above.",
-      "files": []
+      "files": [],
+      "apps": [
+        "qcv",
+        "mn"
+      ]
     },
     {
       "name": "Mbed TLS",
@@ -344,7 +364,11 @@
         "mbedtls-LICENSE.txt"
       ],
       "note": "Linked into FFmpeg (SRT's encryption).",
-      "files": []
+      "files": [],
+      "apps": [
+        "qcv",
+        "mn"
+      ]
     },
     {
       "name": "Sparkle",
@@ -359,6 +383,10 @@
       ],
       "files": [
         "Sparkle.framework"
+      ],
+      "apps": [
+        "qcv",
+        "mn"
       ]
     },
     {
@@ -403,7 +431,11 @@
       "text": [
         "minColor-NOTICE.txt"
       ],
-      "files": []
+      "files": [],
+      "apps": [
+        "qcv",
+        "mn"
+      ]
     },
     {
       "name": "Geist and Geist Mono (fonts)",
@@ -467,7 +499,9 @@
   "own": [
     "qcview",
     "qcview.exe",
-    "minNotes"
+    "minNotes",
+    "minRender",
+    "minRender.exe"
   ],
   "ffmpeg_libraries": {
     "_": "FFmpeg's --enable-<name> flags → what is linked in. null = a feature of FFmpeg itself or of the OS, no third-party code. A flag missing from this table FAILS the notices.",

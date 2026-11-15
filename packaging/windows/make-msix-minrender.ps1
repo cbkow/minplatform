@@ -177,8 +177,12 @@ $makePri = Find-SdkTool "MakePri.exe"; $makeAppx = Find-SdkTool "MakeAppx.exe"
 # resources.pri: without it Windows does not find the logos' sizes (the taskbar's 16 / 24 / 32 / 48, the 200 % ones) and scales the 44 px one
 $priConfig = Join-Path $dist "priconfig-mr.xml"
 & $makePri createconfig /cf $priConfig /dq "en-us" /o | Out-Null
+# (MakePri would put the 200 % logos in a second file, resources.scale-200.pri - a resource pack only a BUNDLE loads; this is
+# one package, so everything goes into the one resources.pri)
+$cfgText = Get-Content $priConfig -Raw; $cfgText = [regex]::Replace($cfgText, '(?s)<packaging>.*?</packaging>', ''); [IO.File]::WriteAllText($priConfig, $cfgText)
 & $makePri new /pr $stage /cf $priConfig /mn (Join-Path $stage "AppxManifest.xml") /of (Join-Path $stage "resources.pri") /o | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "MakePri failed ($LASTEXITCODE)." }
+if (Get-ChildItem $stage -Filter "resources.*.pri") { throw "MakePri split the resources into packs - a single package loads only resources.pri." }
 Remove-Item $priConfig
 $base = if ($TestIdentity) { "minRender-test-$version-win64" } else { "minRender-$version-win64" }
 $out = Join-Path $dist "$base.msix"
