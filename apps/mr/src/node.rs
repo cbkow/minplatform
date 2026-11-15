@@ -275,6 +275,18 @@ impl Node {
         match min_image::load_thumbnail(&path.to_string_lossy(), "", 960) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); *last = Some(key); put(fname, (w, h), rgba, None); }
             Err(_) => { *last = None; put(fname, (0, 0), Vec::new(), Some("This frame cannot be shown yet")); } }
     }
+    /// This node's settings as they are kept (`config.json`), for the Settings card.
+    pub fn settings(&self) -> Value { std::fs::read_to_string(self.data.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({})) }
+    /// The Settings card's Save (row 389): the keys given are laid over the file as it is - what the file holds besides
+    /// stays - and the file is written whole, then moved into place. A file that is there and cannot be read is not replaced.
+    pub fn save_settings(&self, changes: &Value) -> Result<(), String> {
+        let f = self.data.join("config.json"); let text = std::fs::read_to_string(&f).map_err(|e| format!("config.json: {e}"))?;
+        let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("config.json could not be read as JSON ({e}); it is left as it is"))?;
+        for (k, x) in changes.as_object().into_iter().flatten() { v[k] = x.clone(); }
+        write_atomically(&f, &serde_json::to_string_pretty(&v).unwrap()).map_err(|e| format!("config.json could not be written: {e}"))
+    }
+    /// The secret's fingerprint as this node holds it, and how many peers that answer show another one.
+    pub fn secret_state(&self) -> (String, usize) { let mine = fingerprint(&self.secret); let other = self.peers.lock().unwrap().values().filter(|p| p.alive && p.record.as_ref().and_then(|r| r["secret_fingerprint"].as_str()).is_some_and(|f| !f.is_empty() && f != mine)).count(); (mine, other) }
     /// The farm's folder on the share (the form reads the templates there).
     pub fn farm(&self) -> &Path { &self.farm }
     /// A job from the New Job form (8.1): checked, given its id, baked, put in the form manifests travel in, handed to

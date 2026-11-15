@@ -10,6 +10,7 @@ mod instance;
 mod lead;
 mod leash;
 mod node;
+mod settings;
 mod share;
 mod shell;
 mod submit;
@@ -30,7 +31,7 @@ pub fn restart(minimized: bool) {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(i) = args.iter().position(|a| a == "--wait-pid") { args.drain(i..(i + 2).min(args.len())); }
     args.extend(["--wait-pid".to_string(), std::process::id().to_string()]); if minimized && !args.iter().any(|a| a == "--minimized") { args.push("--minimized".into()); }
-    let mut c = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "minRender".into())); c.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let mut c = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "minRender".into())); c.args(&args).env_remove("MR_DEMO").env_remove("MR_SHOT").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0000_0008 | 0x0800_0000); }
     #[cfg(unix)] { use std::os::unix::process::CommandExt; c.process_group(0); }
     match c.spawn() { Ok(ch) => share::log("INFO", "farm", &format!("the application starts itself again (the copy is process {})", ch.id())), Err(e) => share::log("ERROR", "farm", &format!("the application could not start itself again: {e}")) }

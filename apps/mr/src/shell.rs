@@ -98,7 +98,8 @@ impl ApplicationHandler for Shell {
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         if self.left { return }
         // another node, or the window, asked for a new start: a copy of this program takes over when this one is gone
-        if self.node.restart_asked.swap(false, Ordering::Relaxed) { crate::restart(true); self.node.stop.store(true, Ordering::Relaxed); }
+        // (started again with its window as it is now: hidden stays hidden, shown comes back shown)
+        if self.node.restart_asked.swap(false, Ordering::Relaxed) { crate::restart(self.window.as_ref().is_none_or(|w| w.is_visible() == Some(false))); self.node.stop.store(true, Ordering::Relaxed); }
         if self.ended.load(Ordering::Relaxed) { self.left = true; el.exit(); if let Some((_, p)) = TX.get() { p.wake_up(); } return }
         // the window follows the farm four times a second while it shows
         self.refresh(); if let Some(w) = &self.window { if w.is_visible() != Some(false) { w.request_redraw(); } } el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250)));
