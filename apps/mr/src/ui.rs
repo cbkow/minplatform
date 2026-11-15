@@ -290,9 +290,11 @@ impl Ui {
         // -- the title row: this node, whether it leads, whether it takes work
         let me = &view.me; let host = me["hostname"].as_str().unwrap_or(""); let stopped = me["node_state"] == "stopped"; let pad = 12.0 * s;
         let mut x = pad + text(scene, host, pad, TITLE * s / 2.0, t::BODY_SIZE_M, true, false, ink, 320.0 * s) + 10.0 * s;
-        if view.leads { let lw = 58.0 * s; paint::rounded(scene, Rect::new(x, TITLE * s / 2.0 - 9.0 * s, x + lw, TITLE * s / 2.0 + 9.0 * s), 4.0 * s, t::ACCENT_BACKGROUND_COLOR_DEFAULT); text(scene, "LEADER", x + 8.0 * s, TITLE * s / 2.0, t::DETAIL_SIZE_S, true, false, paint::color(t::ACCENT_CONTENT_COLOR_ON_FILL), lw); x += lw + 10.0 * s; }
+        if view.leads && view.no_farm.is_none() { let lw = 58.0 * s; paint::rounded(scene, Rect::new(x, TITLE * s / 2.0 - 9.0 * s, x + lw, TITLE * s / 2.0 + 9.0 * s), 4.0 * s, t::ACCENT_BACKGROUND_COLOR_DEFAULT); text(scene, "LEADER", x + 8.0 * s, TITLE * s / 2.0, t::DETAIL_SIZE_S, true, false, paint::color(t::ACCENT_CONTENT_COLOR_ON_FILL), lw); x += lw + 10.0 * s; }
         scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(if view.suspended.is_some() { t::NEGATIVE_VISUAL_COLOR } else if stopped { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT } else { t::POSITIVE_VISUAL_COLOR }), None, &Circle::new((x + 4.0 * s, TITLE * s / 2.0), 4.0 * s));
         let title_dot = Rect::new(x - 4.0 * s, TITLE * s / 2.0 - 8.0 * s, x + 12.0 * s, TITLE * s / 2.0 + 8.0 * s);
+        // no farm (row 425): said beside the dot, with the way out
+        if let Some(why) = &view.no_farm { let nx = x + 20.0 * s; let nw = text(scene, "NO FARM", nx, TITLE * s / 2.0, t::DETAIL_SIZE_M, true, false, paint::color(t::NOTICE_VISUAL_COLOR), 80.0 * s); text(scene, &format!("{why}  Open Settings to set it; the farm is joined as soon as the folder is there."), nx + nw + 10.0 * s, TITLE * s / 2.0, t::DETAIL_SIZE_M, false, false, sub, (w - nx - nw - 380.0 * s).max(0.0)); }
         paint::hline(scene, 0.0, w, TITLE * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
         // -- the node panel
         let left = (w * self.layout.left).max(260.0 * s).min(w * 0.6); let top = TITLE * s + pad;

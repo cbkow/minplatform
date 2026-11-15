@@ -39,11 +39,29 @@ pub fn restart(minimized: bool) {
     match c.spawn() { Ok(ch) => share::log("INFO", "farm", &format!("the application starts itself again (the copy is process {})", ch.id())), Err(e) => share::log("ERROR", "farm", &format!("the application could not start itself again: {e}")) }
 }
 
+/// The data folder of the application as installed, or none for a build that is not installed.
+/// Windows: with the Store package's identity `cbkow.minRender` it is `%USERPROFILE%\minRender` (0.5.x's, outside
+/// AppData on purpose); with any OTHER package identity - a test package beside the real one - `%USERPROFILE%\minRender-test`.
+/// macOS: run from inside `minRender.app` it is `~/Library/Application Support/MinRender`; from an application bundle
+/// of another name, `…/MinRender-test`.
+fn installed_data() -> Option<std::path::PathBuf> {
+    #[cfg(windows)] { use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName; use windows::core::PWSTR;
+        let mut n = 0u32; unsafe { let _ = GetCurrentPackageFullName(&mut n, None); } if n == 0 { return None }
+        let mut buf = vec![0u16; n as usize]; if unsafe { GetCurrentPackageFullName(&mut n, Some(PWSTR(buf.as_mut_ptr()))) }.0 != 0 { return None }
+        let full = String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(buf.len())]); let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE")?);
+        Some(home.join(if full.split('_').next() == Some("cbkow.minRender") { "minRender" } else { "minRender-test" })) }
+    #[cfg(target_os = "macos")] { let exe = std::env::current_exe().ok()?; let app = exe.ancestors().find(|p| p.extension().is_some_and(|x| x == "app"))?; if !exe.starts_with(app.join("Contents/MacOS")) { return None }
+        let home = std::path::PathBuf::from(std::env::var_os("HOME")?); Some(home.join("Library/Application Support").join(if app.file_stem().is_some_and(|n| n == "minRender") { "MinRender" } else { "MinRender-test" })) }
+    #[cfg(not(any(windows, target_os = "macos")))] { None }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect(); let val = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned()); let has = |k: &str| args.iter().any(|a| a == k);
     if args.first().is_some_and(|a| a == "--leash") { let from = args.iter().position(|a| a == "--").map(|i| i + 1).unwrap_or(args.len()); leash::run(&args[from..]) }
-    // (until the port is ruled ready to take the real data folder's place, it runs only where it is told to)
-    let Some(data) = val("--data").map(std::path::PathBuf::from) else { eprintln!("minRender --data <folder> [--minimized | --no-window]"); std::process::exit(2) };
+    // The data folder (row 425). `--data` names it. Without it, the application AS INSTALLED takes 0.5.x's own - so an
+    // upgraded node is the same node - and a bare run of a build that is not installed takes none: it cannot touch a
+    // real node's folder by a slip.
+    let Some(data) = val("--data").map(std::path::PathBuf::from).or_else(installed_data) else { eprintln!("minRender --data <folder> [--minimized | --no-window]   (the installed application needs no --data)"); std::process::exit(2) };
     if let Some(pid) = val("--wait-pid").and_then(|p| p.parse::<u32>().ok()) { let t = std::time::Instant::now(); while alive(pid) && t.elapsed() < std::time::Duration::from_secs(20) { std::thread::sleep(std::time::Duration::from_millis(50)); } }
     let windowed = !has("--no-window"); let minimized = has("--minimized") || windowed && shell::started_at_sign_in();
     // one instance for a data folder: a later launch tells the first how it was started, and leaves

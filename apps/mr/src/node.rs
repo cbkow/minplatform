@@ -66,10 +66,13 @@ pub struct PeerRow { /// benched by the leader after this many failures
     pub suspended: Option<i64>, pub id: String, pub host: String, pub alive: bool, pub leader: bool, pub stopped: bool, pub job: String, pub health_ok: bool }
 /// What the window shows of the farm, as of now. The job list is made off the window's thread every two seconds and
 /// handed over whole; the window never asks the leader or the database for anything itself.
-pub struct View { /// this node is benched by the leader, after this many failures
+pub struct View { /// why there is no farm (row 425)
+    pub no_farm: Option<String>, /// this node is benched by the leader, after this many failures
     pub suspended: Option<i64>, pub me: Value, pub leads: bool, pub peers: Vec<PeerRow>, pub jobs: Arc<Vec<JobRow>>, /// false: the list is the last one the leader gave, and the leader does not answer now
     pub leader_answers: bool }
 pub struct Node {
+    /// why this node has no farm (row 425), and the sync root its settings name
+    pub no_farm: Option<String>, wanted_root: String,
     pub id: String, pub data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, /// another node, or this one's window, asked for the application to start again
     pub restart_asked: AtomicBool, /// the graphics card's name, once found; the nodes the leader has benched: (id, failures); lines for the window's toast
@@ -115,24 +118,38 @@ fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> { let tmp = 
 impl Node {
     /// Reads the data folder and starts the farm at the sync root - making it, with its secret, if it is not there.
     pub fn open(data: &Path) -> Result<Arc<Node>, String> {
-        let cfg: Value = serde_json::from_str(&std::fs::read_to_string(data.join("config.json")).map_err(|e| format!("config.json: {e}"))?).map_err(|e| format!("config.json could not be read as JSON ({e}); it is left as it is"))?;
-        let root = cfg["sync_root"].as_str().unwrap_or(""); if root.is_empty() || !Path::new(root).is_dir() { return Err("the sync root is not set, or is not a folder that is there".into()) }
-        let farm = Path::new(root).join("MinRender-v2"); let (ip, port, hostname) = (advertised_ip(cfg["ip_override"].as_str().unwrap_or(""), root), cfg["http_port"].as_u64().unwrap_or(8420) as u16, host_name());
+        // NO FARM (row 425; 0.5.x's "No Farm"): no settings yet, no sync root, or a sync root that is not there now (a
+        // share not mounted at sign-in). The application does not leave: the node runs ALONE, on the loopback address,
+        // on an empty farm of its own inside the data folder - so the window, its Settings and the tray are all there -
+        // and it says so. It takes no submission and sends no heartbeat while it is so, and it looks for the sync root
+        // every few seconds: when the folder is there, the application starts itself again on the real farm.
+        let _ = std::fs::create_dir_all(data);
+        let (cfg, mut no_farm): (Value, Option<String>) = match std::fs::read_to_string(data.join("config.json")) { Err(_) => (json!({}), Some("The sync root is not set.".to_string())),
+            Ok(t) => match serde_json::from_str(&t) { Ok(v) => (v, None), Err(e) => (json!({}), Some(format!("config.json could not be read ({e}); it is left as it is."))) } };
+        let wanted = cfg["sync_root"].as_str().unwrap_or("").to_string();
+        if no_farm.is_none() { if wanted.is_empty() { no_farm = Some("The sync root is not set.".to_string()); } else if !Path::new(&wanted).is_dir() { no_farm = Some(format!("The sync root is not reachable: {wanted}")); } }
+        let park = data.join("no-farm"); if no_farm.is_some() { std::fs::create_dir_all(&park).map_err(|e| format!("the data folder cannot be written: {e}"))?; }
+        let root_owned = if no_farm.is_some() { park.to_string_lossy().into_owned() } else { wanted.clone() }; let root = root_owned.as_str();
+        let farm = Path::new(root).join("MinRender-v2"); let (ip, port, hostname) = (if no_farm.is_some() { "127.0.0.1".to_string() } else { advertised_ip(cfg["ip_override"].as_str().unwrap_or(""), root) }, cfg["http_port"].as_u64().unwrap_or(8420) as u16, host_name());
         // The node's id (1.1): twelve characters in node_id.txt, made once. A machine that has LOST the file (its data
         // folder emptied, the application put on anew) does not take a new id if the farm's phonebook still has an
         // entry at this machine's own address and port: it comes back as that node (row 401). A new id there leaves the
         // old entry for every node to take for alive - the newcomer answers its polls - and chunks given to it are lost.
         let idf = data.join("node_id.txt"); let mut adopted = false;
         let id = match std::fs::read_to_string(&idf).ok().map(|t| t.lines().next().unwrap_or("").to_string()).filter(|t| t.len() == 12) { Some(id) => id,
+            // (with no farm an id is made for this run and NOT kept: the real farm's phonebook may hold this machine's own, to be taken up again)
+            None if no_farm.is_some() => crate::share::hex(&crate::share::random(6)?),
             None => { let id = match former_self(&farm, &ip, port, &hostname) { Some(id) => { adopted = true; id } None => crate::share::hex(&crate::share::random(6)?) }; std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
         let secret = crate::share::start_farm(&farm, &id, now_ms())?;
         crate::share::log_to(farm.join("nodes").join(&id)); let _ = std::fs::create_dir_all(farm.join("nodes").join(&id));
         if adopted { crate::share::log("WARN", "farm", &format!("this machine had lost its node id; the phonebook has an entry at its address, and it returns as that node ({id})")); }
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
+        if let Some(why) = &no_farm { crate::share::log("WARN", "farm", &format!("NO FARM: {why} The node runs alone until the sync root is there.")); }
+        Ok(Arc::new(Node { udp: if no_farm.is_none() && cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None },
+            no_farm, wanted_root: wanted, id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             job_dirs: Mutex::new(std::collections::BTreeSet::new()), gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
             preview_path: Mutex::new(String::new()), layer_of: Mutex::new(BTreeMap::new()), peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
-            udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
+            submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
     fn endpoint_file(&self) -> PathBuf { self.farm.join("nodes").join(&self.id).join("endpoint.json") }
@@ -383,7 +400,7 @@ impl Node {
     /// The Settings card's Save (row 389): the keys given are laid over the file as it is - what the file holds besides
     /// stays - and the file is written whole, then moved into place. A file that is there and cannot be read is not replaced.
     pub fn save_settings(&self, changes: &Value) -> Result<(), String> {
-        let f = self.data.join("config.json"); let text = std::fs::read_to_string(&f).map_err(|e| format!("config.json: {e}"))?;
+        let f = self.data.join("config.json"); let text = std::fs::read_to_string(&f).unwrap_or_else(|_| "{}".to_string());   // (a first run has no file yet)
         let mut v: Value = serde_json::from_str(&text).map_err(|e| format!("config.json could not be read as JSON ({e}); it is left as it is"))?;
         for (k, x) in changes.as_object().into_iter().flatten() { v[k] = x.clone(); }
         write_atomically(&f, &serde_json::to_string_pretty(&v).unwrap()).map_err(|e| format!("config.json could not be written: {e}"))
@@ -468,6 +485,7 @@ impl Node {
     /// and the reason is logged. Unlike 0.5.x (ruled 2026-11-14, row 389): a submission is checked as the form
     /// checks one; a file the leader could not be told of STAYS and is tried again; no file is submitted twice.
     fn drop_box(self: &Arc<Self>) {
+        if self.no_farm.is_some() { return }   // a submission waits for the real farm
         let dir = self.data.join("submissions"); let Ok(rd) = std::fs::read_dir(&dir) else { return };
         let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json")).collect(); files.sort();
         for f in files {
@@ -514,7 +532,7 @@ impl Node {
         let peers = self.peers.lock().unwrap().iter().map(|(id, p)| { let r = p.record.as_ref(); let s = |k: &str| r.and_then(|r| r[k].as_str()).unwrap_or("").to_string();
             PeerRow { suspended: benched.iter().find(|(n, _)| n == id).map(|x| x.1), id: id.clone(), host: s("hostname"), alive: p.alive, leader: p.leader, stopped: s("node_state") == "stopped", job: if s("render_state") == "rendering" { s("active_job") } else { String::new() }, health_ok: r.is_none_or(|r| r.get("agent_health").is_none_or(|h| h == &json!("ok"))) } }).collect();
         let (jobs, leader_answers) = { let v = self.jobs_view.lock().unwrap(); (v.0.clone(), v.1) };
-        View { suspended: benched.iter().find(|(n, _)| *n == self.id).map(|x| x.1), me: self.record(), leads: self.lead.lock().unwrap().is_some(), peers, jobs, leader_answers }
+        View { no_farm: self.no_farm.clone(), suspended: benched.iter().find(|(n, _)| *n == self.id).map(|x| x.1), me: self.record(), leads: self.lead.lock().unwrap().is_some(), peers, jobs, leader_answers }
     }
     /// The job list for the window, fetched here - never on the window's thread: from this node's own queue when it
     /// leads, else from its leader. A leader that does not answer leaves the last list standing, marked (row 389).
@@ -625,7 +643,7 @@ impl Node {
         let lead = best.1.is_none(); drop(peers);
         // taking over, or giving way (3.4): the database is opened only while this node leads
         let mut l = self.lead.lock().unwrap();
-        if lead && l.is_none() { match Lead::take_over(&self.data, &self.farm, &self.id) { Ok(x) => { *l = Some(x); log("this node leads now"); } Err(e) => log(format!("this node should lead, and its database could not be opened: {e}")) } }
+        if lead && l.is_none() { match Lead::take_over(&if self.no_farm.is_some() { self.data.join("no-farm") } else { self.data.clone() }, &self.farm, &self.id) { Ok(x) => { *l = Some(x); log("this node leads now"); } Err(e) => log(format!("this node should lead, and its database could not be opened: {e}")) } }
         else if !lead && l.is_some() { *l = None; log("another node leads now"); }
     }
 
@@ -747,6 +765,9 @@ impl Node {
         if let Some((s, _)) = &self.udp { self.beat();
             { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { return } std::thread::sleep(Duration::from_millis(100)); } me.beat(); }); }
             if let Ok(s) = s.try_clone() { let me = self.clone(); std::thread::spawn(move || { let mut b = [0u8; 1500]; while !me.stop.load(Ordering::Relaxed) { if let Ok((n, _)) = s.recv_from(&mut b) { if let Ok(v) = serde_json::from_slice::<Value>(&b[..n]) { if v.is_object() { me.heard(&v); } } } } }); } }
+        // with no farm: the sync root is looked for every five seconds; there, the application starts itself again on it
+        if self.no_farm.is_some() && !self.wanted_root.is_empty() { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { for _ in 0..50 { if me.stop.load(Ordering::Relaxed) { return } std::thread::sleep(Duration::from_millis(100)); }
+            if Path::new(&me.wanted_root).is_dir() { crate::share::log("INFO", "farm", "the sync root is there now: the application starts again on the farm"); me.restart_asked.store(true, Ordering::Relaxed); return } }); }
         // the graphics card's name: asked of the system once, off every other thread (macOS takes its time to say)
         { let me = self.clone(); std::thread::spawn(move || { let g = gpu_name(); *me.gpu.lock().unwrap() = g; }); }
         // the window's job list, and whom the leader has benched, every 2 s

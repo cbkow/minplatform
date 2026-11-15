@@ -30,7 +30,7 @@ impl Shell {
     /// What the tray says: its status line, its tooltip, the name of Stop / Resume - set when it changes, not at every turn.
     fn refresh(&mut self) {
         let (job, stopped) = self.node.state();
-        let text = match (&job, stopped) { (Some(j), _) => format!("Rendering {j}"), (None, true) => "Stopped".to_string(), _ => "Idle".to_string() };
+        let text = match (&job, stopped) { (Some(j), _) => format!("Rendering {j}"), (None, true) => "Stopped".to_string(), _ if self.node.no_farm.is_some() => "No Farm".to_string(), _ => "Idle".to_string() };
         if (text.clone(), stopped) == self.shown { return } self.shown = (text.clone(), stopped);
         if let Some(s) = &self.status { s.set_text(&text); } if let Some(s) = &self.stop { s.set_text(if stopped { "Resume Node" } else { "Stop Node" }); }
         // (Windows cuts a tooltip at 127 characters; a job's id has no such bound)
