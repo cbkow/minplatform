@@ -2997,15 +2997,22 @@ dependencies = [
 name = "mr"
 version = "0.6.0"
 dependencies = [
+ "interprocess",
  "libc",
  "min-paths",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "regex",
+ "rfd",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "socket2",
+ "tray-icon",
  "windows",
+ "winit 0.31.0-beta.4",
 ]
 
 [[package]]
