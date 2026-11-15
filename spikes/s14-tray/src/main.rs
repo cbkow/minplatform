@@ -70,7 +70,9 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
         // (the loop is told to end ONCE: on macOS each `exit` wakes the loop again, and asking at every turn keeps it turning)
         if self.left { return }
-        match self.leaving { Some(t) if Instant::now() >= t => { log("shutdown work done; the loop ends"); self.left = true; el.exit(); } Some(t) => el.set_control_flow(ControlFlow::WaitUntil(t)), None => el.set_control_flow(ControlFlow::Wait) }
+        match self.leaving { Some(t) if Instant::now() >= t => { log("shutdown work done; the loop ends"); self.left = true; el.exit();
+            // (on Windows an `exit` asked for here, just before the loop waits, is not seen until something wakes the loop)
+            if let Some((_, p)) = TX.get() { p.wake_up(); } } Some(t) => el.set_control_flow(ControlFlow::WaitUntil(t)), None => el.set_control_flow(ControlFlow::Wait) }
     }
 }
 /// This program starts itself again: a copy that waits for this one to be gone, then is the application.
