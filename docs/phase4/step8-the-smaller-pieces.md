@@ -39,6 +39,23 @@ The port now counts **an answer from another node as no answer**: the old id fai
 three. This differs from 0.5.x only in what the port itself believes; it is the owner's to veto. On a real farm the
 same thing follows a reinstall that empties the data folder.
 
+## The ghost, fixed in three layers (canon row 401, 2026-11-15)
+
+The owner had met this fault before. 0.5.11 has no fix for it: its poll never asks who answered; Farm Cleanup lists
+only peers that are offline, and a ghost looks alive; a "Forget peer" item was added and taken out again the same day
+in April, because it could not tell an entry that was truly old; the procedure left was to delete the node's folder on
+the share by hand.
+
+| Layer | What the port does | Tried |
+|---|---|---|
+| 1. Do not make one | a node that starts with no id file looks in the phonebook for an entry at its own address and port (and of its host name, where the entry gives one - the port now writes `hostname` into its entry, which 0.5.11 ignores) and returns as THAT node | the node killed outright, its id file removed, started again: the same id, two entries in the phonebook as before, one peer in 0.5.11's list |
+| 2. Do not believe one | a poll answered by another node's id is a failed poll (row 400) | the old entry is held dead by the port within three polls |
+| 3. Take it away | an entry whose address has answered as another node for a full minute is removed from the phonebook; its folder and logs stay | an entry of another id put at the port's address: removed 52 s after it was seen, with a line in the log |
+
+What stays: a 0.5.x node goes on holding a ghost for alive for as long as the newcomer answers at its address -
+after layer 3 took the entry away, 0.5.11 still listed it. It lets go at its next start, and the entry no longer
+comes back. Only layer 1 spares 0.5.x nodes altogether, and only when the returning machine runs the port.
+
 ## Not yet
 
 - The cleanup routes and `POST /api/config` (2.5 rows 34, 35, 37, 38): nothing in 0.5.11 calls them; they come with

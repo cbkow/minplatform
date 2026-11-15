@@ -25,7 +25,8 @@ struct Peer { endpoint: String, record: Option<Value>, alive: bool, failed: u32,
     written_ms: i64, same: u8, /// its entry is not looked at again before this
     wait_until: Option<Instant>, /// the last heartbeat heard from it (1.6)
     heard: Option<Instant>, /// the round trip of its polls, smoothed (1.5)
-    rtt_ms: Option<f64> }
+    rtt_ms: Option<f64>, /// since when its polls have been answered by a node of another id (row 401)
+    other_since: Option<Instant> }
 impl Peer { fn udp(&self) -> bool { self.heard.is_some_and(|t| t.elapsed() < Duration::from_secs(15)) } }
 /// A chunk a leader gave this node (2.5 row 7).
 struct Assignment { manifest: Value, start: i64, end: i64, epoch: Option<i64> }
@@ -76,16 +77,20 @@ impl Node {
     /// Reads the data folder and starts the farm at the sync root - making it, with its secret, if it is not there.
     pub fn open(data: &Path) -> Result<Arc<Node>, String> {
         let cfg: Value = serde_json::from_str(&std::fs::read_to_string(data.join("config.json")).map_err(|e| format!("config.json: {e}"))?).map_err(|e| format!("config.json could not be read as JSON ({e}); it is left as it is"))?;
-        // the node's id (1.1): twelve characters in node_id.txt, made once
-        let idf = data.join("node_id.txt");
-        let id = match std::fs::read_to_string(&idf).ok().map(|t| t.lines().next().unwrap_or("").to_string()).filter(|t| t.len() == 12) { Some(id) => id,
-            None => { let id = crate::share::hex(&crate::share::random(6)?); std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
         let root = cfg["sync_root"].as_str().unwrap_or(""); if root.is_empty() || !Path::new(root).is_dir() { return Err("the sync root is not set, or is not a folder that is there".into()) }
-        let farm = Path::new(root).join("MinRender-v2");
+        let farm = Path::new(root).join("MinRender-v2"); let (ip, port, hostname) = (advertised_ip(cfg["ip_override"].as_str().unwrap_or(""), root), cfg["http_port"].as_u64().unwrap_or(8420) as u16, host_name());
+        // The node's id (1.1): twelve characters in node_id.txt, made once. A machine that has LOST the file (its data
+        // folder emptied, the application put on anew) does not take a new id if the farm's phonebook still has an
+        // entry at this machine's own address and port: it comes back as that node (row 401). A new id there leaves the
+        // old entry for every node to take for alive - the newcomer answers its polls - and chunks given to it are lost.
+        let idf = data.join("node_id.txt"); let mut adopted = false;
+        let id = match std::fs::read_to_string(&idf).ok().map(|t| t.lines().next().unwrap_or("").to_string()).filter(|t| t.len() == 12) { Some(id) => id,
+            None => { let id = match former_self(&farm, &ip, port, &hostname) { Some(id) => { adopted = true; id } None => crate::share::hex(&crate::share::random(6)?) }; std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
         let secret = crate::share::start_farm(&farm, &id, now_ms())?;
         crate::share::log_to(farm.join("nodes").join(&id)); let _ = std::fs::create_dir_all(farm.join("nodes").join(&id));
+        if adopted { crate::share::log("WARN", "farm", &format!("this machine had lost its node id; the phonebook has an entry at its address, and it returns as that node ({id})")); }
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or(""), root), tags, hostname: host_name(),
+        Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
             peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
@@ -94,7 +99,7 @@ impl Node {
     fn endpoint_file(&self) -> PathBuf { self.farm.join("nodes").join(&self.id).join("endpoint.json") }
     /// The phonebook entry (1.2): a temporary file, then a rename; every write carries a new time.
     fn write_endpoint(&self) { let f = self.endpoint_file(); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); }
-        let text = serde_json::to_string_pretty(&json!({ "node_id": self.id, "ip": self.ip, "port": self.port, "timestamp_ms": now_ms() })).unwrap();
+        let text = serde_json::to_string_pretty(&json!({ "node_id": self.id, "ip": self.ip, "port": self.port, "timestamp_ms": now_ms(), "hostname": self.hostname })).unwrap();
         match write_atomically(&f, &text) { Ok(()) => *self.wrote_endpoint.lock().unwrap() = Some(Instant::now()), Err(e) => log(format!("the phonebook entry could not be written: {e}")) } }
     /// The record this node gives of itself (2.4).
     fn record(&self) -> Value {
@@ -284,20 +289,27 @@ impl Node {
                     // such read, after waits of 20 and 40 s (every true write carries a new time: 1.2).
                     if p.stamp.is_some() && written == p.written_ms && p.same < 2 { p.same += 1; p.wait_until = Some(Instant::now() + Duration::from_secs(20 * p.same as u64)); continue }
                     if p.endpoint != endpoint { p.endpoint = endpoint; p.failed = 0; } p.stamp = stamp; p.written_ms = written; p.same = 0; p.wait_until = None; }
-                None => { peers.insert(id, Peer { endpoint, record: None, alive: true, failed: 0, last_seen_ms: 0, leader: false, stamp, written_ms: written, same: 0, wait_until: None, heard: None, rtt_ms: None }); } }
+                None => { peers.insert(id, Peer { endpoint, record: None, alive: true, failed: 0, last_seen_ms: 0, leader: false, stamp, written_ms: written, same: 0, wait_until: None, heard: None, rtt_ms: None, other_since: None }); } }
         } }
         // the poll (1.5): no token, a new connection, one peer after the other
         // (a peer that is heard by heartbeat, is known by name, and was polled less than 9 s ago is not polled now)
         let targets: Vec<(String, String, u64)> = self.peers.lock().unwrap().iter().filter(|(_, p)| !(p.udp() && p.record.as_ref().is_some_and(|r| !r["hostname"].as_str().unwrap_or("").is_empty()) && now_ms().saturating_sub(p.last_seen_ms) < 9000))
             .map(|(id, p)| (id.clone(), p.endpoint.clone(), p.rtt_ms.map(|r| (4.0 * r) as u64).unwrap_or(2000).clamp(2000, 8000))).collect();
         for (id, endpoint, wait) in targets {
-            let t = Instant::now(); let got = http::call(&endpoint, "GET", "/api/status", None, None, Duration::from_millis(wait), Duration::from_millis(wait + 1000)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).filter(peer_record_is_sound)
+            let t = Instant::now(); let answer = http::call(&endpoint, "GET", "/api/status", None, None, Duration::from_millis(wait), Duration::from_millis(wait + 1000)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).filter(peer_record_is_sound);
+            let other = answer.as_ref().and_then(|r| r["node_id"].as_str()).is_some_and(|n| n != id);
+            let got = answer
                 // An answer from ANOTHER node is no answer from this one. (A machine whose data folder was emptied comes
                 // back under a new id at the old address, and its old entry stays in the phonebook. 0.5.x takes the
                 // newcomer's answer for the old node's: the old id looks alive, is given chunks, and every report for
                 // them is refused because it comes from the new id. Seen 2026-11-14.)
                 .filter(|r| r["node_id"].as_str().is_none_or(|n| n == id));
             let mut peers = self.peers.lock().unwrap(); let Some(p) = peers.get_mut(&id) else { continue };
+            // An entry whose address has been another node's for a full minute is an old one left behind: it is taken
+            // out of the phonebook (its folder and its logs stay). 0.5.x could not do this safely - it never knew who
+            // had answered - and left it to a hand on the share.
+            if other { let since = *p.other_since.get_or_insert_with(Instant::now); if since.elapsed() >= Duration::from_secs(60) { let f = self.farm.join("nodes").join(&id).join("endpoint.json");
+                if std::fs::remove_file(&f).is_ok() { crate::share::log("WARN", "peer", &format!("the phonebook's entry of node {id} is an old one - its address has answered as another node for a minute - and was removed")); seen.retain(|s| *s != id); } } } else if answer_was_its_own(&got) { p.other_since = None; }
             match got { Some(mut r) => { if let Some(e) = r["endpoint"].as_str() { p.endpoint = e.to_string(); } r["is_local"] = json!(false);
                     // what a heartbeat said most lately stands over the poll's answer for readiness, and for health while the poll says "ok"
                     if p.udp() { if let Some(old) = &p.record { r["ready_for_work"] = old["ready_for_work"].clone(); if r["agent_health"] == json!("ok") { r["agent_health"] = old["agent_health"].clone(); r["alert_reason"] = old["alert_reason"].clone(); } } }
@@ -493,6 +505,17 @@ mod tests {
     #[test] fn a_root_ends_on_a_folder_boundary() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "P:\\jobs-old\\a.blend" }] }); assert_eq!(translate_manifest(m, "macos", &maps())["flags"][0]["value"], json!("P:/jobs-old/a.blend")); }
     #[test] fn the_same_system_and_no_mappings_change_nothing() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "a/b" }] });
         assert_eq!(translate_manifest(m.clone(), "windows", &maps()), m); assert_eq!(translate_manifest(m.clone(), "macos", &[]), m); }
+}
+fn answer_was_its_own(got: &Option<Value>) -> bool { got.is_some() }
+/// The id this machine had before it lost its id file, if the phonebook still knows it: the entry at this address and
+/// port (and of this host name, where the entry gives one) - the latest written, if there are several.
+fn former_self(farm: &Path, ip: &str, port: u16, hostname: &str) -> Option<String> {
+    let mut best: Option<(i64, String)> = None;
+    for d in std::fs::read_dir(farm.join("nodes")).ok()?.flatten() { let id = d.file_name().to_string_lossy().into_owned(); if id.len() != 12 { continue }
+        let Some(v) = std::fs::read_to_string(d.path().join("endpoint.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+        if v["node_id"].as_str() != Some(&id) || v["ip"].as_str() != Some(ip) || v["port"].as_u64() != Some(port as u64) || v["hostname"].as_str().is_some_and(|h| h != hostname) { continue }
+        let at = v["timestamp_ms"].as_i64().unwrap_or(0); if best.as_ref().is_none_or(|(b, _)| at > *b) { best = Some((at, id)); } }
+    best.map(|(_, id)| id)
 }
 /// A staged chunk's files go to the output folder (4.11): every file directly in the staging folder, written over what
 /// is there; when all have gone the staging folder is removed. False: the folder could not be made or a copy failed.
