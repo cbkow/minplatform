@@ -3,7 +3,7 @@
 //!
 //! Built for row 389's scale bar from the start: a list draws only the rows that are in view, whatever its length, and
 //! nothing here asks another node or the database for anything - the window is handed a `View` (node.rs).
-use crate::node::{JobRow, Node, View};
+use crate::node::{ChunkRow, Detail, JobRow, Node, View};
 use kurbo::{Affine, Circle, Rect};
 use min_present::{Output, Presenter};
 use min_theme::tokens as t;
@@ -17,10 +17,19 @@ use winit31::window::Window;
 pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presenter, layer: UiLayer, fonts: Fonts, jobs_bar: ScrollBar, peers_bar: ScrollBar, pointer: (f64, f64), /// the chosen jobs; the one the cursor is on; where a range began
     sel: BTreeSet<String>, pub cursor: Option<String>, anchor: Option<String>, /// the strip's buttons, with what each asks of the chosen jobs
     strip: Vec<(TextButton, &'static str)>, menu: Menu, menu_acts: Vec<&'static str>, /// the question before Cancel and Delete (0.5.x's own; nothing else asks)
-    confirm: Option<(Dialog, &'static str)>, demo: bool, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
+    confirm: Option<(Dialog, &'static str)>, demo: bool, /// the job's detail: the frame grid's and the chunk table's scroll, the chosen chunks, where each lies
+    grid_bar: ScrollBar, chunks_bar: ScrollBar, csel: BTreeSet<i64>, ccursor: Option<i64>, canchor: Option<i64>, grid_rect: Rect, chunks_rect: Rect, /// the keys go to the chunk table (the last click was there), not the job list
+    on_chunks: bool, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
 /// The job list's columns: (header, default width).
 const COLUMNS: [(&str, f64); 6] = [("Pri", 36.0), ("Name", 300.0), ("State", 90.0), ("Progress", 280.0), ("Duration", 80.0), ("Created", 140.0)];
+/// The chunk table's columns.
+const CHUNK_COLUMNS: [(&str, f64); 6] = [("State", 80.0), ("Frames", 120.0), ("Node", 160.0), ("Progress", 120.0), ("Duration", 70.0), ("Retries", 60.0)];
+const CHUNK_ROW: f64 = 24.0; const CELL: f64 = 10.0;
+/// The frame grid's own colours (minRender's): the pit behind it, a frame nobody has, one finished inside a chunk that is not.
+const GRID_PIT: min_theme::Color = min_theme::Color::rgba(0.051, 0.051, 0.051, 1.0); const GRID_FREE: min_theme::Color = min_theme::Color::rgba(0.188, 0.188, 0.188, 1.0); const GRID_RENDERED: min_theme::Color = min_theme::Color::rgba(0.165, 0.510, 0.157, 1.0);
+/// A chunk's colour, the same in the table and in the grid (row 389): given out - the accent; done - green; failed - red; waiting or stopped - grey.
+fn chunk_color(state: &str) -> min_theme::Color { match state { "assigned" => t::ACCENT_VISUAL_COLOR, "completed" => t::POSITIVE_VISUAL_COLOR, "failed" => t::NEGATIVE_VISUAL_COLOR, _ => t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT } }
 const ROW: f64 = 32.0; const HEADER: f64 = 22.0; const PEER_ROW: f64 = 52.0; const TITLE: f64 = 40.0; const STRIP: f64 = 36.0;
 fn duration(ms: i64) -> String { let s = ms / 1000; if s < 60 { format!("{s}s") } else if s < 3600 { format!("{}m {}s", s / 60, s % 60) } else { format!("{}h {}m", s / 3600, s % 3600 / 60) } }
 /// The word and colour a job's state is shown with (a completed job with stopped chunks reads "partial").
@@ -36,10 +45,18 @@ impl Ui {
         let layer = UiLayer::new(&presenter.engine.device, size.width.max(1), size.height.max(1)).ok()?; presenter.engine.set_overlay(Some(layer.view()));
         let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
-        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
-    pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1); if self.peers_rect.contains(p) { self.peers_bar.wheel(dy, now); } else { self.jobs_bar.wheel(dy, now); } }
+    pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
+        if self.peers_rect.contains(p) { self.peers_bar.wheel(dy, now); } else if self.grid_rect.contains(p) { self.grid_bar.wheel(dy, now); } else if self.chunks_rect.contains(p) { self.chunks_bar.wheel(dy, now); } else { self.jobs_bar.wheel(dy, now); } }
+    fn chunk_at(&self, y: f64, d: &Detail) -> Option<usize> { let s = self.window.scale_factor(); let i = ((y - self.chunks_rect.y0 + self.chunks_bar.offset) / (CHUNK_ROW * s)) as usize; (y >= self.chunks_rect.y0 && i < d.chunks.len()).then_some(i) }
+    fn choose_chunk(&mut self, i: usize, d: &Detail, shift: bool, cmd: bool) {
+        let id = d.chunks[i].id;
+        if shift { let a = self.canchor.and_then(|a| d.chunks.iter().position(|c| c.id == a)).unwrap_or(i); self.csel = d.chunks[a.min(i)..=a.max(i)].iter().map(|c| c.id).collect(); }
+        else if cmd { if !self.csel.remove(&id) { self.csel.insert(id); } self.canchor = Some(id); } else { self.csel = BTreeSet::from([id]); self.canchor = Some(id); }
+        self.ccursor = Some(id);
+    }
     /// The chosen jobs that a command applies to (row 389: a command is offered when it applies to at least one).
     fn applies(&self, view: &View, what: &str) -> Vec<String> { view.jobs.iter().filter(|j| self.sel.contains(&j.id) && match what { "pause" => j.state == "active", "resume" => j.state == "paused", _ => true }).map(|j| j.id.clone()).collect() }
     /// A command for the chosen jobs: Cancel and Delete ask first, as they do in 0.5.x; the others act. The choice is
@@ -65,8 +82,20 @@ impl Ui {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.window.scale_factor();
         // what lies over the lists takes the pointer first: the question, then the menu
         if let Some((d, what)) = self.confirm.as_mut() { let what = *what; d.pointer(e, &mut self.fonts); if let (Some(i), _) = d.event(e, now) { self.confirm = None; if i == 1 { self.act(view, what, true); } } return }
-        if self.menu.is_open() { let (chosen, _, _) = self.menu.event(e); if let Some(i) = chosen { let what = self.menu_acts.get(i).copied().unwrap_or(""); self.menu.close(); if !what.is_empty() { self.act(view, what, false); } } else if matches!(e, Event::Down { .. }) && !self.menu.is_open() {} return }
-        if self.jobs_bar.event(e, now).1 || self.peers_bar.event(e, now).1 { return }
+        if self.menu.is_open() { let (chosen, _, _) = self.menu.event(e); if let Some(i) = chosen { let what = self.menu_acts.get(i).copied().unwrap_or(""); self.menu.close();
+            // a chunk command goes to the chunks it applies to: back to the queue - those given out, failed or stopped; stop - those waiting or given out
+            if let Some(c) = what.strip_prefix("chunk:") { if let Some(d) = self.node.detail() { let ids: Vec<i64> = d.chunks.iter().filter(|x| self.csel.contains(&x.id) && if c == "stop" { matches!(x.state.as_str(), "pending" | "assigned") } else { matches!(x.state.as_str(), "assigned" | "failed" | "stopped") }).map(|x| x.id).collect(); if !ids.is_empty() { self.node.chunk_command(ids, if c == "stop" { "stop" } else { "reassign" }); } } }
+            else if !what.is_empty() { self.act(view, what, false); } } return }
+        if self.jobs_bar.event(e, now).1 || self.peers_bar.event(e, now).1 || self.grid_bar.event(e, now).1 || self.chunks_bar.event(e, now).1 { return }
+        if let Event::Down { x, y, button } = *e { if self.chunks_rect.contains(kurbo::Point::new(x, y)) { self.on_chunks = true; if let Some(d) = self.node.detail() { match self.chunk_at(y, &d) {
+            Some(i) => { if button == Button::Secondary { if !self.csel.contains(&d.chunks[i].id) { self.choose_chunk(i, &d, false, false); }
+                    let chosen: Vec<&ChunkRow> = d.chunks.iter().filter(|c| self.csel.contains(&c.id)).collect(); let n = chosen.len(); let all_stopped = chosen.iter().all(|c| c.state == "stopped"); let back = chosen.iter().filter(|c| matches!(c.state.as_str(), "assigned" | "failed" | "stopped")).count(); let stoppable = chosen.iter().filter(|c| matches!(c.state.as_str(), "pending" | "assigned")).count();
+                    let first = if all_stopped { "Requeue (resume stopped chunk)".to_string() } else { "Return to queue".to_string() }; let first = if n > 1 { format!("{first} ({back} chunks)") } else { first };
+                    let items = vec![MenuItem::action(&first, back > 0), MenuItem::action(&if n > 1 { format!("Stop {stoppable} chunk(s)") } else { "Stop chunk".to_string() }, stoppable > 0)];
+                    self.menu_acts = vec!["chunk:reassign", "chunk:stop"]; let size = self.window.surface_size(); self.menu.open_at(items, &mut self.fonts, x, y, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); }
+                else { self.choose_chunk(i, &d, mods.0, mods.1); } }
+            None => self.csel.clear() } } return } }
+        if matches!(e, Event::Down { .. }) && self.jobs_rect.contains(kurbo::Point::new(self.pointer.0, self.pointer.1)) { self.on_chunks = false; }
         let mut asked = None; for (b, what) in self.strip.iter_mut() { if b.event(e, now).0 { asked = Some(*what); } } if let Some(w) = asked { self.act(view, w, false); return }
         match *e {
             Event::Down { x, y, button: Button::Primary } if self.jobs_rect.contains(kurbo::Point::new(x, y)) => match self.row_at(y, view) { Some(i) => self.choose(i, view, mods.0, mods.1), None => self.sel.clear() },
@@ -84,6 +113,12 @@ impl Ui {
     /// where it began); the command key with A chooses all; Escape lets the choice go; Delete asks to delete it.
     pub fn key(&mut self, name: &str, view: &View, mods: (bool, bool)) {
         if self.confirm.is_some() { if name == "Escape" { self.confirm = None; } return } if self.menu.is_open() { if name == "Escape" { self.menu.close(); } return }
+        if self.on_chunks { let Some(d) = self.node.detail() else { return }; let n = d.chunks.len(); if n == 0 { return } let s = self.window.scale_factor(); let page = ((self.chunks_rect.height() / (CHUNK_ROW * s)) as usize).saturating_sub(1).max(1);
+            let at = self.ccursor.and_then(|c| d.chunks.iter().position(|x| x.id == c));
+            let to = match name { "Up" => Some(at.map(|a| a.saturating_sub(1)).unwrap_or(0)), "Down" => Some(at.map(|a| (a + 1).min(n - 1)).unwrap_or(0)), "Home" => Some(0), "End" => Some(n - 1), "PageUp" => Some(at.unwrap_or(0).saturating_sub(page)), "PageDown" => Some((at.unwrap_or(0) + page).min(n - 1)), _ => None };
+            if let Some(i) = to { self.choose_chunk(i, &d, mods.0, false); let (top, h) = (i as f64 * CHUNK_ROW * s, self.chunks_rect.height()); if top < self.chunks_bar.offset { self.chunks_bar.offset = top; } else if top + CHUNK_ROW * s > self.chunks_bar.offset + h { self.chunks_bar.offset = top + CHUNK_ROW * s - h; } }
+            else if name == "a" && mods.1 { self.csel = d.chunks.iter().map(|c| c.id).collect(); } else if name == "Escape" { self.csel.clear(); }
+            return }
         let n = view.jobs.len(); if n == 0 { return } let s = self.window.scale_factor(); let page = ((self.jobs_rect.height() / (ROW * s)) as usize).saturating_sub(1).max(1);
         let at = self.cursor.as_ref().and_then(|c| view.jobs.iter().position(|j| j.id == *c));
         let to = match name { "Up" => Some(at.map(|a| a.saturating_sub(1)).unwrap_or(0)), "Down" => Some(at.map(|a| (a + 1).min(n - 1)).unwrap_or(0)), "Home" => Some(0), "End" => Some(n - 1), "PageUp" => Some(at.unwrap_or(0).saturating_sub(page)), "PageDown" => Some((at.unwrap_or(0) + page).min(n - 1)), _ => None };
@@ -95,7 +130,9 @@ impl Ui {
         let now = Instant::now(); let now_ms = crate::node::now_ms() as i64;
         let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         // (scripted looks: MR_DEMO=select chooses the second to fourth job, so that a picture shows the strip alive)
-        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Ok(demo) = std::env::var("MR_DEMO") { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
+        // (MR_DEMO=open:<job id> puts the cursor on that job, so that a picture shows its detail)
+        if !self.demo { if let Some(id) = std::env::var("MR_DEMO").ok().and_then(|d| d.strip_prefix("open:").map(str::to_string)) { if view.jobs.iter().any(|j| j.id == id) { self.demo = true; self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } } }
+        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:")) { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
             // (MR_DEMO=pause | cancel | ...: the command is given as a click on its button would give it)
             if demo != "select" { let what: &'static str = Box::leak(demo.into_boxed_str()); self.act(view, what, what != "cancel" && what != "delete"); self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); } } }
         let strip_labels: Vec<(f64, &'static str)> = { let fonts = &mut self.fonts; self.strip.iter().map(|(b, w)| (b.measure(fonts, s).0, *w)).collect() }; let mut strip_rects: Vec<(Rect, bool)> = Vec::new(); let sel = self.sel.clone();
@@ -166,6 +203,67 @@ impl Ui {
             text(scene, &if j.created_ms <= 0 { "\u{2014}".to_string() } else { crate::share::local_stamp(j.created_ms) }, cols[5].0, cy, t::DETAIL_SIZE_M, false, false, sub, cols[5].1);
         }
         scene.pop_layer(); self.jobs_bar.paint(scene, now);
+        // -- the job's detail: what the cursor's job is made of
+        self.node.show_detail(self.cursor.clone()); let detail = self.node.detail(); if self.cursor.is_none() { self.csel.clear(); }
+        let area = Rect::new(jx, list.y1 + pad, w - pad, h - pad); let tab_y = area.y0 + 10.0 * s;
+        let tw = text(scene, "Job Detail", area.x0, tab_y, t::BODY_SIZE_S, true, false, ink, 120.0 * s); paint::rect(scene, Rect::new(area.x0, tab_y + 11.0 * s, area.x0 + tw, tab_y + 13.0 * s), t::ACCENT_VISUAL_COLOR); text(scene, "Logs", area.x0 + tw + 18.0 * s, tab_y, t::BODY_SIZE_S, false, false, sub, 80.0 * s);
+        let body = Rect::new(area.x0, area.y0 + 28.0 * s, area.x1, area.y1);
+        self.grid_rect = Rect::ZERO; self.chunks_rect = Rect::ZERO;
+        match (&self.cursor, &detail) {
+            (None, _) => { text(scene, "No job selected", body.x0 + 12.0 * s, body.y0 + 24.0 * s, t::BODY_SIZE_S, false, false, sub, 240.0 * s); }
+            (Some(_), None) => {}
+            (Some(_), Some(d)) if body.height() > 160.0 * s => {
+                // the header: the job, its state, how far it is, what is under way
+                let head = Rect::new(body.x0, body.y0, body.x1, body.y0 + 86.0 * s); paint::rounded(scene, head, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
+                let (total, done, running, failed) = d.chunks.iter().fold((0, 0, 0, 0), |(t0, dn, rn, fl), c| (t0 + (c.state != "stopped") as i64, dn + (c.state == "completed") as i64, rn + (c.state == "assigned") as i64, fl + (c.state == "failed") as i64));
+                let idw = text(scene, &d.id, head.x0 + 12.0 * s, head.y0 + 20.0 * s, t::BODY_SIZE_M, true, true, ink, head.width() - 160.0 * s);
+                let fake = JobRow { id: String::new(), state: d.state.clone(), priority: 0, total, done, stopped: 0, first_ms: 0, last_ms: 0, created_ms: 0 }; let (word, color) = state_of(&fake); let word = word.to_uppercase();
+                let pill = Rect::new(head.x0 + 12.0 * s + idw + 10.0 * s, head.y0 + 11.0 * s, head.x0 + 12.0 * s + idw + 10.0 * s + (word.len() as f64 * 7.5 + 14.0) * s, head.y0 + 29.0 * s); paint::rounded(scene, pill, 3.0 * s, color); text(scene, &word, pill.x0 + 7.0 * s, pill.center().y, t::DETAIL_SIZE_S, true, false, paint::color(t::BACKGROUND_BASE_COLOR), pill.width());
+                let bar = Rect::new(head.x0 + 12.0 * s, head.y0 + 40.0 * s, head.x1 - 110.0 * s, head.y0 + 50.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_LAYER_1_COLOR); if total > 0 && done > 0 { paint::rounded(scene, Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * (done as f64 / total as f64).min(1.0), bar.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
+                text(scene, &format!("{done} / {total}"), bar.x1 + 10.0 * s, bar.center().y, t::DETAIL_SIZE_M, false, true, ink, 96.0 * s);
+                let mut lx = head.x0 + 12.0 * s; let ly = head.y0 + 68.0 * s;
+                if running > 0 { lx += text(scene, &format!("\u{25cf} {running} rendering"), lx, ly, t::DETAIL_SIZE_M, false, false, paint::color(t::INFORMATIVE_VISUAL_COLOR), 160.0 * s) + 14.0 * s; }
+                if failed > 0 { lx += text(scene, &format!("\u{25cf} {failed} failed"), lx, ly, t::DETAIL_SIZE_M, false, false, paint::color(t::NEGATIVE_VISUAL_COLOR), 140.0 * s) + 14.0 * s; }
+                text(scene, &format!("priority {}", d.priority), lx, ly, t::DETAIL_SIZE_M, false, false, sub, 120.0 * s);
+                if d.created_ms > 0 { text(scene, &crate::share::local_stamp(d.created_ms), head.x1 - 130.0 * s, ly, t::DETAIL_SIZE_M, false, false, sub, 120.0 * s); }
+                // the frame grid: one cell a frame, in reading order; only the rows in view are drawn, whatever the job's length
+                let rest = Rect::new(body.x0, head.y1 + pad / 2.0, body.x1, body.y1); let grid_h = (rest.height() * 0.4).clamp(60.0 * s, 220.0 * s);
+                let grid = Rect::new(rest.x0, rest.y0, rest.x1, rest.y0 + grid_h); paint::rounded(scene, grid, t::CORNER_RADIUS_500 as f64 * s, GRID_PIT); let inner = grid.inset(-4.0 * s); self.grid_rect = inner;
+                let slot = CELL * s; let per_row = ((inner.width() - 10.0 * s) / slot).floor().max(1.0) as i64; let frames = (d.last - d.first + 1).max(0); let grid_rows = (frames + per_row - 1) / per_row;
+                self.grid_bar.set(inner, grid_rows as f64 * slot, s);
+                scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &inner);
+                let first_row = (self.grid_bar.offset / slot) as i64; let mut ci = 0usize;
+                for row in first_row..(first_row + (inner.height() / slot) as i64 + 2).min(grid_rows) { for col in 0..per_row { let f = d.first + row * per_row + col; if f > d.last { break }
+                    // the chunk this frame is in: the chunks are in the order of their frames, and so are the cells
+                    while ci < d.chunks.len() && d.chunks[ci].b < f { ci += 1; } if ci >= d.chunks.len() || d.chunks[ci].a > f { if ci > 0 && d.chunks[ci.min(d.chunks.len() - 1)].a > f { ci = d.chunks.partition_point(|c| c.b < f); } }
+                    let c = d.chunks.get(ci).filter(|c| c.a <= f && f <= c.b);
+                    let color = match c { None => Some(GRID_FREE), Some(c) => match c.state.as_str() { "stopped" => None, "completed" => Some(t::POSITIVE_VISUAL_COLOR), st => if c.done.binary_search(&f).is_ok() { Some(GRID_RENDERED) } else { match st { "assigned" => Some(t::ACCENT_VISUAL_COLOR), "failed" => Some(t::NEGATIVE_VISUAL_COLOR), _ => Some(GRID_FREE) } } } };
+                    if let Some(color) = color { let (x, y) = (inner.x0 + col as f64 * slot, inner.y0 + row as f64 * slot - self.grid_bar.offset); paint::rect(scene, Rect::new(x + s, y + s, x + slot - s, y + slot - s), color); } } }
+                scene.pop_layer(); self.grid_bar.paint(scene, now);
+                // the chunk table
+                let table = Rect::new(rest.x0, grid.y1 + pad / 2.0, rest.x1, rest.y1); paint::rounded(scene, table, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
+                let ccols: Vec<(f64, f64)> = { let mut x = table.x0 + 8.0 * s; CHUNK_COLUMNS.iter().map(|(_, cw)| { let r = (x, cw * s); x += cw * s + 8.0 * s; r }).collect() };
+                for ((label, _), (cx, cwid)) in CHUNK_COLUMNS.iter().zip(&ccols) { text(scene, label, *cx, table.y0 + HEADER * s / 2.0, t::DETAIL_SIZE_M, false, false, sub, *cwid); }
+                paint::hline(scene, table.x0, table.x1, table.y0 + HEADER * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
+                let crows = Rect::new(table.x0, table.y0 + HEADER * s + 1.0, table.x1, table.y1); self.chunks_rect = crows; self.chunks_bar.set(crows, d.chunks.len() as f64 * CHUNK_ROW * s, s);
+                let host = |id: &str| -> String { if id.is_empty() { return "\u{2014}".into() } if view.me["node_id"].as_str() == Some(id) { return view.me["hostname"].as_str().unwrap_or(id).to_string() } view.peers.iter().find(|p| p.id == id).map(|p| if p.host.is_empty() { p.id.clone() } else { p.host.clone() }).unwrap_or_else(|| id.to_string()) };
+                scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &crows);
+                let first = (self.chunks_bar.offset / (CHUNK_ROW * s)) as usize;
+                for (i, c) in d.chunks.iter().enumerate().skip(first).take((crows.height() / (CHUNK_ROW * s)) as usize + 2) {
+                    let y = crows.y0 + i as f64 * CHUNK_ROW * s - self.chunks_bar.offset; let cy = y + CHUNK_ROW * s / 2.0;
+                    if self.csel.contains(&c.id) { paint::rect(scene, Rect::new(crows.x0, y, crows.x1, y + CHUNK_ROW * s), t::SELECTION_BACKGROUND_COLOR); }
+                    text(scene, &c.state, ccols[0].0, cy, t::DETAIL_SIZE_M, true, false, paint::color(chunk_color(&c.state)), ccols[0].1);
+                    text(scene, &if c.a == c.b { c.a.to_string() } else { format!("{}-{}", c.a, c.b) }, ccols[1].0, cy, t::DETAIL_SIZE_M, false, true, ink, ccols[1].1);
+                    text(scene, &host(&c.node), ccols[2].0, cy, t::DETAIL_SIZE_M, false, true, if c.node.is_empty() { sub } else { ink }, ccols[2].1);
+                    let n_frames = (c.b - c.a + 1).max(1); let frac = if c.state == "completed" { 1.0 } else { c.done_count as f64 / n_frames as f64 };
+                    let pb = Rect::new(ccols[3].0, cy - 4.0 * s, ccols[3].0 + ccols[3].1 - 6.0 * s, cy + 4.0 * s); paint::rounded(scene, pb, 3.0 * s, t::BACKGROUND_LAYER_1_COLOR); if frac > 0.0 { paint::rounded(scene, Rect::new(pb.x0, pb.y0, pb.x0 + pb.width() * frac.min(1.0), pb.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
+                    text(scene, &if c.assigned_ms > 0 && c.completed_ms > c.assigned_ms { duration(c.completed_ms - c.assigned_ms) } else { "\u{2014}".to_string() }, ccols[4].0, cy, t::DETAIL_SIZE_M, false, true, sub, ccols[4].1);
+                    text(scene, &c.retries.to_string(), ccols[5].0, cy, t::DETAIL_SIZE_M, false, true, if c.retries > 0 { paint::color(t::NOTICE_VISUAL_COLOR) } else { sub }, ccols[5].1);
+                }
+                scene.pop_layer(); self.chunks_bar.paint(scene, now);
+            }
+            _ => {}
+        }
         drop(text);
         // the strip's buttons, then what lies over everything: the menu, the question
         for ((b, _), (r, on)) in self.strip.iter_mut().zip(&strip_rects) { b.rect = *r; b.enabled = *on; b.paint(scene, &mut self.fonts, s, now); }
@@ -179,5 +277,5 @@ impl Ui {
             let bytes: Vec<u8> = (0..(w * h) as usize).flat_map(|i| [oetf(px[i * 4]), oetf(px[i * 4 + 1]), oetf(px[i * 4 + 2])]).collect();
             if let Ok(f) = std::fs::File::create(&path) { let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h); e.set_color(png::ColorType::Rgb); e.set_depth(png::BitDepth::Eight); let _ = e.write_header().and_then(|mut wr| wr.write_image_data(&bytes)); } } } }
     }
-    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) }
+    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) }
 }

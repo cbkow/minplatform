@@ -41,6 +41,11 @@ struct Work { queue: VecDeque<Assignment>, running: Option<Running>, /// from an
 
 /// A job as the window lists it (2.6).
 pub struct JobRow { pub id: String, pub state: String, pub priority: i64, pub total: i64, pub done: i64, pub stopped: i64, pub first_ms: i64, pub last_ms: i64, pub created_ms: i64 }
+/// A chunk as the window shows it. `done` holds the finished frames only while the chunk is not `completed` (the
+/// frame grid needs them then; a completed chunk is all done, and a hundred thousand lists would be kept for nothing).
+pub struct ChunkRow { pub id: i64, pub a: i64, pub b: i64, pub state: String, pub node: String, pub assigned_ms: i64, pub completed_ms: i64, pub retries: i64, pub done: Vec<i64>, pub done_count: i64 }
+/// One job with its chunks, in the order of their first frames.
+pub struct Detail { pub id: String, pub state: String, pub priority: i64, pub created_ms: i64, pub first: i64, pub last: i64, pub chunks: Vec<ChunkRow> }
 /// A peer as the window lists it.
 pub struct PeerRow { pub id: String, pub host: String, pub alive: bool, pub leader: bool, pub stopped: bool, pub job: String, pub health_ok: bool }
 /// What the window shows of the farm, as of now. The job list is made off the window's thread every two seconds and
@@ -53,7 +58,8 @@ pub struct Node {
     pub restart_asked: AtomicBool, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
-    jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
+    jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
+    detail_of: Mutex<Option<String>>, detail_view: Mutex<Option<Arc<Detail>>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
     staging: bool, /// the heartbeat's socket and port, when heartbeats are on (1.6)
     udp: Option<(std::net::UdpSocket, u16)>, /// submission files that were dealt with and could not be moved away
     submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
@@ -102,7 +108,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
@@ -215,6 +221,26 @@ impl Node {
     fn to_leader(self: &Arc<Self>, path: &str, body: &str) -> Option<(u16, Vec<u8>)> {
         if self.lead.lock().unwrap().is_some() { return self.lead_answer("POST", path, body.as_bytes()).map(|r| (r.status, r.body)) }
         let l = self.leader()?; http::call(&l, "POST", path, Some(&self.secret), Some(body), Duration::from_secs(2), Duration::from_secs(5))
+    }
+    /// The job whose chunks the window wants (or none). The detail is fetched on the node's own thread.
+    pub fn show_detail(&self, id: Option<String>) { let mut d = self.detail_of.lock().unwrap(); if *d != id { *d = id; *self.detail_view.lock().unwrap() = None; } }
+    pub fn detail(&self) -> Option<Arc<Detail>> { self.detail_view.lock().unwrap().clone() }
+    /// A job's chunks for the window, fetched here: from this node's database when it leads, else from its leader. A
+    /// fetch that fails leaves the last detail standing (0.5.x blanked the table). A job that is gone clears it.
+    fn refresh_detail(self: &Arc<Self>) {
+        let Some(id) = self.detail_of.lock().unwrap().clone() else { return }; let path = format!("/api/jobs/{id}");
+        let got = if self.lead.lock().unwrap().is_some() { self.lead_answer("GET", &path, b"").map(|r| (r.status, r.body)) } else { self.leader().and_then(|l| http::call(&l, "GET", &path, Some(&self.secret), None, Duration::from_millis(500), Duration::from_secs(10))) };
+        let Some((status, body)) = got else { return };
+        if status == 404 { if self.detail_of.lock().unwrap().as_deref() == Some(id.as_str()) { *self.detail_view.lock().unwrap() = None; } return }
+        let Some(v) = (status == 200).then(|| serde_json::from_slice::<Value>(&body).ok()).flatten() else { return }; let n = |j: &Value, k: &str| j[k].as_i64().unwrap_or(0);
+        let chunks = v["chunks"].as_array().map(|a| a.iter().map(|c| { let state = c["state"].as_str().unwrap_or("").to_string(); let frames: Vec<i64> = c["completed_frames"].as_array().map(|f| f.iter().filter_map(Value::as_i64).collect()).unwrap_or_default();
+            ChunkRow { id: n(c, "id"), a: n(c, "frame_start"), b: n(c, "frame_end"), node: c["assigned_to"].as_str().unwrap_or("").to_string(), assigned_ms: n(c, "assigned_at_ms"), completed_ms: n(c, "completed_at_ms"), retries: n(c, "retry_count"), done_count: frames.len() as i64, done: if state == "completed" { Vec::new() } else { frames }, state } }).collect()).unwrap_or_default();
+        let d = Detail { id: id.clone(), state: v["current_state"].as_str().unwrap_or("").to_string(), priority: n(&v, "priority"), created_ms: n(&v, "submitted_at_ms"), first: n(&v["manifest"], "frame_start"), last: n(&v["manifest"], "frame_end"), chunks };
+        if self.detail_of.lock().unwrap().as_deref() == Some(id.as_str()) { *self.detail_view.lock().unwrap() = Some(Arc::new(d)); }
+    }
+    /// What the window asks of chunks: "reassign" (back to the queue) or "stop" - said to the leader off the window's thread.
+    pub fn chunk_command(self: &Arc<Self>, ids: Vec<i64>, what: &'static str) {
+        let me = self.clone(); std::thread::spawn(move || { for id in ids { let body = json!({ "chunk_id": id }).to_string(); if me.to_leader(&format!("/api/chunks/{what}"), &body).is_none_or(|(s, _)| s != 200) { crate::share::log("WARN", "job", &format!("{what} of chunk {id}: the leader did not take it")); } } me.refresh_detail(); me.refresh_jobs_view(); });
     }
     /// What the window asks of the jobs it has chosen (the spec's 1.10): pause, resume, cancel, archive, requeue,
     /// retry-failed, delete - each said to the leader, on a thread of its own, never on the window's. As in 0.5.x a
@@ -495,6 +521,9 @@ impl Node {
             if let Ok(s) = s.try_clone() { let me = self.clone(); std::thread::spawn(move || { let mut b = [0u8; 1500]; while !me.stop.load(Ordering::Relaxed) { if let Ok((n, _)) = s.recv_from(&mut b) { if let Ok(v) = serde_json::from_slice::<Value>(&b[..n]) { if v.is_object() { me.heard(&v); } } } } }); } }
         // the window's job list, every 2 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.refresh_jobs_view(); for _ in 0..20 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
+        // the window's job detail: at once when another job is asked for, then every 3 s
+        { let me = self.clone(); std::thread::spawn(move || { let (mut last, mut at) = (None::<String>, Instant::now()); while !me.stop.load(Ordering::Relaxed) { let want = me.detail_of.lock().unwrap().clone();
+            if want.is_some() && (want != last || at.elapsed() >= Duration::from_secs(3)) { me.refresh_detail(); at = Instant::now(); } last = want; std::thread::sleep(Duration::from_millis(100)); } }); }
         // the plug-ins' drop box, every 3 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.drop_box(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)
