@@ -17,11 +17,13 @@ port tiff 4.7.2
 port yaml-cpp 0.9.0#1
 port zlib 1.3.2#3
 port zstd 1.5.7
+file Imath-*.dll
 file OpenEXRCore-*.dll
 file concrt*.dll
 file deflate.dll
 file dxcompiler.dll
 file jpeg62.dll
+file libImath*.dylib
 file libOpenEXRCore*.dylib
 file liblzma.dll
 file minNotes
