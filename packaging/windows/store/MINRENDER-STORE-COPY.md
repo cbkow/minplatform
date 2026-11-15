@@ -55,6 +55,16 @@ Expected behavior: closing the window hides the app to the tray icon (quit via t
 Uninstall removes the app, startup task and firewall rules. %USERPROFILE%\minRender is kept so a reinstall keeps farm settings; removal is documented at https://minrender.com/install/#uninstall.
 ```
 
+## Screenshots (1920 x 1080, taken on Windows from a demo farm with made-up machine and job names)
+
+1. `1-window.png` - The farm at work: jobs, frame grid, chunks and the latest frame
+2. `2-layers.png` - EXR layers in the frame preview
+3. `3-new-job.png` - Submitting a job from a template
+4. `4-edit-job.png` - Editing a job that is already running
+5. `5-logs.png` - Each chunk's render output, per node
+6. `6-settings.png` - One card for a node's settings, with path mappings for mixed Windows / macOS farms
+7. `7-farm-cleanup.png` - Farm Cleanup
+
 ## Submission routine (0.5.x's, kept)
 
 1. Regenerate the notices on the Mac if `Cargo.lock`, the version or `components.json` changed, and commit.
