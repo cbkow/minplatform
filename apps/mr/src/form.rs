@@ -17,7 +17,7 @@ pub enum Kind { New, Edit, Resubmit }
 pub struct Form {
     kind: Kind, /// the job edited, or the one a chunk is taken from; its manifest in this system's paths; the template's line and whether it is gone
     job: String, manifest: Value, template_line: (String, bool), /// Start, End, Chunk as the card opened (an edit that changes them can only start over)
-    range0: [String; 3], timeout0: String, apply: [TextButton; 3],
+    range0: [String; 3], timeout0: String, apply: [TextButton; 3], mappings: Vec<min_paths::map::Mapping>,
     templates: Vec<Value>, chosen: Option<usize>, template_rects: Vec<Rect>, name: TextField, /// Start, End, Chunk, Priority
     nums: Vec<TextField>, flags: Vec<FlagRow>, focus: usize, cancel: TextButton, submit: TextButton, errors: Vec<String>, busy: bool, card: Rect,
     /// the answer of a submission under way: the new job's id, or why not
@@ -31,7 +31,7 @@ fn field(text: &str, placeholder: &str, fonts: &mut Fonts) -> TextField { let mu
 impl Form {
     pub fn open(node: &Node, fonts: &mut Fonts) -> Form {
         let templates = crate::submit::form_templates(node.farm());
-        let mut f = Form { kind: Kind::New, job: String::new(), manifest: Value::Null, template_line: (String::new(), false), range0: Default::default(), timeout0: String::new(), apply: Form::apply_buttons(), templates, chosen: None, template_rects: Vec::new(), name: field("", "e.g. shot_010_v003", fonts), nums: vec![field("1", "", fonts), field("250", "", fonts), field("1", "", fonts), field("50", "", fonts)], flags: Vec::new(), focus: 0,
+        let mut f = Form { kind: Kind::New, job: String::new(), manifest: Value::Null, template_line: (String::new(), false), range0: Default::default(), timeout0: String::new(), apply: Form::apply_buttons(), mappings: node.mappings().to_vec(), templates, chosen: None, template_rects: Vec::new(), name: field("", "e.g. shot_010_v003", fonts), nums: vec![field("1", "", fonts), field("250", "", fonts), field("1", "", fonts), field("50", "", fonts)], flags: Vec::new(), focus: 0,
             cancel: TextButton::new("Cancel", Variant::Secondary), submit: TextButton::new("Submit", Variant::Primary), errors: Vec::new(), busy: false, card: Rect::ZERO, result: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
         // (one template: it is the one - 0.5.x made the operator pick it from a list of one)
         if f.templates.len() == 1 { f.choose(0, fonts); } f.set_focus(0); f
@@ -56,7 +56,7 @@ impl Form {
         let mut nums = vec![field(&range0[0], "", fonts), field(&range0[1], "", fonts), field(&range0[2], "", fonts), field(&priority.to_string(), "", fonts)];
         if kind == Kind::Edit { nums.push(field(&n("max_retries", 3).to_string(), "", fonts)); nums.push(field(&timeout0, "", fonts)); }
         let name = if kind == Kind::Resubmit { format!("{job}_f{a}-{b}") } else { job.clone() };
-        let mut f = Form { kind, job, manifest, template_line, range0, timeout0, apply: Form::apply_buttons(), templates: Vec::new(), chosen: None, template_rects: Vec::new(), name: field(&name, "e.g. shot_010_v003", fonts), nums, flags, focus: 0,
+        let mut f = Form { kind, job, manifest, template_line, range0, timeout0, apply: Form::apply_buttons(), mappings: node.mappings().to_vec(), templates: Vec::new(), chosen: None, template_rects: Vec::new(), name: field(&name, "e.g. shot_010_v003", fonts), nums, flags, focus: 0,
             cancel: TextButton::new("Cancel", Variant::Secondary), submit: TextButton::new("Submit as new job", Variant::Primary), errors: Vec::new(), busy: false, card: Rect::ZERO, result: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
         f.set_focus(0); f
     }
@@ -147,7 +147,9 @@ impl Form {
         let c = paint::color; let pad = t::DIALOG_PADDING as f64 * s; let (ink, sub) = (c(t::NEUTRAL_CONTENT_COLOR_DEFAULT), c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         let row = 38.0 * s; let fh = 30.0 * s; let help_rows = self.flags.iter().filter(|f| !f.help.is_empty()).count() as f64;
         let edit = self.kind == Kind::Edit; let changed = self.range_changed();
-        let body_h = 30.0 * s + (self.templates.len().max(1) as f64) * 30.0 * s + 14.0 * s + row + row + 26.0 * s + if edit { row + 26.0 * s } else { 0.0 } + if changed { 24.0 * s } else { 0.0 } + if self.flags.is_empty() { 0.0 } else { 26.0 * s + self.flags.len() as f64 * row + help_rows * 18.0 * s } + self.errors.len() as f64 * 20.0 * s + if self.errors.is_empty() { 0.0 } else { 20.0 * s };
+        // (row 418) a path under no mapping gets a line under its field: it is submitted as it is, and only some machines have it
+        let warns: Vec<bool> = self.flags.iter().map(|f| f.editable && crate::submit::outside(f.field.text().trim(), &self.mappings)).collect(); let warn_rows = warns.iter().filter(|w| **w).count() as f64;
+        let body_h = 30.0 * s + (self.templates.len().max(1) as f64) * 30.0 * s + 14.0 * s + row + row + 26.0 * s + if edit { row + 26.0 * s } else { 0.0 } + if changed { 24.0 * s } else { 0.0 } + if self.flags.is_empty() { 0.0 } else { 26.0 * s + self.flags.len() as f64 * row + (help_rows + warn_rows) * 18.0 * s } + self.errors.len() as f64 * 20.0 * s + if self.errors.is_empty() { 0.0 } else { 20.0 * s };
         let (w, h) = ((640.0 * s).min(view.width() - 48.0 * s), (pad * 2.0 + 36.0 * s + body_h + 56.0 * s).min(view.height() - 48.0 * s));
         let (x0, y0) = (view.x0 + (view.width() - w) / 2.0, view.y0 + (view.height() - h) / 2.0); self.card = Rect::new(x0, y0, x0 + w, y0 + h);
         paint::rect(scene, view, t::DIALOG_SCRIM_COLOR); let rad = t::DIALOG_CORNER_RADIUS as f64 * s;
@@ -173,12 +175,13 @@ impl Form {
         if edit { for (i, label) in ["Max retries", "Timeout (s, 0 = none)"].iter().enumerate() { let x = fx + i as f64 * 2.0 * (nw + 12.0 * s); let fw = 2.0 * nw + 12.0 * s; line(scene, fonts, label, x, y + 8.0 * s, t::DETAIL_SIZE_S, false, sub, fw); self.nums[4 + i].layout(fonts, Rect::new(x, y + 18.0 * s, x + fw, y + 18.0 * s + fh), s); self.nums[4 + i].paint(scene, fonts, s); }
             line(scene, fonts, "Job settings", lx, y + 18.0 * s + fh / 2.0, t::DETAIL_SIZE_M, false, ink, 140.0 * s); y += row + 26.0 * s; }
         if !self.flags.is_empty() { line(scene, fonts, "Flags", lx, y + 10.0 * s, t::DETAIL_SIZE_M, true, sub, 140.0 * s); y += 26.0 * s; }
-        for r in self.flags.iter_mut() {
+        for (k, r) in self.flags.iter_mut().enumerate() {
             line(scene, fonts, &r.label, lx, y + fh / 2.0, t::DETAIL_SIZE_M, false, if r.required { c(t::NOTICE_VISUAL_COLOR) } else { ink }, 140.0 * s);
             let bw = if r.file { r.browse.measure(fonts, s).0 + 8.0 * s } else { 0.0 };
             if r.editable { r.field.layout(fonts, Rect::new(fx, y, x1 - bw, y + fh), s); r.field.paint(scene, fonts, s); } else { line(scene, fonts, r.field.text(), fx, y + fh / 2.0, t::BODY_SIZE_S, false, sub, x1 - fx); }
             if r.file { r.browse.rect = Rect::new(x1 - bw + 8.0 * s, y + 3.0 * s, x1, y + fh - 3.0 * s); r.browse.paint(scene, fonts, s, now); }
-            y += row; if !r.help.is_empty() { line(scene, fonts, &r.help, fx, y - 4.0 * s, t::DETAIL_SIZE_S, false, sub, x1 - fx); y += 18.0 * s; }
+            y += row; if warns[k] { line(scene, fonts, crate::submit::OUTSIDE, fx, y - 4.0 * s, t::DETAIL_SIZE_S, false, c(t::NOTICE_VISUAL_COLOR), x1 - fx); y += 18.0 * s; }
+            if !r.help.is_empty() { line(scene, fonts, &r.help, fx, y - 4.0 * s, t::DETAIL_SIZE_S, false, sub, x1 - fx); y += 18.0 * s; }
         }
         // every reason a submission was refused, just over the buttons (0.5.x showed the first alone, at the foot of the scroll)
         for e in &self.errors { line(scene, fonts, e, lx, y + 10.0 * s, t::DETAIL_SIZE_M, false, c(t::NEGATIVE_VISUAL_COLOR), w - 2.0 * pad); y += 20.0 * s; }

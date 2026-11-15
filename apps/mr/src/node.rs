@@ -368,6 +368,7 @@ impl Node {
     pub fn secret_state(&self) -> (String, usize) { let mine = fingerprint(&self.secret); let other = self.peers.lock().unwrap().values().filter(|p| p.alive && p.record.as_ref().and_then(|r| r["secret_fingerprint"].as_str()).is_some_and(|f| !f.is_empty() && f != mine)).count(); (mine, other) }
     /// The farm's folder on the share (the form reads the templates there).
     pub fn farm(&self) -> &Path { &self.farm }
+    pub fn mappings(&self) -> &[min_paths::map::Mapping] { &self.mappings }
     /// A job from the New Job form (8.1): checked, given its id, baked, put in the form manifests travel in, handed to
     /// the leader - on a thread of its own. `done` gets the new job's id, or every reason it was not submitted.
     pub fn submit_form(self: &Arc<Self>, template: Value, values: Vec<String>, name: String, a: i64, b: i64, chunk: i64, priority: i64, done: Arc<Mutex<Option<Result<String, Vec<String>>>>>) {
@@ -460,6 +461,8 @@ impl Node {
             if let Some(why) = crate::submit::refusal(&t, &values, &exe, a, b, chunk) { done(Some(why)); continue }
             let Some(id) = crate::submit::slug(job_name, &self.farm) else { done(Some("its name gives no id".into())); continue };
             let mut m = crate::submit::bake(&t, &values, &exe, OS, &id, a, b, chunk, &self.id, now_ms());
+            // (row 418) a path under no mapping is submitted as it is, and said: in the log, and by the window
+            for v in values.iter().filter(|v| crate::submit::outside(v, &self.mappings)) { log(format!("{id}: a path outside every path mapping - only machines that have this exact path can render it: {v}")); self.notes.lock().unwrap().push(format!("{id}: {}", crate::submit::OUTSIDE)); }
             if cfg!(target_os = "macos") { m = crate::submit::canonical(m, &self.mappings); }
             match self.to_leader("/api/jobs", &json!({ "manifest": m, "priority": int("priority", 50) }).to_string()) {
                 Some((200, _)) => { log(format!("submitted {id}")); done(None) }

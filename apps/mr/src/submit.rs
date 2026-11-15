@@ -75,13 +75,39 @@ pub fn bake(template: &Value, values: &[String], exe: &str, os: &str, id: &str, 
         "process": { "working_dir": template["process"].get("working_dir").cloned().unwrap_or(Value::Null) }, "environment": template.get("environment").cloned().unwrap_or(json!({})), "tags_required": template.get("tags_required").cloned().unwrap_or(json!([])) })
 }
 fn progress(p: &Value) -> Value { json!({ "patterns": p.get("patterns").cloned().unwrap_or(json!([])), "error_patterns": p.get("error_patterns").cloned().unwrap_or(json!([])), "completion_pattern": p.get("completion_pattern").cloned().unwrap_or(Value::Null) }) }
+/// A full path of this system's that lies under none of the farm's path mappings (and there are mappings): only a
+/// machine that has this exact path can use it. (Blender's "//" paths, relative to the scene, are not full paths.)
+pub fn outside(value: &str, mappings: &[Mapping]) -> bool {
+    let b = value.as_bytes(); let full = if cfg!(windows) { (b.len() > 2 && b[1] == b':') || value.starts_with("\\\\") } else { value.starts_with('/') && !value.starts_with("//") };
+    full && mappings.iter().any(|m| m.enabled) && !matches!(min_paths::map::to_ref(value, min_paths::Os::current(), mappings), min_paths::map::Ref::Vol { .. })
+}
+pub const OUTSIDE: &str = "Outside every path mapping \u{2014} only machines that have this exact path can render it.";
 /// The folder a path is in, as the system this runs on reads paths.
 pub fn parent(p: &str) -> String { let cut = if cfg!(windows) { p.rfind(['/', '\\']) } else { p.rfind('/') }; match cut { Some(0) => p[..1].to_string(), Some(i) => p[..i].to_string(), None => String::new() } }
 /// A manifest made on macOS is put in the form manifests travel in (7.6): every flag value that is not empty, and the
 /// output folder, from macOS to Windows through this node's mappings; it then says it was submitted on Windows.
 pub fn canonical(mut m: Value, mappings: &[Mapping]) -> Value {
     use min_paths::{map::translate, Os};
-    if let Some(flags) = m["flags"].as_array_mut() { for f in flags { if let Some(v) = f["value"].as_str().filter(|v| !v.is_empty()) { f["value"] = json!(translate(Os::Mac, Os::Win, v, mappings)); } } }
-    if let Some(d) = m["output_dir"].as_str().filter(|d| !d.is_empty()) { m["output_dir"] = json!(translate(Os::Mac, Os::Win, d, mappings)); }
+    // (row 418) only what lies under a mapping is translated: a path under none is left exactly as given - turned
+    // "to Windows" it came out with its slashes flipped, a path no machine has, and a Mac that did have it wrote elsewhere
+    let mapped = |v: &str| matches!(min_paths::map::to_ref(v, Os::Mac, mappings), min_paths::map::Ref::Vol { .. });
+    if let Some(flags) = m["flags"].as_array_mut() { for f in flags { if let Some(v) = f["value"].as_str().filter(|v| !v.is_empty() && mapped(v)) { f["value"] = json!(translate(Os::Mac, Os::Win, v, mappings)); } } }
+    if let Some(d) = m["output_dir"].as_str().filter(|d| !d.is_empty() && mapped(d)) { m["output_dir"] = json!(translate(Os::Mac, Os::Win, d, mappings)); }
     m["submitted_os"] = json!("windows"); m
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    fn table() -> Vec<Mapping> { vec![Mapping { id: String::new(), label: "jobs".into(), win: "Z:\\jobs".into(), mac: "/Volumes/jobs".into(), lin: String::new(), enabled: true }] }
+    /// Row 418: what lies under a mapping goes to Windows form; a path under none, and a value that is no path, stay as given.
+    #[test] fn canonical_leaves_what_no_mapping_holds() {
+        let m = json!({ "flags": [{ "flag": "", "value": "/Volumes/jobs/a/s.blend" }, { "flag": "", "value": "/Users/me/local/s_####" }, { "flag": "-F", "value": "OPEN_EXR" }, { "flag": "-b", "value": null }], "output_dir": "/Users/me/local", "submitted_os": "macos" });
+        let c = canonical(m, &table());
+        assert_eq!(c["flags"][0]["value"], "Z:\\jobs\\a\\s.blend"); assert_eq!(c["flags"][1]["value"], "/Users/me/local/s_####"); assert_eq!(c["flags"][2]["value"], "OPEN_EXR"); assert!(c["flags"][3]["value"].is_null());
+        assert_eq!(c["output_dir"], "/Users/me/local"); assert_eq!(c["submitted_os"], "windows");
+    }
+    #[cfg(not(windows))] #[test] fn outside_is_a_full_path_under_no_mapping() {
+        assert!(outside("/Users/me/x", &table())); assert!(!outside("/Volumes/jobs/x", &table())); assert!(!outside("//relative/to/scene", &table())); assert!(!outside("OPEN_EXR", &table())); assert!(!outside("/Users/me/x", &[]));
+    }
 }
