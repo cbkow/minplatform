@@ -62,6 +62,9 @@ impl Form {
     }
     /// (scripted checks) An edit sets the priority to 77 and the retries to 5 and applies to the next chunks; the other card is sent as it stands.
     pub fn demo_job(&mut self, fonts: &mut Fonts, node: &Arc<Node>) { if self.kind == Kind::Edit { self.nums[3].set_text_end("77", fonts); self.nums[4].set_text_end("5", fonts); } self.send(node); }
+    pub fn kind(&self) -> Kind { self.kind }
+    /// The leader did not answer and the edit was left on the share for it: the card's work is done.
+    pub fn queued(&self) -> Option<&str> { self.errors.first().map(String::as_str).filter(|e| e.contains("edit queued")) }
     /// Whether Start, End or Chunk were changed in an edit: then only "Start over" can apply it.
     fn range_changed(&self) -> bool { self.kind == Kind::Edit && (0..3).any(|i| self.nums[i].text().trim() != self.range0[i]) }
     /// The job's manifest with what the card holds laid over it, or why not.
