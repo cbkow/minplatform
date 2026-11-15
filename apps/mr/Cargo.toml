@@ -45,4 +45,4 @@ objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", 
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_Security_Cryptography", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Storage_Packaging_Appx", "Win32_System_Recovery", "ApplicationModel", "ApplicationModel_Activation"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_Security_Cryptography", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Storage_Packaging_Appx", "Win32_System_Recovery", "ApplicationModel", "ApplicationModel_Activation"] }

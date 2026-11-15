@@ -63,6 +63,10 @@ impl Form {
     /// (scripted checks) An edit sets the priority to 77 and the retries to 5 and applies to the next chunks; the other card is sent as it stands.
     pub fn demo_job(&mut self, fonts: &mut Fonts, node: &Arc<Node>) { if self.kind == Kind::Edit { self.nums[3].set_text_end("77", fonts); self.nums[4].set_text_end("5", fonts); } self.send(node); }
     pub fn kind(&self) -> Kind { self.kind }
+    /// What the edit's three buttons say of themselves when the pointer rests on one (0.5.x's words).
+    pub fn tip(&self, p: kurbo::Point) -> Option<(u64, Rect, String)> { if self.kind != Kind::Edit { return None }
+        let said = ["In-flight chunks finish with the old settings; every chunk dispatched from now on uses the new ones.", "Kills in-flight renders and requeues them with the new settings. Completed chunks keep their output.", "Discards ALL progress \u{2014} every chunk, including completed frames, re-renders with the new settings."];
+        self.apply.iter().enumerate().find(|(_, b)| b.rect.contains(p)).map(|(i, b)| (10 + i as u64, b.rect, said[i].to_string())) }
     /// The leader did not answer and the edit was left on the share for it: the card's work is done.
     pub fn queued(&self) -> Option<&str> { self.errors.first().map(String::as_str).filter(|e| e.contains("edit queued")) }
     /// Whether Start, End or Chunk were changed in an edit: then only "Start over" can apply it.
