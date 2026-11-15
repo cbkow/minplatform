@@ -39,12 +39,21 @@ struct Running { job: String, start: i64, end: i64, cut: Option<Cut>, /// closin
 struct Work { queue: VecDeque<Assignment>, running: Option<Running>, /// from an accepted dispatch until the node is idle again
     busy: bool }
 
+/// A job as the window lists it (2.6).
+pub struct JobRow { pub id: String, pub state: String, pub priority: i64, pub total: i64, pub done: i64, pub stopped: i64, pub first_ms: i64, pub last_ms: i64, pub created_ms: i64 }
+/// A peer as the window lists it.
+pub struct PeerRow { pub id: String, pub host: String, pub alive: bool, pub leader: bool, pub stopped: bool, pub job: String, pub health_ok: bool }
+/// What the window shows of the farm, as of now. The job list is made off the window's thread every two seconds and
+/// handed over whole; the window never asks the leader or the database for anything itself.
+pub struct View { pub me: Value, pub leads: bool, pub peers: Vec<PeerRow>, pub jobs: Arc<Vec<JobRow>>, /// false: the list is the last one the leader gave, and the leader does not answer now
+    pub leader_answers: bool }
 pub struct Node {
     pub id: String, pub data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, /// another node, or this one's window, asked for the application to start again
     pub restart_asked: AtomicBool, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
-    lead: Mutex<Option<Lead>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
+    lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
+    jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
     staging: bool, /// the heartbeat's socket and port, when heartbeats are on (1.6)
     udp: Option<(std::net::UdpSocket, u16)>, /// submission files that were dealt with and could not be moved away
     submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
@@ -93,7 +102,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
@@ -251,6 +260,23 @@ impl Node {
         self.effects(fx); self.commands();
     }
     /// The node is stopped or started (4.12): kept in the config; a render under way is ended and reported as failed.
+    /// What the window shows (a copy; nothing here waits on another node).
+    pub fn view(&self) -> View {
+        let peers = self.peers.lock().unwrap().iter().map(|(id, p)| { let r = p.record.as_ref(); let s = |k: &str| r.and_then(|r| r[k].as_str()).unwrap_or("").to_string();
+            PeerRow { id: id.clone(), host: s("hostname"), alive: p.alive, leader: p.leader, stopped: s("node_state") == "stopped", job: if s("render_state") == "rendering" { s("active_job") } else { String::new() }, health_ok: r.is_none_or(|r| r.get("agent_health").is_none_or(|h| h == &json!("ok"))) } }).collect();
+        let (jobs, leader_answers) = { let v = self.jobs_view.lock().unwrap(); (v.0.clone(), v.1) };
+        View { me: self.record(), leads: self.lead.lock().unwrap().is_some(), peers, jobs, leader_answers }
+    }
+    /// The job list for the window, fetched here - never on the window's thread: from this node's own queue when it
+    /// leads, else from its leader. A leader that does not answer leaves the last list standing, marked (row 389).
+    fn refresh_jobs_view(self: &Arc<Self>) {
+        // (with no leader known yet - the first seconds after a start - there is nobody to be unreachable)
+        if self.lead.lock().unwrap().is_none() && self.leader().is_none() { return }
+        let body = if self.lead.lock().unwrap().is_some() { self.lead_answer("GET", "/api/jobs", b"").map(|r| r.body) } else { self.leader().and_then(|l| http::call(&l, "GET", "/api/jobs", Some(&self.secret), None, Duration::from_millis(500), Duration::from_secs(1))).filter(|(s, _)| *s == 200).map(|(_, b)| b) };
+        let rows = body.and_then(|b| if b.is_empty() { Some(Vec::new()) } else { serde_json::from_slice::<Vec<Value>>(&b).ok().map(|a| a.iter().map(|j| { let n = |k: &str| j[k].as_i64().unwrap_or(0);
+            JobRow { id: j["job_id"].as_str().unwrap_or("").to_string(), state: j["current_state"].as_str().unwrap_or("").to_string(), priority: n("priority"), total: n("total_chunks"), done: n("completed_chunks"), stopped: n("stopped_chunks"), first_ms: n("first_assigned_ms"), last_ms: n("last_completed_ms"), created_ms: n("submitted_at_ms") } }).collect()) });
+        let mut v = self.jobs_view.lock().unwrap(); match rows { Some(r) => *v = (Arc::new(r), true), None => v.1 = false }
+    }
     /// What the tray and the window say of this node: (rendering which job, stopped).
     pub fn state(&self) -> (Option<String>, bool) { (self.work.lock().unwrap().running.as_ref().map(|r| r.job.clone()), self.stopped.load(Ordering::Relaxed)) }
     pub fn set_stopped(&self, on: bool) {
@@ -454,6 +480,8 @@ impl Node {
         if let Some((s, _)) = &self.udp { self.beat();
             { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { return } std::thread::sleep(Duration::from_millis(100)); } me.beat(); }); }
             if let Ok(s) = s.try_clone() { let me = self.clone(); std::thread::spawn(move || { let mut b = [0u8; 1500]; while !me.stop.load(Ordering::Relaxed) { if let Ok((n, _)) = s.recv_from(&mut b) { if let Ok(v) = serde_json::from_slice::<Value>(&b[..n]) { if v.is_object() { me.heard(&v); } } } } }); } }
+        // the window's job list, every 2 s
+        { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.refresh_jobs_view(); for _ in 0..20 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // the plug-ins' drop box, every 3 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.drop_box(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)

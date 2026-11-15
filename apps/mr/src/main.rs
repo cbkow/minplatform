@@ -12,6 +12,7 @@ mod node;
 mod share;
 mod shell;
 mod submit;
+mod ui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 

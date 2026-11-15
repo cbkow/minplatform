@@ -2998,11 +2998,18 @@ name = "mr"
 version = "0.6.0"
 dependencies = [
  "interprocess",
+ "kurbo 0.13.1",
  "libc",
  "min-paths",
+ "min-present",
+ "min-theme",
+ "min-ui",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "peniko",
+ "png 0.17.16",
+ "raw-window-handle",
  "regex",
  "rusqlite",
  "serde",
@@ -3010,6 +3017,8 @@ dependencies = [
  "sha2",
  "socket2",
  "tray-icon",
+ "vello",
+ "wgpu",
  "windows",
  "winit 0.31.0-beta.4",
 ]

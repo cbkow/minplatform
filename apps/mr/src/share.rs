@@ -54,6 +54,15 @@ fn local(days: i64) -> (i32, u32, u32, u32, u32, u32, u32) {
         let z = era * 146097 + doe + days; let era = z.div_euclid(146097); let doe = z - era * 146097; let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); let mp = (5 * doy + 2) / 153; let d = doy - (153 * mp + 2) / 5 + 1; let m = if mp < 10 { mp + 3 } else { mp - 9 }; let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
         return (y as i32, m as u32, d as u32, s.wHour as u32, s.wMinute as u32, s.wSecond as u32, s.wMilliseconds as u32) }
 }
+/// A time of the farm (milliseconds since 1970) as this machine's clock reads it: `yyyy-MM-dd HH:mm`.
+pub fn local_stamp(ms: i64) -> String {
+    #[cfg(unix)] { let t = (ms / 1000) as libc::time_t; let mut tm: libc::tm = unsafe { std::mem::zeroed() }; unsafe { libc::localtime_r(&t, &mut tm); } return format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min) }
+    // (elsewhere: the offset this machine's clock has from the farm's time NOW, applied to the calendar's arithmetic)
+    #[cfg(not(unix))] { let (y, mo, d, h, mi, s, _) = local(0); let days = |y: i64, m: i64, d: i64| { let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) }; let era = y.div_euclid(400); let yoe = y - era * 400; era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + (153 * m + 2) / 5 + d - 1 - 719468 };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0); let local_now = days(y as i64, mo as i64, d as i64) * 86400 + h as i64 * 3600 + mi as i64 * 60 + s as i64;
+        let t = ms / 1000 + ((local_now - now + 450) / 900) * 900; let (dd, r) = (t.div_euclid(86400), t.rem_euclid(86400)); let z = dd + 719468; let era = z.div_euclid(146097); let doe = z - era * 146097; let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); let mp = (5 * doy + 2) / 153;
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", yoe + era * 400 + if mp >= 10 { 1 } else { 0 }, if mp < 10 { mp + 3 } else { mp - 9 }, doy - (153 * mp + 2) / 5 + 1, r / 3600, r % 3600 / 60) }
+}
 fn day_name(days: i64) -> String { let (y, m, d, ..) = local(days); format!("monitor-{y:04}-{m:02}-{d:02}.log") }
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// Where this node's log goes on the share (`nodes/<id>`); files more than seven days old are removed now, not

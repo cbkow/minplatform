@@ -20,6 +20,15 @@ socket2 = { version = "0.5", features = ["all"] }
 winit31 = { workspace = true }
 tray-icon = { version = "0.21", default-features = false }
 interprocess = "2.4"
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+vello = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+raw-window-handle = { workspace = true }
+png = { workspace = true }
 rusqlite = { workspace = true }
 min-paths = { path = "../../crates/min-paths" }
 
