@@ -15,6 +15,8 @@ mod node;
 mod settings;
 mod share;
 mod shell;
+#[cfg(target_os = "macos")]
+mod sparkle;
 mod submit;
 mod ui;
 use std::sync::atomic::{AtomicBool, Ordering};

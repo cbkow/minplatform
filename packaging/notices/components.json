@@ -177,10 +177,6 @@
       "files": [
         "libImath*.dylib",
         "Imath-*.dll"
-      ],
-      "apps": [
-        "qcv",
-        "mn"
       ]
     },
     {
@@ -386,7 +382,8 @@
       ],
       "apps": [
         "qcv",
-        "mn"
+        "mn",
+        "mr"
       ]
     },
     {

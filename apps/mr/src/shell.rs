@@ -65,9 +65,11 @@ impl ApplicationHandler for Shell {
         let menu = Menu::new(); let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &show, &stop, &PredefinedMenuItem::separator(), &exit]);
         // macOS: the application's own menu, whose Quit goes the same way out as every other (never `terminate:`)
         let quit = MenuItem::new("Quit minRender", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyQ)));
-        #[cfg(target_os = "macos")] { let app = Menu::new(); let sub = Submenu::new("minRender", true); let _ = sub.append_items(&[&PredefinedMenuItem::hide(None), &PredefinedMenuItem::separator(), &quit]); let _ = app.append(&sub); app.init_for_nsapp(); self._app_menu = Some(app); }
+        #[cfg(target_os = "macos")] { let app = Menu::new(); let sub = Submenu::new("minRender", true); let updates = MenuItem::with_id("updates", "Check for Updates\u{2026}", true, None); let _ = sub.append_items(&[&updates, &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::separator(), &quit]);
+            // the updater starts with the application (its daily check); never in a scripted run
+            if std::env::var_os("MR_SHOT").is_none() && std::env::var_os("MR_DEMO").is_none() { crate::sparkle::start(); } let _ = app.append(&sub); app.init_for_nsapp(); self._app_menu = Some(app); }
         #[cfg(not(target_os = "macos"))] { let _ = Submenu::new("", false); }
-        let ids = [(show.id().0.clone(), "show"), (stop.id().0.clone(), "stop"), (exit.id().0.clone(), "exit"), (quit.id().0.clone(), "exit")];
+        let ids = [(show.id().0.clone(), "show"), (stop.id().0.clone(), "stop"), (exit.id().0.clone(), "exit"), (quit.id().0.clone(), "exit"), ("updates".to_string(), "updates")];
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| { if let Some((_, n)) = ids.iter().find(|(id, _)| *id == e.id.0) { send(Msg::Menu(n)); } }));
         TrayIconEvent::set_event_handler(Some(|e: TrayIconEvent| { if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. } = e { send(Msg::TrayClick); } }));
         // minRender's own icon, as 0.5.x shows it: black on clear for the macOS menu bar (a template: the system tints it), the colour mark on Windows
@@ -106,6 +108,7 @@ impl ApplicationHandler for Shell {
     fn proxy_wake_up(&mut self, _el: &dyn ActiveEventLoop) {
         while let Ok(m) = self.rx.try_recv() { match m {
             Msg::Show | Msg::Menu("show") => self.show(),
+            Msg::Menu("updates") => { #[cfg(target_os = "macos")] crate::sparkle::check_now(); }
             Msg::Menu("stop") => { let stopped = self.node.state().1; self.node.set_stopped(!stopped); self.refresh(); }
             Msg::Menu(_) => self.quit(),
             Msg::TrayClick => if !cfg!(target_os = "macos") { self.show() },

@@ -40,7 +40,7 @@ min-paths = { path = "../../crates/min-paths" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }
-objc2-foundation = { workspace = true, features = ["NSObject"] }
+objc2-foundation = { workspace = true, features = ["NSObject", "NSBundle", "NSString"] }
 objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
 
 [target.'cfg(unix)'.dependencies]
