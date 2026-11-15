@@ -1,6 +1,6 @@
 # S14 - the life of a tray application on winit (opened 2026-11-15)
 
-**Status: OPEN.**
+**Status: PART A PASSES on macOS and Windows; of part C, the restart inside a package passes; the owner's hand (part B) and a sign-out and sign-in (the rest of C) are awaited (2026-11-15).**
 
 ## Why
 
@@ -48,3 +48,37 @@ Three hours for A and the build of B and C.
 ## How to run
 
 `cargo build --release -p s14-tray`; `target/release/s14 --log <file>` with `S14_SCRIPT` as in `src/main.rs`.
+
+## Findings so far (2026-11-15)
+
+### Part A, by script
+
+| | macOS | Windows |
+|---|---|---|
+| The tray icon made without an error | yes, every run | yes, every run |
+| Started minimized: hidden; a minimized second launch leaves it hidden; a plain one shows it; the second process ends | 10 of 10 | 10 of 10 |
+| Hide and show, twenty times in a row | 20 and 20, ended normally | 20 and 20, ended normally |
+| `terminate:` while rendering: asked, alive, shutdown work done, the loop returns | 10 of 10 | - |
+| `terminate:` while idle: leaves at once through the loop | 10 of 10 | - |
+| The session's query answered yes, its end reaching the application, which leaves through its loop | - | 10 of 10 |
+| Starting itself again: the copy is the one instance, the old one gone | 10 of 10 (hand-over 0.06 s) | 10 of 10 |
+
+Three things the first runs got wrong, each a rule for the product:
+
+1. **The loop is told to end ONCE.** Asking at every turn kept the loop turning on macOS: one run span 541,465 times
+   and then crashed inside AppKit while a window was being released.
+2. **On Windows the loop must be woken after it is told to end** from the step before it waits: without that the
+   process sat there for good with its work done.
+3. **`applicationShouldTerminate:` answered "not yet"** (winit installs no application delegate, so the application's
+   own can hold this) is what lets the shutdown run: the application ends its loop itself and the process leaves
+   through `main`, not inside AppKit.
+
+### Part C, packaged on Windows
+
+- The package installs with a startup task whose executable is the application itself.
+- **Starting itself again works inside the package** with no helper and without asking to leave the package's job:
+  the copy has the package's identity, takes over as the one instance, and the old one is gone at once.
+- Windows says how a packaged application was started (`AppInstance::GetActivatedEventArgs`): a start by hand reads as
+  kind 0 (launch). The copy started by the application itself has no activation at all, which is not a startup task.
+- `RegisterApplicationRestart("--minimized")` succeeds packaged and unpackaged.
+- NOT yet seen: the startup task at a sign-in (the package is left installed for it).
