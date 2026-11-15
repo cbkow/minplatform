@@ -78,7 +78,8 @@ pub struct Node {
     pub restart_asked: AtomicBool, /// the graphics card's name, once found; the nodes the leader has benched: (id, failures); lines for the window's toast
     /// the jobs whose log folder this node, leading, has made on the share (row 424)
     job_dirs: Mutex<std::collections::BTreeSet<String>>, /// the shared folder's small duties (row 429): when they were last looked at; the content is settled
-    share_looked: Mutex<Instant>, content_settled: AtomicBool, gpu: Mutex<String>, suspended: Mutex<Vec<(String, i64)>>, pub notes: Mutex<Vec<String>>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
+    share_looked: Mutex<Instant>, content_settled: AtomicBool, /// since when this node has been trying to take the leader's place (row 430)
+    takeover_since: Mutex<Option<Instant>>, gpu: Mutex<String>, suspended: Mutex<Vec<(String, i64)>>, pub notes: Mutex<Vec<String>>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
     jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
@@ -148,7 +149,7 @@ impl Node {
         if let Some(why) = &no_farm { crate::share::log("WARN", "farm", &format!("NO FARM: {why} The node runs alone until the sync root is there.")); }
         Ok(Arc::new(Node { udp: if no_farm.is_none() && cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None },
             no_farm, wanted_root: wanted, id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
-            job_dirs: Mutex::new(std::collections::BTreeSet::new()), share_looked: Mutex::new(Instant::now()), content_settled: AtomicBool::new(false), gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
+            job_dirs: Mutex::new(std::collections::BTreeSet::new()), share_looked: Mutex::new(Instant::now()), content_settled: AtomicBool::new(false), takeover_since: Mutex::new(None), gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
             preview_path: Mutex::new(String::new()), layer_of: Mutex::new(BTreeMap::new()), peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
@@ -668,7 +669,12 @@ impl Node {
         let lead = best.1.is_none(); drop(peers);
         // taking over, or giving way (3.4): the database is opened only while this node leads
         let mut l = self.lead.lock().unwrap();
-        if lead && l.is_none() { match Lead::take_over(&if self.no_farm.is_some() { self.data.join("no-farm") } else { self.data.clone() }, &self.farm, &self.id) { Ok(x) => { *l = Some(x); log("this node leads now"); } Err(e) => log(format!("this node should lead, and its database could not be opened: {e}")) } }
+        if lead && l.is_none() { // (row 430) a snapshot that is not whole yet is waited for - twenty seconds from the first try, a turn at a time - before the one before it is taken
+            let since = *self.takeover_since.lock().unwrap().get_or_insert_with(Instant::now); let give_up = since.elapsed() > Duration::from_secs(20);
+            match Lead::take_over(&if self.no_farm.is_some() { self.data.join("no-farm") } else { self.data.clone() }, &self.farm, &self.id, give_up) {
+                Ok(mut x) => { if let Some(n) = x.note.take() { self.notes.lock().unwrap().push(n); } *l = Some(x); *self.takeover_since.lock().unwrap() = None; log("this node leads now"); }
+                Err(e) if e == crate::lead::WAIT => { if since.elapsed() < Duration::from_secs(3) { log("this node should lead; the snapshot on the share is not whole yet - waiting for the rest of it".to_string()); } }
+                Err(e) => log(format!("this node should lead, and its database could not be opened: {e}")) } }
         else if !lead && l.is_some() { *l = None; log("another node leads now"); }
     }
 

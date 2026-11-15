@@ -23,7 +23,11 @@ pub struct Candidate { pub id: String, pub alive: bool, pub can_work: bool, pub 
 struct Failures { count: u32, first_ms: u64, last_ms: u64, suspended: bool }
 struct Report { node: String, job: String, start: i64, end: i64, epoch: i64 }
 
+/// `take_over`'s answer while the share's snapshot is not whole yet: try again.
+pub const WAIT: &str = "the snapshot on the share is not whole yet";
 pub struct Lead {
+    /// what the taking over has to say to the person at the window (a snapshot that was not whole)
+    pub note: Option<String>,
     db: Connection, me: String, submissions: Vec<(Value, i64)>, completes: Vec<Report>, fails: Vec<Report>, reverts: Vec<(String, i64, i64)>, frames: Vec<(String, i64, Vec<i64>)>,
     tracker: BTreeMap<String, Failures>, dispatched: BTreeMap<String, Instant>, /// the list as `GET /api/jobs` gives it: made every cycle, so it trails a command by up to two seconds (seen of 0.5.11)
     list: Option<String>, last_snapshot: Instant, data: PathBuf, /// chunks whose holder is alive and not rendering them, and since when (row 396)
@@ -38,10 +42,23 @@ fn strings(text: &str) -> Vec<String> { serde_json::from_str::<Vec<String>>(text
 fn ints(text: &str) -> Vec<i64> { serde_json::from_str::<Vec<i64>>(text).unwrap_or_default() }
 
 impl Lead {
-    /// Taking over (3.4): the share's snapshot is copied over the local file and opened; with no snapshot, the local file as it is.
-    pub fn take_over(data: &Path, farm: &Path, me: &str) -> Result<Lead, String> {
-        let local = data.join("minrender.db"); let snap = farm.join("state").join("snapshot.db");
-        if snap.is_file() { for ext in ["-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", local.display())); } if let Err(e) = std::fs::copy(&snap, &local) { eprintln!("the snapshot could not be copied ({e}): the local database is used as it is"); } }
+    /// Taking over (3.4): the share's snapshot becomes the local database; with no snapshot at all, the local file as it is.
+    /// (row 430) The snapshot is CHECKED first - on storage that syncs, half of it may have arrived: it is copied to a
+    /// file of its own and must open and pass SQLite's check before it replaces anything. Not whole, and `give_up` not
+    /// yet said: `Err(WAIT)` - the node tries again at its next turn. Not whole after that: the snapshot BEFORE it
+    /// (`snapshot.prev.db`, which a 1.0 leader keeps); neither whole: an EMPTY queue, said loudly. Never this node's own
+    /// old database: it is never near what the last leader had (the owner, 2026-11-15).
+    pub fn take_over(data: &Path, farm: &Path, me: &str, give_up: bool) -> Result<Lead, String> {
+        let local = data.join("minrender.db"); let snap = farm.join("state").join("snapshot.db"); let prev = farm.join("state").join("snapshot.prev.db"); let mut note = None;
+        if snap.is_file() || prev.is_file() {
+            let incoming = data.join("minrender.incoming.db");
+            let whole = |from: &Path| -> bool { let _ = std::fs::remove_file(&incoming); std::fs::copy(from, &incoming).is_ok() && Connection::open_with_flags(&incoming, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(|c| { let ok: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0))?; let tables: i64 = c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('jobs', 'chunks')", [], |r| r.get(0))?; Ok(ok == "ok" && tables == 2) }).unwrap_or(false) };
+            let took = if snap.is_file() && whole(&snap) { true } else if !give_up { let _ = std::fs::remove_file(&incoming); return Err(WAIT.into()) } else if prev.is_file() && whole(&prev) { note = Some("The leader's last snapshot on the share was not whole; the one before it was taken. Up to a minute of the queue's changes may be missing.".to_string()); true } else { false };
+            for ext in ["", "-wal", "-shm"] { let _ = std::fs::remove_file(format!("{}{ext}", local.display())); }
+            if took { if let Err(e) = std::fs::rename(&incoming, &local) { return Err(format!("the checked snapshot could not be put in place: {e}")) } }
+            else { let _ = std::fs::remove_file(&incoming); note = Some("NO WHOLE SNAPSHOT of the queue was on the share (neither the last nor the one before): this leader starts with an EMPTY queue. Jobs must be submitted again.".to_string()); }
+            if let Some(n) = &note { crate::share::log("ERROR", "farm", n); }
+        }
         let db = Connection::open(&local).map_err(|e| e.to_string())?;
         let _ = db.pragma_update(None, "journal_mode", "WAL"); let _ = db.pragma_update(None, "foreign_keys", "ON"); let _ = db.busy_timeout(std::time::Duration::from_millis(5000));
         db.execute_batch("CREATE TABLE IF NOT EXISTS jobs (
@@ -71,7 +88,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
         // the additive steps, each tried on every open (a database of an older leader lacks some of these)
         for m in ["ALTER TABLE chunks ADD COLUMN completed_frames TEXT NOT NULL DEFAULT '[]'", "ALTER TABLE chunks ADD COLUMN failed_on TEXT NOT NULL DEFAULT '[]'", "ALTER TABLE jobs ADD COLUMN sort_key INTEGER",
             "UPDATE jobs SET sort_key = submitted_at_ms WHERE sort_key IS NULL", "ALTER TABLE jobs ADD COLUMN edit_epoch INTEGER NOT NULL DEFAULT 0", "ALTER TABLE chunks ADD COLUMN edit_epoch INTEGER NOT NULL DEFAULT 0"] { let _ = db.execute(m, []); }
-        Ok(Lead { db, me: me.to_string(), submissions: Vec::new(), completes: Vec::new(), fails: Vec::new(), reverts: Vec::new(), frames: Vec::new(), tracker: BTreeMap::new(), dispatched: BTreeMap::new(), list: None, last_snapshot: Instant::now(), data: data.to_path_buf(), orphaned: BTreeMap::new() })
+        Ok(Lead { note, db, me: me.to_string(), submissions: Vec::new(), completes: Vec::new(), fails: Vec::new(), reverts: Vec::new(), frames: Vec::new(), tracker: BTreeMap::new(), dispatched: BTreeMap::new(), list: None, last_snapshot: Instant::now(), data: data.to_path_buf(), orphaned: BTreeMap::new() })
     }
     fn manifest(&self, id: &str) -> Option<Value> { self.db.query_row("SELECT manifest_json FROM jobs WHERE job_id = ?", [id], |r| r.get::<_, String>(0)).optional().ok().flatten().and_then(|t| serde_json::from_str(&t).ok()) }
     fn exists(&self, id: &str) -> bool { self.db.query_row("SELECT 1 FROM jobs WHERE job_id = ?", [id], |_| Ok(())).optional().ok().flatten().is_some() }
@@ -271,10 +288,16 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
                 if !first_job { out.push(','); } first_job = false; out.push_str(&v.to_string()); } } }
         out.push(']'); out
     }
-    /// The snapshot (3.3): a copy made beside the farm's folder, then copied over the shared file.
+    /// The snapshot (3.3). (row 430) It is made on THIS machine, then put on the share whole: the one that is there is
+    /// first kept as `snapshot.prev.db`, and each of the two arrives under a name of this node's own and is renamed -
+    /// no reader, and no sync tool, meets half a file, and `snapshot.db` is never absent in between. (0.5.x made the
+    /// copy in the share's root and copied it over the live file.) 0.5.x nodes read `snapshot.db` as ever.
     fn snapshot(&self, farm: &Path) {
-        let Some(root) = farm.parent() else { return }; let tmp = root.join("snapshot_tmp.db"); let _ = std::fs::remove_file(&tmp); let _ = std::fs::create_dir_all(farm.join("state"));
-        match self.db.execute("VACUUM INTO ?", [tmp.to_string_lossy()]) { Ok(_) => { if let Err(e) = std::fs::copy(&tmp, farm.join("state").join("snapshot.db")) { eprintln!("the snapshot could not be put on the share: {e}"); } let _ = std::fs::remove_file(&tmp); } Err(e) => eprintln!("the snapshot could not be made: {e}") }
-        let _ = &self.data;
+        let state = farm.join("state"); let _ = std::fs::create_dir_all(&state); let made = self.data.join("minrender.snapshot.db"); let _ = std::fs::remove_file(&made);
+        if let Err(e) = self.db.execute("VACUUM INTO ?", [made.to_string_lossy()]) { eprintln!("the snapshot could not be made: {e}"); return }
+        let (live, prev) = (state.join("snapshot.db"), state.join("snapshot.prev.db")); let (t1, t2) = (state.join(format!("snapshot.prev.{}.tmp", self.me)), state.join(format!("snapshot.{}.tmp", self.me)));
+        if live.is_file() { if std::fs::copy(&live, &t1).is_ok() { let _ = std::fs::rename(&t1, &prev); } else { let _ = std::fs::remove_file(&t1); } }
+        match std::fs::copy(&made, &t2).and_then(|_| std::fs::rename(&t2, &live)) { Ok(_) => {} Err(e) => { let _ = std::fs::remove_file(&t2); eprintln!("the snapshot could not be put on the share: {e}"); } }
+        let _ = std::fs::remove_file(&made);
     }
 }
