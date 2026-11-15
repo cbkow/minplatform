@@ -73,7 +73,8 @@ pub struct Node {
     pub id: String, pub data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, /// another node, or this one's window, asked for the application to start again
     pub restart_asked: AtomicBool, /// the graphics card's name, once found; the nodes the leader has benched: (id, failures); lines for the window's toast
-    gpu: Mutex<String>, suspended: Mutex<Vec<(String, i64)>>, pub notes: Mutex<Vec<String>>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
+    /// the jobs whose log folder this node, leading, has made on the share (row 424)
+    job_dirs: Mutex<std::collections::BTreeSet<String>>, gpu: Mutex<String>, suspended: Mutex<Vec<(String, i64)>>, pub notes: Mutex<Vec<String>>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
     jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
@@ -129,7 +130,7 @@ impl Node {
         if adopted { crate::share::log("WARN", "farm", &format!("this machine had lost its node id; the phonebook has an entry at its address, and it returns as that node ({id})")); }
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
-            gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
+            job_dirs: Mutex::new(std::collections::BTreeSet::new()), gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
             preview_path: Mutex::new(String::new()), layer_of: Mutex::new(BTreeMap::new()), peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
@@ -232,6 +233,10 @@ impl Node {
                 for t in targets { let (secret, body) = (self.secret.clone(), json!({ "job_id": job, "reason": reason }).to_string()); std::thread::spawn(move || { let _ = http::call(&t, "POST", "/api/render/abort", Some(&secret), Some(&body), Duration::from_secs(3), Duration::from_secs(10)); }); } }
             Effect::RemoveJobDir(id) => { let d = self.farm.join("jobs").join(&id); std::thread::spawn(move || { if d.is_dir() && std::fs::remove_dir_all(&d).is_err() { std::thread::sleep(Duration::from_millis(250)); let _ = std::fs::remove_dir_all(&d); } }); }
             Effect::Dispatch { node, manifest, start, end, epoch } => {
+                // (row 424) the leader makes the job's log folder ONCE, before the first chunk is given out: each node then adds only
+                // its own folder under it, and no two machines make the same folder at the same moment (storage that
+                // answers that with a second, "conflicted" folder lost a node's render output)
+                if let Some(job) = manifest["job_id"].as_str().filter(|j| safe(j)) { if self.job_dirs.lock().unwrap().insert(job.to_string()) { let _ = std::fs::create_dir_all(self.farm.join("jobs").join(job).join("stdout")); } }
                 // (0.5.x translates nothing when the leader gives itself a chunk, so a leader on another system than the
                 // submitter's runs the job with the wrong paths; here its own chunks are translated like any node's)
                 if node == self.id { let manifest = self.translated(manifest, OS); let mut w = self.work.lock().unwrap(); w.queue.push_back(Assignment { manifest, start, end, epoch: Some(epoch) }); w.busy = true; continue }
@@ -643,8 +648,10 @@ impl Node {
         // the chunk's own log on the share (6.5): one file for each attempt
         let logf = self.farm.join("jobs").join(&job).join("stdout").join(&self.id).join(format!("{:06}-{:06}_{}.log", a.start, a.end, now_ms()));
         if let Some(d) = logf.parent() { let _ = std::fs::create_dir_all(d); }
-        // (the output's folder is made before the render, as well as may be; a leader never makes it)
-        if let Some(d) = m["output_dir"].as_str().filter(|d| !d.is_empty()) { let _ = std::fs::create_dir_all(d); }
+        // (the output's folder is made before the render, as well as may be; a leader never makes it. With local
+        // staging it is NOT made here: the render writes on this machine, and the folder is made when the files are
+        // delivered - as 0.5.x does - so nodes starting chunks of one job at the same moment do not all make it at once)
+        if staging.is_none() { if let Some(d) = m["output_dir"].as_str().filter(|d| !d.is_empty()) { let _ = std::fs::create_dir_all(d); } }
         let pattern = m["progress"]["completion_pattern"]["regex"].as_str().and_then(|r| regex::Regex::new(r).ok());
         let mut c = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "minRender".into()));
         c.arg("--leash").arg("--").arg(&exe).args(&args).env("PYTHONUNBUFFERED", "1").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
