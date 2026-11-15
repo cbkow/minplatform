@@ -21,7 +21,12 @@ fn log(msg: impl AsRef<str>) { crate::share::log("INFO", "farm", msg.as_ref()); 
 
 /// A peer as this node knows it (1.2, 1.5).
 struct Peer { endpoint: String, record: Option<Value>, alive: bool, failed: u32, last_seen_ms: u64, leader: bool, /// (modified, size) of its endpoint.json at the last good read
-    stamp: Option<(u128, u64)> }
+    stamp: Option<(u128, u64)>, /// the `timestamp_ms` of that read, and how often the listing changed since with the same one (a cached listing: 1.2)
+    written_ms: i64, same: u8, /// its entry is not looked at again before this
+    wait_until: Option<Instant>, /// the last heartbeat heard from it (1.6)
+    heard: Option<Instant>, /// the round trip of its polls, smoothed (1.5)
+    rtt_ms: Option<f64> }
+impl Peer { fn udp(&self) -> bool { self.heard.is_some_and(|t| t.elapsed() < Duration::from_secs(15)) } }
 /// A chunk a leader gave this node (2.5 row 7).
 struct Assignment { manifest: Value, start: i64, end: i64, epoch: Option<i64> }
 /// How a render that was cut short is told to the leader (4.10): not at all, or as a failure.
@@ -37,7 +42,8 @@ pub struct Node {
     pub id: String, data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
-    lead: Mutex<Option<Lead>>, /// submission files that were dealt with and could not be moved away
+    lead: Mutex<Option<Lead>>, /// the heartbeat's socket and port, when heartbeats are on (1.6)
+    udp: Option<(std::net::UdpSocket, u16)>, /// submission files that were dealt with and could not be moved away
     submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
     mappings: Vec<min_paths::map::Mapping>,
 }
@@ -57,9 +63,11 @@ fn ram_mb() -> u64 {
     0
 }
 /// The address this node gives out (1.4): the override, else the address the system would use to leave the machine.
-fn advertised_ip(over: &str) -> String {
+fn advertised_ip(over: &str, sync_root: &str) -> String {
     if !over.is_empty() { return over.to_string() }
-    std::net::UdpSocket::bind("0.0.0.0:0").ok().and_then(|s| { s.connect("192.0.2.1:445").ok()?; s.local_addr().ok() }).map(|a| a.ip().to_string()).filter(|ip| ip != "0.0.0.0").unwrap_or_else(|| "127.0.0.1".into())
+    // the address this machine uses to reach the share's host is the one the farm's other machines can reach it by
+    let towards = |host: &str| { use std::net::ToSocketAddrs; let to = (host, 445).to_socket_addrs().ok()?.find(|a| a.is_ipv4())?; let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?; s.connect(to).ok()?; Some(s.local_addr().ok()?.ip().to_string()).filter(|ip| ip != "0.0.0.0" && ip != "127.0.0.1") };
+    min_paths::classify::share_host_for_path(sync_root).and_then(|h| towards(&h)).or_else(|| towards("192.0.2.1")).unwrap_or_else(|| "127.0.0.1".into())
 }
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> { let tmp = PathBuf::from(format!("{}.tmp", path.display())); std::fs::write(&tmp, text)?; std::fs::rename(&tmp, path).or_else(|_| std::fs::write(path, text)) }
 
@@ -76,9 +84,10 @@ impl Node {
         let secret = crate::share::start_farm(&farm, &id, now_ms())?;
         crate::share::log_to(farm.join("nodes").join(&id)); let _ = std::fs::create_dir_all(farm.join("nodes").join(&id));
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
-        Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or("")), tags, hostname: host_name(),
+        Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or(""), root), tags, hostname: host_name(),
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), submitted: Mutex::new(Default::default()),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None),
+            udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
     fn endpoint_file(&self) -> PathBuf { self.farm.join("nodes").join(&self.id).join("endpoint.json") }
@@ -94,6 +103,23 @@ impl Node {
             "active_job": r.map(|r| r.job.clone()).unwrap_or_default(), "active_chunk": r.map(|r| if r.start == r.end { format!("f{}", r.start) } else { format!("f{}-{}", r.start, r.end) }).unwrap_or_default(),
             "priority": 100, "tags": self.tags, "capabilities": CAPABILITIES, "endpoint": format!("{}:{}", self.ip, self.port), "secret_fingerprint": fingerprint(&self.secret),
             "agent_health": "ok", "alert_reason": "", "ready_for_work": !w.busy, "is_local": true, "is_alive": true, "is_leader": false, "last_seen_ms": 0, "has_udp_contact": false, "failed_polls": 0 })
+    }
+    /// A heartbeat (1.6): what this node is doing, to every node that listens. The types are exactly 0.5.x's: a
+    /// 0.5.x node reads them without a guard.
+    fn beat(&self) {
+        let Some((s, port)) = &self.udp else { return }; let r = self.record(); let mut v = json!({ "t": "hb", "from": self.id, "n": self.id, "ip": self.ip, "port": self.port, "st": r["node_state"], "rs": r["render_state"], "ah": "ok", "rfw": r["ready_for_work"] });
+        if r["render_state"] == json!("rendering") { v["job"] = r["active_job"].clone(); v["chunk"] = r["active_chunk"].clone(); }
+        let text = v.to_string(); if text.len() <= 1400 { let _ = s.send_to(text.as_bytes(), (HEARTBEAT_GROUP, *port)); }
+    }
+    /// What a heartbeat of another node changes (1.6): only a peer the phonebook already gave; never an address.
+    fn heard(&self, v: &Value) {
+        let (Some(t), Some(n)) = (v["t"].as_str(), v["n"].as_str()) else { return }; if n.is_empty() || n == self.id || v["from"].as_str() == Some(&self.id) { return }
+        let mut peers = self.peers.lock().unwrap(); let Some(p) = peers.get_mut(n) else { return };
+        if t == "bye" { p.alive = false; p.heard = None; return } if t != "hb" { return }
+        let r = p.record.get_or_insert_with(|| json!({ "node_id": n }));
+        r["node_state"] = json!(v["st"].as_str().unwrap_or("active")); r["render_state"] = json!(v["rs"].as_str().unwrap_or("idle")); r["active_job"] = json!(v["job"].as_str().unwrap_or("")); r["active_chunk"] = json!(v["chunk"].as_str().unwrap_or(""));
+        r["agent_health"] = json!(v["ah"].as_str().unwrap_or("ok")); r["alert_reason"] = json!(v["ar"].as_str().unwrap_or("")); r["ready_for_work"] = json!(v["rfw"].as_bool().unwrap_or(true));
+        p.alive = true; p.failed = 0; p.heard = Some(Instant::now());
     }
     /// The leader's address as this node believes it (2.3): the first peer it holds alive and leading.
     fn leader(&self) -> Option<String> { self.peers.lock().unwrap().values().find(|p| p.leader && p.alive).map(|p| p.endpoint.clone()) }
@@ -114,7 +140,7 @@ impl Node {
             ("GET", "/api/status") => Response::json(200, self.record()),
             ("GET", "/api/peers") => Response::json(200, Value::Array(self.peers.lock().unwrap().iter().map(|(id, p)| {
                 let mut r = p.record.clone().unwrap_or_else(|| json!({ "node_id": id, "endpoint": p.endpoint }));
-                for (k, v) in [("is_local", json!(false)), ("is_alive", json!(p.alive)), ("is_leader", json!(p.leader)), ("last_seen_ms", json!(p.last_seen_ms)), ("has_udp_contact", json!(false)), ("failed_polls", json!(p.failed)), ("endpoint", json!(p.endpoint))] { r[k] = v; } r }).collect())),
+                for (k, v) in [("is_local", json!(false)), ("is_alive", json!(p.alive)), ("is_leader", json!(p.leader)), ("last_seen_ms", json!(p.last_seen_ms)), ("has_udp_contact", json!(p.udp())), ("failed_polls", json!(p.failed)), ("endpoint", json!(p.endpoint))] { r[k] = v; } r }).collect())),
             ("POST", "/api/node/stop") => { self.set_stopped(true); Response::ok() }
             ("POST", "/api/node/start") => { self.set_stopped(false); Response::ok() }
             ("POST", "/api/node/restart") => Response::error(500, "restart_failed"),
@@ -230,6 +256,10 @@ impl Node {
     // --------------------------------------------------------------------------------------------- peers and the leader
     /// One cycle (1): the phonebook entry, the other entries, a poll of every peer, the election.
     fn cycle(&self) {
+        // a restart asked for by another node (1.3): the file is taken away; one more than 60 s old is ignored
+        let sig = self.farm.join("nodes").join(&self.id).join("restart");
+        if let Ok(m) = std::fs::metadata(&sig) { let fresh = m.modified().ok().and_then(|t| t.elapsed().ok()).is_none_or(|d| d.as_secs() <= 60); let _ = std::fs::remove_file(&sig);
+            if fresh { crate::share::log("WARN", "farm", "a restart was asked for by another node; this build cannot start itself again yet"); } }
         // the node's own entry: rewritten when it is gone from the listing, not within 15 s of its last write
         let mine = self.endpoint_file(); let listed = mine.parent().and_then(|d| std::fs::read_dir(d).ok()).is_some_and(|rd| rd.flatten().any(|e| e.file_name() == "endpoint.json"));
         if !listed && self.wrote_endpoint.lock().unwrap().is_none_or(|t| t.elapsed() > Duration::from_secs(15)) { self.write_endpoint(); }
@@ -241,20 +271,34 @@ impl Node {
             seen.push(id.clone());
             let stamp = e.metadata().ok().map(|m| (m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0), m.len()));
             let mut peers = self.peers.lock().unwrap();
-            if peers.get(&id).is_some_and(|p| p.stamp.is_some() && p.stamp == stamp) { continue }
-            let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+            if peers.get(&id).is_some_and(|p| p.stamp.is_some() && p.stamp == stamp || p.wait_until.is_some_and(|t| Instant::now() < t)) { continue }
+            // an entry that cannot be read is left alone for 15 s
+            let Some(v) = std::fs::read_to_string(e.path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { if let Some(p) = peers.get_mut(&id) { p.wait_until = Some(Instant::now() + Duration::from_secs(15)); } continue };
             if v["node_id"].as_str() != Some(&id) { continue }
-            let endpoint = format!("{}:{}", v["ip"].as_str().unwrap_or(""), v["port"].as_u64().unwrap_or(8420));
-            match peers.get_mut(&id) { Some(p) => { if p.endpoint != endpoint { p.endpoint = endpoint; p.failed = 0; } p.stamp = stamp; }
-                None => { peers.insert(id, Peer { endpoint, record: None, alive: true, failed: 0, last_seen_ms: 0, leader: false, stamp }); } }
+            let endpoint = format!("{}:{}", v["ip"].as_str().unwrap_or(""), v["port"].as_u64().unwrap_or(8420)); let written = v["timestamp_ms"].as_i64().unwrap_or(0);
+            match peers.get_mut(&id) {
+                Some(p) => {
+                    // The listing says the file changed and the file says it was written when the last one was: a
+                    // Windows share's cached view of a file another machine renamed over. It is believed at the third
+                    // such read, after waits of 20 and 40 s (every true write carries a new time: 1.2).
+                    if p.stamp.is_some() && written == p.written_ms && p.same < 2 { p.same += 1; p.wait_until = Some(Instant::now() + Duration::from_secs(20 * p.same as u64)); continue }
+                    if p.endpoint != endpoint { p.endpoint = endpoint; p.failed = 0; } p.stamp = stamp; p.written_ms = written; p.same = 0; p.wait_until = None; }
+                None => { peers.insert(id, Peer { endpoint, record: None, alive: true, failed: 0, last_seen_ms: 0, leader: false, stamp, written_ms: written, same: 0, wait_until: None, heard: None, rtt_ms: None }); } }
         } }
         // the poll (1.5): no token, a new connection, one peer after the other
-        let targets: Vec<(String, String)> = self.peers.lock().unwrap().iter().map(|(id, p)| (id.clone(), p.endpoint.clone())).collect();
-        for (id, endpoint) in targets {
-            let got = http::call(&endpoint, "GET", "/api/status", None, None, Duration::from_secs(2), Duration::from_secs(3)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).filter(peer_record_is_sound);
+        // (a peer that is heard by heartbeat, is known by name, and was polled less than 9 s ago is not polled now)
+        let targets: Vec<(String, String, u64)> = self.peers.lock().unwrap().iter().filter(|(_, p)| !(p.udp() && p.record.as_ref().is_some_and(|r| !r["hostname"].as_str().unwrap_or("").is_empty()) && now_ms().saturating_sub(p.last_seen_ms) < 9000))
+            .map(|(id, p)| (id.clone(), p.endpoint.clone(), p.rtt_ms.map(|r| (4.0 * r) as u64).unwrap_or(2000).clamp(2000, 8000))).collect();
+        for (id, endpoint, wait) in targets {
+            let t = Instant::now(); let got = http::call(&endpoint, "GET", "/api/status", None, None, Duration::from_millis(wait), Duration::from_millis(wait + 1000)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).filter(peer_record_is_sound);
             let mut peers = self.peers.lock().unwrap(); let Some(p) = peers.get_mut(&id) else { continue };
-            match got { Some(mut r) => { if let Some(e) = r["endpoint"].as_str() { p.endpoint = e.to_string(); } r["is_local"] = json!(false); p.record = Some(r); p.alive = true; p.failed = 0; p.last_seen_ms = now_ms(); }
-                None => { p.failed += 1; if p.failed >= 3 { p.alive = false; } } }
+            match got { Some(mut r) => { if let Some(e) = r["endpoint"].as_str() { p.endpoint = e.to_string(); } r["is_local"] = json!(false);
+                    // what a heartbeat said most lately stands over the poll's answer for readiness, and for health while the poll says "ok"
+                    if p.udp() { if let Some(old) = &p.record { r["ready_for_work"] = old["ready_for_work"].clone(); if r["agent_health"] == json!("ok") { r["agent_health"] = old["agent_health"].clone(); r["alert_reason"] = old["alert_reason"].clone(); } } }
+                    let ms = t.elapsed().as_secs_f64() * 1000.0; p.rtt_ms = Some(p.rtt_ms.map(|o| 0.7 * o + 0.3 * ms).unwrap_or(ms));
+                    p.record = Some(r); p.alive = true; p.failed = 0; p.last_seen_ms = now_ms(); }
+                // dead at three failed polls - unless a heartbeat was heard in the last ten seconds
+                None => { p.failed += 1; if p.failed >= 3 && !p.heard.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) { p.alive = false; } } }
             // a peer leaves only when it is dead AND its entry is gone from the listing
             if !p.alive && !seen.contains(&id) { peers.remove(&id); }
         }
@@ -286,6 +330,8 @@ impl Node {
         // the chunk's own log on the share (6.5): one file for each attempt
         let logf = self.farm.join("jobs").join(&job).join("stdout").join(&self.id).join(format!("{:06}-{:06}_{}.log", a.start, a.end, now_ms()));
         if let Some(d) = logf.parent() { let _ = std::fs::create_dir_all(d); }
+        // (the output's folder is made before the render, as well as may be; a leader never makes it)
+        if let Some(d) = m["output_dir"].as_str().filter(|d| !d.is_empty()) { let _ = std::fs::create_dir_all(d); }
         let pattern = m["progress"]["completion_pattern"]["regex"].as_str().and_then(|r| regex::Regex::new(r).ok());
         let mut c = std::process::Command::new(std::env::current_exe().unwrap_or_else(|_| "minRender".into()));
         c.arg("--leash").arg("--").arg(&exe).args(&args).env("PYTHONUNBUFFERED", "1").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
@@ -345,6 +391,10 @@ impl Node {
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.cycle(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // the leader's cycle, every 2 s, while this node leads
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.lead_cycle(); for _ in 0..20 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
+        // heartbeats: one at the start and every 3 s; those of others, as they come
+        if let Some((s, _)) = &self.udp { self.beat();
+            { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { return } std::thread::sleep(Duration::from_millis(100)); } me.beat(); }); }
+            if let Ok(s) = s.try_clone() { let me = self.clone(); std::thread::spawn(move || { let mut b = [0u8; 1500]; while !me.stop.load(Ordering::Relaxed) { if let Ok((n, _)) = s.recv_from(&mut b) { if let Ok(v) = serde_json::from_slice::<Value>(&b[..n]) { if v.is_object() { me.heard(&v); } } } } }); } }
         // the plug-ins' drop box, every 3 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.drop_box(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)
@@ -369,6 +419,7 @@ impl Node {
         // leaving: a render is killed, the leader is told once if it answers, the phonebook entry is taken away
         self.cut(None, Cut::Fail); std::thread::sleep(Duration::from_millis(150));
         let last: Vec<(String, String)> = self.reports.lock().unwrap().drain(..).collect(); for (path, body) in last { let _ = self.to_leader(&path, &body); }
+        if let Some((s, port)) = &self.udp { let _ = s.send_to(json!({ "from": self.id, "n": self.id, "t": "bye" }).to_string().as_bytes(), (HEARTBEAT_GROUP, *port)); }
         let _ = std::fs::remove_file(self.endpoint_file()); http::wake(self.port);
         Ok(())
     }
@@ -399,6 +450,14 @@ mod tests {
     #[test] fn a_root_ends_on_a_folder_boundary() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "P:\\jobs-old\\a.blend" }] }); assert_eq!(translate_manifest(m, "macos", &maps())["flags"][0]["value"], json!("P:/jobs-old/a.blend")); }
     #[test] fn the_same_system_and_no_mappings_change_nothing() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "a/b" }] });
         assert_eq!(translate_manifest(m.clone(), "windows", &maps()), m); assert_eq!(translate_manifest(m.clone(), "macos", &[]), m); }
+}
+/// The group every node's heartbeats go to (1.6); the port is a setting.
+const HEARTBEAT_GROUP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(239, 42, 0, 1);
+/// The heartbeat's socket: shared with any other node on this machine, in the group, heard one hop away.
+fn heartbeat_socket(port: u16) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type}; let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?; s.set_reuse_address(true)?; #[cfg(unix)] s.set_reuse_port(true)?;
+    s.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], port)).into())?; s.join_multicast_v4(&HEARTBEAT_GROUP, &std::net::Ipv4Addr::UNSPECIFIED)?; s.set_multicast_ttl_v4(1)?; s.set_read_timeout(Some(Duration::from_millis(500)))?;
+    Ok(s.into())
 }
 /// The routes only a leader answers (2.5, rows 9-30).
 fn leader_route(p: &str) -> bool {

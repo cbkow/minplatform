@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 regex = "1"
 sha2 = "0.10"
+socket2 = { version = "0.5", features = ["all"] }
 rusqlite = { workspace = true }
 min-paths = { path = "../../crates/min-paths" }
 
