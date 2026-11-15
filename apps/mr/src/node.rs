@@ -212,7 +212,9 @@ impl Node {
                 active: r.filter(|r| r["render_state"] == json!("rendering")).map(|r| (r["active_job"].as_str().unwrap_or("").to_string(), r["active_chunk"].as_str().unwrap_or("").to_string())) } }).collect();
         { let w = self.work.lock().unwrap(); nodes.push(Candidate { id: self.id.clone(), alive: true, can_work: !self.stopped.load(Ordering::Relaxed) && !w.busy, rendering: w.running.is_some(), needs_attention: false, tags: self.tags.clone(),
             active: w.running.as_ref().map(|r| (r.job.clone(), if r.start == r.end { format!("f{}", r.start) } else { format!("f{}-{}", r.start, r.end) })) }); }
-        let fx = match self.lead.lock().unwrap().as_mut() { Some(l) => l.cycle(&nodes, &self.farm), None => return }; self.effects(fx);
+        let t = Instant::now(); let fx = match self.lead.lock().unwrap().as_mut() { Some(l) => l.cycle(&nodes, &self.farm), None => return };
+        if t.elapsed() > Duration::from_millis(500) { crate::share::log("WARN", "dispatch", &format!("the leader's cycle took {} ms", t.elapsed().as_millis())); }
+        self.effects(fx);
     }
     /// The node is stopped or started (4.12): kept in the config; a render under way is ended and reported as failed.
     fn set_stopped(&self, on: bool) {
@@ -367,7 +369,7 @@ impl Node {
         // leaving: a render is killed, the leader is told once if it answers, the phonebook entry is taken away
         self.cut(None, Cut::Fail); std::thread::sleep(Duration::from_millis(150));
         let last: Vec<(String, String)> = self.reports.lock().unwrap().drain(..).collect(); for (path, body) in last { let _ = self.to_leader(&path, &body); }
-        let _ = std::fs::remove_file(self.endpoint_file());
+        let _ = std::fs::remove_file(self.endpoint_file()); http::wake(self.port);
         Ok(())
     }
 }

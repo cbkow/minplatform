@@ -44,10 +44,12 @@ pub fn decode(p: &str) -> String {
 }
 /// Serves until `stop` says so. `handle` is called on a thread of its own for each request.
 pub fn serve(listener: TcpListener, stop: std::sync::Arc<std::sync::atomic::AtomicBool>, handle: impl Fn(Request) -> Response + Send + Sync + 'static) {
-    let handle = std::sync::Arc::new(handle); let _ = listener.set_nonblocking(true);
-    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-        match listener.accept() {
-            Ok((mut s, _)) => { let handle = handle.clone(); let _ = s.set_nonblocking(false);
+    // (the wait for a connection blocks, so a request is taken up at once; `wake` ends the wait when the node stops)
+    let handle = std::sync::Arc::new(handle);
+    loop {
+        let got = listener.accept(); if stop.load(std::sync::atomic::Ordering::Relaxed) { break }
+        match got {
+            Ok((mut s, _)) => { let handle = handle.clone();
                 std::thread::spawn(move || {
                     let r = match read_request(&mut s) { Ok(q) => handle(q), Err(code) => Response::empty(code) };
                     let mut head = format!("HTTP/1.1 {} {}\r\nConnection: close\r\n", r.status, reason(r.status));
@@ -59,6 +61,8 @@ pub fn serve(listener: TcpListener, stop: std::sync::Arc<std::sync::atomic::Atom
         }
     }
 }
+/// A connection to this machine's own port, made so that a server waiting for one looks at its stop flag.
+pub fn wake(port: u16) { let _ = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(300)); }
 /// One request to another node. `None`: no answer at all (the callers' "status 0").
 pub fn call(endpoint: &str, method: &str, path: &str, bearer: Option<&str>, body: Option<&str>, connect: Duration, read: Duration) -> Option<(u16, Vec<u8>)> {
     let addr = endpoint.to_socket_addrs().ok()?.next()?;

@@ -29,6 +29,9 @@ pub struct Lead {
     list: Option<String>, last_snapshot: Instant, data: PathBuf, /// chunks whose holder is alive and not rendering them, and since when (row 396)
     orphaned: BTreeMap<i64, Instant>,
 }
+/// A manifest read for its tags alone.
+#[derive(serde::Deserialize)]
+struct TagsOnly { #[serde(default)] tags_required: Vec<String> }
 fn safe_segment(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', ':']) }
 fn chunks_of(a: i64, b: i64, size: i64) -> Vec<(i64, i64)> { let mut v = Vec::new(); if size <= 0 || a > b { return v } let mut f = a; while f <= b { v.push((f, (f + size - 1).min(b))); f += size; } v }
 fn strings(text: &str) -> Vec<String> { serde_json::from_str::<Vec<String>>(text).unwrap_or_default() }
@@ -73,7 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
     fn manifest(&self, id: &str) -> Option<Value> { self.db.query_row("SELECT manifest_json FROM jobs WHERE job_id = ?", [id], |r| r.get::<_, String>(0)).optional().ok().flatten().and_then(|t| serde_json::from_str(&t).ok()) }
     fn exists(&self, id: &str) -> bool { self.db.query_row("SELECT 1 FROM jobs WHERE job_id = ?", [id], |_| Ok(())).optional().ok().flatten().is_some() }
     fn epoch(&self, id: &str) -> Option<i64> { self.db.query_row("SELECT edit_epoch FROM jobs WHERE job_id = ?", [id], |r| r.get(0)).optional().ok().flatten() }
-    fn insert_chunks(&self, id: &str, m: &Value) { for (a, b) in chunks_of(m["frame_start"].as_i64().unwrap_or(1), m["frame_end"].as_i64().unwrap_or(250), m["chunk_size"].as_i64().unwrap_or(1)) { let _ = self.db.execute("INSERT INTO chunks (job_id, frame_start, frame_end) VALUES (?, ?, ?)", params![id, a, b]); } }
+    fn insert_chunks(&self, id: &str, m: &Value) { let Ok(mut st) = self.db.prepare_cached("INSERT INTO chunks (job_id, frame_start, frame_end) VALUES (?, ?, ?)") else { return };
+        for (a, b) in chunks_of(m["frame_start"].as_i64().unwrap_or(1), m["frame_end"].as_i64().unwrap_or(250), m["chunk_size"].as_i64().unwrap_or(1)) { let _ = st.execute(params![id, a, b]); } }
     /// A job enters the database: `active`, its chunks `pending`. An id that is already there is dropped without a word (2.5 row 9).
     fn insert(&self, m: &Value, priority: i64, at_ms: i64) -> bool {
         let Some(id) = m["job_id"].as_str() else { return false };
@@ -186,6 +190,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
     /// finished jobs are marked, each free node gets at most one chunk, the list is made anew.
     pub fn cycle(&mut self, nodes: &[Candidate], farm: &Path) -> Vec<Effect> {
         let mut fx = Vec::new(); let now = now_ms();
+        // (one transaction for the whole cycle: a hundred thousand chunks are one write to the disk, not as many)
+        let _ = self.db.execute_batch("BEGIN IMMEDIATE");
         for (m, p) in std::mem::take(&mut self.submissions) { let at = m["submitted_at_ms"].as_i64().unwrap_or(now as i64); self.insert(&m, p, at); }
         for r in std::mem::take(&mut self.completes) { if let Some((id, _, _)) = self.current(&r) { let _ = self.db.execute("UPDATE chunks SET state = 'completed', completed_at_ms = ? WHERE id = ?", params![now as i64, id]); } }
         for r in std::mem::take(&mut self.fails) { if let Some((id, retries, barred)) = self.current(&r) {
@@ -217,25 +223,29 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
         }
         self.orphaned = still;
         // active jobs with nothing left to do are completed, or failed if a chunk is
-        let active: Vec<String> = self.db.prepare("SELECT job_id FROM jobs WHERE current_state = 'active'").and_then(|mut s| s.query_map([], |r| r.get(0))?.collect()).unwrap_or_default();
-        for job in active { let (open, failed): (i64, i64) = self.db.query_row("SELECT COALESCE(SUM(state NOT IN ('completed', 'failed', 'stopped')), 0), COALESCE(SUM(state = 'failed'), 0) FROM chunks WHERE job_id = ?", [&job], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((1, 0));
-            if open == 0 { let _ = self.db.execute("UPDATE jobs SET current_state = ? WHERE job_id = ?", params![if failed > 0 { "failed" } else { "completed" }, job]); } }
+        let done: Vec<(String, i64)> = self.db.prepare_cached("SELECT j.job_id, COALESCE(SUM(c.state = 'failed'), 0) FROM jobs j LEFT JOIN chunks c ON c.job_id = j.job_id WHERE j.current_state = 'active' GROUP BY j.job_id HAVING COALESCE(SUM(c.state NOT IN ('completed', 'failed', 'stopped')), 0) = 0").and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()).unwrap_or_default();
+        for (job, failed) in done { let _ = self.db.execute("UPDATE jobs SET current_state = ? WHERE job_id = ?", params![if failed > 0 { "failed" } else { "completed" }, job]); }
         // the work: peers in the order of their ids, this node last; one chunk a node a cycle
         self.dispatched.retain(|id, t| t.elapsed().as_secs() < 15 && nodes.iter().find(|n| n.id == *id).is_some_and(|n| n.alive && !n.rendering));
         let mut order: Vec<&Candidate> = nodes.iter().filter(|n| n.id != self.me).collect(); order.sort_by(|a, b| a.id.cmp(&b.id)); order.extend(nodes.iter().filter(|n| n.id == self.me));
-        for n in order {
-            if !n.alive || !n.can_work || n.rendering || n.needs_attention || self.dispatched.contains_key(&n.id) { continue }
-            if self.tracker.get(&n.id).is_some_and(|f| f.suspended || now.saturating_sub(f.last_ms) < 30_000) { continue }
-            let jobs: Vec<(String, String, i64)> = self.db.prepare(&format!("SELECT job_id, manifest_json, edit_epoch FROM jobs WHERE current_state = 'active' AND EXISTS (SELECT 1 FROM chunks c WHERE c.job_id = jobs.job_id AND c.state = 'pending') {}", Self::ORDER)).and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()).unwrap_or_default();
-            'jobs: for (job, text, epoch) in jobs { let Ok(m) = serde_json::from_str::<Value>(&text) else { continue };
-                if !m["tags_required"].as_array().map(|a| a.iter().filter_map(Value::as_str).all(|t| n.tags.iter().any(|x| x == t))).unwrap_or(true) { continue }
-                let pending: Vec<(i64, i64, i64, String)> = self.db.prepare("SELECT id, frame_start, frame_end, failed_on FROM chunks WHERE job_id = ? AND state = 'pending' ORDER BY frame_start").and_then(|mut s| s.query_map([&job], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect()).unwrap_or_default();
+        let free: Vec<&Candidate> = order.into_iter().filter(|n| n.alive && n.can_work && !n.rendering && !n.needs_attention && !self.dispatched.contains_key(&n.id) && !self.tracker.get(&n.id).is_some_and(|f| f.suspended || now.saturating_sub(f.last_ms) < 30_000)).collect();
+        // the jobs that have something to give, in the queue's order - read once a cycle, and only when a node is free;
+        // a job's tags are read without the rest of its manifest until a node may take it
+        let mut jobs: Vec<(String, String, i64, Vec<String>, bool)> = if free.is_empty() { Vec::new() } else { self.db.prepare_cached(&format!("SELECT job_id, manifest_json, edit_epoch FROM jobs WHERE current_state = 'active' AND job_id IN (SELECT DISTINCT job_id FROM chunks WHERE state = 'pending') {}", Self::ORDER)).and_then(|mut s| s.query_map([], |r| { let text: String = r.get(1)?;
+            let tags = serde_json::from_str::<TagsOnly>(&text).map(|t| t.tags_required).unwrap_or_default(); Ok((r.get(0)?, text, r.get(2)?, tags, true)) })?.collect()).unwrap_or_default() };
+        for n in free {
+            'jobs: for (job, text, epoch, tags, has) in jobs.iter_mut() { if !*has || !tags.iter().all(|t| n.tags.iter().any(|x| x == t)) { continue }
+                let Ok(m) = serde_json::from_str::<Value>(text) else { continue }; let (job, epoch) = (job.clone(), *epoch);
+                // (the first pending chunk this node is not barred from; the bar is almost always empty, so a few rows are read)
+                let pending: Vec<(i64, i64, i64, String)> = self.db.prepare_cached("SELECT id, frame_start, frame_end, failed_on FROM chunks WHERE job_id = ? AND state = 'pending' AND failed_on NOT LIKE ? ORDER BY frame_start LIMIT 1").and_then(|mut s| s.query_map(params![job, format!("%\"{}\"%", n.id)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect()).unwrap_or_default();
+                if pending.is_empty() { *has = false; }
                 for (id, a, b, barred) in pending { if strings(&barred).contains(&n.id) { continue }
                     let _ = self.db.execute("UPDATE chunks SET state = 'assigned', assigned_to = ?, assigned_at_ms = ?, edit_epoch = ? WHERE id = ?", params![n.id, now as i64, epoch, id]);
                     self.dispatched.insert(n.id.clone(), Instant::now()); fx.push(Effect::Dispatch { node: n.id.clone(), manifest: m, start: a, end: b, epoch }); break 'jobs }
             }
         }
         self.list = Some(self.summaries());
+        let _ = self.db.execute_batch("COMMIT");
         if self.last_snapshot.elapsed().as_secs() >= 30 { self.last_snapshot = Instant::now(); self.snapshot(farm); }
         fx
     }
@@ -243,17 +253,21 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
     pub fn revert(&mut self, job: String, a: i64, b: i64) { self.reverts.push((job, a, b)); }
     /// The list of jobs (2.6), in the queue's order, archived ones left out.
     fn summaries(&self) -> String {
-        let jobs: Vec<(String, String, String, i64, i64)> = self.db.prepare(&format!("SELECT job_id, manifest_json, current_state, priority, submitted_at_ms FROM jobs WHERE current_state != 'archived' {}", Self::ORDER)).and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect()).unwrap_or_default();
-        Value::Array(jobs.into_iter().map(|(id, text, state, priority, at)| { let m: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-            let c = |st: &str| self.db.query_row("SELECT COUNT(*) FROM chunks WHERE job_id = ? AND state = ?", params![id, st], |r| r.get::<_, i64>(0)).unwrap_or(0);
-            let (first, last): (i64, i64) = self.db.query_row("SELECT COALESCE(MIN(assigned_at_ms), 0), COALESCE(MAX(completed_at_ms), 0) FROM chunks WHERE job_id = ?", [&id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap_or((0, 0));
-            let total: i64 = self.db.query_row("SELECT COUNT(*) FROM chunks WHERE job_id = ? AND state != 'stopped'", [&id], |r| r.get(0)).unwrap_or(0);
-            let mut v = json!({ "job_id": id, "template_id": m["template_id"].as_str().unwrap_or(""), "current_state": state, "priority": priority, "submitted_at_ms": at, "submitted_by": m["submitted_by"].as_str().unwrap_or(""),
-                "frame_start": m["frame_start"].as_i64().unwrap_or(1), "frame_end": m["frame_end"].as_i64().unwrap_or(250), "chunk_size": m["chunk_size"].as_i64().unwrap_or(1), "total_chunks": total, "completed_chunks": c("completed"), "failed_chunks": c("failed"),
-                "rendering_chunks": c("assigned"), "pending_chunks": c("pending"), "stopped_chunks": c("stopped"), "first_assigned_ms": first, "last_completed_ms": last });
-            if let Some(d) = m["output_dir"].as_str() { v["output_dir"] = json!(d); }
-            if let Some(o) = m["flags"].as_array().and_then(|f| f.iter().find(|f| f["is_output"] == json!(true))).and_then(|f| f["value"].as_str()).filter(|o| !o.is_empty()) { v["output_stem"] = json!(o); }
-            v }).collect()).to_string()
+        // every job's counts in one pass over the chunks
+        let mut counts: BTreeMap<String, [i64; 7]> = BTreeMap::new();   // completed, failed, assigned, pending, stopped, first assigned, last completed
+        if let Ok(mut st) = self.db.prepare_cached("SELECT job_id, state, COUNT(*), COALESCE(MIN(assigned_at_ms), 0), COALESCE(MAX(completed_at_ms), 0) FROM chunks GROUP BY job_id, state") { if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))) {
+            for (job, state, n, first, last) in rows.flatten() { let c = counts.entry(job).or_insert([0; 7]); if let Some(i) = ["completed", "failed", "assigned", "pending", "stopped"].iter().position(|x| *x == state) { c[i] = n; }
+                if first > 0 && (c[5] == 0 || first < c[5]) { c[5] = first; } c[6] = c[6].max(last); } } }
+        let mut out = String::from("["); let mut first_job = true;
+        if let Ok(mut st) = self.db.prepare_cached(&format!("SELECT job_id, manifest_json, current_state, priority, submitted_at_ms FROM jobs WHERE current_state != 'archived' {}", Self::ORDER)) { if let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))) {
+            for (id, text, state, priority, at) in rows.flatten() { let m: Value = serde_json::from_str(&text).unwrap_or(Value::Null); let c = counts.get(&id).copied().unwrap_or([0; 7]);
+                let mut v = json!({ "job_id": id, "template_id": m["template_id"].as_str().unwrap_or(""), "current_state": state, "priority": priority, "submitted_at_ms": at, "submitted_by": m["submitted_by"].as_str().unwrap_or(""),
+                    "frame_start": m["frame_start"].as_i64().unwrap_or(1), "frame_end": m["frame_end"].as_i64().unwrap_or(250), "chunk_size": m["chunk_size"].as_i64().unwrap_or(1), "total_chunks": c[0] + c[1] + c[2] + c[3], "completed_chunks": c[0], "failed_chunks": c[1],
+                    "rendering_chunks": c[2], "pending_chunks": c[3], "stopped_chunks": c[4], "first_assigned_ms": c[5], "last_completed_ms": c[6] });
+                if let Some(d) = m["output_dir"].as_str() { v["output_dir"] = json!(d); }
+                if let Some(o) = m["flags"].as_array().and_then(|f| f.iter().find(|f| f["is_output"] == json!(true))).and_then(|f| f["value"].as_str()).filter(|o| !o.is_empty()) { v["output_stem"] = json!(o); }
+                if !first_job { out.push(','); } first_job = false; out.push_str(&v.to_string()); } } }
+        out.push(']'); out
     }
     /// The snapshot (3.3): a copy made beside the farm's folder, then copied over the shared file.
     fn snapshot(&self, farm: &Path) {

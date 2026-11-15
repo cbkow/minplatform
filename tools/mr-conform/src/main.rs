@@ -62,7 +62,7 @@ impl Rec {
             "twospaces" => Some(format!("Bearer  {}", self.secret)), "basic" => Some(format!("Basic {}", self.secret)), _ => None };
         self.n += 1; let file = self.out.join(format!("{:03}-{name}.json", self.n));
         let (v, r) = match http(endpoint, method, path, header.as_deref(), body) {
-            Ok(a) => { let keep = &a.body[..a.body.len().min(2 << 20)];
+            Ok(a) => { let keep = &a.body[..a.body.len().min(64 << 20)];
                 (json!({ "name": name, "target": target, "method": method, "request_body": body, "path": path, "auth": auth, "status": a.status, "headers": a.headers.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
                     "body_len": a.body.len(), "body": String::from_utf8_lossy(keep), "ms": a.ms as u64 }), Some((a.status, a.body))) }
             Err(e) => (json!({ "name": name, "target": target, "method": method, "request_body": body, "path": path, "auth": auth, "error": e }), None) };
@@ -443,6 +443,18 @@ fn main() {
         Some("record") => record(&args).map(|_| true),
         Some("fake-render") | Some("fake-helper") => fake_render(&args),
         Some("lead") => lead(&args).map(|_| true),
+        // the size the farm must bear (row 389): N small jobs and one of F frames, none of them given out (a tag no node has); then how long the leader's answers take
+        Some("load") => (|| { let config = arg(&args, "--config").ok_or("--config")?; let cfg: Value = serde_json::from_str(&std::fs::read_to_string(&config).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            let root = cfg["sync_root"].as_str().unwrap_or(""); if cfg["ip_override"] != json!("127.0.0.1") || !root.replace('\\', "/").contains("/mr-farm/") { return Err("not a private farm: refused".to_string()) }
+            let secret = serde_json::from_str::<Value>(&std::fs::read_to_string(Path::new(root).join("MinRender-v2/farm.json")).map_err(|e| e.to_string())?).ok().and_then(|v| v["api_secret"].as_str().map(str::to_string)).ok_or("no secret")?; let bearer = format!("Bearer {secret}");
+            let me = format!("127.0.0.1:{}", cfg["http_port"].as_u64().unwrap_or(0)); let first = http(&me, "GET", "/api/jobs", Some(&bearer), None)?; let at = if first.status == 200 { me } else { serde_json::from_slice::<Value>(&first.body).ok().and_then(|v| v["leader_endpoint"].as_str().map(str::to_string)).ok_or("no leader")? };
+            let (jobs, frames, chunk): (i64, i64, i64) = (arg(&args, "--jobs").and_then(|x| x.parse().ok()).unwrap_or(10000), arg(&args, "--frames").and_then(|x| x.parse().ok()).unwrap_or(1_000_000), arg(&args, "--chunk").and_then(|x| x.parse().ok()).unwrap_or(10));
+            let m = |id: &str, b: i64, c: i64| json!({ "manifest": { "_version": 1, "job_id": id, "template_id": "load", "submitted_by": "load", "submitted_os": "macos", "submitted_at_ms": 1, "cmd": { "macos": "none", "windows": "none" }, "flags": [{ "flag": "", "value": "x", "is_output": true }], "frame_start": 1, "frame_end": b, "chunk_size": c, "max_retries": 3, "timeout_seconds": null, "output_dir": "x", "progress": {}, "output_detection": {}, "process": {}, "environment": {}, "tags_required": ["nobody-has-this"] } }).to_string();
+            let t = Instant::now(); http(&at, "POST", "/api/jobs", Some(&bearer), Some(&m("load-big", frames, chunk)))?; for i in 0..jobs { http(&at, "POST", "/api/jobs", Some(&bearer), Some(&m(&format!("load-{i:05}"), 100, 10)))?; }
+            println!("{} jobs submitted in {:.1} s", jobs + 1, t.elapsed().as_secs_f64());
+            let t = Instant::now(); loop { let a = http(&at, "GET", "/api/jobs", Some(&bearer), None)?; let n = serde_json::from_slice::<Value>(&a.body).ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0); if n as i64 > jobs || t.elapsed() > Duration::from_secs(600) { println!("the list holds {n} jobs {:.1} s later", t.elapsed().as_secs_f64()); break } std::thread::sleep(Duration::from_millis(500)); }
+            for (what, path) in [("the job list", "/api/jobs".to_string()), ("the big job's detail", "/api/jobs/load-big".to_string()), ("a small job's detail", "/api/jobs/load-00042".to_string()), ("the status", "/api/status".to_string())] { let mut worst = 0u128; let mut len = 0; for _ in 0..5 { let a = http(&at, "GET", &path, Some(&bearer), None)?; worst = worst.max(a.ms); len = a.body.len(); std::thread::sleep(Duration::from_millis(300)); } println!("{what}: {:.1} MB, slowest of five {worst} ms", len as f64 / 1e6); }
+            Ok(true) })(),
         // a private farm's folder with nothing in it but a secret, for a machine that has no 0.5.x build to make one
         Some("make-farm") => (|| { let share = arg(&args, "--share").ok_or("--share <dir>")?; if !share.replace('\\', "/").contains("/mr-farm/") { return Err("not under a folder named mr-farm: refused".to_string()) }
             let farm = Path::new(&share).join("MinRender-v2"); std::fs::create_dir_all(farm.join("nodes")).map_err(|e| e.to_string())?;
