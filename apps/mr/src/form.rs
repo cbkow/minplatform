@@ -113,7 +113,7 @@ impl Form {
     /// (scripted looks) The template whose name holds `word` is chosen, the name and each field filled, and the form sent - as a hand would.
     pub fn demo(&mut self, word: &str, fonts: &mut Fonts, node: &Arc<Node>) {
         if let Some(i) = self.templates.iter().position(|t| t["name"].as_str().is_some_and(|n| n.contains(word))) { self.choose(i, fonts); }
-        self.name.set_text_end("Demo Shot 010 v003", fonts); for r in self.flags.iter_mut() { let v = if r.file { "/Volumes/projects/jobs/demo/scenes/shot_010.blend" } else { "/Volumes/projects/jobs/demo/renders/shot_010/shot_010_####" }; r.field.set_text_end(v, fonts); }
+        self.name.set_text_end("Demo Shot 010 v003", fonts); for r in self.flags.iter_mut() { let v = match (r.file, cfg!(windows)) { (true, false) => "/Volumes/projects/jobs/demo/scenes/shot_010.blend", (false, false) => "/Volumes/projects/jobs/demo/renders/shot_010/shot_010_####", (true, true) => "P:\\jobs\\demo\\scenes\\shot_010.blend", (false, true) => "P:\\jobs\\demo\\renders\\shot_010\\shot_010_####" }; r.field.set_text_end(v, fonts); }
         self.nums[1].set_text_end("48", fonts); self.send(node);
     }
     /// A submission's answer, when it has come: the new job's id (the card then closes).
