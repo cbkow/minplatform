@@ -44,8 +44,11 @@ pub struct JobRow { pub id: String, pub state: String, pub priority: i64, pub to
     pub output_dir: String, pub output_stem: String }
 /// The picture the window shows of a job's output: the frame found, decoded and made small here - never on the
 /// window's thread. `note` is what to say where there is no picture.
-pub struct Preview { pub job: String, pub file: String, pub pin: Option<(i64, i64)>, pub size: (u32, u32), pub rgba: Arc<Vec<u8>>, pub note: Option<&'static str>, /// changes when the pixels do
+pub struct Preview { /// the EXR layer shown ("" = the file's own picture)
+    pub layer: String, pub job: String, pub file: String, pub pin: Option<(i64, i64)>, pub size: (u32, u32), pub rgba: Arc<Vec<u8>>, pub note: Option<&'static str>, /// changes when the pixels do
     pub stamp: u64 }
+/// One layer of an EXR for the layers card: its name and its picture made small (no size: it could not be read).
+pub struct LayerTile { pub name: String, pub size: (u32, u32), pub rgba: Vec<u8> }
 /// A chunk as the window shows it. `done` holds the finished frames only while the chunk is not `completed` (the
 /// frame grid needs them then; a completed chunk is all done, and a hundred thousand lists would be kept for nothing).
 pub struct ChunkRow { pub id: i64, pub a: i64, pub b: i64, pub state: String, pub node: String, pub assigned_ms: i64, pub completed_ms: i64, pub retries: i64, pub done: Vec<i64>, pub done_count: i64 }
@@ -75,6 +78,8 @@ pub struct Node {
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
     jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
     detail_of: Mutex<Option<String>>, detail_view: Mutex<Option<Arc<Detail>>>, /// the job (and the frames pinned) the window wants a picture of; the picture
+    /// the file the preview shows, on this machine; the EXR layer chosen for a job (kept until the application ends)
+    preview_path: Mutex<String>, layer_of: Mutex<BTreeMap<String, String>>,
     preview_of: Mutex<Option<(String, Option<(i64, i64)>)>>, preview_view: Mutex<Option<Arc<Preview>>>, /// what the Logs tab wants, and what was read for it
     log_of: Mutex<Option<LogWant>>, log_view: Mutex<Arc<LogData>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
     staging: bool, /// the heartbeat's socket and port, when heartbeats are on (1.6)
@@ -125,7 +130,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
+            preview_path: Mutex::new(String::new()), layer_of: Mutex::new(BTreeMap::new()), peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
@@ -293,7 +298,8 @@ impl Node {
     fn refresh_preview(self: &Arc<Self>, last: &mut Option<(PathBuf, u64, u64)>) {
         let Some((job, pin)) = self.preview_of.lock().unwrap().clone() else { *last = None; return };
         let Some((dir, stem)) = self.jobs_view.lock().unwrap().0.iter().find(|j| j.id == job).map(|j| (j.output_dir.clone(), j.output_stem.clone())) else { return };
-        let put = |file: String, size: (u32, u32), rgba: Vec<u8>, note: Option<&'static str>| { if self.preview_of.lock().unwrap().as_ref().map(|x| x.0.as_str()) == Some(job.as_str()) { *self.preview_view.lock().unwrap() = Some(Arc::new(Preview { job: job.clone(), file, pin, size, rgba: Arc::new(rgba), note, stamp: now_ms() })); } };
+        let layer = self.layer_of.lock().unwrap().get(&job).cloned().unwrap_or_default();
+        let put = |file: String, size: (u32, u32), rgba: Vec<u8>, note: Option<&'static str>| { if self.preview_of.lock().unwrap().as_ref().map(|x| x.0.as_str()) == Some(job.as_str()) { *self.preview_view.lock().unwrap() = Some(Arc::new(Preview { layer: layer.clone(), job: job.clone(), file, pin, size, rgba: Arc::new(rgba), note, stamp: now_ms() })); } };
         let nothing = if pin.is_some() { "Not rendered yet" } else { "No frames rendered yet" };
         let here = PathBuf::from(min_paths::map::from_canonical_windows_form(&dir, &self.mappings)); if dir.is_empty() || !here.is_dir() { *last = None; put(String::new(), (0, 0), Vec::new(), Some(nothing)); return }
         // the output's name as a pattern: each run of `#` is the frame's number
@@ -309,10 +315,23 @@ impl Node {
                 None => if let Ok(t) = e.metadata().and_then(|m| m.modified()) { if newest.as_ref().is_none_or(|(nt, _)| t > *nt) { newest = Some((t, p)); } } } } }
         let Some(path) = best.map(|(_, p)| p).or(if pin.is_none() { newest.map(|(_, p)| p) } else { None }) else { *last = None; put(String::new(), (0, 0), Vec::new(), Some(nothing)); return };
         let meta = std::fs::metadata(&path).ok(); let key = (path.clone(), meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0), meta.map(|m| m.len()).unwrap_or(0));
-        let fname = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        if last.as_ref() == Some(&key) { if self.preview_view.lock().unwrap().as_ref().is_some_and(|p| p.pin != pin) { if let Some(old) = self.preview() { put(fname, old.size, old.rgba.as_ref().clone(), old.note); } } return }
-        match min_image::load_thumbnail(&path.to_string_lossy(), "", 960) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); *last = Some(key); put(fname, (w, h), rgba, None); }
+        let fname = path.file_name().unwrap_or_default().to_string_lossy().into_owned(); *self.preview_path.lock().unwrap() = path.to_string_lossy().into_owned();
+        if last.as_ref() == Some(&key) && self.preview().is_none_or(|p| p.layer == layer) { if self.preview_view.lock().unwrap().as_ref().is_some_and(|p| p.pin != pin) { if let Some(old) = self.preview() { put(fname, old.size, old.rgba.as_ref().clone(), old.note); } } return }
+        // (a layer that this file does not have - another frame, another pass set - shows the file's own picture)
+        match min_image::load_thumbnail(&path.to_string_lossy(), &layer, 960).or_else(|e| if layer.is_empty() { Err(e) } else { min_image::load_thumbnail(&path.to_string_lossy(), "", 960) }) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); *last = Some(key); put(fname, (w, h), rgba, None); }
             Err(_) => { *last = None; put(fname, (0, 0), Vec::new(), Some("This frame cannot be shown yet")); } }
+    }
+    /// The EXR layer the preview shows for a job ("" = the file's own picture), and the choice of one.
+    pub fn layer(&self, job: &str) -> String { self.layer_of.lock().unwrap().get(job).cloned().unwrap_or_default() }
+    pub fn set_layer(&self, job: &str, layer: &str) { let mut m = self.layer_of.lock().unwrap(); if layer.is_empty() || layer == "default" { m.remove(job); } else { m.insert(job.to_string(), layer.to_string()); } }
+    /// The layers of the file the preview shows, for the layers card: listed, then each made small, one after the
+    /// other, off the window's thread. The flag says the list is whole.
+    pub fn layers_for_window(self: &Arc<Self>, into: Arc<Mutex<(Vec<LayerTile>, bool)>>) {
+        let path = self.preview_path.lock().unwrap().clone(); std::thread::spawn(move || {
+            for name in min_image::exr::layers(&path).unwrap_or_default() { if Arc::strong_count(&into) < 2 { return }   // the card was closed
+                let tile = match min_image::load_thumbnail(&path, if name == "default" { "" } else { &name }, 240) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); LayerTile { name, size: (w, h), rgba } } Err(_) => LayerTile { name, size: (0, 0), rgba: Vec::new() } };
+                into.lock().unwrap().0.push(tile); }
+            into.lock().unwrap().1 = true; });
     }
     /// What Farm Cleanup could clear (2.5 row 34, 6.7), as this node sees it: finished and archived jobs (a leader
     /// alone knows these), folders under `jobs/` no job owns, peers that do not answer, this machine's staging folders.

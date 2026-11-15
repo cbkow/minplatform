@@ -55,9 +55,12 @@ impl ApplicationHandler for Shell {
         let ids = [(show.id().0.clone(), "show"), (stop.id().0.clone(), "stop"), (exit.id().0.clone(), "exit"), (quit.id().0.clone(), "exit")];
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| { if let Some((_, n)) = ids.iter().find(|(id, _)| *id == e.id.0) { send(Msg::Menu(n)); } }));
         TrayIconEvent::set_event_handler(Some(|e: TrayIconEvent| { if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. } = e { send(Msg::TrayClick); } }));
-        // (a placeholder until minRender's own icon is in: a dot)
-        let px: Vec<u8> = (0..32 * 32).flat_map(|i| { let (x, y) = (i % 32, i / 32); let on = (x as i32 - 16).pow(2) + (y as i32 - 16).pow(2) < 150; [0, 0, 0, if on { 255 } else { 0 }] }).collect();
-        match tray_icon::Icon::from_rgba(px, 32, 32).ok().and_then(|icon| TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("minRender").with_icon(icon).with_icon_as_template(true).with_menu_on_left_click(cfg!(target_os = "macos")).build().ok()) {
+        // minRender's own icon, as 0.5.x shows it: black on clear for the macOS menu bar (a template: the system tints it), the colour mark on Windows
+        let (px, iw, ih) = { let bytes: &[u8] = if cfg!(target_os = "macos") { include_bytes!("../assets/icons/tray-macos.png") } else { include_bytes!("../assets/icons/tray-windows.png") };
+            let mut d = png::Decoder::new(std::io::Cursor::new(bytes)); d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16); let mut r = d.read_info().expect("the bundled icon"); let mut buf = vec![0u8; r.output_buffer_size()]; let info = r.next_frame(&mut buf).expect("the bundled icon"); buf.truncate(info.buffer_size());
+            let rgba: Vec<u8> = match info.color_type { png::ColorType::Rgba => buf, png::ColorType::Rgb => buf.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(), png::ColorType::GrayscaleAlpha => buf.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(), _ => buf.iter().flat_map(|g| [*g, *g, *g, 255]).collect() };
+            (rgba, info.width, info.height) };
+        match tray_icon::Icon::from_rgba(px, iw, ih).ok().and_then(|icon| TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("minRender").with_icon(icon).with_icon_as_template(cfg!(target_os = "macos")).with_menu_on_left_click(cfg!(target_os = "macos")).build().ok()) {
             Some(t) => self.tray = Some(t), None => crate::share::log("WARN", "farm", "no tray icon could be made: closing the window will minimise it") }
         self.status = Some(status); self.stop = Some(stop); self.refresh();
     }

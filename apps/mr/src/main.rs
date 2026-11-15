@@ -6,6 +6,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod cleanup;
 mod form;
+mod layers;
 mod http;
 mod instance;
 mod lead;
