@@ -26,7 +26,10 @@ fn log(s: impl AsRef<str>) { crate::share::log("INFO", "farm", s.as_ref()); }
 struct Shell { node: Arc<Node>, ended: Arc<std::sync::atomic::AtomicBool>, rx: Receiver<Msg>, window: Option<Arc<Box<dyn Window>>>, ui: Option<crate::ui::Ui>, pointer: (f64, f64), /// (shift, the command key - Control on Windows)
     mods: (bool, bool), tray: Option<TrayIcon>, status: Option<MenuItem>, stop: Option<MenuItem>, minimized: bool, shown: (String, bool), left: bool, _app_menu: Option<Menu> }
 impl Shell {
-    fn show(&self) { if let Some(w) = &self.window { w.set_visible(true); w.set_minimized(false); w.focus_window(); w.request_redraw(); } }
+    fn show(&mut self) {
+        // (Windows shows a window white until a frame is drawn in it: a frame first, then the window - row 428)
+        if cfg!(windows) { if let Some(ui) = self.ui.as_mut() { ui.redraw(&self.node.view()); } }
+        if let Some(w) = &self.window { w.set_visible(true); w.set_minimized(false); w.focus_window(); w.request_redraw(); } }
     /// What the tray says: its status line, its tooltip, the name of Stop / Resume - set when it changes, not at every turn.
     fn refresh(&mut self) {
         let (job, stopped) = self.node.state();
@@ -44,7 +47,7 @@ impl Shell {
 impl ApplicationHandler for Shell {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.window.is_some() { return }
-        #[allow(unused_mut)] let mut attrs = WindowAttributes::default().with_title("minRender").with_surface_size({ let (w, h) = crate::ui::Layout::load(&self.node.data).size.unwrap_or((1440.0, 900.0)); winit::dpi::LogicalSize::new(w, h) }).with_visible(!self.minimized);
+        #[allow(unused_mut)] let mut attrs = WindowAttributes::default().with_title("minRender").with_surface_size({ let (w, h) = crate::ui::Layout::load(&self.node.data).size.unwrap_or((1440.0, 900.0)); winit::dpi::LogicalSize::new(w, h) }).with_visible(!self.minimized && !cfg!(windows));   // Windows: made unseen, shown after its first frame (row 428; QCView's and minNotes' row 382)
         // Windows' two icons, as QCView's and minNotes' (rows 248, 372): the title bar's small one is the macOS icon, the taskbar's and Alt+Tab's the
         // exe's own resource (build.rs, id 1); the caption takes the window's colour, so the window is one surface from its top edge down
         #[cfg(windows)] {
@@ -61,6 +64,8 @@ impl ApplicationHandler for Shell {
         }
         self.window = el.create_window(attrs).ok().map(Arc::new);
         self.ui = self.window.clone().and_then(|w| crate::ui::Ui::new(w, self.node.clone())); if self.ui.is_none() { crate::share::log("WARN", "farm", "the window's content could not be set up (no renderer): the node runs, the window stays empty"); }
+        // the first frame, then the window (Windows: see where it is made unseen)
+        if cfg!(windows) && !self.minimized { if let Some(ui) = self.ui.as_mut() { ui.redraw(&self.node.view()); } if let Some(w) = &self.window { w.set_visible(true); w.request_redraw(); } }
         let (status, show, stop, exit) = (MenuItem::new("Idle", false, None), MenuItem::new("Show Window", true, None), MenuItem::new("Stop Node", true, None), MenuItem::new("Exit", true, None));
         let menu = Menu::new(); let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &show, &stop, &PredefinedMenuItem::separator(), &exit]);
         // macOS: the application's own menu, whose Quit goes the same way out as every other (never `terminate:`)

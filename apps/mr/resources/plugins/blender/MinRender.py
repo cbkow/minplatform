@@ -7,7 +7,7 @@
 bl_info = {
     "name": "MinRender",
     "author": "MinRender",
-    "version": (1, 0, 0),   # tracks the minRender app version; 0.5.8 = %USERPROFILE%\minRender data folder; 1.0.0 = the Blender 5.3 template
+    "version": (1, 0, 1),   # tracks the minRender app version; 0.5.8 = %USERPROFILE%\minRender data folder; 1.0.0 = the Blender 5.3 template
     "blender": (4, 0, 0),
     "location": "Render Properties > MinRender",
     "description": "Submit render jobs to MinRender farm",

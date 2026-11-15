@@ -5,7 +5,7 @@ kept here and changed here. They began as copies of the minRender repository's f
 release 0.5.11); that repository's copies are frozen with 0.5.x. The After Effects and Cinema 4D templates and
 plug-ins stay there as a starting point; this build neither ships them nor removes copies a farm already has.
 
-- `plugins/blender/MinRender.py` - the add-on, installed by hand on workstations (version 1.0.0). It names its
+- `plugins/blender/MinRender.py` - the add-on, installed by hand on workstations (version 1.0.1). It names its
   template by id: `blender-5.3-plugin`.
 - `templates/plugins/blender-5.3-plugin.json` - the template the add-on's submissions are baked from.
 - `templates/blender-5.3-studio.json` - the template the New Job form offers ("Studio": the owner, 2026-11-14).
