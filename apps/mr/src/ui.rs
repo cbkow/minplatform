@@ -22,16 +22,19 @@ pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presen
     on_chunks: bool, /// the panels' sizes, set by dragging the gaps between them and kept for the next start: the node panel's share of the
     /// width, the job list's share of the height beside it, the frame grid's height
     layout: Layout, /// the three gaps that can be dragged (the node panel's edge, under the job list, under the frame grid), and the one in hand or under the pointer
-    gaps: [Rect; 3], drag: Option<usize>, over: Option<usize>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
+    gaps: [Rect; 4], drag: Option<usize>, over: Option<usize>, /// the preview: the frames it is held to and since when (a pin lasts a minute), the picture as drawn, its "Latest" button, where the pane lies
+    pin: Option<((i64, i64), Instant)>, picture: Option<(u64, peniko::ImageBrush)>, latest: TextButton, pane: Rect, shown_job: Option<String>, /// the frame grid as laid out: (cells a row, a cell's size, the first frame)
+    grid_geom: (i64, f64, i64), /// this node's Stop / Resume; the peer the menu is for
+    node_btn: TextButton, peer_menu: Option<String>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
 /// How the window is laid out, as the owner left it (0.5.x kept the same in its own settings): in `window.json` in the
 /// data folder - never in `config.json`, which a 0.5.x build on the same machine rewrites without what it does not know.
 #[derive(Clone, Copy)]
-pub struct Layout { pub left: f64, pub list: f64, pub grid: f64, pub size: Option<(f64, f64)> }
+pub struct Layout { pub left: f64, pub list: f64, pub grid: f64, pub preview: f64, pub size: Option<(f64, f64)> }
 impl Layout {
     pub fn load(data: &std::path::Path) -> Layout { let v: serde_json::Value = std::fs::read_to_string(data.join("window.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null); let f = |k: &str, d: f64| v[k].as_f64().unwrap_or(d);
-        Layout { left: f("left", 0.28).clamp(0.1, 0.6), list: f("list", 0.34).clamp(0.1, 0.8), grid: f("grid", 220.0).clamp(60.0, 2000.0), size: v["width"].as_f64().zip(v["height"].as_f64()).filter(|(w, h)| *w >= 640.0 && *h >= 400.0) } }
-    pub fn save(&self, data: &std::path::Path) { let mut v = serde_json::json!({ "left": self.left, "list": self.list, "grid": self.grid }); if let Some((w, h)) = self.size { v["width"] = w.into(); v["height"] = h.into(); } let _ = std::fs::write(data.join("window.json"), serde_json::to_string_pretty(&v).unwrap_or_default()); }
+        Layout { left: f("left", 0.28).clamp(0.1, 0.6), list: f("list", 0.34).clamp(0.1, 0.8), grid: f("grid", 220.0).clamp(60.0, 2000.0), preview: f("preview", 240.0).clamp(80.0, 2000.0), size: v["width"].as_f64().zip(v["height"].as_f64()).filter(|(w, h)| *w >= 640.0 && *h >= 400.0) } }
+    pub fn save(&self, data: &std::path::Path) { let mut v = serde_json::json!({ "left": self.left, "list": self.list, "grid": self.grid, "preview": self.preview }); if let Some((w, h)) = self.size { v["width"] = w.into(); v["height"] = h.into(); } let _ = std::fs::write(data.join("window.json"), serde_json::to_string_pretty(&v).unwrap_or_default()); }
 }
 /// The job list's columns: (header, default width).
 const COLUMNS: [(&str, f64); 6] = [("Pri", 36.0), ("Name", 300.0), ("State", 90.0), ("Progress", 280.0), ("Duration", 80.0), ("Created", 140.0)];
@@ -57,7 +60,7 @@ impl Ui {
         let layer = UiLayer::new(&presenter.engine.device, size.width.max(1), size.height.max(1)).ok()?; presenter.engine.set_overlay(Some(layer.view()));
         let node_data = node.data.clone(); let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
-        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 3], drag: None, over: None, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } let s = self.window.scale_factor(); self.layout.size = Some((w as f64 / s, h as f64 / s)); self.layout.save(&self.node.data); self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
     pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
@@ -67,7 +70,7 @@ impl Ui {
         let id = d.chunks[i].id;
         if shift { let a = self.canchor.and_then(|a| d.chunks.iter().position(|c| c.id == a)).unwrap_or(i); self.csel = d.chunks[a.min(i)..=a.max(i)].iter().map(|c| c.id).collect(); }
         else if cmd { if !self.csel.remove(&id) { self.csel.insert(id); } self.canchor = Some(id); } else { self.csel = BTreeSet::from([id]); self.canchor = Some(id); }
-        self.ccursor = Some(id);
+        self.ccursor = Some(id); self.pin = Some(((d.chunks[i].a, d.chunks[i].b), Instant::now()));   // the preview follows the chunk in hand
     }
     /// The chosen jobs that a command applies to (row 389: a command is offered when it applies to at least one).
     fn applies(&self, view: &View, what: &str) -> Vec<String> { view.jobs.iter().filter(|j| self.sel.contains(&j.id) && match what { "pause" => j.state == "active", "resume" => j.state == "paused", _ => true }).map(|j| j.id.clone()).collect() }
@@ -97,18 +100,28 @@ impl Ui {
         if self.menu.is_open() { let (chosen, _, _) = self.menu.event(e); if let Some(i) = chosen { let what = self.menu_acts.get(i).copied().unwrap_or(""); self.menu.close();
             // a chunk command goes to the chunks it applies to: back to the queue - those given out, failed or stopped; stop - those waiting or given out
             if let Some(c) = what.strip_prefix("chunk:") { if let Some(d) = self.node.detail() { let ids: Vec<i64> = d.chunks.iter().filter(|x| self.csel.contains(&x.id) && if c == "stop" { matches!(x.state.as_str(), "pending" | "assigned") } else { matches!(x.state.as_str(), "assigned" | "failed" | "stopped") }).map(|x| x.id).collect(); if !ids.is_empty() { self.node.chunk_command(ids, if c == "stop" { "stop" } else { "reassign" }); } } }
+            else if let Some(c) = what.strip_prefix("peer:") { if let Some(id) = self.peer_menu.take() { self.node.peer_command(vec![id], match c { "stop" => "stop", "start" => "start", "restart" => "restart", "unsuspend" => "unsuspend", _ => "signal" }); } }
             else if !what.is_empty() { self.act(view, what, false); } } return }
         // the gaps between the panels: dragged, they resize what lies on either side; the sizes are kept when the drag ends
         { let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); let top = (TITLE + 12.0) * s;
             match *e {
                 Event::Down { x, y, button: Button::Primary } => if let Some(i) = self.gaps.iter().position(|g| g.inflate(2.0 * s, 2.0 * s).contains(kurbo::Point::new(x, y))) { self.drag = Some(i); return },
-                Event::Move { x, y } => { if let Some(i) = self.drag { match i { 0 => self.layout.left = (x / w).clamp(260.0 * s / w, 0.6), 1 => self.layout.list = ((y - top) / (h - top)).clamp(0.1, 0.8), _ => self.layout.grid = ((y - self.grid_rect.y0 + 4.0 * s) / s).clamp(60.0, 2000.0) } return }
+                Event::Move { x, y } => { if let Some(i) = self.drag { match i { 0 => self.layout.left = (x / w).clamp(260.0 * s / w, 0.6), 1 => self.layout.list = ((y - top) / (h - top)).clamp(0.1, 0.8), 2 => self.layout.grid = ((y - self.grid_rect.y0 + 4.0 * s) / s).clamp(60.0, 2000.0), _ => self.layout.preview = ((h - 12.0 * s - 32.0 * s - y) / s).clamp(80.0, (h / s - 320.0).max(80.0)) } return }
                     let over = self.gaps.iter().position(|g| g.inflate(2.0 * s, 2.0 * s).contains(kurbo::Point::new(x, y)));
                     if over != self.over { self.over = over; self.window.set_cursor(winit31::cursor::Cursor::Icon(match over { Some(0) => winit31::cursor::CursorIcon::ColResize, Some(_) => winit31::cursor::CursorIcon::RowResize, None => winit31::cursor::CursorIcon::Default })); } }
                 Event::Up { .. } => if self.drag.take().is_some() { self.layout.save(&self.node.data); return },
                 _ => {}
             } }
         if self.jobs_bar.event(e, now).1 || self.peers_bar.event(e, now).1 || self.grid_bar.event(e, now).1 || self.chunks_bar.event(e, now).1 { return }
+        if self.node_btn.event(e, now).0 { self.node.toggle_stopped(); return } if self.pin.is_some() && self.latest.event(e, now).0 { self.pin = None; return }
+        // a frame's cell in the grid: the preview is held to that frame
+        if let Event::Down { x, y, button: Button::Primary } = *e { if self.grid_rect.contains(kurbo::Point::new(x, y)) { let (per_row, slot, first) = self.grid_geom; let (col, row) = (((x - self.grid_rect.x0) / slot) as i64, ((y - self.grid_rect.y0 + self.grid_bar.offset) / slot) as i64);
+            if col < per_row { let f = first + row * per_row + col; if self.node.detail().is_some_and(|d| f <= d.last) { self.pin = Some(((f, f), now)); } } return } }
+        // a peer: the right button opens what can be asked of it
+        if let Event::Down { x, y, button: Button::Secondary } = *e { if self.peers_rect.contains(kurbo::Point::new(x, y)) { let i = ((y - self.peers_rect.y0 + self.peers_bar.offset) / (PEER_ROW * s)) as usize; if let Some(p) = view.peers.get(i) {
+            let (items, acts) = if p.alive { (vec![MenuItem::action(&p.id, false), MenuItem::Separator, MenuItem::action("Stop", !p.stopped), MenuItem::action("Start", p.stopped), MenuItem::action("Restart App", true), MenuItem::action("Unsuspend", true)], vec!["", "", "peer:stop", "peer:start", "peer:restart", "peer:unsuspend"]) }
+                else { (vec![MenuItem::action(&p.id, false), MenuItem::Separator, MenuItem::action("Write restart signal (filesystem)", true)], vec!["", "", "peer:signal"]) };
+            self.peer_menu = Some(p.id.clone()); self.menu_acts = acts; let size = self.window.surface_size(); self.menu.open_at(items, &mut self.fonts, x, y, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); } return } }
         if let Event::Down { x, y, button } = *e { if self.chunks_rect.contains(kurbo::Point::new(x, y)) { self.on_chunks = true; if let Some(d) = self.node.detail() { match self.chunk_at(y, &d) {
             Some(i) => { if button == Button::Secondary { if !self.csel.contains(&d.chunks[i].id) { self.choose_chunk(i, &d, false, false); }
                     let chosen: Vec<&ChunkRow> = d.chunks.iter().filter(|c| self.csel.contains(&c.id)).collect(); let n = chosen.len(); let all_stopped = chosen.iter().all(|c| c.state == "stopped"); let back = chosen.iter().filter(|c| matches!(c.state.as_str(), "assigned" | "failed" | "stopped")).count(); let stoppable = chosen.iter().filter(|c| matches!(c.state.as_str(), "pending" | "assigned")).count();
@@ -178,9 +191,16 @@ impl Ui {
         let tags = me["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(); let dash = |v: &str| if v.is_empty() { "\u{2014}".to_string() } else { v.to_string() };
         for (i, (k, v, mono)) in [("Host", host.to_string(), false), ("Node ID", me["node_id"].as_str().unwrap_or("").to_string(), true), ("GPU", dash(me["gpu_name"].as_str().unwrap_or("")), false), ("CPU / RAM", format!("{} cores \u{b7} {ram}", me["cpu_cores"]), false), ("Tags", dash(&tags), false)].iter().enumerate() {
             let cy = card.y0 + 8.0 * s + (i as f64 + 0.5) * 24.0 * s; text(scene, k, card.x0 + 12.0 * s, cy, t::DETAIL_SIZE_M, false, false, sub, 80.0 * s); text(scene, v, card.x0 + 100.0 * s, cy, t::DETAIL_SIZE_M, false, *mono, ink, card.width() - 112.0 * s); }
-        let py = card.y1 + pad; let online = view.peers.iter().filter(|p| p.alive).count();
+        // this node's Stop / Resume, under its card (Stop ends a render under way at once: row 404)
+        let nb = Rect::new(card.x0, card.y1 + 8.0 * s, card.x1, card.y1 + 8.0 * s + 24.0 * s); let node_btn_rect = nb;
+        // the preview's place at the foot of the panel, when a job is in hand: its header, the pane, its foot
+        let pv_h = if self.cursor.is_some() { (self.layout.preview * s).min(h - top - 320.0 * s).max(80.0 * s) } else { 0.0 };
+        let pane = if pv_h > 0.0 { Rect::new(pad, h - pad - 32.0 * s - pv_h, left - pad / 2.0, h - pad - 32.0 * s) } else { Rect::ZERO }; self.pane = pane;
+        self.gaps[3] = if pv_h > 0.0 { Rect::new(pad, pane.y0 - 32.0 * s - pad / 2.0, left - pad / 2.0, pane.y0 - 32.0 * s) } else { Rect::ZERO };
+        let peers_bottom = if pv_h > 0.0 { pane.y0 - 32.0 * s - pad / 2.0 } else { h - pad };
+        let py = nb.y1 + pad; let online = view.peers.iter().filter(|p| p.alive).count();
         let hw = text(scene, "Peers", pad, py + 10.0 * s, t::BODY_SIZE_S, true, false, ink, 100.0 * s); text(scene, &format!("\u{b7} {online} online"), pad + hw + 6.0 * s, py + 10.0 * s, t::DETAIL_SIZE_M, false, false, sub, 160.0 * s);
-        self.peers_rect = Rect::new(pad, py + 24.0 * s, left - pad / 2.0, h - pad); self.peers_bar.set(self.peers_rect, view.peers.len() as f64 * PEER_ROW * s, s);
+        self.peers_rect = Rect::new(pad, py + 24.0 * s, left - pad / 2.0, peers_bottom.max(py + 24.0 * s)); self.peers_bar.set(self.peers_rect, view.peers.len() as f64 * PEER_ROW * s, s);
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &self.peers_rect);
         let first = (self.peers_bar.offset / (PEER_ROW * s)) as usize;
         for (i, p) in view.peers.iter().enumerate().skip(first).take((self.peers_rect.height() / (PEER_ROW * s)) as usize + 2) {
@@ -194,6 +214,28 @@ impl Ui {
             text(scene, &line, r.x0 + 28.0 * s, r.y0 + 34.0 * s, t::DETAIL_SIZE_M, false, false, sub, r.width() - 36.0 * s);
         }
         scene.pop_layer(); self.peers_bar.paint(scene, now);
+        // -- the preview (the spec's 3): the job's latest frame, or the frames the grid or the chunk table hold it to
+        if self.shown_job != self.cursor { self.shown_job = self.cursor.clone(); self.pin = None; self.picture = None; }
+        if self.pin.is_some_and(|(_, t)| t.elapsed().as_secs() >= 60) { self.pin = None; }
+        self.node.show_preview(self.cursor.clone().map(|j| (j, self.pin.map(|(r, _)| r)))); let pv = self.node.preview();
+        let mut latest_rect = Rect::ZERO;
+        if pv_h > 0.0 {
+            let hy = pane.y0 - 16.0 * s; let hw = text(scene, "Preview", pad, hy, t::BODY_SIZE_S, true, false, ink, 100.0 * s); text(scene, &format!("\u{b7} {}", self.cursor.as_deref().unwrap_or("")), pad + hw + 6.0 * s, hy, t::DETAIL_SIZE_M, false, true, sub, pane.width() - hw - 12.0 * s);
+            paint::rounded(scene, pane, t::CORNER_RADIUS_500 as f64 * s, GRID_PIT);
+            match &pv { Some(p) if p.note.is_none() && p.size.0 > 0 => {
+                    if self.picture.as_ref().is_none_or(|(st, _)| *st != p.stamp) { self.picture = Some((p.stamp, paint::image_rgba8(p.size.0, p.size.1, p.rgba.as_ref().clone()))); }
+                    // fitted, its shape kept, four pixels clear of the pane's edge
+                    let inner = pane.inset(-4.0 * s); let k = (inner.width() / p.size.0 as f64).min(inner.height() / p.size.1 as f64); let (dw, dh) = (p.size.0 as f64 * k, p.size.1 as f64 * k);
+                    if let Some((_, brush)) = &self.picture { paint::image(scene, brush, Rect::new(inner.center().x - dw / 2.0, inner.center().y - dh / 2.0, inner.center().x + dw / 2.0, inner.center().y + dh / 2.0)); } }
+                Some(p) => { let note = p.note.unwrap_or(""); text(scene, note, pane.center().x - note.len() as f64 * 3.4 * s, pane.center().y, t::DETAIL_SIZE_M, false, false, sub, pane.width() - 16.0 * s); }
+                None => {} }
+            // the foot: the pin's tag, the file's name, "Latest" while pinned
+            let fy = pane.y1 + 16.0 * s; let mut fx = pad;
+            if let Some(((a, b), _)) = self.pin { fx += text(scene, &if a == b { format!("\u{25c9} f{a}") } else { format!("\u{25c9} {a}-{b}") }, fx, fy, t::DETAIL_SIZE_M, true, false, paint::color(t::NOTICE_VISUAL_COLOR), 120.0 * s) + 8.0 * s; }
+            let lw = if self.pin.is_some() { 64.0 * s } else { 0.0 };
+            text(scene, pv.as_ref().map(|p| p.file.as_str()).filter(|f| !f.is_empty()).unwrap_or("Preview"), fx, fy, t::DETAIL_SIZE_M, false, true, sub, (pane.x1 - fx - lw - 8.0 * s).max(0.0));
+            if self.pin.is_some() { latest_rect = Rect::new(pane.x1 - lw, fy - 12.0 * s, pane.x1, fy + 12.0 * s); }
+        }
         // -- the job list
         let jx = left + pad / 2.0; let n = view.jobs.len();
         let tw = text(scene, "Jobs", jx, top + STRIP * s / 2.0 - 6.0 * s, t::BODY_SIZE_S, true, false, ink, 80.0 * s); let cw = text(scene, &format!("\u{b7} {n}"), jx + tw + 6.0 * s, top + STRIP * s / 2.0 - 6.0 * s, t::DETAIL_SIZE_M, false, false, sub, 120.0 * s);
@@ -242,7 +284,7 @@ impl Ui {
                 let head = Rect::new(body.x0, body.y0, body.x1, body.y0 + 86.0 * s); paint::rounded(scene, head, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
                 let (total, done, running, failed) = d.chunks.iter().fold((0, 0, 0, 0), |(t0, dn, rn, fl), c| (t0 + (c.state != "stopped") as i64, dn + (c.state == "completed") as i64, rn + (c.state == "assigned") as i64, fl + (c.state == "failed") as i64));
                 let idw = text(scene, &d.id, head.x0 + 12.0 * s, head.y0 + 20.0 * s, t::BODY_SIZE_M, true, true, ink, head.width() - 160.0 * s);
-                let fake = JobRow { id: String::new(), state: d.state.clone(), priority: 0, total, done, stopped: 0, first_ms: 0, last_ms: 0, created_ms: 0 }; let (word, color) = state_of(&fake); let word = word.to_uppercase();
+                let fake = JobRow { id: String::new(), state: d.state.clone(), priority: 0, total, done, stopped: 0, first_ms: 0, last_ms: 0, created_ms: 0, output_dir: String::new(), output_stem: String::new() }; let (word, color) = state_of(&fake); let word = word.to_uppercase();
                 let pill = Rect::new(head.x0 + 12.0 * s + idw + 10.0 * s, head.y0 + 11.0 * s, head.x0 + 12.0 * s + idw + 10.0 * s + (word.len() as f64 * 7.5 + 14.0) * s, head.y0 + 29.0 * s); paint::rounded(scene, pill, 3.0 * s, color); text(scene, &word, pill.x0 + 7.0 * s, pill.center().y, t::DETAIL_SIZE_S, true, false, paint::color(t::BACKGROUND_BASE_COLOR), pill.width());
                 let bar = Rect::new(head.x0 + 12.0 * s, head.y0 + 40.0 * s, head.x1 - 110.0 * s, head.y0 + 50.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_BASE_COLOR); if total > 0 && done > 0 { paint::rounded(scene, Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * (done as f64 / total as f64).min(1.0), bar.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
                 text(scene, &format!("{done} / {total}"), bar.x1 + 10.0 * s, bar.center().y, t::DETAIL_SIZE_M, false, true, ink, 96.0 * s);
@@ -254,7 +296,7 @@ impl Ui {
                 // the frame grid: one cell a frame, in reading order; only the rows in view are drawn, whatever the job's length
                 let rest = Rect::new(body.x0, head.y1 + pad / 2.0, body.x1, body.y1); let grid_h = (self.layout.grid * s).min(rest.height() - 120.0 * s).max(60.0 * s);
                 let grid = Rect::new(rest.x0, rest.y0, rest.x1, rest.y0 + grid_h); paint::rounded(scene, grid, t::CORNER_RADIUS_500 as f64 * s, GRID_PIT); let inner = grid.inset(-4.0 * s); self.grid_rect = inner;
-                let slot = CELL * s; let per_row = ((inner.width() - 10.0 * s) / slot).floor().max(1.0) as i64; let frames = (d.last - d.first + 1).max(0); let grid_rows = (frames + per_row - 1) / per_row;
+                let slot = CELL * s; let per_row = ((inner.width() - 10.0 * s) / slot).floor().max(1.0) as i64; self.grid_geom = (per_row, slot, d.first); let frames = (d.last - d.first + 1).max(0); let grid_rows = (frames + per_row - 1) / per_row;
                 self.grid_bar.set(inner, grid_rows as f64 * slot, s);
                 scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &inner);
                 let first_row = (self.grid_bar.offset / slot) as i64; let mut ci = 0usize;
@@ -263,7 +305,9 @@ impl Ui {
                     while ci < d.chunks.len() && d.chunks[ci].b < f { ci += 1; } if ci >= d.chunks.len() || d.chunks[ci].a > f { if ci > 0 && d.chunks[ci.min(d.chunks.len() - 1)].a > f { ci = d.chunks.partition_point(|c| c.b < f); } }
                     let c = d.chunks.get(ci).filter(|c| c.a <= f && f <= c.b);
                     let color = match c { None => Some(GRID_FREE), Some(c) => match c.state.as_str() { "stopped" => None, "completed" => Some(t::POSITIVE_VISUAL_COLOR), st => if c.done.binary_search(&f).is_ok() { Some(GRID_RENDERED) } else { match st { "assigned" => Some(t::ACCENT_VISUAL_COLOR), "failed" => Some(t::NEGATIVE_VISUAL_COLOR), _ => Some(GRID_FREE) } } } };
-                    if let Some(color) = color { let (x, y) = (inner.x0 + col as f64 * slot, inner.y0 + row as f64 * slot - self.grid_bar.offset); paint::rect(scene, Rect::new(x + s, y + s, x + slot - s, y + slot - s), color); } } }
+                    let (x, y) = (inner.x0 + col as f64 * slot, inner.y0 + row as f64 * slot - self.grid_bar.offset);
+                    if let Some(color) = color { paint::rect(scene, Rect::new(x + s, y + s, x + slot - s, y + slot - s), color); }
+                    if self.pin.is_some_and(|((a, b), _)| a == b && a == f) { scene.stroke(&kurbo::Stroke::new(s), Affine::IDENTITY, paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), None, &Rect::new(x, y, x + slot, y + slot)); } } }
                 scene.pop_layer(); self.grid_bar.paint(scene, now);
                 // the chunk table
                 self.gaps[2] = Rect::new(rest.x0, grid.y1, rest.x1, grid.y1 + pad / 2.0);
@@ -295,6 +339,8 @@ impl Ui {
         if let Some(i) = self.drag.or(self.over) { let g = self.gaps[i]; if i == 0 { paint::rect(scene, Rect::new(g.center().x - s, g.y0, g.center().x + s, g.y1), t::ACCENT_VISUAL_COLOR); } else { paint::rect(scene, Rect::new(g.x0, g.center().y - s, g.x1, g.center().y + s), t::ACCENT_VISUAL_COLOR); } }
         // the strip's buttons, then what lies over everything: the menu, the question
         for ((b, _), (r, on)) in self.strip.iter_mut().zip(&strip_rects) { b.rect = *r; b.enabled = *on; b.paint(scene, &mut self.fonts, s, now); }
+        self.node_btn.label = if stopped { "Resume".into() } else { "Stop".into() }; self.node_btn.variant = if stopped { Variant::Primary } else { Variant::Secondary }; self.node_btn.rect = node_btn_rect; self.node_btn.paint(scene, &mut self.fonts, s, now);
+        if self.pin.is_some() && latest_rect.width() > 0.0 { self.latest.rect = latest_rect; self.latest.paint(scene, &mut self.fonts, s, now); } else { self.latest.rect = Rect::ZERO; }
         self.menu.paint(scene, &mut self.fonts, s);
         if let Some((d, _)) = self.confirm.as_mut() { let view_rect = Rect::new(0.0, 0.0, w, h); d.layout(&mut self.fonts, view_rect, s); d.paint(scene, &mut self.fonts, s, view_rect, now); }
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);

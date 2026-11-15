@@ -40,7 +40,12 @@ struct Work { queue: VecDeque<Assignment>, running: Option<Running>, /// from an
     busy: bool }
 
 /// A job as the window lists it (2.6).
-pub struct JobRow { pub id: String, pub state: String, pub priority: i64, pub total: i64, pub done: i64, pub stopped: i64, pub first_ms: i64, pub last_ms: i64, pub created_ms: i64 }
+pub struct JobRow { pub id: String, pub state: String, pub priority: i64, pub total: i64, pub done: i64, pub stopped: i64, pub first_ms: i64, pub last_ms: i64, pub created_ms: i64, /// where the job writes, and its output's name with the padding token - as manifests carry them (Windows form)
+    pub output_dir: String, pub output_stem: String }
+/// The picture the window shows of a job's output: the frame found, decoded and made small here - never on the
+/// window's thread. `note` is what to say where there is no picture.
+pub struct Preview { pub job: String, pub file: String, pub pin: Option<(i64, i64)>, pub size: (u32, u32), pub rgba: Arc<Vec<u8>>, pub note: Option<&'static str>, /// changes when the pixels do
+    pub stamp: u64 }
 /// A chunk as the window shows it. `done` holds the finished frames only while the chunk is not `completed` (the
 /// frame grid needs them then; a completed chunk is all done, and a hundred thousand lists would be kept for nothing).
 pub struct ChunkRow { pub id: i64, pub a: i64, pub b: i64, pub state: String, pub node: String, pub assigned_ms: i64, pub completed_ms: i64, pub retries: i64, pub done: Vec<i64>, pub done_count: i64 }
@@ -59,7 +64,8 @@ pub struct Node {
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
     jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
-    detail_of: Mutex<Option<String>>, detail_view: Mutex<Option<Arc<Detail>>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
+    detail_of: Mutex<Option<String>>, detail_view: Mutex<Option<Arc<Detail>>>, /// the job (and the frames pinned) the window wants a picture of; the picture
+    preview_of: Mutex<Option<(String, Option<(i64, i64)>)>>, preview_view: Mutex<Option<Arc<Preview>>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
     staging: bool, /// the heartbeat's socket and port, when heartbeats are on (1.6)
     udp: Option<(std::net::UdpSocket, u16)>, /// submission files that were dealt with and could not be moved away
     submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
@@ -108,7 +114,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
@@ -238,6 +244,46 @@ impl Node {
         let d = Detail { id: id.clone(), state: v["current_state"].as_str().unwrap_or("").to_string(), priority: n(&v, "priority"), created_ms: n(&v, "submitted_at_ms"), first: n(&v["manifest"], "frame_start"), last: n(&v["manifest"], "frame_end"), chunks };
         if self.detail_of.lock().unwrap().as_deref() == Some(id.as_str()) { *self.detail_view.lock().unwrap() = Some(Arc::new(d)); }
     }
+    /// The job the window wants a picture of, and the frames it is pinned to (none: the latest).
+    pub fn show_preview(&self, want: Option<(String, Option<(i64, i64)>)>) { let mut p = self.preview_of.lock().unwrap(); if *p != want { if p.as_ref().map(|x| &x.0) != want.as_ref().map(|x| &x.0) { *self.preview_view.lock().unwrap() = None; } *p = want; } }
+    pub fn preview(&self) -> Option<Arc<Preview>> { self.preview_view.lock().unwrap().clone() }
+    /// The picture for the window (the spec's 3.2-3.4), made here. The job's output folder, through this machine's
+    /// mappings, is listed once - its own files only; the file whose name carries the HIGHEST frame number wins (inside
+    /// the pin, when there is one); it is decoded small. A file written again under the same name is decoded again
+    /// (0.5.x kept the old picture); one that cannot be read yet says so and is tried at the next turn (row 389).
+    fn refresh_preview(self: &Arc<Self>, last: &mut Option<(PathBuf, u64, u64)>) {
+        let Some((job, pin)) = self.preview_of.lock().unwrap().clone() else { *last = None; return };
+        let Some((dir, stem)) = self.jobs_view.lock().unwrap().0.iter().find(|j| j.id == job).map(|j| (j.output_dir.clone(), j.output_stem.clone())) else { return };
+        let put = |file: String, size: (u32, u32), rgba: Vec<u8>, note: Option<&'static str>| { if self.preview_of.lock().unwrap().as_ref().map(|x| x.0.as_str()) == Some(job.as_str()) { *self.preview_view.lock().unwrap() = Some(Arc::new(Preview { job: job.clone(), file, pin, size, rgba: Arc::new(rgba), note, stamp: now_ms() })); } };
+        let nothing = if pin.is_some() { "Not rendered yet" } else { "No frames rendered yet" };
+        let here = PathBuf::from(min_paths::map::from_canonical_windows_form(&dir, &self.mappings)); if dir.is_empty() || !here.is_dir() { *last = None; put(String::new(), (0, 0), Vec::new(), Some(nothing)); return }
+        // the output's name as a pattern: each run of `#` is the frame's number
+        let name = stem.rsplit(['/', '\\']).next().unwrap_or(""); let pattern = { let mut p = String::from("(?i)^"); let mut hashes = false; let mut any = false;
+            for ch in name.replace("[#", "#").replace("#]", "#").chars() { if ch == '#' { if !hashes { p.push_str("(\\d+)"); hashes = true; any = true; } } else { hashes = false; p.push_str(&regex::escape(&ch.to_string())); } }
+            if !any { p.push_str("(\\d+)\\.\\w+"); } else { p.push_str("(\\.\\w+)?"); } p.push('$'); if name.is_empty() { None } else { regex::Regex::new(&p).ok() } };
+        let tail = regex::Regex::new("(\\d+)\\.\\w+$").unwrap();
+        let mut best: Option<(i64, PathBuf)> = None; let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+        if let Ok(rd) = std::fs::read_dir(&here) { for e in rd.flatten() { let p = e.path(); let fname = e.file_name().to_string_lossy().into_owned();
+            if !p.extension().and_then(|x| x.to_str()).is_some_and(|x| ["exr", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "tga"].contains(&x.to_ascii_lowercase().as_str())) || !p.is_file() { continue }
+            let frame = pattern.as_ref().and_then(|r| r.captures(&fname)).or_else(|| if pattern.is_none() { tail.captures(&fname) } else { None }).and_then(|c| c.get(1)).and_then(|m| m.as_str().parse::<i64>().ok());
+            match frame { Some(f) => if pin.is_none_or(|(a, b)| a <= f && f <= b) && best.as_ref().is_none_or(|(bf, _)| f > *bf) { best = Some((f, p)); },
+                None => if let Ok(t) = e.metadata().and_then(|m| m.modified()) { if newest.as_ref().is_none_or(|(nt, _)| t > *nt) { newest = Some((t, p)); } } } } }
+        let Some(path) = best.map(|(_, p)| p).or(if pin.is_none() { newest.map(|(_, p)| p) } else { None }) else { *last = None; put(String::new(), (0, 0), Vec::new(), Some(nothing)); return };
+        let meta = std::fs::metadata(&path).ok(); let key = (path.clone(), meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0), meta.map(|m| m.len()).unwrap_or(0));
+        let fname = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if last.as_ref() == Some(&key) { if self.preview_view.lock().unwrap().as_ref().is_some_and(|p| p.pin != pin) { if let Some(old) = self.preview() { put(fname, old.size, old.rgba.as_ref().clone(), old.note); } } return }
+        match min_image::load_thumbnail(&path.to_string_lossy(), "", 960) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); *last = Some(key); put(fname, (w, h), rgba, None); }
+            Err(_) => { *last = None; put(fname, (0, 0), Vec::new(), Some("This frame cannot be shown yet")); } }
+    }
+    /// What the window asks of another node (the peers' menu): "stop", "start", "restart" - said to that node; "unsuspend" -
+    /// said to the leader; "signal" - the restart file put in the node's folder on the share, for a node that does not answer.
+    pub fn peer_command(self: &Arc<Self>, ids: Vec<String>, what: &'static str) {
+        let me = self.clone(); std::thread::spawn(move || for id in ids { match what {
+            "signal" => { let d = me.farm.join("nodes").join(&id); if d.is_dir() { let _ = std::fs::write(d.join("restart"), b""); } }
+            "unsuspend" => { let _ = me.to_leader(&format!("/api/nodes/{id}/unsuspend"), ""); }
+            _ => { let to = me.peers.lock().unwrap().get(&id).map(|p| p.endpoint.clone()); if let Some(to) = to { if http::call(&to, "POST", &format!("/api/node/{what}"), Some(&me.secret), Some(""), Duration::from_secs(3), Duration::from_secs(10)).is_none_or(|(s, _)| s != 200) { crate::share::log("WARN", "peer", &format!("{what} of node {id}: it did not take it")); } } } } });
+    }
+    pub fn toggle_stopped(&self) { let on = !self.stopped.load(Ordering::Relaxed); self.set_stopped(on); }
     /// What the window asks of chunks: "reassign" (back to the queue) or "stop" - said to the leader off the window's thread.
     pub fn chunk_command(self: &Arc<Self>, ids: Vec<i64>, what: &'static str) {
         let me = self.clone(); std::thread::spawn(move || { for id in ids { let body = json!({ "chunk_id": id }).to_string(); if me.to_leader(&format!("/api/chunks/{what}"), &body).is_none_or(|(s, _)| s != 200) { crate::share::log("WARN", "job", &format!("{what} of chunk {id}: the leader did not take it")); } } me.refresh_detail(); me.refresh_jobs_view(); });
@@ -313,7 +359,7 @@ impl Node {
         if self.lead.lock().unwrap().is_none() && self.leader().is_none() { return }
         let body = if self.lead.lock().unwrap().is_some() { self.lead_answer("GET", "/api/jobs", b"").map(|r| r.body) } else { self.leader().and_then(|l| http::call(&l, "GET", "/api/jobs", Some(&self.secret), None, Duration::from_millis(500), Duration::from_secs(1))).filter(|(s, _)| *s == 200).map(|(_, b)| b) };
         let rows = body.and_then(|b| if b.is_empty() { Some(Vec::new()) } else { serde_json::from_slice::<Vec<Value>>(&b).ok().map(|a| a.iter().map(|j| { let n = |k: &str| j[k].as_i64().unwrap_or(0);
-            JobRow { id: j["job_id"].as_str().unwrap_or("").to_string(), state: j["current_state"].as_str().unwrap_or("").to_string(), priority: n("priority"), total: n("total_chunks"), done: n("completed_chunks"), stopped: n("stopped_chunks"), first_ms: n("first_assigned_ms"), last_ms: n("last_completed_ms"), created_ms: n("submitted_at_ms") } }).collect()) });
+            JobRow { id: j["job_id"].as_str().unwrap_or("").to_string(), state: j["current_state"].as_str().unwrap_or("").to_string(), priority: n("priority"), total: n("total_chunks"), done: n("completed_chunks"), stopped: n("stopped_chunks"), first_ms: n("first_assigned_ms"), last_ms: n("last_completed_ms"), created_ms: n("submitted_at_ms"), output_dir: j["output_dir"].as_str().unwrap_or("").to_string(), output_stem: j["output_stem"].as_str().unwrap_or("").to_string() } }).collect()) });
         let mut v = self.jobs_view.lock().unwrap(); match rows { Some(r) => *v = (Arc::new(r), true), None => v.1 = false }
     }
     /// What the tray and the window say of this node: (rendering which job, stopped).
@@ -524,6 +570,9 @@ impl Node {
         // the window's job detail: at once when another job is asked for, then every 3 s
         { let me = self.clone(); std::thread::spawn(move || { let (mut last, mut at) = (None::<String>, Instant::now()); while !me.stop.load(Ordering::Relaxed) { let want = me.detail_of.lock().unwrap().clone();
             if want.is_some() && (want != last || at.elapsed() >= Duration::from_secs(3)) { me.refresh_detail(); at = Instant::now(); } last = want; std::thread::sleep(Duration::from_millis(100)); } }); }
+        // the window's picture of a job's output: at once when another job or pin is asked for, then every 3 s
+        { let me = self.clone(); std::thread::spawn(move || { let (mut asked, mut at, mut last) = (None, Instant::now(), None); while !me.stop.load(Ordering::Relaxed) { let want = me.preview_of.lock().unwrap().clone();
+            if want.is_some() && (want != asked || at.elapsed() >= Duration::from_secs(3)) { me.refresh_preview(&mut last); at = Instant::now(); } asked = want; std::thread::sleep(Duration::from_millis(100)); } }); }
         // the plug-ins' drop box, every 3 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.drop_box(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)
@@ -590,6 +639,17 @@ fn former_self(farm: &Path, ip: &str, port: u16, hostname: &str) -> Option<Strin
         if v["node_id"].as_str() != Some(&id) || v["ip"].as_str() != Some(ip) || v["port"].as_u64() != Some(port as u64) || v["hostname"].as_str().is_some_and(|h| h != hostname) { continue }
         let at = v["timestamp_ms"].as_i64().unwrap_or(0); if best.as_ref().is_none_or(|(b, _)| at > *b) { best = Some((at, id)); } }
     best.map(|(_, id)| id)
+}
+/// A decoded picture as the preview shows it (the spec's 3.4, carried): opaque, the colours as stored; half-float
+/// through the sRGB curve and cut at 1.0. No exposure, no tone mapping.
+fn opaque_rgba8(img: &min_image::Image) -> (Vec<u8>, u32, u32) {
+    let (w, h, p) = (img.width as usize, img.height as usize, img.pitch as usize); let mut out = vec![255u8; w * h * 4];
+    let curve = |v: f32| { let v = if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }; ((if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }) * 255.0 + 0.5) as u8 };
+    for y in 0..h { let (g, b, r) = (&img.planes[0][y * p..], &img.planes[1][y * p..], &img.planes[2][y * p..]); let row = &mut out[y * w * 4..(y + 1) * w * 4];
+        match img.sample { min_image::Sample::U8 => for x in 0..w { row[x * 4] = r[x]; row[x * 4 + 1] = g[x]; row[x * 4 + 2] = b[x]; },
+            min_image::Sample::U16 => for x in 0..w { row[x * 4] = r[x * 2 + 1]; row[x * 4 + 1] = g[x * 2 + 1]; row[x * 4 + 2] = b[x * 2 + 1]; },
+            _ => for x in 0..w { let f = |pl: &[u8]| curve(half::f16::from_bits(u16::from_le_bytes([pl[x * 2], pl[x * 2 + 1]])).to_f32()); row[x * 4] = f(r); row[x * 4 + 1] = f(g); row[x * 4 + 2] = f(b); } } }
+    (out, w as u32, h as u32)
 }
 /// A staged chunk's files go to the output folder (4.11): every file directly in the staging folder, written over what
 /// is there; when all have gone the staging folder is removed. False: the folder could not be made or a copy failed.

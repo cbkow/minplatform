@@ -2997,9 +2997,11 @@ dependencies = [
 name = "mr"
 version = "0.6.0"
 dependencies = [
+ "half",
  "interprocess",
  "kurbo 0.13.1",
  "libc",
+ "min-image",
  "min-paths",
  "min-present",
  "min-theme",
