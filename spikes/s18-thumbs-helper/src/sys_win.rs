@@ -46,7 +46,10 @@ unsafe fn pixels(hbmp: HBITMAP) -> R { unsafe {
 /// the first Windows run of this spike).
 fn shell_path(path: &str) -> String {
     let abs = std::path::absolute(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
-    abs.replace('/', "\\")
+    let abs = abs.replace('/', "\\");
+    // `std::fs::canonicalize` gives `\\?\C:\...`; the shell's parser refuses that form (E_INVALIDARG - the second run).
+    if let Some(r) = abs.strip_prefix("\\\\?\\UNC\\") { return format!("\\\\{r}") }
+    abs.strip_prefix("\\\\?\\").map(str::to_string).unwrap_or(abs)
 }
 
 fn get_image(path: &str, px: u32, flags: SIIGBF) -> R { unsafe {

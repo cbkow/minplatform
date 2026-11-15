@@ -71,7 +71,7 @@ impl Drop for Pidls { fn drop(&mut self) { for p in &self.0 { unsafe { CoTaskMem
 /// Build the menu, track it at `at` (screen pixels), act. All the paths must be in ONE folder.
 unsafe fn show(owner: HWND, at: POINT, paths: &[PathBuf], dump: bool) -> windows::core::Result<Chosen> { unsafe {
     let mut abs = Pidls(vec![]);
-    for p in paths { let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut(); let wide: Vec<u16> = { std::path::absolute(p).unwrap_or_else(|_| p.clone()).to_string_lossy().replace('/', "\\").encode_utf16().chain(Some(0)).collect() }; SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None)?; abs.0.push(pidl); }
+    for p in paths { let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut(); let wide: Vec<u16> = { shell_path(p).encode_utf16().chain(Some(0)).collect() }; SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None)?; abs.0.push(pidl); }
     let folder: IShellFolder = SHBindToParent(abs.0[0], None)?;
     let children: Vec<*const ITEMIDLIST> = abs.0.iter().map(|p| ILFindLastID(*p) as *const ITEMIDLIST).collect();
     let cm: IContextMenu = folder.GetUIObjectOf(owner, &children, None)?;
@@ -143,4 +143,12 @@ pub fn step(s: Step, view: *mut std::ffi::c_void, files: &Files) {
             post(hwnd, Spec { label: format!("#{n} {}", if n % 2 == 1 { "one file" } else { "two files" }), paths: if n % 2 == 1 { files.one() } else { files.many() }, at: pt, cancel_after_ms: Some(1000), dump: false }); }
         _ => {}
     }
+}
+
+/// A path as the shell's parser takes it: absolute, backslashes, and without the `\\?\` form `canonicalize` gives
+/// (each of the three is E_INVALIDARG otherwise - the first two Windows runs of this spike).
+fn shell_path(p: &std::path::Path) -> String {
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().replace('/', "\\");
+    if let Some(r) = abs.strip_prefix("\\\\?\\UNC\\") { return format!("\\\\{r}") }
+    abs.strip_prefix("\\\\?\\").map(str::to_string).unwrap_or(abs)
 }
