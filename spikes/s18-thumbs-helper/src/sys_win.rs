@@ -42,7 +42,15 @@ unsafe fn pixels(hbmp: HBITMAP) -> R { unsafe {
     Ok(Img { w: w as u32, h: h as u32, rgba: buf })
 } }
 
+/// The shell parses only an ABSOLUTE path with backslashes (a relative one, or one with `/`, is E_INVALIDARG - seen on
+/// the first Windows run of this spike).
+fn shell_path(path: &str) -> String {
+    let abs = std::path::absolute(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string());
+    abs.replace('/', "\\")
+}
+
 fn get_image(path: &str, px: u32, flags: SIIGBF) -> R { unsafe {
+    let path = &shell_path(path);
     let factory: IShellItemImageFactory = SHCreateItemFromParsingName(&HSTRING::from(path), None).map_err(|e| (FAILED, e.code().0 as i64))?;
     let hbmp = factory.GetImage(SIZE { cx: px as i32, cy: px as i32 }, flags).map_err(|e| (FAILED, e.code().0 as i64))?;
     let r = pixels(hbmp);
