@@ -231,3 +231,43 @@ replacement in under 6 ms (bar: 500 ms); urgent first, cancel free; a helper sta
 
 **Open:** the Windows run; whether a "Foreground" registration shows in the Dock (avoided by the design in point 6);
 the product's own executable's start time as a helper; pipe cost for masters larger than 512 px.
+
+## Windows, run 2026-11-15 (Windows 11, the same commands, in the desktop session)
+
+Two faults of the Windows code as first written, both the same answer from the shell (`E_INVALIDARG`, 0x80070057) and
+both mended: the shell's parser takes only an ABSOLUTE path with backslashes, and NOT the `\\?\` form that
+`std::fs::canonicalize` returns. The real application needs one function for "a path as the shell takes it".
+
+**A - the system's pictures, from a helper with no window and no message loop**
+
+| Item | Thumbnail 256 px, cold | Icon 256 px, cold | Warm |
+|---|---|---|---|
+| PNG | 89 ms | 2.4 - 17 ms | under 2 ms |
+| JPEG | 13 ms | 2.6 - 3.2 ms | under 2 ms |
+| PDF, text | none (the system has no thumbnail for them on this machine) | 2.5 - 4.7 ms | under 2 ms |
+| Folder | 30 ms (its icon) | 2.5 - 4.5 ms | under 2 ms |
+| Icon per TYPE (no file) | - | 0.7 - 3.7 ms | - |
+
+A slow file (a 9000 x 9000 PNG the system had never seen): 585 ms, and the soft bound does NOT shorten it - the call
+cannot be cancelled; the answer is dropped when it comes and the helper goes on (the next request 1.6 ms). The hard
+bound is ending the helper, as on macOS.
+
+**B - the helper model**
+
+| Measure | Bar | Windows |
+|---|---|---|
+| 2 / 4 / 8 helpers against 1 | 4 helpers >= 3x | 2.03x / 3.87x / 6.76x (36 / 73 / 140 / 244 items a second) |
+| Cost of the pipe, RGBA back (1 MiB) | under 10 % of the decode | 0.27 ms = 0.97 % of 27 ms |
+| JPEG back | - | 3.3 ms to encode: RGBA wins here too |
+| A file that aborts the helper | a clean failure, 20 of 20 | 20 of 20; seen after 64 ms on average (88 ms at most) |
+| A file that hangs it | bounded | ended at 5.0 s |
+| A helper replaced | under 500 ms | 14.6 ms on average, 19.4 ms at most |
+| 100 urgent among 5,000 | first | first (4 in flight between); all 100 after 728 ms |
+| Cancel 4,000 queued | nothing measurable | 0.34 ms |
+| A helper's start | - | 14 ms to its first answer; 8 together ready in 23 ms |
+| A helper idle | - | 1.3 MiB fresh, 2.2 - 2.8 MiB after work (private); the parent's memory flat |
+
+A crash is seen later than on macOS (64 ms against under 1 ms) - the system's own handling of a dying process - and is
+still far inside any bound that matters. No dialog of the system's was seen; none of the helpers was left running.
+
+## VERDICT (Windows): PASS on both halves

@@ -179,4 +179,31 @@ at every count; sorts 8.5 ms (name, natural) and 1.5 ms (size, date) against 150
 the model 5 MB against 40; select all free. Two stretch figures miss at 1,000,000 only: type-ahead with no hit (9 ms)
 and the model (50 MB). Owed: the starred grid rows again with the screens awake.
 
-## VERDICT (Windows): not run
+## VERDICT (Windows): see the run at the end of this file
+
+## Windows, run 2026-11-15 (the same scripts; Windows 11, D3D12, a discrete GPU, a 60 Hz screen at scale 1, 1440 x 900 px)
+
+Frame = build + vello + GPU done, in ms. Every run was PRESENTED (the screen was on), no late frame in any sweep.
+
+| Run | p50 | p95 | worst |
+|---|---|---|---|
+| List sweep, 1,000 | 6.30 | 6.58 | 8.76 |
+| List sweep, 100,000 | 6.32 | 6.61 | 7.80 |
+| List sweep, 1,000,000 | 6.25 | 6.55 | 8.19 |
+| List sweep, all selected, 100,000 / 1,000,000 | 6.45 / 6.39 | 6.68 / 6.60 | 8.42 / 9.36 |
+| Grid sweep, one picture, 100,000 | 6.02 | 6.27 | 6.50 |
+| Grid sweep, 256 distinct pictures, 100,000 | 6.52 | 6.81 | 7.10 |
+| Grid sweep, one picture, 1,000,000 | 6.22 | 6.49 | 6.79 |
+
+- The count does not matter here either. Most of a frame is the wait for the GPU (about 5 ms of the 6), not our work:
+  build 0.2 - 2.8 ms, vello's CPU part 0.5 - 0.8 ms.
+- In the slow glide and in two "all selected" sweeps ONE frame of 300 took 21 - 22 ms (the GPU wait, not the build) -
+  over the 16 ms bar for the worst frame. The interval between presents stayed at one refresh but for that frame. Read
+  as an outside stall (another process on the machine was rendering); to be seen again on a quiet machine.
+- 100,000 entries: natural sort 23.4 ms with the key made once (35.4 ms by comparator); by size 2.2 ms, by date 2.3 ms;
+  type-ahead 0.11 - 0.49 ms; select all under 1 us; the model 4.98 MB; a name laid out in 7 us (31 us cut with an
+  ellipsis).
+- This also gives the figures the macOS run owes for the grid at 1,000,000 and for distinct pictures - on Windows.
+  macOS still owes them with its screen awake.
+
+## VERDICT (Windows): PASS - p95 inside the bar everywhere; the single 21 ms frames are to be seen again

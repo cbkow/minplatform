@@ -213,3 +213,25 @@ Rulings needed before it is built:
 On macOS every point of the bar is met by script and by picture, five runs out of five, with two workarounds for the
 library on file pages and one focus rule. On Windows the same code path is written and type-checked only; the verdict
 there waits for the owner's run.
+
+## Windows, run 2026-11-15 (Windows 11; the system's web view present, version 157)
+
+`S15_SCRIPT=all`, in the desktop session, the code as written on macOS - it ran at the first try. 15 checks passed;
+the 3 that failed are the three PICTURES (the script's window capture is a macOS tool; not a fault of the web view).
+
+- The first view: the call returns after 200 ms, the page's script has run after 210 ms, the load is finished at
+  357 ms. Twenty lives: 87 ms on average, 564 ms at most; nothing left behind (no child window, no helper process
+  2 s after the last).
+- Script, title read back, `<video>` live, `<canvas>` animating: yes.
+- **The folder's bounds hold, and better than on macOS:** an image beside the page loads, `fetch()` of a file beside
+  it works too (the folder is served through a made-up https host), an image and a `fetch()` in a sibling folder fail.
+- A link to an outside address and `window.open()` are told to the host and not loaded.
+- Pointer: our strips are ours, the rectangle is the web view's (a child window). Keys: made unfocused it takes none;
+  once it has them `focus_parent()` gives them back; Escape inside the page reaches the host through the host's script.
+- 50 changes of the rectangle: no crash, the same page.
+- Six helper processes while a view lives; none after it is removed (macOS keeps two for the application's life).
+
+Not tried: a machine WITHOUT the web view's runtime (Windows 10), the Store package (where the profile folder must be
+writable), a large video through the folder mapping, pictures of the window.
+
+## VERDICT (Windows 11): PASS; Windows 10 and the packaged case: open

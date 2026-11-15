@@ -259,3 +259,17 @@ ended (what the target did).
 **Part A PASS (macOS): 50 / 50.** The layer sits beside winit without touching its classes, the payload it would hand
 to the system is right, the destination path works end to end on a pasteboard of our own.
 **Part B and Windows: OPEN** - no verdict on the question until the checklist is ticked on both systems.
+
+## Windows, Part A, run 2026-11-15 (`s16 --selftest`, Windows 11, in the desktop session; exit 0, first try)
+
+- Two windows, each a drop target of our own (OLE), each drawn.
+- 9 paths out in the shell's data object and back; formats offered: Shell IDList Array, Preferred DropEffect, our own
+  mark, CF_HDROP, FileName, FileNameW, ZoneIdentifier.
+- Our own mark and the preferred effect ride on the data object.
+- The drag picture made from our own pixels is taken by the shell's helper.
+- Enter and over reach us with the files, the place and the operation (our own drag: a move); then leave; then a drop
+  with every path (Ctrl: a copy), and the logical effect is written back.
+
+As on macOS, no drag was performed: `DoDragDrop` was never called. Part B on Windows is the owner's hand.
+
+## VERDICT (Windows): Part A PASS; Part B OPEN

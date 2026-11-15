@@ -285,3 +285,24 @@ closed early by another application coming forward, with no crash), the winit lo
 rows report their ids through their actions. It must be shown from the run loop, not from a winit callback. Public
 API does not give Get Info (only by asking Finder), Quick Actions, per-file "Always Open With" or third-party Finder
 extensions. The spike's code dies with this verdict.
+
+## Windows, Part A, run 2026-11-15 (`S19_SCRIPT=all`, Windows 11, in the desktop session)
+
+Two faults of the code as first written, mended (the shell's parser takes only an absolute path with backslashes and
+not the `\\?\` form of `canonicalize`: `E_INVALIDARG` otherwise). After that: no failure in the whole script.
+
+- ONE menu holds our rows and the shell's: 28 rows for one file - ours first (Rename, Mark as Tracked, a "Copy to"
+  submenu), then the shell's with their verbs: Open, Edit, Print, the virus scanner's row, Open with (submenu), Give
+  access to, Copy as path, Share, Restore previous versions, Add to Favorites, an installed third-party extension's
+  row, Send to (submenu), Cut, Copy, Create shortcut, Delete, Rename, Properties.
+- Building it: `QueryContextMenu` took **288 ms the first time**, 11 - 17 ms afterwards, for one path and for two.
+- The popups opened and were closed by the program (`EndMenu`) every time; the loop is alive afterwards.
+- **While the shell's menu is up our window is NOT redrawn** (0 redraws in a second; wake-ups still arrive). On macOS
+  the window goes on drawing. A progress bar or a playing thumbnail stands still under an open menu on Windows.
+- Some rows have no text (owner-drawn rows of extensions) - they are drawn by their owners through the forwarded
+  messages; by eye is Part B.
+
+This supports the proposal for Windows: our own drawn menu first, and the shell's menu behind "Show more options" -
+its first build is slow, it stops our drawing, and its rows are not ours to order.
+
+## VERDICT (Windows): Part A PASS; Part B OPEN
