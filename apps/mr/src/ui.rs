@@ -140,7 +140,9 @@ impl Ui {
         // one line of text, left-aligned at x, centred on cy, cut to the room it has
         let mut text = |scene: &mut Scene, txt: &str, x: f64, cy: f64, size: f32, bold: bool, mono: bool, color: peniko::Color, room: f64| -> f64 { if room < 4.0 { return 0.0 }
             let l = fonts.layout_fit(txt, if mono { Family::Mono } else { Family::Sans }, size * s as f32, if bold { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, color, room); draw_layout(scene, &l, Affine::translate((x, cy - l.height() as f64 / 2.0))); l.width() as f64 };
-        paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_BASE_COLOR);
+        // The surfaces, as the family's other applications stack them in their panels: the window is layer 1, a card
+        // on it layer 2, and what is sunk into a card - a bar's track, the frame grid's pit - the base colour.
+        paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
         // -- the title row: this node, whether it leads, whether it takes work
         let me = &view.me; let host = me["hostname"].as_str().unwrap_or(""); let stopped = me["node_state"] == "stopped"; let pad = 12.0 * s;
         let mut x = pad + text(scene, host, pad, TITLE * s / 2.0, t::BODY_SIZE_M, true, false, ink, 320.0 * s) + 10.0 * s;
@@ -195,7 +197,7 @@ impl Ui {
             text(scene, &j.priority.to_string(), cols[0].0, cy, t::DETAIL_SIZE_M, false, true, sub, cols[0].1);
             text(scene, &j.id, cols[1].0, cy, t::BODY_SIZE_S, false, true, ink, cols[1].1);
             let (word, color) = state_of(j); text(scene, word, cols[2].0, cy, t::DETAIL_SIZE_M, true, false, paint::color(color), cols[2].1);
-            let bar = Rect::new(cols[3].0, cy - 5.0 * s, cols[3].0 + cols[3].1 - 64.0 * s, cy + 5.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_LAYER_1_COLOR);
+            let bar = Rect::new(cols[3].0, cy - 5.0 * s, cols[3].0 + cols[3].1 - 64.0 * s, cy + 5.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_BASE_COLOR);
             if j.total > 0 && j.done > 0 { paint::rounded(scene, Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * (j.done as f64 / j.total as f64).min(1.0), bar.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
             text(scene, &format!("{}/{}", j.done, j.total), bar.x1 + 8.0 * s, cy, t::DETAIL_SIZE_S, false, false, sub, 56.0 * s);
             let d = if j.first_ms <= 0 { "\u{2014}".to_string() } else if j.state == "active" { duration((now_ms - j.first_ms).max(0)) } else if j.last_ms > j.first_ms { duration(j.last_ms - j.first_ms) } else { "\u{2014}".to_string() };
@@ -219,7 +221,7 @@ impl Ui {
                 let idw = text(scene, &d.id, head.x0 + 12.0 * s, head.y0 + 20.0 * s, t::BODY_SIZE_M, true, true, ink, head.width() - 160.0 * s);
                 let fake = JobRow { id: String::new(), state: d.state.clone(), priority: 0, total, done, stopped: 0, first_ms: 0, last_ms: 0, created_ms: 0 }; let (word, color) = state_of(&fake); let word = word.to_uppercase();
                 let pill = Rect::new(head.x0 + 12.0 * s + idw + 10.0 * s, head.y0 + 11.0 * s, head.x0 + 12.0 * s + idw + 10.0 * s + (word.len() as f64 * 7.5 + 14.0) * s, head.y0 + 29.0 * s); paint::rounded(scene, pill, 3.0 * s, color); text(scene, &word, pill.x0 + 7.0 * s, pill.center().y, t::DETAIL_SIZE_S, true, false, paint::color(t::BACKGROUND_BASE_COLOR), pill.width());
-                let bar = Rect::new(head.x0 + 12.0 * s, head.y0 + 40.0 * s, head.x1 - 110.0 * s, head.y0 + 50.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_LAYER_1_COLOR); if total > 0 && done > 0 { paint::rounded(scene, Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * (done as f64 / total as f64).min(1.0), bar.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
+                let bar = Rect::new(head.x0 + 12.0 * s, head.y0 + 40.0 * s, head.x1 - 110.0 * s, head.y0 + 50.0 * s); paint::rounded(scene, bar, 3.0 * s, t::BACKGROUND_BASE_COLOR); if total > 0 && done > 0 { paint::rounded(scene, Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * (done as f64 / total as f64).min(1.0), bar.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
                 text(scene, &format!("{done} / {total}"), bar.x1 + 10.0 * s, bar.center().y, t::DETAIL_SIZE_M, false, true, ink, 96.0 * s);
                 let mut lx = head.x0 + 12.0 * s; let ly = head.y0 + 68.0 * s;
                 if running > 0 { lx += text(scene, &format!("\u{25cf} {running} rendering"), lx, ly, t::DETAIL_SIZE_M, false, false, paint::color(t::INFORMATIVE_VISUAL_COLOR), 160.0 * s) + 14.0 * s; }
@@ -256,7 +258,7 @@ impl Ui {
                     text(scene, &if c.a == c.b { c.a.to_string() } else { format!("{}-{}", c.a, c.b) }, ccols[1].0, cy, t::DETAIL_SIZE_M, false, true, ink, ccols[1].1);
                     text(scene, &host(&c.node), ccols[2].0, cy, t::DETAIL_SIZE_M, false, true, if c.node.is_empty() { sub } else { ink }, ccols[2].1);
                     let n_frames = (c.b - c.a + 1).max(1); let frac = if c.state == "completed" { 1.0 } else { c.done_count as f64 / n_frames as f64 };
-                    let pb = Rect::new(ccols[3].0, cy - 4.0 * s, ccols[3].0 + ccols[3].1 - 6.0 * s, cy + 4.0 * s); paint::rounded(scene, pb, 3.0 * s, t::BACKGROUND_LAYER_1_COLOR); if frac > 0.0 { paint::rounded(scene, Rect::new(pb.x0, pb.y0, pb.x0 + pb.width() * frac.min(1.0), pb.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
+                    let pb = Rect::new(ccols[3].0, cy - 4.0 * s, ccols[3].0 + ccols[3].1 - 6.0 * s, cy + 4.0 * s); paint::rounded(scene, pb, 3.0 * s, t::BACKGROUND_BASE_COLOR); if frac > 0.0 { paint::rounded(scene, Rect::new(pb.x0, pb.y0, pb.x0 + pb.width() * frac.min(1.0), pb.y1), 3.0 * s, t::ACCENT_VISUAL_COLOR); }
                     text(scene, &if c.assigned_ms > 0 && c.completed_ms > c.assigned_ms { duration(c.completed_ms - c.assigned_ms) } else { "\u{2014}".to_string() }, ccols[4].0, cy, t::DETAIL_SIZE_M, false, true, sub, ccols[4].1);
                     text(scene, &c.retries.to_string(), ccols[5].0, cy, t::DETAIL_SIZE_M, false, true, if c.retries > 0 { paint::color(t::NOTICE_VISUAL_COLOR) } else { sub }, ccols[5].1);
                 }
