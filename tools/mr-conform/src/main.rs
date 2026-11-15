@@ -160,16 +160,15 @@ fn drive(args: &[String]) -> Result<(), String> {
     let first = get(&me, "/api/jobs", Some(&bearer))?; let at = if first.status == 200 { me.clone() } else { serde_json::from_slice::<Value>(&first.body).ok().and_then(|v| v["leader_endpoint"].as_str().map(str::to_string)).ok_or("no leader known yet")? };
     if !at.starts_with("127.0.0.1:") { return Err("the leader is not on the loopback address: refused".into()) }
     let my_id = get(&me, "/api/status", None).ok().and_then(|a| serde_json::from_slice::<Value>(&a.body).ok()).and_then(|v| v["node_id"].as_str().map(str::to_string)).unwrap_or_default();
-    // the synthetic renderer: <first frame> <last frame> <output pattern> <ok|fail> <seconds per frame>
-    let work = Path::new(&root).parent().unwrap_or(Path::new(".")).join("render"); let _ = std::fs::create_dir_all(&work); let script = work.join("fake-render.sh");
-    std::fs::write(&script, "#!/bin/sh\ns=$1; e=$2; d=$(dirname \"$3\"); mkdir -p \"$d\"\nif [ \"$4\" = fail ]; then echo \"Unable to open the scene\"; exit 3; fi\ni=$s; while [ $i -le $e ]; do sleep $5; f=\"$d/f_$(printf %04d $i).exr\"; echo data > \"$f\"; echo \"Saved: '$f'\"; i=$((i+1)); done\n").map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-    let manifest = |id: &str, a: i64, b: i64, chunk: i64, mode: &str, nap: &str, retries: i64| { let o = work.join(id).join("f_####.exr").to_string_lossy().into_owned(); json!({
-        "_version": 1, "job_id": id, "template_id": "conformance", "submitted_by": my_id, "submitted_os": "macos", "submitted_at_ms": stamp, "cmd": { "macos": "/bin/sh" },
-        "flags": [{ "flag": "", "value": script.to_string_lossy() }, { "flag": "", "value": "{chunk_start}" }, { "flag": "", "value": "{chunk_end}" }, { "flag": "", "value": o, "is_output": true }, { "flag": "", "value": mode }, { "flag": "", "value": nap }],
+    // the stand-in renderer is this program itself (`fake-render`): no shell, the same on every system
+    let work = Path::new(&root).parent().unwrap_or(Path::new(".")).join("render"); let _ = std::fs::create_dir_all(&work); let exe = std::env::current_exe().map_err(|e| e.to_string())?.to_string_lossy().into_owned();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0); let this_os = if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" };
+    let manifest = |id: &str, a: i64, b: i64, chunk: i64, mode: &str, nap: &str, retries: i64| json!({
+        "_version": 1, "job_id": id, "template_id": "conformance", "submitted_by": my_id, "submitted_os": this_os, "submitted_at_ms": stamp, "cmd": { "macos": exe, "windows": exe, "linux": exe },
+        "flags": [{ "flag": "fake-render", "value": "{chunk_start}" }, { "flag": "", "value": "{chunk_end}" }, { "flag": "", "value": mode }, { "flag": "", "value": nap }, { "flag": "", "value": work.join(id).to_string_lossy() }],
         "frame_start": a, "frame_end": b, "chunk_size": chunk, "max_retries": retries, "timeout_seconds": null, "output_dir": work.join(id).to_string_lossy(),
         "progress": { "patterns": [], "error_patterns": [], "completion_pattern": { "info": "one line per frame", "regex": "Saved: '?(.+)'?" } },
-        "output_detection": { "stdout_regex": "Saved: '?([^']+)'?", "path_group": 1, "validation": "exists_nonzero", "info": "" }, "process": { "working_dir": null }, "environment": {}, "tags_required": [] }) };
+        "output_detection": { "stdout_regex": "Saved: '?([^']+)'?", "path_group": 1, "validation": "exists_nonzero", "info": "" }, "process": { "working_dir": null }, "environment": {}, "tags_required": [] });
     // a job's detail is filed each time what it shows changes: the job's state, each chunk's state, how many frames are done
     fn watch(r: &mut Rec, at: &str, bearer: &str, label: &str, id: &str, secs: u64, done: &dyn Fn(&Value) -> bool) -> Option<Value> {
         let (t, mut last, mut n, mut seen) = (Instant::now(), String::new(), 0, None);

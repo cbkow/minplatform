@@ -8,6 +8,7 @@
 #                                              inside of every node's path_mappings array)
 #   sh tools/mr-conform/farm.sh port          the Rust node (target/release/minRender) joins the running farm, as a
 #                                              follower (tag `noleader`); MR_PORT_TAGS='' lets it lead, MR_PORT_TAGS='"leader"' makes it
+#   sh tools/mr-conform/farm.sh ports [N]     a farm of N Rust nodes and nothing else
 #   sh tools/mr-conform/farm.sh stop
 #   sh tools/mr-conform/farm.sh config <n>    prints the path of node n's config.json (for `mr-conform record --config`)
 # Everything lives under target/mr-farm (ignored).
@@ -35,10 +36,22 @@ case "$1" in
     printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" "${MR_PORT_TAGS-\"noleader\"}" "${MR_MAPPINGS:-}" > "$d/config.json"
     "$BIN" --data "$d" --no-window < /dev/null > "$W/p/out.log" 2>&1 &
     echo $! >> "$W/pids"; echo "the port joined on port 8439; its config: $d/config.json" ;;
+  ports)
+    # a farm of Rust nodes ALONE: the first one makes the farm (its folder, its secret, the Blender template)
+    N="${2:-2}"; BIN="${MR_PORT:-$PWD/target/release/minRender}"; [ -x "$BIN" ] || { echo "build it first: cargo build --release -p mr"; exit 1; }
+    [ -f "$W/pids" ] && { echo "a farm is running: stop it first"; exit 1; }
+    rm -rf "$W"; mkdir -p "$W/share"
+    i=1; while [ "$i" -le "$N" ]; do
+      d="$W/p$i/data"; mkdir -p "$d"
+      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" $((8440 + i)) $((4340 + i)) "${MR_TAGS:-}" "${MR_MAPPINGS:-}" > "$d/config.json"
+      "$BIN" --data "$d" --no-window < /dev/null > "$W/p$i/out.log" 2>&1 &
+      echo $! >> "$W/pids"; i=$((i + 1)); sleep 1
+    done
+    echo "started $N Rust nodes; ports 8441..$((8440 + N)); configs $W/p<n>/data/config.json" ;;
   stop)
     [ -f "$W/pids" ] || { echo "no farm is running"; exit 0; }
     while read -r p; do kill "$p" 2>/dev/null || true; done < "$W/pids"; sleep 2
     while read -r p; do kill -9 "$p" 2>/dev/null || true; done < "$W/pids"; rm -f "$W/pids"; echo stopped ;;
   config) echo "$(data "$2")/config.json" ;;
-  *) echo "farm.sh start [N] | port | stop | config <n>"; exit 1 ;;
+  *) echo "farm.sh start [N] | port | ports [N] | stop | config <n>"; exit 1 ;;
 esac

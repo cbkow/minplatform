@@ -5,6 +5,7 @@ mod http;
 mod lead;
 mod leash;
 mod node;
+mod share;
 mod submit;
 use std::sync::atomic::{AtomicBool, Ordering};
 

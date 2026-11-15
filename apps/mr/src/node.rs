@@ -17,7 +17,7 @@ pub const OS: &str = if cfg!(windows) { "windows" } else if cfg!(target_os = "ma
 /// What this build says it can do (2.4): the same five words 0.5.11 sends - every one is honoured below or is the leader's.
 const CAPABILITIES: [&str; 5] = ["job_edit", "edit_result", "edit_epoch", "edit_commands", "chunk_stop"];
 pub fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
-fn log(msg: impl AsRef<str>) { eprintln!("[{}] {}", now_ms() / 1000 % 100000, msg.as_ref()); }
+fn log(msg: impl AsRef<str>) { crate::share::log("INFO", "farm", msg.as_ref()); }
 
 /// A peer as this node knows it (1.2, 1.5).
 struct Peer { endpoint: String, record: Option<Value>, alive: bool, failed: u32, last_seen_ms: u64, leader: bool, /// (modified, size) of its endpoint.json at the last good read
@@ -43,12 +43,8 @@ pub struct Node {
 }
 
 fn fingerprint(secret: &str) -> String { use sha2::Digest; if secret.is_empty() { return String::new() } sha2::Sha256::digest(secret.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect() }
-/// Twelve lowercase hex characters from the system's randomness (1.1).
-fn new_id() -> Result<String, String> {
-    #[cfg(unix)] { let mut b = [0u8; 6]; std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b)).map_err(|e| format!("no random bytes for a node id: {e}"))?; return Ok(b.iter().map(|x| format!("{x:02x}")).collect()) }
-    // (elsewhere: the standard library's hasher is keyed from the system's random source for each new state)
-    #[cfg(not(unix))] { use std::hash::{BuildHasher, Hasher}; let mut h = std::collections::hash_map::RandomState::new().build_hasher(); h.write_u64(now_ms()); h.write_u32(std::process::id()); Ok(format!("{:012x}", h.finish() & 0xffff_ffff_ffff)) }
-}
+/// A name that may be one step of a path on the share (the rule 0.5.x applies to every id that becomes one).
+fn safe(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', ':']) }
 /// An id that is one plain path segment (it names a folder on the share).
 fn plain_segment(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', '\0']) && !s.contains("..") }
 fn host_name() -> String {
@@ -68,16 +64,17 @@ fn advertised_ip(over: &str) -> String {
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> { let tmp = PathBuf::from(format!("{}.tmp", path.display())); std::fs::write(&tmp, text)?; std::fs::rename(&tmp, path).or_else(|_| std::fs::write(path, text)) }
 
 impl Node {
-    /// Reads the data folder and the farm. Nothing on the share is created by this slice: a farm must exist.
+    /// Reads the data folder and starts the farm at the sync root - making it, with its secret, if it is not there.
     pub fn open(data: &Path) -> Result<Arc<Node>, String> {
         let cfg: Value = serde_json::from_str(&std::fs::read_to_string(data.join("config.json")).map_err(|e| format!("config.json: {e}"))?).map_err(|e| format!("config.json could not be read as JSON ({e}); it is left as it is"))?;
         // the node's id (1.1): twelve characters in node_id.txt, made once
         let idf = data.join("node_id.txt");
         let id = match std::fs::read_to_string(&idf).ok().map(|t| t.lines().next().unwrap_or("").to_string()).filter(|t| t.len() == 12) { Some(id) => id,
-            None => { let id = new_id()?; std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
+            None => { let id = crate::share::hex(&crate::share::random(6)?); std::fs::write(&idf, &id).map_err(|e| e.to_string())?; id } };
         let root = cfg["sync_root"].as_str().unwrap_or(""); if root.is_empty() || !Path::new(root).is_dir() { return Err("the sync root is not set, or is not a folder that is there".into()) }
         let farm = Path::new(root).join("MinRender-v2");
-        let secret = std::fs::read_to_string(farm.join("farm.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["api_secret"].as_str().map(str::to_string)).filter(|s| !s.is_empty()).ok_or("there is no farm at the sync root yet (this build joins a farm; it does not make one)")?;
+        let secret = crate::share::start_farm(&farm, &id, now_ms())?;
+        crate::share::log_to(farm.join("nodes").join(&id)); let _ = std::fs::create_dir_all(farm.join("nodes").join(&id));
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or("")), tags, hostname: host_name(),
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
@@ -124,6 +121,16 @@ impl Node {
             // (there is no separate agent to restart: the leash is started anew for every chunk)
             ("POST", "/api/agent/restart") => Response::ok(),
             // (a busy or stopped node says so before it reads the body: seen of 0.5.11, which answers `busy` even to a body that is not JSON)
+            // a job's chunk logs, a node's log, this node's settings (2.5 rows 31-33, 36): any node answers these
+            ("GET", p) if p.starts_with("/api/jobs/") && p.contains("/task-output") => { let seg: Vec<&str> = p["/api/jobs/".len()..].split('/').collect();
+                match seg.as_slice() { [job, "task-output"] => if !safe(job) { Response::error(400, "invalid_path") } else { Response::json(200, crate::share::task_output(&self.farm, job)) },
+                    [job, "task-output", node, file] => if !safe(job) || !safe(node) || !safe(file) { Response::error(400, "invalid_path") } else { match std::fs::read(self.farm.join("jobs").join(job).join("stdout").join(node).join(file)) { Ok(b) => Response { status: 200, content_type: Some("text/plain"), body: b }, Err(_) => Response::error(404, "not_found") } },
+                    _ => Response::empty(404) } }
+            ("GET", p) if p.starts_with("/api/nodes/") && p.ends_with("/log") => { let node = &p["/api/nodes/".len()..p.len() - "/log".len()];
+                if !safe(node) { Response::error(400, "invalid_path") } else { let max = _query.split('&').find_map(|kv| kv.strip_prefix("max_lines=")).and_then(|v| v.parse().ok()).unwrap_or(500); Response::json(200, json!(crate::share::node_log(&self.farm, node, max))) } }
+            ("GET", "/api/config") => { let mut v = std::fs::read_to_string(self.data.join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({}));
+                for (k, x) in [("node_id", json!(self.id)), ("hostname", json!(self.hostname)), ("cpu_cores", json!(self.cores)), ("ram_mb", json!(self.ram_mb)), ("gpu_name", json!("")), ("farm_running", json!(true)), ("farm_path", json!(self.farm.to_string_lossy())), ("farm_error", json!("")), ("is_leader", json!(self.lead.lock().unwrap().is_some()))] { v[k] = x; }
+                Response::json(200, v) }
             ("POST", "/api/dispatch/assign") => { if self.work.lock().unwrap().running.is_some() { return Response::error(409, "busy") } if self.stopped.load(Ordering::Relaxed) { return Response::error(409, "stopped") }
                 let v = match body() { Ok(v) => v, Err(r) => return r };
                 let (Some(m), Some(a), Some(b)) = (v.get("manifest").filter(|m| m.is_object()), v["frame_start"].as_i64(), v["frame_end"].as_i64()) else { return Response::error(400, "the assignment lacks a manifest or its frames") };
