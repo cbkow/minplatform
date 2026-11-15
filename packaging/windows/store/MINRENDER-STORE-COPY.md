@@ -30,6 +30,25 @@ minRender 1.0 is the same farm, rebuilt from the ground up.
 - Blender 5.3 templates and add-on. Install the add-on again from the shared folder's `plugins/blender`.
 - After Effects and Cinema 4D templates and plug-ins are no longer included.
 
+## Copyright and licence fields (Partner Center > Store listing) - REPLACE 0.5.x's MIT wording
+
+minRender 1.0 is under the GNU General Public License, version 3 or later (0.5.x was MIT). The listing's two fields
+still carry 0.5.x's text and must be replaced.
+
+**Copyright and trademark info**
+
+```
+Copyright © 2025–2026 cbkow. Free software under the GNU General Public License, version 3 or later. Blender is a trademark of the Blender Foundation.
+```
+
+**Additional license terms**
+
+```
+minRender is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It comes with no warranty, to the extent permitted by law. Licence: https://github.com/cbkow/MinRender/blob/main/LICENSE. Source code: https://github.com/cbkow/minplatform (tag minrender-v<version>). Third-party notices ship with the app as THIRD-PARTY-NOTICES.html.
+```
+
+(After Effects and Cinema 4D are no longer named: 1.0 does not ship or mention them in the listing.)
+
 ## Restricted capability: runFullTrust
 
 > Win32 render-farm manager. Launches the locally installed Blender as a child process on the user's own machines to

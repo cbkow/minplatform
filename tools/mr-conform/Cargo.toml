@@ -3,6 +3,7 @@ name = "mr-conform"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "GPL-3.0-or-later"
 
 # The conformance harness of the minRender port (canon rows 387, 389): what a 0.5.11 node answers, recorded and
 # checked against the contract in docs/phase4/step0-contracts.md - and, later, the same checks against the Rust node.

@@ -1,4 +1,6 @@
 # MinRender.py — Farm submitter addon for Blender
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2025-2026 cbkow. Part of minRender (https://github.com/cbkow/minplatform).
 # Install via: Edit > Preferences > Add-ons > Install from Disk
 #
 # Submits render jobs to MinRender farm via the local submissions dropbox.
