@@ -36,6 +36,39 @@ and the plug-ins (which run inside Blender, without the package's identity) read
 same `submissions\`. Registry writes stay redirected (the RNDR companion falls back to its HTTP poll). Uninstalling
 keeps the data folder.
 
+## 2a. The ground truth: the package the Store has installed (read 2026-11-15)
+
+The owner, the same day: "specifically exactly the capabilities the last version declares as that is the only one on
+the windows store right now". So the measure is not the repository's template but the manifest INSIDE the installed
+package (`cbkow.minRender` 0.5.11.0, signature kind Store, x64), read on the Windows machine without changing anything.
+It agrees with the template in every line; the Store added only its own `mp:PhoneIdentity` element at ingestion.
+
+**The capabilities of 0.5.11.0, verbatim - and of 1.0.0.0, with none added and none dropped:**
+
+```xml
+<Capabilities>
+  <Capability Name="internetClientServer" />
+  <Capability Name="privateNetworkClientServer" />
+  <rescap:Capability Name="runFullTrust" />
+</Capabilities>
+```
+
+Also as installed, and to be the same in 1.0.0: the namespaces `uap`, `uap3`, `desktop`, `desktop2`, `rescap` (all
+ignorable); `TargetDeviceFamily Windows.Desktop`, `MinVersion 10.0.19041.0`, `MaxVersionTested 10.0.26100.0`; one
+application, `Id="minRender"`, `Executable="minRender.exe"`, `EntryPoint="Windows.FullTrustApplication"`; one startup
+task, `TaskId="minRenderStartup"`, `Enabled="true"`, `DisplayName="minRender"`; the firewall rules for `minRender.exe`,
+inbound TCP 8420 and UDP 4243, `Profile="all"`; `PublisherDisplayName` "cbkow"; the seven logo files. The publisher is
+the one minNotes' and QCView's tracked manifests already carry.
+
+**The only lines that differ in 1.0.0**: `Version`; the startup task's `Executable` (`minRender.exe` instead of
+`mr-restart.exe`, K4); `Description` (Blender only, row 390). The package's root loses `mr-agent.exe`,
+`mr-restart.exe` and `minrender-headless.exe`.
+
+**The pack script's guard** (as 0.5.x's `make_msix.ps1` had): it refuses to pack unless the sorted capability list is
+exactly `internetClientServer, privateNetworkClientServer, runFullTrust`, and it compares the generated manifest
+against the installed one (kept as `fixtures/minrender/store-0.5.11-AppxManifest.xml`, not tracked) and prints every
+difference, so that nothing beyond the three lines above changes unseen.
+
 ## 3. What 1.0.0 must keep for the Store to treat it as an update, and for a node to come back as itself
 
 | # | Keep | State in `apps/mr` today |
@@ -45,7 +78,7 @@ keeps the data folder.
 | K3 | The application's `Id` ("minRender") and executable name (`minRender.exe`). | the binary already has that name |
 | K4 | The startup task's `TaskId` ("minRenderStartup") - the same id keeps each user's on / off choice in Task Manager. Its executable becomes `minRender.exe` itself: spike S14 showed the application can tell that the startup task started it and then starts minimized, so `mr-restart.exe` is not carried. **S14's open item stands: that start has been installed and has never fired at a sign-in.** | the detection is in S14, not yet in `apps/mr`'s package |
 | K5 | The firewall rules: TCP 8420 and UDP 4243 for `minRender.exe`. The leash is the same executable, so one rule set covers it. | the node's defaults are 8420 / 4243 |
-| K6 | The three capabilities and nothing else; the pack script's guard against drift. | to build |
+| K6 | **Exactly the capabilities of the installed 0.5.11.0** (section 2a) - none added, none dropped; the pack script's guard against drift. | to build |
 | K7 | **The data folder: `%USERPROFILE%\minRender`** (macOS: `~/Library/Application Support/MinRender`), read when the application is started with no `--data`. That is what makes an upgraded node the SAME node: its `node_id.txt`, its `config.json` (sync root, tags, port, path mappings), its `submissions\` for the add-on. | **NOT there: `--data` is required today, on purpose, so that no test could touch a real node's folder.** The default arrives with the package and nowhere before it. |
 | K8 | `config.json` written whole and never losing a key it does not know (row 389). | done |
 | K9 | No headless alias, no second application entry. | `--no-window` and `--leash` are arguments of the one executable |
