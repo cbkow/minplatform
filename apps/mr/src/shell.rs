@@ -44,7 +44,7 @@ impl Shell {
 impl ApplicationHandler for Shell {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.window.is_some() { return }
-        self.window = el.create_window(WindowAttributes::default().with_title("minRender").with_surface_size(winit::dpi::LogicalSize::new(1440.0, 900.0)).with_visible(!self.minimized)).ok().map(Arc::new);
+        self.window = el.create_window(WindowAttributes::default().with_title("minRender").with_surface_size({ let (w, h) = crate::ui::Layout::load(&self.node.data).size.unwrap_or((1440.0, 900.0)); winit::dpi::LogicalSize::new(w, h) }).with_visible(!self.minimized)).ok().map(Arc::new);
         self.ui = self.window.clone().and_then(|w| crate::ui::Ui::new(w, self.node.clone())); if self.ui.is_none() { crate::share::log("WARN", "farm", "the window's content could not be set up (no renderer): the node runs, the window stays empty"); }
         let (status, show, stop, exit) = (MenuItem::new("Idle", false, None), MenuItem::new("Show Window", true, None), MenuItem::new("Stop Node", true, None), MenuItem::new("Exit", true, None));
         let menu = Menu::new(); let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &show, &stop, &PredefinedMenuItem::separator(), &exit]);

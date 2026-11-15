@@ -19,8 +19,20 @@ pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presen
     strip: Vec<(TextButton, &'static str)>, menu: Menu, menu_acts: Vec<&'static str>, /// the question before Cancel and Delete (0.5.x's own; nothing else asks)
     confirm: Option<(Dialog, &'static str)>, demo: bool, /// the job's detail: the frame grid's and the chunk table's scroll, the chosen chunks, where each lies
     grid_bar: ScrollBar, chunks_bar: ScrollBar, csel: BTreeSet<i64>, ccursor: Option<i64>, canchor: Option<i64>, grid_rect: Rect, chunks_rect: Rect, /// the keys go to the chunk table (the last click was there), not the job list
-    on_chunks: bool, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
+    on_chunks: bool, /// the panels' sizes, set by dragging the gaps between them and kept for the next start: the node panel's share of the
+    /// width, the job list's share of the height beside it, the frame grid's height
+    layout: Layout, /// the three gaps that can be dragged (the node panel's edge, under the job list, under the frame grid), and the one in hand or under the pointer
+    gaps: [Rect; 3], drag: Option<usize>, over: Option<usize>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
+/// How the window is laid out, as the owner left it (0.5.x kept the same in its own settings): in `window.json` in the
+/// data folder - never in `config.json`, which a 0.5.x build on the same machine rewrites without what it does not know.
+#[derive(Clone, Copy)]
+pub struct Layout { pub left: f64, pub list: f64, pub grid: f64, pub size: Option<(f64, f64)> }
+impl Layout {
+    pub fn load(data: &std::path::Path) -> Layout { let v: serde_json::Value = std::fs::read_to_string(data.join("window.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null); let f = |k: &str, d: f64| v[k].as_f64().unwrap_or(d);
+        Layout { left: f("left", 0.28).clamp(0.1, 0.6), list: f("list", 0.34).clamp(0.1, 0.8), grid: f("grid", 220.0).clamp(60.0, 2000.0), size: v["width"].as_f64().zip(v["height"].as_f64()).filter(|(w, h)| *w >= 640.0 && *h >= 400.0) } }
+    pub fn save(&self, data: &std::path::Path) { let mut v = serde_json::json!({ "left": self.left, "list": self.list, "grid": self.grid }); if let Some((w, h)) = self.size { v["width"] = w.into(); v["height"] = h.into(); } let _ = std::fs::write(data.join("window.json"), serde_json::to_string_pretty(&v).unwrap_or_default()); }
+}
 /// The job list's columns: (header, default width).
 const COLUMNS: [(&str, f64); 6] = [("Pri", 36.0), ("Name", 300.0), ("State", 90.0), ("Progress", 280.0), ("Duration", 80.0), ("Created", 140.0)];
 /// The chunk table's columns.
@@ -43,11 +55,11 @@ impl Ui {
         #[cfg(not(target_os = "macos"))] let view = None;
         let mut presenter = Presenter::new(&instance, surface, (size.width.max(1), size.height.max(1)), Output::Auto, view).ok()?; presenter.engine.set_ui_scale(window.scale_factor() as f32);
         let layer = UiLayer::new(&presenter.engine.device, size.width.max(1), size.height.max(1)).ok()?; presenter.engine.set_overlay(Some(layer.view()));
-        let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
+        let node_data = node.data.clone(); let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
-        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 3], drag: None, over: None, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
-    pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
+    pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } let s = self.window.scale_factor(); self.layout.size = Some((w as f64 / s, h as f64 / s)); self.layout.save(&self.node.data); self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
     pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.peers_rect.contains(p) { self.peers_bar.wheel(dy, now); } else if self.grid_rect.contains(p) { self.grid_bar.wheel(dy, now); } else if self.chunks_rect.contains(p) { self.chunks_bar.wheel(dy, now); } else { self.jobs_bar.wheel(dy, now); } }
     fn chunk_at(&self, y: f64, d: &Detail) -> Option<usize> { let s = self.window.scale_factor(); let i = ((y - self.chunks_rect.y0 + self.chunks_bar.offset) / (CHUNK_ROW * s)) as usize; (y >= self.chunks_rect.y0 && i < d.chunks.len()).then_some(i) }
@@ -86,6 +98,16 @@ impl Ui {
             // a chunk command goes to the chunks it applies to: back to the queue - those given out, failed or stopped; stop - those waiting or given out
             if let Some(c) = what.strip_prefix("chunk:") { if let Some(d) = self.node.detail() { let ids: Vec<i64> = d.chunks.iter().filter(|x| self.csel.contains(&x.id) && if c == "stop" { matches!(x.state.as_str(), "pending" | "assigned") } else { matches!(x.state.as_str(), "assigned" | "failed" | "stopped") }).map(|x| x.id).collect(); if !ids.is_empty() { self.node.chunk_command(ids, if c == "stop" { "stop" } else { "reassign" }); } } }
             else if !what.is_empty() { self.act(view, what, false); } } return }
+        // the gaps between the panels: dragged, they resize what lies on either side; the sizes are kept when the drag ends
+        { let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); let top = (TITLE + 12.0) * s;
+            match *e {
+                Event::Down { x, y, button: Button::Primary } => if let Some(i) = self.gaps.iter().position(|g| g.inflate(2.0 * s, 2.0 * s).contains(kurbo::Point::new(x, y))) { self.drag = Some(i); return },
+                Event::Move { x, y } => { if let Some(i) = self.drag { match i { 0 => self.layout.left = (x / w).clamp(260.0 * s / w, 0.6), 1 => self.layout.list = ((y - top) / (h - top)).clamp(0.1, 0.8), _ => self.layout.grid = ((y - self.grid_rect.y0 + 4.0 * s) / s).clamp(60.0, 2000.0) } return }
+                    let over = self.gaps.iter().position(|g| g.inflate(2.0 * s, 2.0 * s).contains(kurbo::Point::new(x, y)));
+                    if over != self.over { self.over = over; self.window.set_cursor(winit31::cursor::Cursor::Icon(match over { Some(0) => winit31::cursor::CursorIcon::ColResize, Some(_) => winit31::cursor::CursorIcon::RowResize, None => winit31::cursor::CursorIcon::Default })); } }
+                Event::Up { .. } => if self.drag.take().is_some() { self.layout.save(&self.node.data); return },
+                _ => {}
+            } }
         if self.jobs_bar.event(e, now).1 || self.peers_bar.event(e, now).1 || self.grid_bar.event(e, now).1 || self.chunks_bar.event(e, now).1 { return }
         if let Event::Down { x, y, button } = *e { if self.chunks_rect.contains(kurbo::Point::new(x, y)) { self.on_chunks = true; if let Some(d) = self.node.detail() { match self.chunk_at(y, &d) {
             Some(i) => { if button == Button::Secondary { if !self.csel.contains(&d.chunks[i].id) { self.choose_chunk(i, &d, false, false); }
@@ -150,7 +172,7 @@ impl Ui {
         scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, paint::color(if stopped { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT } else { t::POSITIVE_VISUAL_COLOR }), None, &Circle::new((x + 4.0 * s, TITLE * s / 2.0), 4.0 * s));
         paint::hline(scene, 0.0, w, TITLE * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
         // -- the node panel
-        let left = (w * 0.28).max(260.0 * s).min(w * 0.5); let top = TITLE * s + pad;
+        let left = (w * self.layout.left).max(260.0 * s).min(w * 0.6); let top = TITLE * s + pad;
         let card = Rect::new(pad, top, left - pad / 2.0, top + 5.0 * 24.0 * s + 16.0 * s); paint::rounded(scene, card, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
         let ram = me["ram_mb"].as_u64().unwrap_or(0); let ram = if ram == 0 { "unknown".to_string() } else if ram >= 1024 { format!("{:.1} GB", ram as f64 / 1024.0) } else { format!("{ram} MB") };
         let tags = me["tags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default(); let dash = |v: &str| if v.is_empty() { "\u{2014}".to_string() } else { v.to_string() };
@@ -182,7 +204,8 @@ impl Ui {
         let delete_w = strip_labels.last().map(|x| x.0).unwrap_or(0.0);
         for (i, (bw, what)) in strip_labels.iter().enumerate() { let bw = *bw; let on = view.jobs.iter().any(|j| sel.contains(&j.id) && match *what { "pause" => j.state == "active", "resume" => j.state == "paused", _ => true });
             let r = if i == 6 { Rect::new(w - pad - bw, cy0 - bh / 2.0, w - pad, cy0 + bh / 2.0) } else if i == 5 { let x = w - pad - delete_w - 6.0 * s - bw; Rect::new(x, cy0 - bh / 2.0, x + bw, cy0 + bh / 2.0) } else { let r = Rect::new(sx, cy0 - bh / 2.0, sx + bw, cy0 + bh / 2.0); sx += bw + 6.0 * s; r }; strip_rects.push((r, on)); }
-        let list = Rect::new(jx, top + STRIP * s - 8.0 * s, w - pad, (top + (h - top) / 3.0).max(top + 160.0 * s).min(h - pad)); paint::rounded(scene, list, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
+        let list = Rect::new(jx, top + STRIP * s - 8.0 * s, w - pad, (top + (h - top) * self.layout.list).max(top + 120.0 * s).min(h - pad - 200.0 * s).max(top + 80.0 * s));
+        self.gaps[0] = Rect::new(left - pad / 2.0, top, left + pad / 2.0, h - pad); self.gaps[1] = Rect::new(jx, list.y1, w - pad, list.y1 + pad); self.gaps[2] = Rect::ZERO; paint::rounded(scene, list, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
         let cols: Vec<(f64, f64)> = { let mut x = list.x0 + 8.0 * s; COLUMNS.iter().map(|(_, cw)| { let r = (x, cw * s); x += cw * s + 8.0 * s; r }).collect() };
         for ((label, _), (cx, cwid)) in COLUMNS.iter().zip(&cols) { text(scene, label, *cx, list.y0 + HEADER * s / 2.0, t::DETAIL_SIZE_M, false, false, sub, *cwid); }
         paint::hline(scene, list.x0, list.x1, list.y0 + HEADER * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
@@ -229,7 +252,7 @@ impl Ui {
                 text(scene, &format!("priority {}", d.priority), lx, ly, t::DETAIL_SIZE_M, false, false, sub, 120.0 * s);
                 if d.created_ms > 0 { text(scene, &crate::share::local_stamp(d.created_ms), head.x1 - 130.0 * s, ly, t::DETAIL_SIZE_M, false, false, sub, 120.0 * s); }
                 // the frame grid: one cell a frame, in reading order; only the rows in view are drawn, whatever the job's length
-                let rest = Rect::new(body.x0, head.y1 + pad / 2.0, body.x1, body.y1); let grid_h = (rest.height() * 0.4).clamp(60.0 * s, 220.0 * s);
+                let rest = Rect::new(body.x0, head.y1 + pad / 2.0, body.x1, body.y1); let grid_h = (self.layout.grid * s).min(rest.height() - 120.0 * s).max(60.0 * s);
                 let grid = Rect::new(rest.x0, rest.y0, rest.x1, rest.y0 + grid_h); paint::rounded(scene, grid, t::CORNER_RADIUS_500 as f64 * s, GRID_PIT); let inner = grid.inset(-4.0 * s); self.grid_rect = inner;
                 let slot = CELL * s; let per_row = ((inner.width() - 10.0 * s) / slot).floor().max(1.0) as i64; let frames = (d.last - d.first + 1).max(0); let grid_rows = (frames + per_row - 1) / per_row;
                 self.grid_bar.set(inner, grid_rows as f64 * slot, s);
@@ -243,6 +266,7 @@ impl Ui {
                     if let Some(color) = color { let (x, y) = (inner.x0 + col as f64 * slot, inner.y0 + row as f64 * slot - self.grid_bar.offset); paint::rect(scene, Rect::new(x + s, y + s, x + slot - s, y + slot - s), color); } } }
                 scene.pop_layer(); self.grid_bar.paint(scene, now);
                 // the chunk table
+                self.gaps[2] = Rect::new(rest.x0, grid.y1, rest.x1, grid.y1 + pad / 2.0);
                 let table = Rect::new(rest.x0, grid.y1 + pad / 2.0, rest.x1, rest.y1); paint::rounded(scene, table, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
                 let ccols: Vec<(f64, f64)> = { let mut x = table.x0 + 8.0 * s; CHUNK_COLUMNS.iter().map(|(_, cw)| { let r = (x, cw * s); x += cw * s + 8.0 * s; r }).collect() };
                 for ((label, _), (cx, cwid)) in CHUNK_COLUMNS.iter().zip(&ccols) { text(scene, label, *cx, table.y0 + HEADER * s / 2.0, t::DETAIL_SIZE_M, false, false, sub, *cwid); }
@@ -267,6 +291,8 @@ impl Ui {
             _ => {}
         }
         drop(text);
+        // the gap under the pointer or in hand shows as a line of the accent
+        if let Some(i) = self.drag.or(self.over) { let g = self.gaps[i]; if i == 0 { paint::rect(scene, Rect::new(g.center().x - s, g.y0, g.center().x + s, g.y1), t::ACCENT_VISUAL_COLOR); } else { paint::rect(scene, Rect::new(g.x0, g.center().y - s, g.x1, g.center().y + s), t::ACCENT_VISUAL_COLOR); } }
         // the strip's buttons, then what lies over everything: the menu, the question
         for ((b, _), (r, on)) in self.strip.iter_mut().zip(&strip_rects) { b.rect = *r; b.enabled = *on; b.paint(scene, &mut self.fonts, s, now); }
         self.menu.paint(scene, &mut self.fonts, s);
