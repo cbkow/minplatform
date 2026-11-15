@@ -19,7 +19,6 @@ sha2 = "0.10"
 socket2 = { version = "0.5", features = ["all"] }
 winit31 = { workspace = true }
 tray-icon = { version = "0.21", default-features = false }
-rfd = "0.18"
 interprocess = "2.4"
 rusqlite = { workspace = true }
 min-paths = { path = "../../crates/min-paths" }

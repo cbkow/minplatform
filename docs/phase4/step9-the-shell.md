@@ -13,12 +13,12 @@ row 389, in the product.
 - **The tray.** A status line (Idle / Stopped / Rendering <job> / ... - exits after this chunk), Show Window, Stop
   Node / Resume Node, Exit; the tooltip follows the status. macOS: a click opens the menu only; Windows: a left click
   shows the window. The icon is a placeholder dot (the owner: fine until the real one is in).
-- **One way out** (row 389). Exit in the tray, Quit in the macOS menu (Cmd+Q), the Dock's Quit - while the node
-  renders each ASKS: "This node is rendering. Kill the render and exit?" with Kill and Exit / Exit After This Chunk /
-  Cancel. "After this chunk": the node takes no more work, says so in its status and to the leader, and leaves when
-  the chunk is done. With nothing rendering, it leaves at once.
-- **Exits nobody can answer** kill without asking and tell the leader first: on macOS the quit's own reason says when
-  it is a log-out, a restart or a shutdown; on Windows the session's end.
+- **One way out, and it does not ask** (row 404, which takes back row 389's question). Exit in the tray, Quit in the
+  macOS menu (Cmd+Q), the Dock's Quit, a log-out, a shutdown, a session's end: all the same. A render under way is
+  killed with its whole tree at once, the leader is told, the application leaves. Stop Node kills at once too.
+  (A question - Kill and Exit / Exit After This Chunk / Cancel - was built first. The owner, walking it: "adding
+  complexity to the brute force death that worked in the old app". It was also broken: the system's dialog held the
+  main loop still, its buttons misbehaved, and the application could not leave behind it.)
 - **Leaving is always the node's shutdown**: the render killed, the leader told, the phonebook entry removed, a
   goodbye to the heartbeats - then the loop is told to end, once.
 - **One instance for a data folder.** A later launch tells the first how it was started and leaves; only a launch
@@ -34,7 +34,7 @@ Without a hand: a hidden start seen by its leader; a second launch gone in 0.01 
 asked over the network - a new process was the same node 0.5 s later; a stop - gone in 0.3 s with its phonebook entry
 removed. The drivers pass as before on macOS and on Windows.
 
-By the owner's hand: the exit question with a render under way (awaited).
+By the owner's hand: an exit with a render under way (awaited).
 
 ## Not yet
 

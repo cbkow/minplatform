@@ -3004,7 +3004,6 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "regex",
- "rfd",
  "rusqlite",
  "serde",
  "serde_json",

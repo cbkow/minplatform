@@ -41,8 +41,7 @@ struct Work { queue: VecDeque<Assignment>, running: Option<Running>, /// from an
 
 pub struct Node {
     pub id: String, pub data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
-    stopped: AtomicBool, pub stop: Arc<AtomicBool>, /// the node takes no more work and stops when its chunk is done ("Exit after this chunk")
-    leaving: AtomicBool, /// another node, or this one's window, asked for the application to start again
+    stopped: AtomicBool, pub stop: Arc<AtomicBool>, /// another node, or this one's window, asked for the application to start again
     pub restart_asked: AtomicBool, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
     lead: Mutex<Option<Lead>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
@@ -93,7 +92,7 @@ impl Node {
         if adopted { crate::share::log("WARN", "farm", &format!("this machine had lost its node id; the phonebook has an entry at its address, and it returns as that node ({id})")); }
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
-            cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), leaving: AtomicBool::new(false), restart_asked: AtomicBool::new(false),
+            cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
             peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
@@ -110,7 +109,7 @@ impl Node {
             "node_state": if self.stopped.load(Ordering::Relaxed) { "stopped" } else { "active" }, "render_state": if r.is_some() { "rendering" } else { "idle" },
             "active_job": r.map(|r| r.job.clone()).unwrap_or_default(), "active_chunk": r.map(|r| if r.start == r.end { format!("f{}", r.start) } else { format!("f{}-{}", r.start, r.end) }).unwrap_or_default(),
             "priority": 100, "tags": self.tags, "capabilities": CAPABILITIES, "endpoint": format!("{}:{}", self.ip, self.port), "secret_fingerprint": fingerprint(&self.secret),
-            "agent_health": "ok", "alert_reason": "", "ready_for_work": !w.busy && !self.leaving.load(Ordering::Relaxed), "is_local": true, "is_alive": true, "is_leader": false, "last_seen_ms": 0, "has_udp_contact": false, "failed_polls": 0 })
+            "agent_health": "ok", "alert_reason": "", "ready_for_work": !w.busy, "is_local": true, "is_alive": true, "is_leader": false, "last_seen_ms": 0, "has_udp_contact": false, "failed_polls": 0 })
     }
     /// A heartbeat (1.6): what this node is doing, to every node that listens. The types are exactly 0.5.x's: a
     /// 0.5.x node reads them without a guard.
@@ -166,7 +165,7 @@ impl Node {
             ("GET", "/api/config") => { let mut v = std::fs::read_to_string(self.data.join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({}));
                 for (k, x) in [("node_id", json!(self.id)), ("hostname", json!(self.hostname)), ("cpu_cores", json!(self.cores)), ("ram_mb", json!(self.ram_mb)), ("gpu_name", json!("")), ("farm_running", json!(true)), ("farm_path", json!(self.farm.to_string_lossy())), ("farm_error", json!("")), ("is_leader", json!(self.lead.lock().unwrap().is_some()))] { v[k] = x; }
                 Response::json(200, v) }
-            ("POST", "/api/dispatch/assign") => { if self.work.lock().unwrap().running.is_some() { return Response::error(409, "busy") } if self.stopped.load(Ordering::Relaxed) || self.leaving.load(Ordering::Relaxed) { return Response::error(409, "stopped") }
+            ("POST", "/api/dispatch/assign") => { if self.work.lock().unwrap().running.is_some() { return Response::error(409, "busy") } if self.stopped.load(Ordering::Relaxed) { return Response::error(409, "stopped") }
                 let v = match body() { Ok(v) => v, Err(r) => return r };
                 let (Some(m), Some(a), Some(b)) = (v.get("manifest").filter(|m| m.is_object()), v["frame_start"].as_i64(), v["frame_end"].as_i64()) else { return Response::error(400, "the assignment lacks a manifest or its frames") };
                 let mut w = self.work.lock().unwrap();
@@ -245,17 +244,15 @@ impl Node {
             Candidate { id: id.clone(), alive: p.alive, can_work: r.is_some_and(|r| r["node_state"] != json!("stopped") && r["ready_for_work"] != json!(false)), rendering: r.is_some_and(|r| r["render_state"] == json!("rendering")), needs_attention: r.is_some_and(|r| r.get("agent_health").is_some_and(|h| h != &json!("ok"))),
                 tags: r.and_then(|r| r["tags"].as_array()).map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(),
                 active: r.filter(|r| r["render_state"] == json!("rendering")).map(|r| (r["active_job"].as_str().unwrap_or("").to_string(), r["active_chunk"].as_str().unwrap_or("").to_string())) } }).collect();
-        { let w = self.work.lock().unwrap(); nodes.push(Candidate { id: self.id.clone(), alive: true, can_work: !self.stopped.load(Ordering::Relaxed) && !w.busy && !self.leaving.load(Ordering::Relaxed), rendering: w.running.is_some(), needs_attention: false, tags: self.tags.clone(),
+        { let w = self.work.lock().unwrap(); nodes.push(Candidate { id: self.id.clone(), alive: true, can_work: !self.stopped.load(Ordering::Relaxed) && !w.busy, rendering: w.running.is_some(), needs_attention: false, tags: self.tags.clone(),
             active: w.running.as_ref().map(|r| (r.job.clone(), if r.start == r.end { format!("f{}", r.start) } else { format!("f{}-{}", r.start, r.end) })) }); }
         let t = Instant::now(); let fx = match self.lead.lock().unwrap().as_mut() { Some(l) => l.cycle(&nodes, &self.farm), None => return };
         if t.elapsed() > Duration::from_millis(500) { crate::share::log("WARN", "dispatch", &format!("the leader's cycle took {} ms", t.elapsed().as_millis())); }
         self.effects(fx); self.commands();
     }
     /// The node is stopped or started (4.12): kept in the config; a render under way is ended and reported as failed.
-    /// What the tray and the window say of this node: (rendering which job, stopped, leaving after its chunk).
-    pub fn state(&self) -> (Option<String>, bool, bool) { (self.work.lock().unwrap().running.as_ref().map(|r| r.job.clone()), self.stopped.load(Ordering::Relaxed), self.leaving.load(Ordering::Relaxed)) }
-    /// "Exit after this chunk": no more work is taken, and the node stops when it has none.
-    pub fn leave_after_chunk(&self) { self.leaving.store(true, Ordering::Relaxed); }
+    /// What the tray and the window say of this node: (rendering which job, stopped).
+    pub fn state(&self) -> (Option<String>, bool) { (self.work.lock().unwrap().running.as_ref().map(|r| r.job.clone()), self.stopped.load(Ordering::Relaxed)) }
     pub fn set_stopped(&self, on: bool) {
         self.stopped.store(on, Ordering::Relaxed); if on { self.cut(None, Cut::Fail); }
         let f = self.data.join("config.json"); if let Some(mut v) = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) { v["node_stopped"] = json!(on); let _ = write_atomically(&f, &serde_json::to_string_pretty(&v).unwrap()); }
@@ -475,7 +472,6 @@ impl Node {
         log(format!("node {} is in the farm as {}:{}", self.id, self.ip, self.port));
         // the chunks, one at a time
         while !self.stop.load(Ordering::Relaxed) {
-            if self.leaving.load(Ordering::Relaxed) { let w = self.work.lock().unwrap(); if w.running.is_none() && w.queue.is_empty() { self.stop.store(true, Ordering::Relaxed); break } }
             let next = self.work.lock().unwrap().queue.pop_front();
             match next { Some(a) => if self.stopped.load(Ordering::Relaxed) { log("stopped: the chunk is abandoned"); self.idle(); } else { self.render(a) }, None => std::thread::sleep(Duration::from_millis(50)) }
         }

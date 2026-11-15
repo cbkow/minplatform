@@ -1,5 +1,5 @@
 //! The application as it lives on a machine (canon rows 389, 402; spike S14): a window that hides, an icon in the tray
-//! or the menu bar with a menu, one way out that asks while the node renders, the end of a session, a start of
+//! or the menu bar with a menu, one way out that kills a render at once, the end of a session, a start of
 //! itself again. The node runs on its own threads (`node.rs`); this is the main thread's loop.
 //!
 //! S14's rules, kept: the tray is made after the window, on the main thread; the loop is told to end ONCE, and woken
@@ -17,8 +17,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-/// What reaches the loop from outside it. `Quit(true)`: nobody is there to be asked (a log-out, a shutdown, an update).
-pub enum Msg { Show, Menu(&'static str), TrayClick, Second(bool), Quit(bool) }
+/// What reaches the loop from outside it.
+pub enum Msg { Show, Menu(&'static str), TrayClick, Second(bool), Quit }
 static TX: OnceLock<(Mutex<Sender<Msg>>, EventLoopProxy)> = OnceLock::new();
 pub fn send(m: Msg) { if let Some((tx, p)) = TX.get() { let _ = tx.lock().unwrap().send(m); p.wake_up(); } }
 fn log(s: impl AsRef<str>) { crate::share::log("INFO", "farm", s.as_ref()); }
@@ -28,24 +28,17 @@ impl Shell {
     fn show(&self) { if let Some(w) = &self.window { w.set_visible(true); w.set_minimized(false); w.focus_window(); } }
     /// What the tray says: its status line, its tooltip, the name of Stop / Resume - set when it changes, not at every turn.
     fn refresh(&mut self) {
-        let (job, stopped, leaving) = self.node.state();
-        let text = match (&job, leaving, stopped) { (Some(j), true, _) => format!("Rendering {j} - exits after this chunk"), (Some(j), ..) => format!("Rendering {j}"), (None, _, true) => "Stopped".to_string(), _ => "Idle".to_string() };
+        let (job, stopped) = self.node.state();
+        let text = match (&job, stopped) { (Some(j), _) => format!("Rendering {j}"), (None, true) => "Stopped".to_string(), _ => "Idle".to_string() };
         if (text.clone(), stopped) == self.shown { return } self.shown = (text.clone(), stopped);
         if let Some(s) = &self.status { s.set_text(&text); } if let Some(s) = &self.stop { s.set_text(if stopped { "Resume Node" } else { "Stop Node" }); }
         // (Windows cuts a tooltip at 127 characters; a job's id has no such bound)
         if let Some(t) = &self.tray { let tip: String = format!("minRender - {text}").chars().take(120).collect(); let _ = t.set_tooltip(Some(tip)); }
     }
-    /// The one way out (row 389). While the node renders, a quit ASKS - unless nobody can answer.
-    fn quit(&mut self, unattended: bool) {
-        let rendering = self.node.state().0.is_some();
-        if rendering && !unattended {
-            self.show();
-            let answer = rfd::MessageDialog::new().set_level(rfd::MessageLevel::Warning).set_title("minRender").set_description("This node is rendering. Kill the render and exit?")
-                .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Kill and Exit".into(), "Exit After This Chunk".into(), "Cancel".into())).show();
-            match answer { rfd::MessageDialogResult::Custom(a) if a == "Kill and Exit" => {} rfd::MessageDialogResult::Custom(a) if a == "Exit After This Chunk" => { log("exit asked for: after this chunk"); self.node.leave_after_chunk(); return } _ => return }
-        }
-        log(if rendering { "exit: the render is killed" } else { "exit" }); self.node.stop.store(true, Ordering::Relaxed);
-    }
+    /// The one way out (row 404): every exit is the same and none asks. The render is killed with its whole tree, the
+    /// leader is told, the node leaves the farm, the application ends. (A question while rendering was ruled in row 389
+    /// and taken out again: it put a dialog between the owner and the kill that has always simply worked.)
+    fn quit(&self) { log(if self.node.state().0.is_some() { "exit: the render is killed" } else { "exit" }); self.node.stop.store(true, Ordering::Relaxed); }
 }
 impl ApplicationHandler for Shell {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
@@ -73,10 +66,10 @@ impl ApplicationHandler for Shell {
         while let Ok(m) = self.rx.try_recv() { match m {
             Msg::Show | Msg::Menu("show") => self.show(),
             Msg::Menu("stop") => { let stopped = self.node.state().1; self.node.set_stopped(!stopped); self.refresh(); }
-            Msg::Menu(_) => self.quit(false),
+            Msg::Menu(_) => self.quit(),
             Msg::TrayClick => if !cfg!(target_os = "macos") { self.show() },
             Msg::Second(minimized) => if !minimized { self.show() },
-            Msg::Quit(unattended) => self.quit(unattended),
+            Msg::Quit => self.quit(),
         } }
     }
     fn about_to_wait(&mut self, el: &dyn ActiveEventLoop) {
@@ -98,14 +91,8 @@ pub fn started_at_sign_in() -> bool { os::started_at_sign_in() }
 
 #[cfg(target_os = "macos")]
 mod os {
-    use objc2::rc::Retained; use objc2::runtime::{AnyObject, ProtocolObject}; use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
+    use objc2::rc::Retained; use objc2::runtime::ProtocolObject; use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{NSApplication, NSApplicationDelegate, NSApplicationTerminateReply}; use objc2_foundation::{NSObject, NSObjectProtocol};
-    /// Why the system asks the application to quit, when it says: a log-out, a restart, a shutdown.
-    fn system_is_leaving() -> bool { unsafe {
-        let mgr: *mut AnyObject = msg_send![objc2::class!(NSAppleEventManager), sharedAppleEventManager]; if mgr.is_null() { return false }
-        let ev: *mut AnyObject = msg_send![mgr, currentAppleEvent]; if ev.is_null() { return false }
-        let why: *mut AnyObject = msg_send![ev, attributeDescriptorForKeyword: u32::from_be_bytes(*b"why?")]; if why.is_null() { return false }
-        let code: u32 = msg_send![why, typeCodeValue]; [*b"logo", *b"rlgo", *b"rest", *b"rrst", *b"shut", *b"rsdn"].iter().any(|c| u32::from_be_bytes(*c) == code) } }
     define_class!(
         #[unsafe(super(NSObject))] #[thread_kind = MainThreadOnly] #[name = "MinRenderAppDelegate"]
         struct Delegate;
@@ -113,7 +100,7 @@ mod os {
         unsafe impl NSApplicationDelegate for Delegate {
             // the Dock's Quit, a log-out, a shutdown, an updater: the answer is "not yet", and the loop ends itself after the node's shutdown
             #[unsafe(method(applicationShouldTerminate:))]
-            fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply { super::send(super::Msg::Quit(system_is_leaving())); NSApplicationTerminateReply::TerminateCancel }
+            fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply { super::send(super::Msg::Quit); NSApplicationTerminateReply::TerminateCancel }
             // a click on the Dock's icon while no window shows
             #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
             fn reopen(&self, _app: &NSApplication, visible: bool) -> bool { if !visible { super::send(super::Msg::Show); } true }
@@ -128,7 +115,7 @@ mod os {
     // a top-level window of the application's own, never shown: Windows asks every top-level window whether the session may end
     unsafe extern "system" fn proc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT { match m {
         WM_QUERYENDSESSION => LRESULT(1),
-        WM_ENDSESSION => { if w.0 != 0 { super::send(super::Msg::Quit(true)); } LRESULT(0) }
+        WM_ENDSESSION => { if w.0 != 0 { super::send(super::Msg::Quit); } LRESULT(0) }
         _ => unsafe { DefWindowProcW(h, m, w, l) } } }
     fn packaged() -> bool { let mut n = 0u32; unsafe { let _ = windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(&mut n, None); } n != 0 }
     pub fn install() { unsafe { let inst = windows::Win32::System::LibraryLoader::GetModuleHandleW(PCWSTR::null()).unwrap_or_default(); let class = w!("MinRenderSessionWindow");
