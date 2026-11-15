@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// The content this build brings to a share (row 390: Blender only), with where each file goes under the farm's folder.
-const CONTENT: [(&str, &str); 2] = [("templates/plugins/blender-5.2-plugin.json", include_str!("../resources/templates/plugins/blender-5.2-plugin.json")), ("plugins/blender/MinRender.py", include_str!("../resources/plugins/blender/MinRender.py"))];
+const CONTENT: [(&str, &str); 3] = [("templates/examples/blender-5.2-studio.json", include_str!("../resources/templates/blender-5.2-studio.json")), ("templates/plugins/blender-5.2-plugin.json", include_str!("../resources/templates/plugins/blender-5.2-plugin.json")), ("plugins/blender/MinRender.py", include_str!("../resources/plugins/blender/MinRender.py"))];
 
 /// `n` bytes from the system's source of randomness.
 pub fn random(n: usize) -> Result<Vec<u8>, String> {
