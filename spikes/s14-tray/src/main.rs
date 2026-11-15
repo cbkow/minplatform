@@ -128,7 +128,9 @@ mod os {
     pub fn terminate() { super::log("terminate: is macOS's; on Windows the window's close and the session's end are the ways out"); }
     pub fn end_session() { if let Some(h) = HIDDEN.get() { unsafe { let h = HWND(*h as *mut _); let q = SendMessageW(h, WM_QUERYENDSESSION, Some(WPARAM(0)), Some(LPARAM(0))); super::log(format!("the query was answered {}", q.0)); SendMessageW(h, WM_ENDSESSION, Some(WPARAM(1)), Some(LPARAM(0))); } } }
     /// Whether this process has a package's identity (a Store install) - there the startup task starts it with no arguments.
-    pub fn startup_kind() -> String { let mut n = 0u32; unsafe { let _ = windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(&mut n, None); } if n == 0 { "unpackaged".into() } else { "packaged".into() } }
+    pub fn startup_kind() -> String { let mut n = 0u32; unsafe { let _ = windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName(&mut n, None); } if n == 0 { return "unpackaged".into() }
+        // with a package's identity Windows says HOW the application was started: by hand, or by the startup task at sign-in
+        match windows::ApplicationModel::AppInstance::GetActivatedEventArgs().and_then(|a| a.Kind()) { Ok(k) if k == windows::ApplicationModel::Activation::ActivationKind::StartupTask => "packaged, started by the startup task".into(), Ok(k) => format!("packaged, activation kind {}", k.0), Err(e) => format!("packaged, activation unknown ({e})") } }
 }
 #[cfg(not(any(target_os = "macos", windows)))]
 mod os { pub fn install() {} pub fn terminate() {} pub fn end_session() {} pub fn startup_kind() -> String { "n/a".into() } }
@@ -136,19 +138,25 @@ mod os { pub fn install() {} pub fn terminate() {} pub fn end_session() {} pub f
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect(); let val = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1).cloned());
     let _ = T0.set(Instant::now());
-    if let Some(f) = val("--log").and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok()) { let _ = LOG.set(Mutex::new(f)); }
-    let minimized = args.iter().any(|a| a == "--minimized");
+    // (with no --log: `s14.log` in the home folder - a packaged start has no arguments)
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".into());
+    if let Some(f) = std::fs::OpenOptions::new().create(true).append(true).open(val("--log").unwrap_or_else(|| format!("{home}/s14.log"))).ok() { let _ = LOG.set(Mutex::new(f)); }
+    let kind = os::startup_kind();
+    // started at sign-in by the startup task: hidden, as a tray application starts
+    let minimized = args.iter().any(|a| a == "--minimized") || kind.contains("startup task");
     // started by a copy that is leaving: wait until it is gone
     if let Some(pid) = val("--wait-pid").and_then(|p| p.parse::<u32>().ok()) { let t = Instant::now(); while alive(pid) && t.elapsed() < Duration::from_secs(15) { std::thread::sleep(Duration::from_millis(50)); } log(format!("the former instance ({pid}) was gone after {:.2} s", t.elapsed().as_secs_f64())); }
     // one instance: the first listens; a later one says how it was started and leaves
     let listener = match std::net::TcpListener::bind(("127.0.0.1", PORT)) { Ok(l) => l, Err(_) => {
         #[cfg(windows)] unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX); }   // ASFW_ANY: the first instance may take the foreground
         match std::net::TcpStream::connect(("127.0.0.1", PORT)) { Ok(mut s) => { let _ = s.write_all(if minimized { b"minimized" } else { b"show" }); log(format!("second launch (minimized: {minimized}): handed to the first, leaving")); } Err(e) => log(format!("second launch: the first did not answer ({e})")) } return } };
-    log(format!("started; args {args:?}; {}", os::startup_kind()));
+    log(format!("started; args {args:?}; {kind}; minimized {minimized}"));
     let el = EventLoop::new().unwrap(); let (tx, rx) = channel(); let _ = TX.set((Mutex::new(tx), el.create_proxy()));
     os::install();
     std::thread::spawn(move || for s in listener.incoming().flatten() { let mut s = s; let mut b = [0u8; 16]; let n = s.read(&mut b).unwrap_or(0); send(Msg::Second(&b[..n] == b"minimized")); });
-    if let Ok(script) = std::env::var("S14_SCRIPT") { std::thread::spawn(move || { let t = Instant::now(); let mut steps: Vec<(f64, String)> = script.split(',').filter_map(|s| s.split_once('@').map(|(a, b)| (b.parse().unwrap_or(0.0), a.to_string()))).collect(); steps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // (a script may also be left in the home folder as `s14-script.txt`: it is taken once - the way to script a packaged start)
+    let left = format!("{home}/s14-script.txt"); let from_file = std::fs::read_to_string(&left).ok().map(|t| t.trim().to_string()); if from_file.is_some() { let _ = std::fs::remove_file(&left); }
+    if let Some(script) = std::env::var("S14_SCRIPT").ok().or(from_file) { std::thread::spawn(move || { let t = Instant::now(); let mut steps: Vec<(f64, String)> = script.split(',').filter_map(|s| s.split_once('@').map(|(a, b)| (b.parse().unwrap_or(0.0), a.to_string()))).collect(); steps.sort_by(|a, b| a.0.total_cmp(&b.0));
         for (at, what) in steps { let d = at - t.elapsed().as_secs_f64(); if d > 0.0 { std::thread::sleep(Duration::from_secs_f64(d)); } send(Msg::Script(what)); } }); }
     let r = el.run_app(App { rx, window: None, tray: None, items: None, minimized, rendering: false, stopped: false, leaving: None, left: false });
     log(format!("the loop returned ({r:?}); the process ends normally"));

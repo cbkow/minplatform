@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- S14's test package: one full-trust application whose startup task names THE APPLICATION ITSELF (no helper
+     executable, where minRender 0.5.x names mr-restart.exe). -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
+  <Identity Name="cbkow.S14Spike" Version="0.0.1.0" Publisher="CN=C64A1D41-EFAA-4EED-AE81-0C074867D4E9" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>S14 Spike</DisplayName>
+    <PublisherDisplayName>cbkow</PublisherDisplayName>
+    <Logo>images\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Applications>
+    <Application Id="S14" Executable="s14.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="S14 Spike" Description="A test of a tray application's life inside a package"
+        BackgroundColor="transparent" Square150x150Logo="images\Square150x150Logo.png" Square44x44Logo="images\Square44x44Logo.png" />
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="s14.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="S14Startup" Enabled="true" DisplayName="S14 Spike" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
