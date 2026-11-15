@@ -160,7 +160,7 @@ if ($Installed) {
         $bad = @(Compare-Object $a $b | Where-Object { $_.InputObject -notmatch $allowed })
         if ($bad.Count) { throw "The manifest differs from the installed 0.5.11.0's in more than the version, the startup task's executable and the description." }
     }
-} else { Write-Host "  (no installed manifest to compare with - pass -Installed; C:\qcb-lab\read-store-manifest.ps1 reads it)" }
+} else { Write-Host "  (no installed manifest to compare with - pass -Installed <the AppxManifest.xml inside the Store-installed package>)" }
 [IO.File]::WriteAllText((Join-Path $stage "AppxManifest.xml"), $manifest, (New-Object Text.UTF8Encoding($false)))
 Copy-Item -Recurse (Join-Path $PSScriptRoot "msix-minrender\Assets") (Join-Path $stage "Assets")
 
