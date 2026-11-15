@@ -37,7 +37,8 @@ pub struct Node {
     pub id: String, data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
-    lead: Mutex<Option<Lead>>, /// this machine's table of shared roots (5.3)
+    lead: Mutex<Option<Lead>>, /// submission files that were dealt with and could not be moved away
+    submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
     mappings: Vec<min_paths::map::Mapping>,
 }
 
@@ -80,7 +81,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or("")), tags, hostname: host_name(),
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
     fn endpoint_file(&self) -> PathBuf { self.farm.join("nodes").join(&self.id).join("endpoint.json") }
@@ -164,6 +165,37 @@ impl Node {
     fn to_leader(self: &Arc<Self>, path: &str, body: &str) -> Option<(u16, Vec<u8>)> {
         if self.lead.lock().unwrap().is_some() { return self.lead_answer("POST", path, body.as_bytes()).map(|r| (r.status, r.body)) }
         let l = self.leader()?; http::call(&l, "POST", path, Some(&self.secret), Some(body), Duration::from_secs(2), Duration::from_secs(5))
+    }
+    /// The plug-ins' drop box (8.2): each `*.json` in `submissions/` becomes a job - the template found by its id, one
+    /// value a flag, the id from the name, the manifest baked and put in its travelling form, handed to the leader.
+    /// A file is moved to `processed/` once the leader has taken or refused it, or when it cannot be a job at all,
+    /// and the reason is logged. Unlike 0.5.x (ruled 2026-11-14, row 389): a submission is checked as the form
+    /// checks one; a file the leader could not be told of STAYS and is tried again; no file is submitted twice.
+    fn drop_box(self: &Arc<Self>) {
+        let dir = self.data.join("submissions"); let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json")).collect(); files.sort();
+        for f in files {
+            let name = f.file_name().unwrap_or_default().to_string_lossy().into_owned(); if self.submitted.lock().unwrap().contains(&name) { continue }
+            let done = |why: Option<String>| { if let Some(w) = &why { log(format!("the submission {name} is not a job: {w}")); } let to = dir.join("processed"); let _ = std::fs::create_dir_all(&to);
+                if std::fs::rename(&f, to.join(&name)).is_err() { self.submitted.lock().unwrap().insert(name.clone()); } };
+            let Some(v) = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(Value::is_object) else {
+                // (a file still being written is not yet JSON: it is given ten seconds before it is called bad)
+                if f.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() >= 10) { done(Some("it is not JSON".into())); } continue };
+            let (Some(tid), Some(job_name)) = (v["template_id"].as_str(), v["job_name"].as_str()) else { done(Some("it names no template or no job".into())); continue };
+            let Some(t) = crate::submit::templates(&self.farm).into_iter().find(|t| t["template_id"].as_str() == Some(tid)) else { done(Some(format!("the template {tid} is not on the share"))); continue };
+            let values: Vec<String> = t["flags"].as_array().map(|a| a.iter().map(|fl| fl["id"].as_str().and_then(|id| v["overrides"][id].as_str()).or(fl["value"].as_str()).unwrap_or("").to_string()).collect()).unwrap_or_default();
+            let int = |k: &str, d: i64| v[k].as_i64().unwrap_or(d); let (a, b, chunk) = (int("frame_start", 1), int("frame_end", 250), int("chunk_size", 10));
+            let exe = t["cmd"][OS].as_str().unwrap_or("").to_string();
+            if let Some(why) = crate::submit::refusal(&t, &values, &exe, a, b, chunk) { done(Some(why)); continue }
+            let Some(id) = crate::submit::slug(job_name, &self.farm) else { done(Some("its name gives no id".into())); continue };
+            let mut m = crate::submit::bake(&t, &values, &exe, OS, &id, a, b, chunk, &self.id, now_ms());
+            if cfg!(target_os = "macos") { m = crate::submit::canonical(m, &self.mappings); }
+            match self.to_leader("/api/jobs", &json!({ "manifest": m, "priority": int("priority", 50) }).to_string()) {
+                Some((200, _)) => { log(format!("submitted {id}")); done(None) }
+                Some((s, b)) => done(Some(format!("the leader refused it ({s} {})", String::from_utf8_lossy(&b)))),
+                None => log(format!("the submission {name} waits: no leader answers")),
+            }
+        }
     }
     /// The leader's cycle (4.6), when this node leads.
     fn lead_cycle(self: &Arc<Self>) {
@@ -304,6 +336,8 @@ impl Node {
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.cycle(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // the leader's cycle, every 2 s, while this node leads
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.lead_cycle(); for _ in 0..20 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
+        // the plug-ins' drop box, every 3 s
+        { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.drop_box(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) {
             let next = me.reports.lock().unwrap().front().cloned();

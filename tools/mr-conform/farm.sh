@@ -4,7 +4,8 @@
 # off. Nothing here can reach a real farm: another share, other ports, 127.0.0.1 only. The real installation's data
 # folder is never used (each node's HOME is a scratch folder).
 #   sh tools/mr-conform/farm.sh start [N]     (default 2; needs MR_HEADLESS = the path of a `minrender-headless` build;
-#                                              MR_TAGS='"noleader"' gives every node that tag)
+#                                              MR_TAGS='"noleader"' gives every node that tag; MR_MAPPINGS = the
+#                                              inside of every node's path_mappings array)
 #   sh tools/mr-conform/farm.sh port          the Rust node (target/release/minRender) joins the running farm, as a
 #                                              follower (tag `noleader`); MR_PORT_TAGS='' lets it lead, MR_PORT_TAGS='"leader"' makes it
 #   sh tools/mr-conform/farm.sh stop
@@ -21,7 +22,7 @@ case "$1" in
     rm -rf "$W"; mkdir -p "$W/share"
     i=1; while [ "$i" -le "$N" ]; do
       d="$(data $i)"; mkdir -p "$d" "$W/n$i/t"
-      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" $((8430 + i)) $((4330 + i)) "${MR_TAGS:-}" > "$d/config.json"
+      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" $((8430 + i)) $((4330 + i)) "${MR_TAGS:-}" "${MR_MAPPINGS:-}" > "$d/config.json"
       HOME="$W/n$i" TMPDIR="$W/n$i/t" "$MR_HEADLESS" > "$W/n$i/out.log" 2>&1 &
       echo $! >> "$W/pids"; i=$((i + 1)); sleep 1
     done
@@ -31,7 +32,7 @@ case "$1" in
     [ -f "$W/share/MinRender-v2/farm.json" ] || { echo "start a farm first (the port joins a farm; it does not make one)"; exit 1; }
     BIN="${MR_PORT:-$PWD/target/release/minRender}"; [ -x "$BIN" ] || { echo "build it first: cargo build --release -p mr"; exit 1; }
     d="$W/p/data"; mkdir -p "$d"
-    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[]}\n' "$W/share" "${MR_PORT_TAGS-\"noleader\"}" > "$d/config.json"
+    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":false,"udp_port":4339,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" "${MR_PORT_TAGS-\"noleader\"}" "${MR_MAPPINGS:-}" > "$d/config.json"
     "$BIN" --data "$d" --no-window < /dev/null > "$W/p/out.log" 2>&1 &
     echo $! >> "$W/pids"; echo "the port joined on port 8439; its config: $d/config.json" ;;
   stop)

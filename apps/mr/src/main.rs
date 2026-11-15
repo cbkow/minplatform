@@ -5,6 +5,7 @@ mod http;
 mod lead;
 mod leash;
 mod node;
+mod submit;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static QUIT: AtomicBool = AtomicBool::new(false);
