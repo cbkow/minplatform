@@ -3,6 +3,8 @@ name = "mr"
 version = "1.0.0"
 edition = "2024"
 publish = false
+license = "GPL-3.0-or-later"
+description = "minRender on the platform (Phase 4): a render farm's node, its leader and its window in one executable"
 
 # minRender, the port (Phase 4; canon rows 385-393): ONE executable - the node, and, started again with `--leash`, the
 # small process that owns a render's process tree (rows 387-388). Its contract with a 0.5.x farm is
