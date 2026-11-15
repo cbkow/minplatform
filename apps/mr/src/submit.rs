@@ -18,6 +18,20 @@ pub fn templates(farm: &Path) -> Vec<Value> {
     }
     out
 }
+/// The templates the New Job form offers: the examples and the users' own (the plug-ins' templates are not for the form).
+pub fn form_templates(farm: &Path) -> Vec<Value> {
+    let plug: Vec<String> = std::fs::read_dir(farm.join("templates/plugins")).map(|rd| rd.flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).filter_map(|t| t["template_id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let users: Vec<String> = std::fs::read_dir(farm.join("templates")).map(|rd| rd.flatten().filter(|e| e.path().is_file()).filter_map(|e| std::fs::read_to_string(e.path()).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).filter_map(|t| t["template_id"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+    templates(farm).into_iter().filter(|t| { let id = t["template_id"].as_str().unwrap_or(""); !plug.iter().any(|p| p == id) || users.iter().any(|u| u == id) }).collect()
+}
+/// Everything that stands in the way of a submission from the form - all of it at once, not the first alone (row 389).
+pub fn refusals(template: &Value, values: &[String], exe: &str, name: &str, a: i64, b: i64, chunk: i64) -> Vec<String> {
+    let mut out = Vec::new();
+    if exe.is_empty() { out.push("Executable path is empty".to_string()); } if name.trim().is_empty() { out.push("Job name is empty".into()); } else if name.bytes().all(|c| !(c.is_ascii_alphanumeric() || c == b'_')) { out.push("Job name produces an empty slug".into()); }
+    if a > b { out.push("Frame start must be <= frame end".into()); } if chunk < 1 { out.push("Chunk size must be >= 1".into()); }
+    for (f, v) in template["flags"].as_array().map(|a| a.as_slice()).unwrap_or(&[]).iter().zip(values) { if f["editable"] == json!(true) && f["required"] == json!(true) && v.trim().is_empty() { out.push(format!("Required field is empty: {}", f["info"].as_str().unwrap_or("a value"))); } }
+    out
+}
 /// A job's id from its name (4.2): bytes lower-cased, letters, digits and `_` kept, every other byte a `-`, runs of
 /// `-` made one, none at the ends, 64 bytes at most; the first of `id`, `id-2` ... `id-99` that has no folder under
 /// `jobs/` on the share. `None`: the name gives nothing, or all are taken.

@@ -76,10 +76,12 @@ impl ApplicationHandler for Shell {
                 let ev = if state == ElementState::Pressed { min_ui::Event::Down { x, y, button } } else { min_ui::Event::Up { x, y, button } };
                 if let Some(ui) = self.ui.as_mut() { ui.pointer(&ev, &self.node.view(), self.mods); } redraw(self); }
             WindowEvent::PointerLeft { .. } => { if let Some(ui) = self.ui.as_mut() { ui.pointer(&min_ui::Event::Leave, &self.node.view(), self.mods); } redraw(self); }
-            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { use winit::keyboard::{Key, NamedKey};
-                let name = match &event.logical_key { Key::Named(NamedKey::ArrowUp) => "Up", Key::Named(NamedKey::ArrowDown) => "Down", Key::Named(NamedKey::Home) => "Home", Key::Named(NamedKey::End) => "End", Key::Named(NamedKey::PageUp) => "PageUp", Key::Named(NamedKey::PageDown) => "PageDown",
-                    Key::Named(NamedKey::Escape) => "Escape", Key::Named(NamedKey::Delete) => "Delete", Key::Named(NamedKey::Backspace) => "Backspace", Key::Character(c) if c.eq_ignore_ascii_case("a") => "a", _ => "" };
-                if !name.is_empty() { if let Some(ui) = self.ui.as_mut() { ui.key(name, &self.node.view(), self.mods); } redraw(self); } }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { use winit::keyboard::{Key, NamedKey}; use min_ui::{Key as K, Named as N};
+                let key = match &event.logical_key { Key::Named(NamedKey::ArrowUp) => K::Named(N::Up), Key::Named(NamedKey::ArrowDown) => K::Named(N::Down), Key::Named(NamedKey::ArrowLeft) => K::Named(N::Left), Key::Named(NamedKey::ArrowRight) => K::Named(N::Right), Key::Named(NamedKey::Home) => K::Named(N::Home), Key::Named(NamedKey::End) => K::Named(N::End),
+                    Key::Named(NamedKey::Escape) => K::Named(N::Escape), Key::Named(NamedKey::Enter) => K::Named(N::Enter), Key::Named(NamedKey::Tab) => K::Named(N::Tab), Key::Named(NamedKey::Delete) => K::Named(N::Delete), Key::Named(NamedKey::Backspace) => K::Named(N::Backspace),
+                    Key::Named(NamedKey::PageUp) => K::Char("PageUp".into()), Key::Named(NamedKey::PageDown) => K::Char("PageDown".into()), Key::Character(c) => K::Char(c.to_string()), _ => K::Char(String::new()) };
+                let ev = min_ui::KeyEvent { key, text: event.text.as_ref().map(|t| t.to_string()).filter(|_| !self.mods.1), shift: self.mods.0, cmd: self.mods.1 };
+                if let Some(ui) = self.ui.as_mut() { ui.key_event(&ev, &self.node.view(), self.mods); } redraw(self); }
             _ => {}
         }
     }

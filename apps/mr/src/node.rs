@@ -275,6 +275,18 @@ impl Node {
         match min_image::load_thumbnail(&path.to_string_lossy(), "", 960) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); *last = Some(key); put(fname, (w, h), rgba, None); }
             Err(_) => { *last = None; put(fname, (0, 0), Vec::new(), Some("This frame cannot be shown yet")); } }
     }
+    /// The farm's folder on the share (the form reads the templates there).
+    pub fn farm(&self) -> &Path { &self.farm }
+    /// A job from the New Job form (8.1): checked, given its id, baked, put in the form manifests travel in, handed to
+    /// the leader - on a thread of its own. `done` gets the new job's id, or every reason it was not submitted.
+    pub fn submit_form(self: &Arc<Self>, template: Value, values: Vec<String>, name: String, a: i64, b: i64, chunk: i64, priority: i64, done: Arc<Mutex<Option<Result<String, Vec<String>>>>>) {
+        let me = self.clone(); std::thread::spawn(move || {
+            let exe = template["cmd"][OS].as_str().unwrap_or("").to_string(); let bad = crate::submit::refusals(&template, &values, &exe, &name, a, b, chunk);
+            let r = if !bad.is_empty() { Err(bad) } else { match crate::submit::slug(&name, &me.farm) { None => Err(vec!["Job name produces an empty slug".to_string()]), Some(id) => {
+                let mut m = crate::submit::bake(&template, &values, &exe, OS, &id, a, b, chunk, &me.id, now_ms()); if cfg!(target_os = "macos") { m = crate::submit::canonical(m, &me.mappings); }
+                match me.to_leader("/api/jobs", &json!({ "manifest": m, "priority": priority }).to_string()) { Some((200, _)) => { me.refresh_jobs_view(); Ok(id) } Some((_, body)) => Err(vec![String::from_utf8_lossy(&body).into_owned()]), None => Err(vec!["Leader did not respond".to_string()]) } } } };
+            *done.lock().unwrap() = Some(r); });
+    }
     /// What the window asks of another node (the peers' menu): "stop", "start", "restart" - said to that node; "unsuspend" -
     /// said to the leader; "signal" - the restart file put in the node's folder on the share, for a node that does not answer.
     pub fn peer_command(self: &Arc<Self>, ids: Vec<String>, what: &'static str) {

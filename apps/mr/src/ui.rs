@@ -25,7 +25,8 @@ pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presen
     gaps: [Rect; 4], drag: Option<usize>, over: Option<usize>, /// the preview: the frames it is held to and since when (a pin lasts a minute), the picture as drawn, its "Latest" button, where the pane lies
     pin: Option<((i64, i64), Instant)>, picture: Option<(u64, peniko::ImageBrush)>, latest: TextButton, pane: Rect, shown_job: Option<String>, /// the frame grid as laid out: (cells a row, a cell's size, the first frame)
     grid_geom: (i64, f64, i64), /// this node's Stop / Resume; the peer the menu is for
-    node_btn: TextButton, peer_menu: Option<String>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
+    node_btn: TextButton, peer_menu: Option<String>, /// the title row's New Job, and its card while it is open
+    new_job: TextButton, form: Option<crate::form::Form>, clipboard: Option<arboard::Clipboard>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
 /// How the window is laid out, as the owner left it (0.5.x kept the same in its own settings): in `window.json` in the
 /// data folder - never in `config.json`, which a 0.5.x build on the same machine rewrites without what it does not know.
@@ -60,7 +61,7 @@ impl Ui {
         let layer = UiLayer::new(&presenter.engine.device, size.width.max(1), size.height.max(1)).ok()?; presenter.engine.set_overlay(Some(layer.view()));
         let node_data = node.data.clone(); let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
-        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } let s = self.window.scale_factor(); self.layout.size = Some((w as f64 / s, h as f64 / s)); self.layout.save(&self.node.data); self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
     pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
@@ -95,7 +96,9 @@ impl Ui {
     /// A pointer event. `mods`: (shift, the command key).
     pub fn pointer(&mut self, e: &Event, view: &View, mods: (bool, bool)) {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.window.scale_factor();
-        // what lies over the lists takes the pointer first: the question, then the menu
+        // what lies over the lists takes the pointer first: the New Job card, the question, the menu
+        if let Some(f) = self.form.as_mut() { if let crate::form::Out::Close = f.pointer(e, &mut self.fonts, &self.node) { self.form = None; } return }
+        if self.new_job.event(e, now).0 { self.form = Some(crate::form::Form::open(&self.node, &mut self.fonts)); return }
         if let Some((d, what)) = self.confirm.as_mut() { let what = *what; d.pointer(e, &mut self.fonts); if let (Some(i), _) = d.event(e, now) { self.confirm = None; if i == 1 { self.act(view, what, true); } } return }
         if self.menu.is_open() { let (chosen, _, _) = self.menu.event(e); if let Some(i) = chosen { let what = self.menu_acts.get(i).copied().unwrap_or(""); self.menu.close();
             // a chunk command goes to the chunks it applies to: back to the queue - those given out, failed or stopped; stop - those waiting or given out
@@ -146,7 +149,15 @@ impl Ui {
     }
     /// A key for the job list: the arrows, Home, End and the page keys move the cursor (with Shift the choice grows from
     /// where it began); the command key with A chooses all; Escape lets the choice go; Delete asks to delete it.
-    pub fn key(&mut self, name: &str, view: &View, mods: (bool, bool)) {
+    /// A key as it was pressed. The New Job card takes every key while it is open (the command key with V pastes); else
+    /// the lists take theirs.
+    pub fn key_event(&mut self, k: &min_ui::KeyEvent, view: &View, mods: (bool, bool)) {
+        if let Some(f) = self.form.as_mut() { let pasted = if k.cmd && matches!(&k.key, min_ui::Key::Char(c) if c.eq_ignore_ascii_case("v")) { Some(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()) } else { None }; f.key(k, pasted, &mut self.fonts, &self.node); return }
+        use min_ui::{Key, Named}; let name = match &k.key { Key::Named(Named::Up) => "Up", Key::Named(Named::Down) => "Down", Key::Named(Named::Home) => "Home", Key::Named(Named::End) => "End", Key::Named(Named::Escape) => "Escape", Key::Named(Named::Delete) => "Delete", Key::Named(Named::Backspace) => "Backspace",
+            Key::Char(c) if c == "PageUp" => "PageUp", Key::Char(c) if c == "PageDown" => "PageDown", Key::Char(c) if c.eq_ignore_ascii_case("a") => "a", _ => "" };
+        if !name.is_empty() { self.key(name, view, mods); }
+    }
+    fn key(&mut self, name: &str, view: &View, mods: (bool, bool)) {
         if self.confirm.is_some() { if name == "Escape" { self.confirm = None; } return } if self.menu.is_open() { if name == "Escape" { self.menu.close(); } return }
         if self.on_chunks { let Some(d) = self.node.detail() else { return }; let n = d.chunks.len(); if n == 0 { return } let s = self.window.scale_factor(); let page = ((self.chunks_rect.height() / (CHUNK_ROW * s)) as usize).saturating_sub(1).max(1);
             let at = self.ccursor.and_then(|c| d.chunks.iter().position(|x| x.id == c));
@@ -165,9 +176,11 @@ impl Ui {
         let now = Instant::now(); let now_ms = crate::node::now_ms() as i64;
         let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         // (scripted looks: MR_DEMO=select chooses the second to fourth job, so that a picture shows the strip alive)
+        // (MR_DEMO=newjob opens the New Job card)
+        if !self.demo { if let Some(d) = std::env::var("MR_DEMO").ok().filter(|d| d.starts_with("newjob")) { self.demo = true; let mut f = crate::form::Form::open(&self.node, &mut self.fonts); if let Some(word) = d.strip_prefix("newjob:") { f.demo(word, &mut self.fonts, &self.node); } self.form = Some(f); } }
         // (MR_DEMO=open:<job id> puts the cursor on that job, so that a picture shows its detail)
         if !self.demo { if let Some(id) = std::env::var("MR_DEMO").ok().and_then(|d| d.strip_prefix("open:").map(str::to_string)) { if view.jobs.iter().any(|j| j.id == id) { self.demo = true; self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } } }
-        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:")) { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
+        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:") && !d.starts_with("newjob")) { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
             // (MR_DEMO=pause | cancel | ...: the command is given as a click on its button would give it)
             if demo != "select" { let what: &'static str = Box::leak(demo.into_boxed_str()); self.act(view, what, what != "cancel" && what != "delete"); self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); } } }
         let strip_labels: Vec<(f64, &'static str)> = { let fonts = &mut self.fonts; self.strip.iter().map(|(b, w)| (b.measure(fonts, s).0, *w)).collect() }; let mut strip_rects: Vec<(Rect, bool)> = Vec::new(); let sel = self.sel.clone();
@@ -341,8 +354,13 @@ impl Ui {
         for ((b, _), (r, on)) in self.strip.iter_mut().zip(&strip_rects) { b.rect = *r; b.enabled = *on; b.paint(scene, &mut self.fonts, s, now); }
         self.node_btn.label = if stopped { "Resume".into() } else { "Stop".into() }; self.node_btn.variant = if stopped { Variant::Primary } else { Variant::Secondary }; self.node_btn.rect = node_btn_rect; self.node_btn.paint(scene, &mut self.fonts, s, now);
         if self.pin.is_some() && latest_rect.width() > 0.0 { self.latest.rect = latest_rect; self.latest.paint(scene, &mut self.fonts, s, now); } else { self.latest.rect = Rect::ZERO; }
+        // New Job, always in reach at the title row's right
+        { let (bw, _) = self.new_job.measure(&mut self.fonts, s); self.new_job.rect = Rect::new(w - pad - bw, TITLE * s / 2.0 - 12.0 * s, w - pad, TITLE * s / 2.0 + 12.0 * s); self.new_job.paint(scene, &mut self.fonts, s, now); }
         self.menu.paint(scene, &mut self.fonts, s);
         if let Some((d, _)) = self.confirm.as_mut() { let view_rect = Rect::new(0.0, 0.0, w, h); d.layout(&mut self.fonts, view_rect, s); d.paint(scene, &mut self.fonts, s, view_rect, now); }
+        // the New Job card, over everything; a submission that went through closes it and the new job is the one in hand
+        if let Some(f) = self.form.as_mut() { if let Some(id) = f.answered() { self.form = None; self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } }
+        if let Some(f) = self.form.as_mut() { f.paint(scene, &mut self.fonts, Rect::new(0.0, 0.0, w, h), s, now); }
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
         let window = self.window.clone(); self.presenter.draw(|| window.pre_present_notify());
         // (scripted looks: MR_SHOT=<file.png> saves the window as drawn, once, MR_SHOT_AFTER seconds - 8 - after it was made)
@@ -351,5 +369,5 @@ impl Ui {
             let bytes: Vec<u8> = (0..(w * h) as usize).flat_map(|i| [oetf(px[i * 4]), oetf(px[i * 4 + 1]), oetf(px[i * 4 + 2])]).collect();
             if let Ok(f) = std::fs::File::create(&path) { let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h); e.set_color(png::ColorType::Rgb); e.set_depth(png::BitDepth::Eight); let _ = e.write_header().and_then(|mut wr| wr.write_image_data(&bytes)); } } } }
     }
-    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) }
+    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) || self.form.as_ref().is_some_and(|f| f.animating(now)) }
 }

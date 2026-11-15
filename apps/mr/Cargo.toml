@@ -31,6 +31,8 @@ raw-window-handle = { workspace = true }
 png = { workspace = true }
 min-image = { path = "../../crates/min-image" }
 half = "2.4"
+rfd = "0.18"
+arboard = { workspace = true }
 rusqlite = { workspace = true }
 min-paths = { path = "../../crates/min-paths" }
 

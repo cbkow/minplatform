@@ -2997,6 +2997,7 @@ dependencies = [
 name = "mr"
 version = "0.6.0"
 dependencies = [
+ "arboard",
  "half",
  "interprocess",
  "kurbo 0.13.1",
@@ -3013,6 +3014,7 @@ dependencies = [
  "png 0.17.16",
  "raw-window-handle",
  "regex",
+ "rfd",
  "rusqlite",
  "serde",
  "serde_json",
