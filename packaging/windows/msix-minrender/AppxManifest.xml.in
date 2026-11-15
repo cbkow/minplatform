@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Store package's manifest of minRender (canon rows 421, 423; docs/phase4/step10-store-release-flow.md): the
+     manifest INSIDE the Store-installed 0.5.11.0, line for line, so the Store replaces 0.5.x in place and a node comes
+     back as itself. Against it only three things differ: the version, the startup task's executable (the application
+     itself - there is no mr-restart.exe any more; it tells a start by the task and starts hidden) and the description
+     (Blender only). The capabilities are EXACTLY 0.5.11.0's three; make-msix-minrender.ps1 refuses any other list.
+     The script fills @VERSION@ (apps/mr/Cargo.toml, four parts) and, for a test package beside the real one
+     (-TestIdentity), @NAME@, @DISPLAY@ and the two ports. The data folder is %USERPROFILE%\minRender - outside
+     AppData on purpose, so nothing is redirected and no capability is needed for it. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop desktop2 rescap">
+
+  <Identity
+    Name="@NAME@"
+    Publisher="CN=C64A1D41-EFAA-4EED-AE81-0C074867D4E9"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>@DISPLAY@</DisplayName>
+    <PublisherDisplayName>cbkow</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="minRender" Executable="minRender.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="@DISPLAY@"
+        Description="Lightweight render-farm monitor for Blender"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        BackgroundColor="transparent" />
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="minRender.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="minRenderStartup" Enabled="true" DisplayName="@DISPLAY@" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Extensions>
+    <desktop2:Extension Category="windows.firewallRules">
+      <desktop2:FirewallRules Executable="minRender.exe">
+        <desktop2:Rule Direction="in" IPProtocol="TCP" LocalPortMin="@TCP@" LocalPortMax="@TCP@" Profile="all" />
+        <desktop2:Rule Direction="in" IPProtocol="UDP" LocalPortMin="@UDP@" LocalPortMax="@UDP@" Profile="all" />
+      </desktop2:FirewallRules>
+    </desktop2:Extension>
+  </Extensions>
+</Package>

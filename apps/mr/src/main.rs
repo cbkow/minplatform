@@ -62,6 +62,9 @@ fn main() {
     // upgraded node is the same node - and a bare run of a build that is not installed takes none: it cannot touch a
     // real node's folder by a slip.
     let Some(data) = val("--data").map(std::path::PathBuf::from).or_else(installed_data) else { eprintln!("minRender --data <folder> [--minimized | --no-window]   (the installed application needs no --data)"); std::process::exit(2) };
+    // a TEST package beside the real application (its folder ends in `-test`): its first start takes ports of its own, so
+    // it cannot ask for the ones the real node holds (the test package's firewall rules are for these two)
+    if val("--data").is_none() && data.file_name().is_some_and(|n| n.to_string_lossy().ends_with("-test")) && !data.join("config.json").exists() { let _ = std::fs::create_dir_all(&data); let _ = std::fs::write(data.join("config.json"), "{\n  \"http_port\": 8520,\n  \"udp_port\": 4343\n}\n"); }
     if let Some(pid) = val("--wait-pid").and_then(|p| p.parse::<u32>().ok()) { let t = std::time::Instant::now(); while alive(pid) && t.elapsed() < std::time::Duration::from_secs(20) { std::thread::sleep(std::time::Duration::from_millis(50)); } }
     let windowed = !has("--no-window"); let minimized = has("--minimized") || windowed && shell::started_at_sign_in();
     // one instance for a data folder: a later launch tells the first how it was started, and leaves
