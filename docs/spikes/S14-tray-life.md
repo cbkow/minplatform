@@ -1,6 +1,6 @@
 # S14 - the life of a tray application on winit (opened 2026-11-15)
 
-**Status: PART A PASSES on macOS and Windows; of part C, the restart inside a package passes; the owner's hand (part B) and a sign-out and sign-in (the rest of C) are awaited (2026-11-15).**
+**Status: VERDICT - PASS (2026-11-15). One winit executable with the `tray-icon` crate lives as a tray application on macOS and Windows: icon and menu, a window that hides, one instance, a quit that is asked first, the session's end, starting itself again with no helper - also inside a package. ONE thing is not yet seen: the startup task at a sign-in.**
 
 ## Why
 
@@ -82,3 +82,40 @@ Three things the first runs got wrong, each a rule for the product:
   kind 0 (launch). The copy started by the application itself has no activation at all, which is not a startup task.
 - `RegisterApplicationRestart("--minimized")` succeeds packaged and unpackaged.
 - NOT yet seen: the startup task at a sign-in (the package is left installed for it).
+
+### Part B, by the owner's hand (2026-11-15: "the placeholder dot is fine until we get the icon in, everything else seems fine")
+
+Read back from the logs of the walks:
+
+| | macOS | Windows (the installed package) |
+|---|---|---|
+| The icon shows; its menu opens | yes | yes |
+| Stop Node / Resume Node from the menu, twice | yes | yes |
+| The close button hides the window, the icon stays | yes | yes |
+| A left click on the tray icon shows the window, and it takes the focus | (ruled: menu only) | yes |
+| Exit from the menu while "rendering": the question is put, the work done, a clean end | yes | (idle: a clean end) |
+
+Not walked by hand, and why it is not held against the verdict: Show Window from the macOS menu and a click on the
+Dock's icon (the same `show` the second launch and the Windows click use); the Dock's Quit (the same `terminate:` the
+script sent ten times). The spike has no application menu, so there was no Cmd+Q to press: the product's Quit item is
+to call the exit rule, never `terminate:` directly.
+
+## Verdict
+
+**PASS.** The shape for the product (canon row 402):
+
+- `tray-icon` for the icon and its menu, made after the window, on the main thread; its events and the menu's sent
+  into winit's loop through the proxy. macOS: a template image, the menu on a click; Windows: the window on a left
+  click, the menu on a right one.
+- The window's close hides it; with no tray, it minimises.
+- The application's own delegate on macOS answers `applicationShouldTerminate:` with "not yet" and ends the loop
+  itself after its shutdown; it also answers the Dock's reopen.
+- A hidden top-level window of the application's own on Windows hears `WM_QUERYENDSESSION` / `WM_ENDSESSION`.
+- The loop is told to end once, and on Windows is woken after that.
+- One instance; a second launch says whether it was started minimized, and only a plain one shows the window.
+- Starting itself again: a copy that waits for this process to be gone - no `mr-restart.exe` (row 389).
+- `RegisterApplicationRestart("--minimized")` for a Store update.
+
+**Open:** the startup task naming the application itself has been installed and never fired, because nobody has
+signed out since. Until it is seen, the product keeps the possibility of a small helper for that one job, as 0.5.x
+has. The test package stays installed on the Windows machine for the next sign-in.
