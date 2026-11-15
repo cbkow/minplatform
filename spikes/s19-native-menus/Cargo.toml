@@ -1,0 +1,12 @@
+[package]
+name = "s19-native-menus"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# A spike for the UFB port (canon row 459; its question, pass bar and verdict: docs/spikes). It dies with its verdict.
+[[bin]]
+name = "s19"
+path = "src/main.rs"
+
+[dependencies]
