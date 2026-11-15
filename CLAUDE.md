@@ -16,7 +16,7 @@
   SUBMITTED by the user; the work resumes on Partner Center's answer or a bug. The minNotes repository's `main` is the
   site, the manual and the feed; its `2.x` branch is minNotes 2's source. **Read `docs/phase3/handoff-2026-11-10.md`:
   its LAST section ("Where minNotes stands after the 3.0.0 release") is the place to resume**, with the runbook just
-  above it, and rows 268-451.
+  above it, and rows 268-452.
 - **Phase 4 (minRender): minRender 1.0.1 is RELEASED on macOS and PACKED for the Microsoft Store** (2026-11-15; parity
   with a live 0.5.x farm, rows 387-433). `apps/mr` (binary `minRender`: node, leader, window, tray and the leash in one
   executable). macOS: a notarized DMG on the minRender repository's release `v1.0.1`, the Sparkle feed carries it.
