@@ -62,11 +62,28 @@ pub fn match_under_root(abs: &str, root: &str, os: Os) -> Option<Vec<String>> {
     Some(split_segments(&abs[cut..], os))
 }
 
-/// minNotes' `toRef`: the first enabled mapping whose root for `os` contains `abs` wins; none → `Ref::Abs`.
+/// A share that macOS landed beside a leftover folder (row 445): `/Volumes/<name>-<digits>[/…]` → `/Volumes/<name>[/…]`.
+/// Only a macOS-form path, only the folder directly under `/Volumes`, only digits after the last `-` (`jobs-extra` is
+/// another volume). `None` when the path has no such shape. Callers try the path AS WRITTEN against every mapping
+/// first, so where `Mount` and `Mount-2` are both mapped each matches itself alone.
+pub fn without_volume_number(path: &str, os: Os) -> Option<String> {
+    if os != Os::Mac { return None }
+    let rest = path.strip_prefix("/Volumes/")?;
+    let (vol, tail) = match rest.find('/') { Some(i) => rest.split_at(i), None => (rest, "") };
+    let (name, digits) = vol.rsplit_once('-')?;
+    if name.is_empty() || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { return None }
+    Some(format!("/Volumes/{name}{tail}"))
+}
+
+/// minNotes' `toRef`: the first enabled mapping whose root for `os` contains `abs` wins; then (row 445) the same with
+/// the volume's landing number taken off; none → `Ref::Abs`.
 pub fn to_ref(abs: &str, os: Os, mappings: &[Mapping]) -> Ref {
     if abs.is_empty() { return Ref::Abs(String::new()) }
-    for m in mappings.iter().filter(|m| m.enabled) {
-        if let Some(rel) = match_under_root(abs, m.root_for(os), os) { return Ref::Vol { vol: m.id.clone(), rel } }
+    let plain = without_volume_number(abs, os);
+    for path in std::iter::once(abs).chain(plain.as_deref()) {
+        for m in mappings.iter().filter(|m| m.enabled) {
+            if let Some(rel) = match_under_root(path, m.root_for(os), os) { return Ref::Vol { vol: m.id.clone(), rel } }
+        }
     }
     Ref::Abs(abs.to_string())
 }
@@ -91,13 +108,16 @@ pub fn resolve_ref(r: &Ref, os: Os, mappings: &[Mapping]) -> Option<String> {
         }
         Ref::Abs(s) => {
             if s.is_empty() { return Some(String::new()) }
-            for m in mappings.iter().filter(|m| m.enabled) {
-                for src in [Os::Win, Os::Mac, Os::Lin] {
-                    if src == os { continue }
-                    if let Some(segs) = match_under_root(s, m.root_for(src), src) {
-                        let root = trim_trailing_seps(m.root_for(os));
-                        if root.is_empty() { continue }
-                        return Some(join_root(root, &segs));
+            let plain = without_volume_number(s, Os::Mac);   // row 445: only a macOS-form path has a landing number
+            for (path, mac_only) in std::iter::once((s.as_str(), false)).chain(plain.as_deref().map(|p| (p, true))) {
+                for m in mappings.iter().filter(|m| m.enabled) {
+                    for src in [Os::Win, Os::Mac, Os::Lin] {
+                        if src == os || (mac_only && src != Os::Mac) { continue }
+                        if let Some(segs) = match_under_root(path, m.root_for(src), src) {
+                            let root = trim_trailing_seps(m.root_for(os));
+                            if root.is_empty() { continue }
+                            return Some(join_root(root, &segs));
+                        }
                     }
                 }
             }
@@ -125,6 +145,13 @@ pub fn to_native(path: &str, os: Os) -> String { if os.is_windows() { path.repla
 /// their drive still match a mapping written as `C:\Volumes\X` — unless the mapping is a bare drive root (`U:\`), whose
 /// letter is its only information. Nothing matches → separators swapped, nothing else.
 pub fn translate(src: Os, dst: Os, path: &str, mappings: &[Mapping]) -> String {
+    if let Some(t) = translate_exact(src, dst, path, mappings) { return t }
+    // Row 445: a share that landed as `/Volumes/<name>-<digits>` is the mapping's `/Volumes/<name>`.
+    if let Some(t) = without_volume_number(&path.replace('\\', "/"), src).and_then(|p| translate_exact(src, dst, &p, mappings)) { return t }
+    to_native(path, dst)
+}
+
+fn translate_exact(src: Os, dst: Os, path: &str, mappings: &[Mapping]) -> Option<String> {
     for m in mappings.iter().filter(|m| m.enabled) {
         let (sp, tp) = (m.root_for(src), m.root_for(dst));
         if sp.is_empty() || tp.is_empty() { continue }
@@ -144,9 +171,9 @@ pub fn translate(src: Os, dst: Os, path: &str, mappings: &[Mapping]) -> String {
         let remainder = case_path[cmp_source.len()..].trim_start_matches(['/', '\\']);
         let target_norm = target_prefix.trim_end_matches(['/', '\\']);
         let translated = if remainder.is_empty() { target_norm.to_string() } else { format!("{target_norm}/{remainder}") };
-        return to_native(&translated, dst);
+        return Some(to_native(&translated, dst));
     }
-    to_native(path, dst)
+    None
 }
 
 /// ufb's `to_canonical_path` / MinRender's `toCanonicalPath`: the current OS's native path → the canonical Windows form.
@@ -157,6 +184,34 @@ pub fn from_canonical_windows_form(canonical: &str, mappings: &[Mapping]) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_numbered_landing_is_the_same_volume() {   // row 445
+        let m = |id: &str, win: &str, mac: &str| Mapping { id: id.into(), label: id.into(), win: win.into(), mac: mac.into(), lin: String::new(), enabled: true };
+        let one = vec![m("a", "Z:\\", "/Volumes/Mount")];
+        assert_eq!(without_volume_number("/Volumes/Mount-2/a/b", Os::Mac).as_deref(), Some("/Volumes/Mount/a/b"));
+        assert_eq!(without_volume_number("/Volumes/Mount-7", Os::Mac).as_deref(), Some("/Volumes/Mount"));
+        for no in ["/Volumes/Mount-extra/a", "/Volumes/Mount-/a", "/Volumes/-2/a", "/Volumes/Mount/sub-2/a", "/Users/x/Mount-2", "/volumes/Mount-2"] {
+            assert_eq!(without_volume_number(no, Os::Mac), None, "{no}");
+        }
+        assert_eq!(without_volume_number("/Volumes/Mount-2/a", Os::Win), None);
+        assert_eq!(to_ref("/Volumes/Mount-2/a/b.exr", Os::Mac, &one), Ref::Vol { vol: "a".into(), rel: vec!["a".into(), "b.exr".into()] });
+        assert_eq!(to_ref("/Volumes/Mount-extra/a", Os::Mac, &one), Ref::Abs("/Volumes/Mount-extra/a".into()));
+        assert_eq!(translate(Os::Mac, Os::Win, "/Volumes/Mount-7/a/b.exr", &one), "Z:\\a\\b.exr");
+        assert_eq!(translate(Os::Mac, Os::Win, "/Volumes/Mount-extra/a", &one), "\\Volumes\\Mount-extra\\a");
+        assert_eq!(resolve_ref(&Ref::Abs("/Volumes/Mount-2/a".into()), Os::Win, &one).unwrap(), "Z:/a");
+        // Both names mapped: each matches itself alone; a third landing belongs to the plain name.
+        let two = vec![m("a", "Z:\\", "/Volumes/Mount"), m("b", "Y:\\", "/Volumes/Mount-2")];
+        assert_eq!(to_ref("/Volumes/Mount-2/x", Os::Mac, &two), Ref::Vol { vol: "b".into(), rel: vec!["x".into()] });
+        assert_eq!(to_ref("/Volumes/Mount/x", Os::Mac, &two), Ref::Vol { vol: "a".into(), rel: vec!["x".into()] });
+        assert_eq!(to_ref("/Volumes/Mount-3/x", Os::Mac, &two), Ref::Vol { vol: "a".into(), rel: vec!["x".into()] });
+        assert_eq!(to_ref("/Volumes/Mount-2-2/x", Os::Mac, &two), Ref::Vol { vol: "b".into(), rel: vec!["x".into()] });
+        assert_eq!(translate(Os::Mac, Os::Win, "/Volumes/Mount-2/x", &two), "Y:\\x");
+        // A mapping deeper than the volume, and a name that itself ends in digits.
+        let deep = vec![m("j", "Z:\\jobs", "/Volumes/nas/jobs"), m("y", "X:\\", "/Volumes/shots-2026")];
+        assert_eq!(translate(Os::Mac, Os::Win, "/Volumes/nas-2/jobs/a", &deep), "Z:\\jobs\\a");
+        assert_eq!(translate(Os::Mac, Os::Win, "/Volumes/shots-2026/a", &deep), "X:\\a");
+        assert_eq!(translate(Os::Mac, Os::Win, "/Volumes/shots-2026-2/a", &deep), "X:\\a");
+    }
     fn mapping(win: &str, mac: &str) -> Mapping { Mapping { id: "m1".into(), label: "nas".into(), win: win.into(), mac: mac.into(), lin: String::new(), enabled: true } }
     fn table() -> Vec<Mapping> { vec![Mapping { id: "01J".into(), label: "jobs".into(), win: "Z:\\union-jobs".into(), mac: "/Volumes/union-jobs".into(), lin: "/mnt/union-jobs".into(), enabled: true }] }
 
