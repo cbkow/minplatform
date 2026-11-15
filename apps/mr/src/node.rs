@@ -100,6 +100,8 @@ fn safe(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains
 /// An id that is one plain path segment (it names a folder on the share).
 fn plain_segment(s: &str) -> bool { !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', '\0']) && !s.contains("..") }
 fn host_name() -> String {
+    // (pictures for the manual are taken on a demo farm whose machines have made-up names)
+    if let Some(h) = std::env::var("MR_DEMO_HOST").ok().filter(|h| !h.is_empty()) { return h }
     #[cfg(unix)] { let mut b = [0u8; 256]; if unsafe { libc::gethostname(b.as_mut_ptr() as *mut _, b.len()) } == 0 { let n = b.iter().position(|c| *c == 0).unwrap_or(b.len()); return String::from_utf8_lossy(&b[..n]).into_owned() } }
     std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default()
 }

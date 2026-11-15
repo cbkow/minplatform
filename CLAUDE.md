@@ -16,7 +16,7 @@
   SUBMITTED by the user; the work resumes on Partner Center's answer or a bug. The minNotes repository's `main` is the
   site, the manual and the feed; its `2.x` branch is minNotes 2's source. **Read `docs/phase3/handoff-2026-11-10.md`:
   its LAST section ("Where minNotes stands after the 3.0.0 release") is the place to resume**, with the runbook just
-  above it, and rows 268-430.
+  above it, and rows 268-431.
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a
