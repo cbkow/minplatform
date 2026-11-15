@@ -1,10 +1,10 @@
 {
     "_version": 2,
-    "template_id": "blender-5.2-studio",
-    "name": "Blender 5.2 \u2014 Studio (Simple)",
+    "template_id": "blender-5.3-studio",
+    "name": "Blender 5.3 \u2014 Studio (Simple)",
 
     "cmd": {
-        "windows": "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe",
+        "windows": "C:/Program Files/Blender Foundation/Blender 5.3/blender.exe",
         "linux": "/usr/bin/blender",
         "macos": "/Applications/Blender.app/Contents/MacOS/Blender",
         "label": "Blender Executable",

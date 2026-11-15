@@ -504,6 +504,8 @@ impl Node {
         let body = if self.lead.lock().unwrap().is_some() { self.lead_answer("GET", "/api/nodes/suspended", b"").map(|r| r.body) } else { self.leader().and_then(|l| http::call(&l, "GET", "/api/nodes/suspended", Some(&self.secret), None, Duration::from_millis(500), Duration::from_secs(1))).filter(|(s, _)| *s == 200).map(|(_, b)| b) };
         if let Some(list) = body.and_then(|b| serde_json::from_slice::<Vec<Value>>(&b).ok()) { *self.suspended.lock().unwrap() = list.iter().filter_map(|x| Some((x["node_id"].as_str()?.to_string(), x["failure_count"].as_i64().unwrap_or(0)))).collect(); }
     }
+    /// A job is put before or after another in the leader's order (2.5: `POST …/move`); across priorities it takes the other's.
+    pub fn move_job(self: &Arc<Self>, id: String, target: String, before: bool) { let me = self.clone(); std::thread::spawn(move || { let _ = me.to_leader(&format!("/api/jobs/{id}/move"), &json!({ "target": target, "position": if before { "before" } else { "after" } }).to_string()); me.refresh_jobs_view(); }); }
     /// A job's priority, set from its detail (2.5: `POST …/priority`).
     pub fn set_priority(self: &Arc<Self>, id: String, priority: i64) { let me = self.clone(); std::thread::spawn(move || { let _ = me.to_leader(&format!("/api/jobs/{id}/priority"), &json!({ "priority": priority }).to_string()); me.refresh_jobs_view(); }); }
     /// The folder a job writes to, shown in the system's file manager: its `output_dir` through the path mappings. A

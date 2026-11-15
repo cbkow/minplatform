@@ -7,7 +7,7 @@
 bl_info = {
     "name": "MinRender",
     "author": "MinRender",
-    "version": (0, 5, 11),   # tracks the minRender app version; 0.5.8 = %USERPROFILE%\minRender data folder
+    "version": (0, 6, 0),   # tracks the minRender app version; 0.5.8 = %USERPROFILE%\minRender data folder; 0.6.0 = the Blender 5.3 template
     "blender": (4, 0, 0),
     "location": "Render Properties > MinRender",
     "description": "Submit render jobs to MinRender farm",
@@ -75,7 +75,7 @@ def get_farm_path():
 
 # -- Template ID ---------------------------------------------------------------
 
-TEMPLATE_ID = "blender-5.2-plugin"
+TEMPLATE_ID = "blender-5.3-plugin"
 
 
 # -- Properties ----------------------------------------------------------------

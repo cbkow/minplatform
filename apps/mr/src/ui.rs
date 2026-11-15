@@ -30,17 +30,22 @@ pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presen
     logs: bool, log_src: Option<String>, log_file: Option<String>, log_bar: ScrollBar, files_bar: ScrollBar, log_follow: bool, log_rect: Rect, files_rect: Rect, tab_rects: [Rect; 2], src_rects: Vec<(Rect, Option<String>)>,
     new_job: TextButton, form: Option<crate::form::Form>, settings_btn: TextButton, settings: Option<crate::settings::Settings>, cleanup_btn: TextButton, cleanup: Option<crate::cleanup::Cleanup>, /// a manifest asked for, for the editor: the answer, the card's kind, the job's priority, a chunk's frames
     edit_wait: Option<(Arc<std::sync::Mutex<Option<Result<serde_json::Value, String>>>>, crate::form::Kind, i64, Option<(i64, i64)>)>, last_click: Option<(String, Instant)>, /// the window's one voice for an outcome (the family's toast)
+    /// the job list's column grips: where they lie, the one dragged (column, the pointer's x and the width at the press), the one under the pointer
+    col_grips: Vec<Rect>, col_drag: Option<(usize, f64, f64)>, col_over: Option<usize>, /// a row pressed (its job, the pointer's y), and once it is dragged: the gap it would go to
+    row_press: Option<(String, f64)>, row_drag: Option<(String, Option<usize>)>,
     toast: min_ui::Toast, tips: min_ui::tooltip::Tooltips, /// the detail's priority field and its "Open output": where they go, the job they are for, a value just sent
     prio: min_ui::number_field::NumberField, prio_rect: Rect, prio_job: Option<(String, i64)>, prio_sent: Option<(String, i64, Instant)>, open_btn: TextButton, open_at: (f64, f64), unsuspend: TextButton, unsus_at: (f64, f64), clipboard: Option<arboard::Clipboard>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
 /// How the window is laid out, as the owner left it (0.5.x kept the same in its own settings): in `window.json` in the
 /// data folder - never in `config.json`, which a 0.5.x build on the same machine rewrites without what it does not know.
 #[derive(Clone, Copy)]
-pub struct Layout { pub left: f64, pub list: f64, pub grid: f64, pub preview: f64, pub size: Option<(f64, f64)> }
+pub struct Layout { /// the job list's column widths
+    pub cols: [f64; 6], pub left: f64, pub list: f64, pub grid: f64, pub preview: f64, pub size: Option<(f64, f64)> }
 impl Layout {
     pub fn load(data: &std::path::Path) -> Layout { let v: serde_json::Value = std::fs::read_to_string(data.join("window.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null); let f = |k: &str, d: f64| v[k].as_f64().unwrap_or(d);
-        Layout { left: f("left", 0.28).clamp(0.1, 0.6), list: f("list", 0.34).clamp(0.1, 0.8), grid: f("grid", 220.0).clamp(60.0, 2000.0), preview: f("preview", 240.0).clamp(80.0, 2000.0), size: v["width"].as_f64().zip(v["height"].as_f64()).filter(|(w, h)| *w >= 640.0 && *h >= 400.0) } }
-    pub fn save(&self, data: &std::path::Path) { let mut v = serde_json::json!({ "left": self.left, "list": self.list, "grid": self.grid, "preview": self.preview }); if let Some((w, h)) = self.size { v["width"] = w.into(); v["height"] = h.into(); } let _ = std::fs::write(data.join("window.json"), serde_json::to_string_pretty(&v).unwrap_or_default()); }
+        let mut cols = [0.0; 6]; for (i, c) in cols.iter_mut().enumerate() { *c = v["columns"][i].as_f64().unwrap_or(COLUMNS[i].1).clamp(30.0, 1200.0); }
+        Layout { cols, left: f("left", 0.28).clamp(0.1, 0.6), list: f("list", 0.34).clamp(0.1, 0.8), grid: f("grid", 220.0).clamp(60.0, 2000.0), preview: f("preview", 240.0).clamp(80.0, 2000.0), size: v["width"].as_f64().zip(v["height"].as_f64()).filter(|(w, h)| *w >= 640.0 && *h >= 400.0) } }
+    pub fn save(&self, data: &std::path::Path) { let mut v = serde_json::json!({ "columns": self.cols, "left": self.left, "list": self.list, "grid": self.grid, "preview": self.preview }); if let Some((w, h)) = self.size { v["width"] = w.into(); v["height"] = h.into(); } let _ = std::fs::write(data.join("window.json"), serde_json::to_string_pretty(&v).unwrap_or_default()); }
 }
 /// The job list's columns: (header, default width).
 const COLUMNS: [(&str, f64); 6] = [("Pri", 36.0), ("Name", 300.0), ("State", 90.0), ("Progress", 280.0), ("Duration", 80.0), ("Created", 140.0)];
@@ -67,7 +72,7 @@ impl Ui {
         let node_data = node.data.clone(); let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Edit", Variant::Secondary), "edit"), (b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
         Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, logs: false, log_src: None, log_file: None, log_bar: ScrollBar::default(), files_bar: ScrollBar::default(), log_follow: true, log_rect: Rect::ZERO, files_rect: Rect::ZERO, tab_rects: [Rect::ZERO; 2], src_rects: Vec::new(),
-            new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, settings_btn: TextButton::new("Settings", Variant::Secondary).size_s(), settings: None, cleanup_btn: TextButton::new("Farm Cleanup", Variant::Secondary).size_s(), cleanup: None, edit_wait: None, last_click: None, toast: min_ui::Toast::new(), tips: Default::default(), prio: min_ui::number_field::NumberField::new(50, 1, 999, 1), prio_rect: Rect::ZERO, prio_job: None, prio_sent: None, open_btn: TextButton::new("Open output", Variant::Secondary).size_s(), open_at: (0.0, 0.0), unsuspend: TextButton::new("Unsuspend this node", Variant::Secondary).size_s(), unsus_at: (0.0, 0.0), clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+            new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, settings_btn: TextButton::new("Settings", Variant::Secondary).size_s(), settings: None, cleanup_btn: TextButton::new("Farm Cleanup", Variant::Secondary).size_s(), cleanup: None, edit_wait: None, last_click: None, col_grips: Vec::new(), col_drag: None, col_over: None, row_press: None, row_drag: None, toast: min_ui::Toast::new(), tips: Default::default(), prio: min_ui::number_field::NumberField::new(50, 1, 999, 1), prio_rect: Rect::ZERO, prio_job: None, prio_sent: None, open_btn: TextButton::new("Open output", Variant::Secondary).size_s(), open_at: (0.0, 0.0), unsuspend: TextButton::new("Unsuspend this node", Variant::Secondary).size_s(), unsus_at: (0.0, 0.0), clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } let s = self.window.scale_factor(); self.layout.size = Some((w as f64 / s, h as f64 / s)); self.layout.save(&self.node.data); self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
     pub fn wheel(&mut self, dy: f64) { if let Some(c) = self.cleanup.as_mut() { c.wheel(dy); return } if self.form.is_some() || self.settings.is_some() { return } let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
@@ -131,6 +136,14 @@ impl Ui {
             else if !what.is_empty() { self.act(view, what, false); } } return }
         // the gaps between the panels: dragged, they resize what lies on either side; the sizes are kept when the drag ends
         { let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); let top = (TITLE + 12.0) * s;
+            // a column's grip in the job list's header: dragged, the column is as wide as asked; kept when the drag ends
+            match *e {
+                Event::Down { x, y, button: Button::Primary } => if let Some(i) = self.col_grips.iter().position(|g| g.contains(kurbo::Point::new(x, y))) { self.col_drag = Some((i, x, self.layout.cols[i])); return },
+                Event::Move { x, y } => { if let Some((i, x0, w0)) = self.col_drag { self.layout.cols[i] = (w0 + (x - x0) / s).clamp(30.0, 1200.0); return }
+                    let over = self.col_grips.iter().position(|g| g.contains(kurbo::Point::new(x, y))); if over != self.col_over { self.col_over = over; if over.is_some() { self.window.set_cursor(winit31::cursor::Cursor::Icon(winit31::cursor::CursorIcon::ColResize)); } else if self.over.is_none() { self.window.set_cursor(winit31::cursor::Cursor::Icon(winit31::cursor::CursorIcon::Default)); } } }
+                Event::Up { .. } => if self.col_drag.take().is_some() { self.layout.save(&self.node.data); return },
+                _ => {}
+            }
             match *e {
                 Event::Down { x, y, button: Button::Primary } => if let Some(i) = self.gaps.iter().position(|g| g.inflate(2.0 * s, 2.0 * s).contains(kurbo::Point::new(x, y))) { self.drag = Some(i); return },
                 Event::Move { x, y } => { if let Some(i) = self.drag { match i { 0 => self.layout.left = (x / w).clamp(260.0 * s / w, 0.6), 1 => self.layout.list = ((y - top) / (h - top)).clamp(0.1, 0.8), 2 => self.layout.grid = ((y - self.grid_rect.y0 + 4.0 * s) / s).clamp(60.0, 2000.0), _ => self.layout.preview = ((h - 12.0 * s - 32.0 * s - y) / s).clamp(80.0, (h / s - 320.0).max(80.0)) } return }
@@ -173,6 +186,7 @@ impl Ui {
         match *e {
             Event::Down { x, y, button: Button::Primary } if self.jobs_rect.contains(kurbo::Point::new(x, y)) => match self.row_at(y, view) { Some(i) => { self.choose(i, view, mods.0, mods.1);
                     // a second press on the same row within 400 ms, no modifier: Edit Job, as Return
+                    if !mods.0 && !mods.1 { self.row_press = Some((view.jobs[i].id.clone(), y)); }
                     let id = view.jobs[i].id.clone(); if !mods.0 && !mods.1 && self.last_click.as_ref().is_some_and(|(l, t)| *l == id && t.elapsed() < std::time::Duration::from_millis(400)) { self.last_click = None; self.act(view, "edit", false); } else { self.last_click = Some((id, now)); } }
                 None => self.sel.clear() },
             // the right button keeps a choice that holds the row, else chooses the row; then the menu, at the pointer
@@ -182,6 +196,13 @@ impl Ui {
                 let items = vec![MenuItem::action(&many("Pause"), n > 1 || st == "active"), MenuItem::action(&many("Resume"), n > 1 || st == "paused"), MenuItem::action("Edit Job\u{2026}", n == 1), MenuItem::Separator, MenuItem::action(&many("Retry failed chunks"), true), MenuItem::action(&many("Requeue"), true), MenuItem::Separator, MenuItem::action(&many("Cancel"), true), MenuItem::action(&many("Archive"), true), MenuItem::action(&many("Delete"), true)];
                 self.menu_acts = vec!["pause", "resume", "edit", "", "retry-failed", "requeue", "", "cancel", "archive", "delete"];
                 let size = self.window.surface_size(); self.menu.open_at(items, &mut self.fonts, x, y, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); } }
+            // a pressed row moved more than a little is being dragged: the gap under the pointer is where it would go
+            // (none for the row's own two gaps, or outside the list); let go there, the leader is asked to move it
+            Event::Move { x, y } => if let Some((id, y0)) = self.row_press.clone() { if self.row_drag.is_some() || (y - y0).abs() > 5.0 * s {
+                let n = view.jobs.len(); let own = view.jobs.iter().position(|j| j.id == id); let g = ((y - self.rows_from + self.jobs_bar.offset) / (ROW * s)).round();
+                let gap = (self.jobs_rect.inflate(0.0, ROW * s / 2.0).contains(kurbo::Point::new(x, y)) && g >= 0.0).then(|| (g as usize).min(n)).filter(|g| own.is_none_or(|o| *g != o && *g != o + 1));
+                self.row_drag = Some((id, gap)); } },
+            Event::Up { .. } => { self.row_press = None; if let Some((id, Some(g))) = self.row_drag.take() { let n = view.jobs.len(); if n > 0 { let (target, before) = if g < n { (view.jobs[g].id.clone(), true) } else { (view.jobs[n - 1].id.clone(), false) }; if target != id { self.node.move_job(id, target, before); } } } }
             _ => {}
         }
     }
@@ -319,7 +340,10 @@ impl Ui {
             let r = if i == 7 { Rect::new(w - pad - bw, cy0 - bh / 2.0, w - pad, cy0 + bh / 2.0) } else if i == 6 { let x = w - pad - delete_w - 6.0 * s - bw; Rect::new(x, cy0 - bh / 2.0, x + bw, cy0 + bh / 2.0) } else { let r = Rect::new(sx, cy0 - bh / 2.0, sx + bw, cy0 + bh / 2.0); sx += bw + 6.0 * s; r }; strip_rects.push((r, on)); }
         let list = Rect::new(jx, top + STRIP * s - 8.0 * s, w - pad, (top + (h - top) * self.layout.list).max(top + 120.0 * s).min(h - pad - 200.0 * s).max(top + 80.0 * s));
         self.gaps[0] = Rect::new(left - pad / 2.0, top, left + pad / 2.0, h - pad); self.gaps[1] = Rect::new(jx, list.y1, w - pad, list.y1 + pad); self.gaps[2] = Rect::ZERO; paint::rounded(scene, list, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
-        let cols: Vec<(f64, f64)> = { let mut x = list.x0 + 8.0 * s; COLUMNS.iter().map(|(_, cw)| { let r = (x, cw * s); x += cw * s + 8.0 * s; r }).collect() };
+        let cols: Vec<(f64, f64)> = { let mut x = list.x0 + 8.0 * s; self.layout.cols.iter().map(|cw| { let r = (x, cw * s); x += cw * s + 8.0 * s; r }).collect() };
+        // a grip at each column's right edge: a thin line, the accent while under the pointer or dragged
+        self.col_grips = cols.iter().map(|(cx, cw)| Rect::new(cx + cw, list.y0, cx + cw + 8.0 * s, list.y0 + HEADER * s)).collect();
+        for (i, g) in self.col_grips.iter().enumerate() { let on = self.col_over == Some(i) || self.col_drag.is_some_and(|d| d.0 == i); paint::rect(scene, Rect::new(g.center().x - 0.5 * s, g.y0 + 6.0 * s, g.center().x + 0.5 * s, g.y1 - 6.0 * s), if on { t::ACCENT_VISUAL_COLOR } else { t::DIVIDER_COLOR_MEDIUM }); }
         for ((label, _), (cx, cwid)) in COLUMNS.iter().zip(&cols) { text(scene, label, *cx, list.y0 + HEADER * s / 2.0, t::DETAIL_SIZE_M, false, false, sub, *cwid); }
         paint::hline(scene, list.x0, list.x1, list.y0 + HEADER * s, t::DIVIDER_THICKNESS as f64 * s, t::DIVIDER_COLOR_MEDIUM);
         let rows = Rect::new(list.x0, list.y0 + HEADER * s + 1.0, list.x1, list.y1); self.jobs_rect = rows; self.rows_from = rows.y0; self.jobs_bar.set(rows, n as f64 * ROW * s, s);
@@ -443,6 +467,7 @@ impl Ui {
             self.prio.layout(&mut self.fonts, self.prio_rect, s); self.prio.paint(scene, &mut self.fonts, s);
             let ow = self.open_btn.measure(&mut self.fonts, s).0; self.open_btn.rect = Rect::new(self.open_at.0 - ow, self.open_at.1, self.open_at.0, self.open_at.1 + 24.0 * s); self.open_btn.paint(scene, &mut self.fonts, s, now); } else { self.open_btn.rect = Rect::ZERO; }
         if self.unsus_at.0 > 0.0 { let uw = self.unsuspend.measure(&mut self.fonts, s).0; self.unsuspend.rect = Rect::new(self.unsus_at.0, self.unsus_at.1, self.unsus_at.0 + uw, self.unsus_at.1 + 24.0 * s); self.unsuspend.paint(scene, &mut self.fonts, s, now); } else { self.unsuspend.rect = Rect::ZERO; }
+        if let Some((_, Some(g))) = &self.row_drag { let y = self.rows_from + *g as f64 * ROW * s - self.jobs_bar.offset; if y >= self.jobs_rect.y0 - 1.0 && y <= self.jobs_rect.y1 + 1.0 { paint::rect(scene, Rect::new(self.jobs_rect.x0, y - s, self.jobs_rect.x1, y + s), t::ACCENT_VISUAL_COLOR); } }
         self.node_btn.label = if stopped { "Resume".into() } else { "Stop".into() }; self.node_btn.variant = if stopped { Variant::Primary } else { Variant::Secondary }; self.node_btn.rect = node_btn_rect; self.node_btn.paint(scene, &mut self.fonts, s, now);
         if self.pin.is_some() && latest_rect.width() > 0.0 { self.latest.rect = latest_rect; self.latest.paint(scene, &mut self.fonts, s, now); } else { self.latest.rect = Rect::ZERO; }
         // New Job, always in reach at the title row's right
