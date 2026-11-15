@@ -1,11 +1,11 @@
 What minRender puts on a farm's share (canon row 390: Blender only for this release).
 
-**From 0.6.0 these files are the source** (canon row 417, 2026-11-15): the Blender add-on and its two templates are
+**From 1.0.0 these files are the source** (canon row 417, 2026-11-15): the Blender add-on and its two templates are
 kept here and changed here. They began as copies of the minRender repository's files (branch `min-paths`, b0cfda1,
 release 0.5.11); that repository's copies are frozen with 0.5.x. The After Effects and Cinema 4D templates and
 plug-ins stay there as a starting point; this build neither ships them nor removes copies a farm already has.
 
-- `plugins/blender/MinRender.py` - the add-on, installed by hand on workstations (version 0.6.0). It names its
+- `plugins/blender/MinRender.py` - the add-on, installed by hand on workstations (version 1.0.0). It names its
   template by id: `blender-5.3-plugin`.
 - `templates/plugins/blender-5.3-plugin.json` - the template the add-on's submissions are baked from.
 - `templates/blender-5.3-studio.json` - the template the New Job form offers ("Studio": the owner, 2026-11-14).
