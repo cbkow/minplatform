@@ -216,6 +216,19 @@ impl Node {
         if self.lead.lock().unwrap().is_some() { return self.lead_answer("POST", path, body.as_bytes()).map(|r| (r.status, r.body)) }
         let l = self.leader()?; http::call(&l, "POST", path, Some(&self.secret), Some(body), Duration::from_secs(2), Duration::from_secs(5))
     }
+    /// What the window asks of the jobs it has chosen (the spec's 1.10): pause, resume, cancel, archive, requeue,
+    /// retry-failed, delete - each said to the leader, on a thread of its own, never on the window's. As in 0.5.x a
+    /// failure is a line in the log and nothing more. The list is fetched again at once afterwards.
+    pub fn job_command(self: &Arc<Self>, ids: Vec<String>, what: &'static str) {
+        let me = self.clone(); std::thread::spawn(move || { for id in ids {
+            let (method, path) = if what == "delete" { ("DELETE", format!("/api/jobs/{id}")) } else { ("POST", format!("/api/jobs/{id}/{what}")) };
+            let ok = if me.lead.lock().unwrap().is_some() { me.lead_answer(method, &path, b"").is_some_and(|r| r.status == 200) } else { me.leader().and_then(|l| http::call(&l, method, &path, Some(&me.secret), Some(""), Duration::from_secs(3), Duration::from_secs(10))).is_some_and(|(s, _)| s == 200) };
+            // (a job deleted from a node that does not lead: that node takes the job's folder off the share itself as well)
+            if what == "delete" && me.lead.lock().unwrap().is_none() && safe(&id) { let d = me.farm.join("jobs").join(&id); if d.is_dir() && std::fs::remove_dir_all(&d).is_err() { std::thread::sleep(Duration::from_millis(250)); let _ = std::fs::remove_dir_all(&d); } me.cut(Some(&id), Cut::Fail); }
+            if what == "cancel" { me.cut(Some(&id), Cut::Fail); }
+            if !ok { crate::share::log("WARN", "job", &format!("{what} of {id}: the leader did not take it")); } }
+            me.refresh_jobs_view(); });
+    }
     /// The plug-ins' drop box (8.2): each `*.json` in `submissions/` becomes a job - the template found by its id, one
     /// value a flag, the id from the name, the manifest baked and put in its travelling form, handed to the leader.
     /// A file is moved to `processed/` once the leader has taken or refused it, or when it cannot be a job at all,

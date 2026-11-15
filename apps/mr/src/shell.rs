@@ -23,7 +23,8 @@ static TX: OnceLock<(Mutex<Sender<Msg>>, EventLoopProxy)> = OnceLock::new();
 pub fn send(m: Msg) { if let Some((tx, p)) = TX.get() { let _ = tx.lock().unwrap().send(m); p.wake_up(); } }
 fn log(s: impl AsRef<str>) { crate::share::log("INFO", "farm", s.as_ref()); }
 
-struct Shell { node: Arc<Node>, ended: Arc<std::sync::atomic::AtomicBool>, rx: Receiver<Msg>, window: Option<Arc<Box<dyn Window>>>, ui: Option<crate::ui::Ui>, pointer: (f64, f64), tray: Option<TrayIcon>, status: Option<MenuItem>, stop: Option<MenuItem>, minimized: bool, shown: (String, bool), left: bool, _app_menu: Option<Menu> }
+struct Shell { node: Arc<Node>, ended: Arc<std::sync::atomic::AtomicBool>, rx: Receiver<Msg>, window: Option<Arc<Box<dyn Window>>>, ui: Option<crate::ui::Ui>, pointer: (f64, f64), /// (shift, the command key - Control on Windows)
+    mods: (bool, bool), tray: Option<TrayIcon>, status: Option<MenuItem>, stop: Option<MenuItem>, minimized: bool, shown: (String, bool), left: bool, _app_menu: Option<Menu> }
 impl Shell {
     fn show(&self) { if let Some(w) = &self.window { w.set_visible(true); w.set_minimized(false); w.focus_window(); w.request_redraw(); } }
     /// What the tray says: its status line, its tooltip, the name of Stop / Resume - set when it changes, not at every turn.
@@ -44,7 +45,7 @@ impl ApplicationHandler for Shell {
     fn can_create_surfaces(&mut self, el: &dyn ActiveEventLoop) {
         if self.window.is_some() { return }
         self.window = el.create_window(WindowAttributes::default().with_title("minRender").with_surface_size(winit::dpi::LogicalSize::new(1440.0, 900.0)).with_visible(!self.minimized)).ok().map(Arc::new);
-        self.ui = self.window.clone().and_then(crate::ui::Ui::new); if self.ui.is_none() { crate::share::log("WARN", "farm", "the window's content could not be set up (no renderer): the node runs, the window stays empty"); }
+        self.ui = self.window.clone().and_then(|w| crate::ui::Ui::new(w, self.node.clone())); if self.ui.is_none() { crate::share::log("WARN", "farm", "the window's content could not be set up (no renderer): the node runs, the window stays empty"); }
         let (status, show, stop, exit) = (MenuItem::new("Idle", false, None), MenuItem::new("Show Window", true, None), MenuItem::new("Stop Node", true, None), MenuItem::new("Exit", true, None));
         let menu = Menu::new(); let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &show, &stop, &PredefinedMenuItem::separator(), &exit]);
         // macOS: the application's own menu, whose Quit goes the same way out as every other (never `terminate:`)
@@ -69,10 +70,16 @@ impl ApplicationHandler for Shell {
             WindowEvent::SurfaceResized(sz) => { if let Some(ui) = self.ui.as_mut() { ui.resize(sz.width, sz.height); } redraw(self); }
             WindowEvent::ScaleFactorChanged { .. } => redraw(self),
             WindowEvent::MouseWheel { delta, .. } => { let s = self.window.as_ref().map(|w| w.scale_factor()).unwrap_or(1.0); let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; if let Some(ui) = self.ui.as_mut() { ui.wheel(-dy); } redraw(self); }
-            WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y); if let Some(ui) = self.ui.as_mut() { if ui.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, &self.node.view()) { redraw(self); } } }
-            WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(MouseButton::Left), .. } => { let (x, y) = (position.x, position.y); let ev = if state == ElementState::Pressed { min_ui::Event::Down { x, y, button: min_ui::Button::Primary } } else { min_ui::Event::Up { x, y, button: min_ui::Button::Primary } };
-                if let Some(ui) = self.ui.as_mut() { ui.pointer(&ev, &self.node.view()); } redraw(self); }
-            WindowEvent::PointerLeft { .. } => { if let Some(ui) = self.ui.as_mut() { ui.pointer(&min_ui::Event::Leave, &self.node.view()); } redraw(self); }
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }); }
+            WindowEvent::PointerMoved { position, .. } => { self.pointer = (position.x, position.y); if let Some(ui) = self.ui.as_mut() { ui.pointer(&min_ui::Event::Move { x: position.x, y: position.y }, &self.node.view(), self.mods); } redraw(self); }
+            WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(b @ (MouseButton::Left | MouseButton::Right)), .. } => { let (x, y) = (position.x, position.y); let button = if b == MouseButton::Left { min_ui::Button::Primary } else { min_ui::Button::Secondary };
+                let ev = if state == ElementState::Pressed { min_ui::Event::Down { x, y, button } } else { min_ui::Event::Up { x, y, button } };
+                if let Some(ui) = self.ui.as_mut() { ui.pointer(&ev, &self.node.view(), self.mods); } redraw(self); }
+            WindowEvent::PointerLeft { .. } => { if let Some(ui) = self.ui.as_mut() { ui.pointer(&min_ui::Event::Leave, &self.node.view(), self.mods); } redraw(self); }
+            WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => { use winit::keyboard::{Key, NamedKey};
+                let name = match &event.logical_key { Key::Named(NamedKey::ArrowUp) => "Up", Key::Named(NamedKey::ArrowDown) => "Down", Key::Named(NamedKey::Home) => "Home", Key::Named(NamedKey::End) => "End", Key::Named(NamedKey::PageUp) => "PageUp", Key::Named(NamedKey::PageDown) => "PageDown",
+                    Key::Named(NamedKey::Escape) => "Escape", Key::Named(NamedKey::Delete) => "Delete", Key::Named(NamedKey::Backspace) => "Backspace", Key::Character(c) if c.eq_ignore_ascii_case("a") => "a", _ => "" };
+                if !name.is_empty() { if let Some(ui) = self.ui.as_mut() { ui.key(name, &self.node.view(), self.mods); } redraw(self); } }
             _ => {}
         }
     }
@@ -99,7 +106,7 @@ impl ApplicationHandler for Shell {
 pub fn run(node: Arc<Node>, ended: Arc<std::sync::atomic::AtomicBool>, minimized: bool) {
     let el = EventLoop::new().expect("the event loop"); let (tx, rx) = channel(); let _ = TX.set((Mutex::new(tx), el.create_proxy()));
     os::install();
-    let _ = el.run_app(Shell { node, ended, rx, window: None, ui: None, pointer: (0.0, 0.0), tray: None, status: None, stop: None, minimized, shown: (String::new(), false), left: false, _app_menu: None });
+    let _ = el.run_app(Shell { node, ended, rx, window: None, ui: None, pointer: (0.0, 0.0), mods: (false, false), tray: None, status: None, stop: None, minimized, shown: (String::new(), false), left: false, _app_menu: None });
 }
 /// With a package's identity (a Store install), started by its startup task at sign-in: the application starts hidden.
 pub fn started_at_sign_in() -> bool { os::started_at_sign_in() }
