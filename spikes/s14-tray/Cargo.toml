@@ -1,0 +1,23 @@
+[package]
+name = "s14-tray"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# S14 - the life of a tray application on winit (docs/spikes/S14-tray-life.md): the icon and its menu, a window that
+# hides, one instance, a quit that asks first, the session's end, starting itself again. A spike; it dies with its verdict.
+[[bin]]
+name = "s14"
+path = "src/main.rs"
+
+[dependencies]
+winit = { package = "winit", version = "=0.31.0-beta.4", default-features = false }
+tray-icon = { version = "0.21", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSObject"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_Storage_Packaging_Appx", "Win32_System_Recovery"] }
