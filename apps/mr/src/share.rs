@@ -17,18 +17,34 @@ pub fn random(n: usize) -> Result<Vec<u8>, String> {
 }
 pub fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
 /// "0.5.11" against "0.6.0", part by part as numbers (a part that is missing or no number counts as 0).
-fn newer(mine: &str, theirs: &str) -> bool { let p = |s: &str| -> Vec<u64> { s.split('.').map(|x| x.parse().unwrap_or(0)).collect() }; let (a, b) = (p(mine), p(theirs));
+pub fn newer(mine: &str, theirs: &str) -> bool { let p = |s: &str| -> Vec<u64> { s.split('.').map(|x| x.parse().unwrap_or(0)).collect() }; let (a, b) = (p(mine), p(theirs));
     for i in 0..a.len().max(b.len()) { let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0)); if x != y { return x > y } } false }
 /// This build's files are put on the share - written over what is there of the same name; nothing else is touched or
 /// removed (0.5.x also deleted every template it did not ship). True: every file went.
 fn put_content(farm: &Path) -> bool { let mut ok = true; for (rel, text) in CONTENT { let f = farm.join(rel); if let Some(d) = f.parent() { let _ = std::fs::create_dir_all(d); } if std::fs::write(&f, text).is_err() { ok = false; } } ok }
 
+/// A shared file is written under a name of this process's own, then renamed: no reader - and no sync tool - meets half of it.
+fn write_whole(path: &Path, text: &str) -> std::io::Result<()> { let tmp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id())); std::fs::write(&tmp, text)?; std::fs::rename(&tmp, path).or_else(|_| { let r = std::fs::write(path, text); let _ = std::fs::remove_file(&tmp); r }) }
+/// What the farm's file says of its content: the version that last put its templates and add-on there.
+pub fn content_stamp(farm: &Path) -> Option<String> { let v: Value = serde_json::from_str(&std::fs::read_to_string(farm.join("farm.json")).ok()?).ok()?; Some(v["last_example_update"].as_str().unwrap_or("").to_string()) }
+/// The secret as the farm's file has it now.
+pub fn secret_now(farm: &Path) -> Option<String> { let v: Value = serde_json::from_str(&std::fs::read_to_string(farm.join("farm.json")).ok()?).ok()?; v["api_secret"].as_str().filter(|s| !s.is_empty()).map(str::to_string) }
+/// This build's content goes to the share and the stamp rises - called by the ONE node whose task it is (row 429). True: done, or nothing to do.
+pub fn put_content_if_newer(farm: &Path) -> bool {
+    let file = farm.join("farm.json"); let version = env!("CARGO_PKG_VERSION");
+    let Some(mut v) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return false };
+    if !newer(version, v["last_example_update"].as_str().unwrap_or("")) { return true }
+    if !put_content(farm) { return false }
+    v["last_example_update"] = json!(version); let ok = write_whole(&file, &serde_json::to_string_pretty(&v).unwrap()).is_ok();
+    if ok { log("INFO", "farm", &format!("this build's templates and add-on were put on the share ({version})")); } ok
+}
 /// The farm's folder at the start of a node (6.2): made if it is not there; its file read, a secret made if it has
-/// none; this build's content put there if this build is newer than the one that last did so. The secret.
+/// none. The secret. (A NEW farm's first node also puts this build's content there; on a farm that exists the content
+/// is one node's to write - `put_content_if_newer`, row 429 - not every starting node's.)
 pub fn start_farm(farm: &Path, node: &str, now_ms: u64) -> Result<String, String> {
     for d in ["nodes", "jobs", "state", "templates", "templates/plugins", "templates/examples", "plugins"] { std::fs::create_dir_all(farm.join(d)).map_err(|e| format!("the farm's folder could not be made: {e}"))?; }
     let file = farm.join("farm.json"); let version = env!("CARGO_PKG_VERSION");
-    let write = |v: &Value| std::fs::write(&file, serde_json::to_string_pretty(v).unwrap()).map_err(|e| format!("farm.json could not be written: {e}"));
+    let write = |v: &Value| write_whole(&file, &serde_json::to_string_pretty(v).unwrap()).map_err(|e| format!("farm.json could not be written: {e}"));
     if !file.exists() {
         let secret = hex(&random(32)?); let stamp = if put_content(farm) { version } else { "" };
         write(&json!({ "_version": 1, "protocol_version": 2, "created_by": node, "created_at_ms": now_ms, "last_example_update": stamp, "api_secret": secret }))?;
@@ -38,7 +54,6 @@ pub fn start_farm(farm: &Path, node: &str, now_ms: u64) -> Result<String, String
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).map_err(|e| format!("farm.json: {e}"))?).map_err(|e| format!("farm.json is there and is not JSON ({e}); it is left as it is"))?;
     let mut changed = false;
     if v["api_secret"].as_str().is_none_or(str::is_empty) { v["api_secret"] = json!(hex(&random(32)?)); changed = true; }
-    if newer(version, v["last_example_update"].as_str().unwrap_or("")) && put_content(farm) { v["last_example_update"] = json!(version); changed = true; }
     if changed { write(&v)?; }
     Ok(v["api_secret"].as_str().unwrap_or("").to_string())
 }

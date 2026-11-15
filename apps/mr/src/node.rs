@@ -77,7 +77,8 @@ pub struct Node {
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, /// another node, or this one's window, asked for the application to start again
     pub restart_asked: AtomicBool, /// the graphics card's name, once found; the nodes the leader has benched: (id, failures); lines for the window's toast
     /// the jobs whose log folder this node, leading, has made on the share (row 424)
-    job_dirs: Mutex<std::collections::BTreeSet<String>>, gpu: Mutex<String>, suspended: Mutex<Vec<(String, i64)>>, pub notes: Mutex<Vec<String>>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
+    job_dirs: Mutex<std::collections::BTreeSet<String>>, /// the shared folder's small duties (row 429): when they were last looked at; the content is settled
+    share_looked: Mutex<Instant>, content_settled: AtomicBool, gpu: Mutex<String>, suspended: Mutex<Vec<(String, i64)>>, pub notes: Mutex<Vec<String>>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
     jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
@@ -147,7 +148,7 @@ impl Node {
         if let Some(why) = &no_farm { crate::share::log("WARN", "farm", &format!("NO FARM: {why} The node runs alone until the sync root is there.")); }
         Ok(Arc::new(Node { udp: if no_farm.is_none() && cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None },
             no_farm, wanted_root: wanted, id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
-            job_dirs: Mutex::new(std::collections::BTreeSet::new()), gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
+            job_dirs: Mutex::new(std::collections::BTreeSet::new()), share_looked: Mutex::new(Instant::now()), content_settled: AtomicBool::new(false), gpu: Mutex::new(String::new()), suspended: Mutex::new(Vec::new()), notes: Mutex::new(Vec::new()), cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
             preview_path: Mutex::new(String::new()), layer_of: Mutex::new(BTreeMap::new()), peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
@@ -574,7 +575,31 @@ impl Node {
 
     // --------------------------------------------------------------------------------------------- peers and the leader
     /// One cycle (1): the phonebook entry, the other entries, a poll of every peer, the election.
+    /// Two small duties on the shared folder, every ten seconds (row 429) - each so that no two machines write one file
+    /// at the same moment, which storage that syncs answers with a "conflicted" second copy:
+    /// - THE CONTENT (templates, the add-on, the stamp) is written by ONE node: among the nodes that answer, those of
+    ///   the newest version; of them the leader, or - when the leader is an older build - the one with the smallest id.
+    ///   (Before, every node newer than the stamp wrote it at its start: after an upgrade, several at once.)
+    /// - THE SECRET: when a node that answers shows another secret than this one holds, the farm's file is read again;
+    ///   if it holds another secret now (two nodes each made one at a first start; the storage kept one), this node
+    ///   starts itself again on that one. (Before, it refused everyone until someone restarted it.)
+    fn share_duties(&self) {
+        if self.no_farm.is_some() { return } { let mut at = self.share_looked.lock().unwrap(); if at.elapsed() < Duration::from_secs(10) { return } *at = Instant::now(); }
+        let mine = env!("CARGO_PKG_VERSION"); let my_print = fingerprint(&self.secret);
+        let (others, other_secret): (Vec<(String, String, bool)>, bool) = { let p = self.peers.lock().unwrap(); (p.iter().filter(|(_, x)| x.alive).filter_map(|(id, x)| x.record.as_ref().map(|r| (id.clone(), r["app_version"].as_str().unwrap_or("").to_string(), x.leader))).collect(),
+            p.values().any(|x| x.alive && x.record.as_ref().and_then(|r| r["secret_fingerprint"].as_str()).is_some_and(|f| !f.is_empty() && f != my_print))) };
+        if other_secret { if let Some(now) = crate::share::secret_now(&self.farm) { if now != self.secret { crate::share::log("WARN", "farm", "the farm's file holds another secret than this node started with: the application starts again on it"); self.restart_asked.store(true, Ordering::Relaxed); return } } }
+        if self.content_settled.load(Ordering::Relaxed) { return }
+        if crate::share::content_stamp(&self.farm).is_some_and(|s| !crate::share::newer(mine, &s)) { self.content_settled.store(true, Ordering::Relaxed); return }
+        if others.iter().any(|(_, v, _)| crate::share::newer(v, mine)) { return }   // a newer build is on the farm: the content is its to write
+        let same: Vec<&(String, String, bool)> = others.iter().filter(|(_, v, _)| v == mine).collect();
+        let i_write = if self.lead.lock().unwrap().is_some() { true } else if same.iter().any(|(_, _, leads)| *leads) { false } else { same.iter().all(|(id, _, _)| self.id < *id) };
+        if i_write && crate::share::put_content_if_newer(&self.farm) { self.content_settled.store(true, Ordering::Relaxed); }
+    }
+    /// Whether the leader this node follows makes a job's log folder before it gives out the job's first chunk (1.0 and later do).
+    fn leader_makes_folders(&self) -> bool { self.peers.lock().unwrap().values().find(|p| p.leader && p.alive).and_then(|p| p.record.as_ref()).and_then(|r| r["app_version"].as_str()).is_some_and(|v| v.split('.').next().and_then(|m| m.parse::<u32>().ok()).is_some_and(|m| m >= 1)) }
     fn cycle(&self) {
+        self.share_duties();
         // a restart asked for by another node (1.3): the file is taken away; one more than 60 s old is ignored
         let sig = self.farm.join("nodes").join(&self.id).join("restart");
         if let Ok(m) = std::fs::metadata(&sig) { let fresh = m.modified().ok().and_then(|t| t.elapsed().ok()).is_none_or(|d| d.as_secs() <= 60); let _ = std::fs::remove_file(&sig);
@@ -665,6 +690,9 @@ impl Node {
         let failed = || report("failed", json!({ "error": "" }));
         // the chunk's own log on the share (6.5): one file for each attempt
         let logf = self.farm.join("jobs").join(&job).join("stdout").join(&self.id).join(format!("{:06}-{:06}_{}.log", a.start, a.end, now_ms()));
+        // (row 429) the job's log folder is the LEADER's to make (row 424). On storage that syncs it may not have arrived here
+        // yet: this node waits a little for it rather than making a second one - six seconds, then it makes it, as before.
+        { let shared = self.farm.join("jobs").join(&job).join("stdout"); if !shared.is_dir() && self.lead.lock().unwrap().is_none() && self.leader_makes_folders() { let t = Instant::now(); while !shared.is_dir() && t.elapsed() < Duration::from_secs(6) && !self.stop.load(Ordering::Relaxed) { std::thread::sleep(Duration::from_millis(250)); } } }
         if let Some(d) = logf.parent() { let _ = std::fs::create_dir_all(d); }
         // (the output's folder is made before the render, as well as may be; a leader never makes it. With local
         // staging it is NOT made here: the render writes on this machine, and the folder is made when the files are
