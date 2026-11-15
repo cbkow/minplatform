@@ -3,7 +3,7 @@
 //!
 //! Built for row 389's scale bar from the start: a list draws only the rows that are in view, whatever its length, and
 //! nothing here asks another node or the database for anything - the window is handed a `View` (node.rs).
-use crate::node::{ChunkRow, Detail, JobRow, Node, View};
+use crate::node::{ChunkRow, Detail, JobRow, LogWant, Node, View};
 use kurbo::{Affine, Circle, Rect};
 use min_present::{Output, Presenter};
 use min_theme::tokens as t;
@@ -26,6 +26,8 @@ pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presen
     pin: Option<((i64, i64), Instant)>, picture: Option<(u64, peniko::ImageBrush)>, latest: TextButton, pane: Rect, shown_job: Option<String>, /// the frame grid as laid out: (cells a row, a cell's size, the first frame)
     grid_geom: (i64, f64, i64), /// this node's Stop / Resume; the peer the menu is for
     node_btn: TextButton, peer_menu: Option<String>, /// the title row's New Job, and its card while it is open
+    /// the Logs tab is in front; what it reads (None: this node; a peer's id; "task": the job's render output); the file chosen there; its scroll, and whether it follows the end
+    logs: bool, log_src: Option<String>, log_file: Option<String>, log_bar: ScrollBar, files_bar: ScrollBar, log_follow: bool, log_rect: Rect, files_rect: Rect, tab_rects: [Rect; 2], src_rects: Vec<(Rect, Option<String>)>,
     new_job: TextButton, form: Option<crate::form::Form>, settings_btn: TextButton, settings: Option<crate::settings::Settings>, clipboard: Option<arboard::Clipboard>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
 /// How the window is laid out, as the owner left it (0.5.x kept the same in its own settings): in `window.json` in the
@@ -61,11 +63,14 @@ impl Ui {
         let layer = UiLayer::new(&presenter.engine.device, size.width.max(1), size.height.max(1)).ok()?; presenter.engine.set_overlay(Some(layer.view()));
         let node_data = node.data.clone(); let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
-        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, settings_btn: TextButton::new("Settings", Variant::Secondary).size_s(), settings: None, clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+        Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, logs: false, log_src: None, log_file: None, log_bar: ScrollBar::default(), files_bar: ScrollBar::default(), log_follow: true, log_rect: Rect::ZERO, files_rect: Rect::ZERO, tab_rects: [Rect::ZERO; 2], src_rects: Vec::new(),
+            new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, settings_btn: TextButton::new("Settings", Variant::Secondary).size_s(), settings: None, clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } let s = self.window.scale_factor(); self.layout.size = Some((w as f64 / s, h as f64 / s)); self.layout.save(&self.node.data); self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
     pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
-        if self.peers_rect.contains(p) { self.peers_bar.wheel(dy, now); } else if self.grid_rect.contains(p) { self.grid_bar.wheel(dy, now); } else if self.chunks_rect.contains(p) { self.chunks_bar.wheel(dy, now); } else { self.jobs_bar.wheel(dy, now); } }
+        if self.peers_rect.contains(p) { self.peers_bar.wheel(dy, now); } else if self.grid_rect.contains(p) { self.grid_bar.wheel(dy, now); } else if self.chunks_rect.contains(p) { self.chunks_bar.wheel(dy, now); }
+        // (the log follows its end until it is scrolled away from it, and again once it is scrolled back there)
+        else if self.log_rect.contains(p) { self.log_bar.wheel(dy, now); self.log_follow = self.log_bar.offset >= self.log_bar.max() - 2.0; } else if self.files_rect.contains(p) { self.files_bar.wheel(dy, now); } else { self.jobs_bar.wheel(dy, now); } }
     fn chunk_at(&self, y: f64, d: &Detail) -> Option<usize> { let s = self.window.scale_factor(); let i = ((y - self.chunks_rect.y0 + self.chunks_bar.offset) / (CHUNK_ROW * s)) as usize; (y >= self.chunks_rect.y0 && i < d.chunks.len()).then_some(i) }
     fn choose_chunk(&mut self, i: usize, d: &Detail, shift: bool, cmd: bool) {
         let id = d.chunks[i].id;
@@ -118,6 +123,11 @@ impl Ui {
                 _ => {}
             } }
         if self.jobs_bar.event(e, now).1 || self.peers_bar.event(e, now).1 || self.grid_bar.event(e, now).1 || self.chunks_bar.event(e, now).1 { return }
+        if self.log_bar.event(e, now).1 { self.log_follow = self.log_bar.offset >= self.log_bar.max() - 2.0; return } if self.files_bar.event(e, now).1 { return }
+        if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
+            if let Some(i) = self.tab_rects.iter().position(|r| r.contains(p)) { self.logs = i == 1; return }
+            if self.logs { if let Some((_, src)) = self.src_rects.iter().find(|(r, _)| r.contains(p)) { self.log_src = src.clone(); self.log_file = None; self.log_follow = true; return }
+                if self.files_rect.contains(p) { let i = ((y - self.files_rect.y0 + self.files_bar.offset) / (24.0 * s)) as usize; if let Some((name, _)) = self.node.log().files.get(i) { self.log_file = Some(name.clone()); self.log_follow = true; } return } } }
         if self.node_btn.event(e, now).0 { self.node.toggle_stopped(); return } if self.pin.is_some() && self.latest.event(e, now).0 { self.pin = None; return }
         // a frame's cell in the grid: the preview is held to that frame
         if let Event::Down { x, y, button: Button::Primary } = *e { if self.grid_rect.contains(kurbo::Point::new(x, y)) { let (per_row, slot, first) = self.grid_geom; let (col, row) = (((x - self.grid_rect.x0) / slot) as i64, ((y - self.grid_rect.y0 + self.grid_bar.offset) / slot) as i64);
@@ -181,13 +191,16 @@ impl Ui {
         let now = Instant::now(); let now_ms = crate::node::now_ms() as i64;
         let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         // (scripted looks: MR_DEMO=select chooses the second to fourth job, so that a picture shows the strip alive)
+        // (MR_DEMO=logs shows the Logs tab; logs:task its Task Output for the first job that has any)
+        if !self.demo && std::env::var("MR_DEMO").is_ok_and(|d| d.starts_with("logs")) && !view.jobs.is_empty() { self.demo = true; self.logs = true; if std::env::var("MR_DEMO").is_ok_and(|d| d == "logs:task") { self.log_src = Some("task".into()); let id = view.jobs.iter().find(|j| j.done > 0).unwrap_or(&view.jobs[0]).id.clone(); self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } }
+        if self.logs && self.log_src.as_deref() == Some("task") && self.log_file.is_none() && std::env::var("MR_DEMO").is_ok_and(|d| d == "logs:task") { self.log_file = self.node.log().files.first().map(|f| f.0.clone()); }
         if !self.demo { if let Some(d) = std::env::var("MR_DEMO").ok().filter(|d| d.starts_with("settings")) { self.demo = true; self.open_settings();
             if d == "settings:save" { if let Some(c) = self.settings.as_mut() { if let crate::settings::Out::Saved = c.demo_save(&self.node) { self.settings = None; self.node.restart_asked.store(true, std::sync::atomic::Ordering::Relaxed); } } } } }
         // (MR_DEMO=newjob opens the New Job card)
         if !self.demo { if let Some(d) = std::env::var("MR_DEMO").ok().filter(|d| d.starts_with("newjob")) { self.demo = true; let mut f = crate::form::Form::open(&self.node, &mut self.fonts); if let Some(word) = d.strip_prefix("newjob:") { f.demo(word, &mut self.fonts, &self.node); } self.form = Some(f); } }
         // (MR_DEMO=open:<job id> puts the cursor on that job, so that a picture shows its detail)
         if !self.demo { if let Some(id) = std::env::var("MR_DEMO").ok().and_then(|d| d.strip_prefix("open:").map(str::to_string)) { if view.jobs.iter().any(|j| j.id == id) { self.demo = true; self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } } }
-        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:") && !d.starts_with("newjob") && !d.starts_with("settings")) { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
+        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:") && !d.starts_with("newjob") && !d.starts_with("settings") && !d.starts_with("logs")) { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
             // (MR_DEMO=pause | cancel | ...: the command is given as a click on its button would give it)
             if demo != "select" { let what: &'static str = Box::leak(demo.into_boxed_str()); self.act(view, what, what != "cancel" && what != "delete"); self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); } } }
         let strip_labels: Vec<(f64, &'static str)> = { let fonts = &mut self.fonts; self.strip.iter().map(|(b, w)| (b.measure(fonts, s).0, *w)).collect() }; let mut strip_rects: Vec<(Rect, bool)> = Vec::new(); let sel = self.sel.clone();
@@ -293,10 +306,39 @@ impl Ui {
         // -- the job's detail: what the cursor's job is made of
         self.node.show_detail(self.cursor.clone()); let detail = self.node.detail(); if self.cursor.is_none() { self.csel.clear(); }
         let area = Rect::new(jx, list.y1 + pad, w - pad, h - pad); let tab_y = area.y0 + 10.0 * s;
-        let tw = text(scene, "Job Detail", area.x0, tab_y, t::BODY_SIZE_S, true, false, ink, 120.0 * s); paint::rect(scene, Rect::new(area.x0, tab_y + 11.0 * s, area.x0 + tw, tab_y + 13.0 * s), t::ACCENT_VISUAL_COLOR); text(scene, "Logs", area.x0 + tw + 18.0 * s, tab_y, t::BODY_SIZE_S, false, false, sub, 80.0 * s);
+        let tw = text(scene, "Job Detail", area.x0, tab_y, t::BODY_SIZE_S, !self.logs, false, if self.logs { sub } else { ink }, 120.0 * s); let lw = text(scene, "Logs", area.x0 + tw + 18.0 * s, tab_y, t::BODY_SIZE_S, self.logs, false, if self.logs { ink } else { sub }, 80.0 * s);
+        self.tab_rects = [Rect::new(area.x0, area.y0, area.x0 + tw + 9.0 * s, area.y0 + 24.0 * s), Rect::new(area.x0 + tw + 9.0 * s, area.y0, area.x0 + tw + 18.0 * s + lw + 9.0 * s, area.y0 + 24.0 * s)];
+        { let (ux, uw) = if self.logs { (area.x0 + tw + 18.0 * s, lw) } else { (area.x0, tw) }; paint::rect(scene, Rect::new(ux, tab_y + 11.0 * s, ux + uw, tab_y + 13.0 * s), t::ACCENT_VISUAL_COLOR); }
         let body = Rect::new(area.x0, area.y0 + 28.0 * s, area.x1, area.y1);
         self.grid_rect = Rect::ZERO; self.chunks_rect = Rect::ZERO;
-        match (&self.cursor, &detail) {
+        self.log_rect = Rect::ZERO; self.files_rect = Rect::ZERO; self.src_rects.clear();
+        // what the Logs tab reads is asked for only while it is in front
+        self.node.show_log(if !self.logs { None } else { match self.log_src.as_deref() { None => Some(LogWant::Node(view.me["node_id"].as_str().unwrap_or("").to_string())), Some("task") => self.cursor.clone().map(|j| LogWant::Task(j, self.log_file.clone())), Some(id) => Some(LogWant::Node(id.to_string())) } });
+        if self.logs {
+            // the sources: this node, every peer that answers, the job's render output
+            let mut sx = body.x0; let sy = body.y0 + 12.0 * s; let mut srcs: Vec<(String, Option<String>)> = vec![("This node".to_string(), None)]; srcs.extend(view.peers.iter().filter(|p| p.alive).map(|p| (if p.host.is_empty() { p.id.clone() } else { p.host.clone() }, Some(p.id.clone())))); srcs.push(("Task Output".to_string(), Some("task".to_string())));
+            for (label, src) in srcs { let on = self.log_src == src; let cw = text(scene, &label, sx + 10.0 * s, sy, t::DETAIL_SIZE_M, on, false, if on { ink } else { sub }, 200.0 * s) + 20.0 * s; let r = Rect::new(sx, sy - 11.0 * s, sx + cw, sy + 11.0 * s);
+                if on { scene.stroke(&kurbo::Stroke::new(s), Affine::IDENTITY, paint::color(t::ACCENT_VISUAL_COLOR), None, &kurbo::RoundedRect::from_rect(r, 11.0 * s)); } self.src_rects.push((r, src)); sx += cw + 6.0 * s; }
+            let data = self.node.log(); let task = self.log_src.as_deref() == Some("task"); let pane = Rect::new(body.x0, body.y0 + 30.0 * s, body.x1, body.y1); let lh = 18.0 * s;
+            let mut lines_rect = pane;
+            if task {
+                let fr = Rect::new(pane.x0, pane.y0, pane.x0 + 260.0 * s, pane.y1); paint::rounded(scene, fr, t::CORNER_RADIUS_500 as f64 * s, t::BACKGROUND_LAYER_2_COLOR); self.files_rect = fr; self.files_bar.set(fr, data.files.len() as f64 * 24.0 * s, s); lines_rect = Rect::new(fr.x1 + pad / 2.0, pane.y0, pane.x1, pane.y1);
+                scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &fr);
+                for (i, (name, label)) in data.files.iter().enumerate().skip((self.files_bar.offset / (24.0 * s)) as usize).take((fr.height() / (24.0 * s)) as usize + 2) { let y = fr.y0 + i as f64 * 24.0 * s - self.files_bar.offset; if self.log_file.as_deref() == Some(name.as_str()) { paint::rect(scene, Rect::new(fr.x0, y, fr.x1, y + 24.0 * s), t::SELECTION_BACKGROUND_COLOR); } text(scene, label, fr.x0 + 10.0 * s, y + 12.0 * s, t::DETAIL_SIZE_M, false, true, ink, fr.width() - 20.0 * s); }
+                scene.pop_layer(); self.files_bar.paint(scene, now);
+            }
+            paint::rounded(scene, lines_rect, t::CORNER_RADIUS_500 as f64 * s, GRID_PIT); let inner = lines_rect.inset(-6.0 * s); self.log_rect = inner; self.log_bar.set(inner, data.lines.len() as f64 * lh, s); if self.log_follow { self.log_bar.offset = self.log_bar.max(); }
+            let empty = if !data.lines.is_empty() { "" } else if !task { "No log data for this node yet" } else if self.cursor.is_none() { "Select a job in the Jobs list to view its task output." } else if data.files.is_empty() { "This job hasn't written any chunk output yet. Output appears once a node starts rendering a chunk of this job." } else if self.log_file.is_none() { "Select a chunk on the left" } else { "(Empty)" };
+            if !empty.is_empty() { text(scene, empty, inner.x0 + 6.0 * s, inner.y0 + 16.0 * s, t::DETAIL_SIZE_M, false, false, sub, inner.width() - 12.0 * s); }
+            scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &inner);
+            // only the lines in view are laid out; a line that names an error is red, a warning amber
+            for (i, l) in data.lines.iter().enumerate().skip((self.log_bar.offset / lh) as usize).take((inner.height() / lh) as usize + 2) { let y = inner.y0 + i as f64 * lh - self.log_bar.offset;
+                let color = if l.contains("ERROR") || l.contains("[stderr]") && l.to_lowercase().contains("error") { paint::color(t::NEGATIVE_VISUAL_COLOR) } else if l.contains("WARN") { paint::color(t::NOTICE_VISUAL_COLOR) } else { ink };
+                text(scene, l, inner.x0 + 4.0 * s, y + lh / 2.0, t::DETAIL_SIZE_M, false, true, color, inner.width() - 16.0 * s); }
+            scene.pop_layer(); self.log_bar.paint(scene, now);
+            if data.cut { text(scene, "the end of a longer file", lines_rect.x1 - 170.0 * s, body.y0 + 12.0 * s, t::DETAIL_SIZE_S, false, false, sub, 160.0 * s); }
+        }
+        else { match (&self.cursor, &detail) {
             (None, _) => { text(scene, "No job selected", body.x0 + 12.0 * s, body.y0 + 24.0 * s, t::BODY_SIZE_S, false, false, sub, 240.0 * s); }
             (Some(_), None) => {}
             (Some(_), Some(d)) if body.height() > 160.0 * s => {
@@ -353,7 +395,7 @@ impl Ui {
                 scene.pop_layer(); self.chunks_bar.paint(scene, now);
             }
             _ => {}
-        }
+        } }
         drop(text);
         // the gap under the pointer or in hand shows as a line of the accent
         if let Some(i) = self.drag.or(self.over) { let g = self.gaps[i]; if i == 0 { paint::rect(scene, Rect::new(g.center().x - s, g.y0, g.center().x + s, g.y1), t::ACCENT_VISUAL_COLOR); } else { paint::rect(scene, Rect::new(g.x0, g.center().y - s, g.x1, g.center().y + s), t::ACCENT_VISUAL_COLOR); } }
@@ -378,5 +420,5 @@ impl Ui {
             let bytes: Vec<u8> = (0..(w * h) as usize).flat_map(|i| [oetf(px[i * 4]), oetf(px[i * 4 + 1]), oetf(px[i * 4 + 2])]).collect();
             if let Ok(f) = std::fs::File::create(&path) { let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h); e.set_color(png::ColorType::Rgb); e.set_depth(png::BitDepth::Eight); let _ = e.write_header().and_then(|mut wr| wr.write_image_data(&bytes)); } } } }
     }
-    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) || self.form.as_ref().is_some_and(|f| f.animating(now)) || self.settings.as_ref().is_some_and(|c| c.animating(now)) }
+    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.log_bar.animating(now) || self.files_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) || self.form.as_ref().is_some_and(|f| f.animating(now)) || self.settings.as_ref().is_some_and(|c| c.animating(now)) }
 }

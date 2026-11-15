@@ -51,6 +51,13 @@ pub struct Preview { pub job: String, pub file: String, pub pin: Option<(i64, i6
 pub struct ChunkRow { pub id: i64, pub a: i64, pub b: i64, pub state: String, pub node: String, pub assigned_ms: i64, pub completed_ms: i64, pub retries: i64, pub done: Vec<i64>, pub done_count: i64 }
 /// One job with its chunks, in the order of their first frames.
 pub struct Detail { pub id: String, pub state: String, pub priority: i64, pub created_ms: i64, pub first: i64, pub last: i64, pub chunks: Vec<ChunkRow> }
+/// What the Logs tab asks for: a node's log, or a job's render output (with the file chosen there, if one is).
+#[derive(Clone, PartialEq)]
+pub enum LogWant { Node(String), Task(String, Option<String>) }
+/// What the Logs tab shows: the lines, and for a job's output the files there are - (file name, the label shown).
+#[derive(Default)]
+pub struct LogData { pub lines: Vec<String>, pub files: Vec<(String, String)>, /// the lines are the end of a longer file
+    pub cut: bool }
 /// A peer as the window lists it.
 pub struct PeerRow { pub id: String, pub host: String, pub alive: bool, pub leader: bool, pub stopped: bool, pub job: String, pub health_ok: bool }
 /// What the window shows of the farm, as of now. The job list is made off the window's thread every two seconds and
@@ -65,7 +72,8 @@ pub struct Node {
     lead: Mutex<Option<Lead>>, /// the job list for the window, and whether the leader answered the last time it was asked
     jobs_view: Mutex<(Arc<Vec<JobRow>>, bool)>, /// the job the window shows in detail, and that detail as last fetched
     detail_of: Mutex<Option<String>>, detail_view: Mutex<Option<Arc<Detail>>>, /// the job (and the frames pinned) the window wants a picture of; the picture
-    preview_of: Mutex<Option<(String, Option<(i64, i64)>)>>, preview_view: Mutex<Option<Arc<Preview>>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
+    preview_of: Mutex<Option<(String, Option<(i64, i64)>)>>, preview_view: Mutex<Option<Arc<Preview>>>, /// what the Logs tab wants, and what was read for it
+    log_of: Mutex<Option<LogWant>>, log_view: Mutex<Arc<LogData>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
     staging: bool, /// the heartbeat's socket and port, when heartbeats are on (1.6)
     udp: Option<(std::net::UdpSocket, u16)>, /// submission files that were dealt with and could not be moved away
     submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
@@ -114,7 +122,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port, ip, tags, hostname,
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)), restart_asked: AtomicBool::new(false),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), jobs_view: Mutex::new((Arc::new(Vec::new()), true)), detail_of: Mutex::new(None), detail_view: Mutex::new(None), preview_of: Mutex::new(None), preview_view: Mutex::new(None), log_of: Mutex::new(None), log_view: Mutex::new(Arc::new(LogData::default())), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
@@ -243,6 +251,30 @@ impl Node {
             ChunkRow { id: n(c, "id"), a: n(c, "frame_start"), b: n(c, "frame_end"), node: c["assigned_to"].as_str().unwrap_or("").to_string(), assigned_ms: n(c, "assigned_at_ms"), completed_ms: n(c, "completed_at_ms"), retries: n(c, "retry_count"), done_count: frames.len() as i64, done: if state == "completed" { Vec::new() } else { frames }, state } }).collect()).unwrap_or_default();
         let d = Detail { id: id.clone(), state: v["current_state"].as_str().unwrap_or("").to_string(), priority: n(&v, "priority"), created_ms: n(&v, "submitted_at_ms"), first: n(&v["manifest"], "frame_start"), last: n(&v["manifest"], "frame_end"), chunks };
         if self.detail_of.lock().unwrap().as_deref() == Some(id.as_str()) { *self.detail_view.lock().unwrap() = Some(Arc::new(d)); }
+    }
+    /// What the Logs tab wants read (none while the tab is not in front: nothing is read then).
+    pub fn show_log(&self, want: Option<LogWant>) { let mut w = self.log_of.lock().unwrap(); if *w != want { *w = want; *self.log_view.lock().unwrap() = Arc::new(LogData::default()); } }
+    pub fn log(&self) -> Arc<LogData> { self.log_view.lock().unwrap().clone() }
+    /// The Logs tab's reading, here and never on the window's thread: the last 500 lines of a node's log on the share
+    /// (the files this machine's yesterday and today name), or a job's chunk logs listed - in the order of their frames,
+    /// then their times - and the END of the one chosen (a render's output can be very long: the last 256 KB).
+    fn refresh_log(self: &Arc<Self>) {
+        let Some(want) = self.log_of.lock().unwrap().clone() else { return };
+        let data = match &want {
+            LogWant::Node(id) => LogData { lines: if safe(id) { crate::share::node_log(&self.farm, id, 500) } else { Vec::new() }, files: Vec::new(), cut: false },
+            LogWant::Task(job, file) => { let mut found: Vec<(String, i64, String, String)> = Vec::new();   // (range, time, node, file name)
+                if safe(job) { if let Some(a) = crate::share::task_output(&self.farm, job).as_array() { for f in a { let path = f["path"].as_str().unwrap_or(""); found.push((f["range"].as_str().unwrap_or("").to_string(), f["timestamp_ms"].as_i64().unwrap_or(0), f["node_id"].as_str().unwrap_or("").to_string(), path.rsplit(['/', '\\']).next().unwrap_or("").to_string())); } } }
+                found.sort();
+                let host = |id: &str| -> String { if id == self.id { return self.hostname.clone() } self.peers.lock().unwrap().get(id).and_then(|p| p.record.as_ref()).and_then(|r| r["hostname"].as_str().map(str::to_string)).filter(|h| !h.is_empty()).unwrap_or_else(|| id.to_string()) };
+                // (the label: the frames as the chunk table writes them, the time, the node's name - row 389)
+                let files: Vec<(String, String)> = found.iter().map(|(range, ms, node, name)| { let plain = range.split('-').map(|x| x.trim_start_matches('0')).map(|x| if x.is_empty() { "0" } else { x }).collect::<Vec<_>>(); let frames = if plain.len() == 2 && plain[0] == plain[1] { plain[0].to_string() } else { plain.join("-") };
+                    (format!("{node}/{name}"), format!("{frames}  \u{b7}  {}  \u{b7}  {}", crate::share::local_stamp(*ms).get(11..).unwrap_or(""), host(node))) }).collect();
+                let (mut lines, mut cut) = (Vec::new(), false);
+                if let Some((node, name)) = file.as_ref().and_then(|f| f.split_once('/')) { if safe(node) && safe(name) { if let Ok(mut fh) = std::fs::File::open(self.farm.join("jobs").join(job).join("stdout").join(node).join(name)) { use std::io::{Read, Seek, SeekFrom};
+                    let len = fh.metadata().map(|m| m.len()).unwrap_or(0); let keep = 256 * 1024; if len > keep { cut = true; let _ = fh.seek(SeekFrom::Start(len - keep)); } let mut b = Vec::new(); let _ = fh.read_to_end(&mut b);
+                    lines = String::from_utf8_lossy(&b).lines().skip(if cut { 1 } else { 0 }).map(str::to_string).collect(); } } }
+                LogData { lines, files, cut } } };
+        if *self.log_of.lock().unwrap() == Some(want) { *self.log_view.lock().unwrap() = Arc::new(data); }
     }
     /// The job the window wants a picture of, and the frames it is pinned to (none: the latest).
     pub fn show_preview(&self, want: Option<(String, Option<(i64, i64)>)>) { let mut p = self.preview_of.lock().unwrap(); if *p != want { if p.as_ref().map(|x| &x.0) != want.as_ref().map(|x| &x.0) { *self.preview_view.lock().unwrap() = None; } *p = want; } }
@@ -597,6 +629,9 @@ impl Node {
         // the window's picture of a job's output: at once when another job or pin is asked for, then every 3 s
         { let me = self.clone(); std::thread::spawn(move || { let (mut asked, mut at, mut last) = (None, Instant::now(), None); while !me.stop.load(Ordering::Relaxed) { let want = me.preview_of.lock().unwrap().clone();
             if want.is_some() && (want != asked || at.elapsed() >= Duration::from_secs(3)) { me.refresh_preview(&mut last); at = Instant::now(); } asked = want; std::thread::sleep(Duration::from_millis(100)); } }); }
+        // the Logs tab's reading: at once when something else is asked for, then every 3 s
+        { let me = self.clone(); std::thread::spawn(move || { let (mut asked, mut at) = (None, Instant::now()); while !me.stop.load(Ordering::Relaxed) { let want = me.log_of.lock().unwrap().clone();
+            if want.is_some() && (want != asked || at.elapsed() >= Duration::from_secs(3)) { me.refresh_log(); at = Instant::now(); } asked = want; std::thread::sleep(Duration::from_millis(100)); } }); }
         // the plug-ins' drop box, every 3 s
         { let me = self.clone(); std::thread::spawn(move || while !me.stop.load(Ordering::Relaxed) { me.drop_box(); for _ in 0..30 { if me.stop.load(Ordering::Relaxed) { break } std::thread::sleep(Duration::from_millis(100)); } }); }
         // reports to the leader: in order, kept until a 200 comes, five seconds after a failure (2.3)
