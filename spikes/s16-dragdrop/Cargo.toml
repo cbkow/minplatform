@@ -4,9 +4,28 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-# A spike for the UFB port (canon row 459; its question, pass bar and verdict: docs/spikes). It dies with its verdict.
+# A spike for the UFB port (canon row 459; its question, pass bar and verdict: docs/spikes/S16-dragdrop.md). It dies with its verdict.
 [[bin]]
 name = "s16"
 path = "src/main.rs"
 
 [dependencies]
+winit31 = { workspace = true }
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+vello = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+raw-window-handle = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = { workspace = true, features = ["exception"] }
+objc2-foundation = { workspace = true, features = ["NSObject", "NSString", "NSArray", "NSURL", "NSGeometry", "NSDictionary", "NSOperation", "NSError", "NSValue", "NSEnumerator", "block2"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSView", "NSWindow", "NSEvent", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSPasteboard", "NSPasteboardItem", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics", "NSGraphicsContext", "NSFilePromiseReceiver", "NSFilePromiseProvider", "block2"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Ole", "Win32_System_Memory", "Win32_System_DataExchange", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-core = "0.62"

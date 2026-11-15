@@ -4,9 +4,38 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-# A spike for the UFB port (canon row 459; its question, pass bar and verdict: docs/spikes). It dies with its verdict.
+# A spike for the UFB port (canon row 459; its question, pass bar and verdict: docs/spikes/S15-webview.md). It dies with its verdict.
 [[bin]]
 name = "s15"
 path = "src/main.rs"
 
+# `web` off = the same program with no web view at all: the binary-size comparison of the verdict.
+[features]
+default = ["web"]
+web = ["dep:wry"]
+
 [dependencies]
+winit = { package = "winit", version = "=0.31.0-beta.4", default-features = false }
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+vello = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+raw-window-handle = { workspace = true }
+png = { workspace = true }
+# The system's own web view: WKWebView on macOS, WebView2 on Windows. MIT OR Apache-2.0. No engine is bundled.
+wry = { version = "=0.57.2", default-features = false, features = ["os-webview"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSObject", "NSString", "NSURL", "NSArray", "NSGeometry"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSView", "NSWindow"] }
+# (the version wry itself uses: our own script message handler is added to wry's WKUserContentController)
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "WKScriptMessageHandler", "WKScriptMessage", "WKUserContentController"] }
+
+[target.'cfg(windows)'.dependencies]
+# (wry's own Windows dependencies, named here because the folder mapping is called on WebView2's interface directly)
+webview2-com = "=0.39.1"
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }

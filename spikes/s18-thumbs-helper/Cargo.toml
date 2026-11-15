@@ -10,3 +10,21 @@ name = "s18"
 path = "src/main.rs"
 
 [dependencies]
+# the decoder is not the point: the process model is. `image` is already in the workspace's lock.
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+block2 = "0.6"
+objc2-foundation = { workspace = true, features = ["NSString", "NSURL", "NSError", "NSGeometry", "NSDictionary"] }
+objc2-core-foundation = { workspace = true, features = ["CFCGTypes"] }
+objc2-core-graphics = { workspace = true, features = ["CGBitmapContext", "CGContext", "CGImage", "CGColorSpace"] }
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSImage", "NSApplication", "NSResponder", "NSRunningApplication", "NSImageRep", "NSGraphicsContext", "objc2-uniform-type-identifiers", "objc2-core-graphics"] }
+objc2-uniform-type-identifiers = { version = "0.3.2", features = ["UTType"] }
+objc2-quick-look-thumbnailing = { version = "=0.3.2", features = ["QLThumbnailGenerator", "QLThumbnailGenerationRequest", "QLThumbnailRepresentation", "QLThumbnailErrors", "block2", "objc2-core-graphics", "objc2-core-foundation"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Storage_FileSystem", "Win32_System_ProcessStatus", "Win32_System_Diagnostics_Debug", "Win32_Security"] }

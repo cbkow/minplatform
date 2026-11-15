@@ -10,3 +10,13 @@ name = "s17"
 path = "src/main.rs"
 
 [dependencies]
+winit31 = { workspace = true }
+min-present = { path = "../../crates/min-present" }
+min-ui = { path = "../../crates/min-ui" }
+min-theme = { path = "../../crates/min-theme" }
+vello = { workspace = true }
+peniko = { workspace = true }
+kurbo = { workspace = true }
+wgpu = { workspace = true }
+raw-window-handle = { workspace = true }
+png = { workspace = true }
