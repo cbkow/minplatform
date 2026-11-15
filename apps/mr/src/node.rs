@@ -191,6 +191,10 @@ impl Node {
                     _ => Response::empty(404) } }
             ("GET", p) if p.starts_with("/api/nodes/") && p.ends_with("/log") => { let node = &p["/api/nodes/".len()..p.len() - "/log".len()];
                 if !safe(node) { Response::error(400, "invalid_path") } else { let max = _query.split('&').find_map(|kv| kv.strip_prefix("max_lines=")).and_then(|v| v.parse().ok()).unwrap_or(500); Response::json(200, json!(crate::share::node_log(&self.farm, node, max))) } }
+            // Farm Cleanup's scan and its acts (2.5 rows 34, 35), as 0.5.x answers them
+            ("POST", "/api/farm/scan-cleanup") => Response::json(200, self.scan_cleanup()),
+            ("POST", "/api/farm/cleanup") => { let v = match body() { Ok(v) => v, Err(r) => return r }; let (Some(action), Some(ids)) = (v["action"].as_str(), v["ids"].as_array()) else { return Response::error(400, "key 'action' or 'ids' not found") };
+                let n = self.cleanup(action, &ids.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>()); Response::json(200, json!({ "status": "ok", "count": n })) }
             ("GET", "/api/config") => { let mut v = std::fs::read_to_string(self.data.join("config.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({}));
                 for (k, x) in [("node_id", json!(self.id)), ("hostname", json!(self.hostname)), ("cpu_cores", json!(self.cores)), ("ram_mb", json!(self.ram_mb)), ("gpu_name", json!("")), ("farm_running", json!(true)), ("farm_path", json!(self.farm.to_string_lossy())), ("farm_error", json!("")), ("is_leader", json!(self.lead.lock().unwrap().is_some()))] { v[k] = x; }
                 Response::json(200, v) }
@@ -306,6 +310,46 @@ impl Node {
         if last.as_ref() == Some(&key) { if self.preview_view.lock().unwrap().as_ref().is_some_and(|p| p.pin != pin) { if let Some(old) = self.preview() { put(fname, old.size, old.rgba.as_ref().clone(), old.note); } } return }
         match min_image::load_thumbnail(&path.to_string_lossy(), "", 960) { Ok(img) => { let (rgba, w, h) = opaque_rgba8(&img); *last = Some(key); put(fname, (w, h), rgba, None); }
             Err(_) => { *last = None; put(fname, (0, 0), Vec::new(), Some("This frame cannot be shown yet")); } }
+    }
+    /// What Farm Cleanup could clear (2.5 row 34, 6.7), as this node sees it: finished and archived jobs (a leader
+    /// alone knows these), folders under `jobs/` no job owns, peers that do not answer, this machine's staging folders.
+    pub fn scan_cleanup(self: &Arc<Self>) -> Value {
+        let item = |id: String, label: String, detail: String| json!({ "id": id, "label": label, "detail": detail });
+        let leading = self.lead.lock().unwrap().is_some(); let (mut finished, mut archived, mut known) = (Vec::new(), Vec::new(), std::collections::BTreeSet::new());
+        if let Some(l) = self.lead.lock().unwrap().as_ref() { for (id, state, total) in l.all_jobs() { known.insert(id.clone()); if state == "completed" || state == "cancelled" { finished.push(item(id.clone(), id, format!("{state} | {total} chunks"))); } else if state == "archived" { archived.push(item(id.clone(), id, "archived".into())); } } }
+        // (a node that does not lead knows the listed jobs only, not the archived ones: it names no folder an orphan - 0.5.x did,
+        // and offered an archived job's folder for deletion)
+        let mut orphans = Vec::new(); if leading { if let Ok(rd) = std::fs::read_dir(self.farm.join("jobs")) { for e in rd.flatten().filter(|e| e.path().is_dir()) { let name = e.file_name().to_string_lossy().into_owned(); if !known.contains(&name) { orphans.push(item(e.path().to_string_lossy().into_owned(), name, "no matching job".into())); } } } }
+        let peers: Vec<Value> = self.peers.lock().unwrap().iter().filter(|(_, p)| !p.alive).map(|(id, p)| item(id.clone(), format!("{} ({})", p.record.as_ref().and_then(|r| r["hostname"].as_str()).unwrap_or(""), &id[..id.len().min(8)]), format!("last seen: {}", p.last_seen_ms))).collect();
+        let (mut empty, mut full) = (Vec::new(), Vec::new());
+        if let Ok(rd) = std::fs::read_dir(self.data.join("staging")) { for e in rd.flatten().filter(|e| e.path().is_dir()) { let (mut files, mut bytes) = (0u64, 0u64); let mut stack = vec![e.path()];
+            while let Some(d) = stack.pop() { if let Ok(rd) = std::fs::read_dir(&d) { for f in rd.flatten() { let p = f.path(); if p.is_dir() { stack.push(p); } else { files += 1; bytes += f.metadata().map(|m| m.len()).unwrap_or(0); } } } }
+            let (id, name) = (e.path().to_string_lossy().into_owned(), e.file_name().to_string_lossy().into_owned());
+            if files > 0 { full.push(item(id, name, format!("{files} files ({})", if bytes < 1 << 20 { format!("{} KB", bytes >> 10) } else if bytes < 1 << 30 { format!("{} MB", bytes >> 20) } else { format!("{} GB", bytes >> 30) }))); } else { empty.push(item(id, name, "empty".into())); } } }
+        json!({ "finished_jobs": finished, "archived_jobs": archived, "orphaned_dirs": orphans, "stale_peers": peers, "stale_staging_dirs": empty, "failed_staging_copies": full, "is_leader": leading })
+    }
+    /// One act of Farm Cleanup (row 35) on this node; how many it did. Folders are removed only under the farm's `jobs/`
+    /// and this machine's staging folder, whatever the request names.
+    pub fn cleanup(self: &Arc<Self>, action: &str, ids: &[String]) -> usize {
+        let mut n = 0;
+        for id in ids { match action {
+            "archive" | "delete_jobs" => if safe(id) { let (m, p) = if action == "archive" { ("POST", format!("/api/jobs/{id}/archive")) } else { ("DELETE", format!("/api/jobs/{id}")) }; if self.lead_answer(m, &p, b"").is_some_and(|r| r.status == 200) { n += 1; } },
+            "delete_dirs" => { let t = PathBuf::from(id); let within = |root: PathBuf| t.is_absolute() && !id.contains("..") && t.parent().is_some_and(|p| p == root); if (within(self.farm.join("jobs")) || within(self.data.join("staging"))) && std::fs::remove_dir_all(&t).is_ok() { n += 1; } }
+            "remove_peers" => if safe(id) && *id != self.id { if std::fs::remove_dir_all(self.farm.join("nodes").join(id)).is_ok() { n += 1; } self.peers.lock().unwrap().remove(id); },
+            _ => {} } }
+        n
+    }
+    /// Farm Cleanup for the window, off its thread. The jobs a leader alone knows are asked of the leader; the rest is this machine's.
+    pub fn cleanup_scan_for_window(self: &Arc<Self>, into: Arc<Mutex<Option<Value>>>) {
+        let me = self.clone(); std::thread::spawn(move || { let mut v = me.scan_cleanup();
+            if me.lead.lock().unwrap().is_none() { if let Some(lv) = me.to_leader("/api/farm/scan-cleanup", "").filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()) { for k in ["finished_jobs", "archived_jobs", "orphaned_dirs"] { v[k] = lv[k].clone(); } v["leader_answered"] = json!(true); } else { v["leader_answered"] = json!(false); } }
+            *into.lock().unwrap() = Some(v); });
+    }
+    /// One act for the window, off its thread: jobs and their folders are the leader's to clear, peers and staging this node's; then a new scan.
+    pub fn cleanup_for_window(self: &Arc<Self>, action: &'static str, ids: Vec<String>, into: Arc<Mutex<Option<Value>>>) {
+        let me = self.clone(); std::thread::spawn(move || { let at_leader = matches!(action, "archive" | "delete_jobs") || action == "delete_dirs" && ids.iter().all(|i| !i.contains("staging"));
+            if at_leader && me.lead.lock().unwrap().is_none() { let _ = me.to_leader("/api/farm/cleanup", &json!({ "action": action, "ids": ids }).to_string()); } else { me.cleanup(action, &ids); }
+            me.refresh_jobs_view(); me.cleanup_scan_for_window(into); });
     }
     /// This node's settings as they are kept (`config.json`), for the Settings card.
     pub fn settings(&self) -> Value { std::fs::read_to_string(self.data.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(json!({})) }

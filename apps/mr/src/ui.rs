@@ -28,7 +28,7 @@ pub struct Ui { window: Arc<Box<dyn Window>>, node: Arc<Node>, presenter: Presen
     node_btn: TextButton, peer_menu: Option<String>, /// the title row's New Job, and its card while it is open
     /// the Logs tab is in front; what it reads (None: this node; a peer's id; "task": the job's render output); the file chosen there; its scroll, and whether it follows the end
     logs: bool, log_src: Option<String>, log_file: Option<String>, log_bar: ScrollBar, files_bar: ScrollBar, log_follow: bool, log_rect: Rect, files_rect: Rect, tab_rects: [Rect; 2], src_rects: Vec<(Rect, Option<String>)>,
-    new_job: TextButton, form: Option<crate::form::Form>, settings_btn: TextButton, settings: Option<crate::settings::Settings>, clipboard: Option<arboard::Clipboard>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
+    new_job: TextButton, form: Option<crate::form::Form>, settings_btn: TextButton, settings: Option<crate::settings::Settings>, cleanup_btn: TextButton, cleanup: Option<crate::cleanup::Cleanup>, clipboard: Option<arboard::Clipboard>, jobs_rect: Rect, peers_rect: Rect, rows_from: f64, born: Instant, shot: bool }
 
 /// How the window is laid out, as the owner left it (0.5.x kept the same in its own settings): in `window.json` in the
 /// data folder - never in `config.json`, which a 0.5.x build on the same machine rewrites without what it does not know.
@@ -64,10 +64,10 @@ impl Ui {
         let node_data = node.data.clone(); let b = |l: &str, v: Variant| TextButton::new(l, v).size_s();
         let strip = vec![(b("Pause", Variant::Secondary), "pause"), (b("Resume", Variant::Secondary), "resume"), (b("Retry failed", Variant::Secondary), "retry-failed"), (b("Requeue", Variant::Secondary), "requeue"), (b("Archive", Variant::Secondary), "archive"), (b("Cancel", Variant::Secondary), "cancel"), (b("Delete", Variant::Negative), "delete")];
         Some(Ui { window, node, presenter, layer, fonts: Fonts::new(), jobs_bar: ScrollBar::default(), peers_bar: ScrollBar::default(), pointer: (0.0, 0.0), sel: BTreeSet::new(), cursor: None, anchor: None, strip, menu: Menu::new(), menu_acts: Vec::new(), confirm: None, demo: false, grid_bar: ScrollBar::default(), chunks_bar: ScrollBar::default(), csel: BTreeSet::new(), ccursor: None, canchor: None, grid_rect: Rect::ZERO, chunks_rect: Rect::ZERO, on_chunks: false, layout: Layout::load(&node_data), gaps: [Rect::ZERO; 4], drag: None, over: None, pin: None, picture: None, latest: TextButton::new("Latest", Variant::Secondary).size_s(), pane: Rect::ZERO, shown_job: None, grid_geom: (1, 10.0, 0), node_btn: TextButton::new("Stop", Variant::Secondary).size_s(), peer_menu: None, logs: false, log_src: None, log_file: None, log_bar: ScrollBar::default(), files_bar: ScrollBar::default(), log_follow: true, log_rect: Rect::ZERO, files_rect: Rect::ZERO, tab_rects: [Rect::ZERO; 2], src_rects: Vec::new(),
-            new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, settings_btn: TextButton::new("Settings", Variant::Secondary).size_s(), settings: None, clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
+            new_job: TextButton::new("New Job", Variant::Primary).size_s(), form: None, settings_btn: TextButton::new("Settings", Variant::Secondary).size_s(), settings: None, cleanup_btn: TextButton::new("Farm Cleanup", Variant::Secondary).size_s(), cleanup: None, clipboard: arboard::Clipboard::new().ok(), jobs_rect: Rect::ZERO, peers_rect: Rect::ZERO, rows_from: 0.0, born: Instant::now(), shot: false })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } let s = self.window.scale_factor(); self.layout.size = Some((w as f64 / s, h as f64 / s)); self.layout.save(&self.node.data); self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); }
-    pub fn wheel(&mut self, dy: f64) { let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
+    pub fn wheel(&mut self, dy: f64) { if let Some(c) = self.cleanup.as_mut() { c.wheel(dy); return } if self.form.is_some() || self.settings.is_some() { return } let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.peers_rect.contains(p) { self.peers_bar.wheel(dy, now); } else if self.grid_rect.contains(p) { self.grid_bar.wheel(dy, now); } else if self.chunks_rect.contains(p) { self.chunks_bar.wheel(dy, now); }
         // (the log follows its end until it is scrolled away from it, and again once it is scrolled back there)
         else if self.log_rect.contains(p) { self.log_bar.wheel(dy, now); self.log_follow = self.log_bar.offset >= self.log_bar.max() - 2.0; } else if self.files_rect.contains(p) { self.files_bar.wheel(dy, now); } else { self.jobs_bar.wheel(dy, now); } }
@@ -104,8 +104,10 @@ impl Ui {
         // what lies over the lists takes the pointer first: the New Job card, the question, the menu
         if let Some(f) = self.form.as_mut() { if let crate::form::Out::Close = f.pointer(e, &mut self.fonts, &self.node) { self.form = None; } return }
         if let Some(c) = self.settings.as_mut() { match c.pointer(e, &mut self.fonts, &self.node) { crate::settings::Out::Close => self.settings = None, crate::settings::Out::Saved => { self.settings = None; self.node.restart_asked.store(true, std::sync::atomic::Ordering::Relaxed); } crate::settings::Out::None => {} } return }
+        if let Some(c) = self.cleanup.as_mut() { if let crate::cleanup::Out::Close = c.pointer(e, &self.node) { self.cleanup = None; } return }
         if self.new_job.event(e, now).0 { self.form = Some(crate::form::Form::open(&self.node, &mut self.fonts)); return }
         if self.settings_btn.event(e, now).0 { self.open_settings(); return }
+        if self.cleanup_btn.event(e, now).0 { self.cleanup = Some(crate::cleanup::Cleanup::open(&self.node)); return }
         if let Some((d, what)) = self.confirm.as_mut() { let what = *what; d.pointer(e, &mut self.fonts); if let (Some(i), _) = d.event(e, now) { self.confirm = None; if i == 1 { self.act(view, what, true); } } return }
         if self.menu.is_open() { let (chosen, _, _) = self.menu.event(e); if let Some(i) = chosen { let what = self.menu_acts.get(i).copied().unwrap_or(""); self.menu.close();
             // a chunk command goes to the chunks it applies to: back to the queue - those given out, failed or stopped; stop - those waiting or given out
@@ -166,6 +168,7 @@ impl Ui {
     /// the lists take theirs.
     pub fn key_event(&mut self, k: &min_ui::KeyEvent, view: &View, mods: (bool, bool)) {
         if let Some(f) = self.form.as_mut() { let pasted = if k.cmd && matches!(&k.key, min_ui::Key::Char(c) if c.eq_ignore_ascii_case("v")) { Some(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()) } else { None }; f.key(k, pasted, &mut self.fonts, &self.node); return }
+        if self.cleanup.is_some() { return }
         if let Some(c) = self.settings.as_mut() { let pasted = if k.cmd && matches!(&k.key, min_ui::Key::Char(ch) if ch.eq_ignore_ascii_case("v")) { Some(self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()).unwrap_or_default()) } else { None }; c.key(k, pasted, &mut self.fonts); return }
         if k.cmd && matches!(&k.key, min_ui::Key::Char(ch) if ch == ",") { self.open_settings(); return }
         use min_ui::{Key, Named}; let name = match &k.key { Key::Named(Named::Up) => "Up", Key::Named(Named::Down) => "Down", Key::Named(Named::Home) => "Home", Key::Named(Named::End) => "End", Key::Named(Named::Escape) => "Escape", Key::Named(Named::Delete) => "Delete", Key::Named(Named::Backspace) => "Backspace",
@@ -191,6 +194,7 @@ impl Ui {
         let now = Instant::now(); let now_ms = crate::node::now_ms() as i64;
         let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         // (scripted looks: MR_DEMO=select chooses the second to fourth job, so that a picture shows the strip alive)
+        if !self.demo && std::env::var("MR_DEMO").is_ok_and(|d| d == "cleanup") { self.demo = true; self.cleanup = Some(crate::cleanup::Cleanup::open(&self.node)); }
         // (MR_DEMO=logs shows the Logs tab; logs:task its Task Output for the first job that has any)
         if !self.demo && std::env::var("MR_DEMO").is_ok_and(|d| d.starts_with("logs")) && !view.jobs.is_empty() { self.demo = true; self.logs = true; if std::env::var("MR_DEMO").is_ok_and(|d| d == "logs:task") { self.log_src = Some("task".into()); let id = view.jobs.iter().find(|j| j.done > 0).unwrap_or(&view.jobs[0]).id.clone(); self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } }
         if self.logs && self.log_src.as_deref() == Some("task") && self.log_file.is_none() && std::env::var("MR_DEMO").is_ok_and(|d| d == "logs:task") { self.log_file = self.node.log().files.first().map(|f| f.0.clone()); }
@@ -200,7 +204,7 @@ impl Ui {
         if !self.demo { if let Some(d) = std::env::var("MR_DEMO").ok().filter(|d| d.starts_with("newjob")) { self.demo = true; let mut f = crate::form::Form::open(&self.node, &mut self.fonts); if let Some(word) = d.strip_prefix("newjob:") { f.demo(word, &mut self.fonts, &self.node); } self.form = Some(f); } }
         // (MR_DEMO=open:<job id> puts the cursor on that job, so that a picture shows its detail)
         if !self.demo { if let Some(id) = std::env::var("MR_DEMO").ok().and_then(|d| d.strip_prefix("open:").map(str::to_string)) { if view.jobs.iter().any(|j| j.id == id) { self.demo = true; self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } } }
-        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:") && !d.starts_with("newjob") && !d.starts_with("settings") && !d.starts_with("logs")) { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
+        if self.sel.is_empty() && !self.demo && view.jobs.len() > 4 { if let Some(demo) = std::env::var("MR_DEMO").ok().filter(|d| !d.starts_with("open:") && !d.starts_with("newjob") && !d.starts_with("settings") && !d.starts_with("logs") && d != "cleanup") { self.demo = true; self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); self.cursor = Some(view.jobs[2].id.clone());
             // (MR_DEMO=pause | cancel | ...: the command is given as a click on its button would give it)
             if demo != "select" { let what: &'static str = Box::leak(demo.into_boxed_str()); self.act(view, what, what != "cancel" && what != "delete"); self.sel = view.jobs[1..4].iter().map(|j| j.id.clone()).collect(); } } }
         let strip_labels: Vec<(f64, &'static str)> = { let fonts = &mut self.fonts; self.strip.iter().map(|(b, w)| (b.measure(fonts, s).0, *w)).collect() }; let mut strip_rects: Vec<(Rect, bool)> = Vec::new(); let sel = self.sel.clone();
@@ -405,13 +409,15 @@ impl Ui {
         if self.pin.is_some() && latest_rect.width() > 0.0 { self.latest.rect = latest_rect; self.latest.paint(scene, &mut self.fonts, s, now); } else { self.latest.rect = Rect::ZERO; }
         // New Job, always in reach at the title row's right
         { let (bw, _) = self.new_job.measure(&mut self.fonts, s); self.new_job.rect = Rect::new(w - pad - bw, TITLE * s / 2.0 - 12.0 * s, w - pad, TITLE * s / 2.0 + 12.0 * s); self.new_job.paint(scene, &mut self.fonts, s, now);
-          let (sw2, _) = self.settings_btn.measure(&mut self.fonts, s); self.settings_btn.rect = Rect::new(self.new_job.rect.x0 - 8.0 * s - sw2, self.new_job.rect.y0, self.new_job.rect.x0 - 8.0 * s, self.new_job.rect.y1); self.settings_btn.paint(scene, &mut self.fonts, s, now); }
+          let (sw2, _) = self.settings_btn.measure(&mut self.fonts, s); self.settings_btn.rect = Rect::new(self.new_job.rect.x0 - 8.0 * s - sw2, self.new_job.rect.y0, self.new_job.rect.x0 - 8.0 * s, self.new_job.rect.y1); self.settings_btn.paint(scene, &mut self.fonts, s, now);
+          let (cw2, _) = self.cleanup_btn.measure(&mut self.fonts, s); self.cleanup_btn.rect = Rect::new(self.settings_btn.rect.x0 - 8.0 * s - cw2, self.new_job.rect.y0, self.settings_btn.rect.x0 - 8.0 * s, self.new_job.rect.y1); self.cleanup_btn.paint(scene, &mut self.fonts, s, now); }
         self.menu.paint(scene, &mut self.fonts, s);
         if let Some((d, _)) = self.confirm.as_mut() { let view_rect = Rect::new(0.0, 0.0, w, h); d.layout(&mut self.fonts, view_rect, s); d.paint(scene, &mut self.fonts, s, view_rect, now); }
         // the New Job card, over everything; a submission that went through closes it and the new job is the one in hand
         if let Some(f) = self.form.as_mut() { if let Some(id) = f.answered() { self.form = None; self.sel = BTreeSet::from([id.clone()]); self.cursor = Some(id); } }
         if let Some(f) = self.form.as_mut() { f.paint(scene, &mut self.fonts, Rect::new(0.0, 0.0, w, h), s, now); }
         if let Some(c) = self.settings.as_mut() { c.paint(scene, &mut self.fonts, Rect::new(0.0, 0.0, w, h), s, now); }
+        if let Some(c) = self.cleanup.as_mut() { c.paint(scene, &mut self.fonts, Rect::new(0.0, 0.0, w, h), s, now); }
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
         let window = self.window.clone(); self.presenter.draw(|| window.pre_present_notify());
         // (scripted looks: MR_SHOT=<file.png> saves the window as drawn, once, MR_SHOT_AFTER seconds - 8 - after it was made)
@@ -420,5 +426,5 @@ impl Ui {
             let bytes: Vec<u8> = (0..(w * h) as usize).flat_map(|i| [oetf(px[i * 4]), oetf(px[i * 4 + 1]), oetf(px[i * 4 + 2])]).collect();
             if let Ok(f) = std::fs::File::create(&path) { let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h); e.set_color(png::ColorType::Rgb); e.set_depth(png::BitDepth::Eight); let _ = e.write_header().and_then(|mut wr| wr.write_image_data(&bytes)); } } } }
     }
-    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.log_bar.animating(now) || self.files_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) || self.form.as_ref().is_some_and(|f| f.animating(now)) || self.settings.as_ref().is_some_and(|c| c.animating(now)) }
+    pub fn animating(&self) -> bool { let now = Instant::now(); self.jobs_bar.animating(now) || self.peers_bar.animating(now) || self.grid_bar.animating(now) || self.chunks_bar.animating(now) || self.log_bar.animating(now) || self.files_bar.animating(now) || self.strip.iter().any(|(b, _)| b.animating(now)) || self.confirm.as_ref().is_some_and(|(d, _)| d.animating(now)) || self.form.as_ref().is_some_and(|f| f.animating(now)) || self.settings.as_ref().is_some_and(|c| c.animating(now)) || self.cleanup.as_ref().is_some_and(|c| c.animating(now)) }
 }

@@ -4,6 +4,7 @@
 //!   minRender --leash -- <program> <args...>     the leash of one render (started by the node, never by hand)
 //! `--wait-pid <n>` is how the application starts itself again: the copy waits for process n to be gone.
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod cleanup;
 mod form;
 mod http;
 mod instance;

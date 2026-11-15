@@ -152,6 +152,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_state ON chunks(state);").map_err(|e| e.to
         };
         Some((r, fx))
     }
+    /// Every job with its state and how many chunks it has - the archived ones too, which no list shows (for Farm Cleanup).
+    pub fn all_jobs(&self) -> Vec<(String, String, i64)> { self.db.prepare("SELECT j.job_id, j.current_state, (SELECT COUNT(*) FROM chunks c WHERE c.job_id = j.job_id AND c.state != 'stopped') FROM jobs j ORDER BY j.job_id").and_then(|mut s| s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect()).unwrap_or_default() }
     fn detail(&self, id: &str) -> Option<Value> {
         let (state, priority, at, m): (String, i64, i64, String) = self.db.query_row("SELECT current_state, priority, submitted_at_ms, manifest_json FROM jobs WHERE job_id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional().ok().flatten()?;
         let chunks: Vec<Value> = self.db.prepare("SELECT id, frame_start, frame_end, state, assigned_to, assigned_at_ms, completed_at_ms, retry_count, completed_frames, failed_on FROM chunks WHERE job_id = ? ORDER BY frame_start").and_then(|mut s| s.query_map([id], |r| Ok(json!({
