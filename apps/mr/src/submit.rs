@@ -76,7 +76,7 @@ pub fn bake(template: &Value, values: &[String], exe: &str, os: &str, id: &str, 
 }
 fn progress(p: &Value) -> Value { json!({ "patterns": p.get("patterns").cloned().unwrap_or(json!([])), "error_patterns": p.get("error_patterns").cloned().unwrap_or(json!([])), "completion_pattern": p.get("completion_pattern").cloned().unwrap_or(Value::Null) }) }
 /// The folder a path is in, as the system this runs on reads paths.
-fn parent(p: &str) -> String { let cut = if cfg!(windows) { p.rfind(['/', '\\']) } else { p.rfind('/') }; match cut { Some(0) => p[..1].to_string(), Some(i) => p[..i].to_string(), None => String::new() } }
+pub fn parent(p: &str) -> String { let cut = if cfg!(windows) { p.rfind(['/', '\\']) } else { p.rfind('/') }; match cut { Some(0) => p[..1].to_string(), Some(i) => p[..i].to_string(), None => String::new() } }
 /// A manifest made on macOS is put in the form manifests travel in (7.6): every flag value that is not empty, and the
 /// output folder, from macOS to Windows through this node's mappings; it then says it was submitted on Windows.
 pub fn canonical(mut m: Value, mappings: &[Mapping]) -> Value {

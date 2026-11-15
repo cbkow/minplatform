@@ -375,6 +375,39 @@ impl Node {
                 match me.to_leader("/api/jobs", &json!({ "manifest": m, "priority": priority }).to_string()) { Some((200, _)) => { me.refresh_jobs_view(); Ok(id) } Some((_, body)) => Err(vec![String::from_utf8_lossy(&body).into_owned()]), None => Err(vec!["Leader did not respond".to_string()]) } } } };
             *done.lock().unwrap() = Some(r); });
     }
+    /// A job's manifest for the editor, off the window's thread: asked of the leader, its paths turned into this system's.
+    pub fn fetch_manifest(self: &Arc<Self>, id: String, into: Arc<Mutex<Option<Result<Value, String>>>>) {
+        let me = self.clone(); std::thread::spawn(move || { let path = format!("/api/jobs/{id}/manifest");
+            let got = if me.lead.lock().unwrap().is_some() { me.lead_answer("GET", &path, b"").map(|r| (r.status, r.body)) } else { me.leader().and_then(|l| http::call(&l, "GET", &path, Some(&me.secret), None, Duration::from_secs(3), Duration::from_secs(10))) };
+            let r = match got { None => Err("Leader unreachable \u{2014} check the farm connection".to_string()), Some((404, _)) => Err("The job no longer exists on the leader".to_string()),
+                Some((200, b)) => serde_json::from_slice::<Value>(&b).ok().and_then(|v| v.get("manifest").filter(|m| m.is_object()).cloned()).map(|m| me.translated(m, OS)).ok_or("The stored job manifest is invalid".to_string()),
+                Some((s, b)) => Err(format!("Couldn't fetch the job manifest: {s} {}", String::from_utf8_lossy(&b))) };
+            *into.lock().unwrap() = Some(r); });
+    }
+    /// An edited manifest goes to the leader (2.5 row 22) in one of its three modes. A leader that does not answer at all:
+    /// the edit is left in the share's command box (6.6), where a leader applies it within 15 minutes.
+    pub fn apply_edit(self: &Arc<Self>, mut m: Value, mode: &'static str, priority: i64, done: Arc<Mutex<Option<Result<String, Vec<String>>>>>) {
+        let me = self.clone(); std::thread::spawn(move || { if cfg!(target_os = "macos") { m = crate::submit::canonical(m, &me.mappings); } let id = m["job_id"].as_str().unwrap_or("").to_string();
+            let r = match me.to_leader(&format!("/api/jobs/{id}/edit"), &json!({ "manifest": m, "mode": mode, "priority": priority }).to_string()) {
+                Some((200, _)) => { me.refresh_jobs_view(); Ok(id) }
+                Some((404, b)) => Err(if String::from_utf8_lossy(&b).contains("job_not_found") { "The job no longer exists on the leader".to_string() } else { "The leader is running an older version without job editing \u{2014} update the leader node".to_string() }),
+                Some((503, _)) => Err("The leader's database isn't ready \u{2014} try again shortly".to_string()),
+                Some((400, b)) => Err(format!("Edit rejected: {}", serde_json::from_slice::<Value>(&b).ok().and_then(|v| v["detail"].as_str().map(str::to_string)).unwrap_or_default())),
+                Some((s, _)) => Err(format!("Leader error: {s}")),
+                None => { let at = now_ms(); let stem = format!("{at}_edit_{id}_{}", me.id); let dir = me.farm.join("commands"); let _ = std::fs::create_dir_all(&dir);
+                    let text = serde_json::to_string_pretty(&json!({ "type": "job_edit", "command_id": stem, "job_id": id, "manifest": m, "mode": mode, "priority": priority, "issued_at_ms": at, "issued_by": me.id })).unwrap_or_default();
+                    let tmp = dir.join(format!("{stem}.tmp")); if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, dir.join(format!("{stem}.json"))).is_ok() { Err("Leader unreachable \u{2014} edit queued to the farm and applies when the leader reconnects".to_string()) } else { Err("No response from the leader \u{2014} check the farm connection and try again".to_string()) } } };
+            *done.lock().unwrap() = Some(r.map_err(|e| vec![e])); });
+    }
+    /// A job made from another's manifest (a chunk's frames as a job of their own): a new id from `name`, this node as
+    /// its submitter, now as its time - then to the leader as any submission.
+    pub fn submit_manifest(self: &Arc<Self>, mut m: Value, name: String, priority: i64, done: Arc<Mutex<Option<Result<String, Vec<String>>>>>) {
+        let me = self.clone(); std::thread::spawn(move || {
+            let r = match crate::submit::slug(&name, &me.farm) { None => Err(vec!["Job name produces an empty slug".to_string()]), Some(id) => {
+                m["job_id"] = json!(id); m["submitted_by"] = json!(me.id); m["submitted_at_ms"] = json!(now_ms()); if cfg!(target_os = "macos") { m = crate::submit::canonical(m, &me.mappings); }
+                match me.to_leader("/api/jobs", &json!({ "manifest": m, "priority": priority }).to_string()) { Some((200, _)) => { me.refresh_jobs_view(); Ok(id) } Some((_, body)) => Err(vec![String::from_utf8_lossy(&body).into_owned()]), None => Err(vec!["Leader did not respond".to_string()]) } } };
+            *done.lock().unwrap() = Some(r); });
+    }
     /// What the window asks of another node (the peers' menu): "stop", "start", "restart" - said to that node; "unsuspend" -
     /// said to the leader; "signal" - the restart file put in the node's folder on the share, for a node that does not answer.
     pub fn peer_command(self: &Arc<Self>, ids: Vec<String>, what: &'static str) {
