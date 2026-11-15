@@ -42,7 +42,8 @@ pub struct Node {
     pub id: String, data: PathBuf, farm: PathBuf, secret: String, port: u16, ip: String, tags: Vec<String>, hostname: String, cores: usize, ram_mb: u64,
     stopped: AtomicBool, pub stop: Arc<AtomicBool>, peers: Mutex<BTreeMap<String, Peer>>, work: Mutex<Work>, /// reports to the leader, in order: (path, body)
     reports: Mutex<VecDeque<(String, String)>>, wrote_endpoint: Mutex<Option<Instant>>, /// the database and the queue, while this node leads
-    lead: Mutex<Option<Lead>>, /// the heartbeat's socket and port, when heartbeats are on (1.6)
+    lead: Mutex<Option<Lead>>, /// renders go to a folder of this machine first (4.11; read at the farm's start)
+    staging: bool, /// the heartbeat's socket and port, when heartbeats are on (1.6)
     udp: Option<(std::net::UdpSocket, u16)>, /// submission files that were dealt with and could not be moved away
     submitted: Mutex<std::collections::BTreeSet<String>>, /// this machine's table of shared roots (5.3)
     mappings: Vec<min_paths::map::Mapping>,
@@ -86,7 +87,7 @@ impl Node {
         let tags: Vec<String> = cfg["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
         Ok(Arc::new(Node { id, data: data.to_path_buf(), farm, secret, port: cfg["http_port"].as_u64().unwrap_or(8420) as u16, ip: advertised_ip(cfg["ip_override"].as_str().unwrap_or(""), root), tags, hostname: host_name(),
             cores: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), ram_mb: ram_mb(), stopped: AtomicBool::new(cfg["node_stopped"].as_bool().unwrap_or(false)), stop: Arc::new(AtomicBool::new(false)),
-            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None),
+            peers: Mutex::new(BTreeMap::new()), work: Mutex::new(Work::default()), reports: Mutex::new(VecDeque::new()), wrote_endpoint: Mutex::new(None), lead: Mutex::new(None), staging: cfg["staging_enabled"].as_bool().unwrap_or(false),
             udp: if cfg["udp_enabled"].as_bool().unwrap_or(true) { let port = cfg["udp_port"].as_u64().unwrap_or(4243) as u16; match heartbeat_socket(port) { Ok(s) => Some((s, port)), Err(e) => { eprintln!("heartbeats are off (the socket: {e}); peers are found by the share and polled"); None } } } else { None }, submitted: Mutex::new(Default::default()),
             mappings: cfg["path_mappings"].as_array().map(|a| a.iter().map(|m| { let s = |k: &str| m[k].as_str().unwrap_or("").to_string(); min_paths::map::Mapping { id: String::new(), label: s("label"), win: s("win"), mac: s("mac"), lin: s("lin"), enabled: m["enabled"].as_bool().unwrap_or(true) } }).collect()).unwrap_or_default() }))
     }
@@ -240,7 +241,7 @@ impl Node {
             active: w.running.as_ref().map(|r| (r.job.clone(), if r.start == r.end { format!("f{}", r.start) } else { format!("f{}-{}", r.start, r.end) })) }); }
         let t = Instant::now(); let fx = match self.lead.lock().unwrap().as_mut() { Some(l) => l.cycle(&nodes, &self.farm), None => return };
         if t.elapsed() > Duration::from_millis(500) { crate::share::log("WARN", "dispatch", &format!("the leader's cycle took {} ms", t.elapsed().as_millis())); }
-        self.effects(fx);
+        self.effects(fx); self.commands();
     }
     /// The node is stopped or started (4.12): kept in the config; a render under way is ended and reported as failed.
     fn set_stopped(&self, on: bool) {
@@ -290,7 +291,12 @@ impl Node {
         let targets: Vec<(String, String, u64)> = self.peers.lock().unwrap().iter().filter(|(_, p)| !(p.udp() && p.record.as_ref().is_some_and(|r| !r["hostname"].as_str().unwrap_or("").is_empty()) && now_ms().saturating_sub(p.last_seen_ms) < 9000))
             .map(|(id, p)| (id.clone(), p.endpoint.clone(), p.rtt_ms.map(|r| (4.0 * r) as u64).unwrap_or(2000).clamp(2000, 8000))).collect();
         for (id, endpoint, wait) in targets {
-            let t = Instant::now(); let got = http::call(&endpoint, "GET", "/api/status", None, None, Duration::from_millis(wait), Duration::from_millis(wait + 1000)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).filter(peer_record_is_sound);
+            let t = Instant::now(); let got = http::call(&endpoint, "GET", "/api/status", None, None, Duration::from_millis(wait), Duration::from_millis(wait + 1000)).filter(|(s, _)| *s == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok()).filter(peer_record_is_sound)
+                // An answer from ANOTHER node is no answer from this one. (A machine whose data folder was emptied comes
+                // back under a new id at the old address, and its old entry stays in the phonebook. 0.5.x takes the
+                // newcomer's answer for the old node's: the old id looks alive, is given chunks, and every report for
+                // them is refused because it comes from the new id. Seen 2026-11-14.)
+                .filter(|r| r["node_id"].as_str().is_none_or(|n| n == id));
             let mut peers = self.peers.lock().unwrap(); let Some(p) = peers.get_mut(&id) else { continue };
             match got { Some(mut r) => { if let Some(e) = r["endpoint"].as_str() { p.endpoint = e.to_string(); } r["is_local"] = json!(false);
                     // what a heartbeat said most lately stands over the poll's answer for readiness, and for health while the poll says "ok"
@@ -322,8 +328,13 @@ impl Node {
         let m = &a.manifest; let job = m["job_id"].as_str().unwrap_or("").to_string();
         let tokens = |s: &str| s.replace("{frame}", &a.start.to_string()).replace("{chunk_start}", &a.start.to_string()).replace("{chunk_end}", &a.end.to_string());
         let exe = m["cmd"][OS].as_str().unwrap_or("").to_string();
+        // Local staging (4.11), when this node has it on and the job names an output folder: the render writes to a folder
+        // of this machine, and the files go to the output folder when the chunk is done.
+        let out_dir = m["output_dir"].as_str().filter(|d| !d.is_empty()).map(PathBuf::from);
+        let staging = out_dir.as_ref().filter(|_| self.staging).map(|_| self.data.join("staging").join(&job).join(format!("{:06}-{:06}", a.start, a.end))).filter(|d| std::fs::create_dir_all(d).is_ok());
         let mut args: Vec<String> = Vec::new();
-        for f in m["flags"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) { if let Some(n) = f["flag"].as_str().filter(|n| !n.is_empty()) { args.push(tokens(n)); } if let Some(v) = f["value"].as_str() { args.push(tokens(v)); } }
+        for f in m["flags"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) { if let Some(n) = f["flag"].as_str().filter(|n| !n.is_empty()) { args.push(tokens(n)); }
+            if let Some(v) = f["value"].as_str() { match (&staging, f["is_output"] == json!(true)) { (Some(st), true) => args.push(st.join(v.rsplit(['/', '\\']).next().unwrap_or(v)).to_string_lossy().into_owned()), _ => args.push(tokens(v)) } } }
         let report = |kind: &str, extra: Value| { let mut v = json!({ "node_id": self.id, "job_id": job, "frame_start": a.start, "frame_end": a.end }); if let Some(e) = a.epoch { v["edit_epoch"] = json!(e); }
             for (k, x) in extra.as_object().unwrap() { v[k] = x.clone(); } self.reports.lock().unwrap().push_back((format!("/api/dispatch/{kind}"), v.to_string())); };
         let failed = || report("failed", json!({ "error": "" }));
@@ -375,10 +386,42 @@ impl Node {
         match (cut, status.and_then(|s| s.code())) {
             (Some(Cut::Abandon), _) => log("abandoned: nothing is reported"),
             (Some(Cut::Fail), _) => failed(),
-            (None, Some(0)) => { let _ = send_frames(&mut frames); report("complete", json!({ "elapsed_ms": 0, "exit_code": 0 })); log("chunk complete"); }
+            (None, Some(0)) => { let _ = send_frames(&mut frames);
+                match (staging, out_dir) {
+                    // staged files are delivered before the chunk is called complete; a delivery that fails is tried again
+                    // every 30 s for ten minutes with the node free for other work, then the chunk is reported failed and
+                    // the files stay; a job that is gone meanwhile ends the tries without a report
+                    (Some(st), Some(out)) => if deliver(&st, &out) { report("complete", json!({ "elapsed_ms": 0, "exit_code": 0 })); log("chunk complete (its files delivered)"); } else {
+                        crate::share::log("WARN", "render", "the chunk's files could not be delivered to the output folder: they are kept and the delivery is tried again");
+                        let me = self.clone(); let (job, mut v) = (job.clone(), json!({ "node_id": self.id, "job_id": job, "frame_start": a.start, "frame_end": a.end })); if let Some(e) = a.epoch { v["edit_epoch"] = json!(e); }
+                        std::thread::spawn(move || { let t = Instant::now(); loop { for _ in 0..300 { if me.stop.load(Ordering::Relaxed) { return } std::thread::sleep(Duration::from_millis(100)); }
+                            if me.job_is_gone(&job) { return }
+                            if deliver(&st, &out) { v["elapsed_ms"] = json!(0); v["exit_code"] = json!(0); me.reports.lock().unwrap().push_back(("/api/dispatch/complete".into(), v.to_string())); return }
+                            if t.elapsed() > Duration::from_secs(600) { v["error"] = json!(""); me.reports.lock().unwrap().push_back(("/api/dispatch/failed".into(), v.to_string())); return } } }); },
+                    _ => { report("complete", json!({ "elapsed_ms": 0, "exit_code": 0 })); log("chunk complete"); } } }
             (None, code) => { log(format!("the renderer ended with {code:?}: failed")); failed(); }
         }
         self.idle();
+    }
+    /// The leader's list no longer has the job (asked of the leader, or of this node's own queue when it leads).
+    fn job_is_gone(self: &Arc<Self>, job: &str) -> bool {
+        let list = if self.lead.lock().unwrap().is_some() { self.lead_answer("GET", "/api/jobs", b"").map(|r| r.body) } else { self.leader().and_then(|l| http::call(&l, "GET", "/api/jobs", Some(&self.secret), None, Duration::from_millis(500), Duration::from_secs(1))).filter(|(s, _)| *s == 200).map(|(_, b)| b) };
+        list.and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v.as_array().map(|a| !a.iter().any(|j| j["job_id"].as_str() == Some(job)))).unwrap_or(false)
+    }
+    /// The leader's side of the command drop box (6.6): job edits a node could not get to its leader, left on the share.
+    /// Each is applied in the order of its name (its time), or set aside when it is not an edit or is more than fifteen
+    /// minutes old; either way it goes to `processed/`, where files are kept seven days.
+    fn commands(self: &Arc<Self>) {
+        let dir = self.farm.join("commands"); let Ok(rd) = std::fs::read_dir(&dir) else { return }; let done = dir.join("processed");
+        let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "json")).collect(); files.sort();
+        for f in files {
+            let v = std::fs::read_to_string(&f).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null); let at = v["issued_at_ms"].as_i64().unwrap_or(0);
+            if v["type"] == json!("job_edit") && at > 0 && (now_ms() as i64 - at) <= 15 * 60 * 1000 { if let Some(job) = v["job_id"].as_str() {
+                let body = json!({ "manifest": v["manifest"], "mode": v["mode"].as_str().unwrap_or("continue"), "priority": v["priority"].as_i64().unwrap_or(50) }).to_string();
+                match self.lead_answer("POST", &format!("/api/jobs/{job}/edit"), body.as_bytes()) { Some(r) => log(format!("an edit left on the share was {} ({})", if r.status == 200 { "applied" } else { "refused" }, r.status)), None => return } } }
+            let _ = std::fs::create_dir_all(&done); if std::fs::rename(&f, done.join(f.file_name().unwrap_or_default())).is_err() { let _ = std::fs::remove_file(&f); }
+        }
+        if let Ok(rd) = std::fs::read_dir(&done) { for e in rd.flatten() { if e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 7 * 86400) { let _ = std::fs::remove_file(e.path()); } } }
     }
     fn idle(&self) { let mut w = self.work.lock().unwrap(); w.running = None; w.busy = !w.queue.is_empty(); }
 
@@ -450,6 +493,13 @@ mod tests {
     #[test] fn a_root_ends_on_a_folder_boundary() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "P:\\jobs-old\\a.blend" }] }); assert_eq!(translate_manifest(m, "macos", &maps())["flags"][0]["value"], json!("P:/jobs-old/a.blend")); }
     #[test] fn the_same_system_and_no_mappings_change_nothing() { let m = json!({ "submitted_os": "windows", "flags": [{ "flag": "", "value": "a/b" }] });
         assert_eq!(translate_manifest(m.clone(), "windows", &maps()), m); assert_eq!(translate_manifest(m.clone(), "macos", &[]), m); }
+}
+/// A staged chunk's files go to the output folder (4.11): every file directly in the staging folder, written over what
+/// is there; when all have gone the staging folder is removed. False: the folder could not be made or a copy failed.
+fn deliver(staging: &Path, out: &Path) -> bool {
+    if std::fs::create_dir_all(out).is_err() { return false } let Ok(rd) = std::fs::read_dir(staging) else { return false };
+    for e in rd.flatten().filter(|e| e.path().is_file()) { if std::fs::copy(e.path(), out.join(e.file_name())).is_err() { return false } }
+    let _ = std::fs::remove_dir_all(staging); if let Some(job) = staging.parent() { let _ = std::fs::remove_dir(job); } true
 }
 /// The group every node's heartbeats go to (1.6); the port is a setting.
 const HEARTBEAT_GROUP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(239, 42, 0, 1);

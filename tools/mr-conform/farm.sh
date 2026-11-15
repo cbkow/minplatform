@@ -25,7 +25,7 @@ case "$1" in
     rm -rf "$W"; mkdir -p "$W/share"
     i=1; while [ "$i" -le "$N" ]; do
       d="$(data $i)"; mkdir -p "$d" "$W/n$i/t"
-      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":%s,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" $((8430 + i)) "$UDP_ON" "${MR_UDP:-$((4330 + i))}" "${MR_TAGS:-}" "${MR_MAPPINGS:-}" > "$d/config.json"
+      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":%s,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":'"${MR_STAGING:-false}"',"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" $((8430 + i)) "$UDP_ON" "${MR_UDP:-$((4330 + i))}" "${MR_TAGS:-}" "${MR_MAPPINGS:-}" > "$d/config.json"
       HOME="$W/n$i" TMPDIR="$W/n$i/t" "$MR_HEADLESS" > "$W/n$i/out.log" 2>&1 &
       echo $! >> "$W/pids"; i=$((i + 1)); sleep 1
     done
@@ -35,7 +35,7 @@ case "$1" in
     [ -f "$W/share/MinRender-v2/farm.json" ] || { echo "start a farm first (the port joins a farm; it does not make one)"; exit 1; }
     BIN="${MR_PORT:-$PWD/target/release/minRender}"; [ -x "$BIN" ] || { echo "build it first: cargo build --release -p mr"; exit 1; }
     d="$W/p/data"; mkdir -p "$d"
-    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":%s,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" "$UDP_ON" "${MR_UDP:-4339}" "${MR_PORT_TAGS-\"noleader\"}" "${MR_MAPPINGS:-}" > "$d/config.json"
+    printf '{"sync_root":"%s","http_port":8439,"ip_override":"127.0.0.1","udp_enabled":%s,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":'"${MR_STAGING:-false}"',"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" "$UDP_ON" "${MR_UDP:-4339}" "${MR_PORT_TAGS-\"noleader\"}" "${MR_MAPPINGS:-}" > "$d/config.json"
     "$BIN" --data "$d" --no-window < /dev/null > "$W/p/out.log" 2>&1 &
     echo $! >> "$W/pids"; echo "the port joined on port 8439; its config: $d/config.json" ;;
   ports)
@@ -45,7 +45,7 @@ case "$1" in
     rm -rf "$W"; mkdir -p "$W/share"
     i=1; while [ "$i" -le "$N" ]; do
       d="$W/p$i/data"; mkdir -p "$d"
-      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":%s,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":false,"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" $((8440 + i)) "$UDP_ON" "${MR_UDP:-$((4340 + i))}" "${MR_TAGS:-}" "${MR_MAPPINGS:-}" > "$d/config.json"
+      printf '{"sync_root":"%s","http_port":%d,"ip_override":"127.0.0.1","udp_enabled":%s,"udp_port":%d,"node_stopped":false,"tags":[%s],"staging_enabled":'"${MR_STAGING:-false}"',"show_notifications":false,"auto_start_agent":true,"path_mappings":[%s]}\n' "$W/share" $((8440 + i)) "$UDP_ON" "${MR_UDP:-$((4340 + i))}" "${MR_TAGS:-}" "${MR_MAPPINGS:-}" > "$d/config.json"
       "$BIN" --data "$d" --no-window < /dev/null > "$W/p$i/out.log" 2>&1 &
       echo $! >> "$W/pids"; i=$((i + 1)); sleep 1
     done
