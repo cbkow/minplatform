@@ -46,6 +46,8 @@ pub trait TableSource {
 
 /// Logical px.
 pub const ROW_HEIGHT: f64 = 24.0; pub const HEADER_HEIGHT: f64 = 24.0;
+/// How far (logical px) a press moves before it is a drag.
+pub const DRAG_SLOP: f64 = 6.0;
 const INDENT: f64 = 16.0; const SLOT: f64 = 16.0; const ICON: f64 = 16.0; const PAD: f64 = 8.0; const GRIP: f64 = 4.0; const GUTTER: f64 = 12.0;
 
 /// Where the columns lie in a width of `total`: (x0, x1) for each column SHOWN. The first takes what the others
@@ -98,10 +100,12 @@ pub struct Table {
     hover: Option<usize>, hover_head: Option<usize>, hover_div: Option<usize>, press_head: Option<usize>,
     /// the divider in hand: its column, the pointer's x at the press, the widths then
     drag: Option<(usize, f64, Vec<f64>)>, dbl: DoubleClick,
+    /// a primary press on a row that may become a drag: (the row, where, whether it was already chosen)
+    press: Option<(usize, f64, f64, bool)>,
 }
 
 impl Table {
-    pub fn new(columns: Vec<Column>) -> Table { Table { columns, sort: (0, true), sel: Selection::new(), bar: ScrollBar::default(), rect: Rect::ZERO, focused: false, rows: 0, scale: 1.0, cols: vec![], hover: None, hover_head: None, hover_div: None, press_head: None, drag: None, dbl: DoubleClick::default() } }
+    pub fn new(columns: Vec<Column>) -> Table { Table { columns, sort: (0, true), sel: Selection::new(), bar: ScrollBar::default(), rect: Rect::ZERO, focused: false, rows: 0, scale: 1.0, cols: vec![], hover: None, hover_head: None, hover_div: None, press_head: None, drag: None, dbl: DoubleClick::default(), press: None } }
     fn widths(&self) -> Vec<f64> { self.columns.iter().map(|c| c.width).collect() }
     fn mins(&self) -> Vec<f64> { self.columns.iter().map(|c| c.min).collect() }
     /// The width the columns share, logical px (the scroll bar's gutter is left free).
@@ -157,6 +161,13 @@ impl Table {
         let before = (self.hover, self.hover_head, self.hover_div, self.press_head);
         match *e {
             Event::Move { x, y } => { self.hover_div = self.div_at(x, y); self.hover_head = if self.hover_div.is_some() { None } else { self.head_at(x, y) }; self.hover = self.row_at(x, y); }
+            _ => {}
+        }
+        if matches!(e, Event::Down { .. }) { self.press = None; }
+        // a press on a row, moved: the drag begins (once)
+        if let (Event::Move { x, y }, Some((i, x0, y0, _))) = (*e, self.press) { if (x - x0).hypot(y - y0) > DRAG_SLOP * self.scale { self.press = None; out.push(ViewEvent::DragStart(i)); } }
+        match *e {
+            Event::Move { .. } => {}
             Event::Leave => { self.hover = None; self.hover_head = None; self.hover_div = None; self.press_head = None; }
             Event::Down { x, y, button } if self.hit(x, y) => {
                 if let (Some(d), Button::Primary) = (self.div_at(x, y), button) { self.drag = Some((d, x, self.widths())); return (out, true) }
@@ -166,7 +177,13 @@ impl Table {
                         (Some(i), Button::Primary) => {
                             let info = src.row(i);
                             if info.expandable && !info.plain && self.triangle(i, info.indent).contains(kurbo::Point::new(x, y)) { self.dbl.forget(); out.push(if info.expanded { ViewEvent::Collapse(i) } else { ViewEvent::Expand(i) }); }
-                            else { if self.sel.click(i, mods) { out.push(ViewEvent::SelectionChanged); } if self.dbl.press(i, (x, y), now, self.scale) && !mods.shift && !mods.cmd { out.push(ViewEvent::Activated(i)); } }
+                            else {
+                                // a plain press on a row that is ALREADY chosen keeps the choice - a drag carries all of it; let go without moving, that row alone is chosen
+                                let was = self.sel.is_selected(i) && !mods.shift && !mods.cmd;
+                                if !was && self.sel.click(i, mods) { out.push(ViewEvent::SelectionChanged); }
+                                if !mods.shift && !mods.cmd { self.press = Some((i, x, y, was)); }
+                                if self.dbl.press(i, (x, y), now, self.scale) && !mods.shift && !mods.cmd { out.push(ViewEvent::Activated(i)); }
+                            }
                         }
                         (Some(i), Button::Secondary) => { if !self.sel.is_selected(i) && self.sel.select_only(i) { out.push(ViewEvent::SelectionChanged); } out.push(ViewEvent::ContextMenu(Some(i), (x, y))); }
                         (None, Button::Primary) => { self.dbl.forget(); if !mods.shift && !mods.cmd && self.sel.clear() { out.push(ViewEvent::SelectionChanged); } }
@@ -176,6 +193,7 @@ impl Table {
                 }
             }
             Event::Up { x, y, button: Button::Primary } => {
+                if let Some((i, _, _, was)) = self.press.take() { if was && self.sel.select_only(i) { out.push(ViewEvent::SelectionChanged); } }
                 if let Some(c) = self.press_head.take() { if self.head_at(x, y) == Some(c) { self.sort = if self.sort.0 == c { (c, !self.sort.1) } else { (c, true) }; out.push(ViewEvent::SortChanged(self.sort.0, self.sort.1)); } }
             }
             _ => {}
@@ -314,6 +332,22 @@ mod tests {
         assert_eq!(visible_rows(2_399_760.0, 240.0, 24.0, 100_000), (99_990, 100_000));
         assert_eq!(visible_rows(0.0, 240.0, 24.0, 3), (0, 3)); assert_eq!(visible_rows(0.0, 0.0, 24.0, 3), (0, 0));
         assert_eq!(reveal_offset(0.0, 240.0, 24.0, 5), 0.0); assert_eq!(reveal_offset(0.0, 240.0, 24.0, 10), 24.0); assert_eq!(reveal_offset(480.0, 240.0, 24.0, 3), 72.0);
+    }
+    #[test]
+    fn a_press_moved_is_a_drag_and_carries_the_whole_choice() {
+        let now = Instant::now(); let src = Rows(vec![("a", 0, false, false), ("b", 0, false, false), ("c", 0, false, false)]); let mut t = table(3);
+        let (down, up, mv) = (|x: f64, y: f64| Event::Down { x, y, button: Button::Primary }, |x: f64, y: f64| Event::Up { x, y, button: Button::Primary }, |x: f64, y: f64| Event::Move { x, y });
+        // rows 0..2 chosen (row i lies at y 24 + 24 i); a plain press on one of them keeps all three
+        t.sel.resize(3); t.sel.select_all(); assert_eq!(t.event(&down(200.0, 60.0), &src, NONE, now).0, []); assert!(t.sel.is_selected(0) && t.sel.is_selected(2));
+        // moved a little: nothing; past the slop: the drag begins, once
+        assert_eq!(t.event(&mv(203.0, 61.0), &src, NONE, now).0, []); assert_eq!(t.event(&mv(212.0, 66.0), &src, NONE, now).0, [ViewEvent::DragStart(1)]); assert_eq!(t.event(&mv(260.0, 90.0), &src, NONE, now).0, []);
+        assert!(t.sel.is_selected(0) && t.sel.is_selected(1) && t.sel.is_selected(2), "the drag carries the whole choice");
+        // let go WITHOUT moving on a row of a larger choice: that row alone
+        let later = now + std::time::Duration::from_secs(2);
+        assert_eq!(t.event(&down(200.0, 60.0), &src, NONE, later).0, []); assert_eq!(t.event(&up(200.0, 60.0), &src, NONE, later).0, [ViewEvent::SelectionChanged]); assert!(t.sel.is_selected(1) && !t.sel.is_selected(0) && !t.sel.is_selected(2));
+        // a press on a row that is not chosen chooses it, and it can be dragged at once
+        let later = later + std::time::Duration::from_secs(2);
+        assert_eq!(t.event(&down(200.0, 84.0), &src, NONE, later).0, [ViewEvent::SelectionChanged]); assert_eq!(t.event(&mv(230.0, 84.0), &src, NONE, later).0, [ViewEvent::DragStart(2)]); assert!(t.sel.is_selected(2) && !t.sel.is_selected(1));
     }
     #[test]
     fn presses_choose_activate_open_and_sort() {

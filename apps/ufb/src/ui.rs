@@ -29,6 +29,8 @@ use winit31::window::Window;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Out { /// the clipboard is the application's to reach: files to put on it (`cut`: they are moved when pasted); a paste of files asked for
     /// (`mv`: "Move Item Here"); the text field in hand copies (`cut`) or pastes
+    /// the system's drag of these files begins (a press on them was moved)
+    Drag(Vec<PathBuf>),
     CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste,
     NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
@@ -71,6 +73,8 @@ pub struct Ui {
     /// the entry to rename as soon as its folder is read again (a new folder goes straight into its name)
     rename: Option<Renaming>, dialog: Option<(min_ui::dialog::Dialog, Asked)>, toast: min_ui::toast::Toast, rename_next: Option<PathBuf>,
     /// the engine's questions that wait for the one that is open; the running operation in the status bar: its cancel button, the place a click opens the list at, the list open
+    /// drags of files: where a drop can go (written every frame), what the layer left for the loop
+    pub dnd: crate::dnd::Handle,
     asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool,
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
     menu_for: Option<(Option<usize>, PathBuf)>,
@@ -104,7 +108,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, dnd: Default::default(), asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -119,6 +123,10 @@ impl Ui {
     /// Take in what the worker threads sent. True when anything came.
     pub fn poll(&mut self) -> bool {
         let mut any = self.icons.poll(); any |= self.thumbs.poll();
+        // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
+        let (drops, ended) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended)) };
+        for d in drops { any = true; crate::ops::submit(self.id, crate::ops::Op::Transfer { paths: d.paths, dest: d.dest, mv: d.mv }); }
+        if ended { any = true; let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
         while let Ok(m) = self.rx.try_recv() {
             any = true;
             match m {
@@ -395,6 +403,8 @@ impl Ui {
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
         for pane in self.panes.iter_mut().take(n) { pane.pointer(e, self.mods, now, &port); }
         for i in 0..n { if let Some((row, at)) = self.panes[i].menu_at.take() { self.ask_menu(i, row, at); } }
+        // a press on what is chosen was moved: the system's drag of it begins (the layer needs the pointer's event to be the current one: this is still inside it)
+        for i in 0..n { if std::mem::take(&mut self.panes[i].drag_out) { let paths: Vec<PathBuf> = self.panes[i].chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect(); if !paths.is_empty() { self.out.push(Out::Drag(paths)); } } }
         let resizing = self.over_gap.is_some() || self.panes.iter().take(n).any(|p| p.resizing());
         let text = at.is_some_and(|p| (self.focus == Focus::Path && self.path_rect.contains(p)) || self.search.rect.contains(p));
         self.set_cursor(if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
@@ -481,6 +491,15 @@ impl Ui {
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
+            // a drag of a file, as the layer would tell it (no drag is performed): `over:<row>:<path>[:copy|move]` shows where it would land,
+            // `drop:<row|bg|side<n>>:<path>[:copy|move]` lets it go there - on a row's folder, the pane itself, a sidebar row
+            "over" | "drop" => { let mut it = arg.splitn(3, ':'); let (target, path, keys) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+                let at = if target == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(k) = target.strip_prefix("side").and_then(num) { self.side_rows.get(k).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(target).and_then(|k| self.pane().row_point(k)) };
+                if let Some((x, y)) = at { use min_dnd::{DragEvent, Notice, Payload, Phase, COPY, LINK, MOVE};
+                    let allowed = match keys { "copy" => COPY, "move" => MOVE, _ => COPY | MOVE | LINK }; let payload = std::rc::Rc::new(Payload { paths: vec![PathBuf::from(path)], ..Default::default() });
+                    let tell = |phase| crate::dnd::on_notice(&self.dnd, Notice::Drag(DragEvent { win: 0, phase, x, y, allowed, detail: String::new(), mine: None, payload: payload.clone() }));
+                    let op = tell(Phase::Enter); eprintln!("UFB_DEMO: a drag over {target} would be {}", match op { COPY => "a copy", MOVE => "a move", _ => "refused" });
+                    if word == "drop" { tell(Phase::Drop); } } }
             // `copyother` `moveother` (the chosen entries into the other pane's folder) `all` (tick "Apply to all") `stopop` (call the running operation off) `oplist`
             "copyother" => self.command(Cmd::CopyToOther), "moveother" => self.command(Cmd::MoveToOther), "stopop" => crate::ops::cancel(), "oplist" => self.op_list = true,
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
@@ -701,6 +720,15 @@ impl Ui {
         let shown_now = if self.tip_demo.is_some() { now - Duration::from_millis(t::TOOLTIP_DELAY as u64 + 50).min(now.duration_since(self.born)) } else { now };
         self.tips.hover(over.as_ref().map(|(k, r, text)| (*k, *r, text.as_str())), shown_now); self.tips.tick(now); self.tips.paint(scene, fonts, s, Rect::new(0.0, 0.0, w, h), now);
         if let Some(mb) = self.menubar.as_ref() { mb.bar.paint_menus(scene, fonts, s); }
+        // drags of files: where a drop can go, for the layer to answer from (folders in view first, then the panes, the
+        // sidebar's rows, the path's segments); and the place that would take the drag in hand, outlined
+        { let mut zones: Vec<crate::dnd::Zone> = vec![];
+            for p in self.panes.iter().take(n) { zones.extend(p.folder_zones().into_iter().map(|(rect, folder)| crate::dnd::Zone { rect, folder })); }
+            for r in &self.side_rows { if let (Some(path), true) = (&r.path, r.enabled) { let rect = r.rect.intersect(self.side_rect); if rect.width() > 0.0 && rect.height() > 0.0 { zones.push(crate::dnd::Zone { rect, folder: path.clone() }); } } }
+            if self.focus != Focus::Path { for (b, path) in &self.crumbs { if let Some(path) = path { zones.push(crate::dnd::Zone { rect: b.rect, folder: path.clone() }); } } }
+            for p in self.panes.iter().take(n) { zones.push(crate::dnd::Zone { rect: p.rect, folder: p.path().to_path_buf() }); }
+            let mut d = self.dnd.borrow_mut(); d.zones = zones;
+            if let Some(r) = d.hover { let (k, c) = (2.0 * s, t::FOCUS_INDICATOR_COLOR); for q in [Rect::new(r.x0, r.y0, r.x1, r.y0 + k), Rect::new(r.x0, r.y1 - k, r.x1, r.y1), Rect::new(r.x0, r.y0, r.x0 + k, r.y1), Rect::new(r.x1 - k, r.y0, r.x1, r.y1)] { paint::rect(scene, q, c); } } }
         // what went wrong, at the window's foot; an open question over everything
         self.toast.tick(now); self.toast.paint(scene, fonts, Rect::new(0.0, 0.0, w, status.y0), s, now);
         if let Some((d, _)) = self.dialog.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); d.layout(fonts, bounds, s); d.paint(scene, fonts, s, bounds, now); }

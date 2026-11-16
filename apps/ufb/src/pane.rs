@@ -43,6 +43,8 @@ pub struct Pane {
     pub listed: bool,
     /// a context menu was asked for: on a row (already chosen) or on the empty part, at this point (the window shows it)
     pub menu_at: Option<(Option<usize>, (f64, f64))>,
+    /// a press on a chosen entry was moved: the window starts the system's drag of what is chosen
+    pub drag_out: bool,
     pub rect: Rect, scale: f64,
 }
 
@@ -88,7 +90,7 @@ pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -234,6 +236,13 @@ impl Pane {
     pub fn chosen_entries(&self, max: usize) -> Vec<(PathBuf, bool, bool)> {
         self.sel().iter().filter_map(|i| self.model.row(i)).take(max).map(|id| { let n = self.model.node(id); (self.model.path_of(id, self.path()), n.dir, n.package) }).collect()
     }
+    /// The folders in view, each with where its row or tile is: a drop on one goes INTO it.
+    pub fn folder_zones(&self) -> Vec<(Rect, PathBuf)> {
+        let n = self.model.len(); let list = self.mode == Mode::List;
+        let (a, b) = if list { table::visible_rows(self.table.bar.offset, self.table.body().height(), table::ROW_HEIGHT * self.scale, n) } else { self.grid.geometry().visible(self.grid.bar.offset, self.rect.height(), n) };
+        let clip = if list { self.table.body() } else { self.rect };
+        (a..b).filter_map(|i| { let id = self.model.row(i)?; if !self.model.node(id).dir { return None } let r = if list { self.table.row_rect(i) } else { self.grid.cell_rect(i) }.intersect(clip); (r.width() > 0.0 && r.height() > 0.0).then(|| (r, self.model.path_of(id, self.path()))) }).collect()
+    }
     /// The middle of a row, as the pointer would find it (the scripted looks).
     pub fn row_point(&self, row: usize) -> Option<(f64, f64)> { if row >= self.model.len() { return None } let r = if self.mode == Mode::List { self.table.row_rect(row) } else { self.grid.cell_rect(row) }; Some(((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)) }
 
@@ -245,6 +254,7 @@ impl Pane {
             ViewEvent::Expand(row) => self.expand(port, row),
             ViewEvent::Collapse(row) => self.collapse(row),
             ViewEvent::ContextMenu(row, at) => self.menu_at = Some((row, at)),
+            ViewEvent::DragStart(_) => self.drag_out = true,
         } }
     }
     /// A pointer event. True when a repaint is needed.

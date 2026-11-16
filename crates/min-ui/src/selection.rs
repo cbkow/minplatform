@@ -26,6 +26,8 @@ pub enum ViewEvent {
     SortChanged(usize, bool),
     Expand(usize),
     Collapse(usize),
+    /// A press on a row was moved: a drag of what is chosen begins (the row pressed is among it).
+    DragStart(usize),
     /// The secondary button: the row under it (none on the empty part) and where, in window pixels.
     ContextMenu(Option<usize>, (f64, f64)),
 }

@@ -50,6 +50,12 @@ fn key_name(event: &winit::event::KeyEvent) -> String {
 }
 
 impl App {
+    /// What the drag-and-drop layer calls: it answers from what the window last drew (`dnd::on_notice`), asks for a
+    /// frame, and wakes the loop for what a drop left to do. Nothing of the application is borrowed by it.
+    fn sink(ui: &Ui, window: &Arc<Box<dyn Window>>, proxy: &Arc<EventLoopProxy>) -> min_dnd::Sink {
+        let (shared, window, proxy) = (ui.dnd.clone(), window.clone(), proxy.clone());
+        std::rc::Rc::new(move |n| { let op = crate::dnd::on_notice(&shared, n); window.request_redraw(); proxy.wake_up(); op })
+    }
     fn open(&mut self, el: &dyn ActiveEventLoop, path: PathBuf) {
         if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: a window on {}", path.display()); }
         let (w, h) = wanted_size();
@@ -60,13 +66,17 @@ impl App {
             use winit::platform::windows::WindowAttributesWindows; use min_theme::tokens as tk;
             let c8 = |c: min_theme::Color| winit::platform::windows::Color::from_rgb((c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8);
             attrs = attrs.with_theme(Some(winit::window::Theme::Dark));
-            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
+            // (winit's own drag and drop is OFF: a window has one drop target, and it is ours - `min-dnd`)
+            attrs = attrs.with_platform_attributes(Box::new(WindowAttributesWindows::default().with_drag_and_drop(false).with_title_background_color(Some(c8(tk::MENU_BAR_BACKGROUND_COLOR))).with_title_text_color(c8(tk::MENU_BAR_TITLE_COLOR))));
             attrs = attrs.with_visible(false);
         }
         let Ok(window) = el.create_window(attrs) else { eprintln!("UFB: no window could be made"); return }; let window: Arc<Box<dyn Window>> = Arc::new(window);
         // one channel a window: its workers send into it and wake the loop
         let (tx, rx) = channel(); let proxy = self.proxy.clone(); let port = Port { tx, wake: Arc::new(move || proxy.wake_up()) };
         let Some(mut ui) = Ui::new(window.clone(), port, rx, path, self.favorites.clone()) else { eprintln!("UFB: the window's content could not be set up (no renderer)"); return };
+        // the window takes drops of files; files promised by another application are received in a folder of our own first
+        static WINDOWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if let Err(why) = min_dnd::attach(&**window, WINDOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed), &crate::dnd::staging(), Self::sink(&ui, &window, &self.proxy)) { eprintln!("UFB: this window takes no drops: {why}"); }
         if cfg!(windows) { ui.redraw(); window.set_visible(true); }
         window.request_redraw(); let id = window.id(); self.focused = Some(id); self.windows.insert(id, Win { window, ui });
     }
@@ -79,6 +89,12 @@ impl App {
             Out::Close => { self.windows.remove(&id); if self.focused == Some(id) { self.focused = None; } }
             Out::Minimize => if let Some(w) = self.windows.get(&id) { w.window.set_minimized(true); },
             Out::Quit => done = true,
+            // the system's drag of files (we are still inside the pointer's own event, as the layer needs). What may
+            // not be taken away by this build (the belt) is offered as a copy or a link only.
+            Out::Drag(paths) => if let Some(w) = self.windows.get(&id) {
+                let may_take = paths.iter().all(|p| p.parent().is_some_and(crate::ops::allowed_in));
+                let ops = min_dnd::COPY | min_dnd::LINK | if may_take { min_dnd::MOVE } else { 0 };
+                if let Err(why) = min_dnd::start_drag(&**w.window, &paths, crate::dnd::picture(paths.len(), w.window.scale_factor()), ops, Self::sink(&w.ui, &w.window, &self.proxy)) { eprintln!("UFB: the drag did not start: {why}"); } },
             // the clipboard: files onto it and from it; the text of the field in hand
             Out::CopyFiles { paths, cut } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
                 if let Some(cb) = self.clipboard.as_mut() { if cb.set().file_list(&paths).is_ok() { self.cut = if cut { Some(paths) } else { None }; } } }

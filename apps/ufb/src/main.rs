@@ -10,6 +10,7 @@
 //! `UFB_MENU_BAR=1` shows the drawn menu bar on macOS too.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod crumbs;
+mod dnd;
 mod ctxmenu;
 mod format;
 mod history;
@@ -45,6 +46,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--allow-writes <folder>]..."); return }
     let (folder, favorites, writes) = parse(&args, &places::home());
+    // (files promised by another application arrive in a folder of our own first: the engine may take them out of it)
+    let mut writes = writes; let incoming = dnd::staging(); if std::fs::create_dir_all(&incoming).is_ok() { writes.push(incoming); }
     ops::init(&writes);
     shell::run(folder, favorites);
 }

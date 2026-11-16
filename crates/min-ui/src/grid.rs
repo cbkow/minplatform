@@ -69,10 +69,12 @@ pub struct Grid {
     pub rect: Rect,
     pub focused: bool,
     n: usize, scale: f64, geom: Geometry, hover: Option<usize>, dbl: DoubleClick,
+    /// a primary press on a tile that may become a drag: (the tile, where, whether it was already chosen)
+    press: Option<(usize, f64, f64, bool)>,
 }
 
 impl Grid {
-    pub fn new(tile: f64) -> Grid { Grid { tile: tile.clamp(TILE_MIN, TILE_MAX), lines: 2, sel: Selection::new(), bar: ScrollBar::default(), rect: Rect::ZERO, focused: false, n: 0, scale: 1.0, geom: geometry(1.0, tile, 2, 1.0), hover: None, dbl: DoubleClick::default() } }
+    pub fn new(tile: f64) -> Grid { Grid { tile: tile.clamp(TILE_MIN, TILE_MAX), lines: 2, sel: Selection::new(), bar: ScrollBar::default(), rect: Rect::ZERO, focused: false, n: 0, scale: 1.0, geom: geometry(1.0, tile, 2, 1.0), hover: None, dbl: DoubleClick::default(), press: None } }
     /// Place the grid and tell it how many tiles there are (every frame, before `event` / `paint`).
     pub fn layout(&mut self, rect: Rect, n: usize, scale: f64) {
         self.tile = self.tile.clamp(TILE_MIN, TILE_MAX);
@@ -106,11 +108,19 @@ impl Grid {
         let mut out = vec![];
         let (moved, mine) = self.bar.event(e, now); if mine { return (out, true) }
         let before = self.hover;
+        if matches!(e, Event::Down { .. }) { self.press = None; }
         match *e {
-            Event::Move { x, y } => self.hover = self.tile_at(x, y),
+            Event::Move { x, y } => { self.hover = self.tile_at(x, y); if let Some((i, x0, y0, _)) = self.press { if (x - x0).hypot(y - y0) > crate::table::DRAG_SLOP * self.scale { self.press = None; out.push(ViewEvent::DragStart(i)); } } }
+            Event::Up { button: Button::Primary, .. } => { if let Some((i, _, _, was)) = self.press.take() { if was && self.sel.select_only(i) { out.push(ViewEvent::SelectionChanged); } } }
             Event::Leave => self.hover = None,
             Event::Down { x, y, button } if self.hit(x, y) => match (self.tile_at(x, y), button) {
-                (Some(i), Button::Primary) => { if self.sel.click(i, mods) { out.push(ViewEvent::SelectionChanged); } if self.dbl.press(i, (x, y), now, self.scale) && !mods.shift && !mods.cmd { out.push(ViewEvent::Activated(i)); } }
+                (Some(i), Button::Primary) => {
+                    // (as the table: a plain press on a chosen tile keeps the choice for a drag; let go without moving, that tile alone)
+                    let was = self.sel.is_selected(i) && !mods.shift && !mods.cmd;
+                    if !was && self.sel.click(i, mods) { out.push(ViewEvent::SelectionChanged); }
+                    if !mods.shift && !mods.cmd { self.press = Some((i, x, y, was)); }
+                    if self.dbl.press(i, (x, y), now, self.scale) && !mods.shift && !mods.cmd { out.push(ViewEvent::Activated(i)); }
+                }
                 (Some(i), Button::Secondary) => { if !self.sel.is_selected(i) && self.sel.select_only(i) { out.push(ViewEvent::SelectionChanged); } out.push(ViewEvent::ContextMenu(Some(i), (x, y))); }
                 (None, Button::Primary) => { self.dbl.forget(); if !mods.shift && !mods.cmd && self.sel.clear() { out.push(ViewEvent::SelectionChanged); } }
                 (None, Button::Secondary) => out.push(ViewEvent::ContextMenu(None, (x, y))),

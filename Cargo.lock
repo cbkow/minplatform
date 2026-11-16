@@ -2973,6 +2973,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-dnd"
+version = "0.1.0"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+ "windows",
+ "windows-core",
+ "winit 0.31.0-beta.4",
+]
+
+[[package]]
 name = "min-ffmpeg"
 version = "0.1.0"
 dependencies = [
@@ -6241,6 +6255,7 @@ dependencies = [
  "image",
  "kurbo 0.13.1",
  "libc",
+ "min-dnd",
  "min-image",
  "min-present",
  "min-theme",

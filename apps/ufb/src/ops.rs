@@ -218,7 +218,9 @@ pub fn copy_tree(src: &Path, dst: &Path, pr: &mut Progress) -> std::io::Result<(
 fn trash(path: &Path) -> Result<Option<PathBuf>, Option<String>> {
     #[cfg(target_os = "macos")] {
         use objc2_foundation::{NSFileManager, NSString, NSURL};
-        objc2::rc::autoreleasepool(|_| {
+        // (two items of one name sent to the Trash at the same moment - by another application, another thread - can
+        // collide there: the system refuses one; asked again, it finds it a free name)
+        let once = || objc2::rc::autoreleasepool(|_| {
             let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy())); let mut out = None;
             match NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error(&url, Some(&mut out)) {
                 Ok(()) => { let at = out.and_then(|u| u.path()).map(|p| PathBuf::from(p.to_string())); #[cfg(test)] if let Some(at) = &at { tests::TRASHED.with(|t| t.borrow_mut().push(at.clone())); } Ok(at) }
@@ -226,7 +228,9 @@ fn trash(path: &Path) -> Result<Option<PathBuf>, Option<String>> {
                 Err(e) if e.code() == 3328 => Err(None),
                 Err(e) => Err(Some(e.localizedDescription().to_string())),
             }
-        })
+        });
+        let mut r = once(); for _ in 0..3 { if !matches!(r, Err(Some(_))) || std::fs::symlink_metadata(path).is_err() { break } std::thread::sleep(std::time::Duration::from_millis(40)); r = once(); }
+        r
     }
     #[cfg(windows)] {
         use windows::Win32::UI::Shell::{SHFileOperationW, SHFILEOPSTRUCTW};

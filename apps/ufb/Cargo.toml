@@ -17,6 +17,8 @@ path = "src/main.rs"
 winit31 = { workspace = true }
 min-present = { path = "../../crates/min-present" }
 min-ui = { path = "../../crates/min-ui" }
+# real drags of files to and from the system (canon row 472)
+min-dnd = { path = "../../crates/min-dnd" }
 min-theme = { path = "../../crates/min-theme" }
 vello = { workspace = true }
 peniko = { workspace = true }
