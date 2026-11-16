@@ -1,4 +1,4 @@
-//! UFB (the rebuild, Phase 5; canon rows 434-465). Slice 2: a browser to LOOK AROUND in - it reads folders and
+//! UFB (the rebuild, Phase 5; canon rows 434-466). Slice 2: a browser to LOOK AROUND in - it reads folders and
 //! changes nothing in them. Pictures are made in helper copies of this executable (`UFB --thumb-helper`, see
 //! `thumbs`) and kept in a cache of its own (`UFB_THUMB_CACHE=<folder>` or `off`; else the system's cache location).
 //!   UFB [folder] [--favorite <path>]...
@@ -9,6 +9,7 @@
 //! `UFB_MENU_BAR=1` shows the drawn menu bar on macOS too.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod crumbs;
+mod ctxmenu;
 mod format;
 mod history;
 mod icons;

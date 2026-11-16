@@ -6,7 +6,7 @@ publish = false
 license = "GPL-3.0-or-later"
 description = "UFB on the platform (Phase 5): a file browser. Slice 2: a browser to look around in - read-only"
 
-# UFB, the rebuild (Phase 5; canon rows 434-465). This slice reads folders and nothing else: no settings file, no
+# UFB, the rebuild (Phase 5; canon rows 434-466). This slice reads folders and nothing else: no settings file, no
 # database of an installed 1.4.x, and no file of the user's is ever created, renamed, moved or deleted by it. The one
 # thing it writes is its own thumbnail cache, in the system's cache location (row 465).
 [[bin]]
@@ -35,7 +35,7 @@ libc = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
-objc2 = { workspace = true }
+objc2 = { workspace = true, features = ["exception"] }   # what AppKit throws inside a callback of ours is caught (the context menu)
 objc2-foundation = { workspace = true, features = ["NSString", "NSGeometry", "NSUserDefaults", "NSObject", "NSURL", "NSError"] }
 block2 = "0.6"
 objc2-quick-look-thumbnailing = { version = "=0.3.2", features = ["QLThumbnailGenerator", "QLThumbnailGenerationRequest", "QLThumbnailRepresentation", "QLThumbnailErrors", "block2", "objc2-core-graphics", "objc2-core-foundation"] }

@@ -27,7 +27,8 @@ use winit31::window::Window;
 
 /// What the window asks of the application.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Out { NewWindow(PathBuf), Close, Minimize, Quit }
+pub enum Out { NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
+    Menu(crate::ctxmenu::Ask) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus { Pane, Path, Search }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,6 +54,8 @@ pub struct Ui {
     /// the scripted looks: the steps still to do, a wait, the picture to save, since when nothing is pending
     /// the window's title as it was last set: the active pane's folder
     titled: String,
+    /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
+    menu_for: Option<(Option<usize>, PathBuf)>,
     demo: VecDeque<String>, demo_until: Option<Instant>, shot: Option<PathBuf>, settled: Option<Instant>, tip_demo: Option<String>, born: Instant,
     /// set when the scripted picture is saved: the application ends
     pub done: bool, pub out: Vec<Out>,
@@ -81,7 +84,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -166,6 +169,27 @@ impl Ui {
         if panes { for pane in self.panes.iter().take(self.shown()) { if pane.rect.contains(p) { return pane.folder_at(x, y) } } }
         None
     }
+    /// A context menu for what is chosen in pane `i` (`row`: the click was on an entry), or for its folder.
+    fn ask_menu(&mut self, i: usize, row: Option<usize>, at: (f64, f64)) {
+        use crate::ctxmenu::{self, Ask};
+        let pane = &self.panes[i]; let here = pane.path().to_path_buf();
+        let entries = if row.is_some() { pane.chosen_entries(2000) } else { vec![] };
+        let ask = if entries.is_empty() { self.menu_for = Some((Some(i), here.clone())); Ask { at, paths: vec![here], rows: ctxmenu::rows_for_folder() } }
+            else { let kinds: Vec<(bool, bool)> = entries.iter().map(|e| (e.1, e.2)).collect(); let folder = if entries.len() == 1 && (entries[0].1 || entries[0].2) { entries[0].0.clone() } else { here };
+                self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows: ctxmenu::rows_for(&kinds) } };
+        self.out.push(Out::Menu(ask));
+    }
+    /// A row of OUR OWN in the context menu was chosen.
+    pub fn menu_chosen(&mut self, id: u32) {
+        use crate::ctxmenu::{CONTENTS, NEW_WINDOW, OPEN, REFRESH};
+        let Some((pane, folder)) = self.menu_for.clone() else { return };
+        match id {
+            OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
+            NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
+            REFRESH => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Refresh); }
+            _ => {}
+        }
+    }
     fn set_cursor(&mut self, c: winit31::cursor::CursorIcon) { if c != self.cursor { self.cursor = c; self.window.set_cursor(winit31::cursor::Cursor::Icon(c)); } }
     pub fn pointer(&mut self, e: &Event) {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.scale(); let port = self.port.clone();
@@ -220,10 +244,14 @@ impl Ui {
         self.side_hover = at.filter(|p| self.side_rect.contains(*p)).and_then(|p| self.side_rows.iter().position(|r| r.rect.contains(p)));
         if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
             if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some(to) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone()) { self.go(to); } } }
+        // ... and its menu: a place opens here or in a new window (row 448)
+        if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
+            self.menu_for = Some((None, to.clone())); self.out.push(Out::Menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() })); } }
         // the panes: a press in one makes it the active one
         let n = self.shown();
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
         for pane in self.panes.iter_mut().take(n) { pane.pointer(e, self.mods, now, &port); }
+        for i in 0..n { if let Some((row, at)) = self.panes[i].menu_at.take() { self.ask_menu(i, row, at); } }
         let resizing = self.over_gap.is_some() || self.panes.iter().take(n).any(|p| p.resizing());
         let text = at.is_some_and(|p| (self.focus == Focus::Path && self.path_rect.contains(p)) || self.search.rect.contains(p));
         self.set_cursor(if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
@@ -298,6 +326,9 @@ impl Ui {
             "sidebar" => if let Ok(px) = arg.parse::<f64>() { self.side_w = px.clamp(SIDE_MIN, SIDE_MAX); },
             "menu" => if let (Some(mb), Some(ch)) = (self.menubar.as_mut(), arg.chars().next()) { mb.bar.key(&min_ui::BarKey::Alt(ch.to_ascii_lowercase()), &mut self.fonts); },
             "newwindow" => self.command(Cmd::NewWindow),
+            // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
+            "context" => { let at = if arg == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(n) = arg.strip_prefix("side").and_then(num) { self.side_rows.get(n).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(arg).and_then(|n| self.pane().row_point(n)) };
+                if let Some((x, y)) = at { self.pointer(&Event::Down { x, y, button: Button::Secondary }); self.pointer(&Event::Up { x, y, button: Button::Secondary }); } }
             // a middle click on the folder at a row, as the mouse would do it
             "middle" => if let Some(n) = num(arg) { if let Some((x, y)) = self.pane().row_point(n) { self.pointer(&Event::Down { x, y, button: Button::Middle }); } },
             "tip" => self.tip_demo = Some(arg.to_string()),

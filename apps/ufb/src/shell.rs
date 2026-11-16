@@ -77,6 +77,10 @@ impl App {
             Out::Close => { self.windows.remove(&id); if self.focused == Some(id) { self.focused = None; } }
             Out::Minimize => if let Some(w) = self.windows.get(&id) { w.window.set_minimized(true); },
             Out::Quit => done = true,
+            // the system's menu: handed to the run loop (never shown from inside this callback - S19); a row of ours comes back through `proxy_wake_up`
+            Out::Menu(ask) => { #[cfg(target_os = "macos")] if let Some(w) = self.windows.get(&id) { use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(RawWindowHandle::AppKit(h)) = w.window.window_handle().map(|h| h.as_raw()) { let proxy = self.proxy.clone(); crate::ctxmenu::sys::show(h.ns_view.as_ptr(), id, ask, Arc::new(move || proxy.wake_up())); } }
+                #[cfg(not(target_os = "macos"))] { let _ = (id, ask); } }
         } }
         if done || self.windows.is_empty() { self.windows.clear(); el.exit(); }
         #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); }
@@ -163,6 +167,8 @@ impl ApplicationHandler for App {
         // the menu bar's rows go to the window in front
         #[cfg(target_os = "macos")] { let events: Vec<muda::MenuEvent> = std::mem::take(&mut *MENU_EVENTS.lock().unwrap());
             for ev in events { if let (Some(c), Some(w)) = (Cmd::from_id(&ev.id.0), self.focused.and_then(|id| self.windows.get_mut(&id)).or(None)) { w.ui.command(c); w.window.request_redraw(); } else if Cmd::from_id(&ev.id.0) == Some(Cmd::Quit) { self.windows.clear(); el.exit(); return } } }
+        // a row of ours chosen in a context menu goes to the window the menu was for
+        for (id, row) in crate::ctxmenu::take() { if let Some(w) = self.windows.get_mut(&id) { w.ui.menu_chosen(row); w.window.request_redraw(); } }
         // what the workers sent: every window takes its own and draws again
         for w in self.windows.values_mut() { if w.ui.poll() { w.window.request_redraw(); } }
         self.settle(el);
