@@ -60,7 +60,7 @@ struct Tab { panes: Vec<Pane>, active: usize, two: bool, split: f64 }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
 
 /// Logical px.
-const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const TABS: f64 = 34.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -1043,29 +1043,32 @@ impl Ui {
         if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n - 1)].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }
         if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); paint::rect(scene, Rect::new(split_x, body.y0, split_x + if hot { 2.0 * s } else { s }, body.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
 
-        // -- the strip of tabs: each as wide as the room gives (at most TAB_MAX), the one in front on the window's own
-        // surface with the accent over it, the others on the layer behind; a cross on each, a plus after the last
+        // -- the strip of tabs (row 481): PILLS on the window's own surface, as the sidebar's rows are - the one in front
+        // with the fill and the label of the sidebar row one is in, the others bare until the pointer is on them; no line,
+        // no divider, no ground of the strip's own. Each as wide as the room gives (at most TAB_MAX); a cross in each, a plus after the last
         self.tab_rects.clear();
         if strip.height() > 0.0 {
             let count = self.tabs.len();
             if self.tab_close.len() != count { self.tab_close = (0..count).map(|_| ActionButton::new("x", &menu::tip("Close tab", Cmd::CloseTab)).size_s()).collect(); }
-            let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let plus_w = sb + 12.0 * s; let tw = ((strip.width() - plus_w) / count as f64).min(TAB_MAX * s).max(1.0);
-            paint::rect(scene, strip, t::BACKGROUND_LAYER_2_COLOR); paint::hline(scene, strip.x0, strip.x1, strip.y1 - s, s, t::DIVIDER_COLOR);
-            let at = kurbo::Point::new(self.pointer.0, self.pointer.1);
+            let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let (pad, gap, ph) = (8.0 * s, 4.0 * s, TAB_PILL * s); let plus_w = sb + gap + pad;
+            let tw = ((strip.width() - pad - plus_w - gap * (count as f64 - 1.0)) / count as f64).min(TAB_MAX * s).max(1.0); let radius = t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s;
+            let at = kurbo::Point::new(self.pointer.0, self.pointer.1); let py = strip.y0 + (strip.height() - ph) / 2.0 + s;
             for (i, (name, _)) in places.iter().enumerate() {
-                let r = Rect::new(strip.x0 + i as f64 * tw, strip.y0, strip.x0 + (i + 1) as f64 * tw, strip.y1); let front = i == self.tab; let hot = r.contains(at) && self.drag.is_none();
-                if front { paint::rect(scene, r, t::BACKGROUND_LAYER_1_COLOR); paint::rect(scene, Rect::new(r.x0, r.y0, r.x1, r.y0 + 2.0 * s), t::FOCUS_INDICATOR_COLOR); } else if hot { paint::rect(scene, Rect::new(r.x0, r.y0, r.x1, r.y1 - s), t::HOVER_BACKGROUND_COLOR); }
-                paint::rect(scene, Rect::new(r.x1 - s, r.y0 + if front { 0.0 } else { 7.0 * s }, r.x1, r.y1 - if front { 0.0 } else { 7.0 * s }), t::DIVIDER_COLOR);
-                // (the cross: always on the tab in front, on the others under the pointer; none where a tab is too narrow for it and a name)
-                let b = &mut self.tab_close[i]; let room = tw > 64.0 * s;
-                b.rect = if room && (front || hot) { Rect::new(r.x1 - 6.0 * s - sb, r.y0 + (r.height() - sb) / 2.0, r.x1 - 6.0 * s, r.y0 + (r.height() + sb) / 2.0) } else { Rect::ZERO }; b.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s);
-                let text_w = (tw - 12.0 * s - if room { sb + 10.0 * s } else { 8.0 * s }).max(4.0);
-                let l = fonts.layout_fit(name, Family::Sans, t::BODY_SIZE_S * s as f32, if front { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, if front { ink } else { sub }, text_w);
-                scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r); draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + s + (r.height() - l.height() as f64) / 2.0))); scene.pop_layer();
+                let x0 = strip.x0 + pad + i as f64 * (tw + gap); let r = Rect::new(x0, py, x0 + tw, py + ph); let front = i == self.tab; let hot = r.contains(at) && self.drag.is_none();
+                if front { paint::rounded(scene, r, radius, t::RAIL_ROW_ACTIVE_FILL); } else if hot { paint::rounded(scene, r, radius, t::HOVER_BACKGROUND_COLOR); }
+                let color = paint::color(if front { t::RAIL_ROW_ACTIVE_LABEL } else { t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT });
+                // (the cross: always in the tab in front, in the others under the pointer; none where a tab is too narrow for it and a name)
+                let b = &mut self.tab_close[i]; let room = tw > 64.0 * s; let bs = sb.min(ph - 4.0 * s);
+                b.rect = if room && (front || hot) { Rect::new(r.x1 - 3.0 * s - bs, r.y0 + (ph - bs) / 2.0, r.x1 - 3.0 * s, r.y0 + (ph + bs) / 2.0) } else { Rect::ZERO }; b.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s);
+                scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r);
+                let mut tx = r.x0 + 8.0 * s;
+                if tw > 48.0 * s { if let Some(g) = fonts.icon("folder-simple", 14.0 * s as f32, color) { draw_layout(scene, &g, Affine::translate((tx, r.y0 + (ph - g.height() as f64) / 2.0))); tx += g.width() as f64 + 6.0 * s; } }
+                let l = fonts.layout_fit(name, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, color, (r.x1 - tx - if room { bs + 7.0 * s } else { 6.0 * s }).max(4.0));
+                draw_layout(scene, &l, Affine::translate((tx, r.y0 + (ph - l.height() as f64) / 2.0))); scene.pop_layer();
                 if b.rect.width() > 0.0 { b.paint(scene, fonts, s, now); }
                 self.tab_rects.push(r);
             }
-            let px = strip.x0 + count as f64 * tw + 6.0 * s; self.tab_new.rect = Rect::new(px, strip.y0 + (strip.height() - sb) / 2.0, px + sb, strip.y0 + (strip.height() + sb) / 2.0); self.tab_new.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.tab_new.paint(scene, fonts, s, now);
+            let px = strip.x0 + pad + count as f64 * (tw + gap); self.tab_new.rect = Rect::new(px, py + (ph - sb) / 2.0, px + sb, py + (ph + sb) / 2.0); self.tab_new.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.tab_new.paint(scene, fonts, s, now);
         } else { self.tab_new.rect = Rect::ZERO; }
 
         // -- the toolbar
