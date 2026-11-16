@@ -26,3 +26,8 @@ external/sparkle/
 external/dxc/
 # the app's own icons (QCView's brand mark for exports) — not fixtures
 !apps/qcv/assets/icons/*.png
+# UFB's built-in project type: the applications' own template files (a Blender, an After Effects and a Premiere project)
+# are kept out until the owner says they go in as they are - the folders are tracked, the files are copied in locally
+apps/ufb/resources/types/*/skeletons/**/*.blend
+apps/ufb/resources/types/*/skeletons/**/*.aep
+apps/ufb/resources/types/*/skeletons/**/*.prproj

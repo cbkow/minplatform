@@ -6279,6 +6279,7 @@ dependencies = [
  "qcv-timeline",
  "raw-window-handle",
  "rusqlite",
+ "ufb-projtype",
  "vello",
  "wgpu",
  "windows",

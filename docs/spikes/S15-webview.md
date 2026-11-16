@@ -1,6 +1,6 @@
 # S15 - the system's own web view inside our window (opened 2026-11-15)
 
-**Status: VERDICT (macOS): PASS (2026-11-15); Windows: not run (the code is written and type-checks, nothing more). The
+**Status: VERDICT (macOS): PASS (2026-11-15); Windows 11: PASS (run 2026-11-15, see "Windows, run 2026-11-15" below; this line said "not run" until 2026-11-16 - it had not been brought up to date). The
 system's web view sits as a child in a rectangle of a winit 0.31 window drawn with wgpu / vello, through the `wry`
 crate, with two pieces of our own on macOS. No engine is bundled. Six rules for the product came out of it (below);
 two of them are traps that the library's defaults walk into.**

@@ -7,6 +7,7 @@
 //! channel (`lister::Port`), which also wakes the loop.
 use crate::crumbs;
 use crate::icons::Icons;
+use crate::jobview::Job;
 use crate::thumbs::Thumbs;
 use crate::lister::{self, Msg, Port};
 use crate::menu::{self, Cmd, InWindowMenu};
@@ -39,7 +40,8 @@ pub enum Out { /// the clipboard is the application's to reach: files to put on 
     NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Focus { Pane, Path, Search, Rename }
+enum Focus { Pane, Path, Search, Rename, /// the item list of a job (the arrow keys choose an item)
+    Items }
 /// A row of the drawn context menu.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum CtxRow { Ours(u32), Open, OpenAs, Reveal, More, Rule }
@@ -49,18 +51,23 @@ struct Renaming { pane: usize, path: PathBuf, dir: bool, field: TextField }
 enum Asked { /// delete these for good
     Delete(Vec<PathBuf>), /// the extension would change: the entry, the name typed, the name with the old extension kept
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
-    Conflict(u64) }
+    Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
+    NewJob(PathBuf), AddItem(PathBuf) }
+/// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
+enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split }
 /// A tab that is NOT in front (row 480): what the window holds for it until it is shown again - its panes (with their
 /// folders, histories, choices and views), which one is active, whether the second is shown, and the divider. The tab
 /// in front lives in the window's own fields; its place in the list is empty meanwhile.
 #[derive(Default)]
-struct Tab { panes: Vec<Pane>, active: usize, two: bool, split: f64 }
-struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
+struct Tab { panes: Vec<Pane>, active: usize, two: bool, split: f64, /// the tab shows a job (row 482): its sections and items beside the panes
+    job: Option<Job> }
+struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool, /// a subscribed job: it opens as a job, not as a folder
+    job: bool }
 
 /// Logical px.
-const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 270.0; const JOB_ROW: f64 = 28.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -71,6 +78,13 @@ pub struct Ui {
     /// the tabs (row 480): one a window at first, and then no strip is shown. `tab`: the one in front (its entry here is
     /// empty: it lives in the fields above). The strip as drawn: each tab's place and close button, the "+" at its end.
     tabs: Vec<Tab>, tab: usize, tab_rects: Vec<Rect>, tab_close: Vec<ActionButton>, tab_new: ActionButton,
+    /// the project side (row 482). The job the tab in front shows, if it shows one; the subscribed jobs (the sidebar's
+    /// Jobs); the job's bar - a button a section, made for these names -, its refresh, the item list's Add; the list as
+    /// drawn: its place, its rows, its scroll bar, the row under the pointer; where the panes begin; what is being made
+    job: Option<Job>, jobs: Vec<crate::db::Sub>, job_secs: Vec<ActionButton>, job_secs_for: Vec<String>, job_refresh: ActionButton, job_add: ActionButton,
+    job_list: Rect, job_rows: Vec<Rect>, job_scroll: ScrollBar, job_hover: Option<usize>, panes_x0: f64, made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
+    /// the menu last asked for is about a job of the sidebar
+    menu_job: bool,
     /// options of the window (both panes follow)
     hidden: bool, folders_first: bool,
     side_w: f64, side_rect: Rect, sections: [Section; 4], favorites: Vec<Place>, fixed: Vec<Place>, volumes: Vec<Place>, root: String, side_bar: ScrollBar, side_rows: Vec<SideRow>, side_hover: Option<usize>,
@@ -133,8 +147,11 @@ impl Ui {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::ops::subscribe(id, port.clone());
         let lightbox = { let p = port.clone(); crate::lightbox::Lightbox::new(Arc::new(move || p.send(Msg::Icon))) };
+        let (made_tx, made_rx) = std::sync::mpsc::channel();
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
-            panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(), hidden: false, folders_first: true,
+            panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
+            job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
+            job_list: Rect::ZERO, job_rows: vec![], job_scroll: ScrollBar::default(), job_hover: None, panes_x0: 0.0, made_tx, made_rx, making: false, menu_job: false, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -151,39 +168,116 @@ impl Ui {
     fn shown(&self) -> usize { if self.two { self.panes.len().min(2) } else { 1 } }
     // ---------------------------------------------------------------- tabs (row 480)
     /// The tab in front is put into its place in the list, or taken out of it (the same exchange both ways).
-    fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); }
+    fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); std::mem::swap(&mut self.job, &mut t.job); }
     /// What belongs to the tab in front and does not go with it is ended: a name or a path being typed, an open menu, the lightbox.
-    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.focus = Focus::Pane; }
+    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.job_hover = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
     /// The tab now in front is looked at again: its folders may have changed while it was behind.
-    fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
+    fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } if let Some(j) = self.job.as_mut() { j.reload(); } }
     fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
     /// A new tab on this folder, after the one in front, and shown: one pane, with the view of the pane it was asked from.
     fn new_tab(&mut self, path: PathBuf) {
         let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first);
         { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } }
         self.leave_tab(); self.swap_tab(); self.tab += 1; self.tabs.insert(self.tab, Tab::default());
-        self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5;
+        self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5; self.job = None;
     }
     /// A tab is closed; the last one closes the window.
     fn close_tab(&mut self, i: usize) {
         if self.tabs.len() <= 1 { self.out.push(Out::Close); return } if i >= self.tabs.len() { return }
-        if i == self.tab { self.leave_tab(); self.panes.clear(); self.tabs.remove(i); self.tab = i.min(self.tabs.len() - 1); self.swap_tab(); self.enter_tab(); }
+        if i == self.tab { self.leave_tab(); self.panes.clear(); self.job = None; self.tabs.remove(i); self.tab = i.min(self.tabs.len() - 1); self.swap_tab(); self.enter_tab(); }
         else { self.tabs.remove(i); if i < self.tab { self.tab -= 1; } }
     }
     /// What a tab is called, and the folder it shows: its active pane's.
-    fn tab_place(&self, i: usize) -> (String, PathBuf) { let (panes, active) = if i == self.tab { (&self.panes, self.active) } else { (&self.tabs[i].panes, self.tabs[i].active) }; match panes.get(active.min(panes.len().saturating_sub(1))) { Some(p) => (p.title(), p.path().to_path_buf()), None => (String::new(), PathBuf::new()) } }
+    fn tab_place(&self, i: usize) -> (String, PathBuf) { let (panes, active, job) = if i == self.tab { (&self.panes, self.active, &self.job) } else { (&self.tabs[i].panes, self.tabs[i].active, &self.tabs[i].job) }; if let Some(j) = job { return (j.name.clone(), j.path.clone()) } match panes.get(active.min(panes.len().saturating_sub(1))) { Some(p) => (p.title(), p.path().to_path_buf()), None => (String::new(), PathBuf::new()) } }
+    // ---------------------------------------------------------------- the project side (row 482; `jobview.rs`, `db.rs`)
+    fn reload_jobs(&mut self) { self.jobs = crate::db::with(|d| d.subscriptions()).unwrap_or_default(); }
+    /// The tab in front shows this job: its sections and items beside the browser, which follows them.
+    fn open_job(&mut self, path: PathBuf, name: String) {
+        if self.job.as_ref().is_some_and(|j| j.path == path) { return }
+        self.leave_tab(); let p = self.port.clone(); self.job = Some(Job::new(path, name, Arc::new(move || p.send(Msg::Icon)))); self.job_scroll = ScrollBar::default(); self.active = 0;
+    }
+    /// A place of the sidebar is opened: a job as a job, a folder in the browser (the tab stops showing a job).
+    fn open_place(&mut self, path: PathBuf, job: bool) {
+        if job { let name = self.jobs.iter().find(|j| j.path == path).map(|j| j.name.clone()).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.open_job(path, name); }
+        else { if self.job.take().is_some() { self.focus = Focus::Pane; } self.go(path); }
+    }
+    /// The browser follows the job: the chosen item's project folder in the first pane and its renders in the second
+    /// (each the item itself when it has none) - or, with nothing chosen, the section's folder.
+    fn job_follow(&mut self) {
+        let Some(j) = self.job.as_ref() else { return }; let port = self.port.clone();
+        let (a, b) = match j.chosen_item() { Some(i) => (i.project.clone(), i.renders.clone()), None => match j.section_dir() { Some(d) => (d.clone(), d), None => (j.path.clone(), j.path.clone()) } };
+        if self.panes[0].path() != a { self.panes[0].go(&port, a); }
+        if self.two && self.panes.len() > 1 && self.panes[1].path() != b { self.panes[1].go(&port, b); }
+    }
+    /// The chosen item is brought into view.
+    fn job_reveal(&mut self) { let s = self.scale(); if let Some(i) = self.job.as_ref().and_then(|j| j.chosen) { let (top, h) = (i as f64 * JOB_ROW * s, (self.job_list.height() - (JOB_ROW + 40.0) * s).max(JOB_ROW * s)); if top < self.job_scroll.offset { self.job_scroll.offset = top; } else if top + JOB_ROW * s > self.job_scroll.offset + h { self.job_scroll.offset = top + JOB_ROW * s - h; } } }
+    fn job_choose(&mut self, i: usize) { if let Some(j) = self.job.as_mut() { if i < j.items.len() && j.chosen != Some(i) { j.chosen = Some(i); self.job_follow(); } } }
+    /// "Add" in the section in front: what it is called and whether there is one (the section's kind, by the project type).
+    fn job_add_label(&self) -> Option<&'static str> {
+        use ufb_projtype::Kind; let sec = self.job.as_ref()?.section.as_deref()?;
+        match crate::jobview::project_type().kind(sec) { Kind::Shot => Some("Add Shot"), Kind::Dated => Some("Add Item"), Kind::Folder => Some("Add Folder"), Kind::None => None }
+    }
+    fn ask_add_item(&mut self) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        let (Some(title), Some(dir)) = (self.job_add_label(), self.job.as_ref().and_then(|j| j.section_dir())) else { return };
+        if !crate::ops::allowed_in(&dir) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        let mut d = Dialog::new(title, "", vec![("Cancel", Variant::Secondary), ("Add", Variant::Primary)]).with_field("Name", ""); d.show_with("", &mut self.fonts);
+        self.dialog = Some((d, Asked::AddItem(dir))); self.dialog_preview();
+    }
+    fn ask_new_job(&mut self) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        let parent = self.pane().path().to_path_buf(); if !crate::jobview::is_jobs_folder(&parent) { self.toast.show("A new job is made in a jobs folder.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        if !crate::ops::allowed_in(&parent) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        let mut d = Dialog::new("New Job", "", vec![("Cancel", Variant::Secondary), ("Create", Variant::Primary)]).with_field("Number", "").with_field("Name", ""); d.show_with("", &mut self.fonts);
+        self.dialog = Some((d, Asked::NewJob(parent))); self.dialog_preview();
+    }
+    /// A question with fields says what the answer would make - the very folder name (1.4.2's preview differed from
+    /// what was made for runs of spaces, and always showed the letter `a`) - and its last button waits for a usable answer.
+    fn dialog_preview(&mut self) {
+        let Some((d, asked)) = self.dialog.as_mut() else { return }; let ty = crate::jobview::project_type();
+        let made = match asked {
+            Asked::NewJob(_) => Some(ty.job_folder_name(&d.value_at(0), &d.value_at(1))),
+            Asked::AddItem(dir) => { let name = d.value_at(0); let sec = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                Some(if name.is_empty() { String::new() } else if ty.kind(&sec) == ufb_projtype::Kind::Dated { let taken = self.job.as_ref().map(|j| j.dated_names.clone()).unwrap_or_default(); ufb_projtype::dated_name(&taken, &crate::jobview::today(), &name).unwrap_or_default() } else { name }) }
+            _ => None,
+        };
+        if let Some(name) = made { let ok = ufb_projtype::check_name("name", &name).is_ok(); d.body = if name.is_empty() { "Folder:".into() } else { format!("Folder:  {name}") }; if let Some(b) = d.buttons.last_mut() { b.enabled = ok; } }
+    }
+    /// What was made off the window's thread has come.
+    fn on_made(&mut self, m: Made) {
+        self.making = false; let now = Instant::now(); let port = self.port.clone();
+        let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); }
+        match m {
+            Made::Job(Ok(job)) => { let _ = crate::db::with(|d| d.subscribe(&job, "")); self.reload_jobs(); self.open_place(job, true); }
+            Made::Item(Ok(item)) => if let Some(j) = self.job.as_mut() { j.choose = Some(item); j.reload(); },
+            Made::Job(Err(e)) | Made::Item(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, now),
+        }
+    }
+    /// A folder becomes a job of the sidebar, or leaves it (its metadata is not touched).
+    fn subscribe(&mut self, path: PathBuf, on: bool) {
+        let r = crate::db::with(|d| if on { d.subscribe(&path, "") } else { d.unsubscribe(&path) });
+        match r { Some(Ok(())) => {} Some(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, Instant::now()), None => self.toast.show("The database could not be opened.", min_ui::toast::ToastKind::Negative, Instant::now()) }
+        self.reload_jobs();
+        if !on && self.job.as_ref().is_some_and(|j| j.path == path) { self.job = None; self.focus = Focus::Pane; }
+    }
+    /// A text is being typed somewhere (a field of the window, or of an open question).
+    fn text_focus(&self) -> bool { matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
+
     /// Every pane of the tabs that are behind.
     fn hidden_panes(&mut self) -> impl Iterator<Item = &mut Pane> { self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) }
 
     /// What the menus show of this window.
     pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some(),
         chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
-        sequences: p.model.sequences, typing: self.focus != Focus::Pane, other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
+        sequences: p.model.sequences, jobs_folder: crate::jobview::is_jobs_folder(p.path()), typing: self.text_focus(), other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
 
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
     pub fn poll(&mut self) -> bool {
         let mut any = self.icons.poll(); any |= self.thumbs.poll(); any |= self.lightbox.poll();
+        // the job in front was read: the browser follows a section that came to the front; what was being made is there
+        if let Some(j) = self.job.as_mut() { if j.poll() { any = true; if std::mem::take(&mut j.moved) || j.chosen.is_some() { self.job_follow(); } } }
+        while let Ok(m) = self.made_rx.try_recv() { any = true; self.on_made(m); }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
         for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
@@ -208,7 +302,7 @@ impl Ui {
         any
     }
     /// The window became active: the volumes are looked for again, and each pane asks whether its folder changed.
-    pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
+    pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } self.reload_jobs(); if let Some(j) = self.job.as_mut() { j.reload(); } }
     pub fn deactivated(&mut self) { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
 
     // ---------------------------------------------------------------- the lightbox (`lightbox.rs`)
@@ -444,6 +538,7 @@ impl Ui {
             let here: Vec<String> = if mine && i == self.active { rep.made.iter().filter(|m| m.parent() == Some(p.path())).filter_map(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).collect() } else { vec![] };
             p.refresh_choosing(&port, here);
         }
+        if let Some(j) = self.job.as_mut() { if rep.changed.iter().any(|c| c.starts_with(&j.path) || j.path.starts_with(c)) { j.reload(); } }
         // (the tabs behind show what is there when they come to the front)
         for p in self.hidden_panes() { if rep.changed.iter().any(|c| c.starts_with(p.path())) { p.refresh_choosing(&port, vec![]); } }
         if self.rename.as_ref().is_some_and(|r| rep.changed.iter().any(|c| r.path.starts_with(c))) { self.end_rename(); }
@@ -490,6 +585,11 @@ impl Ui {
         match asked {
             Asked::Conflict(id) => { use crate::ops::Choice; crate::ops::answer(id, [Choice::Stop, Choice::Replace, Choice::Skip, Choice::KeepBoth][button.min(3)], d.checked()); }
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
+            // (made off this thread: a skeleton may be copied to a share)
+            Asked::NewJob(parent) => if button == 1 { let (number, name, tx, port) = (d.value_at(0), d.value_at(1), self.made_tx.clone(), self.port.clone()); self.making = true;
+                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Job(crate::jobview::project_type().new_job(&parent, &number, &name))); port.send(Msg::Icon); }); },
+            Asked::AddItem(dir) => if button == 1 { let (name, tx, port) = (d.value_at(0), self.made_tx.clone(), self.port.clone()); self.making = true;
+                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Item(crate::jobview::project_type().add_item(&dir, &name, &crate::jobview::skeletons(), &crate::jobview::today()))); port.send(Msg::Icon); }); },
             Asked::Extension { path, typed, kept } => { let name = if button == 0 { typed } else { kept }; if path.file_name().is_some_and(|n| n.to_string_lossy() != name.as_str()) { crate::ops::submit(self.id, crate::ops::Op::Rename { path, name }); } }
         }
     }
@@ -556,11 +656,11 @@ impl Ui {
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
         if self.dialog.is_some() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return }
-        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
+        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewJob | Cmd::Subscribe) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
         match c {
             // copy and paste are the text field's while one is in hand; else they are about files (the clipboard is the application's to reach)
-            Cmd::Copy | Cmd::Cut => if self.focus != Focus::Pane { self.out.push(Out::FieldCopy { cut: c == Cmd::Cut }); } else { let paths = self.chosen_paths(); if !paths.is_empty() { self.out.push(Out::CopyFiles { paths, cut: c == Cmd::Cut }); } },
-            Cmd::Paste => self.out.push(if self.focus != Focus::Pane { Out::FieldPaste } else { Out::PasteFiles { mv: false } }),
+            Cmd::Copy | Cmd::Cut => if self.text_focus() { self.out.push(Out::FieldCopy { cut: c == Cmd::Cut }); } else { let paths = self.chosen_paths(); if !paths.is_empty() { self.out.push(Out::CopyFiles { paths, cut: c == Cmd::Cut }); } },
+            Cmd::Paste => self.out.push(if self.text_focus() { Out::FieldPaste } else { Out::PasteFiles { mv: false } }),
             Cmd::PasteMove => self.out.push(Out::PasteFiles { mv: true }),
             Cmd::CopyToOther => self.to_other_pane(false), Cmd::MoveToOther => self.to_other_pane(true),
             Cmd::NewFolder => { let dir = self.pane().path().to_path_buf(); crate::ops::submit(self.id, crate::ops::Op::NewFolder { dir }); }
@@ -575,17 +675,19 @@ impl Ui {
             Cmd::NewTab => { let p = self.pane().path().to_path_buf(); self.new_tab(p); }
             Cmd::CloseTab => self.close_tab(self.tab),
             Cmd::NextTab | Cmd::PrevTab => { let n = self.tabs.len(); if n > 1 { self.show_tab((self.tab + if c == Cmd::NextTab { 1 } else { n - 1 }) % n); } }
+            Cmd::NewJob => self.ask_new_job(),
+            Cmd::Subscribe => { let e = self.pane().chosen_entries(2); if e.len() == 1 && e[0].1 && !e[0].2 { let p = e[0].0.clone(); self.subscribe(p, true); } else { self.toast.show("Choose one folder to subscribe to it as a job.", min_ui::toast::ToastKind::Notice, Instant::now()); } }
             Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.out.push(Out::Quit),
             Cmd::Open => { self.pane().open_chosen(&port); self.after_pane_events(); }
             Cmd::Preview => if self.lightbox.is_open() { self.close_lightbox(); } else if self.focus == Focus::Pane && self.dialog.is_none() { let i = self.active.min(self.panes.len() - 1); if let Some(row) = self.panes[i].cursor_row() { self.open_lightbox(i, row); } },
-            Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all() },
+            Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all(), Focus::Items => {} },
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
             Cmd::SecondPane => self.set_two(!self.two),
             Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
-            Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); }
+            Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); if let Some(j) = self.job.as_mut() { j.reload(); } }
             Cmd::Back => self.pane().back(&port), Cmd::Forward => self.pane().forward(&port), Cmd::Up => self.pane().up(&port),
             Cmd::Home => self.go(places::home()), Cmd::Desktop => self.go(places::home().join("Desktop")), Cmd::Downloads => self.go(places::home().join("Downloads")),
             Cmd::GoToFolder => self.edit_path(), Cmd::Find => self.focus_search(),
@@ -598,6 +700,7 @@ impl Ui {
         let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.menubar.as_ref().is_some_and(|m| m.bar.is_open()) { return }
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
+        if self.job.is_some() && self.job_list.contains(p) { self.job_scroll.wheel(dy, now); return }
         let n = self.shown(); for pane in self.panes.iter_mut().take(n) { if pane.rect.contains(p) { pane.wheel(dy, now); return } }
     }
     /// The folder under the pointer that a new window can be opened on: a sidebar row, a segment of the path, and -
@@ -616,7 +719,10 @@ impl Ui {
         let entries = if row.is_some() { pane.chosen_entries(2000) } else { vec![] }; let sequence = pane.chosen_sequence();
         let ask = if entries.is_empty() { self.menu_for = Some((Some(i), here.clone())); Ask { at, paths: vec![here], rows: ctxmenu::rows_for_folder() } }
             else { let kinds: Vec<(bool, bool)> = entries.iter().map(|e| (e.1, e.2)).collect(); let folder = if entries.len() == 1 && (entries[0].1 || entries[0].2) { entries[0].0.clone() } else { here };
-                self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows: ctxmenu::rows_for(&kinds, sequence) } };
+                // one folder: it can be made a job of the sidebar, or taken out of it
+                let mut rows = ctxmenu::rows_for(&kinds, sequence); if kinds.len() == 1 && kinds[0].0 && !kinds[0].1 { let on = self.jobs.iter().any(|j| j.path == folder); if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Sep) { rows.insert(k, ctxmenu::row_subscribe(on)); } }
+                self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows } };
+        self.menu_job = false;
         self.show_menu(ask);
     }
     /// A context menu is shown: macOS, the system's own with our rows in it (the application's loop shows it);
@@ -657,11 +763,14 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
+        use crate::ctxmenu::{SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
+            OPEN if self.menu_job => self.open_place(folder, true),
+            NEW_TAB if self.menu_job => { self.new_tab(folder.clone()); self.open_place(folder, true); }
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_TAB => self.new_tab(folder),
+            SUBSCRIBE => self.subscribe(folder, true), UNSUBSCRIBE => self.subscribe(folder, false),
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
@@ -688,7 +797,7 @@ impl Ui {
         // the drawn menu bar and its open menus take the pointer first
         if let Some(mb) = self.menubar.as_mut() { let (chosen, _, consumed) = mb.bar.event(e, &mut self.fonts); if let Some(c) = chosen.and_then(|id| mb.cmd(id)) { self.command(c); return } if consumed { return } }
         // an open question takes everything
-        if let Some((d, _)) = self.dialog.as_mut() { let (clicked, _) = d.event(e, now); if let Some(b) = clicked { self.answer(b); } return }
+        if let Some((d, _)) = self.dialog.as_mut() { d.pointer(e, &mut self.fonts); let (clicked, _) = d.event(e, now); if let Some(b) = clicked { self.answer(b); } return }
         { let (_, _, consumed) = self.toast.event(e); if consumed { return } }
         // a name being changed: the field takes what is on it; a press anywhere else takes the name as typed (as Finder does)
         if let Some(r) = self.rename.as_mut() {
@@ -715,14 +824,14 @@ impl Ui {
         // button on a folder, a sidebar row or a segment of the path; the command key (Ctrl on Windows) with a click on a
         // sidebar row or a segment - in a pane that click is the selection's
         if let Event::Down { x, y, button } = *e { let middle = button == Button::Middle;
-            if middle || (button == Button::Primary && self.mods.cmd) { if let Some(p) = self.folder_at(x, y, middle) { self.new_tab(p); return } } }
+            if middle || (button == Button::Primary && self.mods.cmd) { if let Some(p) = self.folder_at(x, y, middle) { let job = self.side_rect.contains(kurbo::Point::new(x, y)) && self.side_rows.iter().any(|r| r.job && r.path.as_deref() == Some(p.as_path())); self.new_tab(p.clone()); if job { self.open_place(p, true); } return } } }
         if matches!(e, Event::Down { button: Button::Middle, .. } | Event::Up { button: Button::Middle, .. }) { return }
         // a gap in hand: the sidebar's edge or the divider between the panes
         if let Some(d) = self.drag {
             match *e {
                 Event::Move { x, .. } => match d {
                     Drag::Sidebar(x0, w0) => self.side_w = (w0 + (x - x0) / s).clamp(SIDE_MIN, SIDE_MAX),
-                    Drag::Split => { let (a, b) = (self.side_rect.x1, self.window.surface_size().width as f64); if b - a > 1.0 { self.split = ((x - a) / (b - a)).clamp(0.15, 0.85); } }
+                    Drag::Split => { let (a, b) = (self.panes_x0, self.window.surface_size().width as f64); if b - a > 1.0 { self.split = ((x - a) / (b - a)).clamp(0.15, 0.85); } }
                 },
                 Event::Up { button: Button::Primary, .. } | Event::Leave => self.drag = None,
                 _ => {}
@@ -761,10 +870,26 @@ impl Ui {
         for sec in self.sections.iter_mut() { sec.event(e, now); }
         self.side_hover = at.filter(|p| self.side_rect.contains(*p)).and_then(|p| self.side_rows.iter().position(|r| r.rect.contains(p)));
         if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
-            if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some(to) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone()) { self.go(to); } } }
+            if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some((to, job)) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone().map(|q| (q, r.job))) { self.open_place(to, job); } } }
         // ... and its menu: a place opens here or in a new window (row 448)
         if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
-            self.menu_for = Some((None, to.clone())); self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() }); } }
+            let job = self.side_rows.iter().any(|r| r.job && r.path.as_deref() == Some(to.as_path()));
+            self.menu_for = Some((None, to.clone())); self.menu_job = job; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: if job { crate::ctxmenu::rows_for_job() } else { crate::ctxmenu::rows_for_place() } }); } }
+        // the job: its sections, its refresh, the item list (a press chooses an item and takes the arrow keys; the
+        // secondary button gives the item's menu), Add
+        if self.job.is_some() {
+            let mut show = None; for (b, name) in self.job_secs.iter_mut().zip(self.job_secs_for.iter()) { if b.event(e, now) == Response::Clicked { show = Some(name.clone()); } }
+            if let Some(name) = show { if let Some(j) = self.job.as_mut() { j.show_section(&name); } self.job_scroll = ScrollBar::default(); }
+            if self.job_refresh.event(e, now) == Response::Clicked { self.command(Cmd::Refresh); }
+            if self.job_add.rect.width() > 0.0 && self.job_add.event(e, now) == Response::Clicked { self.ask_add_item(); return }
+            self.job_scroll.event(e, now);
+            self.job_hover = at.filter(|p| self.job_list.contains(*p)).and_then(|p| self.job_rows.iter().position(|r| r.contains(p)));
+            if let Event::Down { x, y, button } = *e { if self.job_list.contains(kurbo::Point::new(x, y)) {
+                self.leave_path(); self.leave_search(); self.focus = Focus::Items;
+                if let Some(i) = self.job_hover { if button == Button::Primary || button == Button::Secondary { self.job_choose(i); }
+                    if button == Button::Secondary { if let Some(to) = self.job.as_ref().and_then(|j| j.items.get(i)).map(|it| it.path.clone()) { self.menu_for = Some((Some(0), to.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() }); } } }
+                return } }
+        }
         // the panes: a press in one makes it the active one
         let n = self.shown();
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
@@ -778,13 +903,13 @@ impl Ui {
         self.set_cursor(if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
-    pub fn paste(&mut self, text: &str) { match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Pane => {} } }
+    pub fn paste(&mut self, text: &str) { if let Some((d, _)) = self.dialog.as_mut() { if let Some((_, f)) = d.fields.iter_mut().find(|(_, f)| f.focused) { f.paste(text, &mut self.fonts); self.dialog_preview(); } return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Pane | Focus::Items => {} } }
     /// A key for the drawn menu bar: (the command of the row chosen, redraw, the key was the bar's).
     pub fn with_menu_key(&mut self, k: &min_ui::BarKey) -> (Option<Cmd>, bool, bool) { match self.menubar.as_mut() { Some(mb) => { let (id, redraw, consumed) = mb.bar.key(k, &mut self.fonts); (id.and_then(|i| mb.cmd(i)), redraw, consumed) } None => (None, false, false) } }
     /// A text field holds the keyboard (the clipboard's keys are its).
-    pub fn typing(&self) -> bool { self.focus != Focus::Pane }
+    pub fn typing(&self) -> bool { self.text_focus() }
     /// The chosen text of the field in hand, for a copy; `cut` takes it out.
-    pub fn copy(&mut self, cut: bool) -> Option<String> { match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Pane => None } }
+    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some((d, _)) = self.dialog.as_mut() { let r = d.fields.iter_mut().find(|(_, f)| f.focused).and_then(|(_, f)| f.copy(cut, &mut self.fonts)); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Pane | Focus::Items => None } }
     /// A key. `name`: the key as the key map names it ("N", "[", "Up", "F5"); `alt`: the Alt / Option key is down;
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
@@ -792,6 +917,12 @@ impl Ui {
         if self.lightbox.is_open() { return self.lightbox_key(k, name) }
         if self.ctx.is_open() { if matches!(k.key, Key::Named(Named::Escape)) { self.ctx.close(); } return }
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
+        // a question with fields: the keys are the field's (Return gives its last button when the answer is usable, Escape its first)
+        if self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) {
+            let closed = self.dialog.as_mut().and_then(|(d, _)| d.key(k, &mut self.fonts)); self.dialog_preview();
+            if let Some(b) = closed { let usable = self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|l| l.enabled)); if b == 0 || usable { self.answer(b); } else if let Some((d, _)) = self.dialog.as_mut() { d.show(); } }
+            return
+        }
         if let Some((d, asked)) = self.dialog.as_ref() { let last = d.buttons.len().saturating_sub(1);
             match k.key { Key::Named(Named::Enter) => self.answer(last), Key::Named(Named::Escape) => self.answer(if matches!(asked, Asked::Conflict(_)) { 0 } else { last }), _ => {} } return }
         match self.focus {
@@ -814,6 +945,19 @@ impl Ui {
                 }
                 // the command-key shortcuts still act from the search field (a second pane, the view), but not its own editing keys
                 if !(k.cmd && !matches!(&k.key, Key::Char(c) if matches!(c.to_ascii_lowercase().as_str(), "a" | "c" | "v" | "x" | "z"))) || menu_keys { return }
+            }
+            // the item list of a job: the arrows choose, Tab and Escape give the keys back to the browser
+            Focus::Items => {
+                let n = self.job.as_ref().map(|j| j.items.len()).unwrap_or(0); let at = self.job.as_ref().and_then(|j| j.chosen);
+                if !k.cmd && !alt { match k.key {
+                    Key::Named(Named::Down) => { if n > 0 { self.job_choose(at.map(|i| (i + 1).min(n - 1)).unwrap_or(0)); self.job_reveal(); } return }
+                    Key::Named(Named::Up) => { if n > 0 { self.job_choose(at.map(|i| i.saturating_sub(1)).unwrap_or(0)); self.job_reveal(); } return }
+                    Key::Named(Named::Home) => { if n > 0 { self.job_choose(0); self.job_reveal(); } return }
+                    Key::Named(Named::End) => { if n > 0 { self.job_choose(n - 1); self.job_reveal(); } return }
+                    Key::Named(Named::Tab | Named::Escape | Named::Right) => { self.focus = Focus::Pane; return }
+                    _ => {}
+                } }
+                if !k.cmd { return }
             }
             Focus::Pane => {}
         }
@@ -860,6 +1004,17 @@ impl Ui {
             // tabs: `newtab[:<path>]` `tabshow:<n>` `tabclose:<n>` `tabnext` `tabprev` `tabs` (says them; the one in front is starred)
             "newtab" => if arg.is_empty() { self.command(Cmd::NewTab) } else { self.new_tab(PathBuf::from(arg)) },
             "tabshow" => if let Some(n) = num(arg) { self.show_tab(n); }, "tabclose" => if let Some(n) = num(arg) { self.close_tab(n); }, "tabnext" => self.command(Cmd::NextTab), "tabprev" => self.command(Cmd::PrevTab),
+            // the project side: `jobs` (says the sidebar's) `job:<n>` (opens the n-th) `section:<name>` `item:<n>` `items` (says them)
+            // `subscribe:<path>` `unsubscribe:<path>` `newjob:<number>|<name>` (in the folder in view) `additem:<name>` `itemfocus`
+            "jobs" => eprintln!("UFB_DEMO: jobs: {}", self.jobs.iter().map(|j| format!("{} [{}]", j.name, j.path.display())).collect::<Vec<_>>().join(" | ")),
+            "job" => if let Some(j) = num(arg).and_then(|n| self.jobs.get(n)).cloned() { self.open_place(j.path, true); },
+            "section" => { if let Some(j) = self.job.as_mut() { j.show_section(arg); } },
+            "item" => if let Some(n) = num(arg) { self.job_choose(n); },
+            "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
+            "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?}: items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), self.panes.iter().take(self.shown()).map(|p| p.path().display().to_string()).collect::<Vec<_>>().join(" + ")); },
+            "subscribe" => self.subscribe(PathBuf::from(arg), true), "unsubscribe" => self.subscribe(PathBuf::from(arg), false),
+            "newjob" => { self.ask_new_job(); if let Some((d, _)) = self.dialog.as_mut() { let (n, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(n); d.fields[1].1.set_text(name); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
+            "additem" => { self.ask_add_item(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "tabs" => eprintln!("UFB_DEMO: tabs: {}", (0..self.tabs.len()).map(|i| { let (name, path) = self.tab_place(i); let panes = if i == self.tab { self.shown() } else if self.tabs[i].two { 2 } else { 1 }; format!("{}{name} [{}; {panes} pane(s)]", if i == self.tab { "*" } else { "" }, path.display()) }).collect::<Vec<_>>().join(" | ")),
             // the file operations, as the menus give them: `newfolder` `rename` `type:<text>` (into the name's field) `accept` `cancel` `duplicate` `trash` `deletenow` `undo` `answer:<button>`
             "newfolder" => self.command(Cmd::NewFolder), "rename" => self.command(Cmd::Rename), "duplicate" => self.command(Cmd::Duplicate), "trash" => self.command(Cmd::Trash), "deletenow" => self.command(Cmd::DeleteNow), "undo" => self.command(Cmd::Undo),
@@ -921,7 +1076,7 @@ impl Ui {
             other => eprintln!("UFB_DEMO: unknown step {other:?}"),
         }
     }
-    fn busy(&self) -> bool { self.panes.iter().take(self.shown()).any(|p| p.loading()) || self.check.is_some() }
+    fn busy(&self) -> bool { self.panes.iter().take(self.shown()).any(|p| p.loading()) || self.check.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) }
     fn run_demo(&mut self) {
         while !self.demo.is_empty() {
             if self.busy() { return }
@@ -934,7 +1089,7 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.focus != Focus::Pane || self.dialog.is_some() || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.job_scroll.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
             || ((!self.demo.is_empty() || (self.shot.is_some() && !self.done)) && (std::env::var_os("UFB_DEMO_IDLE").is_none() || !self.lightbox.is_open()))
@@ -963,7 +1118,7 @@ impl Ui {
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         if self.active >= self.shown() { self.active = 0; }
         // the window is called by the folder it shows (the active pane's)
-        { let title = self.panes[self.active].title(); if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
+        { let title = match &self.job { Some(j) => format!("{} \u{2014} {}", j.name, self.panes[self.active].title()), None => self.panes[self.active].title() }; if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
         // the search field shows the active pane's filter (a navigation clears it)
         if self.search.text() != self.panes[self.active].search { let text = self.panes[self.active].search.clone(); self.search.set_text(&text); }
         // -- where everything lies
@@ -975,7 +1130,15 @@ impl Ui {
         let area = Rect::new(side_w, menu_h, w, status.y0);
         // the strip of tabs, above the toolbar - only when there are two or more (row 480: nobody gets tabs who did not ask)
         let strip = Rect::new(area.x0, area.y0, area.x1, (area.y0 + if self.tabs.len() > 1 { TABS * s } else { 0.0 }).min(area.y1));
-        let tool = Rect::new(area.x0, strip.y1, area.x1, (strip.y1 + TOOLBAR * s).min(area.y1)); let body = Rect::new(area.x0, tool.y1, area.x1, area.y1);
+        // a job (row 482): its bar under the tabs - the name, a button a section -, and its item list left of the panes
+        let in_job = self.job.is_some();
+        let job_bar = Rect::new(area.x0, strip.y1, area.x1, (strip.y1 + if in_job { JOB_BAR * s } else { 0.0 }).min(area.y1));
+        let tool = Rect::new(area.x0, job_bar.y1, area.x1, (job_bar.y1 + TOOLBAR * s).min(area.y1));
+        let list_w = if in_job { (JOB_LIST * s).min((area.width() * 0.4).round()) } else { 0.0 };
+        self.job_list = Rect::new(area.x0, tool.y1, area.x0 + list_w, area.y1); self.panes_x0 = area.x0 + list_w;
+        let body = Rect::new(area.x0 + list_w, tool.y1, area.x1, area.y1);
+        if let Some(j) = &self.job { if self.job_secs_for != j.sections { self.job_secs_for = j.sections.clone(); self.job_secs = j.sections.iter().map(|n| { let label = crate::jobview::project_type().section(n).map(|s| s.label().to_string()).unwrap_or_else(|| n.clone()); let mut b = ActionButton::new("", "").size_s(); b.label = Some(label); b }).collect(); } }
+        let add_label = self.job_add_label();
         self.gaps[0] = Rect::new(side_w - GAP * s / 2.0, menu_h, side_w + GAP * s / 2.0, status.y0);
         let n = self.shown(); let split_x = if n == 2 { (body.x0 + body.width() * self.split).round() } else { body.x1 };
         self.gaps[1] = if n == 2 { Rect::new(split_x - GAP * s / 2.0, body.y0, split_x + GAP * s / 2.0, body.y1) } else { Rect::ZERO };
@@ -1071,6 +1234,50 @@ impl Ui {
             let px = strip.x0 + pad + count as f64 * (tw + gap); self.tab_new.rect = Rect::new(px, py + (ph - sb) / 2.0, px + sb, py + (ph + sb) / 2.0); self.tab_new.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.tab_new.paint(scene, fonts, s, now);
         } else { self.tab_new.rect = Rect::ZERO; }
 
+        // -- a job: its bar, and its item list
+        self.job_rows.clear(); self.job_add.rect = Rect::ZERO;
+        if let Some(j) = &self.job {
+            let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let radius = t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s; let cy = job_bar.y0 + (job_bar.height() - sb) / 2.0;
+            paint::hline(scene, job_bar.x0, job_bar.x1, job_bar.y1 - s, s, t::DIVIDER_COLOR);
+            let mut x = job_bar.x0 + 12.0 * s;
+            if let Some(g) = fonts.icon("briefcase", 15.0 * s as f32, ink) { draw_layout(scene, &g, Affine::translate((x, job_bar.y0 + (job_bar.height() - g.height() as f64) / 2.0))); x += g.width() as f64 + 7.0 * s; }
+            let l = fonts.layout_fit(&j.name, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_BOLD as f32, ink, (job_bar.width() * 0.3).max(60.0 * s));
+            draw_layout(scene, &l, Affine::translate((x, job_bar.y0 + (job_bar.height() - l.height() as f64) / 2.0))); x += l.width() as f64 + 16.0 * s;
+            self.job_refresh.rect = Rect::new(job_bar.x1 - 10.0 * s - sb, cy, job_bar.x1 - 10.0 * s, cy + sb); self.job_refresh.corners = Corners::all(radius); self.job_refresh.paint(scene, fonts, s, now);
+            // the sections, as far as the room goes
+            let end = self.job_refresh.rect.x0 - 10.0 * s;
+            for (b, name) in self.job_secs.iter_mut().zip(self.job_secs_for.iter()) {
+                let w = b.measure(fonts, s).0; if x + w > end { b.rect = Rect::ZERO; continue }
+                b.rect = Rect::new(x, cy, x + w, cy + sb); b.corners = Corners::all(radius); b.selected = j.section.as_deref() == Some(name.as_str()); b.paint(scene, fonts, s, now); x += w + 4.0 * s;
+            }
+            // the item list: "Items (n)", the rows (the chosen one as the sidebar's row one is in), Add at its foot
+            let lr = self.job_list; let (head, foot, row_h) = (HEAD * s, 40.0 * s, JOB_ROW * s);
+            let small = t::BODY_SIZE_S * s as f32;
+            let hl = fonts.layout_fit(&if j.missing { "The job's folder is not there".to_string() } else if j.loading && j.items.is_empty() { "Items".to_string() } else { format!("Items ({})", j.items.len()) }, Family::Sans, small, t::FONT_WEIGHT_BOLD as f32, sub, lr.width() - 24.0 * s);
+            draw_layout(scene, &hl, Affine::translate((lr.x0 + 12.0 * s, lr.y0 + (head - hl.height() as f64) / 2.0))); paint::hline(scene, lr.x0, lr.x1, lr.y0 + head - s, s, t::DIVIDER_COLOR);
+            let view = Rect::new(lr.x0, lr.y0 + head, lr.x1, (lr.y1 - foot).max(lr.y0 + head)); let today = crate::format::local(crate::format::now_secs());
+            scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &view);
+            for (i, it) in j.items.iter().enumerate() {
+                let y = view.y0 + 4.0 * s + i as f64 * row_h - self.job_scroll.offset; let r = Rect::new(lr.x0 + 6.0 * s, y, lr.x1 - 6.0 * s, y + row_h); self.job_rows.push(r.intersect(view));
+                if y + row_h < view.y0 || y > view.y1 { continue }
+                let here = j.chosen == Some(i);
+                if here { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, if self.focus == Focus::Items { t::RAIL_ROW_ACTIVE_FILL } else { t::HOVER_BACKGROUND_COLOR }); } else if self.job_hover == Some(i) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
+                let color = if here && self.focus == Focus::Items { paint::color(t::RAIL_ROW_ACTIVE_LABEL) } else { ink };
+                let mut tx = r.x0 + 8.0 * s;
+                if let Some(g) = fonts.icon("folder-simple", 15.0 * s as f32, if here && self.focus == Focus::Items { color } else { sub }) { draw_layout(scene, &g, Affine::translate((tx, y + (row_h - g.height() as f64) / 2.0))); } tx += 22.0 * s;
+                let dl = fonts.layout(&crate::format::date_text(it.modified, today), Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, if here && self.focus == Focus::Items { color } else { sub });
+                let date_w = if r.width() > 210.0 * s { dl.width() as f64 + 10.0 * s } else { 0.0 };
+                let nl = fonts.layout_fit(&it.name, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, color, (r.x1 - tx - date_w - 8.0 * s).max(10.0));
+                draw_layout(scene, &nl, Affine::translate((tx, y + (row_h - nl.height() as f64) / 2.0)));
+                if date_w > 0.0 { draw_layout(scene, &dl, Affine::translate((r.x1 - 8.0 * s - dl.width() as f64, y + (row_h - dl.height() as f64) / 2.0))); }
+            }
+            if j.items.is_empty() && !j.loading && !j.missing { let l = fonts.layout_fit("Nothing here yet", Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, sub, lr.width() - 24.0 * s); draw_layout(scene, &l, Affine::translate((lr.x0 + 14.0 * s, view.y0 + 8.0 * s))); }
+            scene.pop_layer();
+            self.job_scroll.set(view, j.items.len() as f64 * row_h + 8.0 * s, s); self.job_scroll.paint(scene, now);
+            paint::hline(scene, lr.x0, lr.x1, lr.y1 - foot, s, t::DIVIDER_COLOR); paint::rect(scene, Rect::new(lr.x1 - s, lr.y0, lr.x1, lr.y1), t::DIVIDER_COLOR);
+            if let Some(label) = add_label { self.job_add.label = Some(label.to_string()); let w = self.job_add.measure(fonts, s).0; self.job_add.rect = Rect::new(lr.x0 + 10.0 * s, lr.y1 - foot + (foot - sb) / 2.0, lr.x0 + 10.0 * s + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_add.corners = Corners::all(radius); self.job_add.paint(scene, fonts, s, now); }
+        }
+
         // -- the toolbar
         paint::hline(scene, tool.x0, tool.x1, tool.y1 - s, s, t::DIVIDER_COLOR);
         for b in [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn] { b.paint(scene, fonts, s, now); }
@@ -1100,20 +1307,22 @@ impl Ui {
         let sr = self.side_rect; self.side_rows.clear();
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &sr);
         let (pad_s, row_h, head_h2) = (8.0 * s, SIDE_ROW * s, Section::height(s)); let (x0, x1) = (sr.x0 + pad_s, sr.x1 - pad_s);
-        let current = self.panes[self.active].path().to_path_buf();
+        // (the row one is in: the job the tab shows, or - in the browser - the place the active pane is in)
+        let current = match &self.job { Some(j) => j.path.clone(), None => self.panes[self.active].path().to_path_buf() };
+        let job_places: Vec<Place> = self.jobs.iter().map(|j| Place { label: j.name.clone(), path: j.path.clone(), icon: "briefcase" }).collect();
         // each section: (its rows, the quiet line it shows when it has none)
-        let lists: [(Vec<&Place>, &str); 4] = [(self.favorites.iter().collect(), "No favorites yet"), (vec![], "No saved shares"), (vec![], "No jobs"), (self.fixed.iter().chain(self.volumes.iter()).collect(), "")];
+        let lists: [(Vec<&Place>, &str); 4] = [(self.favorites.iter().collect(), "No favorites yet"), (vec![], "No saved shares"), (job_places.iter().collect(), "No jobs"), (self.fixed.iter().chain(self.volumes.iter()).collect(), "")];
         // the row of the place the active pane is in: the longest of the places that is exactly it
         let mut y = sr.y0 + pad_s - self.side_bar.offset; let top = y;
-        let side_row = |scene: &mut Scene, fonts: &mut Fonts, rows: &mut Vec<SideRow>, y: f64, icon: &str, label: &str, path: Option<&Path>, enabled: bool, hover: Option<usize>| {
-            let r = Rect::new(x0 + 4.0 * s, y, x1 - 4.0 * s, y + row_h); let here = path.is_some_and(|p| p == current); let idx = rows.len();
+        let side_row = |scene: &mut Scene, fonts: &mut Fonts, rows: &mut Vec<SideRow>, y: f64, icon: &str, label: &str, path: Option<&Path>, enabled: bool, hover: Option<usize>, job: bool| {
+            let r = Rect::new(x0 + 4.0 * s, y, x1 - 4.0 * s, y + row_h); let here = job == in_job && path.is_some_and(|p| p == current); let idx = rows.len();
             if here { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::RAIL_ROW_ACTIVE_FILL); } else if enabled && hover == Some(idx) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
             let color = paint::color(if !enabled { t::DISABLED_CONTENT_COLOR } else if here { t::RAIL_ROW_ACTIVE_LABEL } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT });
             let mut tx = r.x0 + 8.0 * s;
             if let Some(g) = fonts.icon(icon, 15.0 * s as f32, if here || !enabled { color } else { paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) }) { draw_layout(scene, &g, Affine::translate((tx, y + (row_h - g.height() as f64) / 2.0))); } tx += 22.0 * s;
             let l = fonts.layout_fit(label, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, color, r.x1 - tx - 6.0 * s);
             draw_layout(scene, &l, Affine::translate((tx, y + (row_h - l.height() as f64) / 2.0)));
-            rows.push(SideRow { rect: r, path: path.map(Path::to_path_buf), enabled });
+            rows.push(SideRow { rect: r, path: path.map(Path::to_path_buf), enabled, job });
         };
         for (i, (rows, empty)) in lists.iter().enumerate() {
             let open = self.sections[i].expanded; let body_h = if !open { 0.0 } else if rows.is_empty() { row_h } else { rows.len() as f64 * row_h } + if open { 6.0 * s } else { 0.0 };
@@ -1121,12 +1330,12 @@ impl Ui {
             self.sections[i].rect = Rect::new(x0, y, x1, y + head_h2); self.sections[i].paint(scene, fonts, s, now, i == 0); y += head_h2;
             if open {
                 if rows.is_empty() { let l = fonts.layout_fit(empty, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, x1 - x0 - 24.0 * s); draw_layout(scene, &l, Affine::translate((x0 + 12.0 * s, y + (row_h - l.height() as f64) / 2.0))); y += row_h; }
-                for p in rows { side_row(scene, fonts, &mut self.side_rows, y, p.icon, &p.label, Some(&p.path), true, self.side_hover); y += row_h; }
+                for p in rows { side_row(scene, fonts, &mut self.side_rows, y, p.icon, &p.label, Some(&p.path), true, self.side_hover, i == 2); y += row_h; }
                 y += 6.0 * s;
             }
             y += 8.0 * s;
             // All Tracked: a destination of its own between the jobs and the places (row 463) - not this slice's
-            if i == 2 { side_row(scene, fonts, &mut self.side_rows, y, "list-checks", "All Tracked", None, false, self.side_hover); y += row_h + 8.0 * s; }
+            if i == 2 { side_row(scene, fonts, &mut self.side_rows, y, "list-checks", "All Tracked", None, false, self.side_hover, false); y += row_h + 8.0 * s; }
         }
         scene.pop_layer();
         self.side_bar.set(sr, y - top + pad_s, s); self.side_bar.paint(scene, now);

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 /// Our own rows.
 pub const OPEN: u32 = 1; pub const NEW_WINDOW: u32 = 2; pub const CONTENTS: u32 = 3; pub const REFRESH: u32 = 4;
-pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 = 7; pub const DUPLICATE: u32 = 8; pub const COPY: u32 = 9; pub const PASTE: u32 = 10; pub const PREVIEW: u32 = 11; pub const SPLIT: u32 = 12; pub const GROUP: u32 = 13; pub const NEW_TAB: u32 = 14;
+pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 = 7; pub const DUPLICATE: u32 = 8; pub const COPY: u32 = 9; pub const PASTE: u32 = 10; pub const PREVIEW: u32 = 11; pub const SPLIT: u32 = 12; pub const GROUP: u32 = 13; pub const NEW_TAB: u32 = 14; pub const SUBSCRIBE: u32 = 15; pub const UNSUBSCRIBE: u32 = 16;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
@@ -47,6 +47,10 @@ pub fn rows_for(entries: &[(bool, bool)], sequence: bool) -> Vec<Row> {
 }
 /// The rows for the folder in view itself (a click on the empty part of a pane).
 pub fn rows_for_folder() -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Reveal, Row::Sep, ours(NEW_FOLDER, "New Folder"), ours(PASTE, "Paste"), Row::Sep, ours(REFRESH, "Refresh")] }
+/// The rows for a job in the sidebar.
+pub fn rows_for_job() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(UNSUBSCRIBE, "Unsubscribe")] }
+/// The row that makes a folder a job in the sidebar, or takes it out again.
+pub fn row_subscribe(subscribed: bool) -> Row { if subscribed { ours(UNSUBSCRIBE, "Unsubscribe") } else { ours(SUBSCRIBE, "Subscribe as Job") } }
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 

@@ -1,7 +1,7 @@
 //! An HTML file in the lightbox: the SYSTEM's own web view as a child of our window (canon rows 453, 479; carried from
 //! spike S15 - "Native webview or nothing"). macOS: WKWebView through `wry`, with the spike's two pieces of our own
-//! (the confined file load, our own message handler). Windows: not yet - S15 never ran there; an HTML file is shown as
-//! its source text until it has.
+//! (the confined file load, our own message handler). Windows: NOT BUILT YET - S15 ran there and passed (2026-11-15: the
+//! folder served through a made-up https host); until its code is carried here an HTML file is shown as its source text.
 //!
 //! The rules (S15): the view is made unfocused; the page is loaded with read access to ITS OWN FOLDER only; nothing is
 //! fetched from the network (a content rule list, in place BEFORE the page loads); a navigation out of the folder and
