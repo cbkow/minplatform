@@ -6,7 +6,7 @@
 //! rows act by themselves; the callbacks AppKit calls catch what AppKit throws.
 //!
 //! This slice changes nothing in the user's folders: the rows that would (Rename, Copy, Move to Trash, New Folder,
-//! Paste) are there and disabled, as in the menu bar; Tags (they are written INTO files) and Get Info (it asks Finder
+//! Paste) are there and disabled, as in the menu bar; Share is a row of ours that shows the system's picker. Tags (they are written INTO files) and Get Info (it asks Finder
 //! by an Apple event) are not here yet. Windows' menu - our own drawn one with "Show more options" - is not built.
 use std::path::PathBuf;
 
@@ -76,6 +76,8 @@ pub mod sys {
         target: Option<Retained<Target>>, pending: Option<Pending>,
         /// what the menu on screen is for; the share picker owns its row and must outlive the menu
         paths: Vec<PathBuf>, window: Option<WindowId>, wake: Option<Arc<dyn Fn() + Send + Sync>>, picker: Option<Retained<NSSharingServicePicker>>,
+        /// Share was chosen: the system's picker is shown once the menu is gone
+        share: bool,
     }
     thread_local! { static ST: RefCell<State> = RefCell::new(State::default()); }
     fn st<R>(f: impl FnOnce(&mut State) -> R) -> R { ST.with(|s| f(&mut s.borrow_mut())) }
@@ -105,6 +107,12 @@ pub mod sys {
             }
             #[unsafe(method(reveal:))]
             fn reveal(&self, _sender: &NSMenuItem) { let paths = st(|s| s.paths.clone()); guarded(|| NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls_of(&paths))); }
+            /// Share: the system's picker, shown at the place of the click when the menu has closed (see `popup`).
+            #[unsafe(method(share:))]
+            fn share(&self, _sender: &NSMenuItem) { st(|s| s.share = true); }
+            /// The scripted looks: how many windows the application has (the picker is one).
+            #[unsafe(method(probe:))]
+            fn probe(&self, _o: Option<&AnyObject>) { if let Some(mtm) = MainThreadMarker::new() { let ws = objc2_app_kit::NSApplication::sharedApplication(mtm).windows(); eprintln!("UFB_DEMO: {} window(s), {} visible", ws.len(), ws.iter().filter(|w| w.isVisible()).count()); } }
             /// The scripted looks: close the menu; choose a row by program.
             #[unsafe(method(cancel:))]
             fn cancel(&self, menu: &NSMenu) { menu.cancelTracking(); }
@@ -178,11 +186,10 @@ pub mod sys {
                     }
                     ow.setSubmenu(Some(&owm)); menu.addItem(&ow);
                 }
-                // AppKit's own row; the picker owns it
-                Row::Share => { if ask.paths.is_empty() { continue }
-                    let objs: Retained<NSArray<AnyObject>> = unsafe { Retained::cast_unchecked(urls_of(&ask.paths)) };
-                    let picker = unsafe { NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &objs) };
-                    menu.addItem(&picker.standardShareMenuItem(mtm)); st(|s| s.picker = Some(picker)); }
+                // a row of ours that shows the SYSTEM'S picker (AppKit's ready-made row did nothing in a menu shown at a
+                // point: it has no view to show its picker from - the owner's walk, 2026-11-16)
+                Row::Share => { if ask.paths.is_empty() { continue } let it = row(mtm, "Share\u{2026}", Some(sel!(share:)), 0);
+                    if let Some(img) = NSImage::imageWithSystemSymbolName_accessibilityDescription(ns_string!("square.and.arrow.up"), None) { it.setImage(Some(&img)); } menu.addItem(&it); }
             }
         }
         // no separator as the last row
@@ -204,7 +211,7 @@ pub mod sys {
     /// Show the menu and block until it is gone (the run loop goes on turning under it).
     fn popup(p: Pending) {
         let Some(mtm) = MainThreadMarker::new() else { return }; let Some(target) = st(|s| s.target.clone()) else { return };
-        st(|s| { s.paths = p.ask.paths.clone(); s.window = Some(p.window); s.wake = Some(p.wake.clone()); s.picker = None; });
+        st(|s| { s.paths = p.ask.paths.clone(); s.window = Some(p.window); s.wake = Some(p.wake.clone()); s.picker = None; s.share = false; });
         let menu = build(mtm, &p.ask); if menu.numberOfItems() == 0 { return }
         if std::env::var_os("UFB_DEMO").is_some() { let mut text = String::new(); dump(&menu, 0, &mut text); eprint!("UFB_DEMO: the menu\n{text}"); }
         // the scripted looks close the menu by themselves (`UFB_MENU_CLOSE=<seconds>`) and may choose a row first (`UFB_MENU_PICK=<index>`)
@@ -216,6 +223,14 @@ pub mod sys {
         let pt = NSPoint::new(x, if p.view.isFlipped() { y } else { p.view.bounds().size.height - y });
         menu.popUpMenuPositioningItem_atLocation_inView(None, pt, Some(&p.view));
         unsafe { let _: () = msg_send![objc2::class!(NSObject), cancelPreviousPerformRequestsWithTarget: &*target]; }
+        // Share: the system's picker, from where the click was (the picker is kept: it must outlive its showing)
+        if st(|s| std::mem::take(&mut s.share)) {
+            let objs: Retained<NSArray<AnyObject>> = unsafe { Retained::cast_unchecked(urls_of(&p.ask.paths)) };
+            let picker = unsafe { NSSharingServicePicker::initWithItems(NSSharingServicePicker::alloc(), &objs) };
+            picker.showRelativeToRect_ofView_preferredEdge(objc2_foundation::NSRect::new(NSPoint::new(pt.x - 1.0, pt.y - 1.0), NSSize::new(2.0, 2.0)), &p.view, objc2_foundation::NSRectEdge::MinY);
+            st(|s| s.picker = Some(picker));
+            if std::env::var_os("UFB_DEMO").is_some() { unsafe { let _: () = msg_send![&*target, performSelector: sel!(probe:), withObject: None::<&AnyObject>, afterDelay: 0.6f64]; } }
+        }
     }
 
     /// Ask for the menu at a point of the window's view. Returns at once: the menu is shown by the run loop; a row of
