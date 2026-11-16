@@ -849,8 +849,15 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn].iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.focus != Focus::Pane || self.dialog.is_some() || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || !self.demo.is_empty() || (self.shot.is_some() && !self.done)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.focus != Focus::Pane || self.dialog.is_some() || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
+            // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
+            // stops that once the lightbox is open, so that what is measured is what a person gets)
+            || ((!self.demo.is_empty() || (self.shot.is_some() && !self.done)) && (std::env::var_os("UFB_DEMO_IDLE").is_none() || !self.lightbox.is_open()))
     }
+    /// The lightbox has something moving: a picture on its way, a clip that plays, is sought or was just touched. The
+    /// window then draws at every refresh. (Left out at first: a clip moved only when something else woke the window -
+    /// the owner's walk, 2026-11-16: "playing one second at a time with freezes in between", "videos take forever to load".)
+    fn lightbox_live(&self, now: Instant) -> bool { self.lightbox.is_open() && (self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.player.as_ref().is_some_and(|p| p.busy(now)))) }
     /// The path bar's segments as buttons, made anew when the path, the startup disk's name or the room changes.
     fn make_crumbs(&mut self, room: f64, s: f64) {
         let path = self.panes[self.active.min(self.panes.len() - 1)].path().to_path_buf(); let key = (path.clone(), self.root.clone(), (room * 4.0) as i64);
