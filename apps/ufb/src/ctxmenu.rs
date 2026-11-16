@@ -16,7 +16,7 @@ pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 =
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
     /// A row of ours: its number comes back when it is chosen. `id` 0: a row of a later slice, shown disabled.
-    Ours { id: u32, label: &'static str },
+    Ours { id: u32, label: std::borrow::Cow<'static, str> },
     Sep,
     /// The system's: open with the default application; the applications that open these files; show in Finder; share.
     Open, OpenWith, Reveal, Share,
@@ -27,9 +27,11 @@ pub struct Ask { pub at: (f64, f64), pub paths: Vec<PathBuf>, pub rows: Vec<Row>
 
 /// Each system's own word (as in the menu bar).
 const TRASH_LABEL: &str = if cfg!(windows) { "Delete" } else { "Move to Trash" };
-fn ours(id: u32, label: &'static str) -> Row { Row::Ours { id, label } }
+fn ours(id: u32, label: &'static str) -> Row { Row::Ours { id, label: label.into() } }
+/// A row of ours whose words are made at the moment (a column's name).
+pub fn named(id: u32, label: String) -> Row { Row::Ours { id, label: label.into() } }
 #[allow(dead_code)]
-fn later(label: &'static str) -> Row { Row::Ours { id: 0, label } }
+fn later(label: &'static str) -> Row { Row::Ours { id: 0, label: label.into() } }
 
 /// The rows for the chosen entries; each: (it is a folder, it is a package). `sequence`: the one entry is an image
 /// sequence shown as one.
@@ -59,6 +61,24 @@ pub fn rows_for_sort(show: [bool; 4]) -> Vec<Row> {
     vec![ours(SORT, "Sort by Name"), ours(SORT + 1, "Sort by Date Modified"), ours(SORT + 2, "Sort by Size"), ours(SORT + 3, "Sort by Kind"), Row::Sep,
         ours(COLUMN + 1, if show[1] { "Hide Date Modified" } else { "Show Date Modified" }), ours(COLUMN + 2, if show[2] { "Hide Size" } else { "Show Size" }), ours(COLUMN + 3, if show[3] { "Hide Kind" } else { "Show Kind" })]
 }
+// The item list's metadata (row 489): a column's own rows, the rows that add, show and restore columns, an item's.
+pub const META_ADD: u32 = 40; pub const META_EDIT: u32 = 50; pub const META_LEFT: u32 = 51; pub const META_RIGHT: u32 = 52; pub const META_HIDE: u32 = 53; pub const META_TRASH: u32 = 54; pub const META_MODIFIED: u32 = 55; pub const META_TRACK: u32 = 56; pub const META_CLEAR: u32 = 57;
+pub const META_SHOW: u32 = 1000; pub const META_RESTORE: u32 = 2000; pub const META_OPTION: u32 = 3000;
+/// `column`: the menu was asked for on a column (its own rows come first). `hidden`, `trashed`: the names of the
+/// columns that can be shown again, and brought back. `modified`: the date column is shown.
+pub fn rows_for_columns(column: bool, hidden: &[String], trashed: &[String], modified: bool) -> Vec<Row> {
+    let mut rows = vec![];
+    if column { rows.extend([ours(META_EDIT, "Edit Column\u{2026}"), ours(META_LEFT, "Move Left"), ours(META_RIGHT, "Move Right"), ours(META_HIDE, "Hide Column"), ours(META_TRASH, "Move Column to Trash"), Row::Sep]); }
+    for (k, t) in ["Text", "Dropdown", "Date", "Priority", "Number", "Checkbox", "Links", "Notes"].iter().enumerate() { rows.push(named(META_ADD + k as u32, format!("Add {t} Column\u{2026}"))); }
+    if !hidden.is_empty() { rows.push(Row::Sep); for (k, n) in hidden.iter().enumerate() { rows.push(named(META_SHOW + k as u32, format!("Show \u{201c}{n}\u{201d}"))); } }
+    if !trashed.is_empty() { rows.push(Row::Sep); for (k, n) in trashed.iter().enumerate() { rows.push(named(META_RESTORE + k as u32, format!("Restore \u{201c}{n}\u{201d} from the Trash"))); } }
+    rows.extend([Row::Sep, ours(META_MODIFIED, if modified { "Hide Modified" } else { "Show Modified" })]);
+    rows
+}
+/// The rows for an item of a job's list.
+pub fn rows_for_item(tracked: bool) -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(META_TRACK, if tracked { "Untrack" } else { "Mark as Tracked" })] }
+/// A dropdown cell's options, and Clear.
+pub fn rows_for_options(options: &[String]) -> Vec<Row> { let mut rows: Vec<Row> = options.iter().enumerate().map(|(k, n)| named(META_OPTION + k as u32, n.clone())).collect(); rows.extend([Row::Sep, ours(META_CLEAR, "Clear")]); rows }
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 
@@ -308,7 +328,7 @@ pub mod sys {
         let sep = |menu: &NSMenu| { if menu.numberOfItems() > 0 && !menu.itemAtIndex(menu.numberOfItems() - 1).is_some_and(|i| i.isSeparatorItem()) { menu.addItem(&NSMenuItem::separatorItem(mtm)); } };
         for r in &ask.rows {
             match r {
-                Row::Ours { id, label } => { let it = row(mtm, label, Some(sel!(ours:)), *id as isize); it.setEnabled(*id != 0); menu.addItem(&it); }
+                Row::Ours { id, label } => { let it = row(mtm, label.as_ref(), Some(sel!(ours:)), *id as isize); it.setEnabled(*id != 0); menu.addItem(&it); }
                 Row::Sep => sep(&menu),
                 Row::Open => menu.addItem(&row(mtm, "Open", Some(sel!(open:)), 0)),
                 Row::Reveal => menu.addItem(&row(mtm, "Show in Finder", Some(sel!(reveal:)), 0)),

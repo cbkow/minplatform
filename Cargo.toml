@@ -44,7 +44,7 @@ windows-sys = "0.60"             # features per crate
 windows = { version = "0.62", default-features = false }   # the version wgpu-hal 30 uses: raw ID3D12 handles cross the hal boundary (min-present)
 serde = { version = "1", features = ["derive"] }   # optional in min-paths (the {vol,rel} ref shape)
 serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 cbindgen = "0.29"
 # media (FFmpeg 9 via raw bindings + thin RAII, canon §4; system FFmpeg through pkg-config)
 ffmpeg-sys-next = { version = "9.0.1", default-features = false, features = ["avcodec", "avformat", "swscale", "swresample", "avfilter"] }   # swresample + avfilter: step 2b audio

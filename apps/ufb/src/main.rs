@@ -17,6 +17,7 @@ mod ctxmenu;
 mod format;
 mod history;
 mod icons;
+mod itemlist;
 mod jobview;
 mod lightbox;
 mod lister;

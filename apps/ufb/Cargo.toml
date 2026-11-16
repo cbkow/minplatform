@@ -38,6 +38,8 @@ qcv-timeline = { path = "../../crates/qcv-timeline" }
 # what the application remembers between launches (the family's settings service)
 min-settings = { path = "../../crates/min-settings" }
 ufb-projtype = { path = "../../crates/ufb-projtype" }
+uuid = { workspace = true }
+serde_json = "1"
 # PDF pages in the lightbox (the family's reader)
 min-pdf = { path = "../../crates/min-pdf" }
 image = { version = "0.25", default-features = false, features = ["hdr"] }
