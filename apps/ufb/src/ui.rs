@@ -64,9 +64,11 @@ enum Drag { Sidebar(f64, f64), Split, /// the item list's edge in a job (the poi
 /// in front lives in the window's own fields; its place in the list is empty meanwhile.
 #[derive(Default)]
 struct Tab { panes: Vec<Pane>, active: usize, two: bool, split: f64, /// the tab shows a job (row 482): its sections and items beside the panes
-    job: Option<Job> }
+    job: Option<Job>, /// ... or the tracker: one job's tracked items, or every subscribed job's (row 491)
+    tracker: Option<crate::tracker::Tracker> }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool, /// a subscribed job: it opens as a job, not as a folder
-    job: bool }
+    job: bool, /// All Tracked: it opens the tracker of every subscribed job
+    all: bool }
 
 /// Logical px.
 const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 380.0; const JOB_LIST_MIN: f64 = 200.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
@@ -87,6 +89,9 @@ pub struct Ui {
     job_list: Rect, panes_x0: f64, /// the item list itself (row 489): its columns, what the items carry, its field; the foot's Columns button; what its last menu was about (the column in view, the item, the columns that can be shown again, those in the trash)
     /// the chips (row 490): the popover that picks a dropdown cell's value; a column's editor (a question of its own, over everything)
     chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>,
+    /// the tracker the tab in front shows, if it shows one (row 491): a job's (beside its sections), or All Tracked;
+    /// its button in a job's bar, the Due chips, its last press (two on one row open the item)
+    tracker: Option<crate::tracker::Tracker>, trk_btn: ActionButton, due_btns: Vec<ActionButton>, trk_press: Option<(Instant, usize)>,
     items: crate::itemlist::ItemList, job_meta: ActionButton, meta_ctx: (Option<usize>, Option<usize>, Vec<String>, Vec<(i64, String)>), made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
     /// the columns of the lists, a kind of panel (row 488): 0 the browser's panes, 1 a job's first pane, 2 its second
     col_layouts: [crate::pane::ColLayout; 3],
@@ -160,7 +165,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -177,9 +182,9 @@ impl Ui {
     fn shown(&self) -> usize { if self.two { self.panes.len().min(2) } else { 1 } }
     // ---------------------------------------------------------------- tabs (row 480)
     /// The tab in front is put into its place in the list, or taken out of it (the same exchange both ways).
-    fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); std::mem::swap(&mut self.job, &mut t.job); }
+    fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); std::mem::swap(&mut self.job, &mut t.job); std::mem::swap(&mut self.tracker, &mut t.tracker); }
     /// What belongs to the tab in front and does not go with it is ended: a name or a path being typed, an open menu, the lightbox.
-    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.items.edit = None; self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
+    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.items.edit = None; if let Some(t) = self.tracker.as_mut() { t.list.edit = None; } self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
     /// The tab now in front is looked at again: its folders may have changed while it was behind.
     fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } if let Some(j) = self.job.as_mut() { j.reload(); } }
     fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
@@ -188,27 +193,27 @@ impl Ui {
         let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first);
         { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } }
         self.leave_tab(); self.swap_tab(); self.tab += 1; self.tabs.insert(self.tab, Tab::default());
-        self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5; self.job = None;
+        self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5; self.job = None; self.tracker = None;
     }
     /// A tab is closed; the last one closes the window.
     fn close_tab(&mut self, i: usize) {
         if self.tabs.len() <= 1 { self.out.push(Out::Close); return } if i >= self.tabs.len() { return }
-        if i == self.tab { self.leave_tab(); self.panes.clear(); self.job = None; self.tabs.remove(i); self.tab = i.min(self.tabs.len() - 1); self.swap_tab(); self.enter_tab(); }
+        if i == self.tab { self.leave_tab(); self.panes.clear(); self.job = None; self.tracker = None; self.tabs.remove(i); self.tab = i.min(self.tabs.len() - 1); self.swap_tab(); self.enter_tab(); }
         else { self.tabs.remove(i); if i < self.tab { self.tab -= 1; } }
     }
     /// What a tab is called, and the folder it shows: its active pane's.
-    fn tab_place(&self, i: usize) -> (String, PathBuf) { let (panes, active, job) = if i == self.tab { (&self.panes, self.active, &self.job) } else { (&self.tabs[i].panes, self.tabs[i].active, &self.tabs[i].job) }; if let Some(j) = job { return (j.name.clone(), j.path.clone()) } match panes.get(active.min(panes.len().saturating_sub(1))) { Some(p) => (p.title(), p.path().to_path_buf()), None => (String::new(), PathBuf::new()) } }
+    fn tab_place(&self, i: usize) -> (String, PathBuf) { let (panes, active, job) = if i == self.tab { (&self.panes, self.active, &self.job) } else { (&self.tabs[i].panes, self.tabs[i].active, &self.tabs[i].job) }; if let Some(j) = job { return (j.name.clone(), j.path.clone()) } if (if i == self.tab { &self.tracker } else { &self.tabs[i].tracker }).is_some() { return ("All Tracked".to_string(), PathBuf::new()) } match panes.get(active.min(panes.len().saturating_sub(1))) { Some(p) => (p.title(), p.path().to_path_buf()), None => (String::new(), PathBuf::new()) } }
     // ---------------------------------------------------------------- the project side (row 482; `jobview.rs`, `db.rs`)
     fn reload_jobs(&mut self) { self.jobs = crate::db::with(|d| d.subscriptions()).unwrap_or_default(); }
     /// The tab in front shows this job: its sections and items beside the browser, which follows them.
     fn open_job(&mut self, path: PathBuf, name: String) {
-        if self.job.as_ref().is_some_and(|j| j.path == path) { return }
-        self.leave_tab(); let p = self.port.clone(); self.job = Some(Job::new(path, name, Arc::new(move || p.send(Msg::Icon)))); self.items.clear(); self.active = 0;
+        if self.job.as_ref().is_some_and(|j| j.path == path) { self.tracker = None; return }
+        self.leave_tab(); self.tracker = None; let p = self.port.clone(); self.job = Some(Job::new(path, name, Arc::new(move || p.send(Msg::Icon)))); self.items.clear(); self.active = 0;
     }
     /// A place of the sidebar is opened: a job as a job, a folder in the browser (the tab stops showing a job).
     fn open_place(&mut self, path: PathBuf, job: bool) {
         if job { let name = self.jobs.iter().find(|j| j.path == path).map(|j| j.name.clone()).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.open_job(path, name); }
-        else { if self.job.take().is_some() { self.focus = Focus::Pane; for p in self.panes.iter_mut() { p.root = None; } } self.go(path); }
+        else { if self.job.take().is_some() | self.tracker.take().is_some() { self.focus = Focus::Pane; for p in self.panes.iter_mut() { p.root = None; } } self.go(path); }
     }
     /// The browser follows the job: the chosen item's project folder in the first pane and its renders in the second
     /// (each the item itself when it has none) - or, with nothing chosen, the section's folder.
@@ -223,7 +228,7 @@ impl Ui {
         if second && self.two && self.panes.len() > 1 { self.panes[1].rooted(&port, b.clone(), b); }
     }
     /// In a job nothing is chosen: the panes show nothing (row 486 - not the section's folder, which only repeats the item list).
-    fn blank(&self) -> bool { self.job.as_ref().is_some_and(|j| j.chosen_item().is_none()) }
+    fn blank(&self) -> bool { self.tracker.is_some() || self.job.as_ref().is_some_and(|j| j.chosen_item().is_none()) }
     /// The folder the window is "in", for a new tab or a path to type: the active pane's - or, with nothing shown, the job's section.
     fn here(&self) -> PathBuf { match &self.job { Some(j) if j.chosen_item().is_none() => j.section_dir().unwrap_or_else(|| j.path.clone()), _ => self.panes[self.active.min(self.panes.len() - 1)].path().to_path_buf() } }
     /// Another section of the job comes to the front (row 484). What the one in front shows is kept for it - the
@@ -231,6 +236,7 @@ impl Ui {
     /// when it was last left, else its own folder. Nothing of the old section stays in view while the new one is read.
     fn job_show_section(&mut self, name: &str) {
         let port = self.port.clone(); let two = self.two && self.panes.len() > 1;
+        self.tracker = None;
         let Some(j) = self.job.as_mut() else { return }; if j.section.as_deref() == Some(name) { return }
         if let Some(old) = j.section.clone() { let at = |p: &Pane| (p.root.clone().unwrap_or_else(|| p.path().to_path_buf()), p.path().to_path_buf()); j.memory.insert(old, (j.chosen_item().map(|i| i.path.clone()), at(&self.panes[0]), two.then(|| at(&self.panes[1])))); }
         let dir = j.path.join(name); let kept = j.memory.get(name).cloned();
@@ -256,15 +262,65 @@ impl Ui {
     fn meta_err(&mut self, r: Option<Result<(), String>>) { match r { Some(Ok(())) => {} Some(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, Instant::now()), None => self.toast.show("The database could not be opened.", min_ui::toast::ToastKind::Negative, Instant::now()) } }
     /// The cell being typed into is written. False: what was typed is no value of the column's type - the field stays.
     fn commit_cell(&mut self) -> bool {
-        match self.items.typed() {
-            None => { if self.focus == Focus::Cell { self.focus = Focus::Items; } true }
+        let Some((item, col)) = self.list_mut().edit.as_ref().map(|e| (e.item.clone(), e.col)) else { if self.focus == Focus::Cell { self.focus = Focus::Items; } return true };
+        match self.list_mut().typed() {
+            None => { self.cancel_cell(); true }
             Some(Err(why)) => { self.toast.show(&why, min_ui::toast::ToastKind::Notice, Instant::now()); false }
-            Some(Ok((item, uuid, v))) => { self.items.edit = None; self.focus = Focus::Items;
-                if let Some((job, sec)) = self.section_key() { let r = crate::db::with(|d| d.set_field(&job, &item, &sec, &uuid, v)); self.meta_err(r); } self.items_reload(); true }
+            Some(Ok((_, _, v))) => { self.list_mut().edit = None; self.focus = Focus::Items;
+                if let Some((job, sec, c)) = self.cell_target(&item, col) { let r = crate::db::with(|d| d.set_field(&job, &item, &sec, &c.uuid, v)); self.meta_err(r); } self.reload_lists(); true }
         }
     }
-    fn cancel_cell(&mut self) { self.items.edit = None; if self.focus == Focus::Cell { self.focus = Focus::Items; } }
-    fn edit_cell(&mut self, item: usize, col: usize) { if let Some(j) = self.job.as_ref() { self.items.begin_edit(&mut self.fonts, &j.items, item, col); if self.items.edit.is_some() { self.leave_path(); self.leave_search(); self.focus = Focus::Cell; } } }
+    fn cancel_cell(&mut self) { self.list_mut().edit = None; if self.focus == Focus::Cell { self.focus = Focus::Items; } }
+    fn edit_cell(&mut self, item: usize, col: usize) {
+        match self.tracker.as_mut() { Some(t) => { let Some(path) = t.rows.get(item).map(|r| r.path.clone()) else { return }; if t.target(&path, col).is_none() { return } t.list.begin_edit(&mut self.fonts, &t.rows, item, col); }
+            None => if let Some(j) = self.job.as_ref() { self.items.begin_edit(&mut self.fonts, &j.items, item, col); } }
+        if self.list_mut().edit.is_some() { self.leave_path(); self.leave_search(); self.focus = Focus::Cell; }
+    }
+    /// The list in front: the tracker's, or the section's item list.
+    fn list_mut(&mut self) -> &mut crate::itemlist::ItemList { match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items } }
+    /// Where a cell of the list in front is written: (the job, the section, the column as that section has it). In the
+    /// tracker a cell can be of a column its row's section does not have: none.
+    fn cell_target(&self, item: &Path, col: usize) -> Option<(PathBuf, String, crate::db::ColDef)> {
+        match &self.tracker { Some(t) => t.target(item, col), None => { let (job, sec) = self.section_key()?; Some((job, sec, self.items.cols.get(col)?.clone())) } }
+    }
+    /// Something of the metadata was written: the lists read again.
+    fn reload_lists(&mut self) { self.items_reload(); if let Some(t) = self.tracker.as_mut() { t.reload(); } }
+    // ---------------------------------------------------------------- the tracker (row 491; `tracker.rs`)
+    /// The tab in front shows the tracker: this job's (its sections stay in the bar), or every subscribed job's.
+    fn open_tracker(&mut self, all: bool) {
+        self.cancel_cell(); self.chip = None;
+        if all { if self.tracker.as_ref().is_some_and(|t| t.scope == crate::tracker::Scope::All) { return } self.leave_tab(); self.job = None; for p in self.panes.iter_mut() { p.root = None; } self.tracker = Some(crate::tracker::Tracker::new(crate::tracker::Scope::All)); }
+        else if let Some(j) = self.job.as_ref() { self.tracker = Some(crate::tracker::Tracker::new(crate::tracker::Scope::Job(j.path.clone()))); }
+        self.focus = Focus::Items;
+    }
+    /// A tracked item is gone to, in its job: the section it is in comes to the front and the item is chosen. From All
+    /// Tracked, in a new tab (the tracker stays as it is).
+    fn open_tracked(&mut self, item: PathBuf) {
+        let Some((scope, (job, folder))) = self.tracker.as_ref().and_then(|t| t.home(&item).map(|h| (t.scope.clone(), h))) else { return };
+        if scope == crate::tracker::Scope::All { self.new_tab(job.clone()); self.open_place(job, true); if let Some(j) = self.job.as_mut() { j.show_section(&folder); j.choose = Some(item); } return }
+        self.tracker = None;
+        if self.job.as_ref().is_some_and(|j| j.section.as_deref() == Some(folder.as_str()) && !j.loading) { if let Some(i) = self.job.as_ref().and_then(|j| j.items.iter().position(|it| it.path == item)) { self.job_choose(i); self.job_reveal(); } }
+        else { self.job_show_section(&folder); if let Some(j) = self.job.as_mut() { j.choose = Some(item); j.hold = false; } }
+        self.focus = Focus::Items;
+    }
+    /// What the tracker's pointer asked for.
+    fn tracker_acts(&mut self, acts: Vec<crate::itemlist::Act>) {
+        use crate::itemlist::Act; let now = Instant::now();
+        for a in acts { let row = |t: &crate::tracker::Tracker, i: usize| t.rows.get(i).cloned(); match a {
+            // (a second press on the same row soon after the first goes to the item)
+            Act::Choose(i) => { let double = self.trk_press.is_some_and(|(t0, k)| k == i && now.duration_since(t0) < Duration::from_millis(450)); self.trk_press = Some((now, i));
+                if let Some(t) = self.tracker.as_mut() { t.chosen = Some(i); } if double { self.trk_press = None; if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { self.open_tracked(it.path); return } } }
+            // the star in the tracker takes the item out of it
+            Act::Star(i) => if let Some((it, (job, sec))) = self.tracker.as_ref().and_then(|t| row(t, i).and_then(|it| t.home(&it.path).map(|h| (it, h)))) { let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, false)); self.meta_err(r); self.reload_lists(); },
+            Act::Check(i, k) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { if let Some((job, sec, c)) = self.cell_target(&it.path, k) { let on = !self.tracker.as_ref().is_some_and(|t| t.list.cols.get(k).is_some_and(|m| crate::itemlist::is_checked(t.list.value(&it, m)))); let r = crate::db::with(|d| d.set_field(&job, &it.path, &sec, &c.uuid, serde_json::Value::Bool(on))); self.meta_err(r); self.reload_lists(); } },
+            Act::Edit(i, k) => { self.trk_press = None; self.edit_cell(i, k); }
+            Act::Options(i, k, at) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { if let Some((_, _, c)) = self.cell_target(&it.path, k) {
+                self.trk_press = None; let s = self.scale(); let size = self.window.surface_size(); let cur = self.tracker.as_ref().and_then(|t| t.list.cols.get(k).map(|m| crate::itemlist::text_of(&m.kind, t.list.value(&it, m)))).unwrap_or_default();
+                let mut p = crate::chips::ChipPicker::new(it.path.clone(), k, c.options.clone(), cur); p.open(&mut self.fonts, Rect::new(at.0, at.1 - 24.0 * s, at.0 + 120.0 * s, at.1), Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); self.chip = Some(p); } },
+            Act::RowMenu(i, at) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { self.meta_ctx = (None, Some(i), vec![], vec![]); self.menu_for = Some((None, it.path.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![it.path], rows: crate::ctxmenu::rows_for_tracked() }); },
+            Act::HeadMenu(..) | Act::Width(..) => {}
+        } }
+    }
     /// What the item list's pointer asked for.
     fn items_acts(&mut self, acts: Vec<crate::itemlist::Act>) {
         use crate::itemlist::Act; let Some((job, sec)) = self.section_key() else { return };
@@ -304,14 +360,20 @@ impl Ui {
     }
     /// A chip was picked for a cell (or the cell cleared; or a text made an option, and set).
     fn chip_picked(&mut self, item: PathBuf, col: usize, pick: crate::chips::Pick) {
-        use crate::chips::Pick; let (Some((job, sec)), Some(c)) = (self.section_key(), self.items.cols.get(col).cloned()) else { return };
+        use crate::chips::Pick; let Some((job, sec, c)) = self.cell_target(&item, col) else { return };
         let value = match pick { Pick::Clear => serde_json::Value::Null, Pick::Set(n) => serde_json::Value::String(n),
             Pick::Create(n) => { let taken: Vec<Option<String>> = c.options.iter().map(|o| o.1.clone()).collect(); let r = crate::db::with(|d| d.add_option(c.id, &n, &crate::chips::next_color(&taken))); self.meta_err(r); serde_json::Value::String(n) } };
-        let r = crate::db::with(|d| d.set_field(&job, &item, &sec, &c.uuid, value)); self.meta_err(r); self.items_reload();
+        let r = crate::db::with(|d| d.set_field(&job, &item, &sec, &c.uuid, value)); self.meta_err(r); self.reload_lists();
     }
     /// A row of the item list's menus was chosen.
     fn meta_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::*; let Some((job, sec)) = self.section_key() else { return }; let (col, item, hidden, trashed) = self.meta_ctx.clone();
+        use crate::ctxmenu::*;
+        // the tracker's own rows: go to the item in its job; take it out of the tracker
+        if let Some(it) = self.tracker.as_ref().and_then(|t| self.meta_ctx.1.and_then(|i| t.rows.get(i).cloned())) {
+            match id { TRK_OPEN => self.open_tracked(it.path), META_TRACK => { if let Some((job, sec)) = self.tracker.as_ref().and_then(|t| t.home(&it.path)) { let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, false)); self.meta_err(r); self.reload_lists(); } } _ => {} }
+            return
+        }
+        let Some((job, sec)) = self.section_key() else { return }; let (col, item, hidden, trashed) = self.meta_ctx.clone();
         let c = col.and_then(|k| self.items.cols.get(k).cloned());
         match id {
             META_EDIT => if let Some(c) = c { self.ask_column(Some(c.id), &c.kind, &c.name, &c.options); },
@@ -454,7 +516,7 @@ impl Ui {
         any
     }
     /// The window became active: the volumes are looked for again, and each pane asks whether its folder changed.
-    pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } self.reload_jobs(); if let Some(j) = self.job.as_mut() { j.reload(); } }
+    pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } self.reload_jobs(); if let Some(j) = self.job.as_mut() { j.reload(); } if let Some(t) = self.tracker.as_mut() { t.reload(); } }
     pub fn deactivated(&mut self) { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
 
     // ---------------------------------------------------------------- the lightbox (`lightbox.rs`)
@@ -783,7 +845,7 @@ impl Ui {
     /// The active pane goes to a folder. In a job a pane stays inside the chosen item: a folder outside it (a path
     /// typed, the Go menu) opens in a NEW TAB, and the job stays as it is (row 486).
     fn go(&mut self, path: PathBuf) {
-        if self.job.is_some() { let inside = !self.blank() && self.pane().root.clone().is_some_and(|r| path.starts_with(&r)); if !inside { self.new_tab(path); return } }
+        if self.job.is_some() || self.tracker.is_some() { let inside = !self.blank() && self.pane().root.clone().is_some_and(|r| path.starts_with(&r)); if !inside { self.new_tab(path); return } }
         let port = self.port.clone(); self.pane().go(&port, path);
     }
     fn set_two(&mut self, on: bool) {
@@ -843,7 +905,7 @@ impl Ui {
             Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.out.push(Out::Quit),
             Cmd::Open => { self.pane().open_chosen(&port); self.after_pane_events(); }
             Cmd::Preview => if self.lightbox.is_open() { self.close_lightbox(); } else if self.focus == Focus::Pane && self.dialog.is_none() { let i = self.active.min(self.panes.len() - 1); if let Some(row) = self.panes[i].cursor_row() { self.open_lightbox(i, row); } },
-            Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all(), Focus::Items => {}, Focus::Cell => if let Some(e) = self.items.edit.as_mut() { e.field.select_all(&mut self.fonts); } },
+            Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all(), Focus::Items => {}, Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.select_all(&mut self.fonts); } } },
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
@@ -866,7 +928,7 @@ impl Ui {
         let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.menubar.as_ref().is_some_and(|m| m.bar.is_open()) { return }
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
-        if self.job.is_some() && self.job_list.contains(p) { if self.mods.shift { self.items.hbar.wheel(dy, now); } else { self.items.bar.wheel(dy, now); } return }
+        if (self.job.is_some() || self.tracker.is_some()) && self.job_list.contains(p) { let shift = self.mods.shift; let l = self.list_mut(); if shift { l.hbar.wheel(dy, now); } else { l.bar.wheel(dy, now); } return }
         if self.blank() { return }
         let n = self.shown(); for pane in self.panes.iter_mut().take(n) { if pane.rect.contains(p) { pane.wheel(dy, now); return } }
     }
@@ -1045,6 +1107,7 @@ impl Ui {
         for sec in self.sections.iter_mut() { sec.event(e, now); }
         self.side_hover = at.filter(|p| self.side_rect.contains(*p)).and_then(|p| self.side_rows.iter().position(|r| r.rect.contains(p)));
         if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
+            if self.side_rect.contains(p) && self.side_rows.iter().any(|r| r.all && r.rect.contains(p)) { self.open_tracker(true); return }
             if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some((to, job)) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone().map(|q| (q, r.job))) { self.open_place(to, job); } } }
         // ... and its menu: a place opens here or in a new window (row 448)
         if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
@@ -1056,6 +1119,8 @@ impl Ui {
             let mut show = None; for (b, name) in self.job_secs.iter_mut().zip(self.job_secs_for.iter()) { if b.event(e, now) == Response::Clicked { show = Some(name.clone()); } }
             if let Some(name) = show { self.job_show_section(&name); }
             if self.job_refresh.event(e, now) == Response::Clicked { self.command(Cmd::Refresh); }
+            if self.trk_btn.rect.width() > 0.0 && self.trk_btn.event(e, now) == Response::Clicked { if self.tracker.is_some() { self.tracker = None; } else { self.open_tracker(false); } return }
+            if self.tracker.is_none() {
             if self.job_add.rect.width() > 0.0 && self.job_add.event(e, now) == Response::Clicked { self.ask_add_item(); return }
             if self.job_meta.rect.width() > 0.0 && self.job_meta.event(e, now) == Response::Clicked { let r = self.job_meta.rect; self.columns_menu(None, (r.x0, r.y0 - 4.0 * s)); return }
             // a cell being typed into: its field takes what is on it; a press anywhere else takes what was typed
@@ -1070,6 +1135,22 @@ impl Ui {
             let any = !acts.is_empty(); self.items_acts(acts);
             if (matches!(e, Event::Down { .. }) && in_list) || any { self.set_cursor(winit31::cursor::CursorIcon::Default); return }
             if self.items.resizing() { self.set_cursor(winit31::cursor::CursorIcon::ColResize); return }
+            }
+        }
+        // the tracker: its Due chips, its list (a press chooses, two go to the item; the cells are edited as in a job's list)
+        if self.tracker.is_some() {
+            let mut due = None; for (k, b) in self.due_btns.iter_mut().enumerate() { if b.rect.width() > 0.0 && b.event(e, now) == Response::Clicked { due = Some(k); } }
+            if let (Some(k), Some(tr)) = (due, self.tracker.as_mut()) { tr.due = crate::tracker::DUES[k].0; tr.filter(); return }
+            if let Some(ed) = self.tracker.as_mut().and_then(|tr| tr.list.edit.as_mut()) {
+                let on = e.pos().is_some_and(|(x, y)| ed.field.hit(x, y));
+                if on || ed.field.dragging() { ed.field.pointer(e, &mut self.fonts); return }
+                if matches!(e, Event::Down { .. }) && !self.commit_cell() { return }
+            }
+            let (acts, in_list, resizing) = match self.tracker.as_mut() { Some(tr) => { let crate::tracker::Tracker { list, rows, .. } = tr; let inl = e.pos().is_some_and(|(x, y)| list.rect.contains(kurbo::Point::new(x, y))); (list.event(e, rows, now), inl, list.resizing()) } None => (vec![], false, false) };
+            if matches!(e, Event::Down { .. }) && in_list { self.leave_path(); self.leave_search(); if self.focus != Focus::Cell { self.focus = Focus::Items; } }
+            let any = !acts.is_empty(); self.tracker_acts(acts);
+            if (matches!(e, Event::Down { .. }) && in_list) || any { self.set_cursor(winit31::cursor::CursorIcon::Default); return }
+            if resizing { self.set_cursor(winit31::cursor::CursorIcon::ColResize); return }
         }
         // (in a job with nothing chosen no pane is shown: nothing below is there to take the pointer)
         if self.blank() { self.set_cursor(if self.over_gap.is_some() { winit31::cursor::CursorIcon::ColResize } else { winit31::cursor::CursorIcon::Default }); return }
@@ -1090,13 +1171,13 @@ impl Ui {
         self.set_cursor(if self.over_gap == Some(1) && self.stacked { winit31::cursor::CursorIcon::RowResize } else if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
-    pub fn paste(&mut self, text: &str) { if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { if let Some((_, f)) = d.fields.iter_mut().find(|(_, f)| f.focused) { f.paste(text, &mut self.fonts); self.dialog_preview(); } return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => if let Some(e) = self.items.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); }, Focus::Pane | Focus::Items => {} } }
+    pub fn paste(&mut self, text: &str) { if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { if let Some((_, f)) = d.fields.iter_mut().find(|(_, f)| f.focused) { f.paste(text, &mut self.fonts); self.dialog_preview(); } return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); } } Focus::Pane | Focus::Items => {} } }
     /// A key for the drawn menu bar: (the command of the row chosen, redraw, the key was the bar's).
     pub fn with_menu_key(&mut self, k: &min_ui::BarKey) -> (Option<Cmd>, bool, bool) { match self.menubar.as_mut() { Some(mb) => { let (id, redraw, consumed) = mb.bar.key(k, &mut self.fonts); (id.and_then(|i| mb.cmd(i)), redraw, consumed) } None => (None, false, false) } }
     /// A text field holds the keyboard (the clipboard's keys are its).
     pub fn typing(&self) -> bool { self.text_focus() }
     /// The chosen text of the field in hand, for a copy; `cut` takes it out.
-    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.fields.iter_mut().find(|(_, f)| f.focused).and_then(|(_, f)| f.copy(cut, &mut self.fonts)); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => self.items.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)), Focus::Pane | Focus::Items => None } }
+    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.fields.iter_mut().find(|(_, f)| f.focused).and_then(|(_, f)| f.copy(cut, &mut self.fonts)); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; l.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)) } Focus::Pane | Focus::Items => None } }
     /// A key. `name`: the key as the key map names it ("N", "[", "Up", "F5"); `alt`: the Alt / Option key is down;
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
@@ -1138,16 +1219,26 @@ impl Ui {
             // the item list of a job: the arrows choose, Tab and Escape give the keys back to the browser
             // a cell being typed into: Return takes it, Escape leaves it as it was, Tab takes it and opens the next cell that is typed into
             Focus::Cell => {
-                let Some(ed) = self.items.edit.as_mut() else { self.focus = Focus::Items; return };
+                let fonts = &mut self.fonts; let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items };
+                let Some(ed) = l.edit.as_mut() else { self.focus = Focus::Items; return };
                 if matches!(k.key, Key::Named(Named::Tab)) {
                     let (item, col) = (ed.item.clone(), ed.col); if !self.commit_cell() { return }
-                    let typed = |c: &crate::db::ColDef| !matches!(crate::db::kind_of(&c.kind), "checkbox") && !(matches!(crate::db::kind_of(&c.kind), "dropdown" | "priority") && !c.options.is_empty());
-                    let n = self.items.cols.len(); let next = (1..n).map(|d| if k.shift { (col + n - d) % n } else { (col + d) % n }).find(|c| typed(&self.items.cols[*c]));
-                    if let (Some(next), Some(i)) = (next, self.job.as_ref().and_then(|j| j.items.iter().position(|it| it.path == item))) { self.edit_cell(i, next); }
+                    let typed = |c: &crate::db::ColDef| !c.uuid.starts_with('#') && !matches!(crate::db::kind_of(&c.kind), "checkbox") && !(matches!(crate::db::kind_of(&c.kind), "dropdown" | "priority") && !c.options.is_empty());
+                    let cols = self.list_mut().cols.clone(); let n = cols.len(); let next = (1..n).map(|d| if k.shift { (col + n - d) % n } else { (col + d) % n }).find(|c| typed(&cols[*c]));
+                    let at = match &self.tracker { Some(t) => t.rows.iter().position(|it| it.path == item), None => self.job.as_ref().and_then(|j| j.items.iter().position(|it| it.path == item)) };
+                    if let (Some(next), Some(i)) = (next, at) { self.edit_cell(i, next); }
                     return
                 }
-                match ed.field.key(k, &mut self.fonts) { FieldResponse::Accepted => { self.commit_cell(); } FieldResponse::Cancelled => self.cancel_cell(), FieldResponse::Changed => ed.field.error = false, FieldResponse::None => {} }
+                match ed.field.key(k, fonts) { FieldResponse::Accepted => { self.commit_cell(); } FieldResponse::Cancelled => self.cancel_cell(), FieldResponse::Changed => ed.field.error = false, FieldResponse::None => {} }
                 return
+            }
+            // the tracker: the arrows go through its rows, Return goes to the item in its job
+            Focus::Items if self.tracker.is_some() => {
+                if !k.cmd && !alt { if let Some(t) = self.tracker.as_mut() { let order = t.list.order.clone(); let n = order.len(); let at = t.chosen.and_then(|i| order.iter().position(|k| *k == i));
+                    let to = match k.key { Key::Named(Named::Down) => Some(at.map(|i| (i + 1).min(n.saturating_sub(1))).unwrap_or(0)), Key::Named(Named::Up) => Some(at.map(|i| i.saturating_sub(1)).unwrap_or(0)), Key::Named(Named::Home) => Some(0), Key::Named(Named::End) => Some(n.saturating_sub(1)), _ => None };
+                    if let Some(pos) = to.filter(|_| n > 0) { t.chosen = Some(order[pos]); t.list.reveal(pos); return }
+                    if matches!(k.key, Key::Named(Named::Enter)) { if let Some(p) = t.chosen.and_then(|i| t.rows.get(i)).map(|r| r.path.clone()) { self.open_tracked(p); } return } } }
+                if !k.cmd { return }
             }
             Focus::Items => {
                 // (the arrows go through the items in the order SHOWN)
@@ -1218,10 +1309,10 @@ impl Ui {
             // the items' metadata: `col:<type>:<name>[:<options>]` (a column added) `cell:<item>:<column>:<text>` (typed into a cell, as its field would)
             // `star:<item>` `check:<item>:<column>` `option:<item>:<column>:<n>` `colsort:<name|modified|column number>` `colmenu[:<column>]` `colpick:<row>` `meta` (says the list)
             "col" => { let mut p = arg.splitn(3, ':'); if let (Some(kind), Some(name), Some((job, sec))) = (p.next(), p.next(), self.section_key()) { let opts = crate::itemlist::parse_options(p.next().unwrap_or("")); let r = crate::db::with(|d| d.add_column(&job, &sec, name, kind, &opts).map(|_| ())); self.meta_err(r); self.items_reload(); } },
-            "cell" => { let mut p = arg.splitn(3, ':'); if let (Some(i), Some(k), Some(text)) = (p.next().and_then(num), p.next().and_then(num), p.next()) { self.edit_cell(i, k); if let Some(e) = self.items.edit.as_mut() { e.field.set_text(text); } let ok = self.commit_cell(); if !ok { eprintln!("UFB_DEMO: the cell did not take {text:?}"); self.cancel_cell(); } } },
+            "cell" => { let mut p = arg.splitn(3, ':'); if let (Some(i), Some(k), Some(text)) = (p.next().and_then(num), p.next().and_then(num), p.next()) { self.edit_cell(i, k); if let Some(e) = self.list_mut().edit.as_mut() { e.field.set_text(text); } let ok = self.commit_cell(); if !ok { eprintln!("UFB_DEMO: the cell did not take {text:?}"); self.cancel_cell(); } } },
             "celledit" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { self.edit_cell(i, k); } },
-            "star" => if let Some(i) = num(arg) { self.items_acts(vec![crate::itemlist::Act::Star(i)]); },
-            "check" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { self.items_acts(vec![crate::itemlist::Act::Check(i, k)]); } },
+            "star" => if let Some(i) = num(arg) { if self.tracker.is_some() { self.tracker_acts(vec![crate::itemlist::Act::Star(i)]); } else { self.items_acts(vec![crate::itemlist::Act::Star(i)]); } },
+            "check" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { if self.tracker.is_some() { self.tracker_acts(vec![crate::itemlist::Act::Check(i, k)]); } else { self.items_acts(vec![crate::itemlist::Act::Check(i, k)]); } } },
             "option" => { let mut p = arg.splitn(3, ':'); if let (Some(i), Some(k), Some(n)) = (p.next().and_then(num), p.next().and_then(num), p.next().and_then(num)) { self.meta_ctx = (Some(k), Some(i), vec![], vec![]); self.meta_chosen(crate::ctxmenu::META_OPTION + n as u32); } },
             "colsort" => { use crate::itemlist::SortBy; let by = match arg { "name" => Some(SortBy::Name), "modified" => Some(SortBy::Modified), a => num(a).and_then(|k| self.items.cols.get(k)).map(|c| SortBy::Col(c.uuid.clone())) };
                 if let (Some(by), Some(j)) = (by, self.job.as_ref()) { self.items.sort = match &self.items.sort { Some((b, true)) if *b == by => Some((by, false)), Some((b, false)) if *b == by => None, _ => Some((by, true)) }; self.items.reorder(&j.items); } },
@@ -1236,6 +1327,12 @@ impl Ui {
             "coledit" => if let Some(c) = num(arg).and_then(|k| self.items.cols.get(k).cloned()) { self.ask_column(Some(c.id), &c.kind, &c.name, &c.options); },
             "swatches" => { let (row, custom) = arg.split_once(':').map(|(a, b)| (a, b == "custom")).unwrap_or((arg, false)); if let (Some(ed), Some(row)) = (self.coledit.as_mut(), num(row)) { ed.show_swatches(row, custom); } },
             "coleditsave" => { self.key(&KeyEvent { key: Key::Named(Named::Enter), text: None, shift: false, cmd: true }, "Enter", false, false); },
+            // the tracker: `tracker` (the job's; again closes it) `alltracked` `trk` (says it) `due:<0-4>` `trkopen:<row>` - `cell:`, `check:` and `star:` act on its rows while it is in front
+            "tracker" => if self.tracker.is_some() { self.tracker = None; } else { self.open_tracker(false); }, "alltracked" => self.open_tracker(true),
+            "due" => if let (Some(k), Some(tr)) = (num(arg).filter(|k| *k < 5), self.tracker.as_mut()) { tr.due = crate::tracker::DUES[k].0; tr.filter(); },
+            "trkopen" => if let Some(p) = num(arg).and_then(|i| self.tracker.as_ref().and_then(|t| t.rows.get(i).map(|r| r.path.clone()))) { self.open_tracked(p); },
+            "trk" => if let Some(tr) = self.tracker.as_ref() { eprintln!("UFB_DEMO: tracker {:?} due {:?} columns [{}]; {}", tr.scope == crate::tracker::Scope::All, tr.due, tr.list.cols.iter().map(|c| format!("{}:{}", c.name, c.kind)).collect::<Vec<_>>().join(", "),
+                tr.list.order.iter().filter_map(|i| tr.rows.get(*i)).map(|it| format!("{} [{}]", it.name, tr.list.cols.iter().map(|c| crate::itemlist::text_of(&c.kind, tr.list.value(it, c))).collect::<Vec<_>>().join(" | "))).collect::<Vec<_>>().join("; ")); },
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
@@ -1317,7 +1414,7 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.tracker.as_ref().is_some_and(|t| t.list.animating(now)) || self.trk_btn.animating(now) || self.due_btns.iter().any(|b| b.animating(now)) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
             || ((!self.demo.is_empty() || (self.shot.is_some() && !self.done)) && (std::env::var_os("UFB_DEMO_IDLE").is_none() || !self.lightbox.is_open()))
@@ -1352,7 +1449,7 @@ impl Ui {
         if self.active >= self.shown() { self.active = 0; }
         self.sync_columns();
         // the window is called by the folder it shows (the active pane's)
-        { let title = match &self.job { Some(j) if j.chosen_item().is_none() => j.name.clone(), Some(j) => format!("{} \u{2014} {}", j.name, self.panes[self.active].title()), None => self.panes[self.active].title() }; if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
+        { let title = match &self.job { None if self.tracker.is_some() => "All Tracked".to_string(), Some(j) if self.tracker.is_some() => format!("{} \u{2014} Tracker", j.name), Some(j) if j.chosen_item().is_none() => j.name.clone(), Some(j) => format!("{} \u{2014} {}", j.name, self.panes[self.active].title()), None => self.panes[self.active].title() }; if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
         // the search field shows the active pane's filter (a navigation clears it)
         if self.search.text() != self.panes[self.active].search { let text = self.panes[self.active].search.clone(); self.search.set_text(&text); }
         // -- where everything lies
@@ -1369,13 +1466,15 @@ impl Ui {
         let job_bar = Rect::new(area.x0, strip.y1, area.x1, (strip.y1 + if in_job { JOB_BAR * s } else { 0.0 }).min(area.y1));
         let tool = Rect::new(area.x0, job_bar.y1, area.x1, (job_bar.y1 + TOOLBAR * s).min(area.y1));
         // (the item list is wide - it carries the items' metadata - and its edge can be dragged, row 484)
-        let list_w = if in_job { (self.job_w * s).min((area.width() * 0.6).round()).max((JOB_LIST_MIN * s).min(area.width() * 0.6)) } else { 0.0 };
-        self.job_list = Rect::new(area.x0, tool.y1, area.x0 + list_w, area.y1); self.panes_x0 = area.x0 + list_w;
+        // the tracker takes the whole room under the bars (no panes), with a strip of its own above its list: its name, the Due chips
+        let trk = self.tracker.is_some(); let trk_strip = if trk { 36.0 * s } else { 0.0 };
+        let list_w = if trk { area.width() } else if in_job { (self.job_w * s).min((area.width() * 0.6).round()).max((JOB_LIST_MIN * s).min(area.width() * 0.6)) } else { 0.0 };
+        self.job_list = Rect::new(area.x0, (tool.y1 + trk_strip).min(area.y1), area.x0 + list_w, area.y1); self.panes_x0 = area.x0 + list_w;
         let body = Rect::new(area.x0 + list_w, tool.y1, area.x1, area.y1);
         if let Some(j) = &self.job { if self.job_secs_for != j.sections { self.job_secs_for = j.sections.clone(); self.job_secs = j.sections.iter().map(|n| { let label = crate::jobview::project_type().section(n).map(|s| s.label().to_string()).unwrap_or_else(|| n.clone()); let mut b = ActionButton::new("", "").size_s(); b.label = Some(label); b }).collect(); } }
         let add_label = self.job_add_label();
         self.gaps[0] = Rect::new(side_w - GAP * s / 2.0, menu_h, side_w + GAP * s / 2.0, status.y0);
-        self.gaps[2] = if in_job { Rect::new(body.x0 - GAP * s / 2.0, tool.y1, body.x0 + GAP * s / 2.0, area.y1) } else { Rect::ZERO };
+        self.gaps[2] = if in_job && !trk { Rect::new(body.x0 - GAP * s / 2.0, tool.y1, body.x0 + GAP * s / 2.0, area.y1) } else { Rect::ZERO };
         // in a job the second pane lies BELOW the first (row 484: the item list needs the width); in the browser, beside it
         // (in a job with nothing chosen no pane is drawn, row 486)
         let blank = self.blank(); let n = if blank { 0 } else { self.shown() }; self.stacked = in_job; self.panes_area = body;
@@ -1430,7 +1529,7 @@ impl Ui {
         paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
 
         // -- the panes
-        if blank { if let Some(j) = &self.job {
+        if blank && !trk { if let Some(j) = &self.job {
             let what = if j.missing || (j.loading && j.items.is_empty()) { String::new() } else if j.items.is_empty() { "Nothing in this section yet".to_string() } else if self.job_add.label.as_deref() == Some("Add Shot") { "Choose a shot to see its files".to_string() } else { "Choose an item to see its files".to_string() };
             let l = fonts.layout_fit(&what, Family::Sans, t::BODY_SIZE_M * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, (body.width() - 40.0 * s).max(10.0));
             draw_layout(scene, &l, Affine::translate((body.x0 + (body.width() - l.width() as f64) / 2.0, body.y0 + (body.height() * 0.38).min(160.0 * s))));
@@ -1501,8 +1600,11 @@ impl Ui {
             let end = self.job_refresh.rect.x0 - 10.0 * s;
             for (b, name) in self.job_secs.iter_mut().zip(self.job_secs_for.iter()) {
                 let w = b.measure(fonts, s).0; if x + w > end { b.rect = Rect::ZERO; continue }
-                b.rect = Rect::new(x, cy, x + w, cy + sb); b.corners = Corners::all(radius); b.selected = j.section.as_deref() == Some(name.as_str()); b.paint(scene, fonts, s, now); x += w + 4.0 * s;
+                b.rect = Rect::new(x, cy, x + w, cy + sb); b.corners = Corners::all(radius); b.selected = !trk && j.section.as_deref() == Some(name.as_str()); b.paint(scene, fonts, s, now); x += w + 4.0 * s;
             }
+            // ... and, after them, the job's tracker
+            { let w = self.trk_btn.measure(fonts, s).0; self.trk_btn.rect = if x + 10.0 * s + w <= end { Rect::new(x + 10.0 * s, cy, x + 10.0 * s + w, cy + sb) } else { Rect::ZERO }; self.trk_btn.corners = Corners::all(radius); self.trk_btn.selected = trk; if self.trk_btn.rect.width() > 0.0 { paint::rect(scene, Rect::new(x + 4.0 * s, cy + 4.0 * s, x + 4.0 * s + s, cy + sb - 4.0 * s), t::DIVIDER_COLOR); self.trk_btn.paint(scene, fonts, s, now); } }
+            if !trk {
             // the item list (`itemlist.rs`): the star, the name, the metadata columns, the date; Add and Columns at its foot
             let lr = self.job_list; let foot = 40.0 * s;
             let title = if j.missing { "The job's folder is not there".to_string() } else if j.loading && j.items.is_empty() { "Items".to_string() } else { format!("Items ({})", j.items.len()) };
@@ -1513,6 +1615,19 @@ impl Ui {
             let mut fx = lr.x0 + 10.0 * s;
             if let Some(label) = add_label { self.job_add.label = Some(label.to_string()); let w = self.job_add.measure(fonts, s).0; self.job_add.rect = Rect::new(fx, lr.y1 - foot + (foot - sb) / 2.0, fx + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_add.corners = Corners::all(radius); self.job_add.paint(scene, fonts, s, now); fx += w + 8.0 * s; }
             if !j.missing && j.section.is_some() { let w = self.job_meta.measure(fonts, s).0; self.job_meta.rect = Rect::new(fx, lr.y1 - foot + (foot - sb) / 2.0, fx + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_meta.corners = Corners::all(radius); self.job_meta.paint(scene, fonts, s, now); }
+            }
+        } else { self.trk_btn.rect = Rect::ZERO; }
+        // -- the tracker: its strip (its name where no job's bar says it, the Due chips when a date is among its columns), its list
+        for b in self.due_btns.iter_mut() { b.rect = Rect::ZERO; }
+        if let Some(tr) = self.tracker.as_mut() {
+            let lr = self.job_list; let strip = Rect::new(lr.x0, lr.y0 - trk_strip, lr.x1, lr.y0); let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let cy = strip.y0 + (strip.height() - sb) / 2.0; let mut x = strip.x0 + 12.0 * s;
+            if tr.scope == crate::tracker::Scope::All { if let Some(g) = fonts.icon("list-checks", 15.0 * s as f32, ink) { draw_layout(scene, &g, Affine::translate((x, strip.y0 + (strip.height() - g.height() as f64) / 2.0))); x += g.width() as f64 + 7.0 * s; }
+                let l = fonts.layout("All Tracked", Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_BOLD as f32, ink); draw_layout(scene, &l, Affine::translate((x, strip.y0 + (strip.height() - l.height() as f64) / 2.0))); x += l.width() as f64 + 20.0 * s; }
+            if tr.dated { let l = fonts.layout("Due", Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub); draw_layout(scene, &l, Affine::translate((x, strip.y0 + (strip.height() - l.height() as f64) / 2.0))); x += l.width() as f64 + 8.0 * s;
+                for (k, b) in self.due_btns.iter_mut().enumerate() { let w = b.measure(fonts, s).0; if x + w > strip.x1 - 8.0 * s { break } b.rect = Rect::new(x, cy, x + w, cy + sb); b.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); b.selected = crate::tracker::DUES[k].0 == tr.due; b.paint(scene, fonts, s, now); x += w + 4.0 * s; } }
+            paint::hline(scene, strip.x0, strip.x1, strip.y1 - s, s, t::DIVIDER_COLOR);
+            let n = tr.rows.len(); tr.list.layout(lr, n, s);
+            tr.list.paint(scene, fonts, &tr.rows, tr.chosen, matches!(self.focus, Focus::Items | Focus::Cell), &format!("Tracked ({n})"), if tr.due == crate::tracker::Due::All { "Nothing is tracked yet: press an item's star in a job" } else { "Nothing is due then" }, now);
         }
 
         // -- the toolbar
@@ -1551,15 +1666,16 @@ impl Ui {
         let lists: [(Vec<&Place>, &str); 4] = [(self.favorites.iter().collect(), "No favorites yet"), (vec![], "No saved shares"), (job_places.iter().collect(), "No jobs"), (self.fixed.iter().chain(self.volumes.iter()).collect(), "")];
         // the row of the place the active pane is in: the longest of the places that is exactly it
         let mut y = sr.y0 + pad_s - self.side_bar.offset; let top = y;
-        let side_row = |scene: &mut Scene, fonts: &mut Fonts, rows: &mut Vec<SideRow>, y: f64, icon: &str, label: &str, path: Option<&Path>, enabled: bool, hover: Option<usize>, job: bool| {
-            let r = Rect::new(x0 + 4.0 * s, y, x1 - 4.0 * s, y + row_h); let here = job == in_job && path.is_some_and(|p| p == current); let idx = rows.len();
+        let all_front = self.tracker.as_ref().is_some_and(|t| t.scope == crate::tracker::Scope::All);
+        let side_row = |scene: &mut Scene, fonts: &mut Fonts, rows: &mut Vec<SideRow>, y: f64, icon: &str, label: &str, path: Option<&Path>, enabled: bool, hover: Option<usize>, job: bool, all: bool| {
+            let r = Rect::new(x0 + 4.0 * s, y, x1 - 4.0 * s, y + row_h); let here = if all { all_front } else { !all_front && job == in_job && path.is_some_and(|p| p == current) }; let idx = rows.len();
             if here { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::RAIL_ROW_ACTIVE_FILL); } else if enabled && hover == Some(idx) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
             let color = paint::color(if !enabled { t::DISABLED_CONTENT_COLOR } else if here { t::RAIL_ROW_ACTIVE_LABEL } else { t::NEUTRAL_CONTENT_COLOR_DEFAULT });
             let mut tx = r.x0 + 8.0 * s;
             if let Some(g) = fonts.icon(icon, 15.0 * s as f32, if here || !enabled { color } else { paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT) }) { draw_layout(scene, &g, Affine::translate((tx, y + (row_h - g.height() as f64) / 2.0))); } tx += 22.0 * s;
             let l = fonts.layout_fit(label, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, color, r.x1 - tx - 6.0 * s);
             draw_layout(scene, &l, Affine::translate((tx, y + (row_h - l.height() as f64) / 2.0)));
-            rows.push(SideRow { rect: r, path: path.map(Path::to_path_buf), enabled, job });
+            rows.push(SideRow { rect: r, path: path.map(Path::to_path_buf), enabled, job, all });
         };
         for (i, (rows, empty)) in lists.iter().enumerate() {
             let open = self.sections[i].expanded; let body_h = if !open { 0.0 } else if rows.is_empty() { row_h } else { rows.len() as f64 * row_h } + if open { 6.0 * s } else { 0.0 };
@@ -1567,12 +1683,12 @@ impl Ui {
             self.sections[i].rect = Rect::new(x0, y, x1, y + head_h2); self.sections[i].paint(scene, fonts, s, now, i == 0); y += head_h2;
             if open {
                 if rows.is_empty() { let l = fonts.layout_fit(empty, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, x1 - x0 - 24.0 * s); draw_layout(scene, &l, Affine::translate((x0 + 12.0 * s, y + (row_h - l.height() as f64) / 2.0))); y += row_h; }
-                for p in rows { side_row(scene, fonts, &mut self.side_rows, y, p.icon, &p.label, Some(&p.path), true, self.side_hover, i == 2); y += row_h; }
+                for p in rows { side_row(scene, fonts, &mut self.side_rows, y, p.icon, &p.label, Some(&p.path), true, self.side_hover, i == 2, false); y += row_h; }
                 y += 6.0 * s;
             }
             y += 8.0 * s;
             // All Tracked: a destination of its own between the jobs and the places (row 463) - not this slice's
-            if i == 2 { side_row(scene, fonts, &mut self.side_rows, y, "list-checks", "All Tracked", None, false, self.side_hover, false); y += row_h + 8.0 * s; }
+            if i == 2 { side_row(scene, fonts, &mut self.side_rows, y, "list-checks", "All Tracked", None, true, self.side_hover, false, true); y += row_h + 8.0 * s; }
         }
         scene.pop_layer();
         self.side_bar.set(sr, y - top + pad_s, s); self.side_bar.paint(scene, now);
@@ -1617,7 +1733,7 @@ impl Ui {
             for i in 0..self.tab_rects.len() { let r = self.tab_rects[i]; if r.contains(pt) { let b = &self.tab_close[i]; over = Some(if b.rect.contains(pt) { (3000 + i as u64, b.rect, b.tooltip.clone()) } else { (2000 + i as u64, r, places.get(i).map(|p| p.1.to_string_lossy().into_owned()).unwrap_or_default()) }); } }
             if self.tab_new.rect.contains(pt) { over = Some((1999, self.tab_new.rect, self.tab_new.tooltip.clone())); }
             // a sidebar row whose name is cut, and a place's full path
-            if let Some(r) = self.side_hover.and_then(|i| self.side_rows.get(i)) { if let Some(p) = &r.path { over = Some((1000 + self.side_hover.unwrap_or(0) as u64, r.rect, p.to_string_lossy().into_owned())); } else if !r.enabled { over = Some((999, r.rect, "The tracker comes in a later step".into())); } }
+            if let Some(r) = self.side_hover.and_then(|i| self.side_rows.get(i)) { if let Some(p) = &r.path { over = Some((1000 + self.side_hover.unwrap_or(0) as u64, r.rect, p.to_string_lossy().into_owned())); } else if r.all { over = Some((999, r.rect, "Every tracked item of the subscribed jobs".into())); } }
         }
         let shown_now = if self.tip_demo.is_some() { now - Duration::from_millis(t::TOOLTIP_DELAY as u64 + 50).min(now.duration_since(self.born)) } else { now };
         self.tips.hover(over.as_ref().map(|(k, r, text)| (*k, *r, text.as_str())), shown_now); self.tips.tick(now); self.tips.paint(scene, fonts, s, Rect::new(0.0, 0.0, w, h), now);

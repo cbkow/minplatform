@@ -182,6 +182,14 @@ impl Db {
             let values = match serde_json::from_str::<serde_json::Value>(&json) { Ok(serde_json::Value::Object(m)) => m, _ => Default::default() };
             Some((to_native(&id)?, ItemMeta { values, tracked: tracked != 0, modified })) }).collect()).unwrap_or_default()
     }
+    /// Every tracked item: (the item, its job, its section, what it carries). Of every job - the caller keeps its own
+    /// (1.4.2's statement returns the tracked rows of jobs one is not subscribed to as well).
+    pub fn tracked(&self) -> Vec<(PathBuf, PathBuf, String, ItemMeta)> {
+        let Ok(mut st) = self.conn.prepare("SELECT item_path, job_path, folder_name, metadata_json, COALESCE(modified_time, 0) FROM item_metadata WHERE is_tracked = 1 AND deleted_at IS NULL") else { return vec![] };
+        st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?))).map(|rows| rows.flatten().filter_map(|(item, job, folder, json, modified)| {
+            let values = match serde_json::from_str::<serde_json::Value>(&json) { Ok(serde_json::Value::Object(m)) => m, _ => Default::default() };
+            Some((to_native(&item)?, to_native(&job)?, folder, ItemMeta { values, tracked: true, modified })) }).collect()).unwrap_or_default()
+    }
     /// An item's row is written (1.4.2's statement: the whole blob, the star, the time; a tombstone is lifted).
     fn put_item(&self, job: &Path, item: &Path, folder: &str, values: &serde_json::Map<String, serde_json::Value>, tracked: bool) -> Result<(), String> {
         self.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)

@@ -75,6 +75,9 @@ pub fn rows_for_columns(column: bool, hidden: &[String], trashed: &[String], mod
     rows.extend([Row::Sep, ours(META_MODIFIED, if modified { "Hide Modified" } else { "Show Modified" })]);
     rows
 }
+pub const TRK_OPEN: u32 = 58;
+/// The rows for a row of the tracker.
+pub fn rows_for_tracked() -> Vec<Row> { vec![ours(TRK_OPEN, "Open in Job"), Row::Reveal, Row::Sep, ours(META_TRACK, "Untrack")] }
 /// The rows for an item of a job's list.
 pub fn rows_for_item(tracked: bool) -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(META_TRACK, if tracked { "Untrack" } else { "Mark as Tracked" })] }
 /// The rows for a place in the sidebar.

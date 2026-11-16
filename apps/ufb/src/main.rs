@@ -31,6 +31,7 @@ mod settings;
 mod shell;
 mod sysopen;
 mod thumbs;
+mod tracker;
 mod ui;
 mod webview;
 
