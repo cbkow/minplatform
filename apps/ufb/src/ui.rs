@@ -716,6 +716,8 @@ impl Ui {
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
+            // (a flat section of a job has ONE view: two panes on the same folder, one above the other, only confuse - row 485)
+            Cmd::SecondPane if self.job.as_ref().is_some_and(|j| !j.two_tier) => self.toast.show("This section has a single view.", min_ui::toast::ToastKind::Notice, Instant::now()),
             Cmd::SecondPane => { self.set_two(!self.two); let on = self.two; if let Some(j) = self.job.as_mut() { if let Some(sec) = j.section.clone() { j.pane2.insert(sec, on); } } }
             Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
@@ -1211,7 +1213,8 @@ impl Ui {
         let mut x = tool.x0 + pad;
         for b in [&mut self.back, &mut self.forward, &mut self.up] { b.rect = Rect::new(x, by, x + bh, by + bh); b.corners = Corners::all(radius); x += bh + 2.0 * s; }
         let mut r = tool.x1 - pad;
-        self.pane2_btn.rect = Rect::new(r - bh, by, r, by + bh); self.pane2_btn.corners = Corners::all(radius); self.pane2_btn.selected = self.two; r -= bh + pad;
+        self.pane2_btn.rect = Rect::new(r - bh, by, r, by + bh); self.pane2_btn.corners = Corners::all(radius); self.pane2_btn.selected = self.two;
+        { let flat = self.job.as_ref().is_some_and(|j| !j.two_tier && !j.loading); self.pane2_btn.enabled = !flat; self.pane2_btn.tooltip = if flat { "This section has a single view".to_string() } else if in_job { "Renders pane".to_string() } else { "Second pane  (Tab switches panes)".to_string() }; } r -= bh + pad;
         let search_w = (if wide > 1000.0 { 200.0 } else if wide > 760.0 { 150.0 } else if wide > 560.0 { 110.0 } else { 0.0 }) * s; let fh = t::FIELD_HEIGHT_M as f64 * s;
         let search_rect = if search_w > 0.0 { let q = Rect::new(r - search_w, tool.y0 + (tool.height() - fh) / 2.0, r, tool.y0 + (tool.height() + fh) / 2.0); r -= search_w + pad; q } else { Rect::ZERO };
         self.search.layout(&mut self.fonts, search_rect, s);

@@ -104,8 +104,9 @@ impl Job {
         }
         any
     }
-    /// Whether the second pane is to be shown in the section in front: what the user said for it, else what the section is.
-    pub fn wants_two(&self) -> bool { self.section.as_ref().and_then(|s| self.pane2.get(s)).copied().unwrap_or(self.two_tier) }
+    /// Whether the second pane is shown in the section in front: only a section of two tiers has one (row 485), and
+    /// there the user's word for it counts.
+    pub fn wants_two(&self) -> bool { self.two_tier && self.section.as_ref().and_then(|s| self.pane2.get(s)).copied().unwrap_or(true) }
     /// The folder of the section in front.
     pub fn section_dir(&self) -> Option<PathBuf> { self.section.as_ref().map(|s| self.path.join(s)) }
     pub fn chosen_item(&self) -> Option<&Item> { self.chosen.and_then(|i| self.items.get(i)) }
