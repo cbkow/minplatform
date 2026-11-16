@@ -6259,6 +6259,7 @@ dependencies = [
  "min-image",
  "min-paths",
  "min-present",
+ "min-settings",
  "min-theme",
  "min-ui",
  "muda 0.21.2",

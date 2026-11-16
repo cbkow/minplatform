@@ -38,9 +38,12 @@ pub fn handles(ext: &str) -> bool { media_of(ext) != Media::None }
 /// The family's player on the file shown, and whether a frame of it has reached the presenter.
 pub struct Player { pub t: qcv_player::Transport, pub shown: bool, /// frames are drawn until then although nothing plays (a seek's picture comes a little after it was asked)
     pub awake: Instant, pub audio_only: bool, /// the line is being dragged
-    pub scrubbing: bool }
-/// Loop, mute and volume are the application's while it runs (there is no settings store yet).
-static PLAYER_SET: std::sync::Mutex<(bool, bool, f32)> = std::sync::Mutex::new((true, false, 1.0));
+    pub scrubbing: bool, /// an image sequence: the pattern it was opened by (its rate is chosen by hand and remembered for it, row 478)
+    pub sequence: Option<String> }
+/// The rates an image sequence can be played at (the chip steps through them).
+pub const RATES: &[(u32, u32)] = &[(24000, 1001), (24, 1), (25, 1), (30000, 1001), (30, 1), (48, 1), (50, 1), (60000, 1001), (60, 1)];
+/// A rate as the chip writes it: `24`, `23.976`.
+pub fn rate_text(r: (u32, u32)) -> String { let f = r.0 as f64 / r.1.max(1) as f64; if (f - f.round()).abs() < 0.0005 { format!("{f:.0}") } else { format!("{f:.3}") } }
 impl Player {
     /// Open the player on a file or a sequence. `hw`: the system's hardware decoder; `uploader`: the presenter's.
     pub fn open(media: &Media, path: &Path, hw: Option<qcv_player::HwDevice>, uploader: min_present::engine::Uploader) -> Result<Player, String> {
@@ -49,16 +52,27 @@ impl Player {
         let p = path.to_string_lossy();
         let t = match media {
             Media::Audio => qcv_player::Transport::open_audio(&p, opts),
-            Media::Sequence { pattern, start, end } => qcv_player::Transport::open(&Source::Sequence { pattern: pattern.clone(), rate: qcv_timeline::Rate::new(24, 1), start: *start, end: *end, label: String::new() }, opts),
+            // (a sequence has no rate of its own: the one chosen for it before, else the one chosen last, else 24)
+            Media::Sequence { pattern, start, end } => { let (n, d) = crate::settings::sequence_rate(pattern); qcv_player::Transport::open(&Source::Sequence { pattern: pattern.clone(), rate: qcv_timeline::Rate::new(n, d), start: *start, end: *end, label: String::new() }, opts) }
             _ => qcv_player::Transport::open(&Source::File(p.into_owned()), opts),
         };
         let mut t = t.map_err(|e| e.to_string())?;
         match qcv_player::AudioPlayer::new() { Ok(a) => t.set_audio(Box::new(a)), Err(e) => eprintln!("UFB: no sound ({e})") }
-        let set = *PLAYER_SET.lock().unwrap(); t.set_loop_enabled(set.0); t.audio.set_muted(set.1); t.audio.set_volume(set.2);
+        // loop, mute and volume are the application's, remembered between launches
+        let set = crate::settings::with(|s| (s.bool("player/loop"), s.bool("player/muted"), s.float("player/volume") as f32)); t.set_loop_enabled(set.0); t.audio.set_muted(set.1); t.audio.set_volume(set.2);
         let audio_only = t.is_audio_only();
-        Ok(Player { t, shown: false, awake: Instant::now() + Duration::from_millis(800), audio_only, scrubbing: false })
+        Ok(Player { t, shown: false, awake: Instant::now() + Duration::from_millis(800), audio_only, scrubbing: false, sequence: match media { Media::Sequence { pattern, .. } => Some(pattern.clone()), _ => None } })
     }
-    fn keep_settings(&self) { *PLAYER_SET.lock().unwrap() = (self.t.loop_enabled(), self.t.audio.is_muted(), self.t.audio.volume()); }
+    fn keep_settings(&self) { let (l, m, v) = (self.t.loop_enabled(), self.t.audio.is_muted(), self.t.audio.volume() as f64); crate::settings::with(|s| { s.set_bool("player/loop", l); s.set_bool("player/muted", m); s.set_float("player/volume", v); }); }
+    /// The rate a sequence plays at now.
+    pub fn rate(&self) -> (u32, u32) { let r = self.t.rate(); (r.num, r.den) }
+    /// The sequence's rate steps to the next of [`RATES`] (`step` -1: the one before); remembered for this sequence.
+    pub fn step_rate(&mut self, step: i32) {
+        let Some(pattern) = self.sequence.clone() else { return }; let now = self.rate();
+        let at = RATES.iter().position(|r| (r.0 as u64 * now.1 as u64) == (now.0 as u64 * r.1 as u64)).map(|i| i as i32).unwrap_or(1);
+        let next = RATES[(at + step).rem_euclid(RATES.len() as i32) as usize];
+        if self.t.set_sequence_rate(qcv_timeline::Rate::new(next.0, next.1)) { crate::settings::set_sequence_rate(&pattern, next); self.awake = Instant::now() + Duration::from_millis(800); }
+    }
     /// One of the transport's actions (a key, a button).
     pub fn act(&mut self, a: qcv_player::Action) { let now = Instant::now(); self.t.apply(a, now); self.awake = now + Duration::from_millis(800); self.keep_settings(); }
     /// The line is taken hold of at `at` (0 - 1 of its length), dragged, let go.
@@ -275,6 +289,7 @@ mod tests {
         v.state = State::Ready(Info { w: 8000, h: 4000, orig: (16000, 8000), reduced: 2, alpha: true, depth: 16 }); assert!(v.facts(area).ends_with("16 bit, alpha  \u{b7}  6 %  \u{b7}  shown at 1/2 of its size"), "{}", v.facts(area));
         v.state = State::NoPreview; assert_eq!(v.facts(area), format!("OpenEXR image  \u{b7}  {mb}"));
         assert!(shows("exr") && shows("psd") && shows("heic") && !shows("mov") && !shows("pdf") && !shows(""));
+        assert_eq!(rate_text((24, 1)), "24"); assert_eq!(rate_text((24000, 1001)), "23.976"); assert_eq!(rate_text((60000, 1001)), "59.940"); assert!(RATES.contains(&(25, 1)));
         assert_eq!(media_of("mov"), Media::Video); assert_eq!(media_of("wav"), Media::Audio); assert_eq!(media_of("exr"), Media::Still); assert_eq!(media_of("pdf"), Media::None); assert!(handles("mxf") && handles("flac") && handles("tif") && !handles("txt")); assert_eq!(ext_of(Path::new("/a/Plate.EXR")), "exr");
     }
 }

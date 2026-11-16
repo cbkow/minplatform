@@ -87,7 +87,12 @@ pub struct Ui {
     seq_btn: ActionButton,
     /// the lightbox's transport (row 473): play / pause, loop, mute, "Open in QCView"; the line as it was drawn; a press on the picture that has not moved yet (a click plays or pauses);
     /// the system's hardware decoder, found at the first clip
-    lb_play: ActionButton, lb_loop: ActionButton, lb_mute: ActionButton, lb_qcv: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
+    /// (measuring, under UFB_DEMO: when the lightbox was last drawn, the gaps between its frames and how long each took to draw, ms)
+    lb_last: Option<Instant>, lb_gaps: Vec<f32>, lb_cost: Vec<f32>,
+    /// what the lightbox's layer showed when it was last rendered (it is rendered again only when this changes)
+    lb_key: Option<u64>,
+    lb_play: ActionButton, lb_loop: ActionButton, lb_mute: ActionButton, lb_qcv: ActionButton, /// the rate a sequence plays at: a press steps it on (the secondary button: back)
+    lb_fps: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
@@ -129,7 +134,7 @@ impl Ui {
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
-            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
@@ -174,7 +179,7 @@ impl Ui {
     /// The file at this row of a pane, large (a folder has none).
     fn open_lightbox(&mut self, pane: usize, row: usize) {
         let Some((path, name, size, kind, dir)) = self.panes.get(pane).and_then(|p| p.entry(row)) else { return }; if dir { return }
-        self.end_rename(); self.leave_path(); self.leave_search(); self.lb_press = None;
+        self.end_rename(); self.leave_path(); self.leave_search(); self.lb_press = None; self.lb_key = None;
         let ext = crate::lightbox::ext_of(&path);
         // what the player plays: a sequence shown as one entry, a video, a sound
         let media = match self.panes[pane].sequence_at(row) { Some((pattern, start, end)) => crate::lightbox::Media::Sequence { pattern, start, end }, None => crate::lightbox::media_of(&ext) };
@@ -188,7 +193,7 @@ impl Ui {
         }
     }
     fn close_lightbox(&mut self) {
-        if !self.lightbox.is_open() { return } self.lightbox.close();
+        if !self.lightbox.is_open() { return } self.lightbox.close(); self.lb_key = None;
         let e = &mut self.presenter.engine; e.clear_picture(); e.set_place(None); e.set_background(0);
     }
     /// The next file of the folder (or the one before): the pane's cursor goes with it.
@@ -202,7 +207,12 @@ impl Ui {
     /// A key let go while the lightbox plays: a held shuttle ends.
     pub fn key_up(&mut self, name: &str) { if matches!(name, "J" | "L" | "A" | "D") { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.act(qcv_player::Action::ShuttleEnd); } } }
     /// "Open in QCView" (row 452): the file is handed to QCView, when it is installed where the system keeps applications.
-    fn qcview() -> Option<PathBuf> { if cfg!(target_os = "macos") { let p = PathBuf::from("/Applications/QCView.app"); p.is_dir().then_some(p) } else { None } }
+    fn qcview() -> Option<PathBuf> {
+        if cfg!(target_os = "macos") { let p = PathBuf::from("/Applications/QCView.app"); p.is_dir().then_some(p) }
+        // Windows: the Store's QCView is started by the alias the system keeps for it
+        else if cfg!(windows) { let p = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Microsoft").join("WindowsApps").join("qcview.exe"); std::fs::symlink_metadata(&p).is_ok().then_some(p) }
+        else { None }
+    }
     fn lightbox_pointer(&mut self, e: &Event) {
         let now = Instant::now(); let area = self.lightbox_area(); let s = self.scale();
         if self.lb_close.event(e, now) == Response::Clicked { self.close_lightbox(); return }
@@ -211,6 +221,9 @@ impl Ui {
             use qcv_player::Action as A;
             let (play, lp, mute, qcv) = (self.lb_play.event(e, now) == Response::Clicked, self.lb_loop.event(e, now) == Response::Clicked, self.lb_mute.event(e, now) == Response::Clicked, self.lb_qcv.rect.width() > 0.0 && self.lb_qcv.event(e, now) == Response::Clicked);
             if qcv { if let (Some(app), Some(v)) = (Self::qcview(), self.lightbox.view.as_ref()) { self.out.push(Out::OpenWith(v.path.clone(), app)); } return }
+            // the sequence's rate: a press steps it to the next, the secondary button to the one before
+            if self.lb_fps.rect.width() > 0.0 { let back = matches!(e, Event::Down { x, y, button: Button::Secondary } if self.lb_fps.hit(*x, *y)); let fwd = self.lb_fps.event(e, now) == Response::Clicked;
+                if fwd || back { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(if back { -1 } else { 1 }); } self.lb_key = None; return } }
             let line = self.lb_line; let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) else { return };
             if play { p.act(A::TogglePlayback); return } if lp { p.act(A::ToggleLoop); return } if mute { p.act(A::ToggleMute); return }
             let at = |x: f64| (x - line.x0) / line.width().max(1.0);
@@ -267,6 +280,8 @@ impl Ui {
     /// button and, while there is no picture, what to say instead.
     fn redraw_lightbox(&mut self) {
         let s = self.scale(); let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); let now = Instant::now(); let area = self.lightbox_area();
+        let measuring = std::env::var_os("UFB_DEMO").is_some() && self.lightbox.view.as_ref().is_some_and(|v| v.player.as_ref().is_some_and(|p| p.t.is_playing()));
+        if measuring { if let Some(t) = self.lb_last { self.lb_gaps.push(now.duration_since(t).as_secs_f32() * 1000.0); } self.lb_last = Some(now); } else { self.lb_last = None; }
         // a picture that has come goes to the presenter: on a dark ground, or on a checker when it has transparency
         if let Some((frame, alpha)) = self.lightbox.take_frame() {
             match self.presenter.engine.show(&frame) { Ok(()) => self.presenter.engine.set_background(if alpha { 2 } else { 1 }), Err(e) => if let Some(v) = self.lightbox.view.as_mut() { v.state = crate::lightbox::State::Failed(format!("This file could not be shown: {e}.")); } }
@@ -277,6 +292,25 @@ impl Ui {
         }
         let Some(v) = self.lightbox.view.as_ref() else { return };
         let ready = v.info().is_some() && v.player.as_ref().is_none_or(|p| p.shown);
+        // The layer over the picture is drawn and rendered ONLY when something it shows has changed - the frame's number,
+        // a button under the pointer, the zoom - not at every refresh of the screen: a clip of 24 frames on a 120 Hz
+        // screen then costs a fifth of the drawing, and no refresh is missed for it (the owner's walk, 2026-11-16:
+        // "our playback is stuttery and miserable" - the cadence measured was 4 / 5 / 6 refreshes a frame, not 5).
+        let key = { use std::hash::{Hash, Hasher}; let mut k = std::collections::hash_map::DefaultHasher::new();
+            (size.width, size.height, (s * 100.0) as u32, std::mem::discriminant(&v.state), ready, &v.name, &v.layer, v.layers.iter().filter(|l| l.1.is_some()).count(), self.lb_hover).hash(&mut k);
+            if let Some(r) = v.place(area) { ((r.x0 * 4.0) as i64, (r.y0 * 4.0) as i64, (r.width() * 4.0) as i64).hash(&mut k); }
+            if let Some(p) = v.player.as_ref() { (p.t.current_frame(), p.t.is_playing(), p.t.audio.is_muted(), p.t.loop_enabled(), p.shown, p.rate()).hash(&mut k); }
+            // (a text that appears after a while; buttons that light up under the pointer)
+            (v.state == crate::lightbox::State::Loading && now.duration_since(v.since) > Duration::from_millis(250)).hash(&mut k);
+            [&self.lb_close, &self.lb_play, &self.lb_loop, &self.lb_mute, &self.lb_qcv, &self.lb_fps].iter().for_each(|b| (b.hovered(), b.animating(now)).hash(&mut k));
+            k.finish() };
+        if self.lb_key == Some(key) && !self.lb_close.animating(now) {
+            if ready { let r = v.place(area); self.presenter.engine.set_place(r.map(|r| [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32])); } else { self.presenter.engine.clear_picture(); }
+            self.present_layer(now, false);
+            if measuring { self.lb_cost.push(now.elapsed().as_secs_f32() * 1000.0); }
+            return
+        }
+        self.lb_key = Some(key);
         if ready { self.presenter.engine.set_place(v.place(area).map(|r| [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32])); } else { self.presenter.engine.clear_picture(); }
         let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         let scene: &mut Scene = self.layer.scene_mut(); scene.reset(); let fonts = &mut self.fonts;
@@ -320,6 +354,9 @@ impl Ui {
             let mut r = w - 12.0 * s;
             self.lb_qcv.rect = if Self::qcview().is_some() && w / s > 760.0 { let bw = self.lb_qcv.measure(fonts, s).0; let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
             if self.lb_qcv.rect.width() > 0.0 { self.lb_qcv.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_qcv.paint(scene, fonts, s, now); }
+            // a sequence's rate is the owner's to say: the chip (row 478)
+            self.lb_fps.rect = if p.sequence.is_some() { self.lb_fps.label = Some(format!("{} fps", crate::lightbox::rate_text(p.rate()))); let bw = self.lb_fps.measure(fonts, s).0; let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
+            if self.lb_fps.rect.width() > 0.0 { self.lb_fps.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_fps.paint(scene, fonts, s, now); }
             self.lb_mute.icon = if p.t.audio.is_muted() { "speaker-slash" } else { "speaker-high" }; self.lb_mute.rect = Rect::new(r - bh, by, r, by + bh); self.lb_mute.corners = Corners::all(rad); self.lb_mute.selected = p.t.audio.is_muted(); self.lb_mute.paint(scene, fonts, s, now); r -= bh + 4.0 * s;
             self.lb_loop.rect = Rect::new(r - bh, by, r, by + bh); self.lb_loop.corners = Corners::all(rad); self.lb_loop.selected = p.t.loop_enabled(); self.lb_loop.paint(scene, fonts, s, now); r -= bh + 14.0 * s;
             // the line: what has played of it, and where it stands
@@ -338,6 +375,7 @@ impl Ui {
         let bh = t::ACTION_BUTTON_HEIGHT_M as f64 * s; self.lb_close.rect = Rect::new(w - bh - 12.0 * s, 12.0 * s, w - 12.0 * s, 12.0 * s + bh); self.lb_close.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s);
         paint::rounded(scene, self.lb_close.rect, t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s, t::BACKGROUND_LAYER_2_COLOR); self.lb_close.paint(scene, fonts, s, now);
         self.present(now);
+        if measuring { self.lb_cost.push(now.elapsed().as_secs_f32() * 1000.0); }
     }
 
     // ---------------------------------------------------------------- file operations (`ops.rs`)
@@ -756,6 +794,14 @@ impl Ui {
             "sequences" => self.command(Cmd::Sequences), "split" => self.pane().split_chosen(), "group" => { let ok = self.pane().group_chosen(); eprintln!("UFB_DEMO: grouped by hand: {ok}"); }
             // the lightbox: `preview` (the row under the cursor; again closes it) `lbnext` `lbprev` `lbzoom:<factor>` `lbactual` `lbfit` `lbpan:<dx>,<dy>`
             // what plays: `lbkey:<K|Q|E|M|V|Home|End|Up|Down>` (a key of the transport) `lbseek:<0-1>` (the line taken to there)
+            // how the playing went: the player's own count, and the gaps between our frames
+            "lbstats" => if let Some(p) = self.lightbox.view.as_ref().and_then(|v| v.player.as_ref()) {
+                let st = &p.t.stats; let q = |v: &[f32], f: f32| { let mut v = v.to_vec(); v.sort_by(|a, b| a.partial_cmp(b).unwrap()); v.get(((v.len() as f32 - 1.0) * f) as usize).copied().unwrap_or(0.0) };
+                eprintln!("UFB_DEMO: played: shown {} dropped {} late {} black {} loops {}; cadence (refreshes a frame -> frames) {:?}; decode ms median {:.1} worst {:.1}; lateness ms median {:.1} worst {:.1}", st.shown, st.dropped, st.late, st.black, st.loops, st.cadence, q(&st.decode_ms, 0.5), q(&st.decode_ms, 1.0), q(&st.lateness_ms, 0.5), q(&st.lateness_ms, 1.0));
+                eprintln!("UFB_DEMO: our frames: {} drawn; gap ms median {:.1} p95 {:.1} worst {:.1}; cost to draw ms median {:.1} p95 {:.1} worst {:.1}; codec {} hw '{}' {}x{} {:.3} fps", self.lb_gaps.len(), q(&self.lb_gaps, 0.5), q(&self.lb_gaps, 0.95), q(&self.lb_gaps, 1.0), q(&self.lb_cost, 0.5), q(&self.lb_cost, 0.95), q(&self.lb_cost, 1.0), p.t.info().codec_short, p.t.info().hw_accel, p.t.info().width, p.t.info().height, p.t.rate().as_f64());
+            },
+            // a sequence's rate stepped on (`lbfps:-1`: back)
+            "lbfps" => if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(arg.parse().unwrap_or(1)); eprintln!("UFB_DEMO: the sequence plays at {} fps", crate::lightbox::rate_text(p.rate())); self.lb_key = None; },
             "lbkey" => { let k = KeyEvent { key: Key::Char(arg.to_lowercase()), text: None, shift: false, cmd: false }; self.lightbox_key(&k, arg); }
             "lbseek" => if let (Ok(at), Some(p)) = (arg.parse::<f64>(), self.lightbox.view.as_mut().and_then(|v| v.player.as_mut())) { p.scrub(at); p.scrub_end(); },
             "lblayer" => if let Some(i) = num(arg) { self.lightbox.pick_layer(i); }, "lbback" => { if self.lightbox.back_to_layers() { self.presenter.engine.clear_picture(); } }
@@ -776,6 +822,8 @@ impl Ui {
                     let op = tell(Phase::Enter); eprintln!("UFB_DEMO: a drag over {target} would be {}", match op { COPY => "a copy", MOVE => "a move", _ => "refused" });
                     if word == "drop" { tell(Phase::Drop); } } }
             // `copyother` `moveother` (the chosen entries into the other pane's folder) `all` (tick "Apply to all") `stopop` (call the running operation off) `oplist`
+            // the chosen entries shown as CUT (the look only: a script never touches the clipboard)
+            "cutshow" => { let paths = self.chosen_paths(); crate::pane::set_cut(&paths); },
             "copyother" => self.command(Cmd::CopyToOther), "moveother" => self.command(Cmd::MoveToOther), "stopop" => crate::ops::cancel(), "oplist" => self.op_list = true,
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
@@ -1018,9 +1066,15 @@ impl Ui {
         self.present(now);
     }
     /// The frame is rendered and shown; and the scripted picture is saved when everything has settled.
-    fn present(&mut self, now: Instant) {
-        self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
-        let window = self.window.clone(); self.presenter.draw(|| window.pre_present_notify());
+    fn present(&mut self, now: Instant) { self.present_layer(now, true) }
+    /// `render`: the layer was drawn anew and is rendered; else the one rendered last is shown again (only the picture
+    /// under it moved on - QCView's rule: the interface is rendered when it changed, not at every refresh of the screen).
+    fn present_layer(&mut self, now: Instant, render: bool) {
+        if render { self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue); }
+        let window = self.window.clone(); let drawn = self.presenter.draw(|| window.pre_present_notify());
+        // a window that is covered or minimised is given no frame, and the call returns at once: without a pause the loop
+        // would turn as fast as the machine can while something plays (measured: 3,000 turns a second)
+        if !drawn { std::thread::sleep(Duration::from_millis(8)); }
 
         // (the scripted picture: UFB_SHOT=<file.png> saves the window as drawn - no OS screenshot - once the steps are done,
         // the panes have their listings and the icons have come; then the application ends)

@@ -22,6 +22,7 @@ mod model;
 mod ops;
 mod pane;
 mod places;
+mod settings;
 mod shell;
 mod sysopen;
 mod thumbs;

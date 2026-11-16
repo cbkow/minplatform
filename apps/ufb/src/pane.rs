@@ -58,7 +58,8 @@ pub struct Pane {
 /// The table's rows as the model has them.
 struct Rows<'a> { model: &'a Model, icons: &'a Icons, px: u32, today: Civil,
     /// the pictures of single files: the numbers they are looked up by, for the rows in view from `first` on
-    thumbs: &'a Thumbs, keys: &'a [Option<u64>], first: usize }
+    thumbs: &'a Thumbs, keys: &'a [Option<u64>], first: usize, /// the folder in view (an entry that was cut is shown dimmed)
+    root: &'a Path }
 impl Rows<'_> {
     /// A row's own picture (a thumbnail, the icon of that very file) when it has come; else its type's icon.
     fn picture(&self, i: usize) -> Option<&peniko::ImageBrush> {
@@ -68,7 +69,7 @@ impl Rows<'_> {
 impl TableSource for Rows<'_> {
     fn len(&self) -> usize { self.model.len() }
     fn row(&self, i: usize) -> RowInfo {
-        match self.model.row(i) { Some(id) => { let n = self.model.node(id); RowInfo { indent: n.depth, expandable: n.dir, expanded: self.model.is_expanded(id), dim: n.hidden, plain: false } }
+        match self.model.row(i) { Some(id) => { let n = self.model.node(id); RowInfo { indent: n.depth, expandable: n.dir, expanded: self.model.is_expanded(id), dim: n.hidden || is_cut(self.model, self.root, id), plain: false } }
             None => RowInfo { indent: self.model.note(i).map(|n| n.0).unwrap_or(0), expandable: false, expanded: false, dim: true, plain: true } }
     }
     fn text(&self, i: usize, col: usize) -> Cow<'_, str> {
@@ -82,7 +83,7 @@ impl GridSource for Rows<'_> {
     fn len(&self) -> usize { self.model.len() }
     fn name(&self, i: usize) -> Cow<'_, str> { match self.model.row(i) { Some(id) => Cow::Borrowed(&*self.model.node(id).name), None => Cow::Borrowed("") } }
     fn image(&self, i: usize) -> Option<&peniko::ImageBrush> { self.picture(i) }
-    fn dim(&self, i: usize) -> bool { self.model.row(i).is_some_and(|id| self.model.node(id).hidden) }
+    fn dim(&self, i: usize) -> bool { self.model.row(i).is_some_and(|id| self.model.node(id).hidden || is_cut(self.model, self.root, id)) }
 }
 /// The rows' names alone: what the keys need (type-ahead, the triangle), with no icons in hand.
 struct Names<'a>(&'a Model);
@@ -94,6 +95,14 @@ impl TableSource for Names<'_> {
 impl GridSource for Names<'_> { fn len(&self) -> usize { self.0.len() } fn name(&self, i: usize) -> Cow<'_, str> { match self.0.row(i) { Some(id) => Cow::Borrowed(&*self.0.node(id).name), None => Cow::Borrowed("") } } }
 
 pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::new("Date Modified", 150.0, 70.0), Column::new("Size", 86.0, 54.0).right(), Column::new("Kind", 150.0, 60.0)] }
+
+/// The files that were CUT (and wait for a paste): shown dimmed in every window, as the system's own browser shows
+/// them (row 478). The application's, set by the shell with the clipboard.
+static CUT: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+static CUT_ANY: AtomicBool = AtomicBool::new(false);
+/// This entry was cut and waits for a paste (a sequence: its first file was).
+fn is_cut(model: &Model, root: &Path, id: u32) -> bool { CUT_ANY.load(std::sync::atomic::Ordering::Relaxed) && { let cut = CUT.lock().unwrap(); let first = model.files_of(id).first().copied().unwrap_or(id); cut.contains(&model.path_of(first, root)) } }
+pub fn set_cut(paths: &[PathBuf]) { *CUT.lock().unwrap() = paths.to_vec(); CUT_ANY.store(!paths.is_empty(), std::sync::atomic::Ordering::Relaxed); }
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
@@ -364,7 +373,7 @@ impl Pane {
             }
             keys.push(key);
         }
-        let rows = Rows { model: &self.model, icons, px, today, thumbs, keys: &keys, first: a };
+        let rows = Rows { model: &self.model, icons, px, today, thumbs, keys: &keys, first: a, root: self.history.current() };
         if self.mode == Mode::List { self.table.paint(scene, fonts, &rows, now); } else { self.grid.paint(scene, fonts, &rows, now); }
         // an empty pane says why
         if self.model.len() == 0 {

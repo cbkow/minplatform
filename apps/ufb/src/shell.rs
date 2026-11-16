@@ -5,6 +5,10 @@
 //! window (min-ui's, as minNotes'), and the keys are taken here. A window is made unseen on Windows and shown after
 //! its first frame, so that it never shows white (the family's fix, rows 382 / 428).
 use crate::lister::Port;
+thread_local! {
+    /// The windows' contents while a drag of our own runs on Windows (see `App::sink`); empty at every other time.
+    static OWN_DRAG: std::cell::RefCell<Vec<(WindowId, *mut Ui)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 use crate::menu::Cmd;
 use crate::places::Place;
 use crate::ui::{Out, Ui};
@@ -54,7 +58,11 @@ impl App {
     /// frame, and wakes the loop for what a drop left to do. Nothing of the application is borrowed by it.
     fn sink(ui: &Ui, window: &Arc<Box<dyn Window>>, proxy: &Arc<EventLoopProxy>) -> min_dnd::Sink {
         let (shared, window, proxy) = (ui.dnd.clone(), window.clone(), proxy.clone());
-        std::rc::Rc::new(move |n| { let op = crate::dnd::on_notice(&shared, n); window.request_redraw(); proxy.wake_up(); op })
+        std::rc::Rc::new(move |n| { let before = shared.borrow().hover; let op = crate::dnd::on_notice(&shared, n); window.request_redraw(); proxy.wake_up();
+            // Windows, a drag of OUR OWN: the system's drag runs inside the pointer's event, and the redraws asked for wait
+            // until it has returned - so the outline of the place under the pointer is drawn here, at once (row 478)
+            if before != shared.borrow().hover { let id = window.id(); let ui = OWN_DRAG.with(|d| d.borrow().iter().find(|(w, _)| *w == id).map(|(_, u)| *u)); if let Some(ui) = ui { unsafe { (*ui).redraw(); } } }
+            op })
     }
     fn open(&mut self, el: &dyn ActiveEventLoop, path: PathBuf) {
         if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: a window on {}", path.display()); }
@@ -101,14 +109,19 @@ impl App {
             Out::Drag(paths) => if let Some(w) = self.windows.get(&id) {
                 let may_take = paths.iter().all(|p| p.parent().is_some_and(crate::ops::allowed_in));
                 let ops = min_dnd::COPY | min_dnd::LINK | if may_take { min_dnd::MOVE } else { 0 };
-                if let Err(why) = min_dnd::start_drag(&**w.window, &paths, crate::dnd::picture(paths.len(), w.window.scale_factor()), ops, Self::sink(&w.ui, &w.window, &self.proxy)) { eprintln!("UFB: the drag did not start: {why}"); } },
+                let (window, pic, sink) = (w.window.clone(), crate::dnd::picture(paths.len(), w.window.scale_factor()), Self::sink(&w.ui, &w.window, &self.proxy));
+                // (Windows: the drag returns when it is over; meanwhile the windows are drawn from the drag's own notices.
+                // Nothing else touches them while it runs: this thread is inside the system's drag.)
+                if cfg!(windows) { let all: Vec<(WindowId, *mut Ui)> = self.windows.iter_mut().map(|(i, w)| (*i, &mut w.ui as *mut Ui)).collect(); OWN_DRAG.with(|d| *d.borrow_mut() = all); }
+                let r = min_dnd::start_drag(&**window, &paths, pic, ops, sink); OWN_DRAG.with(|d| d.borrow_mut().clear());
+                if let Err(why) = r { eprintln!("UFB: the drag did not start: {why}"); } },
             // the clipboard: files onto it and from it; the text of the field in hand
             Out::CopyFiles { paths, cut } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
-                if let Some(cb) = self.clipboard.as_mut() { if cb.set().file_list(&paths).is_ok() { self.cut = if cut { Some(paths) } else { None }; } } }
+                if let Some(cb) = self.clipboard.as_mut() { if cb.set().file_list(&paths).is_ok() { self.cut = if cut { Some(paths) } else { None }; crate::pane::set_cut(self.cut.as_deref().unwrap_or(&[])); for w in self.windows.values() { w.window.request_redraw(); } } } }
             Out::PasteFiles { mv } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
                 let list = self.clipboard.as_mut().and_then(|cb| cb.get().file_list().ok()).unwrap_or_default();
                 // files that were CUT here (and are still what the clipboard holds) are moved by a paste, once
-                let was_cut = self.cut.as_ref().is_some_and(|c| *c == list); if was_cut { self.cut = None; }
+                let was_cut = self.cut.as_ref().is_some_and(|c| *c == list); if was_cut { self.cut = None; crate::pane::set_cut(&[]); }
                 if let Some(w) = self.windows.get_mut(&id) { w.ui.paste_files(list, mv || was_cut); w.window.request_redraw(); } }
             Out::FieldCopy { cut } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
                 if let (Some(cb), Some(w)) = (self.clipboard.as_mut(), self.windows.get_mut(&id)) { if let Some(text) = w.ui.copy(cut) { let _ = cb.set_text(text); } w.window.request_redraw(); } }
