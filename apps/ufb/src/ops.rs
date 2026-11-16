@@ -43,6 +43,10 @@ pub enum Op {
     NewFolder { dir: PathBuf },
     Rename { path: PathBuf, name: String },
     Duplicate { paths: Vec<PathBuf> },
+    /// Duplicate an image sequence AS a sequence: every frame is copied beside itself under the copy's name of the
+    /// sequence's BASE, its frame number kept (`shot_010 copy.1001.exr`, not `shot_010.1001 copy.exr`). Each frame:
+    /// (the file, the base, what follows the base in its name - separator, number, extension).
+    DuplicateSequence { frames: Vec<(PathBuf, String, String)> },
     Trash { paths: Vec<PathBuf> },
     /// For good, at once: asked about before it is ever sent here.
     Delete { paths: Vec<PathBuf> },
@@ -394,6 +398,21 @@ impl Engine {
                 if !made.is_empty() { self.done(Record::Copies(made)); }
                 rep
             }
+            Op::DuplicateSequence { frames } => {
+                let mut rep = Report { kind: Some(Kind::Duplicate), ..Default::default() }; let mut made = vec![];
+                let Some(dir) = frames.first().and_then(|f| f.0.parent()).map(Path::to_path_buf) else { return rep };
+                if let Some(e) = frames.iter().find_map(|f| self.guard.check(&f.0).err()) { rep.error = Some(e); return rep }
+                // ONE copy name for the whole sequence: the first under which no frame's name is taken
+                let Some(n) = (1..10_000).find(|n| frames.iter().all(|(_, base, tail)| std::fs::symlink_metadata(dir.join(format!("{}{tail}", copy_name(base, true, *n)))).is_err())) else { rep.error = Some("The sequence could not be duplicated.".into()); return rep };
+                for (src, base, tail) in &frames {
+                    if cancel.load(Ordering::Relaxed) { break }
+                    let dst = dir.join(format!("{}{tail}", copy_name(base, true, n)));
+                    match copy_tree(src, &dst, &mut pr) { Ok(()) => { if let Some(s) = stamp(&dst) { made.push((dst.clone(), s)); } rep.made.push(dst); }
+                        Err(e) => { rep.error = Some(format!("\u{201c}{}\u{201d} could not be duplicated: {}.", name_of(src), plain(&e))); break } }
+                }
+                if !made.is_empty() { rep.changed.push(dir); self.done(Record::Copies(made)); }
+                rep
+            }
             Op::Trash { paths } => {
                 let mut rep = Report { kind: Some(Kind::Trash), ..Default::default() }; let mut moved = vec![];
                 for p in paths {
@@ -495,7 +514,7 @@ static SHARED: OnceLock<Shared> = OnceLock::new();
 
 fn label_of(op: &Op) -> String {
     let items = |n: usize| if n == 1 { "1 item".to_string() } else { format!("{n} items") };
-    match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", items(paths.len())), Op::Trash { paths } => format!("Move {} to the Trash", items(paths.len())), Op::Delete { paths } => format!("Delete {}", items(paths.len())),
+    match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", items(paths.len())), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", items(paths.len())), Op::Delete { paths } => format!("Delete {}", items(paths.len())),
         Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, items(paths.len()), name_of(dest)), Op::Undo => "Undo".into() }
 }
 
@@ -613,6 +632,12 @@ mod tests {
             let u = e.run(Op::Undo); assert!(u.error.is_some_and(|w| w.contains("left where it is"))); assert!(copy.exists(), "the changed copy stays"); assert!(!r.made[1].exists(), "the untouched one went to the Trash");
             assert!(t.0.join("plate.exr").exists() && t.0.join("shots/010/comp.nk").exists(), "the originals are untouched");
         }
+        // a SEQUENCE is duplicated as a sequence: the copy's name goes on its base, the frame numbers stay; one name for all its frames
+        for f in 1..=3 { t.file(&format!("seq.{f:04}.exr"), 10 * f); } t.file(&format!("{}.0002.exr", copy_name("seq", true, 1)), 1);
+        let frames: Vec<(PathBuf, String, String)> = (1..=3).map(|f| (t.0.join(format!("seq.{f:04}.exr")), "seq".to_string(), format!(".{f:04}.exr"))).collect();
+        let r = ok(e.run(Op::DuplicateSequence { frames })); let second = copy_name("seq", true, 2);
+        assert_eq!(r.made, (1..=3).map(|f| t.0.join(format!("{second}.{f:04}.exr"))).collect::<Vec<_>>(), "the first copy name was taken by ONE frame: the whole sequence takes the second"); assert_eq!(std::fs::metadata(&r.made[2]).unwrap().len(), 30);
+        assert_eq!(min_paths::sequence::group(&names(&t.0), &Default::default()).iter().map(|g| g.display_name()).collect::<Vec<_>>(), [format!("{second}.[0001-0003].exr"), "seq.[0001-0003].exr".to_string()], "and the copy is a sequence too");
         // a copy that is called off leaves nothing behind
         let cancel = AtomicBool::new(true); let mut none = |_: u64| {}; let dst = t.0.join("never.exr");
         assert!(copy_tree(&t.0.join("plate.exr"), &dst, &mut Progress { cancel: &cancel, bytes: &mut none }).is_err()); assert!(!dst.exists() && !partial(&dst).exists());

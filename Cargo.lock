@@ -6257,6 +6257,7 @@ dependencies = [
  "libc",
  "min-dnd",
  "min-image",
+ "min-paths",
  "min-present",
  "min-theme",
  "min-ui",

@@ -47,6 +47,9 @@ pub struct Pane {
     pub menu_at: Option<(Option<usize>, (f64, f64))>,
     /// a press on a chosen entry was moved: the window starts the system's drag of what is chosen
     pub drag_out: bool,
+    /// what a hand said of this pane's sequences (row 475): those to be shown as separate files (by their entry's place and name),
+    /// and files to be one sequence whatever the rules say; said again when their folder is read again
+    split: Vec<PathBuf>, forced: Vec<Vec<PathBuf>>,
     /// a double click on a file (the row): the lightbox, or the default application (the window decides); "Open" on a file: the default application
     pub preview: Option<usize>, pub open_default: Option<PathBuf>,
     pub rect: Rect, scale: f64,
@@ -94,7 +97,7 @@ pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -188,7 +191,7 @@ impl Pane {
         match m.take() {
             Some(Msg::Chunk { entries, .. }) => self.keep(|model| model.add(parent, entries)),
             Some(Msg::Done { mtime, free, .. }) => {
-                self.reqs.remove(&req); self.keep(|model| model.set_state(parent, Kids::Loaded));
+                self.reqs.remove(&req); self.keep(|model| model.set_state(parent, Kids::Loaded)); self.reapply_sequences(parent); self.keep(|_| {});
                 if parent != TOP { let at = self.model.path_of(parent, self.path()); self.inner.retain(|(p, _)| *p != at); self.inner.push((at, mtime)); }
                 if parent == TOP {
                     self.load = Load::Ready; self.mtime = mtime; self.free = free; self.listed = true;
@@ -232,11 +235,11 @@ impl Pane {
     /// The Open command: the entry under the cursor, when it is chosen - a folder is gone into, a file is opened in its default application (row 473, point 2).
     pub fn open_chosen(&mut self, port: &Port) { if let Some(c) = self.sel().cursor.filter(|c| self.sel().is_selected(*c)) { match self.model.row(c) { Some(id) if !self.model.node(id).dir => self.open_default = Some(self.model.path_of(id, self.path())), _ => self.activate(port, c) } } }
     /// What row `row` is, for the lightbox: (where, its name, its size, its kind, whether it is a folder).
-    pub fn entry(&self, row: usize) -> Option<(PathBuf, String, u64, String, bool)> { let id = self.model.row(row)?; let n = self.model.node(id); Some((self.model.path_of(id, self.path()), n.name.to_string(), n.size, self.model.kind(id).to_string(), n.dir)) }
+    pub fn entry(&self, row: usize) -> Option<(PathBuf, String, u64, String, bool)> { let id = self.model.row(row)?; let n = self.model.node(id); Some((self.model.path_of(self.model.rep(id), self.path()), n.name.to_string(), n.size, self.model.kind(id).to_string(), n.dir)) }
     /// The row under the cursor, when it is chosen.
     pub fn cursor_row(&self) -> Option<usize> { self.sel().cursor.filter(|c| self.sel().is_selected(*c)) }
     /// The row the entry at `path` is shown at.
-    pub fn row_at_path(&self, path: &Path) -> Option<usize> { self.model.row_of(self.id_at(path)?) }
+    pub fn row_at_path(&self, path: &Path) -> Option<usize> { self.model.row_of(self.model.shown_as(self.id_at(path)?)) }
     /// The next row (`step` 1) or the one before (-1) that is not a folder.
     pub fn next_file(&self, from: usize, step: i32) -> Option<usize> { let n = self.model.len() as i64; let mut i = from as i64 + step as i64; while i >= 0 && i < n { if self.model.row(i as usize).is_some_and(|id| !self.model.node(id).dir) { return Some(i as usize) } i += step as i64; } None }
     /// Choose this row alone and bring it into view (the lightbox moved on to it).
@@ -248,8 +251,48 @@ impl Pane {
         let id = self.model.row(row)?; self.model.node(id).dir.then(|| self.model.path_of(id, self.path()))
     }
     /// The chosen entries, for a menu: (where, it is a folder, it is a package). No more than `max`.
+    /// (A sequence shown as one entry is given by the frame that stands for it - its middle one: what a menu's "Open"
+    /// hands to an application. For everything that acts on FILES see [`Pane::chosen_files`].)
     pub fn chosen_entries(&self, max: usize) -> Vec<(PathBuf, bool, bool)> {
-        self.sel().iter().filter_map(|i| self.model.row(i)).take(max).map(|id| { let n = self.model.node(id); (self.model.path_of(id, self.path()), n.dir, n.package) }).collect()
+        self.sel().iter().filter_map(|i| self.model.row(i)).take(max).map(|id| { let n = self.model.node(id); (self.model.path_of(self.model.rep(id), self.path()), n.dir, n.package) }).collect()
+    }
+    /// Every file and folder the chosen entries stand for: a sequence is all of its frames (copy, move, trash, a drag).
+    pub fn chosen_files(&self) -> Vec<PathBuf> { self.sel().iter().filter_map(|i| self.model.row(i)).flat_map(|id| self.model.files_of(id)).map(|id| self.model.path_of(id, self.path())).collect() }
+    /// The chosen entries for Duplicate: the plain files and folders; and each chosen sequence as its frames - (the
+    /// file, the sequence's base, what follows the base in the frame's name) - so that it is duplicated AS a sequence.
+    /// A sequence made by hand whose names the detector cannot read goes with the plain files.
+    pub fn chosen_for_duplicate(&self) -> (Vec<PathBuf>, Vec<Vec<(PathBuf, String, String)>>) {
+        let (mut plain, mut seqs) = (vec![], vec![]);
+        for id in self.sel().iter().filter_map(|i| self.model.row(i)) {
+            let files = self.model.files_of(id);
+            let frames: Option<Vec<(PathBuf, String, String)>> = self.model.is_sequence(id).then(|| files.iter().map(|f| { let name = &*self.model.node(*f).name; let (base, ..) = min_paths::sequence::parse_frame(name)?; Some((self.model.path_of(*f, self.path()), base.clone(), name[base.len()..].to_string())) }).collect()).flatten();
+            match frames { Some(fr) => seqs.push(fr), None => plain.extend(files.iter().map(|f| self.model.path_of(*f, self.path()))) }
+        }
+        (plain, seqs)
+    }
+    /// The one chosen entry is a sequence shown as one.
+    pub fn chosen_sequence(&self) -> bool { let mut it = self.sel().iter().filter_map(|i| self.model.row(i)); matches!((it.next(), it.next()), (Some(id), None) if self.model.is_sequence(id)) }
+    /// Sequences are shown as one entry each, or every file by itself (row 475).
+    pub fn set_sequences(&mut self, on: bool) { self.keep(|m| m.sequences = on); }
+    /// The chosen sequence is shown as its separate files after all; remembered for this folder while the pane lives.
+    pub fn split_chosen(&mut self) {
+        let ids: Vec<u32> = self.sel().iter().filter_map(|i| self.model.row(i)).filter(|id| self.model.is_sequence(*id)).collect(); if ids.is_empty() { return }
+        for id in &ids { let at = self.model.path_of(*id, self.path()); if !self.split.contains(&at) { self.split.push(at); } }
+        self.keep(|m| for id in &ids { m.split(*id); });
+    }
+    /// The chosen files become one sequence, whatever the rules say. False: their names differ in more than a number.
+    pub fn group_chosen(&mut self) -> bool {
+        let ids: Vec<u32> = self.sel().iter().filter_map(|i| self.model.row(i)).collect(); let paths: Vec<PathBuf> = ids.iter().map(|id| self.model.path_of(*id, self.path())).collect();
+        let mut made = None; self.keep(|m| made = m.force_sequence(&ids));
+        match made { Some(id) => { self.forced.push(paths); if let Some(row) = self.model.row_of(id) { self.choose_row(row); } true } None => false }
+    }
+    /// After a folder was read: what a hand said of its sequences before is said again (split ones, forced ones).
+    fn reapply_sequences(&mut self, parent: u32) {
+        let dir = if parent == TOP { self.path().to_path_buf() } else { self.model.path_of(parent, self.path()) };
+        let rel = |p: &Path| -> Option<Vec<String>> { Some(p.strip_prefix(self.history.current()).ok()?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect()) };
+        let split: Vec<u32> = self.split.iter().filter(|p| p.parent() == Some(&dir)).filter_map(|p| self.model.id_of(&rel(p)?)).collect();
+        let forced: Vec<Vec<u32>> = self.forced.iter().filter(|g| g.first().and_then(|p| p.parent()) == Some(&dir)).filter_map(|g| g.iter().map(|p| self.model.id_of(&rel(p)?)).collect::<Option<Vec<u32>>>()).collect();
+        for id in split { self.model.split(id); } for g in forced { self.model.force_sequence(&g); }
     }
     /// The folders in view, each with where its row or tile is: a drop on one goes INTO it.
     pub fn folder_zones(&self) -> Vec<(Rect, PathBuf)> {
@@ -305,8 +348,9 @@ impl Pane {
             let mut key = None;
             if let Some(id) = self.model.row(i) {
                 icons.get(self.model.ext(id), px);
-                let n = self.model.node(id);
-                if let Some(kind) = thumbs::plan(self.model.ext(id), n.package, n.dir, n.size, grid) { key = Some(thumbs.want(&self.model.path_of(id, self.history.current()), self.model.ext(id), n.size, n.mtime, tpx, kind)); }
+                // (a sequence has ONE picture: its middle frame's - row 456, point 2)
+                let src = self.model.rep(id); let n = self.model.node(src);
+                if let Some(kind) = thumbs::plan(self.model.ext(src), n.package, n.dir, n.size, grid) { key = Some(thumbs.want(&self.model.path_of(src, self.history.current()), self.model.ext(src), n.size, n.mtime, tpx, kind)); }
             }
             keys.push(key);
         }
@@ -331,6 +375,8 @@ impl Pane {
         if hidden > 0 { s.push_str(&format!(", {} hidden", group(hidden))); }
         if self.loading() { s.push_str("  \u{b7}  reading\u{2026}"); }
         let (n, bytes) = self.chosen; if n > 0 { s.push_str(&format!("  \u{b7}  {} selected, {}", group(n), format::size_text(bytes, format::DECIMAL))); }
+        // one sequence chosen: how many frames it has, and how many of its range are not there
+        if n == 1 { if let Some((frames, missing)) = self.sel().iter().next().and_then(|i| self.model.row(i)).and_then(|id| self.model.frames(id)) { s.push_str(&format!("  \u{b7}  {} frames", group(frames))); if missing > 0 { s.push_str(&format!(", {} missing", group(missing))); } } }
         s
     }
 }

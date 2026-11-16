@@ -73,6 +73,91 @@ pub fn split_stem(stem: &str) -> Option<(String, String, String)> {
     None
 }
 
+// ---------------------------------------------------------------- a whole listing, grouped (the file browser; canon row 475)
+
+/// How a file browser groups a listing. QCView's detector ([`detect`]) answers "which sequence is THIS file of" and
+/// takes two files for one; a browser showing a folder must not turn two versions of a comp into a clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupRules {
+    /// fewer files than this are left as they are (the detector itself needs 2)
+    pub min_files: usize,
+    /// a number that follows a revision marker (`v001`, `v_001`, `_r0001`, `take-003`) is a revision, not a frame
+    pub revisions: bool,
+}
+impl Default for GroupRules { fn default() -> Self { GroupRules { min_files: 3, revisions: true } } }
+
+/// The words that mark a number as a revision when they stand directly before it (after the start of the name or a
+/// separator), in lower case.
+pub const REVISION_MARKERS: &[&str] = &["v", "r", "ver", "rev", "version", "revision", "take"];
+
+/// `base` and `sep` as [`split_stem`] gave them: the number after them is a REVISION when the base ends in a marker
+/// that stands alone - at the start of the name or after `_`, `-`, `.` or a space. `comp_v` + `001`, `plate_v` + `_` +
+/// `001`, `shot_r` + `0001`: yes. `render` + `0001` (the `r` belongs to a word), `shot_010_v003` + `.` + `1001` (the
+/// last number is the frame): no.
+pub fn is_revision(base: &str) -> bool {
+    let b = base.to_lowercase();
+    REVISION_MARKERS.iter().any(|m| b.strip_suffix(m).is_some_and(|before| before.is_empty() || before.ends_with(['_', '-', '.', ' '])))
+}
+
+/// One sequence found in a listing: its files as indices into the listing, in frame order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group { pub base: String, pub sep: String, pub ext: String, pub padding: usize, pub start: i32, pub end: i32, pub members: Vec<usize> }
+impl Group {
+    /// Frames of `start..=end` that have no file.
+    pub fn missing(&self) -> usize { ((self.end - self.start + 1).max(0) as usize).saturating_sub(self.members.len()) }
+    /// As a browser names it: `shot_010.[1001-1240].exr`.
+    pub fn display_name(&self) -> String { format!("{}{}[{:0w$}-{:0w$}].{}", self.base, self.sep, self.start, self.end, self.ext, w = self.padding) }
+}
+
+/// The base, separator and digits of a name as the detector reads them, and its extension: `shot_010.1001.exr` ->
+/// (`shot_010`, `.`, `1001`, `exr`). None: no sequence can hold this name.
+pub fn parse_frame(name: &str) -> Option<(String, String, String, &str)> {
+    let (stem, ext) = name.rsplit_once('.')?; if stem.is_empty() || ext.is_empty() { return None }
+    let (base, sep, digits) = split_stem(stem)?; if digits.chars().count() < 3 { return None }
+    Some((base, sep, digits, ext))
+}
+
+/// Every sequence of a listing (file names of ONE folder), by [`detect`]'s rules - the same split of a name, the same
+/// padding, base and extension compared without regard to case - and the browser's on top (`rules`). A name belongs to
+/// at most one group; the groups come in the order of their first file in the listing.
+pub fn group<S: AsRef<str>>(names: &[S], rules: &GroupRules) -> Vec<Group> {
+    use std::collections::HashMap;
+    let mut by: HashMap<(String, String, String, usize), Vec<(i32, usize)>> = HashMap::new(); let mut order: Vec<(String, String, String, usize)> = vec![];
+    for (i, n) in names.iter().enumerate() {
+        let Some((base, sep, digits, ext)) = parse_frame(n.as_ref()) else { continue };
+        if rules.revisions && is_revision(&base) { continue }
+        let key = (base.to_lowercase(), sep, ext.to_lowercase(), digits.chars().count());
+        let v = by.entry(key.clone()).or_insert_with(|| { order.push(key); vec![] }); v.push((q_to_int(&digits), i));
+    }
+    let mut out = vec![];
+    for key in order {
+        let Some(mut v) = by.remove(&key) else { continue };
+        v.sort_unstable(); v.dedup_by_key(|m| m.0);   // (two names that differ only in case hold one frame)
+        if v.len() < rules.min_files.max(2) { continue }
+        // the base and the extension as the first frame writes them
+        let Some((base, sep, _, ext)) = parse_frame(names[v[0].1].as_ref()) else { continue };
+        out.push(Group { base, sep, ext: ext.to_string(), padding: key.3, start: v[0].0, end: v[v.len() - 1].0, members: v.into_iter().map(|m| m.1).collect() });
+    }
+    out
+}
+
+/// Files a hand has chosen to be ONE sequence whatever the rules say: their names must differ only in their last
+/// number (any length of it). The members come back in number order; None when they are not such a set.
+pub fn force_group<S: AsRef<str>>(names: &[S]) -> Option<Group> {
+    if names.len() < 2 { return None }
+    let split = |n: &str| -> Option<(String, String, String)> {
+        let (stem, ext) = n.rsplit_once('.').unwrap_or((n, "")); let chars: Vec<char> = stem.chars().collect();
+        let end = chars.iter().rposition(|c| c.is_ascii_digit())? + 1; let mut start = end; while start > 0 && chars[start - 1].is_ascii_digit() { start -= 1; }
+        Some((chars[..start].iter().collect::<String>() + "\u{0}" + &chars[end..].iter().collect::<String>(), chars[start..end].iter().collect(), ext.to_string()))
+    };
+    let (frame, digits0, ext0) = split(names[0].as_ref())?; let mut v = vec![(q_to_int(&digits0), 0usize)]; let mut pad = digits0.chars().count();
+    for (i, n) in names.iter().enumerate().skip(1) { let (f, d, e) = split(n.as_ref())?; if f.to_lowercase() != frame.to_lowercase() || e.to_lowercase() != ext0.to_lowercase() { return None } pad = pad.min(d.chars().count()); v.push((q_to_int(&d), i)); }
+    v.sort_unstable(); let before = v.len(); v.dedup_by_key(|m| m.0); if v.len() != before { return None }
+    let (head, tail) = frame.split_once('\u{0}')?;
+    // (a number in the middle of the name: what follows it is written after the range)
+    Some(Group { base: head.to_string(), sep: String::new(), ext: if tail.is_empty() { ext0 } else { format!("{}.{ext0}", tail.trim_start_matches('.')) }.trim_end_matches('.').to_string(), padding: pad, start: v[0].0, end: v[v.len() - 1].0, members: v.into_iter().map(|m| m.1).collect() })
+}
+
 /// `QDir::entryList` wildcard semantics for the (unescaped) glob `base sep *.ext`: `*`, `?`, `[set]` with ranges and a
 /// leading `!` for negation; case-insensitive (QDir's default). The regex re-validation after it is what decides; this
 /// only reproduces the C++'s pre-filter so a base with glob metacharacters behaves identically.
@@ -274,5 +359,32 @@ mod tests {
         let s = detect_on_disk(&t.join("b_001.png")).unwrap();
         assert_eq!((s.start, s.end, s.match_count), (1, 2, 2));
         std::fs::remove_dir_all(&t).unwrap();
+    }
+    #[test] fn a_listing_is_grouped_by_the_detectors_rules_and_the_browsers() {
+        let names = ["beauty.0001.exr", "beauty.0002.exr", "beauty.0004.exr", "comp_v001.exr", "comp_v002.exr", "comp_v003.exr", "notes.txt", "Beauty.0003.EXR", "two.0001.dpx", "two.0002.dpx", "render0001.png", "render0002.png", "render0003.png",
+            "shot_010_v003.1001.exr", "shot_010_v003.1002.exr", "shot_010_v003.1003.exr", "plate_v_001.mov", "plate_v_002.mov", "plate_v_003.mov", "shot_r0001.tif", "shot_r0002.tif", "shot_r0003.tif", "pad_01.exr", "pad_02.exr", "pad_03.exr", "mix_001.exr", "mix_0002.exr", "mix_003.exr"];
+        let g = group(&names, &GroupRules::default());
+        let shown: Vec<(String, usize, usize)> = g.iter().map(|g| (g.display_name(), g.members.len(), g.missing())).collect();
+        assert_eq!(shown, [("beauty.[0001-0004].exr".to_string(), 4, 0), ("render[0001-0003].png".to_string(), 3, 0), ("shot_010_v003.[1001-1003].exr".to_string(), 3, 0)],
+            "a version, a revision and a take are not frames; two files are not a clip; two digits are not a counter; another padding is another sequence");
+        assert_eq!(g[0].members, [0, 1, 7, 2], "in frame order, whatever the case of the name");
+        // without the browser's rules: QCView's own reading of the same folder
+        let q: Vec<String> = group(&names, &GroupRules { min_files: 2, revisions: false }).iter().map(|g| g.display_name()).collect();
+        assert_eq!(q, ["beauty.[0001-0004].exr", "comp_v[001-003].exr", "two.[0001-0002].dpx", "render[0001-0003].png", "shot_010_v003.[1001-1003].exr", "plate_v_[001-003].mov", "shot_r[0001-0003].tif", "mix_[001-003].exr"]);
+        // ... which is what the detector says of one of those files
+        let d = detect("/a/comp_v001.exr", &names).unwrap(); assert_eq!((d.start, d.end, d.match_count), (1, 3, 3));
+        // frames that are not there
+        let gaps = group(&["a.1001.exr", "a.1005.exr", "a.1009.exr"], &GroupRules::default()); assert_eq!((gaps[0].missing(), gaps[0].display_name()), (6, "a.[1001-1009].exr".to_string()));
+    }
+    #[test] fn a_revision_marker_stands_alone_before_the_number() {
+        for b in ["comp_v", "v", "plate_V", "shot_r", "shot.rev", "cut-ver", "edit_version", "song take", "a_revision"] { assert!(is_revision(b), "{b}"); }
+        for b in ["render", "over", "shot_010_v003", "beauty", "driver", "retake", "", "rev_x"] { assert!(!is_revision(b), "{b}"); }
+        assert_eq!(parse_frame("shot_010.1001.exr"), Some(("shot_010".into(), ".".into(), "1001".into(), "exr"))); assert_eq!(parse_frame("comp_v001.exr"), Some(("comp_v".into(), "".into(), "001".into(), "exr"))); assert_eq!(parse_frame("shot1.png"), None); assert_eq!(parse_frame("README"), None);
+    }
+    #[test] fn files_chosen_by_hand_are_one_sequence_when_only_a_number_differs() {
+        let g = force_group(&["comp_v002.exr", "comp_v001.exr"]).unwrap(); assert_eq!((g.display_name(), g.members.clone()), ("comp_v[001-002].exr".to_string(), vec![1, 0]));
+        let g = force_group(&["take_1.wav", "take_2.wav", "take_10.wav"]).unwrap(); assert_eq!(g.display_name(), "take_[1-10].wav");
+        assert_eq!(force_group(&["a_001_left.exr", "a_002_left.exr"]).map(|g| g.display_name()).as_deref(), Some("a_[001-002]._left.exr"));
+        assert!(force_group(&["a_001.exr", "b_002.exr"]).is_none() && force_group(&["a_001.exr", "a_002.dpx"]).is_none() && force_group(&["a_001.exr"]).is_none() && force_group(&["a.exr", "b.exr"]).is_none() && force_group(&["a_001.exr", "a_001.EXR"]).is_none());
     }
 }

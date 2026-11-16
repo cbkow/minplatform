@@ -6,7 +6,7 @@ publish = false
 license = "GPL-3.0-or-later"
 description = "UFB on the platform (Phase 5): a file browser"
 
-# UFB, the rebuild (Phase 5; canon rows 434-474). No settings file, no database of an installed 1.4.x. It changes
+# UFB, the rebuild (Phase 5; canon rows 434-475). No settings file, no database of an installed 1.4.x. It changes
 # files only inside the folders it is started with (row 468's safety belt), and writes its own thumbnail cache in the
 # system's cache location (row 465).
 [[bin]]
@@ -17,6 +17,8 @@ path = "src/main.rs"
 winit31 = { workspace = true }
 min-present = { path = "../../crates/min-present" }
 min-ui = { path = "../../crates/min-ui" }
+# the family's one image-sequence detector, with the browser's grouping rules (canon row 475)
+min-paths = { path = "../../crates/min-paths" }
 # real drags of files to and from the system (canon row 472)
 min-dnd = { path = "../../crates/min-dnd" }
 min-theme = { path = "../../crates/min-theme" }

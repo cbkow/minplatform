@@ -78,7 +78,8 @@ pub struct Ui {
     /// drags of files: where a drop can go (written every frame), what the layer left for the loop
     /// the lightbox (rows 452, 473): the file shown large; its close button; its last press (two make a double click)
     lightbox: crate::lightbox::Lightbox, lb_close: ActionButton, lb_press: Option<(Instant, (f64, f64))>, /// the contact sheet's tiles as they were drawn, and the one under the pointer
-    lb_tiles: Vec<Rect>, lb_hover: Option<usize>, preview_btn: ActionButton,
+    lb_tiles: Vec<Rect>, lb_hover: Option<usize>, /// sequences as one entry, or every file by itself (row 475)
+    seq_btn: ActionButton, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
@@ -117,7 +118,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()), preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
@@ -127,7 +128,7 @@ impl Ui {
     /// What the menus show of this window.
     pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some(),
         chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
-        typing: self.focus != Focus::Pane, other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
+        sequences: p.model.sequences, typing: self.focus != Focus::Pane, other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
 
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
@@ -297,7 +298,7 @@ impl Ui {
         if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.dragging()) || self.lb_close.animating(Instant::now()) || !self.recheck.is_empty() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
         crate::ops::submit(self.id, crate::ops::Op::Transfer { paths, dest, mv });
     }
-    fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect() }
+    fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_files() }
     /// "Delete for good?" - always asked (row 468, point 3). `no_trash`: asked because the volume has no Trash.
     fn ask_delete(&mut self, paths: Vec<PathBuf>, no_trash: bool) {
         use min_ui::{dialog::Dialog, text_button::Variant};
@@ -320,6 +321,8 @@ impl Ui {
     /// Rename in place (row 437): the one chosen entry's name becomes a field, the name chosen without its extension.
     fn start_rename(&mut self) {
         let i = self.active.min(self.panes.len() - 1); let entries = self.panes[i].chosen_entries(2); if entries.len() != 1 { return }
+        // (a sequence's frames each have a name of their own: renaming them together is batch rename - later, row 437)
+        if self.panes[i].chosen_sequence() { self.toast.show("A sequence is renamed frame by frame for now: show it as separate files first.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
         let (path, dir, _) = entries.into_iter().next().unwrap(); let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
         if !crate::ops::allowed_in(path.parent().unwrap_or(&path)) { self.toast.show(crate::ops::GUARDED, min_ui::toast::ToastKind::Notice, Instant::now()); return }
         let mut field = TextField::new(Family::Sans, t::BODY_SIZE_S); field.set_text(&name); field.focused = true;
@@ -387,7 +390,8 @@ impl Ui {
             Cmd::CopyToOther => self.to_other_pane(false), Cmd::MoveToOther => self.to_other_pane(true),
             Cmd::NewFolder => { let dir = self.pane().path().to_path_buf(); crate::ops::submit(self.id, crate::ops::Op::NewFolder { dir }); }
             Cmd::Rename => self.start_rename(),
-            Cmd::Duplicate => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Duplicate { paths }); } }
+            // (a sequence is duplicated AS a sequence: the copy's name on its base, the frame numbers kept)
+            Cmd::Duplicate => { let (paths, seqs) = self.pane().chosen_for_duplicate(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Duplicate { paths }); } for frames in seqs { crate::ops::submit(self.id, crate::ops::Op::DuplicateSequence { frames }); } }
             Cmd::Trash => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Trash { paths }); } }
             Cmd::DeleteNow => { let paths = self.chosen_paths(); self.ask_delete(paths, false); }
             Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo),
@@ -400,6 +404,7 @@ impl Ui {
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } }
             Cmd::SecondPane => self.set_two(!self.two),
+            Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
             Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); }
             Cmd::Back => self.pane().back(&port), Cmd::Forward => self.pane().forward(&port), Cmd::Up => self.pane().up(&port),
@@ -429,19 +434,21 @@ impl Ui {
     fn ask_menu(&mut self, i: usize, row: Option<usize>, at: (f64, f64)) {
         use crate::ctxmenu::{self, Ask};
         let pane = &self.panes[i]; let here = pane.path().to_path_buf();
-        let entries = if row.is_some() { pane.chosen_entries(2000) } else { vec![] };
+        let entries = if row.is_some() { pane.chosen_entries(2000) } else { vec![] }; let sequence = pane.chosen_sequence();
         let ask = if entries.is_empty() { self.menu_for = Some((Some(i), here.clone())); Ask { at, paths: vec![here], rows: ctxmenu::rows_for_folder() } }
             else { let kinds: Vec<(bool, bool)> = entries.iter().map(|e| (e.1, e.2)).collect(); let folder = if entries.len() == 1 && (entries[0].1 || entries[0].2) { entries[0].0.clone() } else { here };
-                self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows: ctxmenu::rows_for(&kinds) } };
+                self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows: ctxmenu::rows_for(&kinds, sequence) } };
         self.out.push(Out::Menu(ask));
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, NEW_FOLDER, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, TRASH};
+        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
+            SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
+            GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
                 self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, COPY => Cmd::Copy, PASTE => Cmd::Paste, PREVIEW => Cmd::Preview, _ => Cmd::Refresh }); }
             _ => {}
@@ -502,6 +509,7 @@ impl Ui {
         if self.forward.event(e, now) == Response::Clicked { self.command(Cmd::Forward); }
         if self.up.event(e, now) == Response::Clicked { self.command(Cmd::Up); }
         if self.preview_btn.event(e, now) == Response::Clicked { self.command(Cmd::Preview); }
+        if self.seq_btn.event(e, now) == Response::Clicked { self.command(Cmd::Sequences); }
         if self.list_btn.event(e, now) == Response::Clicked { self.command(Cmd::AsList); }
         if self.grid_btn.event(e, now) == Response::Clicked { self.command(Cmd::AsGrid); }
         if self.pane2_btn.event(e, now) == Response::Clicked { self.command(Cmd::SecondPane); }
@@ -535,7 +543,7 @@ impl Ui {
         for i in 0..n { if let Some((row, at)) = self.panes[i].menu_at.take() { self.ask_menu(i, row, at); } }
         self.after_pane_events();
         // a press on what is chosen was moved: the system's drag of it begins (the layer needs the pointer's event to be the current one: this is still inside it)
-        for i in 0..n { if std::mem::take(&mut self.panes[i].drag_out) { let paths: Vec<PathBuf> = self.panes[i].chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect(); if !paths.is_empty() { self.out.push(Out::Drag(paths)); } } }
+        for i in 0..n { if std::mem::take(&mut self.panes[i].drag_out) { let paths = self.panes[i].chosen_files(); if !paths.is_empty() { self.out.push(Out::Drag(paths)); } } }
         let resizing = self.over_gap.is_some() || self.panes.iter().take(n).any(|p| p.resizing());
         let text = at.is_some_and(|p| (self.focus == Focus::Path && self.path_rect.contains(p)) || self.search.rect.contains(p));
         self.set_cursor(if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
@@ -624,6 +632,8 @@ impl Ui {
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
+            // sequences (row 475): `sequences` (the toggle) `split` (the chosen sequence as its files) `group` (the chosen files as one)
+            "sequences" => self.command(Cmd::Sequences), "split" => self.pane().split_chosen(), "group" => { let ok = self.pane().group_chosen(); eprintln!("UFB_DEMO: grouped by hand: {ok}"); }
             // the lightbox: `preview` (the row under the cursor; again closes it) `lbnext` `lbprev` `lbzoom:<factor>` `lbactual` `lbfit` `lbpan:<dx>,<dy>`
             "lblayer" => if let Some(i) = num(arg) { self.lightbox.pick_layer(i); }, "lbback" => { if self.lightbox.back_to_layers() { self.presenter.engine.clear_picture(); } }
             "preview" => self.command(Cmd::Preview), "lbnext" => self.step_lightbox(1), "lbprev" => self.step_lightbox(-1),
@@ -735,6 +745,7 @@ impl Ui {
         self.list_btn.rect = Rect::new(r - bh, by, r, by + bh); self.list_btn.corners = Corners { tl: radius, bl: radius, tr: 0.0, br: 0.0 }; self.list_btn.selected = !grid_mode; r -= bh + pad;
         // (the lightbox by the mouse, row 452)
         self.preview_btn.rect = if wide > 520.0 { let q = Rect::new(r - bh, by, r, by + bh); r -= bh + pad; q } else { Rect::ZERO }; self.preview_btn.corners = Corners::all(radius); self.preview_btn.enabled = self.panes[self.active].cursor_row().is_some();
+        self.seq_btn.rect = if wide > 600.0 { let q = Rect::new(r - bh, by, r, by + bh); r -= bh + pad; q } else { Rect::ZERO }; self.seq_btn.corners = Corners::all(radius); self.seq_btn.selected = self.panes[self.active].model.sequences;
         self.path_rect = Rect::new((x + pad - 2.0 * s).min(r), tool.y0 + (tool.height() - fh) / 2.0, r.max(x + pad), tool.y0 + (tool.height() + fh) / 2.0);
         { let p = &self.panes[self.active]; self.back.enabled = p.history.can_back(); self.forward.enabled = p.history.can_forward(); self.up.enabled = p.history.parent().is_some(); }
         let crumb_room = self.path_rect.width() - 12.0 * s; self.make_crumbs(crumb_room, s);
@@ -769,6 +780,7 @@ impl Ui {
         paint::hline(scene, tool.x0, tool.x1, tool.y1 - s, s, t::DIVIDER_COLOR);
         for b in [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn] { b.paint(scene, fonts, s, now); }
         if self.preview_btn.rect.width() > 0.0 { self.preview_btn.paint(scene, fonts, s, now); }
+        if self.seq_btn.rect.width() > 0.0 { self.seq_btn.paint(scene, fonts, s, now); }
         if self.size.rect.width() > 0.0 { self.size.paint(scene, s, now); }
         if search_w > 0.0 { self.search.paint(scene, fonts, s);
             if self.search.text().is_empty() { if let Some(g) = fonts.icon("magnifying-glass", 13.0 * s as f32, sub) { draw_layout(scene, &g, Affine::translate((search_rect.x1 - g.width() as f64 - 8.0 * s, search_rect.y0 + (search_rect.height() - g.height() as f64) / 2.0))); } } }
