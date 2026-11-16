@@ -493,7 +493,8 @@ impl Ui {
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
             // a drag of a file, as the layer would tell it (no drag is performed): `over:<row>:<path>[:copy|move]` shows where it would land,
             // `drop:<row|bg|side<n>>:<path>[:copy|move]` lets it go there - on a row's folder, the pane itself, a sidebar row
-            "over" | "drop" => { let mut it = arg.splitn(3, ':'); let (target, path, keys) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+            "over" | "drop" => { let (target, rest) = arg.split_once(':').unwrap_or((arg, ""));   // (a Windows path has a colon of its own: only a last ":copy" / ":move" is the keys')
+                let (path, keys) = match rest.rsplit_once(':') { Some((p, k)) if k == "copy" || k == "move" => (p, k), _ => (rest, "") };
                 let at = if target == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(k) = target.strip_prefix("side").and_then(num) { self.side_rows.get(k).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(target).and_then(|k| self.pane().row_point(k)) };
                 if let Some((x, y)) = at { use min_dnd::{DragEvent, Notice, Payload, Phase, COPY, LINK, MOVE};
                     let allowed = match keys { "copy" => COPY, "move" => MOVE, _ => COPY | MOVE | LINK }; let payload = std::rc::Rc::new(Payload { paths: vec![PathBuf::from(path)], ..Default::default() });
