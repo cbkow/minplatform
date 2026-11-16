@@ -56,7 +56,8 @@ enum Asked { /// delete these for good
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
 enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Drag { Sidebar(f64, f64), Split }
+enum Drag { Sidebar(f64, f64), Split, /// the item list's edge in a job (the pointer's x and the width at the press)
+    JobList(f64, f64) }
 /// A tab that is NOT in front (row 480): what the window holds for it until it is shown again - its panes (with their
 /// folders, histories, choices and views), which one is active, whether the second is shown, and the divider. The tab
 /// in front lives in the window's own fields; its place in the list is empty meanwhile.
@@ -67,7 +68,7 @@ struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool, /// a subscri
     job: bool }
 
 /// Logical px.
-const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 270.0; const JOB_ROW: f64 = 28.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 380.0; const JOB_LIST_MIN: f64 = 200.0; const JOB_ROW: f64 = 28.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -91,7 +92,9 @@ pub struct Ui {
     back: ActionButton, forward: ActionButton, up: ActionButton, list_btn: ActionButton, grid_btn: ActionButton, pane2_btn: ActionButton, size: Slider, search: TextField,
     /// the path bar: its box; the segments as buttons with where each goes (none: the ellipsis) and what they were made for; the field while a path is typed; a path that was no folder
     path_rect: Rect, crumbs: Vec<(ActionButton, Option<PathBuf>)>, crumbs_for: Option<(PathBuf, String, i64)>, field: TextField, path_error: Option<(String, Instant)>, check: Option<u64>,
-    focus: Focus, drag: Option<Drag>, gaps: [Rect; 2], over_gap: Option<usize>, cursor: winit31::cursor::CursorIcon,
+    focus: Focus, drag: Option<Drag>, gaps: [Rect; 3], over_gap: Option<usize>, /// in a job the second pane lies BELOW the first (row 484): the panes' area, for the divider in hand
+    stacked: bool, panes_area: Rect, /// the item list's width in a job (logical px; its edge can be dragged)
+    job_w: f64, cursor: winit31::cursor::CursorIcon,
     pub menubar: Option<InWindowMenu>, pointer: (f64, f64), pub mods: Mods,
     /// the scripted looks: the steps still to do, a wait, the picture to save, since when nothing is pending
     /// the window's title as it was last set: the active pane's folder
@@ -156,7 +159,7 @@ impl Ui {
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
-            focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
+            focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 3], over_gap: None, stacked: false, panes_area: Rect::ZERO, job_w: JOB_LIST, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
             lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
@@ -204,12 +207,32 @@ impl Ui {
     /// The browser follows the job: the chosen item's project folder in the first pane and its renders in the second
     /// (each the item itself when it has none) - or, with nothing chosen, the section's folder.
     fn job_follow(&mut self) {
-        let Some(j) = self.job.as_ref() else { return }; let port = self.port.clone();
+        let Some(j) = self.job.as_ref() else { return }; let port = self.port.clone(); if j.hold { return }
         let (a, b) = match j.chosen_item() { Some(i) => (i.project.clone(), i.renders.clone()), None => match j.section_dir() { Some(d) => (d.clone(), d), None => (j.path.clone(), j.path.clone()) } };
         if self.panes[0].path() != a { self.panes[0].go(&port, a); }
         // (the second pane follows only in a section of two tiers: in a flat one it is the ordinary second pane)
         let b = match j.chosen_item().and_then(|i| i.proxies.clone()).filter(|_| j.proxies) { Some(p) => p, None => b }; let follows = j.two_tier;
-        if follows && self.two && self.panes.len() > 1 && self.panes[1].path() != b { self.panes[1].go(&port, b); }
+        // ... but with nothing chosen it shows the section's folder too: nothing of another section lingers (row 484)
+        let nothing = j.chosen_item().is_none();
+        if (follows || nothing) && self.two && self.panes.len() > 1 && self.panes[1].path() != b { self.panes[1].go(&port, b); }
+    }
+    /// Another section of the job comes to the front (row 484). What the one in front shows is kept for it - the
+    /// chosen item, the panes' folders - and the browser goes AT ONCE to what belongs to the new one: what it showed
+    /// when it was last left, else its own folder. Nothing of the old section stays in view while the new one is read.
+    fn job_show_section(&mut self, name: &str) {
+        let port = self.port.clone(); let two = self.two && self.panes.len() > 1;
+        let Some(j) = self.job.as_mut() else { return }; if j.section.as_deref() == Some(name) { return }
+        if let Some(old) = j.section.clone() { j.memory.insert(old, (j.chosen_item().map(|i| i.path.clone()), self.panes[0].path().to_path_buf(), two.then(|| self.panes[1].path().to_path_buf()))); }
+        let dir = j.path.join(name); let kept = j.memory.get(name).cloned();
+        j.show_section(name); self.job_scroll = ScrollBar::default();
+        match kept {
+            Some((item, p0, p1)) => { j.choose = item; j.hold = true; let on = p1.is_some();
+                if on != self.two { self.set_two(on); }
+                if self.panes[0].path() != p0 { self.panes[0].go(&port, p0); }
+                if let Some(p1) = p1 { if self.panes.len() > 1 && self.panes[1].path() != p1 { self.panes[1].go(&port, p1); } } }
+            None => { for p in self.panes.iter_mut().take(2) { if p.path() != dir { p.go(&port, dir.clone()); } } }
+        }
+        self.active = 0;
     }
     /// The chosen item is brought into view.
     fn job_reveal(&mut self) { let s = self.scale(); if let Some(i) = self.job.as_ref().and_then(|j| j.chosen) { let (top, h) = (i as f64 * JOB_ROW * s, (self.job_list.height() - (JOB_ROW + 40.0) * s).max(JOB_ROW * s)); if top < self.job_scroll.offset { self.job_scroll.offset = top; } else if top + JOB_ROW * s > self.job_scroll.offset + h { self.job_scroll.offset = top + JOB_ROW * s - h; } } }
@@ -282,7 +305,8 @@ impl Ui {
             let (want, chosen) = (j.wants_two(), j.chosen.is_some());
             // a section that came to the front: the second pane as the section is - shown for two tiers, hidden for a flat one - unless the user said otherwise for it
             if moved && want != self.two { self.set_two(want); }
-            if moved || chosen { self.job_follow(); } } }
+            if moved || chosen { self.job_follow(); }
+            if let Some(j) = self.job.as_mut() { j.hold = false; } } }
         while let Ok(m) = self.made_rx.try_recv() { any = true; self.on_made(m); }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
         for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
@@ -840,7 +864,8 @@ impl Ui {
             match *e {
                 Event::Move { x, .. } => match d {
                     Drag::Sidebar(x0, w0) => self.side_w = (w0 + (x - x0) / s).clamp(SIDE_MIN, SIDE_MAX),
-                    Drag::Split => { let (a, b) = (self.panes_x0, self.window.surface_size().width as f64); if b - a > 1.0 { self.split = ((x - a) / (b - a)).clamp(0.15, 0.85); } }
+                    Drag::Split => { let r = self.panes_area; let (a, b, at) = if self.stacked { (r.y0, r.y1, self.pointer.1) } else { (r.x0, r.x1, x) }; if b - a > 1.0 { self.split = ((at - a) / (b - a)).clamp(0.15, 0.85); } }
+                    Drag::JobList(x0, w0) => self.job_w = (w0 + (x - x0) / s).clamp(JOB_LIST_MIN, 1200.0),
                 },
                 Event::Up { button: Button::Primary, .. } | Event::Leave => self.drag = None,
                 _ => {}
@@ -848,8 +873,8 @@ impl Ui {
             return
         }
         let at = e.pos().map(|(x, y)| kurbo::Point::new(x, y));
-        let over = at.and_then(|p| self.gaps.iter().position(|g| g.width() > 0.0 && g.contains(p)).filter(|i| *i == 0 || self.two));
-        if let (Event::Down { x, button: Button::Primary, .. }, Some(g)) = (*e, over) { self.drag = Some(if g == 0 { Drag::Sidebar(x, self.side_w) } else { Drag::Split }); return }
+        let over = at.and_then(|p| self.gaps.iter().position(|g| g.width() > 0.0 && g.contains(p)).filter(|i| match i { 0 => true, 1 => self.two, _ => self.job.is_some() }));
+        if let (Event::Down { x, button: Button::Primary, .. }, Some(g)) = (*e, over) { self.drag = Some(match g { 0 => Drag::Sidebar(x, self.side_w), 1 => Drag::Split, _ => Drag::JobList(x, self.job_w) }); return }
         self.over_gap = over;
         // the toolbar
         if self.back.event(e, now) == Response::Clicked { self.command(Cmd::Back); }
@@ -888,7 +913,7 @@ impl Ui {
         // secondary button gives the item's menu), Add
         if self.job.is_some() {
             let mut show = None; for (b, name) in self.job_secs.iter_mut().zip(self.job_secs_for.iter()) { if b.event(e, now) == Response::Clicked { show = Some(name.clone()); } }
-            if let Some(name) = show { if let Some(j) = self.job.as_mut() { j.show_section(&name); } self.job_scroll = ScrollBar::default(); }
+            if let Some(name) = show { self.job_show_section(&name); }
             if self.job_refresh.event(e, now) == Response::Clicked { self.command(Cmd::Refresh); }
             if self.job_add.rect.width() > 0.0 && self.job_add.event(e, now) == Response::Clicked { self.ask_add_item(); return }
             self.job_scroll.event(e, now);
@@ -913,7 +938,7 @@ impl Ui {
         for i in 0..n { if std::mem::take(&mut self.panes[i].drag_out) { let paths = self.panes[i].chosen_files(); if !paths.is_empty() { self.out.push(Out::Drag(paths)); } } }
         let resizing = self.over_gap.is_some() || self.panes.iter().take(n).any(|p| p.resizing());
         let text = at.is_some_and(|p| (self.focus == Focus::Path && self.path_rect.contains(p)) || self.search.rect.contains(p));
-        self.set_cursor(if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
+        self.set_cursor(if self.over_gap == Some(1) && self.stacked { winit31::cursor::CursorIcon::RowResize } else if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
     pub fn paste(&mut self, text: &str) { if let Some((d, _)) = self.dialog.as_mut() { if let Some((_, f)) = d.fields.iter_mut().find(|(_, f)| f.focused) { f.paste(text, &mut self.fonts); self.dialog_preview(); } return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Pane | Focus::Items => {} } }
@@ -1021,10 +1046,11 @@ impl Ui {
             // `subscribe:<path>` `unsubscribe:<path>` `newjob:<number>|<name>` (in the folder in view) `additem:<name>` `itemfocus`
             "jobs" => eprintln!("UFB_DEMO: jobs: {}", self.jobs.iter().map(|j| format!("{} [{}]", j.name, j.path.display())).collect::<Vec<_>>().join(" | ")),
             "job" => if let Some(j) = num(arg).and_then(|n| self.jobs.get(n)).cloned() { self.open_place(j.path, true); },
-            "section" => { if let Some(j) = self.job.as_mut() { j.show_section(arg); } },
+            "section" => self.job_show_section(arg),
             "item" => if let Some(n) = num(arg) { self.job_choose(n); },
             "proxies" => { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(); }
             "headmenu" => { let h = self.pane().table.header(); let (x, y) = ((h.x0 + h.x1) / 2.0, (h.y0 + h.y1) / 2.0); self.pointer(&Event::Down { x, y, button: Button::Secondary }); }
+            "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
             "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?} (two tiers: {}): items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.two_tier, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), self.panes.iter().take(self.shown()).map(|p| p.path().display().to_string()).collect::<Vec<_>>().join(" + ")); },
@@ -1150,17 +1176,23 @@ impl Ui {
         let in_job = self.job.is_some();
         let job_bar = Rect::new(area.x0, strip.y1, area.x1, (strip.y1 + if in_job { JOB_BAR * s } else { 0.0 }).min(area.y1));
         let tool = Rect::new(area.x0, job_bar.y1, area.x1, (job_bar.y1 + TOOLBAR * s).min(area.y1));
-        let list_w = if in_job { (JOB_LIST * s).min((area.width() * 0.4).round()) } else { 0.0 };
+        // (the item list is wide - it carries the items' metadata - and its edge can be dragged, row 484)
+        let list_w = if in_job { (self.job_w * s).min((area.width() * 0.6).round()).max((JOB_LIST_MIN * s).min(area.width() * 0.6)) } else { 0.0 };
         self.job_list = Rect::new(area.x0, tool.y1, area.x0 + list_w, area.y1); self.panes_x0 = area.x0 + list_w;
         let body = Rect::new(area.x0 + list_w, tool.y1, area.x1, area.y1);
         if let Some(j) = &self.job { if self.job_secs_for != j.sections { self.job_secs_for = j.sections.clone(); self.job_secs = j.sections.iter().map(|n| { let label = crate::jobview::project_type().section(n).map(|s| s.label().to_string()).unwrap_or_else(|| n.clone()); let mut b = ActionButton::new("", "").size_s(); b.label = Some(label); b }).collect(); } }
         let add_label = self.job_add_label();
         self.gaps[0] = Rect::new(side_w - GAP * s / 2.0, menu_h, side_w + GAP * s / 2.0, status.y0);
-        let n = self.shown(); let split_x = if n == 2 { (body.x0 + body.width() * self.split).round() } else { body.x1 };
-        self.gaps[1] = if n == 2 { Rect::new(split_x - GAP * s / 2.0, body.y0, split_x + GAP * s / 2.0, body.y1) } else { Rect::ZERO };
+        self.gaps[2] = if in_job { Rect::new(body.x0 - GAP * s / 2.0, tool.y1, body.x0 + GAP * s / 2.0, area.y1) } else { Rect::ZERO };
+        // in a job the second pane lies BELOW the first (row 484: the item list needs the width); in the browser, beside it
+        let n = self.shown(); self.stacked = in_job; self.panes_area = body;
+        let split_x = if n == 2 && !in_job { (body.x0 + body.width() * self.split).round() } else { body.x1 };
+        let split_y = if n == 2 && in_job { (body.y0 + body.height() * self.split).round() } else { body.y1 };
+        self.gaps[1] = if n != 2 { Rect::ZERO } else if in_job { Rect::new(body.x0, split_y - GAP * s / 2.0, body.x1, split_y + GAP * s / 2.0) } else { Rect::new(split_x - GAP * s / 2.0, body.y0, split_x + GAP * s / 2.0, body.y1) };
         let head_h = if n == 2 { HEAD * s } else { 0.0 };
-        for i in 0..n { let (x0, x1) = if n == 1 { (body.x0, body.x1) } else if i == 0 { (body.x0, split_x) } else { (split_x + s, body.x1) };
-            self.pane_heads[i] = Rect::new(x0, body.y0, x1, body.y0 + head_h); let active = i == self.active; self.panes[i].layout(Rect::new(x0, body.y0 + head_h, x1, body.y1), s, active); }
+        for i in 0..n { let (x0, x1) = if n == 1 || in_job { (body.x0, body.x1) } else if i == 0 { (body.x0, split_x) } else { (split_x + s, body.x1) };
+            let (y0, y1) = if n == 1 || !in_job { (body.y0, body.y1) } else if i == 0 { (body.y0, split_y) } else { (split_y + s, body.y1) };
+            self.pane_heads[i] = Rect::new(x0, y0, x1, (y0 + head_h).min(y1)); let active = i == self.active; self.panes[i].layout(Rect::new(x0, (y0 + head_h).min(y1), x1, y1), s, active); }
         self.show_question();
         // a new folder goes straight into its name, as soon as its row is there
         if let Some(path) = self.rename_next.clone() { let i = self.active; if !self.panes[i].loading() { self.rename_next = None; if self.focus == Focus::Pane && self.dialog.is_none() && self.panes[i].name_rect(&path).is_some() { self.start_rename(); } } }
@@ -1226,7 +1258,7 @@ impl Ui {
         }
         self.thumbs.end_frame();
         if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n - 1)].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }
-        if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); paint::rect(scene, Rect::new(split_x, body.y0, split_x + if hot { 2.0 * s } else { s }, body.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
+        if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); let k = if hot { 2.0 * s } else { s }; paint::rect(scene, if in_job { Rect::new(body.x0, split_y, body.x1, split_y + k) } else { Rect::new(split_x, body.y0, split_x + k, body.y1) }, if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
 
         // -- the strip of tabs (row 481): PILLS on the window's own surface, as the sidebar's rows are - the one in front
         // with the fill and the label of the sidebar row one is in, the others bare until the pointer is on them; no line,
@@ -1296,7 +1328,7 @@ impl Ui {
             if j.items.is_empty() && !j.loading && !j.missing { let l = fonts.layout_fit("Nothing here yet", Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, sub, lr.width() - 24.0 * s); draw_layout(scene, &l, Affine::translate((lr.x0 + 14.0 * s, view.y0 + 8.0 * s))); }
             scene.pop_layer();
             self.job_scroll.set(view, j.items.len() as f64 * row_h + 8.0 * s, s); self.job_scroll.paint(scene, now);
-            paint::hline(scene, lr.x0, lr.x1, lr.y1 - foot, s, t::DIVIDER_COLOR); paint::rect(scene, Rect::new(lr.x1 - s, lr.y0, lr.x1, lr.y1), t::DIVIDER_COLOR);
+            paint::hline(scene, lr.x0, lr.x1, lr.y1 - foot, s, t::DIVIDER_COLOR); { let hot = self.over_gap == Some(2) || matches!(self.drag, Some(Drag::JobList(..))); paint::rect(scene, Rect::new(lr.x1 - s, lr.y0, lr.x1 + if hot { s } else { 0.0 }, lr.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR }); }
             if let Some(label) = add_label { self.job_add.label = Some(label.to_string()); let w = self.job_add.measure(fonts, s).0; self.job_add.rect = Rect::new(lr.x0 + 10.0 * s, lr.y1 - foot + (foot - sb) / 2.0, lr.x0 + 10.0 * s + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_add.corners = Corners::all(radius); self.job_add.paint(scene, fonts, s, now); }
         }
 

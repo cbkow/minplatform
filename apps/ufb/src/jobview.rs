@@ -71,13 +71,17 @@ pub struct Job {
     /// the section in front is one of two tiers; what the user said of the second pane, a section (it wins over the
     /// section's own); the second pane shows the proxies in place of the renders
     pub two_tier: bool, pub pane2: std::collections::HashMap<String, bool>, pub proxies: bool,
+    /// what each section showed when it was left, in this tab (1.4.2's session memory): the chosen item, the first
+    /// pane's folder, the second's if it was shown. `hold`: such a view was just put back - the browser is not sent
+    /// to the item's folders over it when the section's read arrives
+    pub memory: std::collections::HashMap<String, (Option<PathBuf>, PathBuf, Option<PathBuf>)>, pub hold: bool,
     /// an item to choose once it is there (it was just made); the section changed: the browser is to follow
     pub choose: Option<PathBuf>, pub moved: bool,
     req: u64, tx: Sender<Read>, rx: Receiver<Read>, wake: Arc<dyn Fn() + Send + Sync>,
 }
 impl Job {
     pub fn new(path: PathBuf, name: String, wake: Arc<dyn Fn() + Send + Sync>) -> Job {
-        let (tx, rx) = channel(); let mut j = Job { path, name, sections: vec![], section: None, items: vec![], chosen: None, loading: true, missing: false, dated_names: vec![], two_tier: false, pane2: Default::default(), proxies: false, choose: None, moved: false, req: 0, tx, rx, wake };
+        let (tx, rx) = channel(); let mut j = Job { path, name, sections: vec![], section: None, items: vec![], chosen: None, loading: true, missing: false, dated_names: vec![], two_tier: false, pane2: Default::default(), proxies: false, memory: Default::default(), hold: false, choose: None, moved: false, req: 0, tx, rx, wake };
         j.reload(); j
     }
     /// Read the job again (the section in front is kept).
