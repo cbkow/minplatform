@@ -1,4 +1,4 @@
-//! UFB (the rebuild, Phase 5; canon rows 434-478): a file browser. Pictures are made in helper copies of this
+//! UFB (the rebuild, Phase 5; canon rows 434-479): a file browser. Pictures are made in helper copies of this
 //! executable (`UFB --thumb-helper`, see `thumbs`) and kept in a cache of its own (`UFB_THUMB_CACHE=<folder>` or `off`;
 //! else the system's cache location). File operations (`ops`) change things ONLY inside the folders it was started
 //! with - the safety belt of row 468, until the owner's word.
@@ -28,6 +28,7 @@ mod shell;
 mod sysopen;
 mod thumbs;
 mod ui;
+mod webview;
 
 /// What the command line asked for: the folder to open, the test favorites, and the folders this build may CHANGE
 /// things in (row 468, point 2): the folder it was started with, the favorites, each `--allow-writes <folder>`.

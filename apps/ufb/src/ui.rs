@@ -55,7 +55,7 @@ enum Drag { Sidebar(f64, f64), Split }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
 
 /// Logical px.
-const LB_STRIP: f64 = 34.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -150,6 +150,8 @@ impl Ui {
     /// Take in what the worker threads sent. True when anything came.
     pub fn poll(&mut self) -> bool {
         let mut any = self.icons.poll(); any |= self.thumbs.poll(); any |= self.lightbox.poll();
+        // what a page in the web view told: Escape pressed inside it closes the lightbox
+        for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
         let (drops, ended) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended)) };
         for d in drops { any = true; crate::ops::submit(self.id, crate::ops::Op::Transfer { paths: d.paths, dest: d.dest, mv: d.mv }); }
@@ -191,6 +193,9 @@ impl Ui {
             let player = crate::lightbox::Player::open(&media, &path, hw, self.presenter.engine.uploader());
             self.lightbox.attach(player);
         }
+        // an HTML page: the system's own web view, where there is one (else its source stays, as text)
+        if crate::webview::is_page(&ext) { let wake = { let p = self.port.clone(); Arc::new(move || p.send(Msg::Icon)) as Arc<dyn Fn() + Send + Sync> };
+            match crate::webview::create(&self.window, self.web_rect(), self.scale(), &path, wake) { Ok(w) => self.lightbox.attach_web(w), Err(why) => if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: no web view ({why}): the page's source is shown"); } } }
     }
     fn close_lightbox(&mut self) {
         if !self.lightbox.is_open() { return } self.lightbox.close(); self.lb_key = None;
@@ -204,6 +209,10 @@ impl Ui {
     }
     /// Where the picture may lie: the window above the lightbox's strip - and above the transport, when something plays.
     fn lightbox_area(&self) -> Rect { let size = self.window.surface_size(); let bar = if self.lightbox.view.as_ref().is_some_and(|v| v.player.is_some()) { LB_BAR } else { 0.0 }; Rect::new(0.0, 0.0, size.width as f64, (size.height as f64 - (LB_STRIP + bar) * self.scale()).max(1.0)) }
+    /// Where the web view lies: the lightbox's area below a band of our own - nothing of ours can be drawn OVER a system
+    /// view, and the close button must stay in reach.
+    fn web_rect(&self) -> Rect { self.web_rect_of(self.lightbox_area(), self.scale()) }
+    fn web_rect_of(&self, a: Rect, s: f64) -> Rect { Rect::new(a.x0, (a.y0 + LB_WEB_TOP * s).min(a.y1), a.x1, a.y1) }
     /// A key let go while the lightbox plays: a held shuttle ends.
     pub fn key_up(&mut self, name: &str) { if matches!(name, "J" | "L" | "A" | "D") { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.act(qcv_player::Action::ShuttleEnd); } } }
     /// "Open in QCView" (row 452): the file is handed to QCView, when it is installed where the system keeps applications.
@@ -216,6 +225,8 @@ impl Ui {
     fn lightbox_pointer(&mut self, e: &Event) {
         let now = Instant::now(); let area = self.lightbox_area(); let s = self.scale();
         if self.lb_close.event(e, now) == Response::Clicked { self.close_lightbox(); return }
+        // the pointer is on something of ours beside the web view: the keys come back to our own view
+        if let Some(w) = self.lightbox.view.as_ref().and_then(|v| v.web.as_ref()) { if matches!(e, Event::Down { .. }) { w.focus_parent(); } return }
         // the transport of what plays: its buttons, and the line (a press takes hold of it; it is dragged until let go)
         if self.lightbox.view.as_ref().is_some_and(|v| v.player.is_some()) {
             use qcv_player::Action as A;
@@ -339,6 +350,9 @@ impl Ui {
                 let l = fonts.layout_fit(lname, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, ink, cell.width()); draw_layout(scene, &l, Affine::translate((cell.center().x - l.width() as f64 / 2.0, cell.y1 - label + (label - l.height() as f64) / 2.0)));
                 self.lb_tiles.push(cell);
             }
+        } else if let Some(web) = v.web.as_ref() {
+            // the page is the system's view, above our surface: around it the window is plain, and the view follows its place
+            paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR); web.set_rect(Rect::new(area.x0, (area.y0 + LB_WEB_TOP * s).min(area.y1), area.x1, area.y1), s);
         } else if let Some(d) = v.doc.as_ref() {
             // a document draws itself (text, a PDF's pages), and scrolls
             d.borrow_mut().draw(scene, fonts, area, s, now);
@@ -812,6 +826,10 @@ impl Ui {
             // a document scrolled by so many points, or made larger by a factor
             "lbscroll" => if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { d.borrow_mut().wheel(arg.parse::<f64>().unwrap_or(0.0) * self.scale(), Instant::now()); },
             "lbdoczoom" => if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { d.borrow_mut().zoom_by(arg.parse().unwrap_or(1.0)); },
+            // a picture of the window taken by the SYSTEM (our own capture has no web view in it); macOS
+            "lbwebshot" => { let n = crate::webview::window_number(&self.window); if n > 0 { let _ = std::process::Command::new("screencapture").args(["-x", "-o", &format!("-l{n}"), arg]).status(); } },
+            // a script run INSIDE the page of the web view (a link pressed, a key made there: nothing is sent to the desktop)
+            "lbwebjs" => if let Some(w) = self.lightbox.view.as_ref().and_then(|v| v.web.as_ref()) { w.eval(arg); },
             "lbfps" => if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(arg.parse().unwrap_or(1)); eprintln!("UFB_DEMO: the sequence plays at {} fps", crate::lightbox::rate_text(p.rate())); self.lb_key = None; },
             "lbkey" => { let k = KeyEvent { key: Key::Char(arg.to_lowercase()), text: None, shift: false, cmd: false }; self.lightbox_key(&k, arg); }
             "lbseek" => if let (Ok(at), Some(p)) = (arg.parse::<f64>(), self.lightbox.view.as_mut().and_then(|v| v.player.as_mut())) { p.scrub(at); p.scrub_end(); },

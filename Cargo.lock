@@ -6271,6 +6271,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-quick-look-thumbnailing",
  "objc2-uniform-type-identifiers 0.3.2",
+ "objc2-web-kit",
  "peniko",
  "png 0.17.16",
  "qcv-meta",
@@ -6282,6 +6283,7 @@ dependencies = [
  "wgpu",
  "windows",
  "winit 0.31.0-beta.4",
+ "wry",
 ]
 
 [[package]]

@@ -101,7 +101,8 @@ pub struct Info { pub w: u32, pub h: u32, /// the file's own size, and by how mu
 pub enum State { Loading, Ready(Info), Failed(String), /// a kind this step does not show
     NoPreview, /// an EXR of several layers: its contact sheet (`View::layers`); one is chosen there
     Layers, /// a sound: the player plays it, there is no picture
-    Audio, /// a document (text, a PDF): `View::doc` reads and draws it
+    Audio, /// an HTML page in the system's web view (`View::web`)
+    Web, /// a document (text, a PDF): `View::doc` reads and draws it
     Doc }
 
 pub struct View {
@@ -117,6 +118,8 @@ pub struct View {
     drag: Option<((f64, f64), (f64, f64))>,
     /// a document, when the file is one (row 479)
     pub doc: Option<std::cell::RefCell<crate::docview::Doc>>,
+    /// the system's web view, when the file is a page it shows (row 479)
+    pub web: Option<crate::webview::Web>,
 }
 
 pub struct Lightbox { wake: Arc<dyn Fn() + Send + Sync>, pool: Pool, next: u64, waiting: Option<u64>, pub view: Option<View>, frame: Option<(Frame, bool)>,
@@ -145,13 +148,13 @@ impl Lightbox {
     /// ([`Lightbox::attach`]) - a video, a sound, a sequence; else a still is asked of the helper.
     pub fn open(&mut self, path: PathBuf, name: String, size: u64, kind: String, ext: &str, pane: usize, played: bool) {
         self.call_off(); self.frame = None; self.retire();
-        if played { self.view = Some(View { path, name, size, kind, pane, state: State::Loading, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None }); return }
+        if played { self.view = Some(View { path, name, size, kind, pane, state: State::Loading, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None, web: None }); return }
         // a document: read and drawn on a thread of its own
         if let Some(dk) = crate::docview::kind_of(ext) { let doc = crate::docview::Doc::open(dk, &path, self.wake.clone());
-            self.view = Some(View { path, name, size, kind, pane, state: State::Doc, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: Some(std::cell::RefCell::new(doc)) }); return }
+            self.view = Some(View { path, name, size, kind, pane, state: State::Doc, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: Some(std::cell::RefCell::new(doc)), web: None }); return }
         let state = if shows(ext) { State::Loading } else { State::NoPreview };
         let wanted = state == State::Loading; let p = path.to_string_lossy().into_owned();
-        self.view = Some(View { path, name, size, kind, pane, state, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None });
+        self.view = Some(View { path, name, size, kind, pane, state, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None, web: None });
         // an EXR is first asked which layers it has: several make a contact sheet, one is shown at once
         if wanted { if ext == "exr" { let id = self.id(); self.asked_layers = Some(id); self.pool.submit(Job::new(Request::new(id, OP_LAYERS, 0, 0, p), 20_000)); } else { self.ask_full(p); } }
     }
@@ -170,6 +173,10 @@ impl Lightbox {
             Err(why) => v.state = State::Failed(format!("This file could not be played: {why}.")),
         }
     }
+    /// The system's web view is on the file shown (an HTML page): it takes the place of the page's source text.
+    pub fn attach_web(&mut self, web: crate::webview::Web) { if let Some(v) = self.view.as_mut() { v.doc = None; v.state = State::Web; v.web = Some(web); } }
+    /// What the page in the web view told since last asked.
+    pub fn web_msgs(&mut self) -> Vec<String> { self.view.as_ref().and_then(|v| v.web.as_ref()).map(|w| std::mem::take(&mut *w.msgs.borrow_mut())).unwrap_or_default() }
     /// A layer of the contact sheet is chosen: it is shown large.
     pub fn pick_layer(&mut self, i: usize) {
         let Some(v) = self.view.as_mut() else { return }; let Some((name, _)) = v.layers.get(i) else { return };
@@ -183,7 +190,7 @@ impl Lightbox {
     }
     /// Take in what the helper answered. True when something came.
     pub fn poll(&mut self) -> bool {
-        let mut any = self.view.as_ref().and_then(|v| v.doc.as_ref()).is_some_and(|d| d.borrow_mut().poll());
+        let mut any = self.view.as_ref().and_then(|v| v.doc.as_ref()).is_some_and(|d| d.borrow_mut().poll()) || self.view.as_ref().and_then(|v| v.web.as_ref()).is_some_and(|w| !w.msgs.borrow().is_empty());
         while let Ok(d) = self.pool.rx.try_recv() {
             any = true;
             // a small picture of the contact sheet
@@ -276,7 +283,7 @@ pub fn ext_of(path: &Path) -> String { path.extension().map(|e| e.to_string_loss
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn view(w: u32, h: u32) -> View { View { path: PathBuf::from("/a/plate.exr"), name: "plate.exr".into(), size: 12_400_000, kind: "OpenEXR image".into(), pane: 0, state: State::Ready(Info { w, h, orig: (w, h), reduced: 1, alpha: false, depth: 32 }), since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None } }
+    fn view(w: u32, h: u32) -> View { View { path: PathBuf::from("/a/plate.exr"), name: "plate.exr".into(), size: 12_400_000, kind: "OpenEXR image".into(), pane: 0, state: State::Ready(Info { w, h, orig: (w, h), reduced: 1, alpha: false, depth: 32 }), since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None, web: None } }
     #[test]
     fn a_picture_is_fitted_never_enlarged_and_zooms_about_the_pointer() {
         let area = Rect::new(0.0, 0.0, 1000.0, 600.0);
