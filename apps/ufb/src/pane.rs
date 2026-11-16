@@ -28,6 +28,8 @@ pub enum Mode { List, Grid }
 pub enum Load { Loading, Ready, Failed(String) }
 
 pub struct Pane {
+    /// the folder this pane does not leave upward (a job's chosen item, row 486): Up stops there; none in the browser
+    pub root: Option<PathBuf>,
     pub history: History, pub model: Model, pub table: Table, pub grid: Grid, pub mode: Mode, pub load: Load,
     /// the room left on the folder's volume; the folder's own modification time at the last reading
     pub free: Option<u64>, mtime: Option<i64>,
@@ -106,7 +108,7 @@ pub fn set_cut(paths: &[PathBuf]) { *CUT.lock().unwrap() = paths.to_vec(); CUT_A
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { root: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -131,11 +133,16 @@ impl Pane {
         let (req, cancel) = (lister::next_req(), Arc::new(AtomicBool::new(false)));
         self.reqs.insert(req, (TOP, cancel.clone())); lister::list(port, req, self.path().to_path_buf(), cancel);
     }
+    /// There is a folder above that this pane may go to: not above its root, when it has one.
+    pub fn can_up(&self) -> bool { self.history.parent().is_some() && self.root.as_ref().is_none_or(|r| self.path() != r && self.path().starts_with(r)) }
+    /// The pane is given to a folder it does not leave upward, and starts at `at` inside it with a history of its own:
+    /// Back cannot lead out of it (row 486).
+    pub fn rooted(&mut self, port: &Port, root: PathBuf, at: PathBuf) { self.root = Some(root); self.history = History::new(at); self.read(port, None, vec![]); }
     pub fn go(&mut self, port: &Port, path: PathBuf) { let look = self.look(); if self.history.go(path, look) { self.read(port, None, vec![]); } }
     pub fn back(&mut self, port: &Port) { let look = self.look(); if let Some(stop) = self.history.back(look) { self.read(port, Some(stop.look), vec![]); } }
     pub fn forward(&mut self, port: &Port) { let look = self.look(); if let Some(stop) = self.history.forward(look) { self.read(port, Some(stop.look), vec![]); } }
     /// To the enclosing folder; the folder left is the one chosen there.
-    pub fn up(&mut self, port: &Port) { let look = self.look(); if let Some(stop) = self.history.up(look) { self.read(port, Some(stop.look), vec![]); } }
+    pub fn up(&mut self, port: &Port) { if !self.can_up() { return } let look = self.look(); if let Some(stop) = self.history.up(look) { self.read(port, Some(stop.look), vec![]); } }
     /// Read again what is shown: the choice, the scroll and the folders opened in place are kept as far as they still exist.
     pub fn refresh(&mut self, port: &Port) { let (look, open, search) = (self.look(), self.model.expanded(), self.search.clone()); self.read(port, Some(look), open); self.model.set_filter(&search); self.search = search; }
     /// Read again and, once read, choose the entries with these names (what an operation made).

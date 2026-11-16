@@ -202,20 +202,23 @@ impl Ui {
     /// A place of the sidebar is opened: a job as a job, a folder in the browser (the tab stops showing a job).
     fn open_place(&mut self, path: PathBuf, job: bool) {
         if job { let name = self.jobs.iter().find(|j| j.path == path).map(|j| j.name.clone()).unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()); self.open_job(path, name); }
-        else { if self.job.take().is_some() { self.focus = Focus::Pane; } self.go(path); }
+        else { if self.job.take().is_some() { self.focus = Focus::Pane; for p in self.panes.iter_mut() { p.root = None; } } self.go(path); }
     }
     /// The browser follows the job: the chosen item's project folder in the first pane and its renders in the second
     /// (each the item itself when it has none) - or, with nothing chosen, the section's folder.
-    fn job_follow(&mut self) {
+    fn job_follow(&mut self, first: bool, second: bool) {
         let Some(j) = self.job.as_ref() else { return }; let port = self.port.clone(); if j.hold { return }
-        let (a, b) = match j.chosen_item() { Some(i) => (i.project.clone(), i.renders.clone()), None => match j.section_dir() { Some(d) => (d.clone(), d), None => (j.path.clone(), j.path.clone()) } };
-        if self.panes[0].path() != a { self.panes[0].go(&port, a); }
-        // (the second pane follows only in a section of two tiers: in a flat one it is the ordinary second pane)
-        let b = match j.chosen_item().and_then(|i| i.proxies.clone()).filter(|_| j.proxies) { Some(p) => p, None => b }; let follows = j.two_tier;
-        // ... but with nothing chosen it shows the section's folder too: nothing of another section lingers (row 484)
-        let nothing = j.chosen_item().is_none();
-        if (follows || nothing) && self.two && self.panes.len() > 1 && self.panes[1].path() != b { self.panes[1].go(&port, b); }
+        // (nothing chosen: nothing is shown - the panes are not drawn, `blank`)
+        let Some(it) = j.chosen_item() else { return };
+        let (root, a) = (it.path.clone(), it.project.clone()); let b = match it.proxies.clone().filter(|_| j.proxies) { Some(p) => p, None => it.renders.clone() };
+        // each pane is the ITEM's from here on (row 486): Up stops at the item, and its history begins anew - Back cannot leave the shot
+        if first { self.panes[0].rooted(&port, root.clone(), a); }
+        if second && self.two && self.panes.len() > 1 { self.panes[1].rooted(&port, root, b); }
     }
+    /// In a job nothing is chosen: the panes show nothing (row 486 - not the section's folder, which only repeats the item list).
+    fn blank(&self) -> bool { self.job.as_ref().is_some_and(|j| j.chosen_item().is_none()) }
+    /// The folder the window is "in", for a new tab or a path to type: the active pane's - or, with nothing shown, the job's section.
+    fn here(&self) -> PathBuf { match &self.job { Some(j) if j.chosen_item().is_none() => j.section_dir().unwrap_or_else(|| j.path.clone()), _ => self.panes[self.active.min(self.panes.len() - 1)].path().to_path_buf() } }
     /// Another section of the job comes to the front (row 484). What the one in front shows is kept for it - the
     /// chosen item, the panes' folders - and the browser goes AT ONCE to what belongs to the new one: what it showed
     /// when it was last left, else its own folder. Nothing of the old section stays in view while the new one is read.
@@ -226,17 +229,19 @@ impl Ui {
         let dir = j.path.join(name); let kept = j.memory.get(name).cloned();
         j.show_section(name); self.job_scroll = ScrollBar::default();
         match kept {
-            Some((item, p0, p1)) => { j.choose = item; j.hold = true; let on = p1.is_some();
+            // (what it showed when it was left: the item, and where each pane was inside it)
+            Some((Some(item), p0, p1)) => { j.choose = Some(item.clone()); j.hold = true; let on = p1.is_some();
                 if on != self.two { self.set_two(on); }
-                if self.panes[0].path() != p0 { self.panes[0].go(&port, p0); }
-                if let Some(p1) = p1 { if self.panes.len() > 1 && self.panes[1].path() != p1 { self.panes[1].go(&port, p1); } } }
-            None => { for p in self.panes.iter_mut().take(2) { if p.path() != dir { p.go(&port, dir.clone()); } } }
+                self.panes[0].rooted(&port, item.clone(), p0);
+                if let Some(p1) = p1 { if self.panes.len() > 1 { self.panes[1].rooted(&port, item, p1); } } }
+            // (a first visit, or one left with nothing chosen: nothing is shown until an item is chosen)
+            _ => { let _ = dir; }
         }
         self.active = 0;
     }
     /// The chosen item is brought into view.
     fn job_reveal(&mut self) { let s = self.scale(); if let Some(i) = self.job.as_ref().and_then(|j| j.chosen) { let (top, h) = (i as f64 * JOB_ROW * s, (self.job_list.height() - (JOB_ROW + 40.0) * s).max(JOB_ROW * s)); if top < self.job_scroll.offset { self.job_scroll.offset = top; } else if top + JOB_ROW * s > self.job_scroll.offset + h { self.job_scroll.offset = top + JOB_ROW * s - h; } } }
-    fn job_choose(&mut self, i: usize) { if let Some(j) = self.job.as_mut() { if i < j.items.len() && j.chosen != Some(i) { j.chosen = Some(i); self.job_follow(); } } }
+    fn job_choose(&mut self, i: usize) { if let Some(j) = self.job.as_mut() { if i < j.items.len() && j.chosen != Some(i) { j.chosen = Some(i); self.job_follow(true, true); } } }
     /// "Add" in the section in front: what it is called and whether there is one (the section's kind, by the project type).
     fn job_add_label(&self) -> Option<&'static str> {
         use ufb_projtype::Kind; let sec = self.job.as_ref()?.section.as_deref()?;
@@ -283,7 +288,7 @@ impl Ui {
         let r = crate::db::with(|d| if on { d.subscribe(&path, "") } else { d.unsubscribe(&path) });
         match r { Some(Ok(())) => {} Some(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, Instant::now()), None => self.toast.show("The database could not be opened.", min_ui::toast::ToastKind::Negative, Instant::now()) }
         self.reload_jobs();
-        if !on && self.job.as_ref().is_some_and(|j| j.path == path) { self.job = None; self.focus = Focus::Pane; }
+        if !on && self.job.as_ref().is_some_and(|j| j.path == path) { self.job = None; self.focus = Focus::Pane; for p in self.panes.iter_mut() { p.root = None; } }
     }
     /// A text is being typed somewhere (a field of the window, or of an open question).
     fn text_focus(&self) -> bool { matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
@@ -292,20 +297,25 @@ impl Ui {
     fn hidden_panes(&mut self) -> impl Iterator<Item = &mut Pane> { self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) }
 
     /// What the menus show of this window.
-    pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some(),
+    pub fn menu_state(&self) -> menu::State { let mut st = self.menu_state_of_pane(); if self.blank() { st.can_back = false; st.can_forward = false; st.can_up = false; st.chosen = 0; st.writable = false; st.other = false; } st }
+    fn menu_state_of_pane(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.can_up(),
         chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
-        sequences: p.model.sequences, jobs_folder: crate::jobview::is_jobs_folder(p.path()), typing: self.text_focus(), other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
+        sequences: p.model.sequences, jobs_folder: !self.blank() && crate::jobview::is_jobs_folder(p.path()), typing: self.text_focus(), other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
 
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
     pub fn poll(&mut self) -> bool {
         let mut any = self.icons.poll(); any |= self.thumbs.poll(); any |= self.lightbox.poll();
         // the job in front was read: the browser follows a section that came to the front; what was being made is there
-        if let Some(j) = self.job.as_mut() { let was = j.two_tier; if j.poll() { any = true; let moved = std::mem::take(&mut j.moved) || (j.two_tier && !was);   // (a section that BECAME one of two tiers - its first shot was added - counts)
-            let (want, chosen) = (j.wants_two(), j.chosen.is_some());
-            // a section that came to the front: the second pane as the section is - shown for two tiers, hidden for a flat one - unless the user said otherwise for it
+        if let Some(j) = self.job.as_mut() { let was = j.two_tier; let before = j.chosen_item().map(|i| i.path.clone()); if j.poll() { any = true;
+            // (a section that BECAME one of two tiers - its first shot was added - counts as one that came to the front)
+            let moved = std::mem::take(&mut j.moved) || (j.two_tier && !was);
+            let (want, after) = (j.wants_two(), j.chosen_item().map(|i| i.path.clone()));
+            // a section that came to the front: the second pane as the section is - shown for two tiers, none for a flat one - unless the user said otherwise for it
             if moved && want != self.two { self.set_two(want); }
-            if moved || chosen { self.job_follow(); }
+            // the browser goes to an item when ANOTHER one is chosen (one just made, a section that came to the front) -
+            // not at every read of the job: a pane taken deeper by hand stays where it is
+            if after.is_some() && (moved || after != before) { self.job_follow(true, true); }
             if let Some(j) = self.job.as_mut() { j.hold = false; } } }
         while let Ok(m) = self.made_rx.try_recv() { any = true; self.on_made(m); }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
@@ -322,7 +332,7 @@ impl Ui {
             any = true;
             match m {
                 Msg::Places { volumes, root } => { self.volumes = volumes; self.root = root; self.crumbs_for = None; }
-                Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); let port = self.port.clone(); self.pane().go(&port, path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
+                Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); self.go(path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
                 Msg::Icon => { self.icons.poll(); self.thumbs.poll(); self.lightbox.poll(); }
                 Msg::Op(rep) => self.on_report(&rep),
                 Msg::Ask(q) => if q.origin == self.id { self.asks.push_back(q); },
@@ -658,21 +668,26 @@ impl Ui {
     }
 
     // ---------------------------------------------------------------- commands
-    fn go(&mut self, path: PathBuf) { let port = self.port.clone(); self.pane().go(&port, path); }
+    /// The active pane goes to a folder. In a job a pane stays inside the chosen item: a folder outside it (a path
+    /// typed, the Go menu) opens in a NEW TAB, and the job stays as it is (row 486).
+    fn go(&mut self, path: PathBuf) {
+        if self.job.is_some() { let inside = !self.blank() && self.pane().root.clone().is_some_and(|r| path.starts_with(&r)); if !inside { self.new_tab(path); return } }
+        let port = self.port.clone(); self.pane().go(&port, path);
+    }
     fn set_two(&mut self, on: bool) {
         self.two = on;
         if on && self.panes.len() < 2 { let path = self.panes[0].path().to_path_buf(); let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first); self.panes.push(p); }
         if !on { self.active = 0; }
-        // (in a job the second pane shows the chosen item's renders)
-        if on { self.job_follow(); }
+        // (in a job the second pane shows the chosen item's renders; the first stays where it is)
+        if on { self.job_follow(false, true); }
     }
     fn edit_path(&mut self) {
-        let text = self.panes[self.active.min(self.panes.len() - 1)].path().to_string_lossy().into_owned();
+        let text = self.here().to_string_lossy().into_owned();
         self.field.set_text(&text); self.field.focused = true; self.field.error = false; self.field.select_all(&mut self.fonts); self.search.focused = false; self.focus = Focus::Path; self.path_error = None;
     }
     fn leave_path(&mut self) { if self.focus == Focus::Path { self.focus = Focus::Pane; } self.field.focused = false; self.field.error = false; self.path_error = None; self.check = None; }
     fn submit_path(&mut self) {
-        let current = self.panes[self.active.min(self.panes.len() - 1)].path().to_path_buf();
+        let current = self.here();
         match crumbs::typed_path(self.field.text(), &places::home(), &current) {
             // whether it is a folder is asked off this thread; the answer navigates or shows the error
             Some(p) => { let req = lister::next_req(); self.check = Some(req); self.path_error = None; self.field.error = false; lister::check(&self.port, req, p); }
@@ -689,6 +704,8 @@ impl Ui {
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
         if self.dialog.is_some() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return }
         if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewJob | Cmd::Subscribe) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
+        // in a job with nothing chosen there is no pane to act on (row 486)
+        if self.blank() && !self.text_focus() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Open | Cmd::Preview | Cmd::SelectAll | Cmd::Back | Cmd::Forward | Cmd::Up | Cmd::Find | Cmd::Subscribe | Cmd::Sort(_)) { return }
         match c {
             // copy and paste are the text field's while one is in hand; else they are about files (the clipboard is the application's to reach)
             Cmd::Copy | Cmd::Cut => if self.text_focus() { self.out.push(Out::FieldCopy { cut: c == Cmd::Cut }); } else { let paths = self.chosen_paths(); if !paths.is_empty() { self.out.push(Out::CopyFiles { paths, cut: c == Cmd::Cut }); } },
@@ -702,9 +719,9 @@ impl Ui {
             Cmd::Trash => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Trash { paths }); } }
             Cmd::DeleteNow => { let paths = self.chosen_paths(); self.ask_delete(paths, false); }
             Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo),
-            Cmd::NewWindow => { let p = self.pane().path().to_path_buf(); self.out.push(Out::NewWindow(p)); }
+            Cmd::NewWindow => { let p = self.here(); self.out.push(Out::NewWindow(p)); }
             // tabs (row 480): a new one shows the folder of the one in front; closing the last closes the window
-            Cmd::NewTab => { let p = self.pane().path().to_path_buf(); self.new_tab(p); }
+            Cmd::NewTab => { let p = self.here(); self.new_tab(p); }
             Cmd::CloseTab => self.close_tab(self.tab),
             Cmd::NextTab | Cmd::PrevTab => { let n = self.tabs.len(); if n > 1 { self.show_tab((self.tab + if c == Cmd::NextTab { 1 } else { n - 1 }) % n); } }
             Cmd::NewJob => self.ask_new_job(),
@@ -735,6 +752,7 @@ impl Ui {
         if self.menubar.as_ref().is_some_and(|m| m.bar.is_open()) { return }
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
         if self.job.is_some() && self.job_list.contains(p) { self.job_scroll.wheel(dy, now); return }
+        if self.blank() { return }
         let n = self.shown(); for pane in self.panes.iter_mut().take(n) { if pane.rect.contains(p) { pane.wheel(dy, now); return } }
     }
     /// The folder under the pointer that a new window can be opened on: a sidebar row, a segment of the path, and -
@@ -926,11 +944,13 @@ impl Ui {
                     if button == Button::Secondary { if let Some(to) = self.job.as_ref().and_then(|j| j.items.get(i)).map(|it| it.path.clone()) { self.menu_for = Some((Some(0), to.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() }); } } }
                 return } }
         }
+        // (in a job with nothing chosen no pane is shown: nothing below is there to take the pointer)
+        if self.blank() { self.set_cursor(if self.over_gap.is_some() { winit31::cursor::CursorIcon::ColResize } else { winit31::cursor::CursorIcon::Default }); return }
         let n = self.shown();
         // the secondary button on a list's header: the fields to sort by (a narrow pane does not show them all, row 483)
         if let Event::Down { x, y, button: Button::Secondary } = *e { for i in 0..n { if self.panes[i].mode == Mode::List && self.panes[i].table.header().contains(kurbo::Point::new(x, y)) {
             self.active = i; let here = self.panes[i].path().to_path_buf(); self.menu_for = Some((Some(i), here.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![here], rows: crate::ctxmenu::rows_for_sort() }); return } } }
-        if self.job_prox.rect.width() > 0.0 && self.job_prox.event(e, now) == Response::Clicked { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(); return }
+        if self.job_prox.rect.width() > 0.0 && self.job_prox.event(e, now) == Response::Clicked { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(false, true); return }
         // the panes: a press in one makes it the active one
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
         for pane in self.panes.iter_mut().take(n) { pane.pointer(e, self.mods, now, &port); }
@@ -1007,12 +1027,12 @@ impl Ui {
             Key::Named(Named::Tab) if !k.cmd && !alt => { if self.two && self.panes.len() > 1 { self.active = 1 - self.active.min(1); } return }
             // Space is the lightbox's (a later slice): nothing yet, and it is not a letter to find a name by
             // Space is the lightbox's (row 452) - unless a name is being typed to find it, where it is a letter
-            Key::Char(c) if c == " " && !k.cmd => { if self.pane().sel().typed(now).is_empty() { self.command(Cmd::Preview); return } }
+            Key::Char(c) if c == " " && !k.cmd && !self.blank() => { if self.pane().sel().typed(now).is_empty() { self.command(Cmd::Preview); return } }
             Key::Named(Named::Enter) if mac => return,
             Key::Named(Named::Escape) => { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } return }
             _ => {}
         }
-        if alt && !mac { return }
+        if (alt && !mac) || self.blank() { return }
         self.pane().key(k, now, &port); self.after_pane_events();
     }
 
@@ -1050,12 +1070,12 @@ impl Ui {
             "job" => if let Some(j) = num(arg).and_then(|n| self.jobs.get(n)).cloned() { self.open_place(j.path, true); },
             "section" => self.job_show_section(arg),
             "item" => if let Some(n) = num(arg) { self.job_choose(n); },
-            "proxies" => { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(); }
+            "proxies" => { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(false, true); }
             "headmenu" => { let h = self.pane().table.header(); let (x, y) = ((h.x0 + h.x1) / 2.0, (h.y0 + h.y1) / 2.0); self.pointer(&Event::Down { x, y, button: Button::Secondary }); }
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
-            "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?} (two tiers: {}): items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.two_tier, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), self.panes.iter().take(self.shown()).map(|p| p.path().display().to_string()).collect::<Vec<_>>().join(" + ")); },
+            "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?} (two tiers: {}): items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.two_tier, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), if self.blank() { "(nothing shown)".to_string() } else { self.panes.iter().take(self.shown()).map(|p| format!("{}{}{}", p.path().display(), if p.history.can_back() { " <back" } else { "" }, if p.can_up() { " ^up" } else { "" })).collect::<Vec<_>>().join(" + ") }); },
             "subscribe" => self.subscribe(PathBuf::from(arg), true), "unsubscribe" => self.subscribe(PathBuf::from(arg), false),
             "newjob" => { self.ask_new_job(); if let Some((d, _)) = self.dialog.as_mut() { let (n, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(n); d.fields[1].1.set_text(name); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "additem" => { self.ask_add_item(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
@@ -1144,9 +1164,14 @@ impl Ui {
     fn lightbox_live(&self, now: Instant) -> bool { self.lightbox.is_open() && (self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.player.as_ref().is_some_and(|p| p.busy(now)) || v.doc.as_ref().is_some_and(|d| d.borrow().busy(now)))) }
     /// The path bar's segments as buttons, made anew when the path, the startup disk's name or the room changes.
     fn make_crumbs(&mut self, room: f64, s: f64) {
-        let path = self.panes[self.active.min(self.panes.len() - 1)].path().to_path_buf(); let key = (path.clone(), self.root.clone(), (room * 4.0) as i64);
+        // (in a job the path begins at the chosen ITEM - the job and the section are named in the bar above, and no
+        // segment leads out of the shot; with nothing chosen there is no path, row 486)
+        let blank = self.blank(); let pane = &self.panes[self.active.min(self.panes.len() - 1)]; let top = pane.root.clone().filter(|_| self.job.is_some());
+        let path = pane.path().to_path_buf(); let key = (path.clone(), format!("{}|{}|{blank}", self.root, top.as_ref().map(|t| t.to_string_lossy().into_owned()).unwrap_or_default()), (room * 4.0) as i64);
         if self.crumbs_for.as_ref() == Some(&key) { return } self.crumbs_for = Some(key);
-        let segs = crumbs::segments(&path, if self.root.is_empty() { "/" } else { &self.root });
+        if blank { self.crumbs.clear(); return }
+        let mut segs = crumbs::segments(&path, if self.root.is_empty() { "/" } else { &self.root });
+        if let Some(top) = &top { segs.retain(|seg| seg.path.starts_with(top)); }
         let mut all: Vec<(ActionButton, Option<PathBuf>)> = segs.into_iter().map(|seg| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(seg.label); (b, Some(seg.path)) }).collect();
         let widths: Vec<f64> = all.iter().map(|(b, _)| b.measure(&mut self.fonts, s).0).collect();
         let (sep, dots) = (14.0 * s, t::ACTION_BUTTON_HEIGHT_S as f64 * s);
@@ -1162,7 +1187,7 @@ impl Ui {
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         if self.active >= self.shown() { self.active = 0; }
         // the window is called by the folder it shows (the active pane's)
-        { let title = match &self.job { Some(j) => format!("{} \u{2014} {}", j.name, self.panes[self.active].title()), None => self.panes[self.active].title() }; if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
+        { let title = match &self.job { Some(j) if j.chosen_item().is_none() => j.name.clone(), Some(j) => format!("{} \u{2014} {}", j.name, self.panes[self.active].title()), None => self.panes[self.active].title() }; if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
         // the search field shows the active pane's filter (a navigation clears it)
         if self.search.text() != self.panes[self.active].search { let text = self.panes[self.active].search.clone(); self.search.set_text(&text); }
         // -- where everything lies
@@ -1187,7 +1212,8 @@ impl Ui {
         self.gaps[0] = Rect::new(side_w - GAP * s / 2.0, menu_h, side_w + GAP * s / 2.0, status.y0);
         self.gaps[2] = if in_job { Rect::new(body.x0 - GAP * s / 2.0, tool.y1, body.x0 + GAP * s / 2.0, area.y1) } else { Rect::ZERO };
         // in a job the second pane lies BELOW the first (row 484: the item list needs the width); in the browser, beside it
-        let n = self.shown(); self.stacked = in_job; self.panes_area = body;
+        // (in a job with nothing chosen no pane is drawn, row 486)
+        let blank = self.blank(); let n = if blank { 0 } else { self.shown() }; self.stacked = in_job; self.panes_area = body;
         let split_x = if n == 2 && !in_job { (body.x0 + body.width() * self.split).round() } else { body.x1 };
         let split_y = if n == 2 && in_job { (body.y0 + body.height() * self.split).round() } else { body.y1 };
         self.gaps[1] = if n != 2 { Rect::ZERO } else if in_job { Rect::new(body.x0, split_y - GAP * s / 2.0, body.x1, split_y + GAP * s / 2.0) } else { Rect::new(split_x - GAP * s / 2.0, body.y0, split_x + GAP * s / 2.0, body.y1) };
@@ -1227,7 +1253,7 @@ impl Ui {
         self.preview_btn.rect = if wide > 520.0 { let q = Rect::new(r - bh, by, r, by + bh); r -= bh + pad; q } else { Rect::ZERO }; self.preview_btn.corners = Corners::all(radius); self.preview_btn.enabled = self.panes[self.active].cursor_row().is_some();
         self.seq_btn.rect = if wide > 600.0 { let q = Rect::new(r - bh, by, r, by + bh); r -= bh + pad; q } else { Rect::ZERO }; self.seq_btn.corners = Corners::all(radius); self.seq_btn.selected = self.panes[self.active].model.sequences;
         self.path_rect = Rect::new((x + pad - 2.0 * s).min(r), tool.y0 + (tool.height() - fh) / 2.0, r.max(x + pad), tool.y0 + (tool.height() + fh) / 2.0);
-        { let p = &self.panes[self.active]; self.back.enabled = p.history.can_back(); self.forward.enabled = p.history.can_forward(); self.up.enabled = p.history.parent().is_some(); }
+        { let p = &self.panes[self.active]; let shown = !self.blank(); self.back.enabled = shown && p.history.can_back(); self.forward.enabled = shown && p.history.can_forward(); self.up.enabled = shown && p.can_up(); }
         let crumb_room = self.path_rect.width() - 12.0 * s; self.make_crumbs(crumb_room, s);
         if self.focus == Focus::Path { self.field.layout(&mut self.fonts, self.path_rect, s); }
         if self.path_error.as_ref().is_some_and(|(_, since)| since.elapsed() > Duration::from_millis(2600)) { self.path_error = None; self.field.error = false; }
@@ -1239,6 +1265,11 @@ impl Ui {
         paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
 
         // -- the panes
+        if blank { if let Some(j) = &self.job {
+            let what = if j.missing || (j.loading && j.items.is_empty()) { String::new() } else if j.items.is_empty() { "Nothing in this section yet".to_string() } else if self.job_add.label.as_deref() == Some("Add Shot") { "Choose a shot to see its files".to_string() } else { "Choose an item to see its files".to_string() };
+            let l = fonts.layout_fit(&what, Family::Sans, t::BODY_SIZE_M * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, (body.width() - 40.0 * s).max(10.0));
+            draw_layout(scene, &l, Affine::translate((body.x0 + (body.width() - l.width() as f64) / 2.0, body.y0 + (body.height() * 0.38).min(160.0 * s))));
+        } }
         self.thumbs.begin_frame();
         for i in 0..n {
             if n == 2 {
@@ -1260,7 +1291,7 @@ impl Ui {
             self.job_prox.rect = Rect::new(hr.x1 - 6.0 * s - w, hr.y0 + s + (hr.height() - sb) / 2.0, hr.x1 - 6.0 * s, hr.y0 + s + (hr.height() + sb) / 2.0); self.job_prox.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.job_prox.selected = j.proxies; self.job_prox.paint(scene, fonts, s, now);
         }
         self.thumbs.end_frame();
-        if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n - 1)].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }
+        if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n.saturating_sub(1))].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }
         if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); let k = if hot { 2.0 * s } else { s }; paint::rect(scene, if in_job { Rect::new(body.x0, split_y, body.x1, split_y + k) } else { Rect::new(split_x, body.y0, split_x + k, body.y1) }, if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
 
         // -- the strip of tabs (row 481): PILLS on the window's own surface, as the sidebar's rows are - the one in front
@@ -1401,7 +1432,7 @@ impl Ui {
         // -- the status bar: the active pane's items and choice; the room left on its volume
         paint::rect(scene, status, t::BACKGROUND_LAYER_1_COLOR); paint::hline(scene, status.x0, status.x1, status.y0, s, t::DIVIDER_COLOR);
         { let p = &self.panes[self.active]; let size = t::BODY_SIZE_S * s as f32;
-            let free = p.free.filter(|_| p.load != Load::Loading).map(|f| crate::format::free_text(f, crate::format::DECIMAL)).unwrap_or_default();
+            let free = p.free.filter(|_| p.load != Load::Loading && !blank).map(|f| crate::format::free_text(f, crate::format::DECIMAL)).unwrap_or_default();
             let fl = fonts.layout(&free, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub); let mut fx = status.x1 - 12.0 * s - fl.width() as f64;
             // a running operation takes the right of the bar (row 468, point 7): what it does, how far it is, its cancel, how many wait
             self.op_rect = Rect::ZERO;
@@ -1421,7 +1452,7 @@ impl Ui {
                     paint::rounded(scene, card.inflate(s, s), t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s + s, t::DIVIDER_COLOR_MEDIUM); paint::rounded(scene, card, t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
                     for (i, row) in rows.iter().enumerate() { let rl = fonts.layout_fit(row, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, if i == 0 { ink } else { sub }, pw - 24.0 * s); draw_layout(scene, &rl, Affine::translate((card.x0 + 12.0 * s, card.y0 + 6.0 * s + i as f64 * rh + (rh - rl.height() as f64) / 2.0))); } }
             } else { self.op_list = false; if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); } }
-            let l = fonts.layout_fit(&p.status(), Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub, (fx - 24.0 * s - area.x0 - 12.0 * s).max(40.0 * s));
+            let l = fonts.layout_fit(&if blank { String::new() } else { p.status() }, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub, (fx - 24.0 * s - area.x0 - 12.0 * s).max(40.0 * s));
             draw_layout(scene, &l, Affine::translate((area.x0 + 12.0 * s, status.y0 + (status.height() - l.height() as f64) / 2.0))); }
 
         // -- the drawn menu bar's strip, the tooltips, and the open menus over everything
