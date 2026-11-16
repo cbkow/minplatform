@@ -49,6 +49,7 @@ fn key_name(event: &winit::event::KeyEvent) -> String {
 
 impl App {
     fn open(&mut self, el: &dyn ActiveEventLoop, path: PathBuf) {
+        if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: a window on {}", path.display()); }
         let (w, h) = wanted_size();
         #[allow(unused_mut)] let mut attrs = WindowAttributes::default().with_title("UFB").with_surface_size(winit::dpi::LogicalSize::new(w, h)).with_min_surface_size(winit::dpi::LogicalSize::new(480.0, 320.0));
         // Windows: the caption takes the menu row's colour, so the window is one surface from its top edge down (as minNotes');
@@ -129,7 +130,7 @@ impl ApplicationHandler for App {
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(b), .. } => {
                 self.alt_clean = false; let (x, y) = (position.x, position.y);
                 match b {
-                    MouseButton::Left | MouseButton::Right => { let button = if b == MouseButton::Left { min_ui::Button::Primary } else { min_ui::Button::Secondary };
+                    MouseButton::Left | MouseButton::Right | MouseButton::Middle => { let button = match b { MouseButton::Left => min_ui::Button::Primary, MouseButton::Right => min_ui::Button::Secondary, _ => min_ui::Button::Middle };
                         w.ui.pointer(&if state == ElementState::Pressed { min_ui::Event::Down { x, y, button } } else { min_ui::Event::Up { x, y, button } }); }
                     // the mouse's own back and forward buttons (row 449)
                     MouseButton::Back if state == ElementState::Pressed => w.ui.command(Cmd::Back),

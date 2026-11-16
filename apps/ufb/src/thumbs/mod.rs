@@ -9,9 +9,13 @@
 //! What is in view is done first and ONLY that is asked for: each frame the views say what they show ([`Thumbs::want`]);
 //! a request that still waits when its entry has left the view is called off ([`Thumbs::end_frame`]).
 //!
-//! This slice keeps the pictures in memory only (a cap, the least recently shown dropped first). The cache on disk
-//! (row 456, point 4), video, sequences and Radiance HDR through our own decoders are later slices.
+//! Two stores: the pictures of what was shown lately, in memory (a cap, the least recently shown dropped first); and
+//! the cache on disk (row 456, point 4; `cache.rs`), which the HELPERS read and write - a picture is first asked of
+//! it ([`OP_CACHED`]), and only made when it is not there. Video, sequences and Radiance HDR through our own decoders
+//! are later slices.
+pub mod cache;
 pub mod helper;
+pub mod volume;
 pub mod pool;
 pub mod proto;
 #[cfg(target_os = "macos")] #[path = "sys_mac.rs"] pub mod sys;
@@ -43,8 +47,10 @@ pub enum Kind {
 
 /// What an entry is asked for, if anything. The grid shows pictures; the list only the icons that belong to one file
 /// (thumbnails in the list's rows: not ruled). An empty file has no picture.
-pub fn plan(ext: &str, name: &str, dir: bool, size: u64, grid: bool) -> Option<Kind> {
-    if dir { return (cfg!(target_os = "macos") && name.len() > 4 && name.get(name.len() - 4..).is_some_and(|e| e.eq_ignore_ascii_case(".app"))).then_some(Kind::Icon) }
+pub fn plan(ext: &str, package: bool, dir: bool, size: u64, grid: bool) -> Option<Kind> {
+    if dir { return None }
+    // a package (an application, a library): its own icon, in the list and in the grid
+    if package { return Some(Kind::Icon) }
     if cfg!(windows) && matches!(ext, "exe" | "lnk" | "url" | "scr") { return Some(Kind::Icon) }
     (grid && size > 0).then_some(Kind::Picture)
 }
@@ -57,9 +63,22 @@ const CAP: usize = 256 << 20;
 const IDLE: Duration = Duration::from_secs(30);
 /// The bounds (ms): how long the helper waits for the system, and when the helper itself is ended.
 const DECODE_HARD: u32 = 20_000; const SYS_SOFT: u32 = 8_000; const SYS_HARD: u32 = 12_000;
+/// ... and a question to the cache on disk (it asks the system which volume a folder is on: a share may stall).
+const CACHE_HARD: u32 = 10_000;
+
+/// Where the cache on disk lives: `UFB_THUMB_CACHE` (a folder; empty or `off`: no cache), else the system's cache
+/// location for the application. The name is this development build's own - nothing of an installed 1.4.x is there.
+pub fn cache_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(v) = std::env::var_os("UFB_THUMB_CACHE") { return (!v.is_empty() && v != "off").then(|| PathBuf::from(v)) }
+    let base = if cfg!(target_os = "macos") { std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches")) } else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(PathBuf::from) }
+        else { std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or(std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))) };
+    base.map(|b| b.join("UFB-test"))
+}
 
 enum Slot { Waiting { id: u64, seen: u64 }, Ready { img: peniko::ImageBrush, bytes: usize, used: u64 } }
-struct Ask { key: u64, path: String, px: u32, op: u8 }
+struct Ask { key: u64, path: String, px: u32, op: u8, /// our decoders make this file's picture (else the system)
+    ours: bool, fsize: u64, mtime: i64 }
 
 pub struct Thumbs {
     /// our decoders: several helpers; the system's thumbnails and icons: apart, so that a plug-in of the system's
@@ -67,6 +86,8 @@ pub struct Thumbs {
     decode: Pool, system: Pool,
     slots: HashMap<u64, Slot>, asked: HashMap<u64, Ask>, none: HashSet<u64>,
     frame: u64, bytes: usize, next: u64,
+    /// there is a cache on disk (the helpers were told where)
+    cached: bool,
     /// counted for the scripted looks: pictures made, entries that have none
     pub made: u64, pub failed: u64,
 }
@@ -85,16 +106,27 @@ impl Thumbs {
         let exe = std::env::current_exe().unwrap_or_default();
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let sys_n = std::env::var("UFB_SYS_HELPERS").ok().and_then(|v| v.parse().ok()).unwrap_or(SYS_HELPERS);
-        Thumbs { decode: Pool::new(exe.clone(), vec![], decoders(cores), IDLE, wake.clone()), system: Pool::new(exe, vec![], sys_n, IDLE, wake),
-            slots: HashMap::new(), asked: HashMap::new(), none: HashSet::new(), frame: 1, bytes: 0, next: 1, made: 0, failed: 0 }
+        // the helpers are told where the cache is (an empty word: there is none)
+        let dir = cache_dir(); let env = vec![("UFB_THUMB_CACHE".to_string(), dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())];
+        Thumbs { decode: Pool::new(exe.clone(), env.clone(), decoders(cores), IDLE, wake.clone()), system: Pool::new(exe, env, sys_n, IDLE, wake),
+            slots: HashMap::new(), asked: HashMap::new(), none: HashSet::new(), frame: 1, bytes: 0, next: 1, cached: dir.is_some(), made: 0, failed: 0 }
     }
-    fn submit(&mut self, key: u64, path: String, px: u32, op: u8) -> u64 {
+    fn submit(&mut self, a: Ask) -> u64 {
         let id = self.next; self.next += 1;
-        let (soft, hard) = if op == OP_DECODE { (0, DECODE_HARD) } else { (SYS_SOFT, SYS_HARD) };
-        let job = Job { req: Request { id, op, size: px as u16, soft_ms: soft, path: path.clone() }, hard_ms: hard };
-        if op == OP_DECODE { self.decode.submit(job) } else { self.system.submit(job) }
-        self.asked.insert(id, Ask { key, path, px, op }); id
+        let (soft, hard) = match a.op { OP_DECODE => (0, DECODE_HARD), OP_CACHED => (0, CACHE_HARD), _ => (SYS_SOFT, SYS_HARD) };
+        let flags = if self.cached && matches!(a.op, OP_DECODE | OP_THUMB) { KEEP } else { 0 };
+        let job = Job { req: Request { id, op: a.op, flags, size: a.px as u16, soft_ms: soft, fsize: a.fsize, mtime: a.mtime, path: a.path.clone() }, hard_ms: hard };
+        // the cache's questions go to the decoders' helpers: the system's are kept for the system (one that hangs there holds no answer back)
+        if matches!(a.op, OP_DECODE | OP_CACHED) { self.decode.submit(job) } else { self.system.submit(job) }
+        self.asked.insert(id, a); id
     }
+    /// Something said to the cache that nothing waits for (its answer is dropped).
+    fn tell(&mut self, op: u8, path: String, fsize: u64, mtime: i64) {
+        if !self.cached { return } let id = self.next; self.next += 1;
+        self.decode.submit(Job { req: Request { id, op, flags: 0, size: 0, soft_ms: 0, fsize, mtime, path }, hard_ms: DECODE_HARD });
+    }
+    /// A folder was read: what the cache keeps for files that are no longer in it is dropped.
+    pub fn listed(&mut self, dir: &Path) { self.tell(OP_PRUNE, dir.to_string_lossy().into_owned(), 0, 0); }
     /// An entry in view says what it wants; it is asked for when it is neither here, nor on its way, nor known to
     /// have no picture. Returns the number to look it up by.
     pub fn want(&mut self, path: &Path, ext: &str, size: u64, mtime: i64, px: u32, kind: Kind) -> u64 {
@@ -103,8 +135,10 @@ impl Thumbs {
             Some(Slot::Waiting { seen, .. }) => *seen = frame,
             Some(Slot::Ready { used, .. }) => *used = frame,
             None => if !self.none.contains(&key) {
-                let op = match kind { Kind::Icon => OP_ICON, Kind::Picture => if helper::ours(ext) { OP_DECODE } else { OP_THUMB } };
-                let id = self.submit(key, path.to_string_lossy().into_owned(), px, op); self.slots.insert(key, Slot::Waiting { id, seen: frame });
+                let ours = helper::ours(ext);
+                // a picture is first asked of the cache on disk; an icon of one file is the system's to keep
+                let op = match kind { Kind::Icon => OP_ICON, Kind::Picture => if self.cached { OP_CACHED } else if ours { OP_DECODE } else { OP_THUMB } };
+                let id = self.submit(Ask { key, path: path.to_string_lossy().into_owned(), px, op, ours, fsize: size, mtime }); self.slots.insert(key, Slot::Waiting { id, seen: frame });
             },
         }
         key
@@ -135,10 +169,19 @@ impl Thumbs {
                 let bytes = d.payload.len(); self.bytes += bytes; self.made += 1;
                 let img = peniko::ImageBrush::new(peniko::ImageData { data: peniko::Blob::new(Arc::new(d.payload)), format: peniko::ImageFormat::Rgba8, alpha_type: peniko::ImageAlphaType::AlphaPremultiplied, width: w, height: h });
                 self.slots.insert(a.key, Slot::Ready { img, bytes, used: seen });
-            } else if a.op == OP_DECODE && d.status != NO_HELPER {
-                // our decoder refused the file, or the file ended its helper: the system may still have a picture
-                let id = self.submit(a.key, a.path, a.px, OP_THUMB); self.slots.insert(a.key, Slot::Waiting { id, seen });
-            } else { self.slots.remove(&a.key); self.none.insert(a.key); self.failed += 1; }
+            } else if a.op == OP_CACHED && d.status == NONE {
+                // known to have no picture (a damaged file is not tried again at every launch; Refresh asks again)
+                self.slots.remove(&a.key); self.none.insert(a.key); self.failed += 1;
+            } else if matches!(a.op, OP_CACHED | OP_DECODE) && d.status != NO_HELPER {
+                // not in the cache: it is made - by our decoder, or by the system; and what our decoder refused (or
+                // what ended its helper) the system may still have a picture of
+                let op = if a.op == OP_CACHED && a.ours { OP_DECODE } else { OP_THUMB };
+                let key = a.key; let id = self.submit(Ask { op, ..a }); self.slots.insert(key, Slot::Waiting { id, seen });
+            } else {
+                self.slots.remove(&a.key); self.none.insert(a.key); self.failed += 1;
+                // remembered on disk too when the FILE is the reason (not when the system was slow, or no helper started)
+                if a.op == OP_THUMB && matches!(d.status, FAILED | CRASHED | HUNG) { self.tell(OP_MARK, a.path, a.fsize, a.mtime); }
+            }
         }
         if self.bytes > CAP { self.evict(); }
         any
@@ -149,8 +192,8 @@ impl Thumbs {
         old.sort_unstable();
         for (_, k, bytes) in old { if self.bytes <= CAP / 4 * 3 { break } self.slots.remove(&k); self.bytes -= bytes; }
     }
-    /// Refresh: files that had no picture are asked about again.
-    pub fn retry(&mut self) { self.none.clear(); }
+    /// Refresh of a folder: its files that had no picture are asked about again.
+    pub fn retry(&mut self, dir: &Path) { self.none.clear(); self.tell(OP_FORGET, dir.to_string_lossy().into_owned(), 0, 0); }
     /// Requests not answered yet.
     pub fn pending(&self) -> usize { self.asked.len() }
 }
@@ -162,11 +205,11 @@ mod tests {
     use super::*;
     #[test]
     fn what_an_entry_is_asked_for() {
-        assert_eq!(plan("exr", "a.exr", false, 10, true), Some(Kind::Picture)); assert_eq!(plan("exr", "a.exr", false, 10, false), None, "the list shows the type's icon");
-        assert_eq!(plan("exr", "a.exr", false, 0, true), None, "an empty file has no picture");
-        assert_eq!(plan("/", "renders", true, 0, true), None);
-        #[cfg(target_os = "macos")] { assert_eq!(plan("/", "Blender.app", true, 0, false), Some(Kind::Icon)); assert_eq!(plan("/", ".app", true, 0, true), None); }
-        #[cfg(windows)] assert_eq!(plan("exe", "setup.exe", false, 10, false), Some(Kind::Icon));
+        assert_eq!(plan("exr", false, false, 10, true), Some(Kind::Picture)); assert_eq!(plan("exr", false, false, 10, false), None, "the list shows the type's icon");
+        assert_eq!(plan("exr", false, false, 0, true), None, "an empty file has no picture");
+        assert_eq!(plan("/", false, true, 0, true), None);
+        assert_eq!(plan("app", true, false, 0, false), Some(Kind::Icon)); assert_eq!(plan("photoslibrary", true, false, 0, true), Some(Kind::Icon));
+        #[cfg(windows)] assert_eq!(plan("exe", false, false, 10, false), Some(Kind::Icon));
         assert_eq!(picture_px(96.0), 256); assert_eq!(picture_px(256.0), 256); assert_eq!(picture_px(300.0), 512);
         assert_eq!(decoders(1), 2); assert_eq!(decoders(8), 4); assert_eq!(decoders(18), 8); assert_eq!(decoders(64), 8);
     }

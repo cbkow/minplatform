@@ -39,6 +39,8 @@ pub struct Pane {
     chosen: (usize, u64),
     /// the search field's text for this pane (it filters the folder in view; a navigation clears it)
     pub search: String,
+    /// set when the folder itself has just been read to its end (the window tells the thumbnails' cache)
+    pub listed: bool,
     pub rect: Rect, scale: f64,
 }
 
@@ -61,7 +63,7 @@ impl TableSource for Rows<'_> {
     fn text(&self, i: usize, col: usize) -> Cow<'_, str> {
         let Some(id) = self.model.row(i) else { return if col == 0 { Cow::Owned(self.model.note(i).map(|n| n.1).unwrap_or_default()) } else { Cow::Borrowed("") } };
         let n = self.model.node(id);
-        match col { 0 => Cow::Borrowed(&*n.name), 1 => Cow::Owned(format::date_text(n.mtime, self.today)), 2 => if n.dir { Cow::Borrowed("--") } else { Cow::Owned(format::size_text(n.size, format::DECIMAL)) }, _ => Cow::Borrowed(self.model.kind(id)) }
+        match col { 0 => Cow::Borrowed(&*n.name), 1 => Cow::Owned(format::date_text(n.mtime, self.today)), 2 => if n.dir || n.package { Cow::Borrowed("--") } else { Cow::Owned(format::size_text(n.size, format::DECIMAL)) }, _ => Cow::Borrowed(self.model.kind(id)) }
     }
     fn icon(&self, i: usize) -> Option<&peniko::ImageBrush> { self.picture(i) }
 }
@@ -84,7 +86,7 @@ pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -161,7 +163,7 @@ impl Pane {
             Some(Msg::Done { mtime, free, .. }) => {
                 self.reqs.remove(&req); self.keep(|model| model.set_state(parent, Kids::Loaded));
                 if parent == TOP {
-                    self.load = Load::Ready; self.mtime = mtime; self.free = free;
+                    self.load = Load::Ready; self.mtime = mtime; self.free = free; self.listed = true;
                     if let Some(look) = self.restore.take() { self.choose(&look.selected); if self.mode == Mode::List { self.table.bar.offset = look.scroll; } else { self.grid.bar.offset = look.scroll; } if look.scroll == 0.0 { if let Some(c) = self.sel().cursor { self.reveal_later(c); } } }
                 }
                 self.reopen(port); self.keep(|_| {});
@@ -201,6 +203,14 @@ impl Pane {
     pub fn activate(&mut self, port: &Port, row: usize) { if let Some(id) = self.model.row(row) { if self.model.node(id).dir { let p = self.model.path_of(id, self.path()); self.go(port, p); } } }
     /// The Open command: the entry under the cursor, when it is chosen.
     pub fn open_chosen(&mut self, port: &Port) { if let Some(c) = self.sel().cursor.filter(|c| self.sel().is_selected(*c)) { self.activate(port, c); } }
+
+    /// The folder shown at a point of the pane, if one is.
+    pub fn folder_at(&self, x: f64, y: f64) -> Option<PathBuf> {
+        let row = if self.mode == Mode::List { self.table.row_at(x, y) } else { self.grid.tile_at(x, y) }?;
+        let id = self.model.row(row)?; self.model.node(id).dir.then(|| self.model.path_of(id, self.path()))
+    }
+    /// The middle of a row, as the pointer would find it (the scripted looks).
+    pub fn row_point(&self, row: usize) -> Option<(f64, f64)> { if row >= self.model.len() { return None } let r = if self.mode == Mode::List { self.table.row_rect(row) } else { self.grid.cell_rect(row) }; Some(((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)) }
 
     fn handle(&mut self, port: &Port, events: Vec<ViewEvent>) {
         for e in events { match e {
@@ -247,7 +257,7 @@ impl Pane {
             if let Some(id) = self.model.row(i) {
                 icons.get(self.model.ext(id), px);
                 let n = self.model.node(id);
-                if let Some(kind) = thumbs::plan(self.model.ext(id), &n.name, n.dir, n.size, grid) { key = Some(thumbs.want(&self.model.path_of(id, self.history.current()), self.model.ext(id), n.size, n.mtime, tpx, kind)); }
+                if let Some(kind) = thumbs::plan(self.model.ext(id), n.package, n.dir, n.size, grid) { key = Some(thumbs.want(&self.model.path_of(id, self.history.current()), self.model.ext(id), n.size, n.mtime, tpx, kind)); }
             }
             keys.push(key);
         }

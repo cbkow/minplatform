@@ -18,9 +18,11 @@ const NOTE: u32 = 1 << 31;
 
 /// An entry as the worker thread read it, with its sort key already made (off the UI thread).
 #[derive(Clone, Debug)]
-pub struct RawEntry { pub name: String, pub size: u64, pub mtime: i64, pub dir: bool, pub hidden: bool, pub key: Box<[u8]> }
+pub struct RawEntry { pub name: String, pub size: u64, pub mtime: i64, pub dir: bool, pub hidden: bool, /// a folder the system shows as one item (an application): `dir` is false for it
+    pub package: bool, pub key: Box<[u8]> }
 impl RawEntry {
-    pub fn new(name: String, size: u64, mtime: i64, dir: bool, hidden: bool) -> RawEntry { let key = natural_key(&name); RawEntry { name, size, mtime, dir, hidden, key } }
+    pub fn new(name: String, size: u64, mtime: i64, dir: bool, hidden: bool) -> RawEntry { let key = natural_key(&name); RawEntry { name, size, mtime, dir, hidden, package: false, key } }
+    pub fn package(mut self) -> RawEntry { self.package = true; self.dir = false; self.size = 0; self }
 }
 
 /// The natural, case-blind order as bytes: letters folded to lower case, a run of digits as a marker, its length and
@@ -50,7 +52,8 @@ pub enum Kids { Loading, Loaded, Failed(String) }
 struct Opened { state: Kids, children: Vec<u32>, expanded: bool }
 
 pub struct Node { pub name: Box<str>, key: Box<[u8]>, pub size: u64, pub mtime: i64, pub parent: u32, pub depth: u16, /// its type: an index into the model's table of extensions and kinds
-    pub ty: u16, pub dir: bool, pub hidden: bool }
+    pub ty: u16, pub dir: bool, pub hidden: bool, /// a folder shown as one item: no size of its own, never gone into
+    pub package: bool }
 
 pub struct Model {
     nodes: Vec<Node>, top: Vec<u32>, top_state: Kids, opened: HashMap<u32, Opened>,
@@ -73,17 +76,20 @@ impl Model {
     }
     /// Forget the folder (a navigation): entries, rows, what was opened in place. The options stay.
     pub fn clear(&mut self) { self.nodes.clear(); self.top.clear(); self.top_state = Kids::Loading; self.opened.clear(); self.rows.clear(); self.pos.clear(); self.filter.clear(); self.shown_top = 0; self.hidden_top = 0; }
-    fn type_of(&mut self, name: &str, dir: bool) -> u16 {
+    fn type_of(&mut self, name: &str, dir: bool, package: bool) -> u16 {
         if dir { return 0 } let Some(ext) = format::extension(name) else { return 1 };
-        if let Some(id) = self.type_ids.get(&ext) { return *id }
+        // a package of an extension is a type of its own beside a file of it: its kind is the table's, else "Package"
+        let key = if package { format!("{ext}/") } else { ext.clone() };
+        if let Some(id) = self.type_ids.get(&key) { return *id }
         if self.types.len() >= u16::MAX as usize { return 1 }
-        let id = self.types.len() as u16; self.types.push((ext.as_str().into(), format::kind_of_extension(Some(&ext)).into())); self.type_ids.insert(ext, id); id
+        let kind = if package { format::kind_of_package(&ext) } else { format::kind_of_extension(Some(&ext)) };
+        let id = self.types.len() as u16; self.types.push((ext.as_str().into(), kind.into())); self.type_ids.insert(key, id); id
     }
     /// Entries read for `parent` ([`TOP`]: the folder in view) are added. Call [`Model::rebuild`] afterwards.
     pub fn add(&mut self, parent: u32, entries: Vec<RawEntry>) {
         let depth = if parent == TOP { 0 } else { self.nodes[parent as usize].depth + 1 };
         let first = self.nodes.len() as u32;
-        for e in entries { let ty = self.type_of(&e.name, e.dir); self.nodes.push(Node { name: e.name.into_boxed_str(), key: e.key, size: e.size, mtime: e.mtime, parent, depth, ty, dir: e.dir, hidden: e.hidden }); }
+        for e in entries { let ty = self.type_of(&e.name, e.dir, e.package); self.nodes.push(Node { name: e.name.into_boxed_str(), key: e.key, size: e.size, mtime: e.mtime, parent, depth, ty, dir: e.dir, hidden: e.hidden, package: e.package }); }
         let ids = first..self.nodes.len() as u32;
         if parent == TOP { self.top.extend(ids); } else if let Some(o) = self.opened.get_mut(&parent) { o.children.extend(ids); }
     }
@@ -247,6 +253,11 @@ mod tests {
         m.tree = true; let assets = m.find_top("Assets").unwrap(); m.expand(assets); m.set_state(assets, Kids::Failed("Permission denied".into())); m.rebuild();
         assert_eq!(names(&m)[..2], ["Assets", "  <This folder cannot be read: Permission denied>"]);
         assert!(!m.expand(m.find_top("Notes.pdf").unwrap()), "a file does not open in place");
+        // a package is one item: among the files, with its own kind, never opened in place
+        let mut p = model(vec![dir("renders", 1), dir("Zeta", 2), RawEntry::new("Blender.app".into(), 0, 3, true, false).package(), RawEntry::new("Old.photoslibrary".into(), 0, 4, true, false).package(), file("a.txt", 1, 5), file("clip.app", 9, 6)]);
+        assert_eq!(names(&p), ["renders", "Zeta", "a.txt", "Blender.app", "clip.app", "Old.photoslibrary"]);
+        let app = p.find_top("Blender.app").unwrap(); assert!(!p.node(app).dir && p.node(app).package); assert_eq!(p.kind(app), "Application"); assert_eq!(p.ext(app), "app"); assert!(!p.expand(app));
+        assert_eq!(p.kind(p.find_top("Old.photoslibrary").unwrap()), "Package"); assert_eq!(p.kind(p.find_top("clip.app").unwrap()), "Application");
         m.clear(); m.rebuild(); assert_eq!(m.len(), 0); assert!(m.expanded().is_empty());
     }
     #[test]

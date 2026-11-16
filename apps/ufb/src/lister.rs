@@ -55,6 +55,18 @@ fn hidden(name: &str, _md: &std::fs::Metadata) -> bool { name.starts_with('.') }
 #[cfg(windows)]
 fn hidden(_name: &str, md: &std::fs::Metadata) -> bool { use std::os::windows::fs::MetadataExt; md.file_attributes() & 0x2 != 0 }   // FILE_ATTRIBUTE_HIDDEN
 
+/// A folder that the system's own file browser shows as one item (macOS: an application, a bundle, a document
+/// package). The system is asked - only about folders whose name has an extension, the others are never packages
+/// in practice (a bare folder with the bundle bit set stays a folder here).
+#[cfg(target_os = "macos")]
+fn is_package(name: &str, path: &Path) -> bool {
+    if crate::format::extension(name).is_none() { return false }
+    let Some(p) = path.to_str() else { return false };
+    objc2::rc::autoreleasepool(|_| objc2_app_kit::NSWorkspace::sharedWorkspace().isFilePackageAtPath(&objc2_foundation::NSString::from_str(p)))
+}
+#[cfg(not(target_os = "macos"))]
+fn is_package(_name: &str, _path: &Path) -> bool { false }
+
 fn entry(e: &std::fs::DirEntry) -> Option<RawEntry> {
     let name = e.file_name().to_string_lossy().into_owned();
     let md = e.metadata().ok();   // the link itself, not what it points to
@@ -62,6 +74,8 @@ fn entry(e: &std::fs::DirEntry) -> Option<RawEntry> {
     // a link to a folder is gone into as a folder
     let md = if md.as_ref().is_some_and(|m| m.file_type().is_symlink()) { std::fs::metadata(e.path()).ok().or(md) } else { md };
     let (dir, size, mtime) = match &md { Some(m) => (m.is_dir(), if m.is_dir() { 0 } else { m.len() }, secs(m.modified()).unwrap_or(i64::MIN)), None => (false, 0, i64::MIN) };
+    // a folder the system shows as ONE item (an application, a library): an entry like a file - not gone into, not opened in place
+    if dir && is_package(&name, &e.path()) { return Some(RawEntry::new(name, 0, mtime, false, is_hidden).package()) }
     Some(RawEntry::new(name, size, mtime, dir, is_hidden))
 }
 
@@ -126,6 +140,16 @@ pub mod tests {
         #[cfg(windows)] assert_eq!(got.len(), 4);
         let now = crate::format::now_secs(); assert!(all.iter().all(|e| (e.mtime - now).abs() < 3600), "modification times are of now");
         assert!(dir_mtime(&t.0).is_some()); assert!(free_space(&t.0).is_some_and(|f| f > 0));
+    }
+    /// macOS: a folder the system shows as one item is one entry here - not a folder, no size of its own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_application_is_one_entry() {
+        let all = read_all(Path::new("/System/Applications")).unwrap();
+        let calc = all.iter().find(|e| e.name == "Calculator.app").expect("the system's calculator"); assert!(calc.package && !calc.dir && calc.size == 0);
+        let util = all.iter().find(|e| e.name == "Utilities").expect("the utilities folder"); assert!(util.dir && !util.package, "a plain folder stays one");
+        // a folder that only LOOKS like a type is asked about, and is a folder
+        let t = Temp::new("pkg"); t.dir("renders.v002"); t.dir("shots.exr"); let all = read_all(&t.0).unwrap(); assert!(all.iter().all(|e| e.dir && !e.package));
     }
     #[test]
     fn a_folder_that_cannot_be_read_says_why() {

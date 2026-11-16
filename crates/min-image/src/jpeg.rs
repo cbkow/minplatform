@@ -50,6 +50,15 @@ pub fn load_thumbnail(path: &str, max_size: u32) -> Result<Image, Error> {
     Ok(Image::from_interleaved(sw, sh, Sample::U8, Samples::U8(&px), ch, !gray, false))
 }
 
+/// A JPEG held in memory as packed RGB, 8 bits (a cache's own blob): (pixels, width, height).
+pub fn decode_rgb8(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    let (h, w, ht, _) = header("", bytes).map_err(|e| e.to_string())?;
+    if w == 0 || ht == 0 || w > 16384 || ht > 16384 { return Err("a JPEG of no usable size".into()) }
+    let mut px = vec![0u8; w as usize * ht as usize * 3];
+    if unsafe { tj3Decompress8(h.0, bytes.as_ptr(), bytes.len(), px.as_mut_ptr(), (w * 3) as i32, TJPF_RGB as _) } != 0 { return Err(err("", &h).to_string()) }
+    Ok((px, w, ht))
+}
+
 pub fn dimensions(path: &str) -> Result<(u32, u32), Error> {
     let bytes = std::fs::read(path).map_err(|e| Error::Open(format!("{path}: {e}")))?;
     let (_, w, h, _) = header(path, &bytes)?; Ok((w, h))

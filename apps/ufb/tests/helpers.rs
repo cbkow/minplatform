@@ -1,6 +1,6 @@
 //! The helper copies of the executable, as the application uses them (canon row 456; spike S18): the real binary is
 //! started with `--thumb-helper` and spoken to through the application's own pool.
-#[path = "../src/thumbs/proto.rs"] mod proto;
+#[allow(dead_code)] #[path = "../src/thumbs/proto.rs"] mod proto;
 #[path = "../src/thumbs/pool.rs"] mod pool;
 use pool::{Done, Job, Pool};
 use proto::*;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn make(n: usize, idle_ms: u64) -> Pool { Pool::new(PathBuf::from(env!("CARGO_BIN_EXE_UFB")), vec![("UFB_HELPER_TEST".into(), "1".into())], n, Duration::from_millis(idle_ms), Arc::new(|| {})) }
-fn job(id: u64, op: u8, path: &str, hard_ms: u32) -> Job { Job { req: Request { id, op, size: 256, soft_ms: 5000, path: path.into() }, hard_ms } }
+fn job(id: u64, op: u8, path: &str, hard_ms: u32) -> Job { Job { req: Request::new(id, op, 256, 5000, path), hard_ms } }
 fn next(p: &Pool) -> Done { p.rx.recv_timeout(Duration::from_secs(30)).expect("an answer") }
 struct Temp(PathBuf);
 impl Temp { fn new(tag: &str) -> Temp { let p = std::env::temp_dir().join(format!("ufb-helpers-{tag}-{}", std::process::id())); let _ = std::fs::remove_dir_all(&p); std::fs::create_dir_all(&p).unwrap(); Temp(p) } fn path(&self, name: &str) -> String { self.0.join(name).to_string_lossy().into_owned() } }
@@ -69,4 +69,36 @@ fn the_system_draws_what_we_do_not() {
     assert!(d.payload[0] > 200 && d.payload[1] < 60 && d.payload[3] == 255, "red, as the file has it: {:?}", &d.payload[..4]);
     p.submit(job(2, OP_THUMB, &t.path("noise.jpg"), 12_000)); assert_eq!(next(&p).status, FAILED, "no thumbnail: said, and the type's icon stays");
     p.submit(job(3, OP_ICON, "/System/Applications/Calculator.app", 12_000)); let d = next(&p); assert_eq!(d.status, OK, "an application's own icon"); assert!(d.w > 0 && d.w <= 256);
+}
+
+/// The cache on disk, as the application uses it: asked first, filled by the request that makes the picture.
+#[test]
+fn a_picture_is_made_once_and_then_comes_from_the_cache() {
+    let t = Temp::new("cache"); let file = t.path("half.png"); picture(&file); std::fs::write(t.path("noise.exr"), vec![7u8; 5000]).unwrap();
+    let db = t.path("db");
+    let pool = || Pool::new(PathBuf::from(env!("CARGO_BIN_EXE_UFB")), vec![("UFB_HELPER_TEST".into(), "1".into()), ("UFB_THUMB_CACHE".into(), db.clone())], 2, Duration::from_secs(30), Arc::new(|| {}));
+    let ask = |id: u64, op: u8, flags: u8, px: u16, path: &str, mtime: i64| Job { req: Request { id, op, flags, size: px, soft_ms: 5000, fsize: 77, mtime, path: path.into() }, hard_ms: 20_000 };
+    let p = pool();
+    p.submit(ask(1, OP_CACHED, 0, 256, &file, 1000)); assert_eq!(next(&p).status, MISS, "nothing kept yet");
+    p.submit(ask(2, OP_DECODE, KEEP, 256, &file, 1000)); let made = next(&p); assert_eq!((made.status, made.w, made.h), (OK, 256, 128), "answered at the size asked");
+    p.submit(ask(3, OP_CACHED, 0, 256, &file, 1000)); let kept = next(&p); assert_eq!((kept.status, kept.w, kept.h), (OK, 256, 128)); assert_eq!(kept.payload, made.payload, "the same picture, exactly (transparency: lossless)");
+    // the master serves another size; a changed file is not this picture's
+    p.submit(ask(4, OP_CACHED, 0, 512, &file, 1000)); let big = next(&p); assert_eq!((big.status, big.w, big.h), (OK, 400, 200), "the kept master, never enlarged");
+    p.submit(ask(5, OP_CACHED, 0, 256, &file, 1001)); assert_eq!(next(&p).status, MISS);
+    // a file with no picture: remembered, forgotten by the folder's refresh
+    p.submit(ask(6, OP_MARK, 0, 0, &t.path("noise.exr"), 5)); assert_eq!(next(&p).status, OK);
+    p.submit(ask(7, OP_CACHED, 0, 256, &t.path("noise.exr"), 5)); assert_eq!(next(&p).status, NONE);
+    drop(p);
+    // another run of the application: other helpers, the same database
+    let p = pool();
+    p.submit(ask(8, OP_CACHED, 0, 256, &file, 1000)); let again = next(&p); assert_eq!(again.status, OK); assert_eq!(again.payload, made.payload);
+    p.submit(ask(9, OP_FORGET, 0, 0, &t.0.to_string_lossy(), 0)); assert_eq!(next(&p).status, OK);
+    p.submit(ask(10, OP_CACHED, 0, 256, &t.path("noise.exr"), 5)); assert_eq!(next(&p).status, MISS, "asked again after a refresh");
+    // the file goes: what was kept for it goes with the next reading of its folder
+    std::fs::remove_file(&file).unwrap();
+    p.submit(ask(11, OP_PRUNE, 0, 0, &t.0.to_string_lossy(), 0)); assert_eq!(next(&p).status, OK);
+    p.submit(ask(12, OP_CACHED, 0, 256, &file, 1000)); assert_eq!(next(&p).status, MISS);
+    // without the folder's name the helpers keep nothing, and say so
+    let none = make(1, 30_000); none.submit(ask(13, OP_DECODE, KEEP, 256, &t.path("noise.exr"), 5)); assert_eq!(next(&none).status, FAILED);
+    picture(&file); none.submit(ask(14, OP_DECODE, KEEP, 256, &file, 1)); assert_eq!(next(&none).status, OK); none.submit(ask(15, OP_CACHED, 0, 256, &file, 1)); assert_eq!(next(&none).status, MISS);
 }

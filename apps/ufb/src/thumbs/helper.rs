@@ -2,6 +2,7 @@
 //! the work, writes one answer, for ever; it ends when its standard input closes (the application is gone or wants it
 //! gone). It has no window, no event loop and no run loop. Everything that reads a file's CONTENTS happens here: a
 //! damaged file can end a helper, never the application.
+use super::cache::{self, Cache, Kept};
 use super::proto::*;
 use super::sys;
 use std::fs::File;
@@ -47,30 +48,51 @@ pub fn run() -> ! {
     std::panic::set_hook(Box::new(|_| std::process::abort()));
     watch_parent();
     sys::init();
-    let test = std::env::var_os("UFB_HELPER_TEST").is_some();
+    let mut ctx = Ctx { test: std::env::var_os("UFB_HELPER_TEST").is_some(), cache: None };
     let (mut inp, mut out) = std_files();
     // the hello: the application bounds a start from the spawn to this frame
     if write_response(&mut *out, &Response::default()).is_err() { std::process::exit(0) }
     loop {
         let Ok(req) = read_request(&mut *inp) else { std::process::exit(0) };
-        let resp = handle(&req, test);
+        let resp = handle(&req, &mut ctx);
         if write_response(&mut *out, &resp).is_err() { std::process::exit(0) }
     }
 }
 
-fn handle(req: &Request, test: bool) -> Response {
-    let t = Instant::now();
+/// What a helper holds between requests: the cache on disk, opened at the first request that needs it (the folder
+/// comes from the application, in `UFB_THUMB_CACHE`; without it nothing is kept).
+struct Ctx { test: bool, cache: Option<Option<Cache>> }
+impl Ctx {
+    fn cache(&mut self) -> Option<&mut Cache> {
+        self.cache.get_or_insert_with(|| std::env::var_os("UFB_THUMB_CACHE").filter(|d| !d.is_empty()).and_then(|d| Cache::open(Path::new(&d)))).as_mut()
+    }
+}
+
+fn handle(req: &Request, ctx: &mut Ctx) -> Response {
+    let t = Instant::now(); let test = ctx.test;
     let mut r = Response { id: req.id, ..Default::default() };
     let soft = Duration::from_millis(req.soft_ms.max(1) as u64);
+    let (path, px) = (Path::new(&req.path), req.size as u32);
+    // a picture to be kept is made at the cache's size, kept, and answered at the size asked
+    let keep = req.flags & KEEP != 0 && matches!(req.op, OP_DECODE | OP_THUMB) && ctx.cache().is_some();
+    let make = if keep { cache::MASTER.max(px) } else { px };
     let res: Result<Img, (u8, i64)> = match req.op {
         OP_PING => return r,
-        OP_DECODE => decode(&req.path, req.size as u32).map_err(|_| (FAILED, 0)),
-        OP_THUMB => sys::thumbnail(&req.path, req.size as u32, soft),
-        OP_ICON => sys::icon(&req.path, req.size as u32, soft),
+        OP_DECODE => decode(&req.path, make).map_err(|_| (FAILED, 0)),
+        OP_THUMB => sys::thumbnail(&req.path, make, soft),
+        OP_ICON => sys::icon(&req.path, px, soft),
+        OP_CACHED => match ctx.cache().map(|c| c.lookup(path, req.fsize, req.mtime)) { Some(Kept::Hit(img)) => Ok(img), Some(Kept::NoPicture) => Err((NONE, 0)), _ => Err((MISS, 0)) },
+        OP_MARK => { if let Some(c) = ctx.cache() { c.mark(path, req.fsize, req.mtime); } return r }
+        OP_PRUNE => { if let Some(c) = ctx.cache() { r.aux = c.prune(path) as u32; } return r }
+        OP_FORGET => { if let Some(c) = ctx.cache() { c.forget(path); } return r }
         OP_TEST_ABORT if test => std::process::abort(),
         OP_TEST_HANG if test => loop { std::thread::sleep(Duration::from_secs(3600)); },
         _ => Err((FAILED, 0)),
     };
+    let res = res.map(|img| {
+        if keep && img.w.max(img.h) <= cache::MASTER { if let Some(c) = ctx.cache() { c.keep(path, req.fsize, req.mtime, &img); } }
+        fitted(img, px)
+    });
     match res {
         Ok(img) if img.w > 0 && img.h > 0 && img.w <= u16::MAX as u32 && img.h <= u16::MAX as u32 && img.rgba.len() == (img.w * img.h * 4) as usize && img.rgba.len() <= MAX_PAYLOAD => { r.w = img.w as u16; r.h = img.h as u16; r.payload = img.rgba; }
         Ok(_) => r.status = FAILED,
@@ -136,6 +158,24 @@ fn rgba8(img: &min_image::Image) -> Result<(Vec<u8>, u32, u32), String> {
     }
     Ok((out, w as u32, h as u32))
 }
+/// A picture whose colour is already multiplied by its alpha, made to fit `px` (never enlarged): each new pixel is
+/// the plain average of those it covers.
+pub fn fitted(img: Img, px: u32) -> Img {
+    let (tw, th) = fit(img.w, img.h, px.max(1)); if (tw, th) == (img.w, img.h) { return img }
+    let (w, h, tw, th) = (img.w as usize, img.h as usize, tw as usize, th as usize); let src = &img.rgba;
+    let mut out = vec![0u8; tw * th * 4];
+    let xs: Vec<(usize, usize)> = (0..tw).map(|x| { let a = x * w / tw; (a, ((x + 1) * w / tw).max(a + 1).min(w)) }).collect();
+    for y in 0..th {
+        let (y0, y1) = { let a = y * h / th; (a, ((y + 1) * h / th).max(a + 1).min(h)) };
+        for (x, (x0, x1)) in xs.iter().enumerate() {
+            let mut sum = [0u32; 4];
+            for sy in y0..y1 { for p in src[(sy * w + x0) * 4..(sy * w + x1) * 4].chunks_exact(4) { for c in 0..4 { sum[c] += p[c] as u32; } } }
+            let n = ((y1 - y0) * (x1 - x0)) as u32; let o = &mut out[(y * tw + x) * 4..(y * tw + x) * 4 + 4];
+            for c in 0..4 { o[c] = ((sum[c] + n / 2) / n) as u8; }
+        }
+    }
+    Img { w: tw as u32, h: th as u32, rgba: out }
+}
 /// A smaller picture by averaging the pixels each new one covers (colour weighted by its alpha). Straight alpha.
 fn shrink(src: &[u8], w: u32, h: u32, tw: u32, th: u32) -> Vec<u8> {
     let (w, h, tw, th) = (w as usize, h as usize, tw as usize, th as usize);
@@ -169,6 +209,14 @@ mod tests {
         let one = shrink(&src, 4, 2, 1, 1); assert_eq!(one, [255, 0, 0, 128]);
         assert_eq!(srgb(0.0), 0); assert_eq!(srgb(1.0), 255); assert_eq!(srgb(0.18), 118); assert_eq!(srgb(7.0), 255);
         assert!((half(0x3c00) - 1.0).abs() < 1e-6 && (half(0x3800) - 0.5).abs() < 1e-6);
+    }
+    #[test]
+    fn a_premultiplied_picture_is_fitted_by_plain_averages() {
+        // 4 x 2, premultiplied: the left half opaque red, the right half clear
+        let mut src = vec![0u8; 4 * 2 * 4]; for y in 0..2 { for x in 0..2 { let i = (y * 4 + x) * 4; src[i] = 255; src[i + 3] = 255; } }
+        let half = fitted(Img { w: 4, h: 2, rgba: src.clone() }, 2); assert_eq!((half.w, half.h), (2, 1)); assert_eq!(half.rgba, [255, 0, 0, 255, 0, 0, 0, 0]);
+        let one = fitted(Img { w: 4, h: 2, rgba: src.clone() }, 1); assert_eq!(one.rgba, [128, 0, 0, 128], "half covered: half the colour, half the alpha");
+        let same = fitted(Img { w: 4, h: 2, rgba: src.clone() }, 512); assert_eq!((same.w, same.h, same.rgba), (4, 2, src), "never enlarged");
     }
     #[test]
     fn our_decoders_take_the_production_formats_only() {

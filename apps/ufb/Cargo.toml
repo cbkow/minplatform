@@ -6,8 +6,9 @@ publish = false
 license = "GPL-3.0-or-later"
 description = "UFB on the platform (Phase 5): a file browser. Slice 2: a browser to look around in - read-only"
 
-# UFB, the rebuild (Phase 5; canon rows 434-463). This slice reads folders and nothing else: no settings file, no
-# database, nothing of an installed 1.4.x, and no file is ever created, renamed, moved or deleted by it.
+# UFB, the rebuild (Phase 5; canon rows 434-465). This slice reads folders and nothing else: no settings file, no
+# database of an installed 1.4.x, and no file of the user's is ever created, renamed, moved or deleted by it. The one
+# thing it writes is its own thumbnail cache, in the system's cache location (row 465).
 [[bin]]
 name = "UFB"
 path = "src/main.rs"
@@ -26,6 +27,8 @@ png = { workspace = true }
 arboard = { workspace = true }
 # the family's decoders, used in the HELPER copies of this executable only (canon row 456)
 min-image = { path = "../../crates/min-image" }
+# the thumbnails' cache on disk, opened by the helpers (canon row 456, point 4)
+rusqlite = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -42,4 +45,4 @@ objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSImage", "NSIma
 objc2-uniform-type-identifiers = { version = "0.3.2", features = ["UTType"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_System_Time", "Win32_System_SystemInformation", "Win32_UI_Shell_Common", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_Debug", "Win32_Security"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_System_Time", "Win32_System_SystemInformation", "Win32_UI_Shell_Common", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_Debug", "Win32_Security", "Win32_NetworkManagement_WNet"] }

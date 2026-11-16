@@ -51,6 +51,8 @@ pub struct Ui {
     focus: Focus, drag: Option<Drag>, gaps: [Rect; 2], over_gap: Option<usize>, cursor: winit31::cursor::CursorIcon,
     pub menubar: Option<InWindowMenu>, pointer: (f64, f64), pub mods: Mods,
     /// the scripted looks: the steps still to do, a wait, the picture to save, since when nothing is pending
+    /// the window's title as it was last set: the active pane's folder
+    titled: String,
     demo: VecDeque<String>, demo_until: Option<Instant>, shot: Option<PathBuf>, settled: Option<Instant>, tip_demo: Option<String>, born: Instant,
     /// set when the scripted picture is saved: the application ends
     pub done: bool, pub out: Vec<Out>,
@@ -79,7 +81,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -98,7 +100,7 @@ impl Ui {
                 Msg::Places { volumes, root } => { self.volumes = volumes; self.root = root; self.crumbs_for = None; }
                 Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); let port = self.port.clone(); self.pane().go(&port, path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
                 Msg::Icon => { self.icons.poll(); self.thumbs.poll(); }
-                other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { break } } }
+                other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { if std::mem::take(&mut p.listed) { self.thumbs.listed(p.path()); } break } } }
             }
         }
         any
@@ -141,7 +143,7 @@ impl Ui {
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } }
             Cmd::SecondPane => self.set_two(!self.two),
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
-            Cmd::Refresh => { self.thumbs.retry(); self.pane().refresh(&port); places::refresh(&port); }
+            Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); }
             Cmd::Back => self.pane().back(&port), Cmd::Forward => self.pane().forward(&port), Cmd::Up => self.pane().up(&port),
             Cmd::Home => self.go(places::home()), Cmd::Desktop => self.go(places::home().join("Desktop")), Cmd::Downloads => self.go(places::home().join("Downloads")),
             Cmd::GoToFolder => self.edit_path(), Cmd::Find => self.focus_search(),
@@ -155,12 +157,26 @@ impl Ui {
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
         let n = self.shown(); for pane in self.panes.iter_mut().take(n) { if pane.rect.contains(p) { pane.wheel(dy, now); return } }
     }
+    /// The folder under the pointer that a new window can be opened on: a sidebar row, a segment of the path, and -
+    /// `panes` - a folder in a pane.
+    fn folder_at(&self, x: f64, y: f64, panes: bool) -> Option<PathBuf> {
+        let p = kurbo::Point::new(x, y);
+        if self.side_rect.contains(p) { return if self.sections.iter().any(|sec| sec.hit(x, y)) { None } else { self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone()) } }
+        if self.focus != Focus::Path { if let Some(to) = self.crumbs.iter().find(|(b, path)| path.is_some() && b.hit(x, y)).and_then(|(_, path)| path.clone()) { return Some(to) } }
+        if panes { for pane in self.panes.iter().take(self.shown()) { if pane.rect.contains(p) { return pane.folder_at(x, y) } } }
+        None
+    }
     fn set_cursor(&mut self, c: winit31::cursor::CursorIcon) { if c != self.cursor { self.cursor = c; self.window.set_cursor(winit31::cursor::Cursor::Icon(c)); } }
     pub fn pointer(&mut self, e: &Event) {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.scale(); let port = self.port.clone();
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); self.tip_demo = None; }
         // the drawn menu bar and its open menus take the pointer first
         if let Some(mb) = self.menubar.as_mut() { let (chosen, _, consumed) = mb.bar.event(e, &mut self.fonts); if let Some(c) = chosen.and_then(|id| mb.cmd(id)) { self.command(c); return } if consumed { return } }
+        // a new window (row 448): the middle button on a folder, a sidebar row or a segment of the path; the command key
+        // (Ctrl on Windows) with a click on a sidebar row or a segment - in a pane that click is the selection's
+        if let Event::Down { x, y, button } = *e { let middle = button == Button::Middle;
+            if middle || (button == Button::Primary && self.mods.cmd) { if let Some(p) = self.folder_at(x, y, middle) { self.out.push(Out::NewWindow(p)); return } } }
+        if matches!(e, Event::Down { button: Button::Middle, .. } | Event::Up { button: Button::Middle, .. }) { return }
         // a gap in hand: the sidebar's edge or the divider between the panes
         if let Some(d) = self.drag {
             match *e {
@@ -261,7 +277,7 @@ impl Ui {
     /// `UFB_DEMO` steps, done one after another once the panes have what they wait for (no system input is involved):
     /// `grid` `list` `size:<px>` `pane2` `tab` `expand:<row>` `collapse:<row>` `select:<a>-<b>` `selectall` `sort:<name|date|size|kind>[:desc]`
     /// `search:<text>` `go:<path>` `back` `forward` `up` `editpath` `typepath:<text>` `hidden` `foldersfirst` `scroll:<row>` `side:<n>` (fold a
-    /// sidebar section) `sidebar:<px>` `menu:<letter>` (the drawn menu bar) `tip:<back|up|list|grid|pane2>` `newwindow` `wait:<ms>`.
+    /// sidebar section) `sidebar:<px>` `menu:<letter>` (the drawn menu bar) `tip:<back|up|list|grid|pane2>` `newwindow` `middle:<row>` `wait:<ms>`.
     fn demo_step(&mut self, step: &str) {
         let port = self.port.clone(); let (word, arg) = step.split_once(':').unwrap_or((step, "")); let num = |a: &str| a.parse::<usize>().ok();
         match word {
@@ -282,6 +298,8 @@ impl Ui {
             "sidebar" => if let Ok(px) = arg.parse::<f64>() { self.side_w = px.clamp(SIDE_MIN, SIDE_MAX); },
             "menu" => if let (Some(mb), Some(ch)) = (self.menubar.as_mut(), arg.chars().next()) { mb.bar.key(&min_ui::BarKey::Alt(ch.to_ascii_lowercase()), &mut self.fonts); },
             "newwindow" => self.command(Cmd::NewWindow),
+            // a middle click on the folder at a row, as the mouse would do it
+            "middle" => if let Some(n) = num(arg) { if let Some((x, y)) = self.pane().row_point(n) { self.pointer(&Event::Down { x, y, button: Button::Middle }); } },
             "tip" => self.tip_demo = Some(arg.to_string()),
             "wait" => self.demo_until = Some(Instant::now() + Duration::from_millis(arg.parse().unwrap_or(0))),
             other => eprintln!("UFB_DEMO: unknown step {other:?}"),
@@ -320,6 +338,8 @@ impl Ui {
         self.poll(); self.run_demo();
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         if self.active >= self.shown() { self.active = 0; }
+        // the window is called by the folder it shows (the active pane's)
+        { let title = self.panes[self.active].title(); if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
         // the search field shows the active pane's filter (a navigation clears it)
         if self.search.text() != self.panes[self.active].search { let text = self.panes[self.active].search.clone(); self.search.set_text(&text); }
         // -- where everything lies

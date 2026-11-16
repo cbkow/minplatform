@@ -1,5 +1,6 @@
-//! UFB (the rebuild, Phase 5; canon rows 434-464). Slice 2: a browser to LOOK AROUND in - it reads folders and
-//! changes nothing. Pictures are made in helper copies of this executable (`UFB --thumb-helper`, see `thumbs`).
+//! UFB (the rebuild, Phase 5; canon rows 434-465). Slice 2: a browser to LOOK AROUND in - it reads folders and
+//! changes nothing in them. Pictures are made in helper copies of this executable (`UFB --thumb-helper`, see
+//! `thumbs`) and kept in a cache of its own (`UFB_THUMB_CACHE=<folder>` or `off`; else the system's cache location).
 //!   UFB [folder] [--favorite <path>]...
 //! opens the folder given (the home folder without one); each `--favorite` adds a test entry to the sidebar's
 //! Favorites. This slice reads no settings file, no database and nothing of an installed 1.4.x (row 463, point 5).

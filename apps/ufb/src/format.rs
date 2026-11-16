@@ -83,6 +83,8 @@ pub fn kind_of_extension(ext: Option<&str>) -> Cow<'static, str> {
     let Some(ext) = ext else { return Cow::Borrowed("File") };
     match KINDS.iter().find(|(exts, _)| exts.contains(&ext)) { Some((_, kind)) => Cow::Borrowed(kind), None => Cow::Owned(format!("{} file", ext.to_uppercase())) }
 }
+/// What a package (a folder the system shows as one item) is called: the table's word for its extension, else "Package".
+pub fn kind_of_package(ext: &str) -> Cow<'static, str> { match KINDS.iter().find(|(exts, _)| exts.contains(&ext)) { Some((_, kind)) => Cow::Borrowed(kind), None => Cow::Borrowed("Package") } }
 #[cfg(test)]
 pub fn kind_text(name: &str, dir: bool) -> Cow<'static, str> { if dir { Cow::Borrowed("Folder") } else { kind_of_extension(extension(name).as_deref()) } }
 

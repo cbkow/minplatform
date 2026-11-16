@@ -1,6 +1,6 @@
 //! The framed protocol between the application and a helper copy of itself, over the helper's standard input and
 //! output (spike S18; canon row 456). Every frame: a u32 length (little endian), then that many bytes.
-//!   request  = id u64 | op u8 | 0 | size u16 | soft_ms u32 | path (UTF-8, the rest of the frame)
+//!   request  = id u64 | op u8 | flags u8 | size u16 | soft_ms u32 | file size u64 | file time i64 | path (UTF-8, the rest)
 //!   response = id u64 | status u8 | 0 | w u16 | h u16 | 0 0 | work_us u32 | aux u32 | payload (the rest)
 //! The payload is a picture: RGBA, 8 bits, colour multiplied by its alpha, sRGB, top row first, w x h.
 //! One request is in flight per helper, so a death or a hang is always the fault of exactly one request.
@@ -13,6 +13,17 @@ pub const OP_THUMB: u8 = 2;
 /// The system's icon of THIS file (an application's own, a shortcut's).
 pub const OP_ICON: u8 = 3;
 pub const OP_PING: u8 = 5;
+/// The cache on disk (canon row 456, point 4; `cache.rs`): the file's picture as it was kept - [`OK`] with it,
+/// [`MISS`] when there is none for the file as it is now, [`NONE`] when the file is known to have no picture.
+pub const OP_CACHED: u8 = 6;
+/// Remember that the file, as it is now, has no picture.
+pub const OP_MARK: u8 = 7;
+/// `path` is a folder: what the cache keeps for files that are no longer in it is dropped.
+pub const OP_PRUNE: u8 = 8;
+/// `path` is a folder: forget which of its files have no picture (Refresh asks again).
+pub const OP_FORGET: u8 = 9;
+/// A flag of [`OP_DECODE`] and [`OP_THUMB`]: the picture is made at the cache's size, kept there, and answered at `size`.
+pub const KEEP: u8 = 1;
 /// Tests only (honoured when the helper was started with `UFB_HELPER_TEST` set): end at once; never answer.
 pub const OP_TEST_ABORT: u8 = 250;
 pub const OP_TEST_HANG: u8 = 251;
@@ -28,34 +39,48 @@ pub const CRASHED: u8 = 3;
 pub const HUNG: u8 = 4;
 /// Made by the parent: no helper could be started.
 pub const NO_HELPER: u8 = 6;
+/// [`OP_CACHED`]: the cache has nothing for the file as it is now.
+pub const MISS: u8 = 7;
+/// [`OP_CACHED`]: the file is known to have no picture.
+pub const NONE: u8 = 8;
 
 #[derive(Clone, Debug)]
-pub struct Request { pub id: u64, pub op: u8, pub size: u16, pub soft_ms: u32, pub path: String }
+pub struct Request { pub id: u64, pub op: u8, pub flags: u8, pub size: u16, pub soft_ms: u32, /// the file's size and modification time as its folder's listing gave them: what a kept picture is valid for
+    pub fsize: u64, pub mtime: i64, pub path: String }
+impl Request {
+    /// A request about `path` with no flags and no file stamp.
+    #[allow(dead_code)]
+    pub fn new(id: u64, op: u8, size: u16, soft_ms: u32, path: impl Into<String>) -> Request { Request { id, op, flags: 0, size, soft_ms, fsize: 0, mtime: 0, path: path.into() } }
+}
+const REQ_HEAD: usize = 32;
 
 #[derive(Debug, Default)]
 pub struct Response { pub id: u64, pub status: u8, pub w: u16, pub h: u16, pub work_us: u32, pub aux: u32, pub payload: Vec<u8> }
 
 pub fn write_request(w: &mut impl Write, r: &Request) -> io::Result<()> {
     let p = r.path.as_bytes();
-    let mut b = Vec::with_capacity(20 + p.len());
-    b.extend_from_slice(&((16 + p.len()) as u32).to_le_bytes());
+    let mut b = Vec::with_capacity(4 + REQ_HEAD + p.len());
+    b.extend_from_slice(&((REQ_HEAD + p.len()) as u32).to_le_bytes());
     b.extend_from_slice(&r.id.to_le_bytes());
-    b.push(r.op); b.push(0);
+    b.push(r.op); b.push(r.flags);
     b.extend_from_slice(&r.size.to_le_bytes());
     b.extend_from_slice(&r.soft_ms.to_le_bytes());
+    b.extend_from_slice(&r.fsize.to_le_bytes());
+    b.extend_from_slice(&r.mtime.to_le_bytes());
     b.extend_from_slice(p);
     w.write_all(&b)?; w.flush()
 }
 
 pub fn read_request(r: &mut impl Read) -> io::Result<Request> {
-    let mut h = [0u8; 20];
+    let mut h = [0u8; 4 + REQ_HEAD];
     r.read_exact(&mut h)?;
     let len = u32::from_le_bytes(h[0..4].try_into().unwrap()) as usize;
-    if !(16..=16 + 65536).contains(&len) { return Err(io::Error::other("bad frame")) }
-    let mut p = vec![0u8; len - 16];
+    if !(REQ_HEAD..=REQ_HEAD + 65536).contains(&len) { return Err(io::Error::other("bad frame")) }
+    let mut p = vec![0u8; len - REQ_HEAD];
     r.read_exact(&mut p)?;
-    Ok(Request { id: u64::from_le_bytes(h[4..12].try_into().unwrap()), op: h[12], size: u16::from_le_bytes([h[14], h[15]]),
-        soft_ms: u32::from_le_bytes(h[16..20].try_into().unwrap()), path: String::from_utf8(p).map_err(io::Error::other)? })
+    Ok(Request { id: u64::from_le_bytes(h[4..12].try_into().unwrap()), op: h[12], flags: h[13], size: u16::from_le_bytes([h[14], h[15]]),
+        soft_ms: u32::from_le_bytes(h[16..20].try_into().unwrap()), fsize: u64::from_le_bytes(h[20..28].try_into().unwrap()), mtime: i64::from_le_bytes(h[28..36].try_into().unwrap()),
+        path: String::from_utf8(p).map_err(io::Error::other)? })
 }
 
 pub const RESP_HEAD: usize = 24;
