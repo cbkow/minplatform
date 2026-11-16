@@ -273,3 +273,21 @@ to the system is right, the destination path works end to end on a pasteboard of
 As on macOS, no drag was performed: `DoDragDrop` was never called. Part B on Windows is the owner's hand.
 
 ## VERDICT (Windows): Part A PASS; Part B OPEN
+
+## macOS, Part B, a first pass by the owner's hand (2026-11-15)
+
+Not the whole table - the main cases. From the log of that sitting:
+
+- **7 drags OUT, every one taken by the system**; the target's answer came back each time: 3 MOVE, 3 COPY, 1 NONE
+  (cancelled: the source still there). A row let go on Terminal typed its path (escaped by Terminal, as it does for
+  any dragged file).
+- **4 drops IN from other applications**, each with its place and its paths; one promised file DELIVERED; one drag
+  from a browser arrived as a `url:`.
+- **2 drags between our two windows**, both known as OURS, a move.
+- No missing path, no error, nothing that stopped the events.
+
+Not done in this pass: modifier-by-modifier (I5), the Trash, Mail, an upload field, archives, the stale-payload and
+stale-hover edges by intent (O15, I4), remote desktop (O18), a second process (C6). Windows: nothing by hand yet.
+
+## VERDICT (macOS): the question is answered YES - a real drag goes out and comes in. The edge cases stay on the list.
+
