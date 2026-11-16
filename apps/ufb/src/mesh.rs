@@ -22,7 +22,11 @@
 //! when it ANSWERS, not when its entry in the phonebook looks fresh - so one that cannot be reached is never the leader
 //! this node waits for.
 //!
-//! NOT here yet: the merge by cell (row 440), the shared secret (row 442), the columns' shared templates.
+//! **Merged by cell** (row 440; `db::merge_row`): a row that arrives - in a message or in a snapshot - does not replace
+//! ours: what its sender changed is taken, what this machine changed is kept, and when the two are not the same in the
+//! end ours is sent on.
+//!
+//! NOT here yet: the shared secret (row 442), the columns' shared templates.
 //!
 //! THE DEVELOPMENT BUILD'S BELT: the epoch is a TEST epoch unless `UFB_MESH_EPOCH` says otherwise - a node of another
 //! epoch is ignored entirely, by 1.4.2's own rule, so no installed UFB can see or be seen by a test node; and
@@ -154,8 +158,12 @@ fn send_loop(s: &Shared) {
             // which is what everybody else gets it from; it leaves the queue when that snapshot is written
             if target.is_none() { if s.relayed.lock().unwrap().contains(&id) { continue } s.snap_needed.store(true, Ordering::Relaxed); }
             msg["mesh_epoch"] = s.cfg.epoch.into(); let (path, body) = (if kind == "meta" { "/api/metadata/update" } else { "/api/table/update" }, msg.to_string());
+            // (taken by somebody: by the leader - or, when this node leads, by at least one node that answers; passed on to nobody, it is in common with nobody)
+            let reached = target.is_some() || s.peers.lock().unwrap().values().any(|p| p.alive);
             let ok = match &target { Some(at) => post(at, path, &body), None => relay(s, path, &body) };
             say(s, &format!("out {path} {key}: {}", if ok { "accepted" } else { "not yet" }));
+            // (what was taken is the version this machine has in common with the others from now on - row 440)
+            if ok && reached && kind == "meta" { crate::db::with(|d| d.base_from_wire(&msg)); }
             if target.is_none() { s.relayed.lock().unwrap().insert(id); continue }
             if ok { crate::db::with(|d| d.pending_done(id)); } else { break }
         }

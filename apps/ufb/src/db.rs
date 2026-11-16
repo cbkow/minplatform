@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS migration_orphans (id INTEGER PRIMARY KEY AUTOINCREME
 /// `kind`: `meta` (an item's row, by its identity), `col` (a column, by its uuid); `payload`: a message to send as it
 /// is (an item that is no longer here under that path), else what the row holds when it is sent.
 const OURS: &str = "CREATE TABLE IF NOT EXISTS mesh_pending (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT, queued_time INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_mesh_pending_key ON mesh_pending(kind, key);";
+CREATE INDEX IF NOT EXISTS idx_mesh_pending_key ON mesh_pending(kind, key);
+CREATE TABLE IF NOT EXISTS mesh_base (item_path TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, is_tracked INTEGER NOT NULL, modified_time INTEGER NOT NULL DEFAULT 0);";
+/// `mesh_base`, also ours: for every item, the version this machine last had IN COMMON with the others (row 440) - what
+/// it sent and was taken, what it took. Against it a row that arrives shows which cells its sender changed.
 /// The columns 1.4.2 adds after the tables (each only where it is missing).
 const ADDED: [(&str, &str, &str); 13] = [("item_metadata", "device_id", "TEXT"), ("column_definitions", "modified_time", "INTEGER NOT NULL DEFAULT 0"), ("column_options", "modified_time", "INTEGER NOT NULL DEFAULT 0"),
     ("subscriptions", "modified_time", "INTEGER NOT NULL DEFAULT 0"), ("item_metadata", "deleted_at", "INTEGER"), ("column_definitions", "deleted_at", "INTEGER"), ("column_options", "deleted_at", "INTEGER"),
@@ -399,10 +402,19 @@ impl Db {
         let scope = |c: &str| match only { Some(o) => { let o = o.replace('\'', "''"); format!("({c} = '{o}' OR substr({c}, 1, {}) = '{o}/')", o.chars().count() + 1) } None => format!("{c} LIKE 'vol:%'") };
         self.conn.execute("ATTACH DATABASE ?1 AS snap", [from.to_string_lossy()]).map_err(e)?;
         let run = || -> rusqlite::Result<usize> {
+            // the items' rows: one that differs from ours is merged by cell, as one that arrives in a message is (row 440);
+            // one that is deleted there is taken when it is newer (1.4.2)
             let mut n = self.conn.execute(&format!("INSERT INTO main.item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at)
-                 SELECT item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at FROM snap.item_metadata WHERE item_path LIKE 'vol:%' AND {}
-                 ON CONFLICT(item_path) DO UPDATE SET job_path = excluded.job_path, folder_name = excluded.folder_name, metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = excluded.deleted_at
+                 SELECT item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at FROM snap.item_metadata WHERE item_path LIKE 'vol:%' AND deleted_at IS NOT NULL AND {}
+                 ON CONFLICT(item_path) DO UPDATE SET metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = excluded.deleted_at
                  WHERE excluded.modified_time > COALESCE(item_metadata.modified_time, -1)", scope("job_path")), [])?;
+            let rows: Vec<(String, String, String, String, bool, i64)> = { let mut st = self.conn.prepare(&format!("SELECT s.item_path, s.job_path, s.folder_name, s.metadata_json, s.is_tracked, COALESCE(s.modified_time, 0) FROM snap.item_metadata s LEFT JOIN main.item_metadata m ON m.item_path = s.item_path
+                 WHERE s.item_path LIKE 'vol:%' AND s.deleted_at IS NULL AND {} AND (m.item_path IS NULL OR m.deleted_at IS NOT NULL OR m.metadata_json != s.metadata_json OR m.is_tracked != s.is_tracked)", scope("s.job_path")))?;
+                let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0, r.get(5)?)))?.flatten().collect(); v };
+            for (item, job, folder, doc, tracked, time) in rows { if self.merge_row(&item, &job, &folder, &doc, tracked, time)? { n += 1; } }
+            // a row that is the SAME there and here is in common - that, and nothing sooner: what this machine wrote into a
+            // snapshot is not in common until another machine's snapshot shows it has it
+            self.conn.execute(&format!("INSERT OR REPLACE INTO mesh_base (item_path, metadata_json, is_tracked, modified_time) SELECT s.item_path, s.metadata_json, s.is_tracked, COALESCE(s.modified_time, 0) FROM snap.item_metadata s JOIN main.item_metadata m ON m.item_path = s.item_path WHERE s.deleted_at IS NULL AND m.deleted_at IS NULL AND m.metadata_json = s.metadata_json AND m.is_tracked = s.is_tracked AND {}", scope("s.job_path")), [])?;
             type Col = (i64, String, String, String, String, i64, f64, i64, Option<String>, i64, Option<i64>, Option<String>, Option<i64>, Option<String>);
             let cols: Vec<Col> = { let mut st = self.conn.prepare(&format!("SELECT id, job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, template_hash, trashed_at, column_uuid FROM snap.column_definitions WHERE {}", scope("job_path")))?;
                 let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?)))?.flatten().collect(); v };
@@ -432,11 +444,48 @@ impl Db {
         let (Some(job), Some(item)) = (text("job_path").map(|p| Self::wire_path(&p)), text("item_path").map(|p| Self::wire_path(&p))) else { return Err("job_path and item_path are needed".into()) };
         let (doc, folder, tracked) = (text("metadata").unwrap_or_else(|| "{}".into()), text("folder_name").unwrap_or_default(), v.get("is_tracked").and_then(|x| x.as_bool()).unwrap_or(false));
         let mut time = v.get("modified_time").and_then(|x| x.as_i64()).unwrap_or(0); if time == 0 { time = now_ms(); }
-        let n = self.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
-             ON CONFLICT(item_path) DO UPDATE SET job_path = excluded.job_path, folder_name = excluded.folder_name, metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = NULL
-             WHERE excluded.modified_time >= COALESCE(item_metadata.modified_time, 0)", rusqlite::params![item, job, folder, doc, tracked as i64, time]).map_err(|e| e.to_string())?;
-        Ok(n > 0)
+        self.merge_row(&item, &job, &folder, &doc, tracked, time).map_err(|e| e.to_string())
     }
+    /// An item's row from another machine is MERGED BY CELL into ours (row 440; 1.4.2 replaces the whole row, so of two
+    /// people who change different cells of one item at about the same time one loses the edit). Against the version
+    /// this machine last had in common with the others: a cell only the sender changed is taken; one only this machine
+    /// changed is kept; one both changed goes to the LATER row, without a word (row 441); the star likewise. When what
+    /// comes of it is not what arrived, it waits to be sent on - which also mends the copy of a 1.4.2 node. True: our row changed.
+    fn merge_row(&self, item: &str, job: &str, folder: &str, doc: &str, tracked: bool, time: i64) -> rusqlite::Result<bool> {
+        type Map = serde_json::Map<String, serde_json::Value>;
+        let parse = |s: &str| -> Map { match serde_json::from_str::<serde_json::Value>(s) { Ok(serde_json::Value::Object(m)) => m, _ => Map::new() } };
+        let local: Option<(String, bool, i64, bool)> = self.conn.query_row("SELECT metadata_json, is_tracked, COALESCE(modified_time, 0), deleted_at IS NOT NULL FROM item_metadata WHERE item_path = ?1", [item], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get(2)?, r.get(3)?))).ok();
+        let base_set = |d: &str, t: bool| self.conn.execute("INSERT INTO mesh_base (item_path, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(item_path) DO UPDATE SET metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time", rusqlite::params![item, d, t as i64, time]);
+        // not here (or deleted here): the row is taken as it is
+        let Some((ldoc, ltracked, ltime, _)) = local.filter(|l| !l.3) else {
+            self.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
+                 ON CONFLICT(item_path) DO UPDATE SET job_path = excluded.job_path, folder_name = excluded.folder_name, metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = NULL", rusqlite::params![item, job, folder, doc, tracked as i64, time])?;
+            base_set(doc, tracked)?; return Ok(true) };
+        let (inc, loc) = (parse(doc), parse(&ldoc));
+        let (base, btracked, btime): (Map, bool, i64) = self.conn.query_row("SELECT metadata_json, is_tracked, modified_time FROM mesh_base WHERE item_path = ?1", [item], |r| Ok((parse(&r.get::<_, String>(0)?), r.get::<_, i64>(1)? != 0, r.get(2)?))).unwrap_or((Map::new(), false, 0));
+        // a row OLDER than the version in common is no change of its sender's: it is one that was overtaken on its way (or sent again), and is left
+        if time < btime { return Ok(false) }
+        // (the sender's row wins a cell both changed when it is not older - 1.4.2's ">=" for a row)
+        let theirs = time >= ltime; let mut out = Map::new();
+        let keys: std::collections::BTreeSet<&String> = inc.keys().chain(loc.keys()).chain(base.keys()).collect();
+        // (a cell the sender's row does not HOLD is no change of the sender's: it never saw that column - clearing a cell writes null and keeps the key)
+        for k in keys { let (i, l, b) = (inc.get(k), loc.get(k), base.get(k)); let (ic, lc) = (i.is_some() && i != b, l != b);
+            if let Some(v) = if ic && (!lc || theirs) { i } else { l } { out.insert(k.clone(), v.clone()); } }
+        let (ic, lc) = (tracked != btracked, ltracked != btracked); let otracked = if ic && (!lc || theirs) { tracked } else { ltracked };
+        let (same_as_ours, same_as_theirs) = (out == loc && otracked == ltracked, out == inc && otracked == tracked);
+        if std::env::var_os("UFB_MESH_LOG").is_some() { eprintln!("UFB_MESH merge {}: theirs star {tracked} t {time} | ours star {ltracked} t {ltime} | common star {btracked} t {btime} -> star {otracked}, {} cell(s)", item.rsplit('/').next().unwrap_or(""), out.len()); }
+        // the mesh has the sender's row: that is the common version now (until ours, if it differs, was taken too)
+        base_set(doc, tracked)?;
+        if same_as_ours && same_as_theirs { if time > ltime { self.conn.execute("UPDATE item_metadata SET modified_time = ?1 WHERE item_path = ?2", rusqlite::params![time, item])?; } return Ok(false) }
+        if !same_as_ours { self.conn.execute("UPDATE item_metadata SET job_path = ?1, folder_name = ?2, metadata_json = ?3, is_tracked = ?4, modified_time = ?5, deleted_at = NULL WHERE item_path = ?6", rusqlite::params![job, folder, serde_json::Value::Object(out.clone()).to_string(), otracked as i64, time.max(ltime), item])?; }
+        // what we hold is more than what arrived: it is sent on, as a change of this machine's
+        if !same_as_theirs { if same_as_ours && ltime < time { self.conn.execute("UPDATE item_metadata SET modified_time = ?1 WHERE item_path = ?2", rusqlite::params![time, item])?; } self.note("meta", item, None); }
+        Ok(!same_as_ours)
+    }
+    /// What this machine sent was taken by the mesh: it is the version in common from now on.
+    pub fn base_from_wire(&self, v: &serde_json::Value) { if let (Some(item), Some(doc)) = (v.get("item_path").and_then(|x| x.as_str()), v.get("metadata").and_then(|x| x.as_str())) {
+        let _ = self.conn.execute("INSERT INTO mesh_base (item_path, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(item_path) DO UPDATE SET metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time", rusqlite::params![item, doc, v.get("is_tracked").and_then(|x| x.as_bool()).unwrap_or(false) as i64, v.get("modified_time").and_then(|x| x.as_i64()).unwrap_or(0)]); } }
+
     /// A column's change arrived (1.4.2's `apply_table_change`): `col_add` / `col_update` take the definition when it
     /// is NEWER than ours (found by its uuid, else by job, section and name), `col_delete` is final; what 1.4.2 itself
     /// accepts and ignores is accepted and ignored; anything else is an error. True: something changed.
@@ -655,8 +704,46 @@ mod tests {
         row(&a, "vol:1111/jobs/other/3d/x", "{}", 100); let k = dir.join("s4.db"); a.write_snapshot(&k, Some(job)).unwrap(); let c = Connection::open(&k).unwrap(); assert_eq!(c.query_row("SELECT count(*) FROM item_metadata WHERE job_path != ?1", [job], |r| r.get::<_, i64>(0)).unwrap(), 0); drop(c);
         // a file that is not whole is refused, and nothing is changed
         let bad = dir.join("bad.db"); let bytes = std::fs::read(&f).unwrap(); std::fs::write(&bad, &bytes[..bytes.len() / 2]).unwrap(); assert!(b.merge_snapshot(&bad, None).is_err()); std::fs::write(&bad, b"not a database").unwrap(); assert!(b.merge_snapshot(&bad, None).is_err());
-        assert_eq!(a.pending_count() + b.pending_count(), 0, "what a snapshot brings is not sent on as a change of this machine's");
+        assert_eq!(b.pending_count(), 0, "what a snapshot brings is not sent on as a change of this machine's"); assert_eq!(a.pending().iter().map(|p| p.2.as_str()).collect::<Vec<_>>(), [i1.as_str()], "but a row of ours that is NEWER than the snapshot's is: the others get it");
         for d in [da, db_, dir] { let _ = std::fs::remove_dir_all(d); }
+    }
+    #[test]
+    fn two_machines_that_change_different_cells_of_one_item_both_keep_their_edit() {
+        let (da, db_) = (temp("cell-a"), temp("cell-b")); let (a, b) = (Db::open(&da).unwrap(), Db::open(&db_).unwrap()); let job = "vol:1111/jobs/0001_Test"; let item = format!("{job}/3d/sh010");
+        let put = |d: &Db, doc: &str, tracked: bool, time: i64| { d.conn.execute("INSERT OR REPLACE INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, '3d', ?3, ?4, ?5)", rusqlite::params![item, job, doc, tracked as i64, time]).unwrap(); };
+        let get = |d: &Db| d.conn.query_row("SELECT metadata_json, is_tracked FROM item_metadata WHERE item_path = ?1", [&item], |r| Ok((serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(0)?).unwrap(), r.get::<_, i64>(1)? != 0))).unwrap();
+        let send = |from: &Db, to: &Db| -> bool { let m = from.meta_wire(&item).unwrap(); let took = to.apply_meta(&m).unwrap(); from.base_from_wire(&m); took };
+        let drain = |d: &Db| { for p in d.pending() { d.pending_done(p.0); } };
+        // both start from the same row
+        put(&a, "{\"status\":\"WIP\",\"artist\":\"Zoe\"}", false, 1000); assert!(send(&a, &b)); assert_eq!(get(&b).0, serde_json::json!({ "status": "WIP", "artist": "Zoe" })); drain(&a); drain(&b);
+        // A changes the status, B the artist - at about the same time, B a little later
+        put(&a, "{\"status\":\"Final\",\"artist\":\"Zoe\"}", false, 2000); put(&b, "{\"status\":\"WIP\",\"artist\":\"Bea\"}", true, 2100);
+        // B's row reaches A: only the artist (and the star) is B's change - A keeps its status
+        assert!(send(&b, &a)); assert_eq!(get(&a), (serde_json::json!({ "status": "Final", "artist": "Bea" }), true), "1.4.2 would have left A with B's whole row: the status lost");
+        // what A holds is more than what arrived: it waits to be sent on; B takes it and both hold the same
+        assert_eq!(a.pending().iter().filter(|p| p.1 == "meta").count(), 1); assert!(send(&a, &b)); assert_eq!(get(&b), get(&a)); drain(&a);
+        assert_eq!(b.pending().iter().filter(|p| p.1 == "meta").count(), 0, "it came to rest: nothing goes back and forth");
+        // the same cell changed on both: the later row's value, without a word
+        put(&a, "{\"status\":\"Hold\",\"artist\":\"Bea\"}", true, 3000); put(&b, "{\"status\":\"Kill\",\"artist\":\"Bea\"}", true, 3500);
+        assert!(!send(&a, &b), "A's is older: B keeps its own"); assert_eq!(get(&b).0["status"], "Kill"); assert!(send(&b, &a)); assert_eq!(get(&a).0["status"], "Kill");
+        // a cell cleared (null) on one side is a change like any other; a row that brings nothing new changes nothing
+        drain(&a); drain(&b); put(&a, "{\"status\":null,\"artist\":\"Bea\"}", true, 4000); assert!(send(&a, &b)); assert!(get(&b).0["status"].is_null()); assert!(!send(&a, &b));
+        // through a snapshot the same merge: B changed the artist meanwhile, A's snapshot brings a new status - both survive
+        put(&a, "{\"status\":\"Done\",\"artist\":\"Bea\"}", true, 5000); put(&b, "{\"status\":null,\"artist\":\"Cy\"}", true, 4900);
+        let f = da.join("s.db"); a.write_snapshot(&f, None).unwrap(); b.merge_snapshot(&f, None).unwrap(); assert_eq!(get(&b).0, serde_json::json!({ "status": "Done", "artist": "Cy" }));
+        // TWO MACHINES THAT ONLY SHARE THE FOLDER, each changing another cell of an item neither had synced, each
+        // publishing its snapshot before it saw the other's (found in a run of two nodes: one edit was lost). A fills
+        // in the notes; B, a moment EARLIER by its clock, fills in the frames and stars the item.
+        let item2 = format!("{job}/3d/sh020"); let put2 = |d: &Db, doc: &str, tracked: bool, time: i64| { d.conn.execute("INSERT OR REPLACE INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, '3d', ?3, ?4, ?5)", rusqlite::params![item2, job, doc, tracked as i64, time]).unwrap(); };
+        let get2 = |d: &Db| d.conn.query_row("SELECT metadata_json, is_tracked FROM item_metadata WHERE item_path = ?1", [&item2], |r| Ok((serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(0)?).unwrap(), r.get::<_, i64>(1)? != 0))).unwrap();
+        put2(&a, "{\"notes\":\"FromA\"}", false, 7000); put2(&b, "{\"frames\":48}", true, 6900);
+        let (sa, sb) = (da.join("sa.db"), db_.join("sb.db")); a.write_snapshot(&sa, None).unwrap(); b.write_snapshot(&sb, None).unwrap();
+        // each merges the other's; then each publishes again and merges again: both hold both edits and the star
+        a.merge_snapshot(&sb, None).unwrap(); b.merge_snapshot(&sa, None).unwrap(); a.write_snapshot(&sa, None).unwrap(); b.write_snapshot(&sb, None).unwrap(); a.merge_snapshot(&sb, None).unwrap(); b.merge_snapshot(&sa, None).unwrap();
+        let both = (serde_json::json!({ "notes": "FromA", "frames": 48 }), true); assert_eq!(get2(&a), both); assert_eq!(get2(&b), both);
+        // and it comes to rest: another round changes nothing
+        a.write_snapshot(&sa, None).unwrap(); b.write_snapshot(&sb, None).unwrap(); assert_eq!(a.merge_snapshot(&sb, None).unwrap() + b.merge_snapshot(&sa, None).unwrap(), 0);
+        for d in [da, db_] { let _ = std::fs::remove_dir_all(d); }
     }
     #[test]
     fn identities_of_this_machine_only() {
