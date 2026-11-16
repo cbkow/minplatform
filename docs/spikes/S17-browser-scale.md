@@ -207,3 +207,15 @@ Frame = build + vello + GPU done, in ms. Every run was PRESENTED (the screen was
   macOS still owes them with its screen awake.
 
 ## VERDICT (Windows): PASS - p95 inside the bar everywhere; the single 21 ms frames are to be seen again
+
+## macOS, the grid figures that were owed (2026-11-15, the screen kept awake, presented at 120 Hz)
+
+| Grid sweep (ms) | p50 | p95 | worst |
+|---|---|---|---|
+| 1,000,000, one picture | 3.66 | 4.06 | 4.90 |
+| 100,000, 256 distinct pictures | 3.73 | 4.08 | 8.57 |
+| 1,000,000, 256 distinct pictures | 5.25 | 6.57 | 8.55 |
+| 1,000,000, 256 pictures, all selected | 5.43 | 7.19 | 10.03 |
+
+Inside the bar (p95 <= 8, worst <= 16), and inside a 120 Hz frame at p95. Nothing is owed on macOS any more.
+
