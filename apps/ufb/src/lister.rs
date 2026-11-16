@@ -17,8 +17,9 @@ pub enum Msg {
     /// The reading is over: the folder's own modification time, the room left on its volume.
     Done { req: u64, mtime: Option<i64>, free: Option<u64> },
     Failed { req: u64, why: String },
-    /// A folder's modification time alone (asked when the window became active again).
-    Probed { req: u64, mtime: Option<i64> },
+    /// A folder's modification time alone (asked when the window became active again); and whether one of the
+    /// folders opened in place inside it is no longer as it was read.
+    Probed { req: u64, mtime: Option<i64>, inner_changed: bool },
     /// A typed path was looked at: is it a folder that can be gone to.
     Checked { req: u64, path: PathBuf, dir: bool },
     /// The volumes, and the startup disk's name.
@@ -49,8 +50,10 @@ pub fn plain(e: &std::io::Error) -> String {
     }
 }
 fn secs(t: std::io::Result<std::time::SystemTime>) -> Option<i64> { let t = t.ok()?; Some(match t.duration_since(std::time::UNIX_EPOCH) { Ok(d) => d.as_secs() as i64, Err(e) => -(e.duration().as_secs() as i64) }) }
-/// A folder's own modification time (it changes when an entry is added, removed or renamed in it).
-pub fn dir_mtime(path: &Path) -> Option<i64> { secs(std::fs::metadata(path).and_then(|m| m.modified())) }
+/// A folder's own modification time (it changes when an entry is added, removed or renamed in it), as finely as the
+/// system keeps it - in nanoseconds: it is only ever COMPARED, and two changes within one second must not look alike
+/// (a file dragged out right after the folder was read).
+pub fn dir_mtime(path: &Path) -> Option<i64> { let t = std::fs::metadata(path).and_then(|m| m.modified()).ok()?; Some(match t.duration_since(std::time::UNIX_EPOCH) { Ok(d) => d.as_nanos().min(i64::MAX as u128) as i64, Err(e) => -(e.duration().as_nanos().min(i64::MAX as u128) as i64) }) }
 
 #[cfg(target_os = "macos")]
 fn hidden(name: &str, md: &std::fs::Metadata) -> bool { use std::os::macos::fs::MetadataExt; name.starts_with('.') || md.st_flags() & 0x8000 != 0 }   // UF_HIDDEN: what Finder hides without a dot
@@ -118,7 +121,8 @@ pub fn list(port: &Port, req: u64, path: PathBuf, cancel: Arc<AtomicBool>) {
     });
 }
 /// Ask for a folder's modification time.
-pub fn probe(port: &Port, req: u64, path: PathBuf) { let port = port.clone(); let _ = std::thread::Builder::new().name("ufb-probe".into()).spawn(move || port.send(Msg::Probed { req, mtime: dir_mtime(&path) })); }
+/// `inner`: the folders opened in place, each with its modification time as it was read.
+pub fn probe(port: &Port, req: u64, path: PathBuf, inner: Vec<(PathBuf, Option<i64>)>) { let port = port.clone(); let _ = std::thread::Builder::new().name("ufb-probe".into()).spawn(move || { let inner_changed = inner.iter().any(|(p, was)| dir_mtime(p) != *was); port.send(Msg::Probed { req, mtime: dir_mtime(&path), inner_changed }) }); }
 /// Ask whether a typed path is a folder.
 pub fn check(port: &Port, req: u64, path: PathBuf) { let port = port.clone(); let _ = std::thread::Builder::new().name("ufb-check".into()).spawn(move || { let dir = path.is_dir(); port.send(Msg::Checked { req, path, dir }); }); }
 
@@ -184,6 +188,7 @@ pub mod tests {
         list(&port, 8, t.0.join("gone"), Arc::new(AtomicBool::new(false)));
         assert!(matches!(rx.recv_timeout(Duration::from_secs(20)), Ok(Msg::Failed { req: 8, .. })));
         check(&port, 9, t.0.clone()); assert!(matches!(rx.recv_timeout(Duration::from_secs(20)), Ok(Msg::Checked { req: 9, dir: true, .. })));
-        probe(&port, 10, t.0.clone()); assert!(matches!(rx.recv_timeout(Duration::from_secs(20)), Ok(Msg::Probed { req: 10, mtime: Some(_) })));
+        probe(&port, 10, t.0.clone(), vec![(t.0.clone(), dir_mtime(&t.0))]); assert!(matches!(rx.recv_timeout(Duration::from_secs(20)), Ok(Msg::Probed { req: 10, mtime: Some(_), inner_changed: false })));
+        probe(&port, 11, t.0.clone(), vec![(t.0.clone(), Some(1))]); assert!(matches!(rx.recv_timeout(Duration::from_secs(20)), Ok(Msg::Probed { req: 11, inner_changed: true, .. })), "a folder opened in place that is not as it was read");
     }
 }

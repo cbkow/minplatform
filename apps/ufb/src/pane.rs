@@ -31,6 +31,8 @@ pub struct Pane {
     pub history: History, pub model: Model, pub table: Table, pub grid: Grid, pub mode: Mode, pub load: Load,
     /// the room left on the folder's volume; the folder's own modification time at the last reading
     pub free: Option<u64>, mtime: Option<i64>,
+    /// the folders opened in place, each with its own modification time as it was read (a file taken out of one of them changes that, not the folder in view's)
+    inner: Vec<(PathBuf, Option<i64>)>,
     /// the readings waited for: request -> the entry they are for ([`TOP`]: the folder itself), each with its way to call it off
     reqs: HashMap<u64, (u32, Arc<AtomicBool>)>, probe: Option<u64>,
     /// what to put back when the reading is over: the choice and the scroll (back / forward / up / refresh), the folders to open in place again (refresh)
@@ -90,7 +92,7 @@ pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -111,7 +113,7 @@ impl Pane {
         for (_, (_, cancel)) in self.reqs.drain() { cancel.store(true, Ordering::Relaxed); }
         self.model.clear(); self.model.tree = self.mode == Mode::List; self.model.rebuild();
         self.table.sel.reset(); self.grid.sel.reset(); self.table.sel.resize(0); self.grid.sel.resize(0); self.table.bar.offset = 0.0; self.grid.bar.offset = 0.0;
-        self.free = None; self.load = Load::Loading; self.restore = restore; self.reopen = reopen; self.chosen = (0, 0); self.probe = None; self.search.clear();
+        self.free = None; self.inner.clear(); self.load = Load::Loading; self.restore = restore; self.reopen = reopen; self.chosen = (0, 0); self.probe = None; self.search.clear();
         let (req, cancel) = (lister::next_req(), Arc::new(AtomicBool::new(false)));
         self.reqs.insert(req, (TOP, cancel.clone())); lister::list(port, req, self.path().to_path_buf(), cancel);
     }
@@ -142,7 +144,7 @@ impl Pane {
         self.model.find_ci(self.model.node(id).parent, name).is_some_and(|other| other != id)
     }
     /// The window became active: ask (off this thread) whether the folder changed since it was read.
-    pub fn activated(&mut self, port: &Port) { if self.load == Load::Loading || self.probe.is_some() { return } let req = lister::next_req(); self.probe = Some(req); lister::probe(port, req, self.path().to_path_buf()); }
+    pub fn activated(&mut self, port: &Port) { if self.load == Load::Loading || self.probe.is_some() { return } let req = lister::next_req(); self.probe = Some(req); lister::probe(port, req, self.path().to_path_buf(), self.inner.clone()); }
 
     /// Change the model (its entries, its options) and keep what is chosen, by entry, across the new rows.
     fn keep(&mut self, change: impl FnOnce(&mut Model)) {
@@ -177,7 +179,7 @@ impl Pane {
     pub fn on_msg(&mut self, port: &Port, m: &mut Option<Msg>) -> bool {
         let req = match m { Some(Msg::Chunk { req, .. } | Msg::Done { req, .. } | Msg::Failed { req, .. } | Msg::Probed { req, .. }) => *req, _ => return false };
         if self.probe == Some(req) {
-            if let Some(Msg::Probed { mtime, .. }) = m.take() { self.probe = None; if self.load == Load::Ready && mtime.is_some() && mtime != self.mtime { self.refresh(port); } else if matches!(self.load, Load::Failed(_)) && mtime.is_some() { self.refresh(port); } }
+            if let Some(Msg::Probed { mtime, inner_changed, .. }) = m.take() { self.probe = None; if self.load == Load::Ready && ((mtime.is_some() && mtime != self.mtime) || inner_changed) { self.refresh(port); } else if matches!(self.load, Load::Failed(_)) && mtime.is_some() { self.refresh(port); } }
             return true
         }
         let Some((parent, _)) = self.reqs.get(&req).map(|(p, c)| (*p, c.clone())) else { return false };
@@ -185,6 +187,7 @@ impl Pane {
             Some(Msg::Chunk { entries, .. }) => self.keep(|model| model.add(parent, entries)),
             Some(Msg::Done { mtime, free, .. }) => {
                 self.reqs.remove(&req); self.keep(|model| model.set_state(parent, Kids::Loaded));
+                if parent != TOP { let at = self.model.path_of(parent, self.path()); self.inner.retain(|(p, _)| *p != at); self.inner.push((at, mtime)); }
                 if parent == TOP {
                     self.load = Load::Ready; self.mtime = mtime; self.free = free; self.listed = true;
                     if let Some(look) = self.restore.take() { self.choose(&look.selected); if self.mode == Mode::List { self.table.bar.offset = look.scroll; } else { self.grid.bar.offset = look.scroll; } if look.scroll == 0.0 { if let Some(c) = self.sel().cursor { self.reveal_later(c); } } }
@@ -388,9 +391,14 @@ mod tests {
         assert_eq!(names(&p), ["assets", "renders", "  v002", "    a.txt", "    b.txt", "  beauty_2.exr", "  beauty_10.exr", "added.mov", "notes.pdf", "shot_2.exr", "shot_10.exr"]); assert_eq!(chosen(&p), ["shot_2.exr"]);
         // the window becomes active: nothing changed - nothing is read again; something changed - it is
         p.activated(&port); let mut m = Some(rx.recv_timeout(Duration::from_secs(30)).unwrap()); assert!(p.on_msg(&port, &mut m)); assert!(!p.loading(), "unchanged: not read again");
-        std::thread::sleep(Duration::from_millis(1100)); t.file("later.txt", 1);
+        // (no second has to pass: the folder's time is compared as finely as the system keeps it)
+        t.file("later.txt", 1);
         p.activated(&port); let mut m = Some(rx.recv_timeout(Duration::from_secs(30)).unwrap()); assert!(p.on_msg(&port, &mut m)); assert!(p.loading(), "the folder's own time changed: read again"); settle(&mut p, &port, &rx);
         assert!(names(&p).contains(&"later.txt".to_string()));
+        // a file taken out of a folder OPENED IN PLACE changes that folder's time, not the one in view's: seen too
+        assert!(names(&p).contains(&"    b.txt".to_string())); std::fs::remove_file(t.0.join("renders/v002/b.txt")).unwrap();
+        p.activated(&port); let mut m = Some(rx.recv_timeout(Duration::from_secs(30)).unwrap()); assert!(p.on_msg(&port, &mut m)); assert!(p.loading(), "read again"); settle(&mut p, &port, &rx); settle(&mut p, &port, &rx);
+        assert!(!names(&p).contains(&"    b.txt".to_string()) && names(&p).contains(&"    a.txt".to_string()));
         assert_eq!(group(20000), "20,000"); assert_eq!(group(999), "999"); assert_eq!(group(1234567), "1,234,567");
     }
 }

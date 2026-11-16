@@ -75,6 +75,9 @@ pub struct Ui {
     /// the engine's questions that wait for the one that is open; the running operation in the status bar: its cancel button, the place a click opens the list at, the list open
     /// drags of files: where a drop can go (written every frame), what the layer left for the loop
     pub dnd: crate::dnd::Handle,
+    /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
+    /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
+    recheck: Vec<Instant>,
     asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool,
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
     menu_for: Option<(Option<usize>, PathBuf)>,
@@ -108,7 +111,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, dnd: Default::default(), asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -126,7 +129,11 @@ impl Ui {
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
         let (drops, ended) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended)) };
         for d in drops { any = true; crate::ops::submit(self.id, crate::ops::Op::Transfer { paths: d.paths, dest: d.dest, mv: d.mv }); }
-        if ended { any = true; let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
+        // a drag of ours ended: the panes ask whether their folders changed - now, and a few times more, because the
+        // application that took the files moves them after the drag is over (no watcher, row 438: a bounded look after OUR OWN drag)
+        let now = Instant::now();
+        if ended { any = true; self.recheck = [0u64, 250, 700, 1500, 3000, 6000].iter().map(|ms| now + Duration::from_millis(*ms)).collect(); }
+        if self.recheck.first().is_some_and(|t| *t <= now) { self.recheck.retain(|t| *t > now); any = true; let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
         while let Ok(m) = self.rx.try_recv() {
             any = true;
             match m {
@@ -178,7 +185,7 @@ impl Ui {
     }
     /// Files from the clipboard are put into the active pane's folder (`mv`: moved there).
     pub fn paste_files(&mut self, paths: Vec<PathBuf>, mv: bool) {
-        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
+        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || !self.recheck.is_empty() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
         crate::ops::submit(self.id, crate::ops::Op::Transfer { paths, dest, mv });
     }
     fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect() }
@@ -491,6 +498,8 @@ impl Ui {
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
+            // a drag of ours has ended, as the layer would tell it
+            "dragended" => { crate::dnd::on_notice(&self.dnd, min_dnd::Notice::Ended { serial: 0, op: min_dnd::MOVE, detail: String::new() }); }
             // a drag of a file, as the layer would tell it (no drag is performed): `over:<row>:<path>[:copy|move]` shows where it would land,
             // `drop:<row|bg|side<n>>:<path>[:copy|move]` lets it go there - on a row's folder, the pane itself, a sidebar row
             "over" | "drop" => { let (target, rest) = arg.split_once(':').unwrap_or((arg, ""));   // (a Windows path has a colon of its own: only a last ":copy" / ":move" is the keys')
