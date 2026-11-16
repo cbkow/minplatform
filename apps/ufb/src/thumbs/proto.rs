@@ -33,7 +33,8 @@ pub const OP_TEST_HANG: u8 = 251;
 pub const OK: u8 = 0;
 /// The helper answered: no thumbnail, or the file cannot be decoded.
 pub const FAILED: u8 = 1;
-/// The helper stopped waiting for the system at `soft_ms` and answered.
+/// The helper stopped waiting for the system at `soft_ms` and answered (macOS; Windows' call cannot be left: its bound is the helper's end).
+#[allow(dead_code)]
 pub const TIMEOUT: u8 = 2;
 /// Made by the parent: the helper died under this request.
 pub const CRASHED: u8 = 3;
