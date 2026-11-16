@@ -25,6 +25,8 @@ pub enum Row {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ask { pub at: (f64, f64), pub paths: Vec<PathBuf>, pub rows: Vec<Row> }
 
+/// Each system's own word (as in the menu bar).
+const TRASH_LABEL: &str = if cfg!(windows) { "Delete" } else { "Move to Trash" };
 fn ours(id: u32, label: &'static str) -> Row { Row::Ours { id, label } }
 #[allow(dead_code)]
 fn later(label: &'static str) -> Row { Row::Ours { id: 0, label } }
@@ -40,7 +42,7 @@ pub fn rows_for(entries: &[(bool, bool)], sequence: bool) -> Vec<Row> {
     // a hand's word against the detector's (row 475): a sequence as its files; several files as one sequence
     if sequence { rows.extend([ours(SPLIT, "Show as Separate Files"), Row::Sep]); } else if !one && !folders { rows.extend([ours(GROUP, "Group as Sequence"), Row::Sep]); }
     if one && !sequence { rows.push(ours(RENAME, "Rename")); }
-    rows.extend([ours(DUPLICATE, "Duplicate"), ours(COPY, "Copy"), ours(TRASH, "Move to Trash"), Row::Sep, Row::Share]);
+    rows.extend([ours(DUPLICATE, "Duplicate"), ours(COPY, "Copy"), ours(TRASH, TRASH_LABEL), Row::Sep, Row::Share]);
     rows
 }
 /// The rows for the folder in view itself (a click on the empty part of a pane).
@@ -378,12 +380,12 @@ mod tests {
     fn labels(rows: &[Row]) -> Vec<String> { rows.iter().map(|r| match r { Row::Ours { id, label } => format!("{label}{}", if *id == 0 { " (later)" } else { "" }), Row::Sep => "--".into(), Row::Open => "<Open>".into(), Row::OpenWith => "<Open With>".into(), Row::Reveal => "<Show in Finder>".into(), Row::Share => "<Share>".into() }).collect() }
     #[test]
     fn the_rows_follow_what_is_chosen() {
-        assert_eq!(labels(&rows_for(&[(true, false)], false)), ["Open", "Open in New Window", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "one folder");
-        assert_eq!(labels(&rows_for(&[(false, false)], false)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "one file");
+        assert_eq!(labels(&rows_for(&[(true, false)], false)), ["Open", "Open in New Window", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "one folder");
+        assert_eq!(labels(&rows_for(&[(false, false)], false)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "one file");
         assert_eq!(labels(&rows_for(&[(false, true)], false))[..4], ["Preview", "<Open>", "Show Package Contents", "<Open With>"], "an application");
-        assert_eq!(labels(&rows_for(&[(false, false), (false, false)], false)), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Group as Sequence", "--", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "several files: no Rename; they can be made one sequence");
-        assert_eq!(labels(&rows_for(&[(false, false)], true)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Show as Separate Files", "--", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "a sequence: no Rename; it can be shown as its files");
-        assert_eq!(labels(&rows_for(&[(true, false), (false, false)], false)), ["<Show in Finder>", "--", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "a folder among them: nothing opens");
+        assert_eq!(labels(&rows_for(&[(false, false), (false, false)], false)), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Group as Sequence", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "several files: no Rename; they can be made one sequence");
+        assert_eq!(labels(&rows_for(&[(false, false)], true)), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Show as Separate Files", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "a sequence: no Rename; it can be shown as its files");
+        assert_eq!(labels(&rows_for(&[(true, false), (false, false)], false)), ["<Show in Finder>", "--", "Duplicate", "Copy", TRASH_LABEL, "--", "<Share>"], "a folder among them: nothing opens");
         assert_eq!(labels(&rows_for_folder()), ["Open in New Window", "<Show in Finder>", "--", "New Folder", "Paste", "--", "Refresh"]);
         assert_eq!(labels(&rows_for_place()), ["Open", "Open in New Window", "--", "<Show in Finder>"]);
     }
