@@ -27,7 +27,8 @@ struct Win { window: Arc<Box<dyn Window>>, ui: Ui }
 struct App {
     first: Option<PathBuf>, favorites: Vec<Place>, proxy: Arc<EventLoopProxy>, windows: HashMap<WindowId, Win>, focused: Option<WindowId>,
     /// (shift, the command key - Ctrl on Windows -, Alt / Option)
-    mods: (bool, bool, bool), alt_clean: bool, clipboard: Option<arboard::Clipboard>,
+    mods: (bool, bool, bool), /// the Ctrl key itself (macOS: Ctrl+Tab steps through the tabs, row 480)
+    ctrl: bool, alt_clean: bool, clipboard: Option<arboard::Clipboard>,
     /// the files that were CUT (Windows' habit): pasted, they are moved
     cut: Option<Vec<PathBuf>>,
     #[cfg(target_os = "macos")] menu: Option<crate::menu::AppMenu>,
@@ -169,7 +170,7 @@ impl ApplicationHandler for App {
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, id: WindowId, e: WindowEvent) {
         if let WindowEvent::KeyboardInput { event, .. } = &e { if self.menu_bar_takes(id, event) { self.settle(el); return } }
-        let mods = self.mods; #[cfg(target_os = "macos")] let native = self.menu.is_some(); #[cfg(not(target_os = "macos"))] let native = false;
+        let mods = self.mods; let ctrl = self.ctrl; #[cfg(target_os = "macos")] let native = self.menu.is_some(); #[cfg(not(target_os = "macos"))] let native = false;
         let Some(w) = self.windows.get_mut(&id) else { return };
         let mut redraw = true;
         match e {
@@ -179,7 +180,7 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { .. } => {}
             WindowEvent::Focused(on) => { if on { self.focused = Some(id); w.ui.activated(); } else { w.ui.deactivated(); self.alt_clean = false; } }
             WindowEvent::MouseWheel { delta, .. } => { let s = w.window.scale_factor(); let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.ui.wheel(-dy); }
-            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); w.ui.mods = min_ui::Mods { shift: self.mods.0, cmd: self.mods.1 }; redraw = false; }
+            WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); w.ui.mods = min_ui::Mods { shift: self.mods.0, cmd: self.mods.1 }; redraw = false; }
             WindowEvent::PointerMoved { position, .. } => w.ui.pointer(&min_ui::Event::Move { x: position.x, y: position.y }),
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(b), .. } => {
                 self.alt_clean = false; let (x, y) = (position.x, position.y);
@@ -201,7 +202,8 @@ impl ApplicationHandler for App {
                 use min_ui::{Key as K, Named as N};
                 let (shift, cmd, alt) = mods; let name = key_name(&event);
                 // the clipboard's keys belong to the text field in hand (the path bar takes a pasted path, row 449)
-                if cmd && !alt && w.ui.typing() && matches!(name.as_str(), "V" | "C" | "X") {
+                if cfg!(target_os = "macos") && ctrl && !cmd && name == "Tab" { w.ui.command(if shift { Cmd::PrevTab } else { Cmd::NextTab }); }
+                else if cmd && !alt && w.ui.typing() && matches!(name.as_str(), "V" | "C" | "X") {
                     if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
                     if let Some(cb) = self.clipboard.as_mut() { if name == "V" { if let Ok(text) = cb.get_text() { w.ui.paste(&text); } } else if let Some(text) = w.ui.copy(name == "X") { let _ = cb.set_text(text); } }
                 } else {
@@ -233,5 +235,5 @@ pub fn run(folder: PathBuf, favorites: Vec<Place>) {
     #[cfg(target_os = "macos")] crate::menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let el = EventLoop::new().expect("the event loop"); let proxy = Arc::new(el.create_proxy());
     #[cfg(target_os = "macos")] { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
-    let _ = el.run_app(App { first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
+    let _ = el.run_app(App { first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), ctrl: false, alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
 }

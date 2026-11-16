@@ -16,7 +16,7 @@
   SUBMITTED by the user; the work resumes on Partner Center's answer or a bug. The minNotes repository's `main` is the
   site, the manual and the feed; its `2.x` branch is minNotes 2's source. **Read `docs/phase3/handoff-2026-11-10.md`:
   its LAST section ("Where minNotes stands after the 3.0.0 release") is the place to resume**, with the runbook just
-  above it, and rows 268-479.
+  above it, and rows 268-480.
 - **Phase 4 (minRender): minRender 1.0.1 is RELEASED on macOS and PACKED for the Microsoft Store** (2026-11-15; parity
   with a live 0.5.x farm, rows 387-433). `apps/mr` (binary `minRender`: node, leader, window, tray and the leash in one
   executable). macOS: a notarized DMG on the minRender repository's release `v1.0.1`, the Sparkle feed carries it.
@@ -25,10 +25,10 @@
   `docs/phase4/step10-store-release-flow.md`** and rows 421-432 before touching packaging; a farm's folder on storage
   that syncs is a FEATURE (rows 429-430).
 - **Phase 5 (UFB): OPEN since 2026-11-15, five spikes answered (S15-S19); `apps/ufb` is a browser with thumbnails, a context menu and file operations - new folder, rename, duplicate, trash, copy and move with the conflict question, drag and drop, undo - the lightbox for stills, video, sound, sequences, text, PDF and (macOS) HTML, image sequences as one entry (slices 2a-4b and 5, rows 463-476) - behind a safety belt (it changes nothing outside the folders it is started with, row 468); run by script on both systems (rows 470, 477, 478).** `../ufb` (1.4.2) was read into six specs in
-  `docs/phase5/`; the owner then ruled the course item by item (rows 434-479): a file browser that works like one,
-  "a window, not a file system replacement"; no tabs, a dual pane, real menus, native file operations with undo; no
+  `docs/phase5/`; the owner then ruled the course item by item (rows 434-480): a file browser that works like one,
+  "a window, not a file system replacement"; optional tabs (hidden until asked for, row 480), a dual pane, real menus, native file operations with undo; no
   cache layer, no agent, no third-party driver; mounts are "ask and watch"; metadata and the mesh stay compatible
-  with 1.4.2 and are mended additively; a project-type schema. It will live in `apps/ufb`. Read rows 434-479 first.
+  with 1.4.2 and are mended additively; a project-type schema. It will live in `apps/ufb`. Read rows 434-480 first.
 - **Talk before building.** Design changes get a scoped proposal — "rulings needed" with [proposed] defaults — and are built on
   the user's go. Every ruling is dated in the canon. A new step starts with an agent reading QCView's code into a spec.
 - **QCView's behaviour wins ties.** Read QCView-Player's code before porting a piece; a divergence needs a written reason (and a

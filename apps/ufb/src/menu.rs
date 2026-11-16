@@ -7,10 +7,10 @@
 use crate::model::SortBy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Cmd { Sequences, Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
+pub enum Cmd { Sequences, Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, NewTab, CloseTab, NextTab, PrevTab, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]   // the ids are the native menu's (macOS)
 impl Cmd {
-    const ALL: [Cmd; 38] = [Cmd::Sequences, Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
+    const ALL: [Cmd; 42] = [Cmd::Sequences, Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::NewTab, Cmd::CloseTab, Cmd::NextTab, Cmd::PrevTab, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
     pub fn id(self) -> String { format!("{self:?}") }
     pub fn from_id(id: &str) -> Option<Cmd> { Cmd::ALL.into_iter().find(|c| c.id() == id) }
 }
@@ -51,13 +51,14 @@ pub fn spec(mac: bool) -> Vec<(&'static str, Vec<Node>)> {
     let m = mac;
     vec![
         ("File", vec![
-            item("New Window", cmd("N"), Cmd::NewWindow), item("New Folder", cmd_shift("N"), Cmd::NewFolder), Node::Sep,
+            item("New Window", cmd("N"), Cmd::NewWindow), item("New Tab", cmd("T"), Cmd::NewTab), item("New Folder", cmd_shift("N"), Cmd::NewFolder), Node::Sep,
             item("Open", if m { cmd("O") } else { bare("Enter") }, Cmd::Open), later("Open With", None), Node::Sep,
             item("Rename", if m { bare("Enter") } else { bare("F2") }, Cmd::Rename), item("Duplicate", if m { cmd("D") } else { None }, Cmd::Duplicate), later(if m { "Get Info" } else { "Properties" }, if m { cmd("I") } else { alt("Enter") }),
             item(if m { "Move to Trash" } else { "Delete" }, if m { cmd("Delete") } else { bare("Delete") }, Cmd::Trash),
             // (for good: it always asks first)
             item(if m { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }, if m { cmd_alt("Delete") } else { Some(Sc { cmd: false, shift: true, alt: false, key: "Delete" }) }, Cmd::DeleteNow), Node::Sep,
-            item("Close Window", cmd("W"), Cmd::CloseWindow),
+            // (tabs, row 480: the key closes the TAB in front - the window with its last one, as Finder and Explorer do)
+            item("Close Tab", cmd("W"), Cmd::CloseTab), item("Close Window", cmd_shift("W"), Cmd::CloseWindow),
         ]),
         ("Edit", {
             // (each system's own habit, row 450: Explorer cuts and pastes; Finder copies, and moves with "Move Item Here")
@@ -85,7 +86,9 @@ pub fn spec(mac: bool) -> Vec<(&'static str, Vec<Node>)> {
             item("Go to Folder\u{2026}", if m { cmd_shift("G") } else { cmd("L") }, Cmd::GoToFolder), item("Find in This Folder", cmd("F"), Cmd::Find),
         ]),
         ("Project", vec![later("New Job\u{2026}", None), later("Subscribe to a Job\u{2026}", None), Node::Sep, later("Track Selected Items", None), later("Open in Tracker", None), Node::Sep, later("Project Types\u{2026}", None)]),
-        ("Window", vec![item("Minimize", if m { cmd("M") } else { None }, Cmd::Minimize)]),
+        ("Window", vec![item("Minimize", if m { cmd("M") } else { None }, Cmd::Minimize), Node::Sep,
+            // (macOS also takes Ctrl+Tab and Ctrl+Shift+Tab: `extra` cannot say it - the Ctrl key is not the command key there - so the window does)
+            item("Show Next Tab", if m { cmd_shift("]") } else { cmd("Tab") }, Cmd::NextTab), item("Show Previous Tab", if m { cmd_shift("[") } else { cmd_shift("Tab") }, Cmd::PrevTab)]),
         ("Help", vec![later("UFB Help", None)]),
     ]
 }
@@ -169,7 +172,7 @@ mod native {
     /// key would be taken from every text field.
     fn accel(s: Sc) -> Option<Accelerator> {
         if !s.cmd { return None }
-        let code = match s.key { "A" => Code::KeyA, "C" => Code::KeyC, "D" => Code::KeyD, "F" => Code::KeyF, "G" => Code::KeyG, "H" => Code::KeyH, "I" => Code::KeyI, "L" => Code::KeyL, "M" => Code::KeyM, "N" => Code::KeyN, "O" => Code::KeyO, "Q" => Code::KeyQ, "R" => Code::KeyR,
+        let code = match s.key { "A" => Code::KeyA, "C" => Code::KeyC, "D" => Code::KeyD, "F" => Code::KeyF, "G" => Code::KeyG, "H" => Code::KeyH, "I" => Code::KeyI, "L" => Code::KeyL, "M" => Code::KeyM, "N" => Code::KeyN, "O" => Code::KeyO, "Q" => Code::KeyQ, "R" => Code::KeyR, "T" => Code::KeyT,
             "V" => Code::KeyV, "W" => Code::KeyW, "X" => Code::KeyX, "Y" => Code::KeyY, "Z" => Code::KeyZ, "1" => Code::Digit1, "2" => Code::Digit2, "[" => Code::BracketLeft, "]" => Code::BracketRight, "." => Code::Period, "," => Code::Comma,
             "Up" => Code::ArrowUp, "Down" => Code::ArrowDown, "Left" => Code::ArrowLeft, "Right" => Code::ArrowRight, "Delete" => Code::Backspace, _ => return None };
         let mut m = Modifiers::META; if s.shift { m |= Modifiers::SHIFT; } if s.alt { m |= Modifiers::ALT; }
@@ -239,7 +242,7 @@ mod tests {
         // both
         for mac in [true, false] {
             assert_eq!(shortcut(mac, "1", true, false, false), Some(Cmd::AsList)); assert_eq!(shortcut(mac, "2", true, false, false), Some(Cmd::AsGrid)); assert_eq!(shortcut(mac, "n", true, false, false), Some(Cmd::NewWindow));
-            assert_eq!(shortcut(mac, "w", true, false, false), Some(Cmd::CloseWindow)); assert_eq!(shortcut(mac, "f", true, false, false), Some(Cmd::Find)); assert_eq!(shortcut(mac, "a", true, false, false), Some(Cmd::SelectAll));
+            assert_eq!(shortcut(mac, "w", true, false, false), Some(Cmd::CloseTab)); assert_eq!(shortcut(mac, "w", true, true, false), Some(Cmd::CloseWindow)); assert_eq!(shortcut(mac, "t", true, false, false), Some(Cmd::NewTab)); assert_eq!(shortcut(mac, "f", true, false, false), Some(Cmd::Find)); assert_eq!(shortcut(mac, "a", true, false, false), Some(Cmd::SelectAll));
             assert_eq!(shortcut(mac, "z", true, false, false), Some(Cmd::Undo)); assert_eq!(shortcut(mac, "n", true, true, false), Some(Cmd::NewFolder));
             assert_eq!(shortcut(mac, "c", true, false, false), Some(Cmd::Copy)); assert_eq!(shortcut(mac, "v", true, false, false), Some(Cmd::Paste));
             // Explorer cuts files; Finder does not (it moves with "Move Item Here")
@@ -252,7 +255,7 @@ mod tests {
             let s = spec(mac); assert_eq!(s.iter().map(|m| m.0).collect::<Vec<_>>(), ["File", "Edit", "View", "Go", "Project", "Window", "Help"]);
             let mut rows: Vec<(&str, bool)> = vec![]; for (_, nodes) in &s { walk(nodes, &mut |n| match n { Node::Item { label, cmd, .. } => rows.push((label, cmd.is_some())), Node::Check { label, .. } => rows.push((label, true)), _ => {} }); }
             let has = |label: &str, on: bool| assert!(rows.contains(&(label, on)), "{label} ({})", if on { "enabled" } else { "disabled" });
-            for l in ["New Window", "Close Window", "Open", "Select All", "as List", "as Grid", "Show Hidden Files", "Folders First", "Group Sequences", "Show Second Pane", "Name", "Date Modified", "Size", "Kind", "Refresh", "Back", "Forward", "Enclosing Folder", "Home", "Desktop", "Downloads", "Go to Folder\u{2026}", "Minimize", "New Folder", "Rename", "Duplicate", "Undo", "Copy", "Paste", "Copy to Other Pane", "Move to Other Pane", if mac { "Move Item Here" } else { "Cut" }, if mac { "Move to Trash" } else { "Delete" }, if mac { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }] { has(l, true); }
+            for l in ["New Window", "New Tab", "Close Tab", "Show Next Tab", "Show Previous Tab", "Close Window", "Open", "Select All", "as List", "as Grid", "Show Hidden Files", "Folders First", "Group Sequences", "Show Second Pane", "Name", "Date Modified", "Size", "Kind", "Refresh", "Back", "Forward", "Enclosing Folder", "Home", "Desktop", "Downloads", "Go to Folder\u{2026}", "Minimize", "New Folder", "Rename", "Duplicate", "Undo", "Copy", "Paste", "Copy to Other Pane", "Move to Other Pane", if mac { "Move Item Here" } else { "Cut" }, if mac { "Move to Trash" } else { "Delete" }, if mac { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }] { has(l, true); }
             for l in ["Redo", if mac { "Cut" } else { "Redo" }, if mac { "Get Info" } else { "Properties" }] { has(l, false); }
             // the two that move files between the panes have NO key (row 450)
             for (_, nodes) in &s { walk(nodes, &mut |n| if let Node::Item { label, sc, .. } = n { if label.ends_with("Other Pane") { assert!(sc.is_none()); } }); }

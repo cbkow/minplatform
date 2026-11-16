@@ -52,10 +52,15 @@ enum Asked { /// delete these for good
     Conflict(u64) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split }
+/// A tab that is NOT in front (row 480): what the window holds for it until it is shown again - its panes (with their
+/// folders, histories, choices and views), which one is active, whether the second is shown, and the divider. The tab
+/// in front lives in the window's own fields; its place in the list is empty meanwhile.
+#[derive(Default)]
+struct Tab { panes: Vec<Pane>, active: usize, two: bool, split: f64 }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
 
 /// Logical px.
-const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const TABS: f64 = 34.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -63,6 +68,9 @@ pub struct Ui {
     port: Port, rx: Receiver<Msg>, icons: Icons, thumbs: Thumbs,
     /// one pane, or two side by side; the one the toolbar, the sidebar and the menus act on; the first pane's share of the width
     panes: Vec<Pane>, active: usize, two: bool, split: f64, pane_heads: [Rect; 2],
+    /// the tabs (row 480): one a window at first, and then no strip is shown. `tab`: the one in front (its entry here is
+    /// empty: it lives in the fields above). The strip as drawn: each tab's place and close button, the "+" at its end.
+    tabs: Vec<Tab>, tab: usize, tab_rects: Vec<Rect>, tab_close: Vec<ActionButton>, tab_new: ActionButton,
     /// options of the window (both panes follow)
     hidden: bool, folders_first: bool,
     side_w: f64, side_rect: Rect, sections: [Section; 4], favorites: Vec<Place>, fixed: Vec<Place>, volumes: Vec<Place>, root: String, side_bar: ScrollBar, side_rows: Vec<SideRow>, side_hover: Option<usize>,
@@ -126,7 +134,7 @@ impl Ui {
         crate::ops::subscribe(id, port.clone());
         let lightbox = { let p = port.clone(); crate::lightbox::Lightbox::new(Arc::new(move || p.send(Msg::Icon))) };
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
-            panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], hidden: false, folders_first: true,
+            panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(), hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -141,6 +149,32 @@ impl Ui {
     fn scale(&self) -> f64 { self.window.scale_factor() }
     fn pane(&mut self) -> &mut Pane { let i = self.active.min(self.panes.len() - 1); &mut self.panes[i] }
     fn shown(&self) -> usize { if self.two { self.panes.len().min(2) } else { 1 } }
+    // ---------------------------------------------------------------- tabs (row 480)
+    /// The tab in front is put into its place in the list, or taken out of it (the same exchange both ways).
+    fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); }
+    /// What belongs to the tab in front and does not go with it is ended: a name or a path being typed, an open menu, the lightbox.
+    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.focus = Focus::Pane; }
+    /// The tab now in front is looked at again: its folders may have changed while it was behind.
+    fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
+    fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
+    /// A new tab on this folder, after the one in front, and shown: one pane, with the view of the pane it was asked from.
+    fn new_tab(&mut self, path: PathBuf) {
+        let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first);
+        { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } }
+        self.leave_tab(); self.swap_tab(); self.tab += 1; self.tabs.insert(self.tab, Tab::default());
+        self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5;
+    }
+    /// A tab is closed; the last one closes the window.
+    fn close_tab(&mut self, i: usize) {
+        if self.tabs.len() <= 1 { self.out.push(Out::Close); return } if i >= self.tabs.len() { return }
+        if i == self.tab { self.leave_tab(); self.panes.clear(); self.tabs.remove(i); self.tab = i.min(self.tabs.len() - 1); self.swap_tab(); self.enter_tab(); }
+        else { self.tabs.remove(i); if i < self.tab { self.tab -= 1; } }
+    }
+    /// What a tab is called, and the folder it shows: its active pane's.
+    fn tab_place(&self, i: usize) -> (String, PathBuf) { let (panes, active) = if i == self.tab { (&self.panes, self.active) } else { (&self.tabs[i].panes, self.tabs[i].active) }; match panes.get(active.min(panes.len().saturating_sub(1))) { Some(p) => (p.title(), p.path().to_path_buf()), None => (String::new(), PathBuf::new()) } }
+    /// Every pane of the tabs that are behind.
+    fn hidden_panes(&mut self) -> impl Iterator<Item = &mut Pane> { self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) }
+
     /// What the menus show of this window.
     pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some(),
         chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
@@ -168,7 +202,7 @@ impl Ui {
                 Msg::Icon => { self.icons.poll(); self.thumbs.poll(); self.lightbox.poll(); }
                 Msg::Op(rep) => self.on_report(&rep),
                 Msg::Ask(q) => if q.origin == self.id { self.asks.push_back(q); },
-                other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { if std::mem::take(&mut p.listed) { self.thumbs.listed(p.path()); } break } } }
+                other => { let mut m = Some(other); let port = self.port.clone(); let thumbs = &mut self.thumbs; for p in self.panes.iter_mut().chain(self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut())) { if p.on_msg(&port, &mut m) { if std::mem::take(&mut p.listed) { thumbs.listed(p.path()); } break } } }
             }
         }
         any
@@ -410,6 +444,8 @@ impl Ui {
             let here: Vec<String> = if mine && i == self.active { rep.made.iter().filter(|m| m.parent() == Some(p.path())).filter_map(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).collect() } else { vec![] };
             p.refresh_choosing(&port, here);
         }
+        // (the tabs behind show what is there when they come to the front)
+        for p in self.hidden_panes() { if rep.changed.iter().any(|c| c.starts_with(p.path())) { p.refresh_choosing(&port, vec![]); } }
         if self.rename.as_ref().is_some_and(|r| rep.changed.iter().any(|c| r.path.starts_with(c))) { self.end_rename(); }
         if !mine { return }
         if let Some(why) = &rep.error { self.toast.show(why, min_ui::toast::ToastKind::Negative, now); }
@@ -516,7 +552,7 @@ impl Ui {
     pub fn command(&mut self, c: Cmd) {
         let port = self.port.clone();
         // while the lightbox is open the window's own commands and Preview act; the browser's wait
-        if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow) { return }
+        if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow | Cmd::NewTab | Cmd::CloseTab | Cmd::NextTab | Cmd::PrevTab) { return }
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
         if self.dialog.is_some() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return }
@@ -535,13 +571,17 @@ impl Ui {
             Cmd::DeleteNow => { let paths = self.chosen_paths(); self.ask_delete(paths, false); }
             Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo),
             Cmd::NewWindow => { let p = self.pane().path().to_path_buf(); self.out.push(Out::NewWindow(p)); }
+            // tabs (row 480): a new one shows the folder of the one in front; closing the last closes the window
+            Cmd::NewTab => { let p = self.pane().path().to_path_buf(); self.new_tab(p); }
+            Cmd::CloseTab => self.close_tab(self.tab),
+            Cmd::NextTab | Cmd::PrevTab => { let n = self.tabs.len(); if n > 1 { self.show_tab((self.tab + if c == Cmd::NextTab { 1 } else { n - 1 }) % n); } }
             Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.out.push(Out::Quit),
             Cmd::Open => { self.pane().open_chosen(&port); self.after_pane_events(); }
             Cmd::Preview => if self.lightbox.is_open() { self.close_lightbox(); } else if self.focus == Focus::Pane && self.dialog.is_none() { let i = self.active.min(self.panes.len() - 1); if let Some(row) = self.panes[i].cursor_row() { self.open_lightbox(i, row); } },
             Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all() },
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
-            Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } }
-            Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } }
+            Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
+            Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
             Cmd::SecondPane => self.set_two(!self.two),
             Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
@@ -617,10 +657,11 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
+        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
+            NEW_TAB => self.new_tab(folder),
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
@@ -660,10 +701,21 @@ impl Ui {
             if self.op_cancel.event(e, now) == Response::Clicked { crate::ops::cancel(); return }
             if let Event::Down { x, y, button: Button::Primary } = *e { if self.op_rect.contains(kurbo::Point::new(x, y)) && !self.op_cancel.hit(x, y) { self.op_list = !self.op_list; return } else if self.op_list { self.op_list = false; } }
         }
-        // a new window (row 448): the middle button on a folder, a sidebar row or a segment of the path; the command key
-        // (Ctrl on Windows) with a click on a sidebar row or a segment - in a pane that click is the selection's
+        // the strip of tabs (row 480; drawn when there are two or more): a press shows a tab, its cross or the middle
+        // button closes it, the plus makes a new one
+        if self.tabs.len() > 1 && self.tab_rects.len() == self.tabs.len() {
+            if self.tab_new.event(e, now) == Response::Clicked { self.command(Cmd::NewTab); return }
+            let mut close = None; for (i, b) in self.tab_close.iter_mut().enumerate() { if b.rect.width() > 0.0 && b.event(e, now) == Response::Clicked { close = Some(i); } }
+            if let Some(i) = close { self.close_tab(i); return }
+            if let Event::Down { x, y, button } = *e { if let Some(i) = self.tab_rects.iter().position(|r| r.contains(kurbo::Point::new(x, y))) {
+                if button == Button::Middle { self.close_tab(i); return }
+                if button == Button::Primary && !self.tab_close.get(i).is_some_and(|b| b.rect.width() > 0.0 && b.hit(x, y)) { self.show_tab(i); return } } }
+        }
+        // a new TAB (rows 448, 480 - a new window until tabs came; "Open in New Window" stays in the menus): the middle
+        // button on a folder, a sidebar row or a segment of the path; the command key (Ctrl on Windows) with a click on a
+        // sidebar row or a segment - in a pane that click is the selection's
         if let Event::Down { x, y, button } = *e { let middle = button == Button::Middle;
-            if middle || (button == Button::Primary && self.mods.cmd) { if let Some(p) = self.folder_at(x, y, middle) { self.out.push(Out::NewWindow(p)); return } } }
+            if middle || (button == Button::Primary && self.mods.cmd) { if let Some(p) = self.folder_at(x, y, middle) { self.new_tab(p); return } } }
         if matches!(e, Event::Down { button: Button::Middle, .. } | Event::Up { button: Button::Middle, .. }) { return }
         // a gap in hand: the sidebar's edge or the divider between the panes
         if let Some(d) = self.drag {
@@ -805,6 +857,10 @@ impl Ui {
             "sidebar" => if let Ok(px) = arg.parse::<f64>() { self.side_w = px.clamp(SIDE_MIN, SIDE_MAX); },
             "menu" => if let (Some(mb), Some(ch)) = (self.menubar.as_mut(), arg.chars().next()) { mb.bar.key(&min_ui::BarKey::Alt(ch.to_ascii_lowercase()), &mut self.fonts); },
             "newwindow" => self.command(Cmd::NewWindow),
+            // tabs: `newtab[:<path>]` `tabshow:<n>` `tabclose:<n>` `tabnext` `tabprev` `tabs` (says them; the one in front is starred)
+            "newtab" => if arg.is_empty() { self.command(Cmd::NewTab) } else { self.new_tab(PathBuf::from(arg)) },
+            "tabshow" => if let Some(n) = num(arg) { self.show_tab(n); }, "tabclose" => if let Some(n) = num(arg) { self.close_tab(n); }, "tabnext" => self.command(Cmd::NextTab), "tabprev" => self.command(Cmd::PrevTab),
+            "tabs" => eprintln!("UFB_DEMO: tabs: {}", (0..self.tabs.len()).map(|i| { let (name, path) = self.tab_place(i); let panes = if i == self.tab { self.shown() } else if self.tabs[i].two { 2 } else { 1 }; format!("{}{name} [{}; {panes} pane(s)]", if i == self.tab { "*" } else { "" }, path.display()) }).collect::<Vec<_>>().join(" | ")),
             // the file operations, as the menus give them: `newfolder` `rename` `type:<text>` (into the name's field) `accept` `cancel` `duplicate` `trash` `deletenow` `undo` `answer:<button>`
             "newfolder" => self.command(Cmd::NewFolder), "rename" => self.command(Cmd::Rename), "duplicate" => self.command(Cmd::Duplicate), "trash" => self.command(Cmd::Trash), "deletenow" => self.command(Cmd::DeleteNow), "undo" => self.command(Cmd::Undo),
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
@@ -877,7 +933,7 @@ impl Ui {
     // ---------------------------------------------------------------- drawing
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
-        self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn].iter().any(|b| b.animating(now))
+        self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
             || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.focus != Focus::Pane || self.dialog.is_some() || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
@@ -916,7 +972,10 @@ impl Ui {
             mb.sync(st, &mut self.fonts); mb.bar.layout(&mut self.fonts, 0.0, 0.0, w, Rect::new(0.0, 0.0, w, h), s); mb.bar.rect.height() } None => 0.0 };
         let status = Rect::new(0.0, h - STATUS * s, w, h);
         let side_w = (self.side_w * s).min(w * 0.45).round(); self.side_rect = Rect::new(0.0, menu_h, side_w, status.y0);
-        let area = Rect::new(side_w, menu_h, w, status.y0); let tool = Rect::new(area.x0, area.y0, area.x1, (area.y0 + TOOLBAR * s).min(area.y1)); let body = Rect::new(area.x0, tool.y1, area.x1, area.y1);
+        let area = Rect::new(side_w, menu_h, w, status.y0);
+        // the strip of tabs, above the toolbar - only when there are two or more (row 480: nobody gets tabs who did not ask)
+        let strip = Rect::new(area.x0, area.y0, area.x1, (area.y0 + if self.tabs.len() > 1 { TABS * s } else { 0.0 }).min(area.y1));
+        let tool = Rect::new(area.x0, strip.y1, area.x1, (strip.y1 + TOOLBAR * s).min(area.y1)); let body = Rect::new(area.x0, tool.y1, area.x1, area.y1);
         self.gaps[0] = Rect::new(side_w - GAP * s / 2.0, menu_h, side_w + GAP * s / 2.0, status.y0);
         let n = self.shown(); let split_x = if n == 2 { (body.x0 + body.width() * self.split).round() } else { body.x1 };
         self.gaps[1] = if n == 2 { Rect::new(split_x - GAP * s / 2.0, body.y0, split_x + GAP * s / 2.0, body.y1) } else { Rect::ZERO };
@@ -959,6 +1018,7 @@ impl Ui {
         if self.focus == Focus::Path { self.field.layout(&mut self.fonts, self.path_rect, s); }
         if self.path_error.as_ref().is_some_and(|(_, since)| since.elapsed() > Duration::from_millis(2600)) { self.path_error = None; self.field.error = false; }
 
+        let places: Vec<(String, PathBuf)> = if self.tabs.len() > 1 { (0..self.tabs.len()).map(|i| self.tab_place(i)).collect() } else { vec![] };
         let scene: &mut Scene = self.layer.scene_mut(); scene.reset(); let fonts = &mut self.fonts;
         // The surfaces, as the family stacks them: the window is layer 1; the sidebar's sections are layer-2 tiles on it;
         // the path bar and the search are fields; the list lies on the window itself.
@@ -982,6 +1042,31 @@ impl Ui {
         self.thumbs.end_frame();
         if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n - 1)].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }
         if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); paint::rect(scene, Rect::new(split_x, body.y0, split_x + if hot { 2.0 * s } else { s }, body.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
+
+        // -- the strip of tabs: each as wide as the room gives (at most TAB_MAX), the one in front on the window's own
+        // surface with the accent over it, the others on the layer behind; a cross on each, a plus after the last
+        self.tab_rects.clear();
+        if strip.height() > 0.0 {
+            let count = self.tabs.len();
+            if self.tab_close.len() != count { self.tab_close = (0..count).map(|_| ActionButton::new("x", &menu::tip("Close tab", Cmd::CloseTab)).size_s()).collect(); }
+            let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let plus_w = sb + 12.0 * s; let tw = ((strip.width() - plus_w) / count as f64).min(TAB_MAX * s).max(1.0);
+            paint::rect(scene, strip, t::BACKGROUND_LAYER_2_COLOR); paint::hline(scene, strip.x0, strip.x1, strip.y1 - s, s, t::DIVIDER_COLOR);
+            let at = kurbo::Point::new(self.pointer.0, self.pointer.1);
+            for (i, (name, _)) in places.iter().enumerate() {
+                let r = Rect::new(strip.x0 + i as f64 * tw, strip.y0, strip.x0 + (i + 1) as f64 * tw, strip.y1); let front = i == self.tab; let hot = r.contains(at) && self.drag.is_none();
+                if front { paint::rect(scene, r, t::BACKGROUND_LAYER_1_COLOR); paint::rect(scene, Rect::new(r.x0, r.y0, r.x1, r.y0 + 2.0 * s), t::FOCUS_INDICATOR_COLOR); } else if hot { paint::rect(scene, Rect::new(r.x0, r.y0, r.x1, r.y1 - s), t::HOVER_BACKGROUND_COLOR); }
+                paint::rect(scene, Rect::new(r.x1 - s, r.y0 + if front { 0.0 } else { 7.0 * s }, r.x1, r.y1 - if front { 0.0 } else { 7.0 * s }), t::DIVIDER_COLOR);
+                // (the cross: always on the tab in front, on the others under the pointer; none where a tab is too narrow for it and a name)
+                let b = &mut self.tab_close[i]; let room = tw > 64.0 * s;
+                b.rect = if room && (front || hot) { Rect::new(r.x1 - 6.0 * s - sb, r.y0 + (r.height() - sb) / 2.0, r.x1 - 6.0 * s, r.y0 + (r.height() + sb) / 2.0) } else { Rect::ZERO }; b.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s);
+                let text_w = (tw - 12.0 * s - if room { sb + 10.0 * s } else { 8.0 * s }).max(4.0);
+                let l = fonts.layout_fit(name, Family::Sans, t::BODY_SIZE_S * s as f32, if front { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, if front { ink } else { sub }, text_w);
+                scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &r); draw_layout(scene, &l, Affine::translate((r.x0 + 12.0 * s, r.y0 + s + (r.height() - l.height() as f64) / 2.0))); scene.pop_layer();
+                if b.rect.width() > 0.0 { b.paint(scene, fonts, s, now); }
+                self.tab_rects.push(r);
+            }
+            let px = strip.x0 + count as f64 * tw + 6.0 * s; self.tab_new.rect = Rect::new(px, strip.y0 + (strip.height() - sb) / 2.0, px + sb, strip.y0 + (strip.height() + sb) / 2.0); self.tab_new.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.tab_new.paint(scene, fonts, s, now);
+        } else { self.tab_new.rect = Rect::ZERO; }
 
         // -- the toolbar
         paint::hline(scene, tool.x0, tool.x1, tool.y1 - s, s, t::DIVIDER_COLOR);
@@ -1079,6 +1164,9 @@ impl Ui {
             if self.size.rect.width() > 0.0 && (self.size.hovered() || self.size.dragging()) { over = Some((10, self.size.rect, format!("Icon size  {} px", self.panes[self.active].grid.tile.round()))); }
             if self.search.rect.contains(pt) && self.focus != Focus::Search { over = Some((11, self.search.rect, menu::tip("Search this folder", Cmd::Find))); }
             if self.focus != Focus::Path && self.path_rect.contains(pt) && !self.crumbs.iter().any(|(b, _)| b.hovered()) { over = Some((12, self.path_rect, menu::tip("Type a path", Cmd::GoToFolder))); }
+            // a tab says the folder it shows; its cross and the plus say their keys
+            for i in 0..self.tab_rects.len() { let r = self.tab_rects[i]; if r.contains(pt) { let b = &self.tab_close[i]; over = Some(if b.rect.contains(pt) { (3000 + i as u64, b.rect, b.tooltip.clone()) } else { (2000 + i as u64, r, places.get(i).map(|p| p.1.to_string_lossy().into_owned()).unwrap_or_default()) }); } }
+            if self.tab_new.rect.contains(pt) { over = Some((1999, self.tab_new.rect, self.tab_new.tooltip.clone())); }
             // a sidebar row whose name is cut, and a place's full path
             if let Some(r) = self.side_hover.and_then(|i| self.side_rows.get(i)) { if let Some(p) = &r.path { over = Some((1000 + self.side_hover.unwrap_or(0) as u64, r.rect, p.to_string_lossy().into_owned())); } else if !r.enabled { over = Some((999, r.rect, "The tracker comes in a later step".into())); } }
         }
