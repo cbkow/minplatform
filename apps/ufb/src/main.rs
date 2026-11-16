@@ -1,4 +1,4 @@
-//! UFB (the rebuild, Phase 5; canon rows 434-471): a file browser. Pictures are made in helper copies of this
+//! UFB (the rebuild, Phase 5; canon rows 434-472): a file browser. Pictures are made in helper copies of this
 //! executable (`UFB --thumb-helper`, see `thumbs`) and kept in a cache of its own (`UFB_THUMB_CACHE=<folder>` or `off`;
 //! else the system's cache location). File operations (`ops`) change things ONLY inside the folders it was started
 //! with - the safety belt of row 468, until the owner's word.
