@@ -6258,6 +6258,7 @@ dependencies = [
  "min-dnd",
  "min-image",
  "min-paths",
+ "min-pdf",
  "min-present",
  "min-settings",
  "min-theme",

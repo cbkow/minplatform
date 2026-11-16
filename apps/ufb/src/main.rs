@@ -11,6 +11,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod crumbs;
 mod dnd;
+mod docview;
 mod ctxmenu;
 mod format;
 mod history;

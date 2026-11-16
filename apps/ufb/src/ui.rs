@@ -246,6 +246,8 @@ impl Ui {
             return
         }
         let Some(v) = self.lightbox.view.as_mut() else { return };
+        // a document: its scroll bar; a drag moves it
+        if let Some(d) = v.doc.as_ref() { if !self.lb_close.hit(e.pos().unwrap_or((-1.0, -1.0)).0, e.pos().unwrap_or((-1.0, -1.0)).1) { d.borrow_mut().pointer(e, area, now); } return }
         match *e {
             Event::Down { x, y, button: Button::Primary } if area.contains(kurbo::Point::new(x, y)) && !self.lb_close.hit(x, y) => {
                 // two presses close together: actual size / fitted; one: the picture is taken hold of
@@ -268,14 +270,16 @@ impl Ui {
                 "Up" => Some(A::VolumeUp), "Down" => Some(A::VolumeDown), "Home" => Some(A::SeekToStart), "End" => Some(A::SeekToEnd), _ => None };
             if let Some(a) = a { if !(matches!(a, A::ShuttleBegin(_)) && p.t.is_fast_seeking()) { p.act(a); } return }
         }
+        // a document: the page keys, Home and End, Up and Down scroll it; + - 0 are its size
+        if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { let ch = match &k.key { Key::Char(c) => c.as_str(), _ => "" }; if d.borrow_mut().key(name, ch, area, Instant::now()) { return } }
         match name { "Space" | "Escape" => return self.close_lightbox(), "Left" | "Up" => return self.step_lightbox(-1), "Right" | "Down" => return self.step_lightbox(1), _ => {} }
         let Some(v) = self.lightbox.view.as_mut() else { return };
         match &k.key { Key::Char(c) => match c.as_str() { "0" | "f" | "F" => v.fit(), "1" => v.actual(mid, area), "=" | "+" => v.zoom_by(1.25, mid, area), "-" | "_" => v.zoom_by(0.8, mid, area), _ => {} }, _ => {} }
     }
     /// The wheel (or two fingers) zooms about the pointer, as in QCView's viewer.
-    fn lightbox_wheel(&mut self, dy: f64) { let (area, at) = (self.lightbox_area(), self.pointer); if let Some(v) = self.lightbox.view.as_mut() { v.zoom_by((-dy * 0.004).exp().clamp(0.5, 2.0), at, area); } }
+    fn lightbox_wheel(&mut self, dy: f64) { let (area, at) = (self.lightbox_area(), self.pointer); if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { d.borrow_mut().wheel(dy, Instant::now()); return } if let Some(v) = self.lightbox.view.as_mut() { v.zoom_by((-dy * 0.004).exp().clamp(0.5, 2.0), at, area); } }
     /// A pinch on a trackpad: `delta` is the change of size (0.1: a tenth larger).
-    pub fn pinch(&mut self, delta: f64) { let (area, at) = (self.lightbox_area(), self.pointer); if let Some(v) = self.lightbox.view.as_mut() { v.zoom_by((1.0 + delta).clamp(0.5, 2.0), at, area); } }
+    pub fn pinch(&mut self, delta: f64) { let (area, at) = (self.lightbox_area(), self.pointer); if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { d.borrow_mut().zoom_by((1.0 + delta).clamp(0.5, 2.0)); return } if let Some(v) = self.lightbox.view.as_mut() { v.zoom_by((1.0 + delta).clamp(0.5, 2.0), at, area); } }
     /// The lightbox drawn: the picture is the presenter's (under this layer); the layer holds only the strip, the close
     /// button and, while there is no picture, what to say instead.
     fn redraw_lightbox(&mut self) {
@@ -299,12 +303,13 @@ impl Ui {
         let key = { use std::hash::{Hash, Hasher}; let mut k = std::collections::hash_map::DefaultHasher::new();
             (size.width, size.height, (s * 100.0) as u32, std::mem::discriminant(&v.state), ready, &v.name, &v.layer, v.layers.iter().filter(|l| l.1.is_some()).count(), self.lb_hover).hash(&mut k);
             if let Some(r) = v.place(area) { ((r.x0 * 4.0) as i64, (r.y0 * 4.0) as i64, (r.width() * 4.0) as i64).hash(&mut k); }
+            if let Some(d) = v.doc.as_ref() { d.borrow().stamp.hash(&mut k); }
             if let Some(p) = v.player.as_ref() { (p.t.current_frame(), p.t.is_playing(), p.t.audio.is_muted(), p.t.loop_enabled(), p.shown, p.rate()).hash(&mut k); }
             // (a text that appears after a while; buttons that light up under the pointer)
             (v.state == crate::lightbox::State::Loading && now.duration_since(v.since) > Duration::from_millis(250)).hash(&mut k);
             [&self.lb_close, &self.lb_play, &self.lb_loop, &self.lb_mute, &self.lb_qcv, &self.lb_fps].iter().for_each(|b| (b.hovered(), b.animating(now)).hash(&mut k));
             k.finish() };
-        if self.lb_key == Some(key) && !self.lb_close.animating(now) {
+        if self.lb_key == Some(key) && !self.lb_close.animating(now) && !v.doc.as_ref().is_some_and(|d| d.borrow().busy(now)) {
             if ready { let r = v.place(area); self.presenter.engine.set_place(r.map(|r| [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32])); } else { self.presenter.engine.clear_picture(); }
             self.present_layer(now, false);
             if measuring { self.lb_cost.push(now.elapsed().as_secs_f32() * 1000.0); }
@@ -334,6 +339,9 @@ impl Ui {
                 let l = fonts.layout_fit(lname, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, ink, cell.width()); draw_layout(scene, &l, Affine::translate((cell.center().x - l.width() as f64 / 2.0, cell.y1 - label + (label - l.height() as f64) / 2.0)));
                 self.lb_tiles.push(cell);
             }
+        } else if let Some(d) = v.doc.as_ref() {
+            // a document draws itself (text, a PDF's pages), and scrolls
+            d.borrow_mut().draw(scene, fonts, area, s, now);
         } else if v.state == crate::lightbox::State::Audio {
             // a sound has no picture: its kind's sign, large
             paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
@@ -801,6 +809,9 @@ impl Ui {
                 eprintln!("UFB_DEMO: our frames: {} drawn; gap ms median {:.1} p95 {:.1} worst {:.1}; cost to draw ms median {:.1} p95 {:.1} worst {:.1}; codec {} hw '{}' {}x{} {:.3} fps", self.lb_gaps.len(), q(&self.lb_gaps, 0.5), q(&self.lb_gaps, 0.95), q(&self.lb_gaps, 1.0), q(&self.lb_cost, 0.5), q(&self.lb_cost, 0.95), q(&self.lb_cost, 1.0), p.t.info().codec_short, p.t.info().hw_accel, p.t.info().width, p.t.info().height, p.t.rate().as_f64());
             },
             // a sequence's rate stepped on (`lbfps:-1`: back)
+            // a document scrolled by so many points, or made larger by a factor
+            "lbscroll" => if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { d.borrow_mut().wheel(arg.parse::<f64>().unwrap_or(0.0) * self.scale(), Instant::now()); },
+            "lbdoczoom" => if let Some(d) = self.lightbox.view.as_ref().and_then(|v| v.doc.as_ref()) { d.borrow_mut().zoom_by(arg.parse().unwrap_or(1.0)); },
             "lbfps" => if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(arg.parse().unwrap_or(1)); eprintln!("UFB_DEMO: the sequence plays at {} fps", crate::lightbox::rate_text(p.rate())); self.lb_key = None; },
             "lbkey" => { let k = KeyEvent { key: Key::Char(arg.to_lowercase()), text: None, shift: false, cmd: false }; self.lightbox_key(&k, arg); }
             "lbseek" => if let (Ok(at), Some(p)) = (arg.parse::<f64>(), self.lightbox.view.as_mut().and_then(|v| v.player.as_mut())) { p.scrub(at); p.scrub_end(); },
@@ -857,7 +868,7 @@ impl Ui {
     /// The lightbox has something moving: a picture on its way, a clip that plays, is sought or was just touched. The
     /// window then draws at every refresh. (Left out at first: a clip moved only when something else woke the window -
     /// the owner's walk, 2026-11-16: "playing one second at a time with freezes in between", "videos take forever to load".)
-    fn lightbox_live(&self, now: Instant) -> bool { self.lightbox.is_open() && (self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.player.as_ref().is_some_and(|p| p.busy(now)))) }
+    fn lightbox_live(&self, now: Instant) -> bool { self.lightbox.is_open() && (self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.player.as_ref().is_some_and(|p| p.busy(now)) || v.doc.as_ref().is_some_and(|d| d.borrow().busy(now)))) }
     /// The path bar's segments as buttons, made anew when the path, the startup disk's name or the room changes.
     fn make_crumbs(&mut self, room: f64, s: f64) {
         let path = self.panes[self.active.min(self.panes.len() - 1)].path().to_path_buf(); let key = (path.clone(), self.root.clone(), (room * 4.0) as i64);

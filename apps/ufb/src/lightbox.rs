@@ -33,7 +33,7 @@ pub const AUDIO: &[&str] = &["wav", "wave", "bwf", "mp3", "aiff", "aif", "aifc",
 pub enum Media { None, Still, Video, Audio, Sequence { pattern: String, start: i64, end: i64 } }
 pub fn media_of(ext: &str) -> Media { if crate::thumbs::helper::VIDEO.contains(&ext) { Media::Video } else if AUDIO.contains(&ext) { Media::Audio } else if shows(ext) { Media::Still } else { Media::None } }
 /// Anything the lightbox shows or plays.
-pub fn handles(ext: &str) -> bool { media_of(ext) != Media::None }
+pub fn handles(ext: &str) -> bool { media_of(ext) != Media::None || crate::docview::kind_of(ext).is_some() }
 
 /// The family's player on the file shown, and whether a frame of it has reached the presenter.
 pub struct Player { pub t: qcv_player::Transport, pub shown: bool, /// frames are drawn until then although nothing plays (a seek's picture comes a little after it was asked)
@@ -61,6 +61,9 @@ impl Player {
         // loop, mute and volume are the application's, remembered between launches
         let set = crate::settings::with(|s| (s.bool("player/loop"), s.bool("player/muted"), s.float("player/volume") as f32)); t.set_loop_enabled(set.0); t.audio.set_muted(set.1); t.audio.set_volume(set.2);
         let audio_only = t.is_audio_only();
+        // it plays as soon as it is opened (owner 2026-11-16: "should videos autoplay and auto loop too?"; the loop is on
+        // unless it was turned off). A scripted look starts it itself - after muting it.
+        if std::env::var_os("UFB_DEMO").is_none() || std::env::var_os("UFB_AUTOPLAY").is_some() { t.apply(qcv_player::Action::TogglePlayback, Instant::now()); }
         Ok(Player { t, shown: false, awake: Instant::now() + Duration::from_millis(800), audio_only, scrubbing: false, sequence: match media { Media::Sequence { pattern, .. } => Some(pattern.clone()), _ => None } })
     }
     fn keep_settings(&self) { let (l, m, v) = (self.t.loop_enabled(), self.t.audio.is_muted(), self.t.audio.volume() as f64); crate::settings::with(|s| { s.set_bool("player/loop", l); s.set_bool("player/muted", m); s.set_float("player/volume", v); }); }
@@ -98,7 +101,8 @@ pub struct Info { pub w: u32, pub h: u32, /// the file's own size, and by how mu
 pub enum State { Loading, Ready(Info), Failed(String), /// a kind this step does not show
     NoPreview, /// an EXR of several layers: its contact sheet (`View::layers`); one is chosen there
     Layers, /// a sound: the player plays it, there is no picture
-    Audio }
+    Audio, /// a document (text, a PDF): `View::doc` reads and draws it
+    Doc }
 
 pub struct View {
     pub path: PathBuf, pub name: String, pub size: u64, pub kind: String, /// the pane it was opened from (its cursor follows the lightbox)
@@ -111,9 +115,11 @@ pub struct View {
     zoom: Option<f64>, pan: (f64, f64),
     /// a drag that pans: where it began, the shift then
     drag: Option<((f64, f64), (f64, f64))>,
+    /// a document, when the file is one (row 479)
+    pub doc: Option<std::cell::RefCell<crate::docview::Doc>>,
 }
 
-pub struct Lightbox { pool: Pool, next: u64, waiting: Option<u64>, pub view: Option<View>, frame: Option<(Frame, bool)>,
+pub struct Lightbox { wake: Arc<dyn Fn() + Send + Sync>, pool: Pool, next: u64, waiting: Option<u64>, pub view: Option<View>, frame: Option<(Frame, bool)>,
     /// the question "which layers" that is out; the small pictures of the sheet that are out (request -> layer)
     asked_layers: Option<u64>, tiles: std::collections::HashMap<u64, usize> }
 
@@ -130,7 +136,7 @@ impl Lightbox {
     /// One helper of its own, started at the first picture and ended after a while without one.
     pub fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Lightbox {
         let _ = HELPER_ARG;
-        Lightbox { pool: Pool::new(std::env::current_exe().unwrap_or_default(), vec![], 1, Duration::from_secs(30), wake), next: 1, waiting: None, view: None, frame: None, asked_layers: None, tiles: Default::default() }
+        Lightbox { wake: wake.clone(), pool: Pool::new(std::env::current_exe().unwrap_or_default(), vec![], 1, Duration::from_secs(30), wake), next: 1, waiting: None, view: None, frame: None, asked_layers: None, tiles: Default::default() }
     }
     pub fn is_open(&self) -> bool { self.view.is_some() }
     pub fn loading(&self) -> bool { self.view.as_ref().is_some_and(|v| v.state == State::Loading) || !self.tiles.is_empty() }
@@ -139,10 +145,13 @@ impl Lightbox {
     /// ([`Lightbox::attach`]) - a video, a sound, a sequence; else a still is asked of the helper.
     pub fn open(&mut self, path: PathBuf, name: String, size: u64, kind: String, ext: &str, pane: usize, played: bool) {
         self.call_off(); self.frame = None; self.retire();
-        if played { self.view = Some(View { path, name, size, kind, pane, state: State::Loading, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None }); return }
+        if played { self.view = Some(View { path, name, size, kind, pane, state: State::Loading, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None }); return }
+        // a document: read and drawn on a thread of its own
+        if let Some(dk) = crate::docview::kind_of(ext) { let doc = crate::docview::Doc::open(dk, &path, self.wake.clone());
+            self.view = Some(View { path, name, size, kind, pane, state: State::Doc, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: Some(std::cell::RefCell::new(doc)) }); return }
         let state = if shows(ext) { State::Loading } else { State::NoPreview };
         let wanted = state == State::Loading; let p = path.to_string_lossy().into_owned();
-        self.view = Some(View { path, name, size, kind, pane, state, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None });
+        self.view = Some(View { path, name, size, kind, pane, state, since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None });
         // an EXR is first asked which layers it has: several make a contact sheet, one is shown at once
         if wanted { if ext == "exr" { let id = self.id(); self.asked_layers = Some(id); self.pool.submit(Job::new(Request::new(id, OP_LAYERS, 0, 0, p), 20_000)); } else { self.ask_full(p); } }
     }
@@ -174,7 +183,7 @@ impl Lightbox {
     }
     /// Take in what the helper answered. True when something came.
     pub fn poll(&mut self) -> bool {
-        let mut any = false;
+        let mut any = self.view.as_ref().and_then(|v| v.doc.as_ref()).is_some_and(|d| d.borrow_mut().poll());
         while let Ok(d) = self.pool.rx.try_recv() {
             any = true;
             // a small picture of the contact sheet
@@ -248,6 +257,7 @@ impl View {
     /// The strip's words: the picture's size, its depth, how it is shown.
     pub fn facts(&self, area: Rect) -> String {
         let mut v = vec![self.kind.clone(), crate::format::size_text(self.size, crate::format::DECIMAL)];
+        if let Some(d) = &self.doc { v.extend(d.borrow().facts()); }
         if let Some(l) = &self.layer { v.insert(0, format!("layer \u{201c}{l}\u{201d}")); } else if self.state == State::Layers { v.push(format!("{} layers", self.layers.len())); }
         if let Some(i) = self.info() {
             v.insert(0, format!("{} \u{d7} {}", crate::pane::group(i.orig.0 as usize), crate::pane::group(i.orig.1 as usize)));
@@ -266,7 +276,7 @@ pub fn ext_of(path: &Path) -> String { path.extension().map(|e| e.to_string_loss
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn view(w: u32, h: u32) -> View { View { path: PathBuf::from("/a/plate.exr"), name: "plate.exr".into(), size: 12_400_000, kind: "OpenEXR image".into(), pane: 0, state: State::Ready(Info { w, h, orig: (w, h), reduced: 1, alpha: false, depth: 32 }), since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None } }
+    fn view(w: u32, h: u32) -> View { View { path: PathBuf::from("/a/plate.exr"), name: "plate.exr".into(), size: 12_400_000, kind: "OpenEXR image".into(), pane: 0, state: State::Ready(Info { w, h, orig: (w, h), reduced: 1, alpha: false, depth: 32 }), since: Instant::now(), layers: vec![], layer: None, player: None, zoom: None, pan: (0.0, 0.0), drag: None, doc: None } }
     #[test]
     fn a_picture_is_fitted_never_enlarged_and_zooms_about_the_pointer() {
         let area = Rect::new(0.0, 0.0, 1000.0, 600.0);
@@ -293,6 +303,6 @@ mod tests {
         v.state = State::NoPreview; assert_eq!(v.facts(area), format!("OpenEXR image  \u{b7}  {mb}"));
         assert!(shows("exr") && shows("psd") && shows("heic") && !shows("mov") && !shows("pdf") && !shows(""));
         assert_eq!(rate_text((24, 1)), "24"); assert_eq!(rate_text((24000, 1001)), "23.976"); assert_eq!(rate_text((60000, 1001)), "59.940"); assert!(RATES.contains(&(25, 1)));
-        assert_eq!(media_of("mov"), Media::Video); assert_eq!(media_of("wav"), Media::Audio); assert_eq!(media_of("exr"), Media::Still); assert_eq!(media_of("pdf"), Media::None); assert!(handles("mxf") && handles("flac") && handles("tif") && !handles("txt")); assert_eq!(ext_of(Path::new("/a/Plate.EXR")), "exr");
+        assert_eq!(media_of("mov"), Media::Video); assert_eq!(media_of("wav"), Media::Audio); assert_eq!(media_of("exr"), Media::Still); assert_eq!(media_of("pdf"), Media::None); assert!(handles("mxf") && handles("flac") && handles("tif") && handles("txt") && handles("pdf") && !handles("docx")); assert_eq!(ext_of(Path::new("/a/Plate.EXR")), "exr");
     }
 }
