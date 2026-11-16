@@ -158,6 +158,11 @@ impl Db {
         self.conn.execute("UPDATE column_definitions SET column_name = ?1, column_type = ?2, modified_time = ?3, deleted_at = NULL WHERE id = ?4", rusqlite::params![name, kind, now, id]).map_err(|e| e.to_string())?;
         self.set_options(id, options, now).map_err(|e| e.to_string())
     }
+    /// An option is added to a column, after its others (made from a cell: a text that was no option yet).
+    pub fn add_option(&self, id: i64, name: &str, color: &str) -> Result<(), String> {
+        let now = now_ms(); self.conn.execute("INSERT INTO column_options (column_id, option_name, option_color, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, NULL)", rusqlite::params![id, name, color, now]).map_err(|e| e.to_string())?;
+        self.conn.execute("UPDATE column_definitions SET modified_time = ?1 WHERE id = ?2", rusqlite::params![now, id]).map(|_| ()).map_err(|e| e.to_string())
+    }
     /// Into the column trash, or out of it (the values stay; a restore under a name now in use is refused).
     pub fn trash_column(&self, id: i64, on: bool) -> Result<(), String> {
         if !on { let taken: bool = self.conn.prepare("SELECT 1 FROM column_definitions o JOIN column_definitions me ON me.id = ?1 WHERE o.id != me.id AND o.job_path = me.job_path AND o.folder_name = me.folder_name AND lower(o.column_name) = lower(me.column_name) AND o.deleted_at IS NULL AND o.trashed_at IS NULL").and_then(|mut s| s.exists([id])).map_err(|e| e.to_string())?;

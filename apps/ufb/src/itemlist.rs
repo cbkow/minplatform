@@ -109,6 +109,7 @@ pub fn parse_options(text: &str) -> Vec<(String, Option<String>)> {
     }
     out
 }
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn options_text(options: &[(String, Option<String>)]) -> String { options.iter().map(|(n, c)| match c { Some(c) => format!("{n} {c}"), None => n.clone() }).collect::<Vec<_>>().join(", ") }
 
 /// The order two cells sort in: numbers by their size, everything else as text without regard to case; an empty
@@ -271,11 +272,9 @@ impl ItemList {
                 match kind_of(&c.kind) {
                     "checkbox" => { let z = min_ui::checkbox::size(s).min(row.height() - 8.0 * s); min_ui::checkbox::paint_box(scene, fonts, Rect::new(a + pad, mid(z), a + pad + z, mid(z) + z), Some(is_checked(v)), true, false, s); }
                     "dropdown" | "priority" => { let text = text_of(&c.kind, v); if !text.is_empty() {
-                        // a pill in the option's colour; a value that matches no option is grey (1.4.2)
-                        let fill = c.options.iter().find(|o| o.0 == text).and_then(|o| o.1.as_deref()).and_then(hex).unwrap_or(min_theme::Color::rgba(0.5, 0.5, 0.5, 1.0));
-                        let l = fonts.layout_fit(&text, Family::Sans, small, t::FONT_WEIGHT_BOLD as f32, ink, (room - 14.0 * s).max(4.0)); let ph = (row.height() - 8.0 * s).min(20.0 * s); let pr = Rect::new(a + pad - 2.0 * s, mid(ph), a + pad + l.width() as f64 + 14.0 * s, mid(ph) + ph);
-                        paint::rounded(scene, pr, ph / 2.0, min_theme::Color::rgba(fill.r, fill.g, fill.b, 0.32)); paint::rounded(scene, Rect::new(pr.x0 + 5.0 * s, mid(6.0 * s), pr.x0 + 11.0 * s, mid(6.0 * s) + 6.0 * s), 3.0 * s, fill);
-                        draw_layout(scene, &l, Affine::translate((pr.x0 + 15.0 * s - 2.0 * s, mid(l.height() as f64)))); } }
+                        // a chip in the option's colour; a value that matches no option is grey (1.4.2)
+                        crate::chips::paint_chip(scene, fonts, &text, c.options.iter().find(|o| o.0 == text).and_then(|o| o.1.as_deref()), a + pad - 2.0 * s, row.y0 + row.height() / 2.0, room + 4.0 * s, s); } }
+
                     kind => { let text = text_of(&c.kind, v); let shown = match kind { "notes" => text.lines().next().unwrap_or("").to_string(), "links" => text.split([',', '\n']).next().unwrap_or("").trim().to_string(), _ => text };
                         if !shown.is_empty() { let l = fonts.layout_fit(&shown, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, color, room); let x = if kind == "number" { b - pad - l.width() as f64 } else { a + pad }; draw_layout(scene, &l, Affine::translate((x, mid(l.height() as f64)))); } }
                 }

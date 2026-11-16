@@ -77,8 +77,6 @@ pub fn rows_for_columns(column: bool, hidden: &[String], trashed: &[String], mod
 }
 /// The rows for an item of a job's list.
 pub fn rows_for_item(tracked: bool) -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(META_TRACK, if tracked { "Untrack" } else { "Mark as Tracked" })] }
-/// A dropdown cell's options, and Clear.
-pub fn rows_for_options(options: &[String]) -> Vec<Row> { let mut rows: Vec<Row> = options.iter().enumerate().map(|(k, n)| named(META_OPTION + k as u32, n.clone())).collect(); rows.extend([Row::Sep, ours(META_CLEAR, "Clear")]); rows }
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 

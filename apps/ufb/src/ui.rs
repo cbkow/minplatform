@@ -53,8 +53,7 @@ enum Asked { /// delete these for good
     Delete(Vec<PathBuf>), /// the extension would change: the entry, the name typed, the name with the old extension kept
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
-    NewJob(PathBuf), AddItem(PathBuf), /// a metadata column of the section in front: a new one of this type, or this one changed
-    Column { id: Option<i64>, kind: String } }
+    NewJob(PathBuf), AddItem(PathBuf) }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
 enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,6 +85,8 @@ pub struct Ui {
     /// drawn: its place, its rows, its scroll bar, the row under the pointer; where the panes begin; what is being made
     job: Option<Job>, jobs: Vec<crate::db::Sub>, job_secs: Vec<ActionButton>, job_secs_for: Vec<String>, job_refresh: ActionButton, job_add: ActionButton,
     job_list: Rect, panes_x0: f64, /// the item list itself (row 489): its columns, what the items carry, its field; the foot's Columns button; what its last menu was about (the column in view, the item, the columns that can be shown again, those in the trash)
+    /// the chips (row 490): the popover that picks a dropdown cell's value; a column's editor (a question of its own, over everything)
+    chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>,
     items: crate::itemlist::ItemList, job_meta: ActionButton, meta_ctx: (Option<usize>, Option<usize>, Vec<String>, Vec<(i64, String)>), made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
     /// the columns of the lists, a kind of panel (row 488): 0 the browser's panes, 1 a job's first pane, 2 its second
     col_layouts: [crate::pane::ColLayout; 3],
@@ -159,7 +160,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -178,7 +179,7 @@ impl Ui {
     /// The tab in front is put into its place in the list, or taken out of it (the same exchange both ways).
     fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); std::mem::swap(&mut self.job, &mut t.job); }
     /// What belongs to the tab in front and does not go with it is ended: a name or a path being typed, an open menu, the lightbox.
-    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.items.edit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
+    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.items.edit = None; self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
     /// The tab now in front is looked at again: its folders may have changed while it was behind.
     fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } if let Some(j) = self.job.as_mut() { j.reload(); } }
     fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
@@ -272,7 +273,10 @@ impl Ui {
             Act::Star(i) => if let Some(it) = self.job.as_ref().and_then(|j| j.items.get(i)).cloned() { let on = !self.items.tracked(&it); let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, on)); self.meta_err(r); self.items_reload(); },
             Act::Check(i, k) => if let (Some(it), Some(c)) = (self.job.as_ref().and_then(|j| j.items.get(i)).cloned(), self.items.cols.get(k).cloned()) { let on = !crate::itemlist::is_checked(self.items.value(&it, &c)); let r = crate::db::with(|d| d.set_field(&job, &it.path, &sec, &c.uuid, serde_json::Value::Bool(on))); self.meta_err(r); self.items_reload(); },
             Act::Edit(i, k) => self.edit_cell(i, k),
-            Act::Options(i, k, at) => if let Some(c) = self.items.cols.get(k) { let names: Vec<String> = c.options.iter().map(|o| o.0.clone()).collect(); self.meta_ctx = (Some(k), Some(i), vec![], vec![]); self.menu_for = None; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![], rows: crate::ctxmenu::rows_for_options(&names) }); },
+            // a dropdown cell: its options as chips, in a popover under it
+            Act::Options(i, k, at) => if let (Some(c), Some(it)) = (self.items.cols.get(k).cloned(), self.job.as_ref().and_then(|j| j.items.get(i)).cloned()) {
+                let s = self.scale(); let size = self.window.surface_size(); let cur = crate::itemlist::text_of(&c.kind, self.items.value(&it, &c));
+                let mut p = crate::chips::ChipPicker::new(it.path.clone(), k, c.options.clone(), cur); p.open(&mut self.fonts, Rect::new(at.0, at.1 - 24.0 * s, at.0 + 120.0 * s, at.1), Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); self.chip = Some(p); },
             Act::HeadMenu(k, at) => self.columns_menu(k, at),
             Act::RowMenu(i, at) => if let Some(it) = self.job.as_ref().and_then(|j| j.items.get(i)).cloned() { self.meta_ctx = (None, Some(i), vec![], vec![]); self.menu_for = Some((Some(0), it.path.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![it.path.clone()], rows: crate::ctxmenu::rows_for_item(self.items.tracked(&it)) }); },
             Act::Width(k, w) => if let Some(c) = self.items.cols.get(k) { let name = c.name.clone(); let r = crate::db::with(|d| d.set_layout(&job, &sec, &name, None, Some(w), None)); self.meta_err(r); },
@@ -285,21 +289,32 @@ impl Ui {
         let rows = crate::ctxmenu::rows_for_columns(col.is_some(), &hidden, &trashed.iter().map(|t| t.1.clone()).collect::<Vec<_>>(), self.items.show_modified);
         self.meta_ctx = (col, None, hidden, trashed); self.menu_for = None; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![], rows });
     }
-    /// A column's question: its name and, for a dropdown or a priority, its options.
-    fn ask_column(&mut self, id: Option<i64>, kind: &str, name: &str, options: &str) {
-        use min_ui::{dialog::Dialog, text_button::Variant};
-        let with_options = matches!(crate::db::kind_of(kind), "dropdown" | "priority"); let what = { let k = crate::db::kind_of(kind); format!("{}{}", &k[..1].to_uppercase(), &k[1..]) };
-        let mut d = Dialog::new(&if id.is_some() { format!("Edit {what} Column") } else { format!("New {what} Column") }, if with_options { "Options: a name, then perhaps its colour as #rrggbb; commas between them." } else { "" }, vec![("Cancel", Variant::Secondary), (if id.is_some() { "Save" } else { "Add" }, Variant::Primary)]).with_field("Name", "");
-        if with_options { d = d.with_field("Options", "WIP #f5a623, Review, Final"); }
-        d.show_with(name, &mut self.fonts); if with_options { if let Some((_, f)) = d.fields.get_mut(1) { f.set_text(options); } }
-        self.dialog = Some((d, Asked::Column { id, kind: kind.to_string() })); self.dialog_preview();
+    /// A column's editor: its name and, for a dropdown or a priority, its options as chips (row 490).
+    fn ask_column(&mut self, id: Option<i64>, kind: &str, name: &str, options: &[(String, Option<String>)]) { self.ctx.close(); self.cancel_cell(); self.coledit = Some(crate::chips::ColumnEditor::new(id, kind, name, options, &mut self.fonts)); }
+    /// The column's editor was left.
+    fn column_done(&mut self, done: crate::chips::Done) {
+        let Some(ed) = self.coledit.take() else { return }; let crate::chips::Done::Save { name, options, renames } = done else { return }; let Some((job, sec)) = self.section_key() else { return };
+        let uuid = ed.id.and_then(|id| self.items.cols.iter().chain(self.items.hidden.iter()).find(|c| c.id == id).map(|c| c.uuid.clone()));
+        let r = crate::db::with(|db| match ed.id { Some(id) => db.update_column(id, &name, &ed.kind, &options), None => db.add_column(&job, &sec, &name, &ed.kind, &options).map(|_| ()) });
+        let ok = matches!(r, Some(Ok(()))); self.meta_err(r);
+        // an option renamed: the items that hold the old name hold the new one (1.4.2 left them with a value that is no option)
+        if let (true, Some(uuid)) = (ok, uuid) { for (old, new) in renames { let holders: Vec<PathBuf> = self.items.meta.iter().filter(|(_, m)| m.values.get(&uuid).and_then(|v| v.as_str()) == Some(old.as_str())).map(|(p, _)| p.clone()).collect();
+            for item in holders { let r = crate::db::with(|d| d.set_field(&job, &item, &sec, &uuid, serde_json::Value::String(new.clone()))); self.meta_err(r); } } }
+        self.items_reload();
+    }
+    /// A chip was picked for a cell (or the cell cleared; or a text made an option, and set).
+    fn chip_picked(&mut self, item: PathBuf, col: usize, pick: crate::chips::Pick) {
+        use crate::chips::Pick; let (Some((job, sec)), Some(c)) = (self.section_key(), self.items.cols.get(col).cloned()) else { return };
+        let value = match pick { Pick::Clear => serde_json::Value::Null, Pick::Set(n) => serde_json::Value::String(n),
+            Pick::Create(n) => { let taken: Vec<Option<String>> = c.options.iter().map(|o| o.1.clone()).collect(); let r = crate::db::with(|d| d.add_option(c.id, &n, &crate::chips::next_color(&taken))); self.meta_err(r); serde_json::Value::String(n) } };
+        let r = crate::db::with(|d| d.set_field(&job, &item, &sec, &c.uuid, value)); self.meta_err(r); self.items_reload();
     }
     /// A row of the item list's menus was chosen.
     fn meta_chosen(&mut self, id: u32) {
         use crate::ctxmenu::*; let Some((job, sec)) = self.section_key() else { return }; let (col, item, hidden, trashed) = self.meta_ctx.clone();
         let c = col.and_then(|k| self.items.cols.get(k).cloned());
         match id {
-            META_EDIT => if let Some(c) = c { self.ask_column(Some(c.id), &c.kind, &c.name, &crate::itemlist::options_text(&c.options)); },
+            META_EDIT => if let Some(c) = c { self.ask_column(Some(c.id), &c.kind, &c.name, &c.options); },
             META_LEFT | META_RIGHT => if let Some(k) = col { let to = if id == META_LEFT { k.checked_sub(1) } else { Some(k + 1).filter(|t| *t < self.items.cols.len()) };
                 if let Some(to) = to { let mut names: Vec<String> = self.items.cols.iter().map(|c| c.name.clone()).collect(); names.swap(k, to); names.extend(self.items.hidden.iter().map(|c| c.name.clone()));
                     // (this user's own order: each column's place, as 1.4.2 writes it)
@@ -309,7 +324,7 @@ impl Ui {
             META_MODIFIED => { self.items.show_modified = !self.items.show_modified; let on = self.items.show_modified; crate::settings::with(|s| s.set_bool("columns/items_modified", on)); },
             META_TRACK => if let Some(it) = item.and_then(|i| self.job.as_ref().and_then(|j| j.items.get(i)).cloned()) { let on = !self.items.tracked(&it); let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, on)); self.meta_err(r); },
             META_CLEAR => if let (Some(c), Some(it)) = (c, item.and_then(|i| self.job.as_ref().and_then(|j| j.items.get(i)).cloned())) { let r = crate::db::with(|d| d.set_field(&job, &it.path, &sec, &c.uuid, serde_json::Value::Null)); self.meta_err(r); },
-            id if (META_ADD..META_ADD + 8).contains(&id) => { let kind = ["text", "dropdown", "date", "priority", "number", "checkbox", "links", "notes"][(id - META_ADD) as usize]; self.ask_column(None, kind, "", ""); return }
+            id if (META_ADD..META_ADD + 8).contains(&id) => { let kind = ["text", "dropdown", "date", "priority", "number", "checkbox", "links", "notes"][(id - META_ADD) as usize]; self.ask_column(None, kind, "", &[]); return }
             id if (META_SHOW..META_RESTORE).contains(&id) => if let Some(name) = hidden.get((id - META_SHOW) as usize) { let r = crate::db::with(|d| d.set_layout(&job, &sec, name, None, None, Some(true))); self.meta_err(r); },
             id if (META_RESTORE..META_OPTION).contains(&id) => if let Some((cid, _)) = trashed.get((id - META_RESTORE) as usize) { let r = crate::db::with(|d| d.trash_column(*cid, false)); self.meta_err(r); },
             id if id >= META_OPTION => if let (Some(c), Some(it)) = (c, item.and_then(|i| self.job.as_ref().and_then(|j| j.items.get(i)).cloned())) { if let Some(o) = c.options.get((id - META_OPTION) as usize) { let r = crate::db::with(|d| d.set_field(&job, &it.path, &sec, &c.uuid, serde_json::Value::String(o.0.clone()))); self.meta_err(r); } },
@@ -345,7 +360,6 @@ impl Ui {
             Asked::NewJob(_) => Some(ty.job_folder_name(&d.value_at(0), &d.value_at(1))),
             Asked::AddItem(dir) => { let name = d.value_at(0); let sec = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 Some(if name.is_empty() { String::new() } else if ty.kind(&sec) == ufb_projtype::Kind::Dated { let taken = self.job.as_ref().map(|j| j.dated_names.clone()).unwrap_or_default(); ufb_projtype::dated_name(&taken, &crate::jobview::today(), &name).unwrap_or_default() } else { name }) }
-            Asked::Column { .. } => { let ok = !d.value_at(0).is_empty(); if let Some(b) = d.buttons.last_mut() { b.enabled = ok; } None }
             _ => None,
         };
         if let Some(name) = made { let ok = ufb_projtype::check_name("name", &name).is_ok(); d.body = if name.is_empty() { "Folder:".into() } else { format!("Folder:  {name}") }; if let Some(b) = d.buttons.last_mut() { b.enabled = ok; } }
@@ -388,7 +402,7 @@ impl Ui {
         crate::settings::with(|s| s.set_str(["columns/browser", "columns/job_top", "columns/job_low"][kind], &text));
     }
     /// A text is being typed somewhere (a field of the window, or of an open question).
-    fn text_focus(&self) -> bool { matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
+    fn text_focus(&self) -> bool { self.chip.is_some() || self.coledit.is_some() || matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
 
     /// Every pane of the tabs that are behind.
     fn hidden_panes(&mut self) -> impl Iterator<Item = &mut Pane> { self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) }
@@ -728,8 +742,6 @@ impl Ui {
                 let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Job(crate::jobview::project_type().new_job(&parent, &number, &name))); port.send(Msg::Icon); }); },
             Asked::AddItem(dir) => if button == 1 { let (name, tx, port) = (d.value_at(0), self.made_tx.clone(), self.port.clone()); self.making = true;
                 let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Item(crate::jobview::project_type().add_item(&dir, &name, &crate::jobview::skeletons(), &crate::jobview::today()))); port.send(Msg::Icon); }); },
-            Asked::Column { id, kind } => if button == 1 { if let Some((job, sec)) = self.section_key() { let (name, options) = (d.value_at(0), crate::itemlist::parse_options(&d.value_at(1)));
-                let r = crate::db::with(|db| match id { Some(id) => db.update_column(id, &name, &kind, &options), None => db.add_column(&job, &sec, &name, &kind, &options).map(|_| ()) }); self.meta_err(r); self.items_reload(); } },
             Asked::Extension { path, typed, kept } => { let name = if button == 0 { typed } else { kept }; if path.file_name().is_some_and(|n| n.to_string_lossy() != name.as_str()) { crate::ops::submit(self.id, crate::ops::Op::Rename { path, name }); } }
         }
     }
@@ -799,6 +811,8 @@ impl Ui {
     pub fn command(&mut self, c: Cmd) {
         let port = self.port.clone();
         // while the lightbox is open the window's own commands and Preview act; the browser's wait
+        if self.coledit.is_some() && !matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::Minimize | Cmd::Quit) { return }
+        if self.chip.is_some() { self.chip = None; }
         if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow | Cmd::NewTab | Cmd::CloseTab | Cmd::NextTab | Cmd::PrevTab) { return }
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
@@ -948,6 +962,9 @@ impl Ui {
     pub fn pointer(&mut self, e: &Event) {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.scale(); let port = self.port.clone();
         if self.lightbox.is_open() { return self.lightbox_pointer(e) }
+        // a column's editor is a question of its own: it takes everything; the chips' popover takes the pointer while it is open
+        if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.event(e, &mut self.fonts, now) { self.column_done(done); } return }
+        if let Some(p) = self.chip.as_mut() { let (pick, close) = p.event(e); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
         // the drawn context menu takes the pointer while it is open
         if self.ctx.is_open() { let (chosen, _, consumed) = self.ctx.event(e); if let Some(i) = chosen { self.ctx_pick(i); } if consumed { return } }
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); self.tip_demo = None; }
@@ -1073,18 +1090,20 @@ impl Ui {
         self.set_cursor(if self.over_gap == Some(1) && self.stacked { winit31::cursor::CursorIcon::RowResize } else if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
-    pub fn paste(&mut self, text: &str) { if let Some((d, _)) = self.dialog.as_mut() { if let Some((_, f)) = d.fields.iter_mut().find(|(_, f)| f.focused) { f.paste(text, &mut self.fonts); self.dialog_preview(); } return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => if let Some(e) = self.items.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); }, Focus::Pane | Focus::Items => {} } }
+    pub fn paste(&mut self, text: &str) { if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { if let Some((_, f)) = d.fields.iter_mut().find(|(_, f)| f.focused) { f.paste(text, &mut self.fonts); self.dialog_preview(); } return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => if let Some(e) = self.items.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); }, Focus::Pane | Focus::Items => {} } }
     /// A key for the drawn menu bar: (the command of the row chosen, redraw, the key was the bar's).
     pub fn with_menu_key(&mut self, k: &min_ui::BarKey) -> (Option<Cmd>, bool, bool) { match self.menubar.as_mut() { Some(mb) => { let (id, redraw, consumed) = mb.bar.key(k, &mut self.fonts); (id.and_then(|i| mb.cmd(i)), redraw, consumed) } None => (None, false, false) } }
     /// A text field holds the keyboard (the clipboard's keys are its).
     pub fn typing(&self) -> bool { self.text_focus() }
     /// The chosen text of the field in hand, for a copy; `cut` takes it out.
-    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some((d, _)) = self.dialog.as_mut() { let r = d.fields.iter_mut().find(|(_, f)| f.focused).and_then(|(_, f)| f.copy(cut, &mut self.fonts)); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => self.items.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)), Focus::Pane | Focus::Items => None } }
+    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.fields.iter_mut().find(|(_, f)| f.focused).and_then(|(_, f)| f.copy(cut, &mut self.fonts)); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => self.items.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)), Focus::Pane | Focus::Items => None } }
     /// A key. `name`: the key as the key map names it ("N", "[", "Up", "F5"); `alt`: the Alt / Option key is down;
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
         if self.lightbox.is_open() { return self.lightbox_key(k, name) }
+        if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.key(k, &mut self.fonts) { self.column_done(done); } return }
+        if let Some(p) = self.chip.as_mut() { let s = self.window.scale_factor(); let (pick, close) = p.key(k, &mut self.fonts, s); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
         if self.ctx.is_open() { if matches!(k.key, Key::Named(Named::Escape)) { self.ctx.close(); } return }
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
         // a question with fields: the keys are the field's (Return gives its last button when the answer is usable, Escape its first)
@@ -1210,6 +1229,13 @@ impl Ui {
             "colpick" => if let Some(id) = arg.parse::<u32>().ok() { self.ctx.close(); self.meta_chosen(id); },
             "meta" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: columns [{}] hidden [{}]; {}", self.items.cols.iter().map(|c| format!("{}:{}", c.name, c.kind)).collect::<Vec<_>>().join(", "), self.items.hidden.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "),
                 self.items.order.iter().filter_map(|i| j.items.get(*i)).map(|it| format!("{}{} [{}]", if self.items.tracked(it) { "*" } else { "" }, it.name, self.items.cols.iter().map(|c| crate::itemlist::text_of(&c.kind, self.items.value(it, c))).collect::<Vec<_>>().join(" | "))).collect::<Vec<_>>().join("; ")); },
+            // the chips: `chipopen:<item>:<column>` `chiptype:<text>` `chipkey:<Enter|Escape|Down>` `coledit:<column>` (its editor) `coleditsave`
+            "chipopen" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { let pos = self.items.order.iter().position(|x| *x == i).unwrap_or(0); let r = self.items.cell_rect(pos, k); self.items_acts(vec![crate::itemlist::Act::Options(i, k, (r.x0, r.y1))]); } },
+            "chiptype" => for ch in arg.chars() { let k = KeyEvent { key: Key::Char(ch.to_string()), text: Some(ch.to_string()), shift: false, cmd: false }; self.key(&k, "", false, false); },
+            "chipkey" => { let key = match arg { "Enter" => Key::Named(Named::Enter), "Escape" => Key::Named(Named::Escape), "Down" => Key::Named(Named::Down), _ => Key::Named(Named::Up) }; self.key(&KeyEvent { key, text: None, shift: false, cmd: false }, arg, false, false); },
+            "coledit" => if let Some(c) = num(arg).and_then(|k| self.items.cols.get(k).cloned()) { self.ask_column(Some(c.id), &c.kind, &c.name, &c.options); },
+            "swatches" => { let (row, custom) = arg.split_once(':').map(|(a, b)| (a, b == "custom")).unwrap_or((arg, false)); if let (Some(ed), Some(row)) = (self.coledit.as_mut(), num(row)) { ed.show_swatches(row, custom); } },
+            "coleditsave" => { self.key(&KeyEvent { key: Key::Named(Named::Enter), text: None, shift: false, cmd: true }, "Enter", false, false); },
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
@@ -1291,7 +1317,7 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
             || ((!self.demo.is_empty() || (self.shot.is_some() && !self.done)) && (std::env::var_os("UFB_DEMO_IDLE").is_none() || !self.lightbox.is_open()))
@@ -1606,6 +1632,8 @@ impl Ui {
             let mut d = self.dnd.borrow_mut(); d.zones = zones;
             if let Some(r) = d.hover { let (k, c) = (2.0 * s, t::FOCUS_INDICATOR_COLOR); for q in [Rect::new(r.x0, r.y0, r.x1, r.y0 + k), Rect::new(r.x0, r.y1 - k, r.x1, r.y1), Rect::new(r.x0, r.y0, r.x0 + k, r.y1), Rect::new(r.x1 - k, r.y0, r.x1, r.y1)] { paint::rect(scene, q, c); } } }
         self.ctx.paint(scene, fonts, s);
+        if let Some(p) = self.chip.as_mut() { p.paint(scene, fonts, s); }
+        if let Some(ed) = self.coledit.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); ed.layout(fonts, bounds, s); ed.paint(scene, fonts, bounds, now); }
         // what went wrong, at the window's foot; an open question over everything
         self.toast.tick(now); self.toast.paint(scene, fonts, Rect::new(0.0, 0.0, w, status.y0), s, now);
         if let Some((d, _)) = self.dialog.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); d.layout(fonts, bounds, s); d.paint(scene, fonts, s, bounds, now); }
