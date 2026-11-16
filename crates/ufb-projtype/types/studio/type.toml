@@ -1,0 +1,55 @@
+# The built-in project type: the layout UFB 1.4.2 carried in its code and its bundled folder tree (canon rows 454, 461).
+# A studio's own type is a folder like this one - `type.toml` and, for its shot sections, `skeletons/<name>/...` -
+# on the farm's share. A job's type is that of its jobs folder; nothing is written into a job.
+name = "Studio"
+job_name = "{number}_{name}"
+
+# kind: "shot"   - Add copies the section's skeleton to <section>/<name>; files matching `rename` become <name>_v001.<ext>
+#       "dated"  - Add makes <YYMMDD><letter>_<name>, the letter the first of a-z free that day in the section
+#       "folder" - Add makes a plain folder
+#       "none"   - nothing is added by the application
+# folders: made inside the section when the job is made.
+
+[[section]]
+folder = "3d"
+kind = "shot"
+skeleton = "3d"
+folders = ["assets"]
+
+[[section]]
+folder = "ae"
+kind = "shot"
+skeleton = "ae"
+
+[[section]]
+folder = "assets"
+kind = "dated"
+
+[[section]]
+folder = "audition"
+kind = "none"
+folders = ["outputs", "projects"]
+
+[[section]]
+folder = "docs"
+kind = "folder"
+folders = ["decks"]
+
+[[section]]
+folder = "illustrator"
+kind = "shot"
+skeleton = "illustrator"
+
+[[section]]
+folder = "photoshop"
+kind = "shot"
+skeleton = "photoshop"
+
+[[section]]
+folder = "postings"
+kind = "dated"
+
+[[section]]
+folder = "premiere"
+kind = "shot"
+skeleton = "premiere"
