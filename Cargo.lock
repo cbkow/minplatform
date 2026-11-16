@@ -6233,6 +6233,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "ufb"
+version = "2.0.0-dev"
+dependencies = [
+ "arboard",
+ "kurbo 0.13.1",
+ "libc",
+ "min-present",
+ "min-theme",
+ "min-ui",
+ "muda 0.21.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
+ "peniko",
+ "png 0.17.16",
+ "raw-window-handle",
+ "vello",
+ "wgpu",
+ "windows",
+ "winit 0.31.0-beta.4",
+]
+
+[[package]]
 name = "ufb-projtype"
 version = "0.1.0"
 dependencies = [
