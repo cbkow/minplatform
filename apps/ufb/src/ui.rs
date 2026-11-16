@@ -633,6 +633,8 @@ impl Ui {
         self.two = on;
         if on && self.panes.len() < 2 { let path = self.panes[0].path().to_path_buf(); let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first); self.panes.push(p); }
         if !on { self.active = 0; }
+        // (in a job the second pane shows the chosen item's renders)
+        if on { self.job_follow(); }
     }
     fn edit_path(&mut self) {
         let text = self.panes[self.active.min(self.panes.len() - 1)].path().to_string_lossy().into_owned();
