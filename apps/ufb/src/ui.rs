@@ -91,6 +91,8 @@ pub struct Ui {
     chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>,
     /// the tracker the tab in front shows, if it shows one (row 491): a job's (beside its sections), or All Tracked;
     /// its button in a job's bar, the Due chips, its last press (two on one row open the item)
+    /// the board (row 492): the section in front shown as lanes of cards in the item list's place; what each (job, section) is grouped by, while the window lives; its button at the list's foot; the columns its last menu offered
+    board: Option<crate::board::Board>, board_of: std::collections::HashMap<(PathBuf, String), crate::board::LaneBy>, board_btn: ActionButton, board_ctx: Vec<crate::board::LaneBy>,
     tracker: Option<crate::tracker::Tracker>, trk_btn: ActionButton, due_btns: Vec<ActionButton>, trk_press: Option<(Instant, usize)>,
     items: crate::itemlist::ItemList, job_meta: ActionButton, meta_ctx: (Option<usize>, Option<usize>, Vec<String>, Vec<(i64, String)>), made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
     /// the columns of the lists, a kind of panel (row 488): 0 the browser's panes, 1 a job's first pane, 2 its second
@@ -165,7 +167,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -184,7 +186,7 @@ impl Ui {
     /// The tab in front is put into its place in the list, or taken out of it (the same exchange both ways).
     fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); std::mem::swap(&mut self.job, &mut t.job); std::mem::swap(&mut self.tracker, &mut t.tracker); }
     /// What belongs to the tab in front and does not go with it is ended: a name or a path being typed, an open menu, the lightbox.
-    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.items.edit = None; if let Some(t) = self.tracker.as_mut() { t.list.edit = None; } self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
+    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.board = None; self.items.edit = None; if let Some(t) = self.tracker.as_mut() { t.list.edit = None; } self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
     /// The tab now in front is looked at again: its folders may have changed while it was behind.
     fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } if let Some(j) = self.job.as_mut() { j.reload(); } }
     fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
@@ -258,7 +260,40 @@ impl Ui {
     /// The job in front and its section, for the database.
     fn section_key(&self) -> Option<(PathBuf, String)> { let j = self.job.as_ref()?; Some((j.path.clone(), j.section.clone()?)) }
     /// The item list reads its columns and values again, and orders its rows.
-    fn items_reload(&mut self) { if let (Some((job, sec)), Some(j)) = (self.section_key(), self.job.as_ref()) { self.items.load(&job, &sec); self.items.reorder(&j.items); } }
+    fn items_reload(&mut self) {
+        let (Some(key), Some(j)) = (self.section_key(), self.job.as_ref()) else { self.board = None; return }; self.items.load(&key.0, &key.1); self.items.reorder(&j.items);
+        // the board of this section, if it is shown as one: its lanes anew - and the list again when its column is gone or cannot group any more (1.4.2)
+        match self.board_of.get(&key).cloned() {
+            Some(by) => { if self.board.as_ref().map(|b| &b.by) != Some(&by) { self.board = Some(crate::board::Board::new(by)); }
+                if !self.board.as_mut().is_some_and(|b| b.rebuild(&j.items, &self.items)) { self.board = None; self.board_of.remove(&key); } }
+            None => self.board = None,
+        }
+    }
+    /// The menu of the Board button: the columns the section can be grouped by; the list again.
+    fn board_menu(&mut self, at: (f64, f64)) {
+        let by = crate::board::eligible(&self.items); self.board_ctx = by.iter().map(|b| b.0.clone()).collect(); self.menu_for = None;
+        self.show_menu(crate::ctxmenu::Ask { at, paths: vec![], rows: crate::ctxmenu::rows_for_board(&by.iter().map(|b| b.1.clone()).collect::<Vec<_>>(), self.board.is_some()) });
+    }
+    /// What the board's pointer asked for.
+    fn board_acts(&mut self, acts: Vec<crate::board::Act>) {
+        use crate::board::{Act, LaneBy, LaneValue}; let Some((job, sec)) = self.section_key() else { return };
+        for a in acts { match a {
+            Act::Choose(i) => self.job_choose(i),
+            Act::Star(i) => self.items_acts(vec![crate::itemlist::Act::Star(i)]),
+            Act::Menu(i, at) => self.items_acts(vec![crate::itemlist::Act::RowMenu(i, at)]),
+            // a card let go on another lane: the lane's value is the item's
+            Act::Drop(i, value) => if let (Some(it), Some(by)) = (self.job.as_ref().and_then(|j| j.items.get(i)).cloned(), self.board.as_ref().map(|b| b.by.clone())) {
+                let r = match (by, value) {
+                    (LaneBy::Tracked, LaneValue::Tracked(on)) => crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, on)),
+                    (LaneBy::Col(uuid), LaneValue::Option(name)) => crate::db::with(|d| d.set_field(&job, &it.path, &sec, &uuid, serde_json::Value::String(name))),
+                    (LaneBy::Col(uuid), LaneValue::Unset) => crate::db::with(|d| d.set_field(&job, &it.path, &sec, &uuid, serde_json::Value::Null)),
+                    (LaneBy::Col(uuid), LaneValue::Check(on)) => crate::db::with(|d| d.set_field(&job, &it.path, &sec, &uuid, serde_json::Value::Bool(on))),
+                    _ => Some(Ok(())),
+                };
+                self.meta_err(r); self.reload_lists();
+            },
+        } }
+    }
     fn meta_err(&mut self, r: Option<Result<(), String>>) { match r { Some(Ok(())) => {} Some(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, Instant::now()), None => self.toast.show("The database could not be opened.", min_ui::toast::ToastKind::Negative, Instant::now()) } }
     /// The cell being typed into is written. False: what was typed is no value of the column's type - the field stays.
     fn commit_cell(&mut self) -> bool {
@@ -374,6 +409,9 @@ impl Ui {
             return
         }
         let Some((job, sec)) = self.section_key() else { return }; let (col, item, hidden, trashed) = self.meta_ctx.clone();
+        // the board: the section as lanes grouped by a column, or as the list again
+        if id == BOARD_LIST { self.board_of.remove(&(job, sec)); self.items_reload(); return }
+        if id >= BOARD_BY { if let Some(by) = self.board_ctx.get((id - BOARD_BY) as usize).cloned() { self.board_of.insert((job, sec), by); self.cancel_cell(); self.items_reload(); } return }
         let c = col.and_then(|k| self.items.cols.get(k).cloned());
         match id {
             META_EDIT => if let Some(c) = c { self.ask_column(Some(c.id), &c.kind, &c.name, &c.options); },
@@ -928,6 +966,7 @@ impl Ui {
         let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.menubar.as_ref().is_some_and(|m| m.bar.is_open()) { return }
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
+        if self.tracker.is_none() && self.job_list.contains(p) { if let Some(b) = self.board.as_mut() { if self.mods.shift { b.hbar.wheel(dy, now); } else { b.bar.wheel(dy, now); } return } }
         if (self.job.is_some() || self.tracker.is_some()) && self.job_list.contains(p) { let shift = self.mods.shift; let l = self.list_mut(); if shift { l.hbar.wheel(dy, now); } else { l.bar.wheel(dy, now); } return }
         if self.blank() { return }
         let n = self.shown(); for pane in self.panes.iter_mut().take(n) { if pane.rect.contains(p) { pane.wheel(dy, now); return } }
@@ -1123,6 +1162,14 @@ impl Ui {
             if self.tracker.is_none() {
             if self.job_add.rect.width() > 0.0 && self.job_add.event(e, now) == Response::Clicked { self.ask_add_item(); return }
             if self.job_meta.rect.width() > 0.0 && self.job_meta.event(e, now) == Response::Clicked { let r = self.job_meta.rect; self.columns_menu(None, (r.x0, r.y0 - 4.0 * s)); return }
+            if self.board_btn.rect.width() > 0.0 && self.board_btn.event(e, now) == Response::Clicked { let r = self.board_btn.rect; self.board_menu((r.x0, r.y0 - 4.0 * s)); return }
+            // the board stands in the list's place: its cards are pressed, and dragged from lane to lane
+            if self.board.is_some() {
+                let (acts, inside, dragging) = match self.board.as_mut() { Some(b) => { let inside = e.pos().is_some_and(|(x, y)| b.rect.contains(kurbo::Point::new(x, y))); (b.event(e, now), inside, b.dragging()) } None => (vec![], false, false) };
+                if matches!(e, Event::Down { .. }) && inside { self.leave_path(); self.leave_search(); self.focus = Focus::Items; }
+                let any = !acts.is_empty(); self.board_acts(acts);
+                if inside || any || dragging { self.set_cursor(if dragging { winit31::cursor::CursorIcon::Grabbing } else { winit31::cursor::CursorIcon::Default }); return }
+            }
             // a cell being typed into: its field takes what is on it; a press anywhere else takes what was typed
             if let Some(ed) = self.items.edit.as_mut() {
                 let on = e.pos().is_some_and(|(x, y)| ed.field.hit(x, y));
@@ -1130,7 +1177,7 @@ impl Ui {
                 if matches!(e, Event::Down { .. }) && !self.commit_cell() { return }
             }
             let in_list = e.pos().is_some_and(|(x, y)| self.items.rect.contains(kurbo::Point::new(x, y)));
-            let acts = match self.job.as_ref() { Some(j) => self.items.event(e, &j.items, now), None => vec![] };
+            let acts = match self.job.as_ref() { Some(j) if self.board.is_none() => self.items.event(e, &j.items, now), _ => vec![] };
             if matches!(e, Event::Down { .. }) && in_list { self.leave_path(); self.leave_search(); if self.focus != Focus::Cell { self.focus = Focus::Items; } }
             let any = !acts.is_empty(); self.items_acts(acts);
             if (matches!(e, Event::Down { .. }) && in_list) || any { self.set_cursor(winit31::cursor::CursorIcon::Default); return }
@@ -1184,6 +1231,7 @@ impl Ui {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
         if self.lightbox.is_open() { return self.lightbox_key(k, name) }
         if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.key(k, &mut self.fonts) { self.column_done(done); } return }
+        if matches!(k.key, Key::Named(Named::Escape)) && self.board.as_mut().is_some_and(|b| b.cancel_drag()) { return }
         if let Some(p) = self.chip.as_mut() { let s = self.window.scale_factor(); let (pick, close) = p.key(k, &mut self.fonts, s); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
         if self.ctx.is_open() { if matches!(k.key, Key::Named(Named::Escape)) { self.ctx.close(); } return }
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
@@ -1333,6 +1381,10 @@ impl Ui {
             "trkopen" => if let Some(p) = num(arg).and_then(|i| self.tracker.as_ref().and_then(|t| t.rows.get(i).map(|r| r.path.clone()))) { self.open_tracked(p); },
             "trk" => if let Some(tr) = self.tracker.as_ref() { eprintln!("UFB_DEMO: tracker {:?} due {:?} columns [{}]; {}", tr.scope == crate::tracker::Scope::All, tr.due, tr.list.cols.iter().map(|c| format!("{}:{}", c.name, c.kind)).collect::<Vec<_>>().join(", "),
                 tr.list.order.iter().filter_map(|i| tr.rows.get(*i)).map(|it| format!("{} [{}]", it.name, tr.list.cols.iter().map(|c| crate::itemlist::text_of(&c.kind, tr.list.value(it, c))).collect::<Vec<_>>().join(" | "))).collect::<Vec<_>>().join("; ")); },
+            // the board: `board:<a column's name|tracked|off>` `boardsay` `carddrop:<item>:<lane>` (the item's card let go on that lane)
+            "board" => if let Some(key) = self.section_key() { if arg == "off" { self.board_of.remove(&key); } else if let Some((by, _)) = crate::board::eligible(&self.items).into_iter().find(|(_, n)| n.eq_ignore_ascii_case(arg)) { self.board_of.insert(key, by); } self.items_reload(); },
+            "boardsay" => match self.board.as_ref() { Some(b) => eprintln!("UFB_DEMO: board by {:?}: {}", b.by, b.lanes.iter().map(|l| format!("{} [{}]", l.title, l.items.iter().filter_map(|i| self.job.as_ref().and_then(|j| j.items.get(*i))).map(|it| it.name.as_str()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(" | ")), None => eprintln!("UFB_DEMO: no board (the list)") },
+            "carddrop" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { if let Some(v) = self.board.as_ref().and_then(|b| b.lanes.get(k).map(|l| l.value.clone())) { self.board_acts(vec![crate::board::Act::Drop(i, v)]); } } },
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
@@ -1414,7 +1466,7 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.tracker.as_ref().is_some_and(|t| t.list.animating(now)) || self.trk_btn.animating(now) || self.due_btns.iter().any(|b| b.animating(now)) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || self.board.as_ref().is_some_and(|b| b.animating(now)) || self.board_btn.animating(now) || self.tracker.as_ref().is_some_and(|t| t.list.animating(now)) || self.trk_btn.animating(now) || self.due_btns.iter().any(|b| b.animating(now)) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
             || ((!self.demo.is_empty() || (self.shot.is_some() && !self.done)) && (std::env::var_os("UFB_DEMO_IDLE").is_none() || !self.lightbox.is_open()))
@@ -1587,7 +1639,7 @@ impl Ui {
         } else { self.tab_new.rect = Rect::ZERO; }
 
         // -- a job: its bar, and its item list
-        self.job_add.rect = Rect::ZERO; self.job_meta.rect = Rect::ZERO;
+        self.job_add.rect = Rect::ZERO; self.job_meta.rect = Rect::ZERO; self.board_btn.rect = Rect::ZERO;
         if let Some(j) = &self.job {
             let sb = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let radius = t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s; let cy = job_bar.y0 + (job_bar.height() - sb) / 2.0;
             paint::hline(scene, job_bar.x0, job_bar.x1, job_bar.y1 - s, s, t::DIVIDER_COLOR);
@@ -1609,12 +1661,17 @@ impl Ui {
             let lr = self.job_list; let foot = 40.0 * s;
             let title = if j.missing { "The job's folder is not there".to_string() } else if j.loading && j.items.is_empty() { "Items".to_string() } else { format!("Items ({})", j.items.len()) };
             if self.items.order.len() != j.items.len() { self.items.reorder(&j.items); }
-            self.items.layout(Rect::new(lr.x0, lr.y0, lr.x1 - s, (lr.y1 - foot).max(lr.y0)), j.items.len(), s);
-            self.items.paint(scene, fonts, &j.items, j.chosen, matches!(self.focus, Focus::Items | Focus::Cell), &title, if j.loading || j.missing { "" } else { "Nothing here yet" }, now);
+            let lrect = Rect::new(lr.x0, lr.y0, lr.x1 - s, (lr.y1 - foot).max(lr.y0));
+            match self.board.as_mut() {
+                // (the board, in the list's place: the same items, as cards in lanes)
+                Some(b) => { b.layout(lrect, s); b.paint(scene, fonts, &j.items, &self.items, j.chosen, matches!(self.focus, Focus::Items | Focus::Cell), now); }
+                None => { self.items.layout(lrect, j.items.len(), s); self.items.paint(scene, fonts, &j.items, j.chosen, matches!(self.focus, Focus::Items | Focus::Cell), &title, if j.loading || j.missing { "" } else { "Nothing here yet" }, now); }
+            }
             paint::hline(scene, lr.x0, lr.x1, lr.y1 - foot, s, t::DIVIDER_COLOR); { let hot = self.over_gap == Some(2) || matches!(self.drag, Some(Drag::JobList(..))); paint::rect(scene, Rect::new(lr.x1 - s, lr.y0, lr.x1 + if hot { s } else { 0.0 }, lr.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR }); }
             let mut fx = lr.x0 + 10.0 * s;
             if let Some(label) = add_label { self.job_add.label = Some(label.to_string()); let w = self.job_add.measure(fonts, s).0; self.job_add.rect = Rect::new(fx, lr.y1 - foot + (foot - sb) / 2.0, fx + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_add.corners = Corners::all(radius); self.job_add.paint(scene, fonts, s, now); fx += w + 8.0 * s; }
-            if !j.missing && j.section.is_some() { let w = self.job_meta.measure(fonts, s).0; self.job_meta.rect = Rect::new(fx, lr.y1 - foot + (foot - sb) / 2.0, fx + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_meta.corners = Corners::all(radius); self.job_meta.paint(scene, fonts, s, now); }
+            if !j.missing && j.section.is_some() { let w = self.job_meta.measure(fonts, s).0; self.job_meta.rect = Rect::new(fx, lr.y1 - foot + (foot - sb) / 2.0, fx + w, lr.y1 - foot + (foot + sb) / 2.0); self.job_meta.corners = Corners::all(radius); self.job_meta.paint(scene, fonts, s, now); fx += w + 8.0 * s; }
+            if !j.missing && j.section.is_some() { let w = self.board_btn.measure(fonts, s).0; self.board_btn.rect = if fx + w <= lr.x1 - 6.0 * s { Rect::new(fx, lr.y1 - foot + (foot - sb) / 2.0, fx + w, lr.y1 - foot + (foot + sb) / 2.0) } else { Rect::ZERO }; self.board_btn.corners = Corners::all(radius); self.board_btn.selected = self.board.is_some(); if self.board_btn.rect.width() > 0.0 { self.board_btn.paint(scene, fonts, s, now); } }
             }
         } else { self.trk_btn.rect = Rect::ZERO; }
         // -- the tracker: its strip (its name where no job's bar says it, the Due chips when a date is among its columns), its list

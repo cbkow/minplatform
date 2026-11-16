@@ -75,7 +75,9 @@ pub fn rows_for_columns(column: bool, hidden: &[String], trashed: &[String], mod
     rows.extend([Row::Sep, ours(META_MODIFIED, if modified { "Hide Modified" } else { "Show Modified" })]);
     rows
 }
-pub const TRK_OPEN: u32 = 58;
+pub const TRK_OPEN: u32 = 58; pub const BOARD_LIST: u32 = 59; pub const BOARD_BY: u32 = 4000;
+/// The rows that show a section's items as a board, grouped by one of these (their names), or as the list again.
+pub fn rows_for_board(by: &[String], on: bool) -> Vec<Row> { let mut rows: Vec<Row> = by.iter().enumerate().map(|(k, n)| named(BOARD_BY + k as u32, format!("Board by {n}"))).collect(); if on { rows.extend([Row::Sep, ours(BOARD_LIST, "Show as List")]); } rows }
 /// The rows for a row of the tracker.
 pub fn rows_for_tracked() -> Vec<Row> { vec![ours(TRK_OPEN, "Open in Job"), Row::Reveal, Row::Sep, ours(META_TRACK, "Untrack")] }
 /// The rows for an item of a job's list.
