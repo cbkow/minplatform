@@ -83,6 +83,9 @@ fn handle(req: &Request, ctx: &mut Ctx) -> Response {
         OP_VIDEO => video_frame(&req.path, make, ctx.poster.get_or_insert_with(qcv_player::poster::Poster::headless)).map_err(|_| (FAILED, 0)),
         OP_THUMB => sys::thumbnail(&req.path, make, soft),
         OP_ICON => sys::icon(&req.path, px, soft),
+        // the lightbox's picture: whole, as decoded - its own kind of answer
+        OP_FULL => { match full(&req.path) { Ok(f) => { r.w = f.w as u16; r.h = f.h as u16; r.aux = f.reduced; r.payload = f.pack(); } Err(_) => r.status = FAILED } r.work_us = t.elapsed().as_micros().min(u32::MAX as u128) as u32; return r }
+        OP_LAYERS => { r.payload = if req.path.to_lowercase().ends_with(".exr") { min_image::exr::layers(&req.path).unwrap_or_default().join("\n").into_bytes() } else { Vec::new() }; return r }
         OP_CACHED => match ctx.cache().map(|c| c.lookup(path, req.fsize, req.mtime)) { Some(Kept::Hit(img)) => Ok(img), Some(Kept::NoPicture) => Err((NONE, 0)), _ => Err((MISS, 0)) },
         OP_MARK => { if let Some(c) = ctx.cache() { c.mark(path, req.fsize, req.mtime); } return r }
         OP_PRUNE => { if let Some(c) = ctx.cache() { r.aux = c.prune(path) as u32; } return r }
@@ -164,14 +167,16 @@ fn radiance(path: &str) -> Result<(Vec<u8>, u32, u32), String> {
 }
 
 /// Our own decoders: the file -> a picture that fits `px`.
+/// A request's path may name a layer of the file after the character U+0001: (the file, the layer - "" the file's own picture).
+pub fn split_layer(path: &str) -> (&str, &str) { path.split_once('\u{1}').unwrap_or((path, "")) }
 pub fn decode(path: &str, px: u32) -> Result<Img, String> {
-    let px = px.clamp(16, 1024);
+    let px = px.clamp(16, 1024); let (path, layer) = split_layer(path);
     let ext = Path::new(path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
     let (rgba, w, h) = match ext.as_str() {
         // the flattened picture, read row by row at the size asked; opaque
         "psd" | "psb" => { let f = min_image::psd::load(Path::new(path), px)?; (f.rgba, f.w, f.h) }
         "hdr" => radiance(path)?,
-        _ => { let img = min_image::load_thumbnail(path, "", px).map_err(|e| e.to_string())?; if img.sentinel.is_some() { return Err("not a picture".into()) } rgba8(&img)? }
+        _ => { let img = min_image::load_thumbnail(path, layer, px).map_err(|e| e.to_string())?; if img.sentinel.is_some() { return Err("not a picture".into()) } rgba8(&img)? }
     };
     if w == 0 || h == 0 || rgba.len() != (w as usize) * (h as usize) * 4 { return Err("an empty picture".into()) }
     let (tw, th) = fit(w, h, px);
@@ -216,6 +221,75 @@ fn rgba8(img: &min_image::Image) -> Result<(Vec<u8>, u32, u32), String> {
     }
     Ok((out, w as u32, h as u32))
 }
+/// The longer side of the lightbox's picture at most (canon row 473, point 4): a larger file is shown reduced.
+pub const FULL_SIDE: u32 = 8192;
+/// A whole picture as its decoder gave it: planes in G, B, R [, A] order (the presenter's planar RGB), rows `pitch`
+/// bytes apart; `sample` 0: 8 bits, 1: 16 bits, 2: half floats (linear light). Alpha is straight. `orig`: the file's
+/// own size; `reduced`: by how much each side was divided to fit [`FULL_SIDE`] (1: not at all).
+pub struct Full { pub w: u32, pub h: u32, pub sample: u8, pub alpha: bool, pub pitch: u32, pub orig: (u32, u32), pub reduced: u32, pub planes: Vec<Vec<u8>> }
+impl Full {
+    pub const HEAD: usize = 16;
+    /// As it crosses the pipe: sample | alpha | planes | 0 | pitch u32 | the file's width u32 | height u32 | the planes.
+    pub fn pack(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::HEAD + self.planes.iter().map(|p| p.len()).sum::<usize>());
+        out.extend_from_slice(&[self.sample, self.alpha as u8, self.planes.len() as u8, 0]); out.extend_from_slice(&self.pitch.to_le_bytes()); out.extend_from_slice(&self.orig.0.to_le_bytes()); out.extend_from_slice(&self.orig.1.to_le_bytes());
+        for p in &self.planes { out.extend_from_slice(p); } out
+    }
+    /// Back from the pipe; `w`, `h` and `reduced` ride in the answer's own fields. None: not what it says.
+    pub fn unpack(w: u32, h: u32, reduced: u32, b: &[u8]) -> Option<Full> {
+        if b.len() < Self::HEAD || w == 0 || h == 0 { return None }
+        let (sample, alpha, n) = (b[0], b[1] != 0, b[2] as usize); let pitch = u32::from_le_bytes(b[4..8].try_into().ok()?); let orig = (u32::from_le_bytes(b[8..12].try_into().ok()?), u32::from_le_bytes(b[12..16].try_into().ok()?));
+        let bytes = if sample == 0 { 1 } else { 2 }; let each = pitch as usize * h as usize;
+        if sample > 2 || n != if alpha { 4 } else { 3 } || (pitch as usize) < w as usize * bytes || b.len() != Self::HEAD + n * each { return None }
+        Some(Full { w, h, sample, alpha, pitch, orig, reduced: reduced.max(1), planes: (0..n).map(|i| b[Self::HEAD + i * each..Self::HEAD + (i + 1) * each].to_vec()).collect() })
+    }
+    /// Straight RGBA, 8 bits, as planes.
+    fn from_rgba8(rgba: &[u8], w: u32, h: u32) -> Full {
+        let pitch = min_image::pitch_for(w, min_image::Sample::U8); let (wu, hu, p) = (w as usize, h as usize, pitch as usize);
+        let alpha = rgba.chunks_exact(4).any(|px| px[3] != 255); let mut planes = vec![vec![0u8; p * hu]; if alpha { 4 } else { 3 }];
+        for y in 0..hu { for x in 0..wu { let px = &rgba[(y * wu + x) * 4..]; planes[0][y * p + x] = px[1]; planes[1][y * p + x] = px[2]; planes[2][y * p + x] = px[0]; if alpha { planes[3][y * p + x] = px[3]; } } }
+        Full { w, h, sample: 0, alpha, pitch, orig: (w, h), reduced: 1, planes }
+    }
+    /// Every `k`-th pixel of every `k`-th row (a picture too large to show whole).
+    fn reduced_by(self, k: u32) -> Full {
+        if k <= 1 { return self } let bytes = if self.sample == 0 { 1usize } else { 2 }; let (k, w, h) = (k as usize, (self.w as usize).div_ceil(k as usize), (self.h as usize).div_ceil(k as usize));
+        let sample = match self.sample { 0 => min_image::Sample::U8, 1 => min_image::Sample::U16, _ => min_image::Sample::F16 }; let pitch = min_image::pitch_for(w as u32, sample) as usize; let old = self.pitch as usize;
+        let planes = self.planes.iter().map(|src| { let mut out = vec![0u8; pitch * h]; for y in 0..h { for x in 0..w { let (s, d) = ((y * k) * old + (x * k) * bytes, y * pitch + x * bytes); out[d..d + bytes].copy_from_slice(&src[s..s + bytes]); } } out }).collect();
+        Full { w: w as u32, h: h as u32, pitch: pitch as u32, reduced: self.reduced * k as u32, planes, ..self }
+    }
+}
+/// The lightbox's picture: the file decoded whole - by our decoders where we have one, else by the system.
+pub fn full(path: &str) -> Result<Full, String> {
+    let (path, layer) = split_layer(path);
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    let f = match ext.as_str() {
+        "psd" | "psb" => { let f = min_image::psd::load(Path::new(path), FULL_SIDE)?; Full::from_rgba8(&f.rgba, f.w, f.h) }
+        "hdr" => { let (rgba, w, h) = radiance(path)?; Full::from_rgba8(&rgba, w, h) }
+        _ if min_image::Format::of(path).is_some() => {
+            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8);
+            let img = min_image::load(path, layer, threads).map_err(|e| e.to_string())?; if img.sentinel.is_some() { return Err("not a picture".into()) }
+            let n = if img.alpha { 4 } else { 3 }; if img.planes.len() < n || img.planes.iter().take(n).any(|p| p.len() < img.pitch as usize * img.height as usize) { return Err("the decoder gave a picture that is not whole".into()) }
+            let each = img.pitch as usize * img.height as usize; let mut planes = img.planes; planes.truncate(n); for p in planes.iter_mut() { p.truncate(each); }
+            Full { w: img.width, h: img.height, sample: match img.sample { min_image::Sample::U8 => 0, min_image::Sample::U16 => 1, min_image::Sample::F16 => 2 }, alpha: img.alpha, pitch: img.pitch, orig: (img.width, img.height), reduced: 1, planes }
+        }
+        _ => system_full(path)?,
+    };
+    if f.w == 0 || f.h == 0 { return Err("an empty picture".into()) }
+    let k = f.w.max(f.h).div_ceil(FULL_SIDE);
+    Ok(f.reduced_by(k))
+}
+/// A picture only the system reads (HEIC, camera raw, WebP ...), whole. macOS: ImageIO. Elsewhere: the largest the
+/// system's own thumbnail gives.
+fn system_full(path: &str) -> Result<Full, String> {
+    #[cfg(target_os = "macos")] { let (rgba, w, h) = min_image::imageio::load(Path::new(path), FULL_SIDE)?; Ok(Full::from_rgba8(&rgba, w, h)) }
+    #[cfg(not(target_os = "macos"))] {
+        let img = sys::thumbnail(path, 1024, Duration::from_secs(8)).map_err(|_| "the system has no picture of it".to_string())?;
+        // (the system's is multiplied by its alpha: the planes are straight)
+        let mut rgba = img.rgba; for p in rgba.chunks_exact_mut(4) { let a = p[3] as u32; if a > 0 && a < 255 { for c in &mut p[..3] { *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8; } } }
+        Ok(Full::from_rgba8(&rgba, img.w, img.h))
+    }
+}
+
 /// A picture whose colour is already multiplied by its alpha, made to fit `px` (never enlarged): each new pixel is
 /// the plain average of those it covers.
 pub fn fitted(img: Img, px: u32) -> Img {
@@ -275,6 +349,18 @@ mod tests {
         let half = fitted(Img { w: 4, h: 2, rgba: src.clone() }, 2); assert_eq!((half.w, half.h), (2, 1)); assert_eq!(half.rgba, [255, 0, 0, 255, 0, 0, 0, 0]);
         let one = fitted(Img { w: 4, h: 2, rgba: src.clone() }, 1); assert_eq!(one.rgba, [128, 0, 0, 128], "half covered: half the colour, half the alpha");
         let same = fitted(Img { w: 4, h: 2, rgba: src.clone() }, 512); assert_eq!((same.w, same.h, same.rgba), (4, 2, src), "never enlarged");
+    }
+    #[test]
+    fn a_whole_picture_crosses_the_pipe_and_a_huge_one_is_reduced() {
+        // 3 x 2, straight RGBA: the first pixel half-clear red
+        let mut rgba = vec![255u8; 3 * 2 * 4]; rgba[..4].copy_from_slice(&[200, 10, 20, 128]);
+        let f = Full::from_rgba8(&rgba, 3, 2); assert!(f.alpha && f.planes.len() == 4 && f.pitch == 256); assert_eq!((f.planes[2][0], f.planes[0][0], f.planes[1][0], f.planes[3][0]), (200, 10, 20, 128), "planes are G, B, R, A");
+        let back = Full::unpack(3, 2, 1, &f.pack()).unwrap(); assert_eq!((back.w, back.h, back.sample, back.alpha, back.pitch, back.orig), (3, 2, 0, true, 256, (3, 2))); assert_eq!(back.planes, f.planes);
+        assert!(Full::unpack(3, 2, 1, &f.pack()[..40]).is_none() && Full::unpack(4000, 2, 1, &f.pack()).is_none(), "an answer that is not what it says is refused");
+        let opaque = Full::from_rgba8(&[9u8, 8, 7, 255, 1, 2, 3, 255], 2, 1); assert!(!opaque.alpha && opaque.planes.len() == 3);
+        // every second pixel of every second row
+        let mut wide = vec![255u8; 4 * 4 * 4]; for (i, px) in wide.chunks_exact_mut(4).enumerate() { px[0] = i as u8; }
+        let r = Full::from_rgba8(&wide, 4, 4).reduced_by(2); assert_eq!((r.w, r.h, r.reduced, r.orig), (2, 2, 2, (4, 4))); assert_eq!((r.planes[2][0], r.planes[2][1], r.planes[2][r.pitch as usize]), (0, 2, 8));
     }
     #[test]
     fn our_decoders_take_the_production_formats_only() {

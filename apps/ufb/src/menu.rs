@@ -7,10 +7,10 @@
 use crate::model::SortBy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Cmd { Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
+pub enum Cmd { Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]   // the ids are the native menu's (macOS)
 impl Cmd {
-    const ALL: [Cmd; 36] = [Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
+    const ALL: [Cmd; 37] = [Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
     pub fn id(self) -> String { format!("{self:?}") }
     pub fn from_id(id: &str) -> Option<Cmd> { Cmd::ALL.into_iter().find(|c| c.id() == id) }
 }
@@ -70,6 +70,8 @@ pub fn spec(mac: bool) -> Vec<(&'static str, Vec<Node>)> {
         }),
         ("View", vec![
             check("as List", cmd("1"), Cmd::AsList), check("as Grid", cmd("2"), Cmd::AsGrid), Node::Sep,
+            // (the lightbox, row 452: Space is its key - not written here as a shortcut, because Space is also a letter of a name being typed to find it)
+            item("Preview", None, Cmd::Preview), Node::Sep,
             check("Show Hidden Files", if m { cmd_shift(".") } else { cmd("H") }, Cmd::Hidden), check("Folders First", None, Cmd::FoldersFirst),
             Node::Sub { label: "Sort By", items: vec![check("Name", None, Cmd::Sort(0)), check("Date Modified", None, Cmd::Sort(1)), check("Size", None, Cmd::Sort(2)), check("Kind", None, Cmd::Sort(3))] }, Node::Sep,
             check("Show Second Pane", None, Cmd::SecondPane), Node::Sep,
@@ -119,7 +121,7 @@ pub struct State { pub grid: bool, pub hidden: bool, pub folders_first: bool, pu
 impl State {
     fn checked(&self, c: Cmd) -> bool { match c { Cmd::AsList => !self.grid, Cmd::AsGrid => self.grid, Cmd::Hidden => self.hidden, Cmd::FoldersFirst => self.folders_first, Cmd::SecondPane => self.second, Cmd::Sort(i) => self.sort.column() == i as usize, _ => false } }
     fn enabled(&self, c: Cmd) -> bool { match c { Cmd::Back => self.can_back, Cmd::Forward => self.can_forward, Cmd::Up => self.can_up,
-        Cmd::NewFolder => self.writable, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo,
+        Cmd::NewFolder => self.writable, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo, Cmd::Preview => self.chosen >= 1,
         Cmd::Copy => self.typing || self.chosen >= 1, Cmd::Cut => self.typing || (self.writable && self.chosen >= 1), Cmd::Paste => self.typing || self.writable, Cmd::PasteMove => !self.typing && self.writable,
         Cmd::CopyToOther => self.other && self.chosen >= 1, Cmd::MoveToOther => self.other && self.writable && self.chosen >= 1, _ => true } }
 }

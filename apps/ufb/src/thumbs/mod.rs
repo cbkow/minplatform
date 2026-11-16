@@ -117,7 +117,7 @@ impl Thumbs {
         let id = self.next; self.next += 1;
         let (soft, hard) = match a.op { OP_DECODE | OP_VIDEO => (0, DECODE_HARD), OP_CACHED => (0, CACHE_HARD), _ => (SYS_SOFT, SYS_HARD) };
         let flags = if self.cached && matches!(a.op, OP_DECODE | OP_VIDEO | OP_THUMB) { KEEP } else { 0 };
-        let job = Job { req: Request { id, op: a.op, flags, size: a.px as u16, soft_ms: soft, fsize: a.fsize, mtime: a.mtime, path: a.path.clone() }, hard_ms: hard };
+        let job = Job::new(Request { id, op: a.op, flags, size: a.px as u16, soft_ms: soft, fsize: a.fsize, mtime: a.mtime, path: a.path.clone() }, hard);
         // the cache's questions go to the decoders' helpers: the system's are kept for the system (one that hangs there holds no answer back)
         if matches!(a.op, OP_DECODE | OP_CACHED) { self.decode.submit(job) } else if a.op == OP_VIDEO { self.video.submit(job) } else { self.system.submit(job) }
         self.asked.insert(id, a); id
@@ -125,7 +125,7 @@ impl Thumbs {
     /// Something said to the cache that nothing waits for (its answer is dropped).
     fn tell(&mut self, op: u8, path: String, fsize: u64, mtime: i64) {
         if !self.cached { return } let id = self.next; self.next += 1;
-        self.decode.submit(Job { req: Request { id, op, flags: 0, size: 0, soft_ms: 0, fsize, mtime, path }, hard_ms: DECODE_HARD });
+        self.decode.submit(Job::new(Request { id, op, flags: 0, size: 0, soft_ms: 0, fsize, mtime, path }, DECODE_HARD));
     }
     /// A folder was read: what the cache keeps for files that are no longer in it is dropped.
     pub fn listed(&mut self, dir: &Path) { self.tell(OP_PRUNE, dir.to_string_lossy().into_owned(), 0, 0); }

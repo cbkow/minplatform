@@ -467,7 +467,7 @@ impl Engine {
                 if left > 0 { rep.error = Some(if left == 1 { "One copy was changed since it was made and was left where it is.".into() } else { format!("{left} copies were changed since they were made and were left where they are.") }); } }
             Record::Transfer { copied, moved, replaced, .. } => { let mut left = 0;
                 // the copies to the Trash (one changed since stays); what was moved, back; then what they replaced, back from the Trash
-                for (p, was) in copied.into_iter().rev() { if stamp(&p) != Some(was) { if std::fs::symlink_metadata(&p).is_ok() { left += 1; } continue } match trash(&p) { Ok(_) => note(&mut rep, p.parent()), Err(_) => left += 1 } }
+                for (p, was) in copied.into_iter().rev() { if stamp(&p) != Some(was) { if std::fs::symlink_metadata(&p).is_ok() { #[cfg(test)] eprintln!("UNDO-DEBUG stamp {:?} now {:?} was {:?}", p, stamp(&p), was); left += 1; } continue } match trash(&p) { Ok(_) => note(&mut rep, p.parent()), Err(e) => { #[cfg(test)] eprintln!("UNDO-DEBUG trash {:?} {:?}", p, e); let _ = e; left += 1 } } }
                 let cancel = AtomicBool::new(false); let mut none = |_: u64| {};
                 for (from, to) in moved.into_iter().rev() { if let Some(dir) = from.parent() { let _ = std::fs::create_dir_all(dir); }
                     match move_one(&to, &from, &mut Progress { cancel: &cancel, bytes: &mut none }) { Ok(()) => { note(&mut rep, from.parent()); note(&mut rep, to.parent()); rep.made.push(from); } Err(_) => left += 1 } }

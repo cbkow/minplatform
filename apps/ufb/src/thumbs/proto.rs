@@ -24,6 +24,13 @@ pub const OP_MARK: u8 = 7;
 pub const OP_PRUNE: u8 = 8;
 /// `path` is a folder: forget which of its files have no picture (Refresh asks again).
 pub const OP_FORGET: u8 = 9;
+/// The lightbox's picture (canon row 473, point 4): the file decoded WHOLE, as its decoder gives it - planes of 8 or
+/// 16 bits or half floats, not yet colour-managed (the presenter does that, as for QCView's stills). The payload is a
+/// small head and the planes (`helper::Full`); `aux` is how many times it was reduced (0: it is whole).
+pub const OP_FULL: u8 = 10;
+/// The layers of an EXR file (its parts, or the layers its channels are named for): their names, one a line.
+/// A layer is then asked for by [`OP_DECODE`] or [`OP_FULL`] with the path, the character U+0001 and the layer's name.
+pub const OP_LAYERS: u8 = 11;
 /// A flag of [`OP_DECODE`], [`OP_VIDEO`] and [`OP_THUMB`]: the picture is made at the cache's size, kept there, and answered at `size`.
 pub const KEEP: u8 = 1;
 /// Tests only (honoured when the helper was started with `UFB_HELPER_TEST` set): end at once; never answer.
@@ -105,11 +112,15 @@ pub fn write_response(w: &mut impl Write, r: &Response) -> io::Result<()> {
 /// The largest answer the parent accepts (a 1024 px picture is 4 MiB): a helper gone mad cannot make it allocate.
 pub const MAX_PAYLOAD: usize = 16 << 20;
 
-pub fn read_response(r: &mut impl Read) -> io::Result<Response> {
+/// The largest answer to [`OP_FULL`]: an 8192 x 8192 picture of four half-float planes, rows padded.
+pub const MAX_FULL: usize = 600 << 20;
+pub fn read_response(r: &mut impl Read) -> io::Result<Response> { read_response_max(r, MAX_PAYLOAD) }
+/// As [`read_response`], with the ceiling the request allows.
+pub fn read_response_max(r: &mut impl Read, max: usize) -> io::Result<Response> {
     let mut h = [0u8; 4 + RESP_HEAD];
     r.read_exact(&mut h)?;
     let len = u32::from_le_bytes(h[0..4].try_into().unwrap()) as usize;
-    if !(RESP_HEAD..=RESP_HEAD + MAX_PAYLOAD).contains(&len) { return Err(io::Error::other("bad frame")) }
+    if !(RESP_HEAD..=RESP_HEAD + max).contains(&len) { return Err(io::Error::other("bad frame")) }
     let mut payload = vec![0u8; len - RESP_HEAD];
     r.read_exact(&mut payload)?;
     Ok(Response { id: u64::from_le_bytes(h[4..12].try_into().unwrap()), status: h[12], w: u16::from_le_bytes([h[14], h[15]]), h: u16::from_le_bytes([h[16], h[17]]),

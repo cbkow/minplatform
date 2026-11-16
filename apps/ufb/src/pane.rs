@@ -47,6 +47,8 @@ pub struct Pane {
     pub menu_at: Option<(Option<usize>, (f64, f64))>,
     /// a press on a chosen entry was moved: the window starts the system's drag of what is chosen
     pub drag_out: bool,
+    /// a double click on a file (the row): the lightbox, or the default application (the window decides); "Open" on a file: the default application
+    pub preview: Option<usize>, pub open_default: Option<PathBuf>,
     pub rect: Rect, scale: f64,
 }
 
@@ -92,7 +94,7 @@ pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -226,9 +228,19 @@ impl Pane {
     pub fn expand(&mut self, port: &Port, row: usize) { let Some(id) = self.model.row(row) else { return }; let mut read = false; self.keep(|m| read = m.expand(id)); if read { self.read_inside(port, id); } }
     pub fn collapse(&mut self, row: usize) { if let Some(id) = self.model.row(row) { self.keep(|m| m.collapse(id)); } }
     /// A double click, the open key: a folder is gone into. A file: nothing yet (the lightbox is a later slice; the system is NOT asked to open it).
-    pub fn activate(&mut self, port: &Port, row: usize) { if let Some(id) = self.model.row(row) { if self.model.node(id).dir { let p = self.model.path_of(id, self.path()); self.go(port, p); } } }
-    /// The Open command: the entry under the cursor, when it is chosen.
-    pub fn open_chosen(&mut self, port: &Port) { if let Some(c) = self.sel().cursor.filter(|c| self.sel().is_selected(*c)) { self.activate(port, c); } }
+    pub fn activate(&mut self, port: &Port, row: usize) { if let Some(id) = self.model.row(row) { if self.model.node(id).dir { let p = self.model.path_of(id, self.path()); self.go(port, p); } else { self.preview = Some(row); } } }
+    /// The Open command: the entry under the cursor, when it is chosen - a folder is gone into, a file is opened in its default application (row 473, point 2).
+    pub fn open_chosen(&mut self, port: &Port) { if let Some(c) = self.sel().cursor.filter(|c| self.sel().is_selected(*c)) { match self.model.row(c) { Some(id) if !self.model.node(id).dir => self.open_default = Some(self.model.path_of(id, self.path())), _ => self.activate(port, c) } } }
+    /// What row `row` is, for the lightbox: (where, its name, its size, its kind, whether it is a folder).
+    pub fn entry(&self, row: usize) -> Option<(PathBuf, String, u64, String, bool)> { let id = self.model.row(row)?; let n = self.model.node(id); Some((self.model.path_of(id, self.path()), n.name.to_string(), n.size, self.model.kind(id).to_string(), n.dir)) }
+    /// The row under the cursor, when it is chosen.
+    pub fn cursor_row(&self) -> Option<usize> { self.sel().cursor.filter(|c| self.sel().is_selected(*c)) }
+    /// The row the entry at `path` is shown at.
+    pub fn row_at_path(&self, path: &Path) -> Option<usize> { self.model.row_of(self.id_at(path)?) }
+    /// The next row (`step` 1) or the one before (-1) that is not a folder.
+    pub fn next_file(&self, from: usize, step: i32) -> Option<usize> { let n = self.model.len() as i64; let mut i = from as i64 + step as i64; while i >= 0 && i < n { if self.model.row(i as usize).is_some_and(|id| !self.model.node(id).dir) { return Some(i as usize) } i += step as i64; } None }
+    /// Choose this row alone and bring it into view (the lightbox moved on to it).
+    pub fn choose_row(&mut self, row: usize) { self.select_rows(row, row); if self.mode == Mode::List { self.table.reveal(row); } else { self.grid.reveal(row); } }
 
     /// The folder shown at a point of the pane, if one is.
     pub fn folder_at(&self, x: f64, y: f64) -> Option<PathBuf> {
@@ -362,7 +374,9 @@ mod tests {
         p.expand(&port, 0); settle(&mut p, &port, &rx); p.select_rows(3, 4); assert_eq!(chosen(&p), ["shot_2.exr", "shot_10.exr"]);
         p.activate(&port, 1); assert_eq!(p.path(), t.0.join("renders")); assert_eq!(p.model.len(), 0, "the old rows are gone at once"); settle(&mut p, &port, &rx);
         assert_eq!(names(&p), ["v002", "beauty_2.exr", "beauty_10.exr"]); assert!(p.history.can_back() && !p.history.can_forward());
-        p.activate(&port, 1); assert_eq!(p.path(), t.0.join("renders"), "a file is not gone into (and not opened)");
+        p.activate(&port, 1); assert_eq!(p.path(), t.0.join("renders"), "a file is not gone into"); assert_eq!(p.preview.take(), Some(1), "a double click on a file is the lightbox's (or the default application's): the window decides");
+        assert_eq!(p.next_file(0, 1), Some(1)); assert_eq!(p.next_file(1, 1), Some(2)); assert_eq!(p.next_file(2, 1), None); assert_eq!(p.next_file(1, -1), None, "the folder before it is stepped over, and there is nothing before that");
+        assert_eq!(p.entry(1).map(|e| (e.1, e.4)), Some(("beauty_2.exr".to_string(), false))); assert_eq!(p.row_at_path(&t.0.join("renders/beauty_10.exr")), Some(2));
         // back: the choice is put back; nothing is open in place any more
         p.back(&port); settle(&mut p, &port, &rx); assert_eq!(p.path(), t.0); assert_eq!(chosen(&p), ["shot_2.exr", "shot_10.exr"]); assert_eq!(names(&p).len(), 5); assert!(p.history.can_forward());
         p.forward(&port); settle(&mut p, &port, &rx); assert_eq!(p.path(), t.0.join("renders"));

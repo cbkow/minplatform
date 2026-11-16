@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn make(n: usize, idle_ms: u64) -> Pool { Pool::new(PathBuf::from(env!("CARGO_BIN_EXE_UFB")), vec![("UFB_HELPER_TEST".into(), "1".into())], n, Duration::from_millis(idle_ms), Arc::new(|| {})) }
-fn job(id: u64, op: u8, path: &str, hard_ms: u32) -> Job { Job { req: Request::new(id, op, 256, 5000, path), hard_ms } }
+fn job(id: u64, op: u8, path: &str, hard_ms: u32) -> Job { Job::new(Request::new(id, op, 256, 5000, path), hard_ms) }
 fn next(p: &Pool) -> Done { p.rx.recv_timeout(Duration::from_secs(30)).expect("an answer") }
 struct Temp(PathBuf);
 impl Temp { fn new(tag: &str) -> Temp { let p = std::env::temp_dir().join(format!("ufb-helpers-{tag}-{}", std::process::id())); let _ = std::fs::remove_dir_all(&p); std::fs::create_dir_all(&p).unwrap(); Temp(p) } fn path(&self, name: &str) -> String { self.0.join(name).to_string_lossy().into_owned() } }
@@ -83,7 +83,7 @@ fn a_picture_is_made_once_and_then_comes_from_the_cache() {
     let t = Temp::new("cache"); let file = t.path("half.png"); picture(&file); std::fs::write(t.path("noise.exr"), vec![7u8; 5000]).unwrap();
     let db = t.path("db");
     let pool = || Pool::new(PathBuf::from(env!("CARGO_BIN_EXE_UFB")), vec![("UFB_HELPER_TEST".into(), "1".into()), ("UFB_THUMB_CACHE".into(), db.clone())], 2, Duration::from_secs(30), Arc::new(|| {}));
-    let ask = |id: u64, op: u8, flags: u8, px: u16, path: &str, mtime: i64| Job { req: Request { id, op, flags, size: px, soft_ms: 5000, fsize: 77, mtime, path: path.into() }, hard_ms: 20_000 };
+    let ask = |id: u64, op: u8, flags: u8, px: u16, path: &str, mtime: i64| Job::new(Request { id, op, flags, size: px, soft_ms: 5000, fsize: 77, mtime, path: path.into() }, 20_000);
     let p = pool();
     p.submit(ask(1, OP_CACHED, 0, 256, &file, 1000)); assert_eq!(next(&p).status, MISS, "nothing kept yet");
     p.submit(ask(2, OP_DECODE, KEEP, 256, &file, 1000)); let made = next(&p); assert_eq!((made.status, made.w, made.h), (OK, 256, 128), "answered at the size asked");

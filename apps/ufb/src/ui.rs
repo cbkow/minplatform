@@ -31,6 +31,8 @@ pub enum Out { /// the clipboard is the application's to reach: files to put on 
     /// (`mv`: "Move Item Here"); the text field in hand copies (`cut`) or pastes
     /// the system's drag of these files begins (a press on them was moved)
     Drag(Vec<PathBuf>),
+    /// a file to hand to the system: it opens in its default application
+    OpenDefault(PathBuf),
     CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste,
     NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
@@ -48,7 +50,7 @@ enum Drag { Sidebar(f64, f64), Split }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
 
 /// Logical px.
-const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -74,6 +76,9 @@ pub struct Ui {
     rename: Option<Renaming>, dialog: Option<(min_ui::dialog::Dialog, Asked)>, toast: min_ui::toast::Toast, rename_next: Option<PathBuf>,
     /// the engine's questions that wait for the one that is open; the running operation in the status bar: its cancel button, the place a click opens the list at, the list open
     /// drags of files: where a drop can go (written every frame), what the layer left for the loop
+    /// the lightbox (rows 452, 473): the file shown large; its close button; its last press (two make a double click)
+    lightbox: crate::lightbox::Lightbox, lb_close: ActionButton, lb_press: Option<(Instant, (f64, f64))>, /// the contact sheet's tiles as they were drawn, and the one under the pointer
+    lb_tiles: Vec<Rect>, lb_hover: Option<usize>, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
@@ -103,6 +108,7 @@ impl Ui {
         let key = |c: Cmd, text: &str| menu::tip(text, c);
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::ops::subscribe(id, port.clone());
+        let lightbox = { let p = port.clone(); crate::lightbox::Lightbox::new(Arc::new(move || p.send(Msg::Icon))) };
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
@@ -111,7 +117,8 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -125,7 +132,7 @@ impl Ui {
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
     pub fn poll(&mut self) -> bool {
-        let mut any = self.icons.poll(); any |= self.thumbs.poll();
+        let mut any = self.icons.poll(); any |= self.thumbs.poll(); any |= self.lightbox.poll();
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
         let (drops, ended) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended)) };
         for d in drops { any = true; crate::ops::submit(self.id, crate::ops::Op::Transfer { paths: d.paths, dest: d.dest, mv: d.mv }); }
@@ -139,7 +146,7 @@ impl Ui {
             match m {
                 Msg::Places { volumes, root } => { self.volumes = volumes; self.root = root; self.crumbs_for = None; }
                 Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); let port = self.port.clone(); self.pane().go(&port, path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
-                Msg::Icon => { self.icons.poll(); self.thumbs.poll(); }
+                Msg::Icon => { self.icons.poll(); self.thumbs.poll(); self.lightbox.poll(); }
                 Msg::Op(rep) => self.on_report(&rep),
                 Msg::Ask(q) => if q.origin == self.id { self.asks.push_back(q); },
                 other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { if std::mem::take(&mut p.listed) { self.thumbs.listed(p.path()); } break } } }
@@ -150,6 +157,108 @@ impl Ui {
     /// The window became active: the volumes are looked for again, and each pane asks whether its folder changed.
     pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
     pub fn deactivated(&mut self) { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
+
+    // ---------------------------------------------------------------- the lightbox (`lightbox.rs`)
+    /// The file at this row of a pane, large (a folder has none).
+    fn open_lightbox(&mut self, pane: usize, row: usize) {
+        let Some((path, name, size, kind, dir)) = self.panes.get(pane).and_then(|p| p.entry(row)) else { return }; if dir { return }
+        self.end_rename(); self.leave_path(); self.leave_search(); self.lb_press = None;
+        let ext = crate::lightbox::ext_of(&path); self.lightbox.open(path, name, size, kind, &ext, pane);
+    }
+    fn close_lightbox(&mut self) {
+        if !self.lightbox.is_open() { return } self.lightbox.close();
+        let e = &mut self.presenter.engine; e.clear_picture(); e.set_place(None); e.set_background(0);
+    }
+    /// The next file of the folder (or the one before): the pane's cursor goes with it.
+    fn step_lightbox(&mut self, step: i32) {
+        let Some((pane, path)) = self.lightbox.view.as_ref().map(|v| (v.pane, v.path.clone())) else { return };
+        let Some(p) = self.panes.get_mut(pane) else { return }; let Some(next) = p.row_at_path(&path).and_then(|r| p.next_file(r, step)) else { return };
+        p.choose_row(next); self.open_lightbox(pane, next);
+    }
+    /// Where the picture may lie: the window above the lightbox's strip.
+    fn lightbox_area(&self) -> Rect { let size = self.window.surface_size(); Rect::new(0.0, 0.0, size.width as f64, (size.height as f64 - LB_STRIP * self.scale()).max(1.0)) }
+    fn lightbox_pointer(&mut self, e: &Event) {
+        let now = Instant::now(); let area = self.lightbox_area(); let s = self.scale();
+        if self.lb_close.event(e, now) == Response::Clicked { self.close_lightbox(); return }
+        // the contact sheet of an EXR's layers: a press on one shows it large
+        if self.lightbox.view.as_ref().is_some_and(|v| v.state == crate::lightbox::State::Layers) {
+            self.lb_hover = e.pos().and_then(|(x, y)| self.lb_tiles.iter().position(|r| r.contains(kurbo::Point::new(x, y))));
+            if let (Event::Down { button: Button::Primary, .. }, Some(i)) = (*e, self.lb_hover) { self.lb_hover = None; self.lightbox.pick_layer(i); }
+            return
+        }
+        let Some(v) = self.lightbox.view.as_mut() else { return };
+        match *e {
+            Event::Down { x, y, button: Button::Primary } if area.contains(kurbo::Point::new(x, y)) && !self.lb_close.hit(x, y) => {
+                // two presses close together: actual size / fitted; one: the picture is taken hold of
+                if self.lb_press.take().is_some_and(|(t, at)| now.duration_since(t) < Duration::from_millis(400) && (at.0 - x).hypot(at.1 - y) < 6.0 * s) { v.drag_end(); v.toggle((x, y), area); } else { self.lb_press = Some((now, (x, y))); v.drag_begin((x, y)); }
+            }
+            Event::Move { x, y } => { v.drag_to((x, y), area); }
+            Event::Up { button: Button::Primary, .. } | Event::Leave => v.drag_end(),
+            _ => {}
+        }
+    }
+    fn lightbox_key(&mut self, k: &KeyEvent, name: &str) {
+        let area = self.lightbox_area(); let mid = (area.center().x, area.center().y);
+        // Escape (and Backspace) step back from one layer to the sheet of layers first (1.4.2's keys)
+        if matches!(name, "Escape" | "Backspace") && self.lightbox.back_to_layers() { let e = &mut self.presenter.engine; e.clear_picture(); return }
+        match name { "Space" | "Escape" => return self.close_lightbox(), "Left" | "Up" => return self.step_lightbox(-1), "Right" | "Down" => return self.step_lightbox(1), _ => {} }
+        let Some(v) = self.lightbox.view.as_mut() else { return };
+        match &k.key { Key::Char(c) => match c.as_str() { "0" | "f" | "F" => v.fit(), "1" => v.actual(mid, area), "=" | "+" => v.zoom_by(1.25, mid, area), "-" | "_" => v.zoom_by(0.8, mid, area), _ => {} }, _ => {} }
+    }
+    /// The wheel (or two fingers) zooms about the pointer, as in QCView's viewer.
+    fn lightbox_wheel(&mut self, dy: f64) { let (area, at) = (self.lightbox_area(), self.pointer); if let Some(v) = self.lightbox.view.as_mut() { v.zoom_by((-dy * 0.004).exp().clamp(0.5, 2.0), at, area); } }
+    /// A pinch on a trackpad: `delta` is the change of size (0.1: a tenth larger).
+    pub fn pinch(&mut self, delta: f64) { let (area, at) = (self.lightbox_area(), self.pointer); if let Some(v) = self.lightbox.view.as_mut() { v.zoom_by((1.0 + delta).clamp(0.5, 2.0), at, area); } }
+    /// The lightbox drawn: the picture is the presenter's (under this layer); the layer holds only the strip, the close
+    /// button and, while there is no picture, what to say instead.
+    fn redraw_lightbox(&mut self) {
+        let s = self.scale(); let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); let now = Instant::now(); let area = self.lightbox_area();
+        // a picture that has come goes to the presenter: on a dark ground, or on a checker when it has transparency
+        if let Some((frame, alpha)) = self.lightbox.take_frame() {
+            match self.presenter.engine.show(&frame) { Ok(()) => self.presenter.engine.set_background(if alpha { 2 } else { 1 }), Err(e) => if let Some(v) = self.lightbox.view.as_mut() { v.state = crate::lightbox::State::Failed(format!("This file could not be shown: {e}.")); } }
+        }
+        let Some(v) = self.lightbox.view.as_ref() else { return };
+        let ready = v.info().is_some();
+        if ready { self.presenter.engine.set_place(v.place(area).map(|r| [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32])); } else { self.presenter.engine.clear_picture(); }
+        let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
+        let scene: &mut Scene = self.layer.scene_mut(); scene.reset(); let fonts = &mut self.fonts;
+        // around the picture the window is plain: the presenter's checker is for what shows THROUGH the picture only
+        if let Some(r) = v.place(area).map(|r| r.intersect(area)).filter(|_| ready) {
+            for q in [Rect::new(0.0, 0.0, w, r.y0), Rect::new(0.0, r.y1, w, area.y1), Rect::new(0.0, r.y0, r.x0, r.y1), Rect::new(r.x1, r.y0, w, r.y1)] { if q.width() > 0.0 && q.height() > 0.0 { paint::rect(scene, q, t::BACKGROUND_LAYER_1_COLOR); } }
+        }
+        self.lb_tiles.clear();
+        if v.state == crate::lightbox::State::Layers {
+            // the contact sheet: the layers in a grid that fills the window, each with its name
+            paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
+            let n = v.layers.len().max(1); let pad = 28.0 * s; let label = 26.0 * s; let room = Rect::new(pad, pad + 30.0 * s, w - pad, area.y1 - pad);
+            let cols = (1..=n).find(|c| { let rows = n.div_ceil(*c); let cw = room.width() / *c as f64; (cw * 9.0 / 16.0 + label) * rows as f64 <= room.height() }).unwrap_or(n); let rows = n.div_ceil(cols);
+            let (cw, chh) = (room.width() / cols as f64, room.height() / rows as f64); let gap = 10.0 * s;
+            for (i, (lname, img)) in v.layers.iter().enumerate() {
+                let cell = Rect::new(room.x0 + (i % cols) as f64 * cw + gap, room.y0 + (i / cols) as f64 * chh + gap, room.x0 + (i % cols + 1) as f64 * cw - gap, room.y0 + (i / cols + 1) as f64 * chh - gap);
+                if self.lb_hover == Some(i) { paint::rounded(scene, cell.inflate(5.0 * s, 5.0 * s), t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
+                let pic = Rect::new(cell.x0, cell.y0, cell.x1, cell.y1 - label);
+                match img { Some(img) => { let (iw, ih) = (img.image.width.max(1) as f64, img.image.height.max(1) as f64); let k = (pic.width() / iw).min(pic.height() / ih); let (pw, ph) = (iw * k, ih * k); paint::image(scene, img, Rect::new(pic.center().x - pw / 2.0, pic.center().y - ph / 2.0, pic.center().x + pw / 2.0, pic.center().y + ph / 2.0)); }
+                    None => paint::rounded(scene, pic.inflate(-pic.width() * 0.3, -pic.height() * 0.3), 4.0 * s, t::GRAY_300) }
+                let l = fonts.layout_fit(lname, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, ink, cell.width()); draw_layout(scene, &l, Affine::translate((cell.center().x - l.width() as f64 / 2.0, cell.y1 - label + (label - l.height() as f64) / 2.0)));
+                self.lb_tiles.push(cell);
+            }
+        } else if !ready {
+            paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
+            let text = match &v.state { crate::lightbox::State::Loading => if now.duration_since(v.since) > Duration::from_millis(250) { "Loading\u{2026}".to_string() } else { String::new() }, crate::lightbox::State::Failed(why) => why.clone(), _ => "No preview of this kind yet. Open it with the Open command.".to_string() };
+            if !text.is_empty() { let l = fonts.layout_fit(&text, Family::Sans, t::BODY_SIZE_M * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, w - 80.0 * s); draw_layout(scene, &l, Affine::translate(((w - l.width() as f64) / 2.0, area.center().y - l.height() as f64 / 2.0))); }
+        }
+        // the strip: the name, then what the picture is
+        let strip = Rect::new(0.0, area.y1, w, h); paint::rect(scene, strip, t::BACKGROUND_LAYER_2_COLOR); paint::hline(scene, 0.0, w, strip.y0, s, t::DIVIDER_COLOR);
+        let size_px = t::BODY_SIZE_S * s as f32;
+        let facts = fonts.layout_fit(&v.facts(area), Family::Sans, size_px, t::FONT_WEIGHT_REGULAR as f32, sub, (w * 0.62).max(80.0 * s)); let fx = w - 14.0 * s - facts.width() as f64;
+        draw_layout(scene, &facts, Affine::translate((fx, strip.y0 + (strip.height() - facts.height() as f64) / 2.0)));
+        let name = fonts.layout_fit(&v.name, Family::Sans, size_px, t::FONT_WEIGHT_BOLD as f32, ink, (fx - 28.0 * s).max(60.0 * s));
+        draw_layout(scene, &name, Affine::translate((14.0 * s, strip.y0 + (strip.height() - name.height() as f64) / 2.0)));
+        // the close button, clear of the window's own buttons: top right
+        let bh = t::ACTION_BUTTON_HEIGHT_M as f64 * s; self.lb_close.rect = Rect::new(w - bh - 12.0 * s, 12.0 * s, w - 12.0 * s, 12.0 * s + bh); self.lb_close.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s);
+        paint::rounded(scene, self.lb_close.rect, t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s, t::BACKGROUND_LAYER_2_COLOR); self.lb_close.paint(scene, fonts, s, now);
+        self.present(now);
+    }
 
     // ---------------------------------------------------------------- file operations (`ops.rs`)
     /// An operation ended (in this window or another): the panes that show a folder it changed read it again; the
@@ -185,7 +294,7 @@ impl Ui {
     }
     /// Files from the clipboard are put into the active pane's folder (`mv`: moved there).
     pub fn paste_files(&mut self, paths: Vec<PathBuf>, mv: bool) {
-        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || !self.recheck.is_empty() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
+        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.dragging()) || self.lb_close.animating(Instant::now()) || !self.recheck.is_empty() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
         crate::ops::submit(self.id, crate::ops::Op::Transfer { paths, dest, mv });
     }
     fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect() }
@@ -264,6 +373,8 @@ impl Ui {
     fn leave_search(&mut self) { if self.focus == Focus::Search { self.focus = Focus::Pane; } self.search.focused = false; }
     pub fn command(&mut self, c: Cmd) {
         let port = self.port.clone();
+        // while the lightbox is open the window's own commands and Preview act; the browser's wait
+        if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow) { return }
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
         if self.dialog.is_some() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return }
@@ -282,7 +393,8 @@ impl Ui {
             Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo),
             Cmd::NewWindow => { let p = self.pane().path().to_path_buf(); self.out.push(Out::NewWindow(p)); }
             Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.out.push(Out::Quit),
-            Cmd::Open => self.pane().open_chosen(&port),
+            Cmd::Open => { self.pane().open_chosen(&port); self.after_pane_events(); }
+            Cmd::Preview => if self.lightbox.is_open() { self.close_lightbox(); } else if self.focus == Focus::Pane && self.dialog.is_none() { let i = self.active.min(self.panes.len() - 1); if let Some(row) = self.panes[i].cursor_row() { self.open_lightbox(i, row); } },
             Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all() },
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } }
@@ -298,6 +410,7 @@ impl Ui {
 
     // ---------------------------------------------------------------- input
     pub fn wheel(&mut self, dy: f64) {
+        if self.lightbox.is_open() { return self.lightbox_wheel(dy) }
         let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.menubar.as_ref().is_some_and(|m| m.bar.is_open()) { return }
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
@@ -324,19 +437,28 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, NEW_FOLDER, NEW_WINDOW, OPEN, PASTE, REFRESH, RENAME, TRASH};
+        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, NEW_FOLDER, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
-            REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
-                self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, COPY => Cmd::Copy, PASTE => Cmd::Paste, _ => Cmd::Refresh }); }
+            REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
+                self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, COPY => Cmd::Copy, PASTE => Cmd::Paste, PREVIEW => Cmd::Preview, _ => Cmd::Refresh }); }
             _ => {}
+        }
+    }
+    /// What the panes left for the window after an event: a double click on a file is the lightbox's when the lightbox
+    /// shows that kind, else the default application's; "Open" on a file is always the default application's (row 473, point 2).
+    fn after_pane_events(&mut self) {
+        for i in 0..self.panes.len() {
+            if let Some(row) = self.panes[i].preview.take() { match self.panes[i].entry(row) { Some((path, ..)) if !crate::lightbox::shows(&crate::lightbox::ext_of(&path)) => self.out.push(Out::OpenDefault(path)), Some(_) => self.open_lightbox(i, row), None => {} } }
+            if let Some(path) = self.panes[i].open_default.take() { self.out.push(Out::OpenDefault(path)); }
         }
     }
     fn set_cursor(&mut self, c: winit31::cursor::CursorIcon) { if c != self.cursor { self.cursor = c; self.window.set_cursor(winit31::cursor::Cursor::Icon(c)); } }
     pub fn pointer(&mut self, e: &Event) {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.scale(); let port = self.port.clone();
+        if self.lightbox.is_open() { return self.lightbox_pointer(e) }
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); self.tip_demo = None; }
         // the drawn menu bar and its open menus take the pointer first
         if let Some(mb) = self.menubar.as_mut() { let (chosen, _, consumed) = mb.bar.event(e, &mut self.fonts); if let Some(c) = chosen.and_then(|id| mb.cmd(id)) { self.command(c); return } if consumed { return } }
@@ -379,6 +501,7 @@ impl Ui {
         if self.back.event(e, now) == Response::Clicked { self.command(Cmd::Back); }
         if self.forward.event(e, now) == Response::Clicked { self.command(Cmd::Forward); }
         if self.up.event(e, now) == Response::Clicked { self.command(Cmd::Up); }
+        if self.preview_btn.event(e, now) == Response::Clicked { self.command(Cmd::Preview); }
         if self.list_btn.event(e, now) == Response::Clicked { self.command(Cmd::AsList); }
         if self.grid_btn.event(e, now) == Response::Clicked { self.command(Cmd::AsGrid); }
         if self.pane2_btn.event(e, now) == Response::Clicked { self.command(Cmd::SecondPane); }
@@ -410,6 +533,7 @@ impl Ui {
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
         for pane in self.panes.iter_mut().take(n) { pane.pointer(e, self.mods, now, &port); }
         for i in 0..n { if let Some((row, at)) = self.panes[i].menu_at.take() { self.ask_menu(i, row, at); } }
+        self.after_pane_events();
         // a press on what is chosen was moved: the system's drag of it begins (the layer needs the pointer's event to be the current one: this is still inside it)
         for i in 0..n { if std::mem::take(&mut self.panes[i].drag_out) { let paths: Vec<PathBuf> = self.panes[i].chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect(); if !paths.is_empty() { self.out.push(Out::Drag(paths)); } } }
         let resizing = self.over_gap.is_some() || self.panes.iter().take(n).any(|p| p.resizing());
@@ -428,6 +552,7 @@ impl Ui {
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
+        if self.lightbox.is_open() { return self.lightbox_key(k, name) }
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
         if let Some((d, asked)) = self.dialog.as_ref() { let last = d.buttons.len().saturating_sub(1);
             match k.key { Key::Named(Named::Enter) => self.answer(last), Key::Named(Named::Escape) => self.answer(if matches!(asked, Asked::Conflict(_)) { 0 } else { last }), _ => {} } return }
@@ -459,13 +584,14 @@ impl Ui {
             // Tab switches panes when the second is shown (row 450)
             Key::Named(Named::Tab) if !k.cmd && !alt => { if self.two && self.panes.len() > 1 { self.active = 1 - self.active.min(1); } return }
             // Space is the lightbox's (a later slice): nothing yet, and it is not a letter to find a name by
-            Key::Char(c) if c == " " && !k.cmd => { if self.pane().sel().typed(now).is_empty() { return } }
+            // Space is the lightbox's (row 452) - unless a name is being typed to find it, where it is a letter
+            Key::Char(c) if c == " " && !k.cmd => { if self.pane().sel().typed(now).is_empty() { self.command(Cmd::Preview); return } }
             Key::Named(Named::Enter) if mac => return,
             Key::Named(Named::Escape) => { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } return }
             _ => {}
         }
         if alt && !mac { return }
-        self.pane().key(k, now, &port);
+        self.pane().key(k, now, &port); self.after_pane_events();
     }
 
     // ---------------------------------------------------------------- the scripted looks
@@ -498,6 +624,12 @@ impl Ui {
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
+            // the lightbox: `preview` (the row under the cursor; again closes it) `lbnext` `lbprev` `lbzoom:<factor>` `lbactual` `lbfit` `lbpan:<dx>,<dy>`
+            "lblayer" => if let Some(i) = num(arg) { self.lightbox.pick_layer(i); }, "lbback" => { if self.lightbox.back_to_layers() { self.presenter.engine.clear_picture(); } }
+            "preview" => self.command(Cmd::Preview), "lbnext" => self.step_lightbox(1), "lbprev" => self.step_lightbox(-1),
+            "lbzoom" | "lbactual" | "lbfit" | "lbpan" => { let area = self.lightbox_area(); let mid = (area.center().x, area.center().y); if let Some(v) = self.lightbox.view.as_mut() { match word {
+                "lbzoom" => v.zoom_by(arg.parse().unwrap_or(1.0), mid, area), "lbactual" => v.actual(mid, area), "lbfit" => v.fit(),
+                _ => if let Some((dx, dy)) = arg.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) { v.drag_begin(mid); v.drag_to((mid.0 + dx, mid.1 + dy), area); v.drag_end(); } } } }
             // a drag of ours has ended, as the layer would tell it
             "dragended" => { crate::dnd::on_notice(&self.dnd, min_dnd::Notice::Ended { serial: 0, op: min_dnd::MOVE, detail: String::new() }); }
             // a drag of a file, as the layer would tell it (no drag is performed): `over:<row>:<path>[:copy|move]` shows where it would land,
@@ -554,6 +686,7 @@ impl Ui {
     pub fn redraw(&mut self) {
         let s = self.scale(); let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); if w < 1.0 || h < 1.0 { return }
         self.poll(); self.run_demo();
+        if self.lightbox.is_open() { return self.redraw_lightbox() }
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         if self.active >= self.shown() { self.active = 0; }
         // the window is called by the folder it shows (the active pane's)
@@ -600,6 +733,8 @@ impl Ui {
         // (list and grid are one control of two halves)
         self.grid_btn.rect = Rect::new(r - bh, by, r, by + bh); self.grid_btn.corners = Corners { tl: 0.0, bl: 0.0, tr: radius, br: radius }; self.grid_btn.selected = grid_mode; r -= bh + s;
         self.list_btn.rect = Rect::new(r - bh, by, r, by + bh); self.list_btn.corners = Corners { tl: radius, bl: radius, tr: 0.0, br: 0.0 }; self.list_btn.selected = !grid_mode; r -= bh + pad;
+        // (the lightbox by the mouse, row 452)
+        self.preview_btn.rect = if wide > 520.0 { let q = Rect::new(r - bh, by, r, by + bh); r -= bh + pad; q } else { Rect::ZERO }; self.preview_btn.corners = Corners::all(radius); self.preview_btn.enabled = self.panes[self.active].cursor_row().is_some();
         self.path_rect = Rect::new((x + pad - 2.0 * s).min(r), tool.y0 + (tool.height() - fh) / 2.0, r.max(x + pad), tool.y0 + (tool.height() + fh) / 2.0);
         { let p = &self.panes[self.active]; self.back.enabled = p.history.can_back(); self.forward.enabled = p.history.can_forward(); self.up.enabled = p.history.parent().is_some(); }
         let crumb_room = self.path_rect.width() - 12.0 * s; self.make_crumbs(crumb_room, s);
@@ -633,6 +768,7 @@ impl Ui {
         // -- the toolbar
         paint::hline(scene, tool.x0, tool.x1, tool.y1 - s, s, t::DIVIDER_COLOR);
         for b in [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn] { b.paint(scene, fonts, s, now); }
+        if self.preview_btn.rect.width() > 0.0 { self.preview_btn.paint(scene, fonts, s, now); }
         if self.size.rect.width() > 0.0 { self.size.paint(scene, s, now); }
         if search_w > 0.0 { self.search.paint(scene, fonts, s);
             if self.search.text().is_empty() { if let Some(g) = fonts.icon("magnifying-glass", 13.0 * s as f32, sub) { draw_layout(scene, &g, Affine::translate((search_rect.x1 - g.width() as f64 - 8.0 * s, search_rect.y0 + (search_rect.height() - g.height() as f64) / 2.0))); } } }
@@ -743,13 +879,17 @@ impl Ui {
         self.toast.tick(now); self.toast.paint(scene, fonts, Rect::new(0.0, 0.0, w, status.y0), s, now);
         if let Some((d, _)) = self.dialog.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); d.layout(fonts, bounds, s); d.paint(scene, fonts, s, bounds, now); }
 
+        self.present(now);
+    }
+    /// The frame is rendered and shown; and the scripted picture is saved when everything has settled.
+    fn present(&mut self, now: Instant) {
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
         let window = self.window.clone(); self.presenter.draw(|| window.pre_present_notify());
 
         // (the scripted picture: UFB_SHOT=<file.png> saves the window as drawn - no OS screenshot - once the steps are done,
         // the panes have their listings and the icons have come; then the application ends)
         if self.shot.is_some() && !self.done {
-            let idle = self.demo.is_empty() && self.demo_until.is_none_or(|t| now >= t) && !self.busy() && self.icons.pending() == 0 && self.thumbs.pending() == 0;
+            let idle = self.demo.is_empty() && self.demo_until.is_none_or(|t| now >= t) && !self.busy() && self.icons.pending() == 0 && self.thumbs.pending() == 0 && !self.lightbox.loading();
             if !idle { self.settled = None; } else if self.settled.is_none() { self.settled = Some(now); }
             if self.settled.is_some_and(|t0| now.duration_since(t0) > Duration::from_millis(500)) || self.born.elapsed() > Duration::from_secs(60) {
                 if let (Some(path), Some((px, w, h))) = (self.shot.take(), self.presenter.capture_window()) {

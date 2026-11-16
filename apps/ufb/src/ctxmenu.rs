@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 /// Our own rows.
 pub const OPEN: u32 = 1; pub const NEW_WINDOW: u32 = 2; pub const CONTENTS: u32 = 3; pub const REFRESH: u32 = 4;
-pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 = 7; pub const DUPLICATE: u32 = 8; pub const COPY: u32 = 9; pub const PASTE: u32 = 10;
+pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 = 7; pub const DUPLICATE: u32 = 8; pub const COPY: u32 = 9; pub const PASTE: u32 = 10; pub const PREVIEW: u32 = 11;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
@@ -34,7 +34,7 @@ pub fn rows_for(entries: &[(bool, bool)]) -> Vec<Row> {
     let one = entries.len() == 1; let folders = entries.iter().any(|e| e.0);
     let mut rows = vec![];
     if one && folders { rows.extend([ours(OPEN, "Open"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep]); }
-    else if !folders { rows.push(Row::Open); if one && entries[0].1 { rows.push(ours(CONTENTS, "Show Package Contents")); } rows.extend([Row::OpenWith, Row::Sep]); }
+    else if !folders { if one { rows.push(ours(PREVIEW, "Preview")); } rows.push(Row::Open); if one && entries[0].1 { rows.push(ours(CONTENTS, "Show Package Contents")); } rows.extend([Row::OpenWith, Row::Sep]); }
     rows.extend([Row::Reveal, Row::Sep]);
     if one { rows.push(ours(RENAME, "Rename")); }
     rows.extend([ours(DUPLICATE, "Duplicate"), ours(COPY, "Copy"), ours(TRASH, "Move to Trash"), Row::Sep, Row::Share]);
@@ -253,8 +253,8 @@ mod tests {
     #[test]
     fn the_rows_follow_what_is_chosen() {
         assert_eq!(labels(&rows_for(&[(true, false)])), ["Open", "Open in New Window", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "one folder");
-        assert_eq!(labels(&rows_for(&[(false, false)])), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "one file");
-        assert_eq!(labels(&rows_for(&[(false, true)]))[..3], ["<Open>", "Show Package Contents", "<Open With>"], "an application");
+        assert_eq!(labels(&rows_for(&[(false, false)])), ["Preview", "<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Rename", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "one file");
+        assert_eq!(labels(&rows_for(&[(false, true)]))[..4], ["Preview", "<Open>", "Show Package Contents", "<Open With>"], "an application");
         assert_eq!(labels(&rows_for(&[(false, false), (false, false)])), ["<Open>", "<Open With>", "--", "<Show in Finder>", "--", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "several files: no Rename");
         assert_eq!(labels(&rows_for(&[(true, false), (false, false)])), ["<Show in Finder>", "--", "Duplicate", "Copy", "Move to Trash", "--", "<Share>"], "a folder among them: nothing opens");
         assert_eq!(labels(&rows_for_folder()), ["Open in New Window", "<Show in Finder>", "--", "New Folder", "Paste", "--", "Refresh"]);

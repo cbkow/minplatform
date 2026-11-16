@@ -15,6 +15,7 @@ mod ctxmenu;
 mod format;
 mod history;
 mod icons;
+mod lightbox;
 mod lister;
 mod menu;
 mod model;
@@ -22,6 +23,7 @@ mod ops;
 mod pane;
 mod places;
 mod shell;
+mod sysopen;
 mod thumbs;
 mod ui;
 

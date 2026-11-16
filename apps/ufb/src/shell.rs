@@ -89,6 +89,7 @@ impl App {
             Out::Close => { self.windows.remove(&id); if self.focused == Some(id) { self.focused = None; } }
             Out::Minimize => if let Some(w) = self.windows.get(&id) { w.window.set_minimized(true); },
             Out::Quit => done = true,
+            Out::OpenDefault(path) => crate::sysopen::open(&path),
             // the system's drag of files (we are still inside the pointer's own event, as the layer needs). What may
             // not be taken away by this build (the belt) is offered as a copy or a link only.
             Out::Drag(paths) => if let Some(w) = self.windows.get(&id) {
@@ -173,6 +174,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::PointerLeft { .. } => w.ui.pointer(&min_ui::Event::Leave),
+            // a pinch on a trackpad zooms the lightbox's picture
+            WindowEvent::PinchGesture { delta, .. } => w.ui.pinch(delta),
             WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed() => {
                 use min_ui::{Key as K, Named as N};
                 let (shift, cmd, alt) = mods; let name = key_name(&event);

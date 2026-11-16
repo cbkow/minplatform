@@ -19,7 +19,10 @@ pub const HELPER_ARG: &str = "--thumb-helper";
 const START_BOUND: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
-pub struct Job { pub req: Request, pub hard_ms: u32 }
+pub struct Job { pub req: Request, pub hard_ms: u32, /// the largest answer this request may have (bytes)
+    pub max: usize }
+impl Job { /// A request whose answer is a thumbnail's size at most.
+    pub fn new(req: Request, hard_ms: u32) -> Job { Job { req, hard_ms, max: MAX_PAYLOAD } } }
 pub struct Done { pub id: u64, pub status: u8, pub w: u16, pub h: u16, pub payload: Vec<u8> }
 
 struct Slot { child: Option<Arc<Mutex<Child>>>, deadline: Option<Instant>, killed: bool }
@@ -113,7 +116,7 @@ fn worker(sh: Arc<Shared>, slot: usize, tx: SyncSender<Done>) {
         }
         let h = helper.as_mut().unwrap();
         bound(Some(Duration::from_millis(job.hard_ms as u64)));
-        let r = write_request(&mut h.stdin, &job.req).and_then(|_| read_response(&mut h.stdout));
+        let r = write_request(&mut h.stdin, &job.req).and_then(|_| read_response_max(&mut h.stdout, job.max));
         let killed = { let mut st = sh.st.lock().unwrap(); let s = &mut st.slots[slot]; s.deadline = None; s.killed };
         let dead = r.is_err() || killed;
         let done = match r {
