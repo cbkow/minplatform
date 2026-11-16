@@ -6284,6 +6284,7 @@ dependencies = [
  "qcv-player",
  "qcv-timeline",
  "raw-window-handle",
+ "rfd",
  "rusqlite",
  "serde_json",
  "ufb-projtype",

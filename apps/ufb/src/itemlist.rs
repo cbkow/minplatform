@@ -37,6 +37,8 @@ pub struct Edit { pub item: PathBuf, pub col: usize, pub field: TextField }
 pub struct ItemList {
     /// the columns in view, those hidden by this user, what the items carry
     pub cols: Vec<ColDef>, pub hidden: Vec<ColDef>, pub meta: HashMap<PathBuf, ItemMeta>,
+    /// rows whose folder is not there (the tracker, row 493): their name says so
+    pub missing: std::collections::HashSet<PathBuf>,
     pub sort: Option<(SortBy, bool)>, /// the items' places in the job's list, in the order shown
     pub order: Vec<usize>, pub show_modified: bool,
     pub rect: Rect, pub bar: ScrollBar, /// sideways, when the columns are wider than the list (Shift with the wheel, or the bar at its foot)
@@ -120,7 +122,7 @@ fn compare(kind: &str, a: Option<&Value>, b: Option<&Value>) -> std::cmp::Orderi
     text_of(kind, a).to_lowercase().cmp(&text_of(kind, b).to_lowercase())
 }
 
-impl Default for ItemList { fn default() -> ItemList { ItemList { cols: vec![], hidden: vec![], meta: HashMap::new(), sort: None, order: vec![], show_modified: true, rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), hover: None, edit: None, name_x: (0.0, 0.0), xs: vec![], mod_x: None, drag: None, over_div: false, scale: 1.0 } } }
+impl Default for ItemList { fn default() -> ItemList { ItemList { cols: vec![], hidden: vec![], meta: HashMap::new(), missing: Default::default(), sort: None, order: vec![], show_modified: true, rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), hover: None, edit: None, name_x: (0.0, 0.0), xs: vec![], mod_x: None, drag: None, over_div: false, scale: 1.0 } } }
 impl ItemList {
     /// The columns and the values of a (job, section), as the database has them now.
     pub fn load(&mut self, job: &std::path::Path, folder: &str) {
@@ -264,7 +266,8 @@ impl ItemList {
             if tracked { let d = 20.0 * s; let c = t::NOTICE_VISUAL_COLOR; paint::rounded(scene, Rect::new(sx + (STAR * s - d) / 2.0, mid(d), sx + (STAR * s + d) / 2.0, mid(d) + d), d / 2.0, min_theme::Color::rgba(c.r, c.g, c.b, if strong { 0.95 } else { 0.28 })); }
             if tracked || here || self.hover == Some(pos) { if let Some(g) = fonts.icon("star", 14.0 * s as f32, if tracked && strong { paint::color(t::BACKGROUND_LAYER_1_COLOR) } else if tracked { paint::color(t::NOTICE_VISUAL_COLOR) } else { quiet }) {
                 draw_layout(scene, &g, Affine::translate((sx + (STAR * s - g.width() as f64) / 2.0, mid(g.height() as f64)))); } }
-            let nl = fonts.layout_fit(&it.name, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, color, (self.name_x.1 - self.name_x.0 - pad).max(10.0));
+            let lost = self.missing.contains(&it.path);
+            let nl = fonts.layout_fit(&if lost { format!("{}  \u{2014}  not found", it.name) } else { it.name.clone() }, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, if lost && !strong { paint::color(t::NEGATIVE_CONTENT_COLOR_DEFAULT) } else { color }, (self.name_x.1 - self.name_x.0 - pad).max(10.0));
             draw_layout(scene, &nl, Affine::translate((self.name_x.0 + 2.0 * s, mid(nl.height() as f64))));
             for (k, c) in self.cols.iter().enumerate() {
                 let (a, b) = self.xs[k]; if a > row.x1 { break } let v = self.value(it, c); let room = (b - a - pad * 2.0).max(4.0);

@@ -75,6 +75,9 @@ pub fn rows_for_columns(column: bool, hidden: &[String], trashed: &[String], mod
     rows.extend([Row::Sep, ours(META_MODIFIED, if modified { "Hide Modified" } else { "Show Modified" })]);
     rows
 }
+pub const TRK_RELINK: u32 = 60; pub const TRK_REMOVE: u32 = 61;
+/// The rows for a row of the tracker whose folder is not there (row 439).
+pub fn rows_for_lost() -> Vec<Row> { vec![ours(TRK_RELINK, "Relink\u{2026}"), Row::Sep, ours(TRK_REMOVE, "Remove from the Tracker")] }
 pub const TRK_OPEN: u32 = 58; pub const BOARD_LIST: u32 = 59; pub const BOARD_BY: u32 = 4000;
 /// The rows that show a section's items as a board, grouped by one of these (their names), or as the list again.
 pub fn rows_for_board(by: &[String], on: bool) -> Vec<Row> { let mut rows: Vec<Row> = by.iter().enumerate().map(|(k, n)| named(BOARD_BY + k as u32, format!("Board by {n}"))).collect(); if on { rows.extend([Row::Sep, ours(BOARD_LIST, "Show as List")]); } rows }

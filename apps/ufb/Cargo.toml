@@ -39,6 +39,7 @@ qcv-timeline = { path = "../../crates/qcv-timeline" }
 min-settings = { path = "../../crates/min-settings" }
 ufb-projtype = { path = "../../crates/ufb-projtype" }
 uuid = { workspace = true }
+rfd = "0.18"
 serde_json = "1"
 # PDF pages in the lightbox (the family's reader)
 min-pdf = { path = "../../crates/min-pdf" }

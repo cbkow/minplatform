@@ -55,7 +55,8 @@ enum Asked { /// delete these for good
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
     NewJob(PathBuf), AddItem(PathBuf) }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
-enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>) }
+enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
+    Relink(PathBuf, Option<PathBuf>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split, /// the item list's edge in a job (the pointer's x and the width at the press)
     JobList(f64, f64) }
@@ -324,13 +325,14 @@ impl Ui {
     /// The tab in front shows the tracker: this job's (its sections stay in the bar), or every subscribed job's.
     fn open_tracker(&mut self, all: bool) {
         self.cancel_cell(); self.chip = None;
-        if all { if self.tracker.as_ref().is_some_and(|t| t.scope == crate::tracker::Scope::All) { return } self.leave_tab(); self.job = None; for p in self.panes.iter_mut() { p.root = None; } self.tracker = Some(crate::tracker::Tracker::new(crate::tracker::Scope::All)); }
-        else if let Some(j) = self.job.as_ref() { self.tracker = Some(crate::tracker::Tracker::new(crate::tracker::Scope::Job(j.path.clone()))); }
+        if all { if self.tracker.as_ref().is_some_and(|t| t.scope == crate::tracker::Scope::All) { return } self.leave_tab(); self.job = None; for p in self.panes.iter_mut() { p.root = None; } self.tracker = Some(crate::tracker::Tracker::new(crate::tracker::Scope::All, { let p = self.port.clone(); Arc::new(move || p.send(Msg::Icon)) })); }
+        else if let Some(j) = self.job.as_ref() { self.tracker = Some(crate::tracker::Tracker::new(crate::tracker::Scope::Job(j.path.clone()), { let p = self.port.clone(); Arc::new(move || p.send(Msg::Icon)) })); }
         self.focus = Focus::Items;
     }
     /// A tracked item is gone to, in its job: the section it is in comes to the front and the item is chosen. From All
     /// Tracked, in a new tab (the tracker stays as it is).
     fn open_tracked(&mut self, item: PathBuf) {
+        if self.tracker.as_ref().is_some_and(|t| t.lost(&item)) { self.toast.show("Its folder is not there any more: Relink it to where it went, or remove it from the tracker.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
         let Some((scope, (job, folder))) = self.tracker.as_ref().and_then(|t| t.home(&item).map(|h| (t.scope.clone(), h))) else { return };
         if scope == crate::tracker::Scope::All { self.new_tab(job.clone()); self.open_place(job, true); if let Some(j) = self.job.as_mut() { j.show_section(&folder); j.choose = Some(item); } return }
         self.tracker = None;
@@ -352,7 +354,7 @@ impl Ui {
             Act::Options(i, k, at) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { if let Some((_, _, c)) = self.cell_target(&it.path, k) {
                 self.trk_press = None; let s = self.scale(); let size = self.window.surface_size(); let cur = self.tracker.as_ref().and_then(|t| t.list.cols.get(k).map(|m| crate::itemlist::text_of(&m.kind, t.list.value(&it, m)))).unwrap_or_default();
                 let mut p = crate::chips::ChipPicker::new(it.path.clone(), k, c.options.clone(), cur); p.open(&mut self.fonts, Rect::new(at.0, at.1 - 24.0 * s, at.0 + 120.0 * s, at.1), Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s); self.chip = Some(p); } },
-            Act::RowMenu(i, at) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { self.meta_ctx = (None, Some(i), vec![], vec![]); self.menu_for = Some((None, it.path.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![it.path], rows: crate::ctxmenu::rows_for_tracked() }); },
+            Act::RowMenu(i, at) => if let Some(it) = self.tracker.as_ref().and_then(|t| row(t, i)) { self.meta_ctx = (None, Some(i), vec![], vec![]); self.menu_for = Some((None, it.path.clone())); self.menu_job = false; let rows = if self.tracker.as_ref().is_some_and(|t| t.lost(&it.path)) { crate::ctxmenu::rows_for_lost() } else { crate::ctxmenu::rows_for_tracked() }; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![it.path], rows }); },
             Act::HeadMenu(..) | Act::Width(..) => {}
         } }
     }
@@ -405,7 +407,8 @@ impl Ui {
         use crate::ctxmenu::*;
         // the tracker's own rows: go to the item in its job; take it out of the tracker
         if let Some(it) = self.tracker.as_ref().and_then(|t| self.meta_ctx.1.and_then(|i| t.rows.get(i).cloned())) {
-            match id { TRK_OPEN => self.open_tracked(it.path), META_TRACK => { if let Some((job, sec)) = self.tracker.as_ref().and_then(|t| t.home(&it.path)) { let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, false)); self.meta_err(r); self.reload_lists(); } } _ => {} }
+            match id { TRK_RELINK => self.ask_relink(it.path), TRK_REMOVE => { let r = crate::db::with(|d| d.remove_item(&it.path)); self.meta_err(r); self.reload_lists(); }
+                TRK_OPEN => self.open_tracked(it.path), META_TRACK => { if let Some((job, sec)) = self.tracker.as_ref().and_then(|t| t.home(&it.path)) { let r = crate::db::with(|d| d.set_tracked(&job, &it.path, &sec, false)); self.meta_err(r); self.reload_lists(); } } _ => {} }
             return
         }
         let Some((job, sec)) = self.section_key() else { return }; let (col, item, hidden, trashed) = self.meta_ctx.clone();
@@ -472,7 +475,42 @@ impl Ui {
             Made::Job(Ok(job)) => { let _ = crate::db::with(|d| d.subscribe(&job, "")); self.reload_jobs(); self.open_place(job, true); }
             Made::Item(Ok(item)) => if let Some(j) = self.job.as_mut() { j.choose = Some(item); j.reload(); },
             Made::Job(Err(e)) | Made::Item(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, now),
+            Made::Relink(old, Some(new)) => self.relink(old, new),
+            Made::Relink(_, None) => {}
         }
+    }
+    /// A tracked item whose folder is gone is pointed at where it went (row 439). When that is an item of a subscribed
+    /// job - `<job>/<section>/<item>` - the row is that job's and that section's from then on.
+    fn relink(&mut self, old: PathBuf, new: PathBuf) {
+        let home = new.parent().and_then(|sec| Some((sec.parent()?.to_path_buf(), sec.file_name()?.to_string_lossy().into_owned()))).filter(|(job, _)| self.jobs.iter().any(|j| &j.path == job));
+        let r = crate::db::with(|d| d.relink(&old, &new, home.as_ref().map(|(j, s)| (j.as_path(), s.as_str())))); self.meta_err(r); self.reload_lists();
+    }
+    /// The system's folder chooser, for Relink: asked for on a thread of its own and answered later (minNotes' way: a
+    /// chooser run from inside an event of the window's loop meets the loop's own wake-ups).
+    fn ask_relink(&mut self, old: PathBuf) {
+        let (tx, port) = (self.made_tx.clone(), self.port.clone()); let title = format!("Where did \u{201c}{}\u{201d} go?", old.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        let start = old.ancestors().find(|a| a.is_dir()).map(Path::to_path_buf);
+        let _ = std::thread::Builder::new().name("ufb-chooser".into()).spawn(move || { let mut d = rfd::FileDialog::new().set_title(title); if let Some(s) = start { d = d.set_directory(s); } let _ = tx.send(Made::Relink(old, d.pick_folder())); port.send(Msg::Icon); });
+    }
+    /// What the engine renamed or moved (rows 439, 493): the metadata that hangs on those paths goes along - an
+    /// item's values and its star, a section's and a job's columns, a subscription - and so does what this window
+    /// shows of it: the job in a tab, its section, its chosen item. An undo is the same step the other way.
+    fn follow_moves(&mut self, moved: &[(PathBuf, PathBuf)]) {
+        if moved.is_empty() { return }
+        for (from, to) in moved {
+            let r = crate::db::with(|d| d.move_paths(from, to).map(|_| ())); self.meta_err(r);
+            let carry = |p: &Path| p.strip_prefix(from).ok().map(|rel| if rel.as_os_str().is_empty() { to.clone() } else { to.join(rel) });
+            let renamed_in_place = from.parent() == to.parent();
+            for j in self.job.iter_mut().chain(self.tabs.iter_mut().filter_map(|t| t.job.as_mut())) {
+                // a section of the job renamed in place: the one in front keeps being in front under its new name
+                if renamed_in_place && from.parent() == Some(j.path.as_path()) { if let (Some(a), Some(b)) = (from.file_name(), to.file_name()) { if j.section.as_deref() == Some(&*a.to_string_lossy()) { j.section = Some(b.to_string_lossy().into_owned()); } } }
+                if let Some(c) = j.chosen_item().and_then(|i| carry(&i.path)) { j.choose = Some(c); }
+                if let Some(p) = carry(&j.path) { if j.path.file_name().is_some_and(|n| n.to_string_lossy() == j.name.as_str()) { j.name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(); } j.path = p; }
+                j.reload();
+            }
+            self.board_of = std::mem::take(&mut self.board_of).into_iter().map(|((job, sec), by)| { let sec = if renamed_in_place && from.parent() == Some(job.as_path()) && from.file_name().is_some_and(|a| a.to_string_lossy() == sec.as_str()) { to.file_name().map(|b| b.to_string_lossy().into_owned()).unwrap_or(sec) } else { sec }; ((carry(&job).unwrap_or(job), sec), by) }).collect();
+        }
+        self.reload_jobs(); self.reload_lists();
     }
     /// A folder becomes a job of the sidebar, or leaves it (its metadata is not touched).
     fn subscribe(&mut self, path: PathBuf, on: bool) {
@@ -530,6 +568,7 @@ impl Ui {
             if let Some(j) = self.job.as_mut() { j.hold = false; }
             self.items_reload(); } }
         while let Ok(m) = self.made_rx.try_recv() { any = true; self.on_made(m); }
+        if let Some(t) = self.tracker.as_mut() { any |= t.poll(); }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
         for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
@@ -790,7 +829,9 @@ impl Ui {
             let here: Vec<String> = if mine && i == self.active { rep.made.iter().filter(|m| m.parent() == Some(p.path())).filter_map(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).collect() } else { vec![] };
             p.refresh_choosing(&port, here);
         }
+        self.follow_moves(&rep.moved);
         if let Some(j) = self.job.as_mut() { if rep.changed.iter().any(|c| c.starts_with(&j.path) || j.path.starts_with(c)) { j.reload(); } }
+        if let Some(t) = self.tracker.as_mut() { t.reload(); }
         // (the tabs behind show what is there when they come to the front)
         for p in self.hidden_panes() { if rep.changed.iter().any(|c| c.starts_with(p.path())) { p.refresh_choosing(&port, vec![]); } }
         if self.rename.as_ref().is_some_and(|r| rep.changed.iter().any(|c| r.path.starts_with(c))) { self.end_rename(); }
@@ -1041,7 +1082,7 @@ impl Ui {
     pub fn menu_chosen(&mut self, id: u32) {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         // (the item list's own rows: columns, options, the star)
-        if (crate::ctxmenu::META_ADD..60).contains(&id) || id >= crate::ctxmenu::META_SHOW { return self.meta_chosen(id) }
+        if (crate::ctxmenu::META_ADD..70).contains(&id) || id >= crate::ctxmenu::META_SHOW { return self.meta_chosen(id) }
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN if self.menu_job => self.open_place(folder, true),
@@ -1386,9 +1427,12 @@ impl Ui {
             // the tracker: `tracker` (the job's; again closes it) `alltracked` `trk` (says it) `due:<0-4>` `trkopen:<row>` - `cell:`, `check:` and `star:` act on its rows while it is in front
             "tracker" => if self.tracker.is_some() { self.tracker = None; } else { self.open_tracker(false); }, "alltracked" => self.open_tracker(true),
             "due" => if let (Some(k), Some(tr)) = (num(arg).filter(|k| *k < 5), self.tracker.as_mut()) { tr.due = crate::tracker::DUES[k].0; tr.filter(); },
+            // rows whose folder is gone: `relink:<row>:<path>` (as the chooser would answer) `trkremove:<row>`
+            "relink" => { let mut p = arg.splitn(2, ':'); if let (Some(old), Some(new)) = (p.next().and_then(num).and_then(|i| self.tracker.as_ref().and_then(|t| t.rows.get(i).map(|r| r.path.clone()))), p.next()) { self.relink(old, PathBuf::from(new)); } },
+            "trkremove" => if let Some(p) = num(arg).and_then(|i| self.tracker.as_ref().and_then(|t| t.rows.get(i).map(|r| r.path.clone()))) { let r = crate::db::with(|d| d.remove_item(&p)); self.meta_err(r); self.reload_lists(); },
             "trkopen" => if let Some(p) = num(arg).and_then(|i| self.tracker.as_ref().and_then(|t| t.rows.get(i).map(|r| r.path.clone()))) { self.open_tracked(p); },
             "trk" => if let Some(tr) = self.tracker.as_ref() { eprintln!("UFB_DEMO: tracker {:?} due {:?} columns [{}]; {}", tr.scope == crate::tracker::Scope::All, tr.due, tr.list.cols.iter().map(|c| format!("{}:{}", c.name, c.kind)).collect::<Vec<_>>().join(", "),
-                tr.list.order.iter().filter_map(|i| tr.rows.get(*i)).map(|it| format!("{} [{}]", it.name, tr.list.cols.iter().map(|c| crate::itemlist::text_of(&c.kind, tr.list.value(it, c))).collect::<Vec<_>>().join(" | "))).collect::<Vec<_>>().join("; ")); },
+                tr.list.order.iter().filter_map(|i| tr.rows.get(*i)).map(|it| format!("{}{} [{}]", it.name, if tr.lost(&it.path) { " (NOT FOUND)" } else { "" }, tr.list.cols.iter().map(|c| crate::itemlist::text_of(&c.kind, tr.list.value(it, c))).collect::<Vec<_>>().join(" | "))).collect::<Vec<_>>().join("; ")); },
             // the board: `board:<a column's name|tracked|off>` `boardsay` `carddrop:<item>:<lane>` (the item's card let go on that lane)
             "board" => if let Some(key) = self.section_key() { if arg == "off" { self.board_of.remove(&key); } else if let Some((by, _)) = crate::board::eligible(&self.items).into_iter().find(|(_, n)| n.eq_ignore_ascii_case(arg)) { self.board_of.insert(key, by); } self.items_reload(); },
             "boardsay" => match self.board.as_ref() { Some(b) => eprintln!("UFB_DEMO: board by {:?}: {}", b.by, b.lanes.iter().map(|l| format!("{} [{}]", l.title, l.items.iter().filter_map(|i| self.job.as_ref().and_then(|j| j.items.get(*i))).map(|it| it.name.as_str()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(" | ")), None => eprintln!("UFB_DEMO: no board (the list)") },

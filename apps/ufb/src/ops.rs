@@ -75,6 +75,8 @@ pub struct Report {
     pub origin: u64, pub kind: Option<Kind>,
     /// the folders whose listing changed; what now exists because of it (to choose)
     pub changed: Vec<PathBuf>, pub made: Vec<PathBuf>,
+    /// what was renamed or moved, whole: (where it was, where it is). The metadata that hangs on a path follows it (row 493).
+    pub moved: Vec<(PathBuf, PathBuf)>,
     /// what went wrong, in plain words (some of it may have been done all the same)
     pub error: Option<String>,
     /// Move to Trash on a volume that has none: these are still there, and the window asks whether to delete them
@@ -414,7 +416,7 @@ impl Engine {
                 let same = old.to_lowercase() == name.to_lowercase();
                 let r = if same { std::fs::rename(&path, &to) } else { rename_no_replace(&path, &to) };
                 match r {
-                    Ok(()) => { rep.changed.extend(path.parent().map(Path::to_path_buf)); rep.made.push(to.clone()); self.done(Record::Rename { from: path, to }); }
+                    Ok(()) => { rep.changed.extend(path.parent().map(Path::to_path_buf)); rep.made.push(to.clone()); rep.moved.push((path.clone(), to.clone())); self.done(Record::Rename { from: path, to }); }
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => rep.error = Some(taken(&name)),
                     Err(e) => rep.error = Some(format!("\u{201c}{old}\u{201d} could not be renamed: {}.", plain(&e))),
                 }
@@ -498,7 +500,7 @@ impl Engine {
             if let Err(e) = run.item(p, &dest, true) { if e.kind() != std::io::ErrorKind::Interrupted { rep.error = Some(format!("\u{201c}{}\u{201d} could not be {}: {}.", name_of(p), if mv { "moved" } else { "copied" }, plain(&e))); } break }
         }
         *ctl.status.lock().unwrap() = None;
-        rep.changed = run.changed; rep.made = run.made;
+        rep.changed = run.changed; rep.made = run.made; if mv { rep.moved = run.moved.clone(); }
         if !(run.copied.is_empty() && run.moved.is_empty() && run.replaced.is_empty()) { self.done(Record::Transfer { mv, copied: run.copied, moved: run.moved, replaced: run.replaced }); }
         rep
     }
@@ -511,7 +513,7 @@ impl Engine {
             // the folder goes to the Trash, whatever came into it since: nothing is deleted by an undo
             Record::NewFolder(p) => match trash(&p) { Ok(_) => note(&mut rep, p.parent()), Err(why) => rep.error = Some(format!("The new folder could not be taken back{}", why.map(|w| format!(": {w}")).unwrap_or_else(|| ": its volume has no Trash.".into()))) },
             Record::Rename { from, to } => match rename_no_replace(&to, &from) {
-                Ok(()) => { note(&mut rep, from.parent()); rep.made.push(from); }
+                Ok(()) => { note(&mut rep, from.parent()); rep.moved.push((to.clone(), from.clone())); rep.made.push(from); }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => rep.error = Some(format!("The rename could not be undone: \u{201c}{}\u{201d} is taken again.", name_of(&from))),
                 Err(e) => rep.error = Some(format!("The rename could not be undone: {}.", plain(&e))),
             },
@@ -527,7 +529,7 @@ impl Engine {
                 for (p, was) in copied.into_iter().rev() { if stamp(&p) != Some(was) { if std::fs::symlink_metadata(&p).is_ok() { #[cfg(test)] eprintln!("UNDO-DEBUG stamp {:?} now {:?} was {:?}", p, stamp(&p), was); left += 1; } continue } match trash(&p) { Ok(_) => note(&mut rep, p.parent()), Err(e) => { #[cfg(test)] eprintln!("UNDO-DEBUG trash {:?} {:?}", p, e); let _ = e; left += 1 } } }
                 let cancel = AtomicBool::new(false); let mut none = |_: u64| {};
                 for (from, to) in moved.into_iter().rev() { if let Some(dir) = from.parent() { let _ = std::fs::create_dir_all(dir); }
-                    match move_one(&to, &from, &mut Progress { cancel: &cancel, bytes: &mut none }) { Ok(()) => { note(&mut rep, from.parent()); note(&mut rep, to.parent()); rep.made.push(from); } Err(_) => left += 1 } }
+                    match move_one(&to, &from, &mut Progress { cancel: &cancel, bytes: &mut none }) { Ok(()) => { note(&mut rep, from.parent()); note(&mut rep, to.parent()); rep.moved.push((to.clone(), from.clone())); rep.made.push(from); } Err(_) => left += 1 } }
                 for (orig, at) in replaced { match rename_no_replace(&at, &orig) { Ok(()) => { forget_recycled(&at); note(&mut rep, orig.parent()) } Err(_) => left += 1 } }
                 if left > 0 { rep.error = Some(if left == 1 { "One item was changed since, or is in the way, and was left where it is.".into() } else { format!("{left} items were changed since, or are in the way, and were left where they are.") }); } }
             Record::Trash(moved) => { let mut left = 0;

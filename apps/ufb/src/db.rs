@@ -182,6 +182,45 @@ impl Db {
             let values = match serde_json::from_str::<serde_json::Value>(&json) { Ok(serde_json::Value::Object(m)) => m, _ => Default::default() };
             Some((to_native(&id)?, ItemMeta { values, tracked: tracked != 0, modified })) }).collect()).unwrap_or_default()
     }
+    /// A folder was renamed or moved by the application (rows 439, 493): every row that hangs on its path, or on a path
+    /// under it, is rewritten - an item's metadata, the job a row belongs to, a job's columns and this user's layout of
+    /// them, a subscription - in ONE step; the items' rows are stamped as changed (they are ordinary edits to whoever
+    /// reads the database). A top-level folder of a job renamed in place takes the section's name in those rows along.
+    /// What already lay at the new path is replaced. Returns how many rows moved.
+    pub fn move_paths(&self, from: &Path, to: &Path) -> Result<usize, String> {
+        let (old, new, now) = (to_identity(from), to_identity(to), now_ms()); let sep = std::path::MAIN_SEPARATOR.to_string(); if old == new { return Ok(0) }
+        // (a row is the folder's own, or lies under it: the text after the old path is kept)
+        let under = "({c} = ?1 OR substr({c}, 1, length(?1) + 1) = ?1 || ?3)"; let moved = "?2 || substr({c}, length(?1) + 1)";
+        let run = || -> rusqlite::Result<usize> {
+            let tx = self.conn.unchecked_transaction()?; let mut n = 0;
+            let w = |c: &str| under.replace("{c}", c); let m = |c: &str| moved.replace("{c}", c);
+            // what lies where the rows go makes way (a row left behind by an earlier rename, a tombstone)
+            tx.execute(&format!("DELETE FROM item_metadata WHERE item_path IN (SELECT {} FROM item_metadata WHERE {})", m("item_path"), w("item_path")), rusqlite::params![old, new, sep])?;
+            tx.execute(&format!("DELETE FROM subscriptions WHERE job_path IN (SELECT {} FROM subscriptions WHERE {})", m("job_path"), w("job_path")), rusqlite::params![old, new, sep])?;
+            n += tx.execute(&format!("UPDATE item_metadata SET item_path = {}, modified_time = ?4 WHERE {}", m("item_path"), w("item_path")), rusqlite::params![old, new, sep, now])?;
+            n += tx.execute(&format!("UPDATE item_metadata SET job_path = {} WHERE {}", m("job_path"), w("job_path")), rusqlite::params![old, new, sep])?;
+            n += tx.execute(&format!("UPDATE column_definitions SET job_path = {}, modified_time = ?4 WHERE {}", m("job_path"), w("job_path")), rusqlite::params![old, new, sep, now])?;
+            n += tx.execute(&format!("UPDATE OR REPLACE column_layout_personal SET job_path = {} WHERE {}", m("job_path"), w("job_path")), rusqlite::params![old, new, sep])?;
+            // a subscription called by its folder's name is called by the new one
+            if let (Some(a), Some(b)) = (from.file_name(), to.file_name()) { tx.execute("UPDATE subscriptions SET job_name = ?2 WHERE job_path = ?1 AND job_name = ?3", rusqlite::params![old, b.to_string_lossy(), a.to_string_lossy()])?; }
+            n += tx.execute(&format!("UPDATE subscriptions SET job_path = {}, modified_time = ?4 WHERE {}", m("job_path"), w("job_path")), rusqlite::params![old, new, sep, now])?;
+            // a section renamed in place: the rows of its job that name it
+            if let (Some(dir), Some(a), Some(b)) = (from.parent().filter(|d| Some(*d) == to.parent()), from.file_name(), to.file_name()) { let (job, a, b) = (to_identity(dir), a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned());
+                for table in ["item_metadata", "column_definitions"] { n += tx.execute(&format!("UPDATE {table} SET folder_name = ?3 WHERE job_path = ?1 AND folder_name = ?2"), rusqlite::params![job, a, b])?; }
+                n += tx.execute("UPDATE OR REPLACE column_layout_personal SET folder_name = ?3 WHERE job_path = ?1 AND folder_name = ?2", rusqlite::params![job, a, b])?; }
+            tx.commit()?; Ok(n)
+        };
+        run().map_err(|e| e.to_string())
+    }
+    /// An item's row is pointed at where its folder went (Relink): its path; and its job and section when the new
+    /// place is an item of a job (`<job>/<section>/<item>`) - else they are kept.
+    pub fn relink(&self, from: &Path, to: &Path, home: Option<(&Path, &str)>) -> Result<(), String> {
+        let now = now_ms(); self.conn.execute("DELETE FROM item_metadata WHERE item_path = ?1", [to_identity(to)]).map_err(|e| e.to_string())?;
+        match home { Some((job, folder)) => self.conn.execute("UPDATE item_metadata SET item_path = ?2, job_path = ?3, folder_name = ?4, modified_time = ?5 WHERE item_path = ?1", rusqlite::params![to_identity(from), to_identity(to), to_identity(job), folder, now]),
+            None => self.conn.execute("UPDATE item_metadata SET item_path = ?2, modified_time = ?3 WHERE item_path = ?1", rusqlite::params![to_identity(from), to_identity(to), now]) }.map(|_| ()).map_err(|e| e.to_string())
+    }
+    /// An item's row is taken away (1.4.2's statement: a tombstone).
+    pub fn remove_item(&self, item: &Path) -> Result<(), String> { self.conn.execute("UPDATE item_metadata SET modified_time = ?1, deleted_at = ?1 WHERE item_path = ?2", rusqlite::params![now_ms(), to_identity(item)]).map(|_| ()).map_err(|e| e.to_string()) }
     /// Every tracked item: (the item, its job, its section, what it carries). Of every job - the caller keeps its own
     /// (1.4.2's statement returns the tracked rows of jobs one is not subscribed to as well).
     pub fn tracked(&self) -> Vec<(PathBuf, PathBuf, String, ItemMeta)> {
@@ -273,6 +312,31 @@ mod tests {
         let other = db.add_column(job, "3d", "Status", "text", &[]).unwrap(); assert!(db.trash_column(status, false).is_err()); db.trash_column(other, true).unwrap(); db.trash_column(status, false).unwrap();
         assert_eq!(db.columns(job, "3d").iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Deadline", "Status"]);
         assert_eq!(kind_of("Note"), "notes"); assert_eq!(kind_of("PRIORITY"), "priority"); assert_eq!(kind_of("formula"), "text");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn the_metadata_follows_a_folder_that_was_renamed_or_moved() {
+        let dir = temp("move"); let db = Db::open(&dir).unwrap(); let root = PathBuf::from(if cfg!(windows) { "C:\\jobs" } else { "/jobs" }); let job = root.join("2601_a");
+        let (sh010, sh0100) = (job.join("3d").join("sh010"), job.join("3d").join("sh0100"));
+        db.subscribe(&job, "").unwrap(); let status = db.add_column(&job, "3d", "Status", "text", &[]).unwrap(); let uuid = db.columns(&job, "3d")[0].uuid.clone(); db.set_layout(&job, "3d", "Status", None, Some(99.0), None).unwrap();
+        db.set_field(&job, &sh010, "3d", &uuid, serde_json::json!("WIP")).unwrap(); db.set_tracked(&job, &sh010, "3d", true).unwrap(); db.set_tracked(&job, &sh0100, "3d", true).unwrap();
+        // an item renamed: its row goes along; one whose name only BEGINS the same stays (sh0100 is not under sh010)
+        let sh011 = job.join("3d").join("sh011"); db.move_paths(&sh010, &sh011).unwrap();
+        let m = db.folder_meta(&job, "3d"); assert_eq!(m[&sh011].values[&uuid], "WIP"); assert!(m[&sh011].tracked); assert!(!m.contains_key(&sh010)); assert!(m.contains_key(&sh0100));
+        // a section renamed in place: the rows and the columns that name it, and this user's layout
+        db.move_paths(&job.join("3d"), &job.join("cg")).unwrap();
+        assert!(db.folder_meta(&job, "3d").is_empty()); let m = db.folder_meta(&job, "cg"); assert_eq!(m[&job.join("cg").join("sh011")].values[&uuid], "WIP");
+        let cols = db.columns(&job, "cg"); assert_eq!((cols[0].id, cols[0].name.as_str(), cols[0].width, &cols[0].uuid), (status, "Status", 99.0, &uuid), "the column keeps its identity: the values still hang on it");
+        // the job renamed: everything of it in one step, and its subscription - called by the folder's new name
+        let job2 = root.join("2601_b"); let n = db.move_paths(&job, &job2).unwrap(); assert!(n >= 4);
+        assert_eq!(db.subscriptions(), [Sub { name: "2601_b".into(), path: job2.clone() }]); assert_eq!(db.columns(&job2, "cg").len(), 1); assert_eq!(db.folder_meta(&job2, "cg").len(), 2); assert!(db.tracked().iter().all(|t| t.1 == job2));
+        // back again (an undo is the same step the other way)
+        db.move_paths(&job2, &job).unwrap(); assert_eq!(db.subscriptions()[0].path, job); assert_eq!(db.folder_meta(&job, "cg").len(), 2);
+        // a row left at the place something is moved to makes way
+        let stray = job.join("cg").join("sh020"); db.set_tracked(&job, &stray, "cg", true).unwrap(); db.move_paths(&job.join("cg").join("sh011"), &stray).unwrap(); assert_eq!(db.folder_meta(&job, "cg")[&stray].values[&uuid], "WIP");
+        // relink and remove
+        let gone = job.join("cg").join("lost"); db.set_tracked(&job, &gone, "cg", true).unwrap(); let found = job.join("ae").join("found"); db.relink(&gone, &found, Some((&job, "ae"))).unwrap();
+        assert!(db.folder_meta(&job, "ae")[&found].tracked); assert!(!db.folder_meta(&job, "cg").contains_key(&gone)); db.remove_item(&found).unwrap(); assert!(db.folder_meta(&job, "ae").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

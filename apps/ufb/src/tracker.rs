@@ -29,6 +29,8 @@ pub struct Tracker {
     /// every tracked row: (the item, its job, its section, what it carries)
     all: Vec<(Item, PathBuf, String)>, /// the real columns of each (job, section), by the merged column's key
     real: HashMap<(PathBuf, String), HashMap<String, ColDef>>,
+    /// whether each row's folder is there is asked off the window's thread (a share may not answer): the question's number, its answers, the wake-up
+    req: u64, tx: std::sync::mpsc::Sender<(u64, Vec<PathBuf>)>, rx: std::sync::mpsc::Receiver<(u64, Vec<PathBuf>)>, wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 fn key_of(c: &ColDef) -> String { format!("{}|{}", c.name.to_lowercase(), kind_of(&c.kind)) }
 /// A date (ms of a local midnight) is in the bucket, `today` being the ms of today's midnight.
@@ -40,7 +42,11 @@ pub fn in_bucket(due: Due, date: i64, today: i64) -> bool {
 }
 
 impl Tracker {
-    pub fn new(scope: Scope) -> Tracker { let mut t = Tracker { scope, list: ItemList::default(), rows: vec![], chosen: None, due: Due::All, dated: false, all: vec![], real: HashMap::new() }; t.list.show_modified = true; t.reload(); t }
+    pub fn new(scope: Scope, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> Tracker { let (tx, rx) = std::sync::mpsc::channel(); let mut t = Tracker { scope, list: ItemList::default(), rows: vec![], chosen: None, due: Due::All, dated: false, all: vec![], real: HashMap::new(), req: 0, tx, rx, wake }; t.list.show_modified = true; t.reload(); t }
+    /// The answers about the rows' folders are taken in. True when one came.
+    pub fn poll(&mut self) -> bool { let mut any = false; while let Ok((req, missing)) = self.rx.try_recv() { if req == self.req { self.list.missing = missing.into_iter().collect(); any = true; } } any }
+    /// A row's folder is not there (it was renamed or moved outside the application, or by a 1.4.2 node).
+    pub fn lost(&self, item: &Path) -> bool { self.list.missing.contains(item) }
     /// Read the tracked items and their sections' columns again.
     pub fn reload(&mut self) {
         let was = self.chosen.and_then(|i| self.rows.get(i)).map(|i| i.path.clone());
@@ -68,6 +74,10 @@ impl Tracker {
         self.list.cols = cols; self.list.hidden.clear(); self.list.meta = meta; self.all = all; self.real = real;
         if let Some((crate::itemlist::SortBy::Col(u), _)) = &self.list.sort { if !self.list.cols.iter().any(|c| &c.uuid == u) { self.list.sort = None; } }
         self.filter(); self.chosen = was.and_then(|w| self.rows.iter().position(|r| r.path == w));
+        // which of the rows' folders are gone: asked on a thread of its own
+        self.req += 1; let (req, paths, tx, wake): (u64, Vec<PathBuf>, _, _) = (self.req, self.all.iter().map(|a| a.0.path.clone()).collect(), self.tx.clone(), self.wake.clone());
+        self.list.missing.retain(|p| paths.contains(p));
+        let _ = std::thread::Builder::new().name("ufb-tracker".into()).spawn(move || { let missing: Vec<PathBuf> = paths.into_iter().filter(|p| !p.is_dir()).collect(); let _ = tx.send((req, missing)); wake(); });
     }
     /// The rows the Due chip leaves: one whose ANY date falls in the bucket (1.4.2).
     pub fn filter(&mut self) {
