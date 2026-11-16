@@ -148,9 +148,10 @@ fn copy_file(src: &Path, dst: &Path, pr: &mut Progress) -> std::io::Result<()> {
     }
     #[cfg(windows)] {
         use windows::core::HSTRING; use windows::Win32::Storage::FileSystem::{CopyFileExW, COPYFILE_FLAGS};
-        unsafe extern "system" fn routine(_total: i64, done: i64, _st: i64, _sd: i64, _n: u32, _why: windows::Win32::Storage::FileSystem::LPPROGRESS_ROUTINE_CALLBACK_REASON, _s: windows::Win32::Foundation::HANDLE, _d: windows::Win32::Foundation::HANDLE, ctx: *const std::ffi::c_void) -> u32 {
-            let pr = unsafe { &mut *(ctx as *mut Progress) }; if pr.cancel.load(Ordering::Relaxed) { return 1 }   // PROGRESS_CANCEL
-            (pr.bytes)(done.max(0) as u64); 0   // PROGRESS_CONTINUE
+        unsafe extern "system" fn routine(_total: i64, done: i64, _st: i64, _sd: i64, _n: u32, _why: windows::Win32::Storage::FileSystem::LPPROGRESS_ROUTINE_CALLBACK_REASON, _s: windows::Win32::Foundation::HANDLE, _d: windows::Win32::Foundation::HANDLE, ctx: *const std::ffi::c_void) -> windows::Win32::Storage::FileSystem::COPYPROGRESSROUTINE_PROGRESS {
+            use windows::Win32::Storage::FileSystem::COPYPROGRESSROUTINE_PROGRESS as P;
+            let pr = unsafe { &mut *(ctx as *mut Progress) }; if pr.cancel.load(Ordering::Relaxed) { return P(1) }   // PROGRESS_CANCEL
+            (pr.bytes)(done.max(0) as u64); P(0)   // PROGRESS_CONTINUE
         }
         // COPY_FILE_FAIL_IF_EXISTS | COPY_FILE_COPY_SYMLINK
         let r = unsafe { CopyFileExW(&HSTRING::from(src.as_os_str()), &HSTRING::from(dst.as_os_str()), Some(routine), Some(pr as *mut Progress as *const std::ffi::c_void), None, COPYFILE_FLAGS(0x1 | 0x800)) };
