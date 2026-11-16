@@ -6287,6 +6287,7 @@ dependencies = [
  "rfd",
  "rusqlite",
  "serde_json",
+ "socket2",
  "ufb-projtype",
  "uuid",
  "vello",

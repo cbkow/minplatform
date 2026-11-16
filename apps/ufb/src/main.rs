@@ -18,12 +18,14 @@ mod docview;
 mod ctxmenu;
 mod format;
 mod history;
+mod http;
 mod icons;
 mod itemlist;
 mod jobview;
 mod lightbox;
 mod lister;
 mod menu;
+mod mesh;
 mod model;
 mod ops;
 mod pane;
@@ -58,13 +60,25 @@ fn main() {
     // a helper copy of the executable (thumbnails, canon row 456): the first branch, before anything else is set up
     if std::env::args_os().nth(1).is_some_and(|a| a == thumbs::pool::HELPER_ARG) { thumbs::helper::run() }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]..."); return }
+    if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]... [--map <windows side>=<macOS side>]... [--mesh <farm folder> [--mesh-node <id>] [--mesh-only <folder>]]"); return }
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
     // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
     db::set_mappings(args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect());
     // (files promised by another application arrive in a folder of our own first: the engine may take them out of it)
     let mut writes = writes; let incoming = dnd::staging(); if std::fs::create_dir_all(&incoming).is_ok() { writes.push(incoming); }
     ops::init(&writes);
+    // the mesh (row 494): `--mesh <farm folder>` starts this machine's node; `--mesh-node <id>` names it (else the
+    // machine's name); `--mesh-only <folder>` keeps everything but that folder's rows out of it. A development build
+    // runs at a TEST epoch (no installed UFB is of it) unless `UFB_MESH_EPOCH` says otherwise; `UFB_MESH_PORTS=c,d,u`.
+    let arg = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
+    if let Some(farm) = arg("--mesh") {
+        let host = std::env::var("COMPUTERNAME").ok().or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())).unwrap_or_else(|| "node".into());
+        let node: String = arg("--mesh-node").unwrap_or(host).chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+        let ports: Vec<u16> = std::env::var("UFB_MESH_PORTS").ok().map(|p| p.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+        let only = arg("--mesh-only").map(|p| db::to_identity(&std::path::absolute(&p).unwrap_or_else(|_| p.clone().into())));
+        mesh::start(mesh::Config { farm: std::path::absolute(&farm).unwrap_or_else(|_| farm.clone().into()), node, epoch: std::env::var("UFB_MESH_EPOCH").ok().and_then(|e| e.parse().ok()).unwrap_or(mesh::TEST_EPOCH),
+            ctl: ports.first().copied().unwrap_or(mesh::CTL_PORT), data: ports.get(1).copied().unwrap_or(mesh::DATA_PORT), udp: ports.get(2).copied().unwrap_or(mesh::UDP_PORT), tags: std::env::var("UFB_MESH_TAGS").ok().map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(), only });
+    }
     shell::run(folder, favorites);
 }
 

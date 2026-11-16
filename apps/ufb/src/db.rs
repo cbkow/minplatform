@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS volumes (uuid TEXT PRIMARY KEY, display_name TEXT NOT
 CREATE TABLE IF NOT EXISTS volume_bindings (uuid TEXT PRIMARY KEY, local_mount_root TEXT NOT NULL, bound_time INTEGER NOT NULL, auto_discovered INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS migration_orphans (id INTEGER PRIMARY KEY AUTOINCREMENT, source_table TEXT NOT NULL, original_path TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', quarantined_at INTEGER NOT NULL);
 ";
+/// Ours, beside 1.4.2's tables (it does not know them and does not mind them): what was changed here and has not been
+/// accepted by the mesh yet (row 441: the database is the queue - nothing is dropped, and a quit loses nothing).
+/// `kind`: `meta` (an item's row, by its identity), `col` (a column, by its uuid); `payload`: a message to send as it
+/// is (an item that is no longer here under that path), else what the row holds when it is sent.
+const OURS: &str = "CREATE TABLE IF NOT EXISTS mesh_pending (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT, queued_time INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_mesh_pending_key ON mesh_pending(kind, key);";
 /// The columns 1.4.2 adds after the tables (each only where it is missing).
 const ADDED: [(&str, &str, &str); 13] = [("item_metadata", "device_id", "TEXT"), ("column_definitions", "modified_time", "INTEGER NOT NULL DEFAULT 0"), ("column_options", "modified_time", "INTEGER NOT NULL DEFAULT 0"),
     ("subscriptions", "modified_time", "INTEGER NOT NULL DEFAULT 0"), ("item_metadata", "deleted_at", "INTEGER"), ("column_definitions", "deleted_at", "INTEGER"), ("column_options", "deleted_at", "INTEGER"),
@@ -109,7 +115,7 @@ impl Db {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let conn = Connection::open(dir.join("ufb_v5.db")).map_err(|e| e.to_string())?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;").map_err(|e| e.to_string())?;
-        conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?; conn.execute_batch(OURS).map_err(|e| e.to_string())?;
         for (table, column, kind) in ADDED {
             let has: bool = conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1")).and_then(|mut s| s.exists([column])).map_err(|e| e.to_string())?;
             if !has { conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"), []).map_err(|e| e.to_string())?; }
@@ -207,7 +213,7 @@ impl Db {
         let order: i64 = self.conn.query_row("SELECT COALESCE(MAX(column_order), -1) + 1 FROM column_definitions WHERE job_path = ?1 AND folder_name = ?2 AND deleted_at IS NULL", rusqlite::params![jid, folder], |r| r.get(0)).map_err(|e| e.to_string())?;
         self.conn.execute("INSERT INTO column_definitions (job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, column_uuid) VALUES (?1, ?2, ?3, ?4, ?5, 120.0, 1, NULL, ?6, NULL, ?7)",
             rusqlite::params![jid, folder, name, kind, order, now, column_uuid(&jid, folder, name, kind)]).map_err(|e| e.to_string())?;
-        let id = self.conn.last_insert_rowid(); self.set_options(id, options, now).map_err(|e| e.to_string())?; Ok(id)
+        let id = self.conn.last_insert_rowid(); self.set_options(id, options, now).map_err(|e| e.to_string())?; self.note_col(id); Ok(id)
     }
     /// A column's name, type and options are changed. Its values stay (they hang on its uuid, which is kept).
     pub fn update_column(&self, id: i64, name: &str, kind: &str, options: &[(String, Option<String>)]) -> Result<(), String> {
@@ -217,18 +223,18 @@ impl Db {
         // (this user's own layout hangs on the NAME: it goes with a rename)
         self.conn.execute("UPDATE OR IGNORE column_layout_personal SET column_name = ?2 WHERE (job_path, folder_name, column_name) IN (SELECT job_path, folder_name, column_name FROM column_definitions WHERE id = ?1)", rusqlite::params![id, name]).map_err(|e| e.to_string())?;
         self.conn.execute("UPDATE column_definitions SET column_name = ?1, column_type = ?2, modified_time = ?3, deleted_at = NULL WHERE id = ?4", rusqlite::params![name, kind, now, id]).map_err(|e| e.to_string())?;
-        self.set_options(id, options, now).map_err(|e| e.to_string())
+        self.set_options(id, options, now).map_err(|e| e.to_string())?; self.note_col(id); Ok(())
     }
     /// An option is added to a column, after its others (made from a cell: a text that was no option yet).
     pub fn add_option(&self, id: i64, name: &str, color: &str) -> Result<(), String> {
         let now = now_ms(); self.conn.execute("INSERT INTO column_options (column_id, option_name, option_color, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, NULL)", rusqlite::params![id, name, color, now]).map_err(|e| e.to_string())?;
-        self.conn.execute("UPDATE column_definitions SET modified_time = ?1 WHERE id = ?2", rusqlite::params![now, id]).map(|_| ()).map_err(|e| e.to_string())
+        self.conn.execute("UPDATE column_definitions SET modified_time = ?1 WHERE id = ?2", rusqlite::params![now, id]).map_err(|e| e.to_string())?; self.note_col(id); Ok(())
     }
     /// Into the column trash, or out of it (the values stay; a restore under a name now in use is refused).
     pub fn trash_column(&self, id: i64, on: bool) -> Result<(), String> {
         if !on { let taken: bool = self.conn.prepare("SELECT 1 FROM column_definitions o JOIN column_definitions me ON me.id = ?1 WHERE o.id != me.id AND o.job_path = me.job_path AND o.folder_name = me.folder_name AND lower(o.column_name) = lower(me.column_name) AND o.deleted_at IS NULL AND o.trashed_at IS NULL").and_then(|mut s| s.exists([id])).map_err(|e| e.to_string())?;
             if taken { return Err("A column of that name is in use: rename it first.".into()) } }
-        let now = now_ms(); self.conn.execute("UPDATE column_definitions SET trashed_at = ?1, modified_time = ?2 WHERE id = ?3", rusqlite::params![on.then_some(now), now, id]).map(|_| ()).map_err(|e| e.to_string())
+        let now = now_ms(); self.conn.execute("UPDATE column_definitions SET trashed_at = ?1, modified_time = ?2 WHERE id = ?3", rusqlite::params![on.then_some(now), now, id]).map_err(|e| e.to_string())?; self.note_col(id); Ok(())
     }
     /// This user's own order, width or visibility of a column (none: left as it is). Never shared.
     pub fn set_layout(&self, job: &Path, folder: &str, name: &str, order: Option<i64>, width: Option<f64>, visible: Option<bool>) -> Result<(), String> {
@@ -271,17 +277,34 @@ impl Db {
                 n += tx.execute("UPDATE OR REPLACE column_layout_personal SET folder_name = ?3 WHERE job_path = ?1 AND folder_name = ?2", rusqlite::params![job, a, b])?; }
             tx.commit()?; Ok(n)
         };
-        run().map_err(|e| e.to_string())
+        // the mesh is told: the tracked rows that were under the old path are untracked there (a 1.4.2 node keeps a row
+        // for good; untracked, it leaves every tracker), and the rows and the columns under the new path are edits of theirs
+        let gone: Vec<(String, String, String)> = self.conn.prepare(&format!("SELECT item_path, job_path, folder_name FROM item_metadata WHERE is_tracked = 1 AND deleted_at IS NULL AND {}", under.replace("{c}", "item_path"))).and_then(|mut st| Ok(st.query_map(rusqlite::params![old, new, sep], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.flatten().collect())).unwrap_or_default();
+        let n = run().map_err(|e| e.to_string())?;
+        for (item, job, folder) in gone { self.note("meta", &item, Some(serde_json::json!({ "job_path": job, "item_path": item, "metadata": "{}", "folder_name": folder, "is_tracked": false, "modified_time": now }).to_string())); }
+        let w = under.replace("{c}", "item_path").replace("?1", "?2");
+        let moved: Vec<String> = self.conn.prepare(&format!("SELECT item_path FROM item_metadata WHERE {w}")).and_then(|mut st| Ok(st.query_map(rusqlite::params![old, new, sep], |r| r.get(0))?.flatten().collect())).unwrap_or_default();
+        for item in moved { self.note("meta", &item, None); }
+        let w = under.replace("{c}", "job_path").replace("?1", "?2");
+        let cols: Vec<i64> = self.conn.prepare(&format!("SELECT id FROM column_definitions WHERE {w}")).and_then(|mut st| Ok(st.query_map(rusqlite::params![old, new, sep], |r| r.get(0))?.flatten().collect())).unwrap_or_default();
+        for id in cols { self.note_col(id); }
+        Ok(n)
     }
     /// An item's row is pointed at where its folder went (Relink): its path; and its job and section when the new
     /// place is an item of a job (`<job>/<section>/<item>`) - else they are kept.
     pub fn relink(&self, from: &Path, to: &Path, home: Option<(&Path, &str)>) -> Result<(), String> {
         let now = now_ms(); self.conn.execute("DELETE FROM item_metadata WHERE item_path = ?1", [to_identity(to)]).map_err(|e| e.to_string())?;
         match home { Some((job, folder)) => self.conn.execute("UPDATE item_metadata SET item_path = ?2, job_path = ?3, folder_name = ?4, modified_time = ?5 WHERE item_path = ?1", rusqlite::params![to_identity(from), to_identity(to), to_identity(job), folder, now]),
-            None => self.conn.execute("UPDATE item_metadata SET item_path = ?2, modified_time = ?3 WHERE item_path = ?1", rusqlite::params![to_identity(from), to_identity(to), now]) }.map(|_| ()).map_err(|e| e.to_string())
+            None => self.conn.execute("UPDATE item_metadata SET item_path = ?2, modified_time = ?3 WHERE item_path = ?1", rusqlite::params![to_identity(from), to_identity(to), now]) }.map_err(|e| e.to_string())?;
+        self.note("meta", &to_identity(to), None); Ok(())
     }
     /// An item's row is taken away (1.4.2's statement: a tombstone).
-    pub fn remove_item(&self, item: &Path) -> Result<(), String> { self.conn.execute("UPDATE item_metadata SET modified_time = ?1, deleted_at = ?1 WHERE item_path = ?2", rusqlite::params![now_ms(), to_identity(item)]).map(|_| ()).map_err(|e| e.to_string()) }
+    pub fn remove_item(&self, item: &Path) -> Result<(), String> {
+        let (id, now) = (to_identity(item), now_ms());
+        // (a row cannot be deleted across the mesh - 1.4.2 has no such message: the others are told it is untracked, which they all understand)
+        if let Ok((job, folder)) = self.conn.query_row("SELECT job_path, folder_name FROM item_metadata WHERE item_path = ?1", [&id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) { self.note("meta", &id, Some(serde_json::json!({ "job_path": job, "item_path": id, "metadata": "{}", "folder_name": folder, "is_tracked": false, "modified_time": now }).to_string())); }
+        self.conn.execute("UPDATE item_metadata SET modified_time = ?1, deleted_at = ?1 WHERE item_path = ?2", rusqlite::params![now, id]).map(|_| ()).map_err(|e| e.to_string())
+    }
     /// Every tracked item: (the item, its job, its section, what it carries). Of every job - the caller keeps its own
     /// (1.4.2's statement returns the tracked rows of jobs one is not subscribed to as well).
     pub fn tracked(&self) -> Vec<(PathBuf, PathBuf, String, ItemMeta)> {
@@ -294,7 +317,8 @@ impl Db {
     fn put_item(&self, job: &Path, item: &Path, folder: &str, values: &serde_json::Map<String, serde_json::Value>, tracked: bool) -> Result<(), String> {
         self.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
              ON CONFLICT(item_path) DO UPDATE SET metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = NULL",
-            rusqlite::params![to_identity(item), to_identity(job), folder, serde_json::Value::Object(values.clone()).to_string(), tracked as i64, now_ms()]).map(|_| ()).map_err(|e| e.to_string())
+            rusqlite::params![to_identity(item), to_identity(job), folder, serde_json::Value::Object(values.clone()).to_string(), tracked as i64, now_ms()]).map(|_| ()).map_err(|e| e.to_string())?;
+        self.note("meta", &to_identity(item), None); Ok(())
     }
     fn item(&self, item: &Path) -> ItemMeta {
         self.conn.query_row("SELECT metadata_json, is_tracked, COALESCE(modified_time, 0) FROM item_metadata WHERE item_path = ?1 AND deleted_at IS NULL", [to_identity(item)], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).ok()
@@ -306,6 +330,91 @@ impl Db {
     }
     /// The star.
     pub fn set_tracked(&self, job: &Path, item: &Path, folder: &str, on: bool) -> Result<(), String> { let m = self.item(item); self.put_item(job, item, folder, &m.values, on) }
+}
+
+// ------------------------------------------------------------------ the mesh's side (row 494; `mesh.rs`)
+/// What waits to be sent: (its number, `meta` or `col`, the key, a ready message or none).
+pub type Pending = (i64, String, String, Option<String>);
+impl Db {
+    /// Something shared was changed here: it waits for the mesh. Only what lies under a mapped share is ever sent.
+    fn note(&self, kind: &str, key: &str, payload: Option<String>) {
+        if !key.starts_with("vol:") && kind == "meta" { return }
+        // (one entry a row: what is sent is the row as it is THEN - a ready message is kept as it is, each one)
+        if payload.is_none() { let _ = self.conn.execute("DELETE FROM mesh_pending WHERE kind = ?1 AND key = ?2 AND payload IS NULL", rusqlite::params![kind, key]); }
+        let _ = self.conn.execute("INSERT INTO mesh_pending (kind, key, payload, queued_time) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![kind, key, payload, now_ms()]);
+    }
+    fn note_col(&self, id: i64) { if let Ok((uuid, job)) = self.conn.query_row("SELECT COALESCE(column_uuid, ''), job_path FROM column_definitions WHERE id = ?1", [id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) { if job.starts_with("vol:") && !uuid.is_empty() { self.note("col", &uuid, None); } } }
+    pub fn pending(&self) -> Vec<Pending> { self.conn.prepare("SELECT id, kind, key, payload FROM mesh_pending ORDER BY id LIMIT 200").and_then(|mut st| Ok(st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.flatten().collect())).unwrap_or_default() }
+    pub fn pending_count(&self) -> usize { self.conn.query_row("SELECT count(*) FROM mesh_pending", [], |r| r.get::<_, i64>(0)).unwrap_or(0) as usize }
+    pub fn pending_done(&self, id: i64) { let _ = self.conn.execute("DELETE FROM mesh_pending WHERE id = ?1", [id]); }
+    /// An item's row as 1.4.2 sends it (`POST /api/metadata/update`): the whole document, as a string, with its star and its time.
+    pub fn meta_wire(&self, item_identity: &str) -> Option<serde_json::Value> {
+        self.conn.query_row("SELECT job_path, folder_name, metadata_json, is_tracked, COALESCE(modified_time, 0) FROM item_metadata WHERE item_path = ?1 AND deleted_at IS NULL", [item_identity], |r| Ok(serde_json::json!({
+            "job_path": r.get::<_, String>(0)?, "item_path": item_identity, "metadata": r.get::<_, String>(2)?, "folder_name": r.get::<_, String>(1)?, "is_tracked": r.get::<_, i64>(3)? != 0, "modified_time": r.get::<_, i64>(4)? }))).ok()
+    }
+    /// A column as 1.4.2 sends it (`POST /api/table/update`): `col_add` - which its receiver takes as "make it or
+    /// bring it up to date" - with the definition as a STRING, its fields in camel case, its options with it.
+    pub fn col_wire(&self, uuid: &str) -> Option<serde_json::Value> {
+        let (id, job, folder, name, kind, order, width, visible, default, modified, deleted, hash, trashed): (i64, String, String, String, String, i64, f64, i64, Option<String>, i64, Option<i64>, Option<String>, Option<i64>) =
+            self.conn.query_row("SELECT id, job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, template_hash, trashed_at FROM column_definitions WHERE column_uuid = ?1 ORDER BY deleted_at IS NOT NULL, modified_time DESC LIMIT 1", [uuid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?))).ok()?;
+        let options: Vec<serde_json::Value> = self.conn.prepare("SELECT id, option_name, option_color, modified_time, deleted_at FROM column_options WHERE column_id = ?1 ORDER BY id").and_then(|mut st| Ok(st.query_map([id], |r| Ok(serde_json::json!({ "id": r.get::<_, i64>(0)?, "name": r.get::<_, String>(1)?, "color": r.get::<_, Option<String>>(2)?, "modifiedTime": r.get::<_, i64>(3)?, "deletedAt": r.get::<_, Option<i64>>(4)? })))?.flatten().collect())).unwrap_or_default();
+        let mut def = serde_json::json!({ "id": id, "jobPath": job, "folderName": folder, "columnName": name, "columnType": kind, "columnOrder": order, "columnWidth": width, "isVisible": visible != 0, "defaultValue": default, "options": options, "modifiedTime": modified, "deletedAt": deleted, "columnUuid": uuid });
+        if let Some(h) = hash { def["templateHash"] = h.into(); } if let Some(t) = trashed { def["trashedAt"] = t.into(); }
+        Some(serde_json::json!({ "action": "col_add", "def": def.to_string(), "modified_time": modified }))
+    }
+    /// A path as a message carries it, in storage form: an identity as it is; a plain path of this machine classified (1.4.2 accepts both).
+    fn wire_path(s: &str) -> String { if s.starts_with("vol:") || s.starts_with("native:") { s.to_string() } else { to_identity(Path::new(s)) } }
+    /// An item's row arrived (1.4.2's rule): it replaces ours when it is not older; a time of 0 is "now". True: taken.
+    pub fn apply_meta(&self, v: &serde_json::Value) -> Result<bool, String> {
+        let text = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        let (Some(job), Some(item)) = (text("job_path").map(|p| Self::wire_path(&p)), text("item_path").map(|p| Self::wire_path(&p))) else { return Err("job_path and item_path are needed".into()) };
+        let (doc, folder, tracked) = (text("metadata").unwrap_or_else(|| "{}".into()), text("folder_name").unwrap_or_default(), v.get("is_tracked").and_then(|x| x.as_bool()).unwrap_or(false));
+        let mut time = v.get("modified_time").and_then(|x| x.as_i64()).unwrap_or(0); if time == 0 { time = now_ms(); }
+        let n = self.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)
+             ON CONFLICT(item_path) DO UPDATE SET job_path = excluded.job_path, folder_name = excluded.folder_name, metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = NULL
+             WHERE excluded.modified_time >= COALESCE(item_metadata.modified_time, 0)", rusqlite::params![item, job, folder, doc, tracked as i64, time]).map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+    /// A column's change arrived (1.4.2's `apply_table_change`): `col_add` / `col_update` take the definition when it
+    /// is NEWER than ours (found by its uuid, else by job, section and name), `col_delete` is final; what 1.4.2 itself
+    /// accepts and ignores is accepted and ignored; anything else is an error. True: something changed.
+    pub fn apply_table(&self, v: &serde_json::Value) -> Result<bool, String> {
+        let action = v.get("action").and_then(|x| x.as_str()).unwrap_or(""); let top = v.get("modified_time").and_then(|x| x.as_i64()).unwrap_or(0);
+        match action {
+            "col_add" | "col_update" => {
+                let def: serde_json::Value = match v.get("def") { Some(serde_json::Value::String(s)) => serde_json::from_str(s).map_err(|e| e.to_string())?, Some(o @ serde_json::Value::Object(_)) => o.clone(), _ => return Err("the column's definition is missing".into()) };
+                let text = |k: &str| def.get(k).and_then(|x| x.as_str()).map(str::to_string); let int = |k: &str| def.get(k).and_then(|x| x.as_i64());
+                let (Some(job), Some(folder), Some(name)) = (text("jobPath").map(|p| Self::wire_path(&p)), text("folderName"), text("columnName")) else { return Err("the column's definition is incomplete".into()) };
+                let kind = text("columnType").unwrap_or_else(|| "text".into()); let uuid = text("columnUuid").filter(|u| !u.is_empty()).unwrap_or_else(|| column_uuid(&job, &folder, &name, &kind));
+                let mut time = int("modifiedTime").filter(|t| *t > 0).unwrap_or(top); if time == 0 { time = now_ms(); }
+                let found: Option<(i64, i64)> = self.conn.query_row("SELECT id, modified_time FROM column_definitions WHERE column_uuid = ?1 ORDER BY deleted_at IS NOT NULL LIMIT 1", [&uuid], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+                    .or_else(|| self.conn.query_row("SELECT id, modified_time FROM column_definitions WHERE job_path = ?1 AND folder_name = ?2 AND column_name = ?3 AND deleted_at IS NULL LIMIT 1", rusqlite::params![job, folder, name], |r| Ok((r.get(0)?, r.get(1)?))).ok());
+                let (order, width, visible) = (int("columnOrder").unwrap_or(0), def.get("columnWidth").and_then(|x| x.as_f64()).unwrap_or(120.0), def.get("isVisible").and_then(|x| x.as_bool()).unwrap_or(true) as i64);
+                let id = match found {
+                    Some((_, local)) if time <= local => return Ok(false),
+                    Some((id, _)) => { self.conn.execute("UPDATE column_definitions SET job_path = ?1, folder_name = ?2, column_name = ?3, column_type = ?4, column_order = ?5, column_width = ?6, is_visible = ?7, default_value = ?8, modified_time = ?9, deleted_at = ?10, trashed_at = ?11, template_hash = ?12, column_uuid = ?13 WHERE id = ?14",
+                        rusqlite::params![job, folder, name, kind, order, width, visible, text("defaultValue"), time, int("deletedAt"), int("trashedAt"), text("templateHash"), uuid, id]).map_err(|e| e.to_string())?; id }
+                    // (`col_update` for a column that is not here: 1.4.2 ignores it)
+                    None if action == "col_update" => return Ok(false),
+                    None => { self.conn.execute("INSERT INTO column_definitions (job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, trashed_at, template_hash, column_uuid) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        rusqlite::params![job, folder, name, kind, order, width, visible, text("defaultValue"), time, int("deletedAt"), int("trashedAt"), text("templateHash"), uuid]).map_err(|e| e.to_string())?; self.conn.last_insert_rowid() }
+                };
+                self.conn.execute("DELETE FROM column_options WHERE column_id = ?1", [id]).map_err(|e| e.to_string())?;
+                for o in def.get("options").and_then(|x| x.as_array()).into_iter().flatten() { let Some(n) = o.get("name").and_then(|x| x.as_str()) else { continue }; if o.get("deletedAt").is_some_and(|d| !d.is_null()) { continue }
+                    self.conn.execute("INSERT INTO column_options (column_id, option_name, option_color, modified_time, deleted_at) VALUES (?1, ?2, ?3, ?4, NULL)", rusqlite::params![id, n, o.get("color").and_then(|x| x.as_str()), o.get("modifiedTime").and_then(|x| x.as_i64()).filter(|t| *t > 0).unwrap_or(time)]).map_err(|e| e.to_string())?; }
+                Ok(true)
+            }
+            "col_delete" => {
+                let text = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string); let at = v.get("deleted_at").and_then(|x| x.as_i64()).filter(|t| *t > 0).unwrap_or_else(now_ms);
+                let n = match text("column_uuid").filter(|u| !u.is_empty()) { Some(u) => self.conn.execute("UPDATE column_definitions SET deleted_at = ?1, modified_time = ?1 WHERE column_uuid = ?2 AND (deleted_at IS NULL OR deleted_at < ?1)", rusqlite::params![at, u]),
+                    None => self.conn.execute("UPDATE column_definitions SET deleted_at = ?1, modified_time = ?1 WHERE job_path = ?2 AND folder_name = ?3 AND column_name = ?4 AND (deleted_at IS NULL OR deleted_at < ?1)", rusqlite::params![at, text("job_path").map(|p| Self::wire_path(&p)).unwrap_or_default(), text("folder_name").unwrap_or_default(), text("column_name").unwrap_or_default()]) }.map_err(|e| e.to_string())?;
+                Ok(n > 0)
+            }
+            "sub_add" | "sub_remove" | "preset_save" | "preset_delete" => Ok(false),
+            other => Err(format!("unknown action {other:?}")),
+        }
+    }
 }
 
 static DB: OnceLock<Option<Mutex<Db>>> = OnceLock::new();
@@ -427,6 +536,34 @@ mod tests {
         let (item, jobp): (String, String) = db.conn.query_row("SELECT item_path, job_path FROM item_metadata", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap(); assert_eq!(item, format!("vol:{}/jobs/0001_Test/3d/sh010", maps[0].uuid)); assert_eq!(jobp, stored[1]);
         assert_eq!(db.classify(&maps).unwrap(), 0, "done once");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn what_is_shared_waits_for_the_mesh_and_arrives_as_1_4_2_sends_it() {
+        // (two databases stand for two machines; a path under a share is given to both as its identity)
+        let (da, db_) = (temp("mesh-a"), temp("mesh-b")); let (a, b) = (Db::open(&da).unwrap(), Db::open(&db_).unwrap());
+        let job = "vol:1111/jobs/0001_Test"; let item = format!("{job}/3d/sh010");
+        // a column made on A, as its message
+        a.conn.execute("INSERT INTO column_definitions (job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, modified_time, column_uuid) VALUES (?1, '3d', 'Status', 'dropdown', 0, 120.0, 1, 1000, 'u-status')", [job]).unwrap();
+        let id = a.conn.last_insert_rowid(); a.set_options(id, &[("WIP".into(), Some("#e6b422".into())), ("Final".into(), None)], 1000).unwrap(); a.note_col(id);
+        assert_eq!(a.pending().iter().map(|p| (p.1.as_str(), p.2.as_str())).collect::<Vec<_>>(), [("col", "u-status")]);
+        let msg = a.col_wire("u-status").unwrap(); assert_eq!(msg["action"], "col_add"); assert!(msg["def"].is_string(), "the definition travels as a string");
+        let def: serde_json::Value = serde_json::from_str(msg["def"].as_str().unwrap()).unwrap(); assert_eq!((def["columnName"].as_str(), def["columnUuid"].as_str(), def["jobPath"].as_str(), def["options"][0]["name"].as_str()), (Some("Status"), Some("u-status"), Some(job), Some("WIP"))); assert!(def.get("templateHash").is_none());
+        assert!(b.apply_table(&msg).unwrap()); assert!(!b.apply_table(&msg).unwrap(), "the same again: not newer, ignored");
+        let (name, opts): (String, i64) = b.conn.query_row("SELECT column_name, (SELECT count(*) FROM column_options o WHERE o.column_id = d.id) FROM column_definitions d WHERE column_uuid = 'u-status'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap(); assert_eq!((name.as_str(), opts), ("Status", 2));
+        // an item's row on A, as its message; B takes it; an older one does not replace a newer
+        a.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, '3d', '{\"u-status\":\"WIP\"}', 1, 2000)", rusqlite::params![item, job]).unwrap(); a.note("meta", &item, None); a.note("meta", &item, None);
+        assert_eq!(a.pending().iter().filter(|p| p.1 == "meta").count(), 1, "one entry a row, however often it changed");
+        let msg = a.meta_wire(&item).unwrap(); assert_eq!((msg["item_path"].as_str(), msg["metadata"].as_str(), msg["is_tracked"].as_bool(), msg["modified_time"].as_i64()), (Some(item.as_str()), Some("{\"u-status\":\"WIP\"}"), Some(true), Some(2000)));
+        assert!(b.apply_meta(&msg).unwrap());
+        let mut older = msg.clone(); older["modified_time"] = 1500.into(); older["metadata"] = "{}".into(); assert!(!b.apply_meta(&older).unwrap(), "older than ours: left");
+        let mut same = msg.clone(); same["metadata"] = "{\"u-status\":\"Final\"}".into(); assert!(b.apply_meta(&same).unwrap(), "not older (the same time): it replaces (1.4.2: >=)");
+        assert_eq!(b.conn.query_row("SELECT metadata_json FROM item_metadata WHERE item_path = ?1", [&item], |r| r.get::<_, String>(0)).unwrap(), "{\"u-status\":\"Final\"}");
+        // what is this machine's own is never queued; what 1.4.2 ignores is ignored; anything else is an error
+        a.note("meta", "native:mac//Users/a/x", None); assert_eq!(a.pending_count(), 2);
+        assert!(!b.apply_table(&serde_json::json!({ "action": "sub_add" })).unwrap()); assert!(b.apply_table(&serde_json::json!({ "action": "nonsense" })).is_err());
+        assert!(b.apply_table(&serde_json::json!({ "action": "col_delete", "column_uuid": "u-status", "deleted_at": 5000 })).unwrap());
+        let p = a.pending(); a.pending_done(p[0].0); assert_eq!(a.pending_count(), 1);
+        let _ = std::fs::remove_dir_all(&da); let _ = std::fs::remove_dir_all(&db_);
     }
     #[test]
     fn identities_of_this_machine_only() {
