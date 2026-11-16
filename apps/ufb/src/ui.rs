@@ -33,11 +33,16 @@ pub enum Out { /// the clipboard is the application's to reach: files to put on 
     Drag(Vec<PathBuf>),
     /// a file to hand to the system: it opens in its default application; or in the application named
     OpenDefault(PathBuf), OpenWith(PathBuf, PathBuf),
+    /// the system's "Open with" chooser; these shown in the system's file browser; Explorer's own menu for these, at a point (Windows)
+    OpenAs(PathBuf), Reveal(Vec<PathBuf>), ShellMenu((f64, f64), Vec<PathBuf>),
     CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste,
     NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus { Pane, Path, Search, Rename }
+/// A row of the drawn context menu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CtxRow { Ours(u32), Open, OpenAs, Reveal, More, Rule }
 /// A name being changed in place (row 437): the entry, its field over the name.
 struct Renaming { pane: usize, path: PathBuf, dir: bool, field: TextField }
 /// What an open question is about.
@@ -88,6 +93,8 @@ pub struct Ui {
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
     recheck: Vec<Instant>,
     asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool,
+    /// the context menu drawn by us (Windows, row 460; `UFB_DRAWN_MENU=1` shows it on macOS too, to look at): what each of its rows is, the files it is about, where it was asked for
+    ctx: min_ui::Menu, ctx_rows: Vec<CtxRow>, ctx_paths: Vec<PathBuf>, ctx_at: (f64, f64),
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
     menu_for: Option<(Option<usize>, PathBuf)>,
     demo: VecDeque<String>, demo_until: Option<Instant>, shot: Option<PathBuf>, settled: Option<Instant>, tip_demo: Option<String>, born: Instant,
@@ -121,7 +128,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
             lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
@@ -510,7 +517,43 @@ impl Ui {
         let ask = if entries.is_empty() { self.menu_for = Some((Some(i), here.clone())); Ask { at, paths: vec![here], rows: ctxmenu::rows_for_folder() } }
             else { let kinds: Vec<(bool, bool)> = entries.iter().map(|e| (e.1, e.2)).collect(); let folder = if entries.len() == 1 && (entries[0].1 || entries[0].2) { entries[0].0.clone() } else { here };
                 self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows: ctxmenu::rows_for(&kinds, sequence) } };
-        self.out.push(Out::Menu(ask));
+        self.show_menu(ask);
+    }
+    /// A context menu is shown: macOS, the system's own with our rows in it (the application's loop shows it);
+    /// Windows, our own drawn one, whose last row opens Explorer's (row 460, point 2).
+    fn show_menu(&mut self, ask: crate::ctxmenu::Ask) {
+        use crate::ctxmenu::Row;
+        if cfg!(target_os = "macos") && std::env::var_os("UFB_DRAWN_MENU").is_none() { self.out.push(Out::Menu(ask)); return }
+        let (mut items, mut rows) = (vec![], vec![]);
+        for r in &ask.rows { let (item, row) = match r {
+                Row::Ours { id, label } => (min_ui::MenuItem::action(label, *id != 0), CtxRow::Ours(*id)),
+                Row::Sep => (min_ui::MenuItem::Separator, CtxRow::Rule),
+                Row::Open => (min_ui::MenuItem::action("Open", true), CtxRow::Open),
+                Row::OpenWith => (min_ui::MenuItem::action("Open with\u{2026}", ask.paths.len() == 1), CtxRow::OpenAs),
+                Row::Reveal => (min_ui::MenuItem::action(if cfg!(windows) { "Show in Explorer" } else { "Show in Finder" }, true), CtxRow::Reveal),
+                Row::Share => continue,   // (the system's share sheet is the system's menu's: "Show more options")
+            };
+            if row == CtxRow::Rule && rows.last().is_none_or(|l| *l == CtxRow::Rule) { continue }
+            items.push(item); rows.push(row); }
+        while rows.last() == Some(&CtxRow::Rule) { rows.pop(); items.pop(); }
+        // Explorer's own menu for the same files, with everything installed on the machine
+        if cfg!(windows) || std::env::var_os("UFB_DRAWN_MENU").is_some() { items.push(min_ui::MenuItem::Separator); rows.push(CtxRow::Rule); items.push(min_ui::MenuItem::action("Show more options", cfg!(windows))); rows.push(CtxRow::More); }
+        let size = self.window.surface_size(); let s = self.scale();
+        self.ctx_rows = rows; self.ctx_paths = ask.paths; self.ctx_at = ask.at;
+        self.ctx.open_at(items, &mut self.fonts, ask.at.0, ask.at.1, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s);
+        if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the drawn menu: {}", self.ctx.items.iter().map(|i| match i { min_ui::MenuItem::Action { label, enabled, .. } => format!("{label}{}", if *enabled { "" } else { " (off)" }), _ => "--".into() }).collect::<Vec<_>>().join(" | ")); }
+    }
+    /// A row of the drawn context menu was chosen.
+    fn ctx_pick(&mut self, i: usize) {
+        let paths = std::mem::take(&mut self.ctx_paths);
+        match self.ctx_rows.get(i).copied() {
+            Some(CtxRow::Ours(id)) => self.menu_chosen(id),
+            Some(CtxRow::Open) => for p in paths.into_iter().take(20) { self.out.push(Out::OpenDefault(p)); },
+            Some(CtxRow::OpenAs) => if let Some(p) = paths.into_iter().next() { self.out.push(Out::OpenAs(p)); },
+            Some(CtxRow::Reveal) => self.out.push(Out::Reveal(paths)),
+            Some(CtxRow::More) => self.out.push(Out::ShellMenu(self.ctx_at, paths)),
+            _ => {}
+        }
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
@@ -538,6 +581,8 @@ impl Ui {
     pub fn pointer(&mut self, e: &Event) {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.scale(); let port = self.port.clone();
         if self.lightbox.is_open() { return self.lightbox_pointer(e) }
+        // the drawn context menu takes the pointer while it is open
+        if self.ctx.is_open() { let (chosen, _, consumed) = self.ctx.event(e); if let Some(i) = chosen { self.ctx_pick(i); } if consumed { return } }
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); self.tip_demo = None; }
         // the drawn menu bar and its open menus take the pointer first
         if let Some(mb) = self.menubar.as_mut() { let (chosen, _, consumed) = mb.bar.event(e, &mut self.fonts); if let Some(c) = chosen.and_then(|id| mb.cmd(id)) { self.command(c); return } if consumed { return } }
@@ -607,7 +652,7 @@ impl Ui {
             if self.side_rect.contains(p) && !self.sections.iter().any(|sec| sec.hit(x, y)) { if let Some(to) = self.side_rows.iter().find(|r| r.rect.contains(p) && r.enabled).and_then(|r| r.path.clone()) { self.go(to); } } }
         // ... and its menu: a place opens here or in a new window (row 448)
         if let Event::Down { x, y, button: Button::Secondary } = *e { if let Some(to) = self.folder_at(x, y, false).filter(|_| self.side_rect.contains(kurbo::Point::new(x, y))) {
-            self.menu_for = Some((None, to.clone())); self.out.push(Out::Menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() })); } }
+            self.menu_for = Some((None, to.clone())); self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() }); } }
         // the panes: a press in one makes it the active one
         let n = self.shown();
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
@@ -633,6 +678,7 @@ impl Ui {
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
         if self.lightbox.is_open() { return self.lightbox_key(k, name) }
+        if self.ctx.is_open() { if matches!(k.key, Key::Named(Named::Escape)) { self.ctx.close(); } return }
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
         if let Some((d, asked)) = self.dialog.as_ref() { let last = d.buttons.len().saturating_sub(1);
             match k.key { Key::Named(Named::Enter) => self.answer(last), Key::Named(Named::Escape) => self.answer(if matches!(asked, Asked::Conflict(_)) { 0 } else { last }), _ => {} } return }
@@ -704,6 +750,8 @@ impl Ui {
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
+            // the drawn context menu: `ctxpick:<row>` chooses a row of the one that is open
+            "ctxpick" => if let Some(i) = num(arg) { if self.ctx.is_open() { self.ctx.close(); self.ctx_pick(i); } },
             // sequences (row 475): `sequences` (the toggle) `split` (the chosen sequence as its files) `group` (the chosen files as one)
             "sequences" => self.command(Cmd::Sequences), "split" => self.pane().split_chosen(), "group" => { let ok = self.pane().group_chosen(); eprintln!("UFB_DEMO: grouped by hand: {ok}"); }
             // the lightbox: `preview` (the row under the cursor; again closes it) `lbnext` `lbprev` `lbzoom:<factor>` `lbactual` `lbfit` `lbpan:<dx>,<dy>`
@@ -962,6 +1010,7 @@ impl Ui {
             for p in self.panes.iter().take(n) { zones.push(crate::dnd::Zone { rect: p.rect, folder: p.path().to_path_buf() }); }
             let mut d = self.dnd.borrow_mut(); d.zones = zones;
             if let Some(r) = d.hover { let (k, c) = (2.0 * s, t::FOCUS_INDICATOR_COLOR); for q in [Rect::new(r.x0, r.y0, r.x1, r.y0 + k), Rect::new(r.x0, r.y1 - k, r.x1, r.y1), Rect::new(r.x0, r.y0, r.x0 + k, r.y1), Rect::new(r.x1 - k, r.y0, r.x1, r.y1)] { paint::rect(scene, q, c); } } }
+        self.ctx.paint(scene, fonts, s);
         // what went wrong, at the window's foot; an open question over everything
         self.toast.tick(now); self.toast.paint(scene, fonts, Rect::new(0.0, 0.0, w, status.y0), s, now);
         if let Some((d, _)) = self.dialog.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); d.layout(fonts, bounds, s); d.paint(scene, fonts, s, bounds, now); }

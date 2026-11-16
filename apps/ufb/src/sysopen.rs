@@ -25,3 +25,23 @@ pub fn open_with(path: &Path, app: &Path) {
     }
     #[cfg(not(target_os = "macos"))] { let _ = app; open(path); }
 }
+
+/// Show these in the system's own file browser, selected (Finder; Explorer shows the first).
+pub fn reveal(paths: &[std::path::PathBuf]) {
+    #[cfg(target_os = "macos")] {
+        use objc2_foundation::{NSArray, NSString, NSURL};
+        let urls: Vec<_> = paths.iter().map(|p| NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy()))).collect();
+        let _ = objc2::exception::catch(std::panic::AssertUnwindSafe(|| objc2_app_kit::NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&urls))));
+    }
+    #[cfg(windows)] { if let Some(p) = paths.first() { let s = p.to_string_lossy().replace('/', "\\"); let s = s.strip_prefix("\\\\?\\").unwrap_or(&s).to_string(); let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{s}")).spawn(); } }
+    #[cfg(not(any(target_os = "macos", windows)))] { let _ = paths; }
+}
+/// The system's "Open with" chooser for a file (Windows).
+pub fn open_as(path: &Path) {
+    #[cfg(windows)] {
+        use windows::core::{w, HSTRING}; use windows::Win32::UI::Shell::ShellExecuteW; use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let s = path.to_string_lossy().replace('/', "\\"); let s = s.strip_prefix("\\\\?\\").unwrap_or(&s).to_string();
+        unsafe { ShellExecuteW(None, w!("openas"), &HSTRING::from(s), None, None, SW_SHOWNORMAL); }
+    }
+    #[cfg(not(windows))] { let _ = path; }
+}

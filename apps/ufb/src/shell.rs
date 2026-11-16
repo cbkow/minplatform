@@ -91,6 +91,11 @@ impl App {
             Out::Quit => done = true,
             Out::OpenDefault(path) => crate::sysopen::open(&path),
             Out::OpenWith(path, app) => crate::sysopen::open_with(&path, &app),
+            Out::OpenAs(path) => crate::sysopen::open_as(&path), Out::Reveal(paths) => crate::sysopen::reveal(&paths),
+            // Windows: Explorer's own menu (it is shown when the window's message loop reaches our message - never from inside this callback)
+            Out::ShellMenu(at, paths) => { #[cfg(windows)] if let Some(w) = self.windows.get(&id) { use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(RawWindowHandle::Win32(h)) = w.window.window_handle().map(|h| h.as_raw()) { let proxy = self.proxy.clone(); crate::ctxmenu::win::more(h.hwnd.get() as *mut std::ffi::c_void, id, at, paths, Arc::new(move || proxy.wake_up())); } }
+                #[cfg(not(windows))] { let _ = (at, paths); } }
             // the system's drag of files (we are still inside the pointer's own event, as the layer needs). What may
             // not be taken away by this build (the belt) is offered as a copy or a link only.
             Out::Drag(paths) => if let Some(w) = self.windows.get(&id) {

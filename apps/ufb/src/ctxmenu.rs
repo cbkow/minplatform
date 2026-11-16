@@ -48,8 +48,129 @@ pub fn rows_for_folder() -> Vec<Row> { vec![ours(NEW_WINDOW, "Open in New Window
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn take() -> Vec<(winit31::window::WindowId, u32)> { vec![] }
+#[cfg(windows)]
+pub use win::take;
+
+/// Windows (row 460, point 2): the context menu is OUR OWN drawn one (the window draws it from the same rows), and
+/// its last row, "Show more options", opens EXPLORER'S menu for the same files - the shell's own, with every
+/// installed extension, tracked on our window. From spike S19's Windows half: the shell's menu is not shown from
+/// inside a winit callback - a private message is posted to the window and the menu is shown when our subclass
+/// procedure receives it; while it is up the shell is handed the window's menu messages (it fills "Send to", "Open
+/// with" and "New" when they open, and paints its owner-drawn rows). The shell acts on its own rows; "rename" alone
+/// comes back to us (only the host can start a rename in its own list).
+#[cfg(windows)]
+pub mod win {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use windows::core::{Interface, PCSTR, PCWSTR, PSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT};
+    use windows::Win32::UI::Shell::Common::ITEMIDLIST;
+    use windows::Win32::UI::Shell::{DefSubclassProc, IContextMenu, IContextMenu2, IContextMenu3, ILFindLastID, IShellFolder, SHBindToParent, SHParseDisplayName, SetWindowSubclass, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_CONTROL_DOWN, CMIC_MASK_PTINVOKE, CMIC_MASK_SHIFT_DOWN, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, GCS_VERBW};
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    use winit31::window::WindowId;
+
+    const SHELL_FIRST: u32 = 0x1000; const SHELL_LAST: u32 = 0x7FFF;
+    const CMIC_MASK_UNICODE: u32 = 0x4000;   // (shobjidl_core.h; not in the windows crate's Shell module)
+    const WM_UFB_SHOW: u32 = WM_APP + 0x55; const WM_UFB_CANCEL: u32 = WM_APP + 0x56;
+    /// What comes back to the window after the shell's menu: one of our rows' numbers (`super::RENAME`), or
+    /// `super::REFRESH` - the shell did something to the files, the panes read again.
+    static CHOSEN: Mutex<Vec<(WindowId, u32)>> = Mutex::new(Vec::new());
+    pub fn take() -> Vec<(WindowId, u32)> { std::mem::take(&mut *CHOSEN.lock().unwrap()) }
+
+    struct Spec { window: WindowId, paths: Vec<PathBuf>, at: POINT, wake: Arc<dyn Fn() + Send + Sync> }
+    thread_local! {
+        static PENDING: RefCell<Option<Spec>> = const { RefCell::new(None) };
+        static TRACKED: RefCell<(Option<IContextMenu3>, Option<IContextMenu2>)> = const { RefCell::new((None, None)) };
+        static SUBCLASSED: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+    }
+    unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        match msg {
+            WM_UFB_SHOW => { if let Some(spec) = PENDING.with(|p| p.borrow_mut().take()) { run(hwnd, spec); } return LRESULT(0) }
+            // (the scripted looks: EndMenu must be called by the thread that tracks the menu, which is this one)
+            WM_UFB_CANCEL => { let _ = unsafe { EndMenu() }; return LRESULT(0) }
+            WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR => {
+                // (WM_DRAWITEM / WM_MEASUREITEM with a non-zero wParam come from a control, not from a menu)
+                let from_menu = !((msg == WM_DRAWITEM || msg == WM_MEASUREITEM) && wp.0 != 0);
+                let (cm3, cm2) = TRACKED.with(|c| c.borrow().clone());
+                if from_menu { unsafe {
+                    if let Some(cm3) = cm3 { let mut r = LRESULT(0); if cm3.HandleMenuMsg2(msg, wp, lp, Some(&mut r)).is_ok() { return match msg { WM_MENUCHAR => r, WM_INITMENUPOPUP => LRESULT(0), _ => LRESULT(1) } } }
+                    else if let Some(cm2) = cm2 { if msg != WM_MENUCHAR && cm2.HandleMenuMsg(msg, wp, lp).is_ok() { return LRESULT(if msg == WM_INITMENUPOPUP { 0 } else { 1 }) } }
+                } }
+            }
+            _ => {}
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wp, lp) }
+    }
+    /// Absolute item lists, freed when dropped.
+    struct Pidls(Vec<*mut ITEMIDLIST>);
+    impl Drop for Pidls { fn drop(&mut self) { for p in &self.0 { unsafe { CoTaskMemFree(Some(*p as *const _)) } } } }
+    /// A path as the shell takes it: absolute, with backslashes, never the `\\?\` form (S18).
+    fn shell_path(p: &std::path::Path) -> String {
+        let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().replace('/', "\\");
+        if let Some(r) = abs.strip_prefix("\\\\?\\UNC\\") { return format!("\\\\{r}") }
+        abs.strip_prefix("\\\\?\\").map(str::to_string).unwrap_or(abs)
+    }
+    unsafe fn verb_of(cm: &IContextMenu, off: u32) -> String { let mut buf = [0u16; 128]; if unsafe { cm.GetCommandString(off as usize, GCS_VERBW, None, PSTR(buf.as_mut_ptr() as *mut u8), buf.len() as u32) }.is_ok() { let n = buf.iter().position(|c| *c == 0).unwrap_or(0); String::from_utf16_lossy(&buf[..n]) } else { String::new() } }
+
+    /// The shell's menu for `paths` (all in ONE folder), tracked at `at` (screen pixels). Ok: the verb of the row
+    /// that was chosen and invoked ("" for one without a name), or none when nothing was chosen; "rename" is not invoked.
+    unsafe fn show(owner: HWND, at: POINT, paths: &[PathBuf]) -> windows::core::Result<Option<String>> { unsafe {
+        let mut abs = Pidls(vec![]);
+        for p in paths { let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut(); let wide: Vec<u16> = shell_path(p).encode_utf16().chain(Some(0)).collect(); SHParseDisplayName(PCWSTR(wide.as_ptr()), None, &mut pidl, 0, None)?; abs.0.push(pidl); }
+        let folder: IShellFolder = SHBindToParent(abs.0[0], None)?;
+        let children: Vec<*const ITEMIDLIST> = abs.0.iter().map(|p| ILFindLastID(*p) as *const ITEMIDLIST).collect();
+        let cm: IContextMenu = folder.GetUIObjectOf(owner, &children, None)?;
+        let menu = CreatePopupMenu()?;
+        // Shift held: the shell's extended verbs too
+        let shift = GetKeyState(VK_SHIFT.0 as i32) < 0; let control = GetKeyState(VK_CONTROL.0 as i32) < 0;
+        cm.QueryContextMenu(menu, 0, SHELL_FIRST, SHELL_LAST, CMF_NORMAL | CMF_CANRENAME | if shift { CMF_EXTENDEDVERBS } else { 0 }).ok()?;
+        if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the shell's menu holds {} rows", GetMenuItemCount(Some(menu))); }
+        TRACKED.with(|c| *c.borrow_mut() = (cm.cast::<IContextMenu3>().ok(), cm.cast::<IContextMenu2>().ok()));
+        let _ = SetForegroundWindow(owner);   // so that a click elsewhere dismisses the menu
+        let cmd = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, at.x, at.y, owner, None).0 as u32;
+        let _ = PostMessageW(Some(owner), WM_NULL, WPARAM(0), LPARAM(0));
+        TRACKED.with(|c| *c.borrow_mut() = (None, None));
+        let chosen = if cmd < SHELL_FIRST { None } else {
+            let off = cmd - SHELL_FIRST; let verb = verb_of(&cm, off);
+            if verb != "rename" {
+                let ici = CMINVOKECOMMANDINFOEX { cbSize: std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32, fMask: CMIC_MASK_UNICODE | CMIC_MASK_PTINVOKE | if shift { CMIC_MASK_SHIFT_DOWN } else { 0 } | if control { CMIC_MASK_CONTROL_DOWN } else { 0 },
+                    hwnd: owner, lpVerb: PCSTR(off as usize as *const u8), lpVerbW: PCWSTR(off as usize as *const u16), nShow: SW_SHOWNORMAL.0, ptInvoke: at, ..Default::default() };
+                let _ = cm.InvokeCommand(&ici as *const CMINVOKECOMMANDINFOEX as *const CMINVOKECOMMANDINFO);
+            }
+            Some(verb)
+        };
+        let _ = DestroyMenu(menu);
+        Ok(chosen)
+    } }
+    fn run(hwnd: HWND, spec: Spec) {
+        // (the scripted looks close the menu by themselves: `UFB_MENU_CLOSE=<seconds>`)
+        if let Some(secs) = std::env::var("UFB_MENU_CLOSE").ok().and_then(|v| v.parse::<f64>().ok()) { let h = hwnd.0 as isize; std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs_f64(secs)); unsafe { let _ = PostMessageW(Some(HWND(h as *mut _)), WM_UFB_CANCEL, WPARAM(0), LPARAM(0)); } }); }
+        match unsafe { show(hwnd, spec.at, &spec.paths) } {
+            // the shell's "rename" is ours to do; after anything else of the shell's the panes read again
+            Ok(Some(verb)) => { CHOSEN.lock().unwrap().push((spec.window, if verb == "rename" { super::RENAME } else { super::REFRESH })); (spec.wake)(); }
+            Ok(None) => {}
+            Err(e) => eprintln!("UFB: the shell's menu could not be shown: {e}"),
+        }
+    }
+    /// Explorer's menu for these files (all in one folder), at a point of the window's content (pixels). Returns at
+    /// once: the menu is shown when the window's own message loop reaches our message.
+    pub fn more(hwnd: *mut std::ffi::c_void, window: WindowId, at: (f64, f64), paths: Vec<PathBuf>, wake: Arc<dyn Fn() + Send + Sync>) {
+        if paths.is_empty() { return } let hwnd = HWND(hwnd);
+        unsafe {
+            let key = hwnd.0 as isize; let fresh = SUBCLASSED.with(|s| { let mut s = s.borrow_mut(); if s.contains(&key) { false } else { s.push(key); true } });
+            if fresh && !SetWindowSubclass(hwnd, Some(subclass), 0x5546, 0).as_bool() { eprintln!("UFB: the window could not be given the shell's menu"); return }
+            let mut pt = POINT { x: at.0 as i32, y: at.1 as i32 }; let _ = ClientToScreen(hwnd, &mut pt);
+            PENDING.with(|p| *p.borrow_mut() = Some(Spec { window, paths, at: pt, wake }));
+            let _ = PostMessageW(Some(hwnd), WM_UFB_SHOW, WPARAM(0), LPARAM(0));
+        }
+    }
+}
 #[cfg(target_os = "macos")]
 pub use sys::take;
 

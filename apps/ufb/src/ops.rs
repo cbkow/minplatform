@@ -241,11 +241,15 @@ fn trash(path: &Path) -> Result<Option<PathBuf>, Option<String>> {
         // the shell's own delete with "allow undo": the Recycle Bin, no question, no window of the shell's. (FO_DELETE = 3;
         // FOF_SILENT 0x4 | FOF_NOCONFIRMATION 0x10 | FOF_ALLOWUNDO 0x40 | FOF_NOERRORUI 0x400.) The shell takes an
         // absolute path with backslashes, never the `\\?\` form (S18), ended by two zeros.
-        let s = path.to_string_lossy().replace('/', "\\"); let s = s.strip_prefix("\\\\?\\").unwrap_or(&s);
+        let s = path.to_string_lossy().replace('/', "\\"); let s = s.strip_prefix("\\\\?\\").unwrap_or(&s).to_string();
+        // A share has NO Recycle Bin: asked to "delete, undo allowed" there the shell deletes for good - and we told it
+        // to ask nothing. So it is not asked at all: the window asks the owner first (row 468, point 3).
+        if s.starts_with("\\\\") || win_remote_drive(&s) { return Err(None) }
+        let since = std::time::SystemTime::now();
         let from: Vec<u16> = s.encode_utf16().chain([0, 0]).collect();
         let mut op = SHFILEOPSTRUCTW { wFunc: 3, pFrom: windows::core::PCWSTR(from.as_ptr()), fFlags: 0x4 | 0x10 | 0x40 | 0x400, ..Default::default() };
         let r = unsafe { SHFileOperationW(&mut op) };
-        if r == 0 && !op.fAnyOperationsAborted.as_bool() { Ok(None) } else { Err(Some(format!("it could not be moved to the Recycle Bin (code {r})"))) }
+        if r == 0 && !op.fAnyOperationsAborted.as_bool() { let at = win_recycled(&s, since); #[cfg(test)] if let Some(at) = &at { tests::TRASHED.with(|t| t.borrow_mut().push(at.clone())); } Ok(at) } else { Err(Some(format!("it could not be moved to the Recycle Bin (code {r})"))) }
     }
     #[cfg(not(any(target_os = "macos", windows)))] { let _ = path; Err(None) }
 }
@@ -335,6 +339,40 @@ impl Run<'_> {
         Ok(())
     }
 }
+
+/// Windows: the letter is a share's (it has no Recycle Bin).
+#[cfg(windows)]
+fn win_remote_drive(path: &str) -> bool {
+    let b = path.as_bytes(); if b.len() < 2 || b[1] != b':' { return false }
+    let root: Vec<u16> = format!("{}\\", &path[..2]).encode_utf16().chain(Some(0)).collect();
+    unsafe { windows::Win32::Storage::FileSystem::GetDriveTypeW(windows::core::PCWSTR(root.as_ptr())) == 4 }   // DRIVE_REMOTE
+}
+/// Windows: where the Recycle Bin put what was just deleted from `orig` - so that Undo can bring it back. The bin
+/// keeps, for every item, a small `$I...` file that names where it came from, beside the item itself (`$R...`): the
+/// newest one written since `since` that names `orig` is ours. None: not found (Undo then leaves it in the bin).
+#[cfg(windows)]
+fn win_recycled(orig: &str, since: std::time::SystemTime) -> Option<PathBuf> {
+    let bin = PathBuf::from(format!("{}\\$Recycle.Bin", orig.get(..2)?)); let since = since - std::time::Duration::from_secs(3);
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    // (one folder a user; only our own can be read)
+    for user in std::fs::read_dir(&bin).ok()?.flatten() {
+        let Ok(rd) = std::fs::read_dir(user.path()) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned(); if !name.starts_with("$I") { continue }
+            let Ok(t) = e.metadata().and_then(|m| m.modified()) else { continue }; if t < since { continue }
+            let Ok(b) = std::fs::read(e.path()) else { continue }; if b.len() < 28 { continue }
+            // version 2 (Windows 10 on): the path's length in characters at 24, the path from 28; version 1: the path from 24
+            let from = if u64::from_le_bytes(b[0..8].try_into().ok()?) == 2 { 28 } else { 24 };
+            let wide: Vec<u16> = b[from.min(b.len())..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|c| *c != 0).collect();
+            if !String::from_utf16_lossy(&wide).eq_ignore_ascii_case(orig) { continue }
+            let item = e.path().with_file_name(format!("$R{}", &name[2..]));
+            if std::fs::symlink_metadata(&item).is_ok() && best.as_ref().is_none_or(|(bt, _)| t > *bt) { best = Some((t, item)); }
+        }
+    }
+    best.map(|b| b.1)
+}
+/// Windows: an item was taken back out of the Recycle Bin: the bin's note of it goes too.
+fn forget_recycled(at: &Path) { #[cfg(windows)] { if let Some(name) = at.file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| n.starts_with("$R")) { let _ = std::fs::remove_file(at.with_file_name(format!("$I{}", &name[2..]))); } } #[cfg(not(windows))] { let _ = at; } }
 
 // ---------------------------------------------------------------- the operations
 
@@ -490,10 +528,10 @@ impl Engine {
                 let cancel = AtomicBool::new(false); let mut none = |_: u64| {};
                 for (from, to) in moved.into_iter().rev() { if let Some(dir) = from.parent() { let _ = std::fs::create_dir_all(dir); }
                     match move_one(&to, &from, &mut Progress { cancel: &cancel, bytes: &mut none }) { Ok(()) => { note(&mut rep, from.parent()); note(&mut rep, to.parent()); rep.made.push(from); } Err(_) => left += 1 } }
-                for (orig, at) in replaced { match rename_no_replace(&at, &orig) { Ok(()) => note(&mut rep, orig.parent()), Err(_) => left += 1 } }
+                for (orig, at) in replaced { match rename_no_replace(&at, &orig) { Ok(()) => { forget_recycled(&at); note(&mut rep, orig.parent()) } Err(_) => left += 1 } }
                 if left > 0 { rep.error = Some(if left == 1 { "One item was changed since, or is in the way, and was left where it is.".into() } else { format!("{left} items were changed since, or are in the way, and were left where they are.") }); } }
             Record::Trash(moved) => { let mut left = 0;
-                for (orig, at) in moved { match rename_no_replace(&at, &orig) { Ok(()) => { note(&mut rep, orig.parent()); rep.made.push(orig); } Err(_) => left += 1 } }
+                for (orig, at) in moved { match rename_no_replace(&at, &orig) { Ok(()) => { forget_recycled(&at); note(&mut rep, orig.parent()); rep.made.push(orig); } Err(_) => left += 1 } }
                 if left > 0 { rep.error = Some(if left == 1 { "One item could not be put back: its name is taken, or it is no longer in the Trash.".into() } else { format!("{left} items could not be put back: their names are taken, or they are no longer in the Trash.") }); } }
         }
         rep
@@ -569,7 +607,7 @@ mod tests {
     fn ok(r: Report) -> Report { assert_eq!(r.error, None); r }
     // what a test moved to the Trash is taken out of it again when the test ends: the owner's Trash is not a test's place
     thread_local! { pub static TRASHED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) }; }
-    struct Sweep; impl Drop for Sweep { fn drop(&mut self) { TRASHED.with(|t| for p in t.borrow_mut().drain(..) { let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) }; }); } }
+    struct Sweep; impl Drop for Sweep { fn drop(&mut self) { TRASHED.with(|t| for p in t.borrow_mut().drain(..) { let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) }; forget_recycled(&p); }); } }
 
     #[test]
     fn the_names_each_system_gives() {
@@ -713,7 +751,7 @@ mod tests {
         let r = e.run_with(Op::Transfer { paths: files, dest: t.0.join("dst"), mv: false }, &mut Ctl { cancel: &cancel, status: &status, ask: &mut ask }); assert_eq!(r.error, None); assert_eq!(names(&t.0.join("dst")).len(), 40); let _ = seen;
         assert_eq!(e.undo_label().as_deref(), Some("Copy of 40 Items"));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn the_trash_and_back() {
         let _sweep = Sweep;
