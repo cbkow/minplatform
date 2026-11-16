@@ -7,10 +7,10 @@
 use crate::model::SortBy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Cmd { Sequences, Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, NewTab, CloseTab, NextTab, PrevTab, NewJob, Subscribe, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
+pub enum Cmd { Sequences, Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, NewTab, CloseTab, NextTab, PrevTab, NewJob, Subscribe, Column(u8), CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]   // the ids are the native menu's (macOS)
 impl Cmd {
-    const ALL: [Cmd; 44] = [Cmd::Sequences, Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::NewTab, Cmd::CloseTab, Cmd::NextTab, Cmd::PrevTab, Cmd::NewJob, Cmd::Subscribe, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
+    const ALL: [Cmd; 47] = [Cmd::Sequences, Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::NewTab, Cmd::CloseTab, Cmd::NextTab, Cmd::PrevTab, Cmd::NewJob, Cmd::Subscribe, Cmd::Column(1), Cmd::Column(2), Cmd::Column(3), Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
     pub fn id(self) -> String { format!("{self:?}") }
     pub fn from_id(id: &str) -> Option<Cmd> { Cmd::ALL.into_iter().find(|c| c.id() == id) }
 }
@@ -76,7 +76,9 @@ pub fn spec(mac: bool) -> Vec<(&'static str, Vec<Node>)> {
             check("Show Hidden Files", if m { cmd_shift(".") } else { cmd("H") }, Cmd::Hidden), check("Folders First", None, Cmd::FoldersFirst),
             // (row 475: an image sequence as ONE entry, or every file by itself)
             check("Group Sequences", None, Cmd::Sequences),
-            Node::Sub { label: "Sort By", items: vec![check("Name", None, Cmd::Sort(0)), check("Date Modified", None, Cmd::Sort(1)), check("Size", None, Cmd::Sort(2)), check("Kind", None, Cmd::Sort(3))] }, Node::Sep,
+            Node::Sub { label: "Sort By", items: vec![check("Name", None, Cmd::Sort(0)), check("Date Modified", None, Cmd::Sort(1)), check("Size", None, Cmd::Sort(2)), check("Kind", None, Cmd::Sort(3))] },
+            // (row 488: which columns a list shows - for the kind of panel the active pane is)
+            Node::Sub { label: "Columns", items: vec![check("Date Modified", None, Cmd::Column(1)), check("Size", None, Cmd::Column(2)), check("Kind", None, Cmd::Column(3))] }, Node::Sep,
             check("Show Second Pane", None, Cmd::SecondPane), Node::Sep,
             item("Refresh", if m { cmd("R") } else { bare("F5") }, Cmd::Refresh),
         ]),
@@ -124,9 +126,10 @@ pub struct State { pub grid: bool, pub hidden: bool, pub folders_first: bool, pu
     /// a text is being typed (copy and paste are the field's); the second pane is shown and things may be put into its folder
     pub typing: bool, pub other: bool, /// image sequences are shown as one entry each
     pub sequences: bool, /// the folder in view is a jobs folder (New Job makes jobs there)
-    pub jobs_folder: bool }
+    pub jobs_folder: bool, /// the columns the active pane's list shows (by number: 1 the date, 2 the size, 3 the kind)
+    pub columns: [bool; 4] }
 impl State {
-    fn checked(&self, c: Cmd) -> bool { match c { Cmd::AsList => !self.grid, Cmd::AsGrid => self.grid, Cmd::Hidden => self.hidden, Cmd::FoldersFirst => self.folders_first, Cmd::SecondPane => self.second, Cmd::Sequences => self.sequences, Cmd::Sort(i) => self.sort.column() == i as usize, _ => false } }
+    fn checked(&self, c: Cmd) -> bool { match c { Cmd::AsList => !self.grid, Cmd::AsGrid => self.grid, Cmd::Hidden => self.hidden, Cmd::FoldersFirst => self.folders_first, Cmd::SecondPane => self.second, Cmd::Sequences => self.sequences, Cmd::Sort(i) => self.sort.column() == i as usize, Cmd::Column(i) => self.columns.get(i as usize).copied().unwrap_or(false), _ => false } }
     fn enabled(&self, c: Cmd) -> bool { match c { Cmd::Back => self.can_back, Cmd::Forward => self.can_forward, Cmd::Up => self.can_up,
         Cmd::NewFolder => self.writable, Cmd::NewJob => self.jobs_folder && self.writable && !self.typing, Cmd::Subscribe => self.chosen == 1 && !self.typing, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo, Cmd::Preview => self.chosen >= 1,
         Cmd::Copy => self.typing || self.chosen >= 1, Cmd::Cut => self.typing || (self.writable && self.chosen >= 1), Cmd::Paste => self.typing || self.writable, Cmd::PasteMove => !self.typing && self.writable,
@@ -268,7 +271,7 @@ mod tests {
         assert_eq!(cmd_shift("N").unwrap().label(false), "Ctrl+Shift+N"); assert_eq!(alt("Left").unwrap().label(false), "Alt+Left"); assert_eq!(bare("F5").unwrap().label(false), "F5"); assert_eq!(Sc { cmd: false, shift: true, alt: false, key: "Delete" }.label(false), "Shift+Delete");
         assert_eq!(cmd_shift("G").unwrap().label(true), "\u{21e7}\u{2318}G"); assert_eq!(cmd("Up").unwrap().label(true), "\u{2318}\u{2191}"); assert_eq!(cmd_alt("L").unwrap().label(true), "\u{2325}\u{2318}L");
         assert_eq!(key_label(true, Cmd::Back).as_deref(), Some("\u{2318}[")); assert_eq!(key_label(false, Cmd::Back).as_deref(), Some("Alt+Left")); assert_eq!(key_label(false, Cmd::SecondPane), None);
-        let st = State { grid: true, hidden: false, folders_first: true, second: false, sort: SortBy::Size, can_back: false, can_forward: true, can_up: true, chosen: 1, undo: false, writable: true, typing: false, other: false, sequences: true, jobs_folder: false };
+        let st = State { grid: true, hidden: false, folders_first: true, second: false, sort: SortBy::Size, can_back: false, can_forward: true, can_up: true, chosen: 1, undo: false, writable: true, typing: false, other: false, sequences: true, jobs_folder: false, columns: [true; 4] };
         assert!(st.enabled(Cmd::Copy) && st.enabled(Cmd::Paste) && !st.enabled(Cmd::CopyToOther) && State { other: true, ..st }.enabled(Cmd::MoveToOther) && !State { other: true, writable: false, ..st }.enabled(Cmd::MoveToOther));
         assert!(!State { chosen: 0, ..st }.enabled(Cmd::Copy) && State { chosen: 0, typing: true, ..st }.enabled(Cmd::Copy) && !State { writable: false, ..st }.enabled(Cmd::Paste));
         // what changes files follows the choice, the undo list and whether this folder may be changed

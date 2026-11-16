@@ -84,6 +84,8 @@ pub struct Ui {
     /// drawn: its place, its rows, its scroll bar, the row under the pointer; where the panes begin; what is being made
     job: Option<Job>, jobs: Vec<crate::db::Sub>, job_secs: Vec<ActionButton>, job_secs_for: Vec<String>, job_refresh: ActionButton, job_add: ActionButton,
     job_list: Rect, job_rows: Vec<Rect>, job_scroll: ScrollBar, job_hover: Option<usize>, panes_x0: f64, made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
+    /// the columns of the lists, a kind of panel (row 488): 0 the browser's panes, 1 a job's first pane, 2 its second
+    col_layouts: [crate::pane::ColLayout; 3],
     /// the menu last asked for is about a job of the sidebar; the second pane's switch to an item's proxies
     menu_job: bool, job_prox: ActionButton,
     /// options of the window (both panes follow)
@@ -154,7 +156,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, job_rows: vec![], job_scroll: ScrollBar::default(), job_hover: None, panes_x0: 0.0, made_tx, made_rx, making: false, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, job_rows: vec![], job_scroll: ScrollBar::default(), job_hover: None, panes_x0: 0.0, made_tx, made_rx, making: false, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -291,6 +293,26 @@ impl Ui {
         self.reload_jobs();
         if !on && self.job.as_ref().is_some_and(|j| j.path == path) { self.job = None; self.focus = Focus::Pane; for p in self.panes.iter_mut() { p.root = None; } }
     }
+    /// The kind of panel pane `i` is, for its columns: the browser's, a job's first, a job's second.
+    fn col_kind(&self, i: usize) -> usize { if self.job.is_none() { 0 } else if i == 0 { 1 } else { 2 } }
+    /// Each pane in view has the columns of its kind of panel; a divider dragged in one is kept for the kind (and so
+    /// for the other panes of it), across launches.
+    fn sync_columns(&mut self) {
+        const KEYS: [&str; 3] = ["columns/browser", "columns/job_top", "columns/job_low"];
+        for i in 0..self.shown() {
+            let kind = self.col_kind(i); let want = self.col_layouts[kind]; let p = &mut self.panes[i];
+            if p.col_kind != Some(kind) { p.set_columns(want); p.col_kind = Some(kind); continue }
+            let now = p.columns_now();
+            if now != p.col_layout { p.col_layout = now; self.col_layouts[kind] = now; crate::settings::with(|s| s.set_str(KEYS[kind], &now.to_text())); }
+            else if want != now { p.set_columns(want); }
+        }
+    }
+    /// A column of the active pane's kind of panel is shown or hidden.
+    fn toggle_column(&mut self, c: usize) {
+        if !(1..4).contains(&c) { return } let kind = self.col_kind(self.active.min(self.panes.len() - 1));
+        self.col_layouts[kind].show[c] = !self.col_layouts[kind].show[c]; let text = self.col_layouts[kind].to_text();
+        crate::settings::with(|s| s.set_str(["columns/browser", "columns/job_top", "columns/job_low"][kind], &text));
+    }
     /// A text is being typed somewhere (a field of the window, or of an open question).
     fn text_focus(&self) -> bool { matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
 
@@ -301,7 +323,7 @@ impl Ui {
     pub fn menu_state(&self) -> menu::State { let mut st = self.menu_state_of_pane(); if self.blank() { st.can_back = false; st.can_forward = false; st.can_up = false; st.chosen = 0; st.writable = false; st.other = false; } st }
     fn menu_state_of_pane(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.can_up(),
         chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
-        sequences: p.model.sequences, jobs_folder: !self.blank() && crate::jobview::is_jobs_folder(p.path()), typing: self.text_focus(), other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
+        sequences: p.model.sequences, jobs_folder: !self.blank() && crate::jobview::is_jobs_folder(p.path()), columns: self.col_layouts[self.col_kind(self.active.min(self.panes.len() - 1))].show, typing: self.text_focus(), other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
 
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
@@ -738,6 +760,7 @@ impl Ui {
             Cmd::SecondPane if self.job.as_ref().is_some_and(|j| !j.two_tier) => self.toast.show("This section has a single view.", min_ui::toast::ToastKind::Notice, Instant::now()),
             Cmd::SecondPane => { self.set_two(!self.two); let on = self.two; if let Some(j) = self.job.as_mut() { if let Some(sec) = j.section.clone() { j.pane2.insert(sec, on); } } }
             Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
+            Cmd::Column(i) => self.toggle_column(i as usize),
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
             Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); if let Some(j) = self.job.as_mut() { j.reload(); } }
             Cmd::Back => self.pane().back(&port), Cmd::Forward => self.pane().forward(&port), Cmd::Up => self.pane().up(&port),
@@ -816,7 +839,7 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
+        use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN if self.menu_job => self.open_place(folder, true),
@@ -824,6 +847,7 @@ impl Ui {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_TAB => self.new_tab(folder),
             SUBSCRIBE => self.subscribe(folder, true), UNSUBSCRIBE => self.subscribe(folder, false),
+            id if (COLUMN + 1..COLUMN + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.toggle_column((id - COLUMN) as usize); }
             id if (SORT..SORT + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Sort((id - SORT) as u8)); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
@@ -950,7 +974,7 @@ impl Ui {
         let n = self.shown();
         // the secondary button on a list's header: the fields to sort by (a narrow pane does not show them all, row 483)
         if let Event::Down { x, y, button: Button::Secondary } = *e { for i in 0..n { if self.panes[i].mode == Mode::List && self.panes[i].table.header().contains(kurbo::Point::new(x, y)) {
-            self.active = i; let here = self.panes[i].path().to_path_buf(); self.menu_for = Some((Some(i), here.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![here], rows: crate::ctxmenu::rows_for_sort() }); return } } }
+            self.active = i; let here = self.panes[i].path().to_path_buf(); self.menu_for = Some((Some(i), here.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![here], rows: crate::ctxmenu::rows_for_sort(self.col_layouts[self.col_kind(i)].show) }); return } } }
         if self.job_prox.rect.width() > 0.0 && self.job_prox.event(e, now) == Response::Clicked { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(false, true); return }
         // the panes: a press in one makes it the active one
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
@@ -1187,6 +1211,7 @@ impl Ui {
         if self.lightbox.is_open() { return self.redraw_lightbox() }
         let now = Instant::now(); let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         if self.active >= self.shown() { self.active = 0; }
+        self.sync_columns();
         // the window is called by the folder it shows (the active pane's)
         { let title = match &self.job { Some(j) if j.chosen_item().is_none() => j.name.clone(), Some(j) => format!("{} \u{2014} {}", j.name, self.panes[self.active].title()), None => self.panes[self.active].title() }; if title != self.titled { self.window.set_title(&title); if !self.demo.is_empty() || self.shot.is_some() { eprintln!("UFB_DEMO: titled {title}"); } self.titled = title; } }
         // the search field shows the active pane's filter (a navigation clears it)
@@ -1280,7 +1305,7 @@ impl Ui {
                 paint::rect(scene, Rect::new(hr.x0, hr.y0, hr.x1, hr.y0 + 2.0 * s), if active { t::FOCUS_INDICATOR_COLOR } else { t::DIVIDER_COLOR });
                 let mut tx = hr.x0 + 10.0 * s;
                 if let Some(g) = fonts.icon("folder-simple", 14.0 * s as f32, if active { ink } else { sub }) { draw_layout(scene, &g, Affine::translate((tx, hr.y0 + s + (hr.height() - g.height() as f64) / 2.0))); tx += g.width() as f64 + 6.0 * s; }
-                let l = fonts.layout_fit(&self.panes[i].title(), Family::Sans, t::BODY_SIZE_S * s as f32, if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, if active { ink } else { sub }, hr.x1 - tx - 10.0 * s);
+                let l = fonts.layout_fit(&match self.panes[i].hidden_sort() { Some(f) => format!("{}   \u{b7}   sorted by {f}", self.panes[i].title()), None => self.panes[i].title() }, Family::Sans, t::BODY_SIZE_S * s as f32, if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, if active { ink } else { sub }, hr.x1 - tx - 10.0 * s);
                 draw_layout(scene, &l, Affine::translate((tx, hr.y0 + s + (hr.height() - l.height() as f64) / 2.0)));
             }
             self.panes[i].paint(scene, fonts, &mut self.icons, &mut self.thumbs, s, now);
@@ -1454,7 +1479,7 @@ impl Ui {
                     paint::rounded(scene, card.inflate(s, s), t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s + s, t::DIVIDER_COLOR_MEDIUM); paint::rounded(scene, card, t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
                     for (i, row) in rows.iter().enumerate() { let rl = fonts.layout_fit(row, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, if i == 0 { ink } else { sub }, pw - 24.0 * s); draw_layout(scene, &rl, Affine::translate((card.x0 + 12.0 * s, card.y0 + 6.0 * s + i as f64 * rh + (rh - rl.height() as f64) / 2.0))); } }
             } else { self.op_list = false; if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); } }
-            let l = fonts.layout_fit(&if blank { String::new() } else { p.status() }, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub, (fx - 24.0 * s - area.x0 - 12.0 * s).max(40.0 * s));
+            let l = fonts.layout_fit(&if blank { String::new() } else { match p.hidden_sort() { Some(f) => format!("{}  \u{b7}  sorted by {f}", p.status()), None => p.status() } }, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub, (fx - 24.0 * s - area.x0 - 12.0 * s).max(40.0 * s));
             draw_layout(scene, &l, Affine::translate((area.x0 + 12.0 * s, status.y0 + (status.height() - l.height() as f64) / 2.0))); }
 
         // -- the drawn menu bar's strip, the tooltips, and the open menus over everything

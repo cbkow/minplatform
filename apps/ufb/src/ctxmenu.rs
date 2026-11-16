@@ -53,7 +53,12 @@ pub fn rows_for_job() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open
 pub fn row_subscribe(subscribed: bool) -> Row { if subscribed { ours(UNSUBSCRIBE, "Unsubscribe") } else { ours(SUBSCRIBE, "Subscribe as Job") } }
 /// The rows of a list's header: the fields to sort by - also those too far right to be seen in a narrow pane (row 483).
 pub const SORT: u32 = 20;
-pub fn rows_for_sort() -> Vec<Row> { vec![ours(SORT, "Sort by Name"), ours(SORT + 1, "Sort by Date Modified"), ours(SORT + 2, "Sort by Size"), ours(SORT + 3, "Sort by Kind")] }
+pub const COLUMN: u32 = 30;
+/// `show`: which columns are shown now (0 the name ... 3 the kind): each of the others can be hidden or shown.
+pub fn rows_for_sort(show: [bool; 4]) -> Vec<Row> {
+    vec![ours(SORT, "Sort by Name"), ours(SORT + 1, "Sort by Date Modified"), ours(SORT + 2, "Sort by Size"), ours(SORT + 3, "Sort by Kind"), Row::Sep,
+        ours(COLUMN + 1, if show[1] { "Hide Date Modified" } else { "Show Date Modified" }), ours(COLUMN + 2, if show[2] { "Hide Size" } else { "Show Size" }), ours(COLUMN + 3, if show[3] { "Hide Kind" } else { "Show Kind" })]
+}
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 

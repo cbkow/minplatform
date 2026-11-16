@@ -30,6 +30,8 @@ pub enum Load { Loading, Ready, Failed(String) }
 pub struct Pane {
     /// the folder this pane does not leave upward (a job's chosen item, row 486): Up stops there; none in the browser
     pub root: Option<PathBuf>,
+    /// the columns shown (their numbers), what was set for them, and which kind of panel that was set for (the window's)
+    pub cols: Vec<usize>, pub col_layout: ColLayout, pub col_kind: Option<usize>,
     pub history: History, pub model: Model, pub table: Table, pub grid: Grid, pub mode: Mode, pub load: Load,
     /// the room left on the folder's volume; the folder's own modification time at the last reading
     pub free: Option<u64>, mtime: Option<i64>,
@@ -61,7 +63,8 @@ pub struct Pane {
 struct Rows<'a> { model: &'a Model, icons: &'a Icons, px: u32, today: Civil,
     /// the pictures of single files: the numbers they are looked up by, for the rows in view from `first` on
     thumbs: &'a Thumbs, keys: &'a [Option<u64>], first: usize, /// the folder in view (an entry that was cut is shown dimmed)
-    root: &'a Path }
+    root: &'a Path, /// the columns shown, by their number (0 the name, 1 the date, 2 the size, 3 the kind)
+    cols: &'a [usize] }
 impl Rows<'_> {
     /// A row's own picture (a thumbnail, the icon of that very file) when it has come; else its type's icon.
     fn picture(&self, i: usize) -> Option<&peniko::ImageBrush> {
@@ -77,7 +80,7 @@ impl TableSource for Rows<'_> {
     fn text(&self, i: usize, col: usize) -> Cow<'_, str> {
         let Some(id) = self.model.row(i) else { return if col == 0 { Cow::Owned(self.model.note(i).map(|n| n.1).unwrap_or_default()) } else { Cow::Borrowed("") } };
         let n = self.model.node(id);
-        match col { 0 => Cow::Borrowed(&*n.name), 1 => Cow::Owned(format::date_text(n.mtime, self.today)), 2 => if n.dir || n.package { Cow::Borrowed("--") } else { Cow::Owned(format::size_text(n.size, format::DECIMAL)) }, _ => Cow::Borrowed(self.model.kind(id)) }
+        match self.cols.get(col).copied().unwrap_or(0) { 0 => Cow::Borrowed(&*n.name), 1 => Cow::Owned(format::date_text(n.mtime, self.today)), 2 => if n.dir || n.package { Cow::Borrowed("--") } else { Cow::Owned(format::size_text(n.size, format::DECIMAL)) }, _ => Cow::Borrowed(self.model.kind(id)) }
     }
     fn icon(&self, i: usize) -> Option<&peniko::ImageBrush> { self.picture(i) }
 }
@@ -96,6 +99,22 @@ impl TableSource for Names<'_> {
 }
 impl GridSource for Names<'_> { fn len(&self) -> usize { self.0.len() } fn name(&self, i: usize) -> Cow<'_, str> { match self.0.row(i) { Some(id) => Cow::Borrowed(&*self.0.node(id).name), None => Cow::Borrowed("") } } }
 
+/// Which of a list's columns are shown and how wide each is (row 488): by column number - 0 the name (always shown,
+/// its width is what the others leave), 1 the date, 2 the size, 3 the kind. Hidden columns keep their width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColLayout { pub show: [bool; 4], pub width: [f64; 4] }
+impl ColLayout {
+    pub fn all() -> ColLayout { let c = columns(); ColLayout { show: [true; 4], width: [c[0].width, c[1].width, c[2].width, c[3].width] } }
+    /// As a setting: `1,0,0|150,86,150` (the date, the size, the kind: shown; their widths).
+    pub fn to_text(&self) -> String { format!("{}|{}", (1..4).map(|i| if self.show[i] { "1" } else { "0" }).collect::<Vec<_>>().join(","), (1..4).map(|i| format!("{:.0}", self.width[i])).collect::<Vec<_>>().join(",")) }
+    pub fn parse(text: &str) -> Option<ColLayout> {
+        let (a, b) = text.split_once('|')?; let (flags, widths): (Vec<&str>, Vec<f64>) = (a.split(',').collect(), b.split(',').filter_map(|w| w.trim().parse().ok()).collect());
+        if flags.len() != 3 || widths.len() != 3 { return None } let base = columns(); let mut l = ColLayout::all();
+        for i in 1..4 { l.show[i] = flags[i - 1].trim() == "1"; l.width[i] = widths[i - 1].clamp(base[i].min, 800.0); }
+        Some(l)
+    }
+}
+pub const COLUMN_NAMES: [&str; 4] = ["Name", "Date Modified", "Size", "Kind"];
 pub fn columns() -> Vec<Column> { vec![Column::new("Name", 0.0, 160.0), Column::new("Date Modified", 150.0, 70.0), Column::new("Size", 86.0, 54.0).right(), Column::new("Kind", 150.0, 60.0)] }
 
 /// The files that were CUT (and wait for a paste): shown dimmed in every window, as the system's own browser shows
@@ -108,7 +127,7 @@ pub fn set_cut(paths: &[PathBuf]) { *CUT.lock().unwrap() = paths.to_vec(); CUT_A
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { root: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -233,7 +252,17 @@ impl Pane {
         let s = self.sel_mut(); s.set(rows); s.cursor = cursor; s.anchor = cursor; self.count();
         if let Some(c) = cursor { self.reveal_later(c); }
     }
-    pub fn set_sort(&mut self, by: SortBy, ascending: bool) { self.table.sort = (by.column(), ascending); self.keep(|m| { m.sort = by; m.ascending = ascending; }); }
+    /// The columns shown and their widths are set (the sort's mark goes to where its column now is; none when it is hidden).
+    pub fn set_columns(&mut self, l: ColLayout) {
+        let base = columns(); self.cols = (0..4).filter(|i| *i == 0 || l.show[*i]).collect();
+        self.table.columns = self.cols.iter().map(|i| { let mut c = base[*i].clone(); if *i > 0 { c.width = l.width[*i]; } c }).collect();
+        self.table.sort = (self.cols.iter().position(|c| *c == self.model.sort.column()).unwrap_or(usize::MAX), self.model.ascending); self.col_layout = l;
+    }
+    /// The columns as they are now: what was set, with the widths the dividers were dragged to.
+    pub fn columns_now(&self) -> ColLayout { let mut l = self.col_layout; for (k, i) in self.cols.iter().enumerate() { if *i > 0 { if let Some(c) = self.table.columns.get(k) { l.width[*i] = c.width; } } } l }
+    /// The field the list is sorted by, when its column is not shown (the window says it: a narrow pane, row 488).
+    pub fn hidden_sort(&self) -> Option<&'static str> { let c = self.model.sort.column(); (self.mode == Mode::List && !self.cols.contains(&c)).then(|| COLUMN_NAMES[c]) }
+    pub fn set_sort(&mut self, by: SortBy, ascending: bool) { self.table.sort = (self.cols.iter().position(|c| *c == by.column()).unwrap_or(usize::MAX), ascending); self.keep(|m| { m.sort = by; m.ascending = ascending; }); }
     pub fn set_hidden(&mut self, on: bool) { self.keep(|m| m.show_hidden = on); }
     pub fn set_folders_first(&mut self, on: bool) { self.keep(|m| m.folders_first = on); }
     /// The search field's text filters the folder in view.
@@ -334,7 +363,7 @@ impl Pane {
         for e in events { match e {
             ViewEvent::Activated(row) => { self.activate(port, row); return }
             ViewEvent::SelectionChanged => self.count(),
-            ViewEvent::SortChanged(col, asc) => self.set_sort(SortBy::of_column(col), asc),
+            ViewEvent::SortChanged(col, asc) => self.set_sort(SortBy::of_column(self.cols.get(col).copied().unwrap_or(0)), asc),
             ViewEvent::Expand(row) => self.expand(port, row),
             ViewEvent::Collapse(row) => self.collapse(row),
             ViewEvent::ContextMenu(row, at) => self.menu_at = Some((row, at)),
@@ -380,7 +409,7 @@ impl Pane {
             }
             keys.push(key);
         }
-        let rows = Rows { model: &self.model, icons, px, today, thumbs, keys: &keys, first: a, root: self.history.current() };
+        let rows = Rows { model: &self.model, icons, px, today, thumbs, keys: &keys, first: a, root: self.history.current(), cols: &self.cols };
         if self.mode == Mode::List { self.table.paint(scene, fonts, &rows, now); } else { self.grid.paint(scene, fonts, &rows, now); }
         // an empty pane says why
         if self.model.len() == 0 {
