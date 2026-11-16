@@ -83,8 +83,8 @@ pub struct Ui {
     /// drawn: its place, its rows, its scroll bar, the row under the pointer; where the panes begin; what is being made
     job: Option<Job>, jobs: Vec<crate::db::Sub>, job_secs: Vec<ActionButton>, job_secs_for: Vec<String>, job_refresh: ActionButton, job_add: ActionButton,
     job_list: Rect, job_rows: Vec<Rect>, job_scroll: ScrollBar, job_hover: Option<usize>, panes_x0: f64, made_tx: std::sync::mpsc::Sender<Made>, made_rx: Receiver<Made>, making: bool,
-    /// the menu last asked for is about a job of the sidebar
-    menu_job: bool,
+    /// the menu last asked for is about a job of the sidebar; the second pane's switch to an item's proxies
+    menu_job: bool, job_prox: ActionButton,
     /// options of the window (both panes follow)
     hidden: bool, folders_first: bool,
     side_w: f64, side_rect: Rect, sections: [Section; 4], favorites: Vec<Place>, fixed: Vec<Place>, volumes: Vec<Place>, root: String, side_bar: ScrollBar, side_rows: Vec<SideRow>, side_hover: Option<usize>,
@@ -151,7 +151,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, job_rows: vec![], job_scroll: ScrollBar::default(), job_hover: None, panes_x0: 0.0, made_tx, made_rx, making: false, menu_job: false, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, job_rows: vec![], job_scroll: ScrollBar::default(), job_hover: None, panes_x0: 0.0, made_tx, made_rx, making: false, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -207,7 +207,9 @@ impl Ui {
         let Some(j) = self.job.as_ref() else { return }; let port = self.port.clone();
         let (a, b) = match j.chosen_item() { Some(i) => (i.project.clone(), i.renders.clone()), None => match j.section_dir() { Some(d) => (d.clone(), d), None => (j.path.clone(), j.path.clone()) } };
         if self.panes[0].path() != a { self.panes[0].go(&port, a); }
-        if self.two && self.panes.len() > 1 && self.panes[1].path() != b { self.panes[1].go(&port, b); }
+        // (the second pane follows only in a section of two tiers: in a flat one it is the ordinary second pane)
+        let b = match j.chosen_item().and_then(|i| i.proxies.clone()).filter(|_| j.proxies) { Some(p) => p, None => b }; let follows = j.two_tier;
+        if follows && self.two && self.panes.len() > 1 && self.panes[1].path() != b { self.panes[1].go(&port, b); }
     }
     /// The chosen item is brought into view.
     fn job_reveal(&mut self) { let s = self.scale(); if let Some(i) = self.job.as_ref().and_then(|j| j.chosen) { let (top, h) = (i as f64 * JOB_ROW * s, (self.job_list.height() - (JOB_ROW + 40.0) * s).max(JOB_ROW * s)); if top < self.job_scroll.offset { self.job_scroll.offset = top; } else if top + JOB_ROW * s > self.job_scroll.offset + h { self.job_scroll.offset = top + JOB_ROW * s - h; } } }
@@ -276,7 +278,11 @@ impl Ui {
     pub fn poll(&mut self) -> bool {
         let mut any = self.icons.poll(); any |= self.thumbs.poll(); any |= self.lightbox.poll();
         // the job in front was read: the browser follows a section that came to the front; what was being made is there
-        if let Some(j) = self.job.as_mut() { if j.poll() { any = true; if std::mem::take(&mut j.moved) || j.chosen.is_some() { self.job_follow(); } } }
+        if let Some(j) = self.job.as_mut() { let was = j.two_tier; if j.poll() { any = true; let moved = std::mem::take(&mut j.moved) || (j.two_tier && !was);   // (a section that BECAME one of two tiers - its first shot was added - counts)
+            let (want, chosen) = (j.wants_two(), j.chosen.is_some());
+            // a section that came to the front: the second pane as the section is - shown for two tiers, hidden for a flat one - unless the user said otherwise for it
+            if moved && want != self.two { self.set_two(want); }
+            if moved || chosen { self.job_follow(); } } }
         while let Ok(m) = self.made_rx.try_recv() { any = true; self.on_made(m); }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
         for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
@@ -686,7 +692,7 @@ impl Ui {
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
-            Cmd::SecondPane => self.set_two(!self.two),
+            Cmd::SecondPane => { self.set_two(!self.two); let on = self.two; if let Some(j) = self.job.as_mut() { if let Some(sec) = j.section.clone() { j.pane2.insert(sec, on); } } }
             Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
             Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); if let Some(j) = self.job.as_mut() { j.reload(); } }
@@ -765,7 +771,7 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
+        use crate::ctxmenu::{SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN if self.menu_job => self.open_place(folder, true),
@@ -773,6 +779,7 @@ impl Ui {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_TAB => self.new_tab(folder),
             SUBSCRIBE => self.subscribe(folder, true), UNSUBSCRIBE => self.subscribe(folder, false),
+            id if (SORT..SORT + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Sort((id - SORT) as u8)); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
@@ -892,8 +899,12 @@ impl Ui {
                     if button == Button::Secondary { if let Some(to) = self.job.as_ref().and_then(|j| j.items.get(i)).map(|it| it.path.clone()) { self.menu_for = Some((Some(0), to.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![to], rows: crate::ctxmenu::rows_for_place() }); } } }
                 return } }
         }
-        // the panes: a press in one makes it the active one
         let n = self.shown();
+        // the secondary button on a list's header: the fields to sort by (a narrow pane does not show them all, row 483)
+        if let Event::Down { x, y, button: Button::Secondary } = *e { for i in 0..n { if self.panes[i].mode == Mode::List && self.panes[i].table.header().contains(kurbo::Point::new(x, y)) {
+            self.active = i; let here = self.panes[i].path().to_path_buf(); self.menu_for = Some((Some(i), here.clone())); self.menu_job = false; self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: vec![here], rows: crate::ctxmenu::rows_for_sort() }); return } } }
+        if self.job_prox.rect.width() > 0.0 && self.job_prox.event(e, now) == Response::Clicked { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(); return }
+        // the panes: a press in one makes it the active one
         if let Event::Down { x, y, .. } = *e { let p = kurbo::Point::new(x, y); for i in 0..n { if self.panes[i].rect.contains(p) || self.pane_heads[i].contains(p) { self.active = i; self.leave_path(); self.leave_search(); self.focus = Focus::Pane; } } }
         for pane in self.panes.iter_mut().take(n) { pane.pointer(e, self.mods, now, &port); }
         for i in 0..n { if let Some((row, at)) = self.panes[i].menu_at.take() { self.ask_menu(i, row, at); } }
@@ -1012,8 +1023,11 @@ impl Ui {
             "job" => if let Some(j) = num(arg).and_then(|n| self.jobs.get(n)).cloned() { self.open_place(j.path, true); },
             "section" => { if let Some(j) = self.job.as_mut() { j.show_section(arg); } },
             "item" => if let Some(n) = num(arg) { self.job_choose(n); },
+            "proxies" => { if let Some(j) = self.job.as_mut() { j.proxies = !j.proxies; } self.job_follow(); }
+            "headmenu" => { let h = self.pane().table.header(); let (x, y) = ((h.x0 + h.x1) / 2.0, (h.y0 + h.y1) / 2.0); self.pointer(&Event::Down { x, y, button: Button::Secondary }); }
+            "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
-            "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?}: items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), self.panes.iter().take(self.shown()).map(|p| p.path().display().to_string()).collect::<Vec<_>>().join(" + ")); },
+            "items" => if let Some(j) = self.job.as_ref() { eprintln!("UFB_DEMO: job {} sections [{}] in front {:?} (two tiers: {}): items [{}] chosen {:?}; panes at {}", j.name, j.sections.join(", "), j.section, j.two_tier, j.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "), j.chosen_item().map(|i| i.name.as_str()), self.panes.iter().take(self.shown()).map(|p| p.path().display().to_string()).collect::<Vec<_>>().join(" + ")); },
             "subscribe" => self.subscribe(PathBuf::from(arg), true), "unsubscribe" => self.subscribe(PathBuf::from(arg), false),
             "newjob" => { self.ask_new_job(); if let Some((d, _)) = self.dialog.as_mut() { let (n, name) = arg.split_once('|').unwrap_or((arg, "")); d.fields[0].1.set_text(n); d.fields[1].1.set_text(name); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "additem" => { self.ask_add_item(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
@@ -1203,6 +1217,12 @@ impl Ui {
                 draw_layout(scene, &l, Affine::translate((tx, hr.y0 + s + (hr.height() - l.height() as f64) / 2.0)));
             }
             self.panes[i].paint(scene, fonts, &mut self.icons, &mut self.thumbs, s, now);
+        }
+        // (a job's section of two tiers: the second pane can show the chosen item's proxies in place of its renders)
+        self.job_prox.rect = Rect::ZERO;
+        if let Some(j) = self.job.as_ref().filter(|j| n == 2 && j.two_tier && j.chosen_item().is_some_and(|i| i.proxies.is_some())) {
+            let hr = self.pane_heads[1]; let sb = (t::ACTION_BUTTON_HEIGHT_S as f64 * s).min(hr.height() - 4.0 * s); let w = self.job_prox.measure(fonts, s).0;
+            self.job_prox.rect = Rect::new(hr.x1 - 6.0 * s - w, hr.y0 + s + (hr.height() - sb) / 2.0, hr.x1 - 6.0 * s, hr.y0 + s + (hr.height() + sb) / 2.0); self.job_prox.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.job_prox.selected = j.proxies; self.job_prox.paint(scene, fonts, s, now);
         }
         self.thumbs.end_frame();
         if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n - 1)].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }

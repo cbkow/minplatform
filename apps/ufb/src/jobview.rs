@@ -15,16 +15,20 @@ use std::sync::Arc;
 
 /// The folders of an item the first pane goes to, and the second (1.4.2's lists; case is not regarded).
 const PROJECT_NAMES: [&str; 21] = ["project", "projects", "scenes", "scene", "work", "source", "src", "maya", "houdini", "nuke", "ae", "c4d", "blender", "flame", "fusion", "resolve", "premiere", "aftereffects", "pfx", "matchmove", "roto"];
+const PROXY_NAMES: [&str; 2] = ["proxies", "proxy"];
+/// How many of a section's items are looked at to say whether it is one of two tiers (1.4.2's number).
+const SAMPLED: usize = 10;
 const RENDER_NAMES: [&str; 11] = ["renders", "render", "output", "outputs", "comp", "comps", "export", "exports", "deliverables", "plates", "precomp"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item { pub name: String, pub path: PathBuf, /// seconds since 1970; `i64::MIN`: not known
     pub modified: i64, /// where the browser goes for it: the first pane, the second (found when the job is read, off the window's thread)
-    pub project: PathBuf, pub renders: PathBuf }
+    pub project: PathBuf, pub renders: PathBuf, /// its proxies folder, if it has one (the second pane can show it in place of the renders)
+    pub proxies: Option<PathBuf> }
 /// What a read of the job found.
 #[derive(Debug, Default)]
 pub struct Read { req: u64, sections: Vec<String>, section: Option<String>, items: Vec<Item>, /// every folder of the section in front (a dated item's letter is the first no folder of the day carries)
-    names: Vec<String>, missing: bool }
+    names: Vec<String>, two_tier: bool, missing: bool }
 
 /// A name is an item's (1.4.2's rule).
 pub fn is_item_name(name: &str) -> bool { !(name.starts_with('.') || name.starts_with("_t_") || name.starts_with("000000")) }
@@ -46,10 +50,15 @@ pub fn read(job: &Path, want: Option<&str>) -> Read {
     let sections: Vec<String> = tops.iter().map(|t| t.0.clone()).collect();
     let section = want.and_then(|w| sections.iter().find(|s| s.eq_ignore_ascii_case(w))).or(sections.first()).cloned();
     let all = section.as_ref().and_then(|s| dirs(&job.join(s)).ok()).unwrap_or_default(); let names = all.iter().map(|d| d.0.clone()).collect();
-    let items = all.into_iter().filter(|(n, ..)| is_item_name(n)).map(|(name, path, modified)| { let (project, renders) = targets(&path); Item { name, path, modified, project, renders } }).collect();
-    Read { req: 0, sections, section, items, names, missing: false }
+    let items = all.into_iter().filter(|(n, ..)| is_item_name(n)).map(|(name, path, modified)| { let (project, renders) = targets(&path); let proxies = named(&path, &PROXY_NAMES); Item { name, path, modified, project, renders, proxies } }).collect::<Vec<Item>>();
+    let two_tier = two_tier(&items.iter().take(SAMPLED).map(|i| (i.project != i.path, i.renders != i.path)).collect::<Vec<_>>());
+    Read { req: 0, sections, section, items, names, two_tier, missing: false }
 }
 fn named(item: &Path, names: &[&str]) -> Option<PathBuf> { std::fs::read_dir(item).ok()?.flatten().find(|e| e.file_type().is_ok_and(|t| t.is_dir()) && names.iter().any(|n| e.file_name().to_string_lossy().eq_ignore_ascii_case(n))).map(|e| e.path()) }
+/// A section is one of TWO TIERS - its items shown as a project folder and a renders folder, in two panes - when one
+/// of the items looked at has both, or two of them have at least one (1.4.2's rule; each: has a project folder, has a
+/// renders folder). Else it is flat: one pane.
+pub fn two_tier(items: &[(bool, bool)]) -> bool { items.iter().any(|(p, r)| *p && *r) || items.iter().filter(|(p, r)| *p || *r).count() >= 2 }
 /// Where the browser goes for an item: (the first pane, the second) - its project and renders folders, or itself.
 pub fn targets(item: &Path) -> (PathBuf, PathBuf) { (named(item, &PROJECT_NAMES).unwrap_or_else(|| item.to_path_buf()), named(item, &RENDER_NAMES).unwrap_or_else(|| item.to_path_buf())) }
 
@@ -59,13 +68,16 @@ pub struct Job {
     pub sections: Vec<String>, pub section: Option<String>, pub items: Vec<Item>, pub chosen: Option<usize>,
     /// nothing was read yet; the job's folder is not there
     pub loading: bool, pub missing: bool, pub dated_names: Vec<String>,
+    /// the section in front is one of two tiers; what the user said of the second pane, a section (it wins over the
+    /// section's own); the second pane shows the proxies in place of the renders
+    pub two_tier: bool, pub pane2: std::collections::HashMap<String, bool>, pub proxies: bool,
     /// an item to choose once it is there (it was just made); the section changed: the browser is to follow
     pub choose: Option<PathBuf>, pub moved: bool,
     req: u64, tx: Sender<Read>, rx: Receiver<Read>, wake: Arc<dyn Fn() + Send + Sync>,
 }
 impl Job {
     pub fn new(path: PathBuf, name: String, wake: Arc<dyn Fn() + Send + Sync>) -> Job {
-        let (tx, rx) = channel(); let mut j = Job { path, name, sections: vec![], section: None, items: vec![], chosen: None, loading: true, missing: false, dated_names: vec![], choose: None, moved: false, req: 0, tx, rx, wake };
+        let (tx, rx) = channel(); let mut j = Job { path, name, sections: vec![], section: None, items: vec![], chosen: None, loading: true, missing: false, dated_names: vec![], two_tier: false, pane2: Default::default(), proxies: false, choose: None, moved: false, req: 0, tx, rx, wake };
         j.reload(); j
     }
     /// Read the job again (the section in front is kept).
@@ -83,11 +95,13 @@ impl Job {
             if r.req != self.req { continue } any = true;
             let was = self.chosen.and_then(|i| self.items.get(i)).map(|i| i.path.clone());
             if self.section != r.section { self.moved = true; }
-            self.missing = r.missing; self.sections = r.sections; self.section = r.section; self.items = r.items; self.dated_names = r.names; self.loading = false;
+            self.missing = r.missing; self.sections = r.sections; self.section = r.section; self.items = r.items; self.dated_names = r.names; self.two_tier = r.two_tier; self.loading = false;
             let want = self.choose.take().or(was); self.chosen = want.and_then(|w| self.items.iter().position(|i| i.path == w));
         }
         any
     }
+    /// Whether the second pane is to be shown in the section in front: what the user said for it, else what the section is.
+    pub fn wants_two(&self) -> bool { self.section.as_ref().and_then(|s| self.pane2.get(s)).copied().unwrap_or(self.two_tier) }
     /// The folder of the section in front.
     pub fn section_dir(&self) -> Option<PathBuf> { self.section.as_ref().map(|s| self.path.join(s)) }
     pub fn chosen_item(&self) -> Option<&Item> { self.chosen.and_then(|i| self.items.get(i)) }
@@ -133,6 +147,10 @@ mod tests {
         // an item with a project and a renders folder shows them; one without shows itself
         assert_eq!(targets(&job.join("3d/sh010")), (job.join("3d/sh010/project"), job.join("3d/sh010/renders")));
         assert_eq!(targets(&job.join("3d/sh020")), (job.join("3d/sh020"), job.join("3d/sh020")));
+        // two tiers: one item with both folders is enough; or two items with one each; a flat section has neither
+        assert!(read(&job, Some("3d")).two_tier); assert!(!read(&job, Some("ae")).two_tier); assert!(!read(&job, Some("docs")).two_tier);
+        assert!(two_tier(&[(false, false), (true, true)])); assert!(two_tier(&[(true, false), (false, true)])); assert!(!two_tier(&[(true, false), (false, false)])); assert!(!two_tier(&[]));
+        std::fs::create_dir_all(job.join("ae/title/proxies")).unwrap(); let r = read(&job, Some("ae")); assert_eq!(r.items[0].proxies, Some(job.join("ae/title/proxies")));
         let _ = std::fs::remove_dir_all(&job);
     }
     #[test]

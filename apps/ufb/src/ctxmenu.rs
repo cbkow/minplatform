@@ -51,6 +51,9 @@ pub fn rows_for_folder() -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ou
 pub fn rows_for_job() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(UNSUBSCRIBE, "Unsubscribe")] }
 /// The row that makes a folder a job in the sidebar, or takes it out again.
 pub fn row_subscribe(subscribed: bool) -> Row { if subscribed { ours(UNSUBSCRIBE, "Unsubscribe") } else { ours(SUBSCRIBE, "Subscribe as Job") } }
+/// The rows of a list's header: the fields to sort by - also those too far right to be seen in a narrow pane (row 483).
+pub const SORT: u32 = 20;
+pub fn rows_for_sort() -> Vec<Row> { vec![ours(SORT, "Sort by Name"), ours(SORT + 1, "Sort by Date Modified"), ours(SORT + 2, "Sort by Size"), ours(SORT + 3, "Sort by Kind")] }
 /// The rows for a place in the sidebar.
 pub fn rows_for_place() -> Vec<Row> { vec![ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal] }
 
