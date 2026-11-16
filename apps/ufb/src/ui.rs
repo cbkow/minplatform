@@ -27,7 +27,10 @@ use winit31::window::Window;
 
 /// What the window asks of the application.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Out { NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
+pub enum Out { /// the clipboard is the application's to reach: files to put on it (`cut`: they are moved when pasted); a paste of files asked for
+    /// (`mv`: "Move Item Here"); the text field in hand copies (`cut`) or pastes
+    CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste,
+    NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus { Pane, Path, Search, Rename }
@@ -36,7 +39,8 @@ struct Renaming { pane: usize, path: PathBuf, dir: bool, field: TextField }
 /// What an open question is about.
 enum Asked { /// delete these for good
     Delete(Vec<PathBuf>), /// the extension would change: the entry, the name typed, the name with the old extension kept
-    Extension { path: PathBuf, typed: String, kept: String } }
+    Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
+    Conflict(u64) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
@@ -44,6 +48,7 @@ struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
 /// Logical px.
 const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
+impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
     window: Arc<Box<dyn Window>>, presenter: Presenter, layer: UiLayer, fonts: Fonts, tips: Tooltips,
     port: Port, rx: Receiver<Msg>, icons: Icons, thumbs: Thumbs,
@@ -65,6 +70,8 @@ pub struct Ui {
     /// a name being changed in place; a question that is open; what went wrong, said at the window's foot;
     /// the entry to rename as soon as its folder is read again (a new folder goes straight into its name)
     rename: Option<Renaming>, dialog: Option<(min_ui::dialog::Dialog, Asked)>, toast: min_ui::toast::Toast, rename_next: Option<PathBuf>,
+    /// the engine's questions that wait for the one that is open; the running operation in the status bar: its cancel button, the place a click opens the list at, the list open
+    asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool,
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
     menu_for: Option<(Option<usize>, PathBuf)>,
     demo: VecDeque<String>, demo_until: Option<Instant>, shot: Option<PathBuf>, settled: Option<Instant>, tip_demo: Option<String>, born: Instant,
@@ -88,7 +95,7 @@ impl Ui {
         let demo = std::env::var("UFB_DEMO").ok().filter(|_| first).map(|d| d.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let key = |c: Cmd, text: &str| menu::tip(text, c);
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::ops::subscribe(port.clone());
+        crate::ops::subscribe(id, port.clone());
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
@@ -97,7 +104,7 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -105,7 +112,8 @@ impl Ui {
     fn shown(&self) -> usize { if self.two { self.panes.len().min(2) } else { 1 } }
     /// What the menus show of this window.
     pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some(),
-        chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()) } }
+        chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
+        typing: self.focus != Focus::Pane, other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
 
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
@@ -118,6 +126,7 @@ impl Ui {
                 Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); let port = self.port.clone(); self.pane().go(&port, path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
                 Msg::Icon => { self.icons.poll(); self.thumbs.poll(); }
                 Msg::Op(rep) => self.on_report(&rep),
+                Msg::Ask(q) => if q.origin == self.id { self.asks.push_back(q); },
                 other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { if std::mem::take(&mut p.listed) { self.thumbs.listed(p.path()); } break } } }
             }
         }
@@ -144,6 +153,26 @@ impl Ui {
         if rep.kind == Some(crate::ops::Kind::NewFolder) { self.rename_next = rep.made.first().cloned(); }
         if !rep.no_trash.is_empty() { self.ask_delete(rep.no_trash.clone(), true); }
     }
+    /// The engine asks about a name that is taken (rows 436 / 468): replace, skip or keep both - for this one or for all
+    /// that follow - or stop. Return gives "Keep Both" (nothing is lost by it), Escape stops.
+    fn show_question(&mut self) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        if self.dialog.is_some() { return } let Some(q) = self.asks.pop_front() else { return }; let c = &q.conflict;
+        let folder = c.dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| c.dest.to_string_lossy().into_owned());
+        let mut d = Dialog::new(&format!("An item named \u{201c}{}\u{201d} already exists in \u{201c}{folder}\u{201d}.", c.name), &format!("Replace it with the one you are {}, skip this one, or keep both?", if c.mv { "moving" } else { "copying" }),
+            vec![("Stop", Variant::Secondary), ("Replace", Variant::Secondary), ("Skip", Variant::Secondary), ("Keep Both", Variant::Primary)]).with_check("Apply to all"); d.show();
+        self.dialog = Some((d, Asked::Conflict(q.id)));
+    }
+    /// The chosen entries are copied (`mv`: moved) into the other pane's folder (row 450: in the menus, with no key).
+    fn to_other_pane(&mut self, mv: bool) {
+        if !self.two || self.panes.len() < 2 { return } let dest = self.panes[1 - self.active.min(1)].path().to_path_buf(); let paths = self.chosen_paths();
+        if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Transfer { paths, dest, mv }); }
+    }
+    /// Files from the clipboard are put into the active pane's folder (`mv`: moved there).
+    pub fn paste_files(&mut self, paths: Vec<PathBuf>, mv: bool) {
+        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
+        crate::ops::submit(self.id, crate::ops::Op::Transfer { paths, dest, mv });
+    }
     fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect() }
     /// "Delete for good?" - always asked (row 468, point 3). `no_trash`: asked because the volume has no Trash.
     fn ask_delete(&mut self, paths: Vec<PathBuf>, no_trash: bool) {
@@ -157,8 +186,9 @@ impl Ui {
     }
     /// A button of the open question was chosen (`button`: its place; the last one is the careful answer).
     fn answer(&mut self, button: usize) {
-        let Some((_, asked)) = self.dialog.take() else { return };
+        let Some((d, asked)) = self.dialog.take() else { return };
         match asked {
+            Asked::Conflict(id) => { use crate::ops::Choice; crate::ops::answer(id, [Choice::Stop, Choice::Replace, Choice::Skip, Choice::KeepBoth][button.min(3)], d.checked()); }
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
             Asked::Extension { path, typed, kept } => { let name = if button == 0 { typed } else { kept }; if path.file_name().is_some_and(|n| n.to_string_lossy() != name.as_str()) { crate::ops::submit(self.id, crate::ops::Op::Rename { path, name }); } }
         }
@@ -221,8 +251,14 @@ impl Ui {
         let port = self.port.clone();
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
-        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
+        if self.dialog.is_some() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return }
+        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
         match c {
+            // copy and paste are the text field's while one is in hand; else they are about files (the clipboard is the application's to reach)
+            Cmd::Copy | Cmd::Cut => if self.focus != Focus::Pane { self.out.push(Out::FieldCopy { cut: c == Cmd::Cut }); } else { let paths = self.chosen_paths(); if !paths.is_empty() { self.out.push(Out::CopyFiles { paths, cut: c == Cmd::Cut }); } },
+            Cmd::Paste => self.out.push(if self.focus != Focus::Pane { Out::FieldPaste } else { Out::PasteFiles { mv: false } }),
+            Cmd::PasteMove => self.out.push(Out::PasteFiles { mv: true }),
+            Cmd::CopyToOther => self.to_other_pane(false), Cmd::MoveToOther => self.to_other_pane(true),
             Cmd::NewFolder => { let dir = self.pane().path().to_path_buf(); crate::ops::submit(self.id, crate::ops::Op::NewFolder { dir }); }
             Cmd::Rename => self.start_rename(),
             Cmd::Duplicate => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Duplicate { paths }); } }
@@ -273,13 +309,13 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{CONTENTS, DUPLICATE, NEW_FOLDER, NEW_WINDOW, OPEN, REFRESH, RENAME, TRASH};
+        use crate::ctxmenu::{CONTENTS, COPY, DUPLICATE, NEW_FOLDER, NEW_WINDOW, OPEN, PASTE, REFRESH, RENAME, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
-            REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
-                self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, _ => Cmd::Refresh }); }
+            REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
+                self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, COPY => Cmd::Copy, PASTE => Cmd::Paste, _ => Cmd::Refresh }); }
             _ => {}
         }
     }
@@ -297,6 +333,11 @@ impl Ui {
             let on = e.pos().is_some_and(|(x, y)| r.field.hit(x, y));
             if on || r.field.dragging() { r.field.pointer(e, &mut self.fonts); return }
             if matches!(e, Event::Down { .. }) { self.commit_rename(); if self.rename.is_some() || self.dialog.is_some() { return } }
+        }
+        // the running operation in the status bar: its cancel; a press on it opens (or closes) the list of what waits
+        if self.op_rect.width() > 0.0 {
+            if self.op_cancel.event(e, now) == Response::Clicked { crate::ops::cancel(); return }
+            if let Event::Down { x, y, button: Button::Primary } = *e { if self.op_rect.contains(kurbo::Point::new(x, y)) && !self.op_cancel.hit(x, y) { self.op_list = !self.op_list; return } else if self.op_list { self.op_list = false; } }
         }
         // a new window (row 448): the middle button on a folder, a sidebar row or a segment of the path; the command key
         // (Ctrl on Windows) with a click on a sidebar row or a segment - in a pane that click is the selection's
@@ -371,7 +412,8 @@ impl Ui {
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
-        if self.dialog.is_some() { if matches!(k.key, Key::Named(Named::Enter | Named::Escape)) { let last = self.dialog.as_ref().map(|(d, _)| d.buttons.len().saturating_sub(1)).unwrap_or(0); self.answer(last); } return }
+        if let Some((d, asked)) = self.dialog.as_ref() { let last = d.buttons.len().saturating_sub(1);
+            match k.key { Key::Named(Named::Enter) => self.answer(last), Key::Named(Named::Escape) => self.answer(if matches!(asked, Asked::Conflict(_)) { 0 } else { last }), _ => {} } return }
         match self.focus {
             Focus::Rename => {
                 let Some(r) = self.rename.as_mut() else { self.focus = Focus::Pane; return };
@@ -439,6 +481,9 @@ impl Ui {
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },
+            // `copyother` `moveother` (the chosen entries into the other pane's folder) `all` (tick "Apply to all") `stopop` (call the running operation off) `oplist`
+            "copyother" => self.command(Cmd::CopyToOther), "moveother" => self.command(Cmd::MoveToOther), "stopop" => crate::ops::cancel(), "oplist" => self.op_list = true,
+            "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
             "context" => { let at = if arg == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(n) = arg.strip_prefix("side").and_then(num) { self.side_rows.get(n).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(arg).and_then(|n| self.pane().row_point(n)) };
                 if let Some((x, y)) = at { self.pointer(&Event::Down { x, y, button: Button::Secondary }); self.pointer(&Event::Up { x, y, button: Button::Secondary }); } }
@@ -499,6 +544,7 @@ impl Ui {
         let head_h = if n == 2 { HEAD * s } else { 0.0 };
         for i in 0..n { let (x0, x1) = if n == 1 { (body.x0, body.x1) } else if i == 0 { (body.x0, split_x) } else { (split_x + s, body.x1) };
             self.pane_heads[i] = Rect::new(x0, body.y0, x1, body.y0 + head_h); let active = i == self.active; self.panes[i].layout(Rect::new(x0, body.y0 + head_h, x1, body.y1), s, active); }
+        self.show_question();
         // a new folder goes straight into its name, as soon as its row is there
         if let Some(path) = self.rename_next.clone() { let i = self.active; if !self.panes[i].loading() { self.rename_next = None; if self.focus == Focus::Pane && self.dialog.is_none() && self.panes[i].name_rect(&path).is_some() { self.start_rename(); } } }
         // the field of a name being changed lies over the name (its entry gone: the rename is over)
@@ -618,8 +664,25 @@ impl Ui {
         paint::rect(scene, status, t::BACKGROUND_LAYER_1_COLOR); paint::hline(scene, status.x0, status.x1, status.y0, s, t::DIVIDER_COLOR);
         { let p = &self.panes[self.active]; let size = t::BODY_SIZE_S * s as f32;
             let free = p.free.filter(|_| p.load != Load::Loading).map(|f| crate::format::free_text(f, crate::format::DECIMAL)).unwrap_or_default();
-            let fl = fonts.layout(&free, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub); let fx = status.x1 - 12.0 * s - fl.width() as f64;
-            if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); }
+            let fl = fonts.layout(&free, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub); let mut fx = status.x1 - 12.0 * s - fl.width() as f64;
+            // a running operation takes the right of the bar (row 468, point 7): what it does, how far it is, its cancel, how many wait
+            self.op_rect = Rect::ZERO;
+            if let Some(st) = crate::ops::status() {
+                let waiting = crate::ops::waiting().len(); let frac = if st.bytes.1 > 0 { st.bytes.0 as f64 / st.bytes.1 as f64 } else if st.items.1 > 0 { st.items.0 as f64 / st.items.1 as f64 } else { 0.0 };
+                let text = format!("{}{}", st.label, if waiting > 0 { format!("  \u{b7}  {waiting} waiting") } else { String::new() });
+                let bh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let x1 = status.x1 - 8.0 * s; let bar_w = 110.0 * s;
+                self.op_cancel.rect = Rect::new(x1 - bh, status.y0 + (status.height() - bh) / 2.0, x1, status.y0 + (status.height() + bh) / 2.0); self.op_cancel.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s);
+                let bar = Rect::new(x1 - bh - 8.0 * s - bar_w, status.y0 + (status.height() - min_ui::progress::height(s)) / 2.0, x1 - bh - 8.0 * s, status.y0 + (status.height() + min_ui::progress::height(s)) / 2.0);
+                let l = fonts.layout_fit(&text, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, ink, (bar.x0 - 10.0 * s - (area.x0 + 160.0 * s)).max(60.0 * s)); let lx = bar.x0 - 10.0 * s - l.width() as f64;
+                draw_layout(scene, &l, Affine::translate((lx, status.y0 + (status.height() - l.height() as f64) / 2.0)));
+                min_ui::progress::bar(scene, bar, frac, min_ui::progress::Tone::Neutral); self.op_cancel.paint(scene, fonts, s, now);
+                self.op_rect = Rect::new(lx - 6.0 * s, status.y0, status.x1, status.y1); fx = lx - 24.0 * s;
+                // the list: the one that runs (with the item in hand), then those that wait
+                if self.op_list { let mut rows = vec![if st.current.is_empty() { st.label.clone() } else { format!("{}  \u{2014}  {}", st.label, st.current) }]; rows.extend(crate::ops::waiting().into_iter().map(|w| format!("Waiting:  {w}")));
+                    let rh = 22.0 * s; let pw = 420.0 * s; let card = Rect::new(status.x1 - 8.0 * s - pw, status.y0 - 8.0 * s - rows.len() as f64 * rh - 12.0 * s, status.x1 - 8.0 * s, status.y0 - 8.0 * s);
+                    paint::rounded(scene, card.inflate(s, s), t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s + s, t::DIVIDER_COLOR_MEDIUM); paint::rounded(scene, card, t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
+                    for (i, row) in rows.iter().enumerate() { let rl = fonts.layout_fit(row, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, if i == 0 { ink } else { sub }, pw - 24.0 * s); draw_layout(scene, &rl, Affine::translate((card.x0 + 12.0 * s, card.y0 + 6.0 * s + i as f64 * rh + (rh - rl.height() as f64) / 2.0))); } }
+            } else { self.op_list = false; if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); } }
             let l = fonts.layout_fit(&p.status(), Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub, (fx - 24.0 * s - area.x0 - 12.0 * s).max(40.0 * s));
             draw_layout(scene, &l, Affine::translate((area.x0 + 12.0 * s, status.y0 + (status.height() - l.height() as f64) / 2.0))); }
 

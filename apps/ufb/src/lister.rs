@@ -27,6 +27,8 @@ pub enum Msg {
     Icon,
     /// A file operation ended (`ops.rs`): every window hears of it.
     Op(Arc<crate::ops::Report>),
+    /// The engine asks about a name that is taken (the window that started the operation answers).
+    Ask(Arc<crate::ops::Question>),
 }
 
 /// Where a worker sends, and how it wakes the window's loop.

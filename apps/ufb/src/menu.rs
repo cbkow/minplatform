@@ -7,10 +7,10 @@
 use crate::model::SortBy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Cmd { NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
+pub enum Cmd { Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]   // the ids are the native menu's (macOS)
 impl Cmd {
-    const ALL: [Cmd; 30] = [Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
+    const ALL: [Cmd; 36] = [Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
     pub fn id(self) -> String { format!("{self:?}") }
     pub fn from_id(id: &str) -> Option<Cmd> { Cmd::ALL.into_iter().find(|c| c.id() == id) }
 }
@@ -59,13 +59,15 @@ pub fn spec(mac: bool) -> Vec<(&'static str, Vec<Node>)> {
             item(if m { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }, if m { cmd_alt("Delete") } else { Some(Sc { cmd: false, shift: true, alt: false, key: "Delete" }) }, Cmd::DeleteNow), Node::Sep,
             item("Close Window", cmd("W"), Cmd::CloseWindow),
         ]),
-        ("Edit", vec![
-            item("Undo", cmd("Z"), Cmd::Undo), later("Redo", if m { cmd_shift("Z") } else { cmd("Y") }), Node::Sep,
-            later("Cut", cmd("X")), later("Copy", cmd("C")), later("Paste", cmd("V")), Node::Sep,
-            item("Select All", cmd("A"), Cmd::SelectAll), Node::Sep,
-            // (row 450: these two have no key on purpose - not a thing to do by accident)
-            later("Copy to Other Pane", None), later("Move to Other Pane", None),
-        ]),
+        ("Edit", {
+            // (each system's own habit, row 450: Explorer cuts and pastes; Finder copies, and moves with "Move Item Here")
+            let mut v = vec![item("Undo", cmd("Z"), Cmd::Undo), later("Redo", if m { cmd_shift("Z") } else { cmd("Y") }), Node::Sep,
+                if m { later("Cut", cmd("X")) } else { item("Cut", cmd("X"), Cmd::Cut) }, item("Copy", cmd("C"), Cmd::Copy), item("Paste", cmd("V"), Cmd::Paste)];
+            if m { v.push(item("Move Item Here", cmd_alt("V"), Cmd::PasteMove)); }
+            // (row 450: the two that move files between the panes have no key on purpose - not a thing to do by accident)
+            v.extend([Node::Sep, item("Select All", cmd("A"), Cmd::SelectAll), Node::Sep, item("Copy to Other Pane", None, Cmd::CopyToOther), item("Move to Other Pane", None, Cmd::MoveToOther)]);
+            v
+        }),
         ("View", vec![
             check("as List", cmd("1"), Cmd::AsList), check("as Grid", cmd("2"), Cmd::AsGrid), Node::Sep,
             check("Show Hidden Files", if m { cmd_shift(".") } else { cmd("H") }, Cmd::Hidden), check("Folders First", None, Cmd::FoldersFirst),
@@ -111,11 +113,15 @@ pub fn tip(text: &str, c: Cmd) -> String { match key_label(cfg!(target_os = "mac
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct State { pub grid: bool, pub hidden: bool, pub folders_first: bool, pub second: bool, pub sort: SortBy, pub can_back: bool, pub can_forward: bool, pub can_up: bool,
     /// how many entries are chosen in the active pane (2: more than one); something can be undone; things may be changed in this folder
-    pub chosen: u8, pub undo: bool, pub writable: bool }
+    pub chosen: u8, pub undo: bool, pub writable: bool,
+    /// a text is being typed (copy and paste are the field's); the second pane is shown and things may be put into its folder
+    pub typing: bool, pub other: bool }
 impl State {
     fn checked(&self, c: Cmd) -> bool { match c { Cmd::AsList => !self.grid, Cmd::AsGrid => self.grid, Cmd::Hidden => self.hidden, Cmd::FoldersFirst => self.folders_first, Cmd::SecondPane => self.second, Cmd::Sort(i) => self.sort.column() == i as usize, _ => false } }
     fn enabled(&self, c: Cmd) -> bool { match c { Cmd::Back => self.can_back, Cmd::Forward => self.can_forward, Cmd::Up => self.can_up,
-        Cmd::NewFolder => self.writable, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo, _ => true } }
+        Cmd::NewFolder => self.writable, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo,
+        Cmd::Copy => self.typing || self.chosen >= 1, Cmd::Cut => self.typing || (self.writable && self.chosen >= 1), Cmd::Paste => self.typing || self.writable, Cmd::PasteMove => !self.typing && self.writable,
+        Cmd::CopyToOther => self.other && self.chosen >= 1, Cmd::MoveToOther => self.other && self.writable && self.chosen >= 1, _ => true } }
 }
 
 /// The menu bar drawn in the window (Windows; `UFB_MENU_BAR=1` shows it on macOS, to look at).
@@ -230,8 +236,9 @@ mod tests {
             assert_eq!(shortcut(mac, "1", true, false, false), Some(Cmd::AsList)); assert_eq!(shortcut(mac, "2", true, false, false), Some(Cmd::AsGrid)); assert_eq!(shortcut(mac, "n", true, false, false), Some(Cmd::NewWindow));
             assert_eq!(shortcut(mac, "w", true, false, false), Some(Cmd::CloseWindow)); assert_eq!(shortcut(mac, "f", true, false, false), Some(Cmd::Find)); assert_eq!(shortcut(mac, "a", true, false, false), Some(Cmd::SelectAll));
             assert_eq!(shortcut(mac, "z", true, false, false), Some(Cmd::Undo)); assert_eq!(shortcut(mac, "n", true, true, false), Some(Cmd::NewFolder));
-            // what is not built yet has a row and a key shown, and no command: copy, cut, paste
-            for key in ["c", "v", "x"] { assert_eq!(shortcut(mac, key, true, false, false), None, "{key}"); }
+            assert_eq!(shortcut(mac, "c", true, false, false), Some(Cmd::Copy)); assert_eq!(shortcut(mac, "v", true, false, false), Some(Cmd::Paste));
+            // Explorer cuts files; Finder does not (it moves with "Move Item Here")
+            assert_eq!(shortcut(mac, "x", true, false, false), if mac { None } else { Some(Cmd::Cut) }); assert_eq!(shortcut(mac, "v", true, false, true), if mac { Some(Cmd::PasteMove) } else { None });
         }
     }
     #[test]
@@ -240,8 +247,8 @@ mod tests {
             let s = spec(mac); assert_eq!(s.iter().map(|m| m.0).collect::<Vec<_>>(), ["File", "Edit", "View", "Go", "Project", "Window", "Help"]);
             let mut rows: Vec<(&str, bool)> = vec![]; for (_, nodes) in &s { walk(nodes, &mut |n| match n { Node::Item { label, cmd, .. } => rows.push((label, cmd.is_some())), Node::Check { label, .. } => rows.push((label, true)), _ => {} }); }
             let has = |label: &str, on: bool| assert!(rows.contains(&(label, on)), "{label} ({})", if on { "enabled" } else { "disabled" });
-            for l in ["New Window", "Close Window", "Open", "Select All", "as List", "as Grid", "Show Hidden Files", "Folders First", "Show Second Pane", "Name", "Date Modified", "Size", "Kind", "Refresh", "Back", "Forward", "Enclosing Folder", "Home", "Desktop", "Downloads", "Go to Folder\u{2026}", "Minimize", "New Folder", "Rename", "Duplicate", "Undo", if mac { "Move to Trash" } else { "Delete" }, if mac { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }] { has(l, true); }
-            for l in ["Redo", "Cut", "Copy", "Paste", "Copy to Other Pane", "Move to Other Pane", if mac { "Get Info" } else { "Properties" }] { has(l, false); }
+            for l in ["New Window", "Close Window", "Open", "Select All", "as List", "as Grid", "Show Hidden Files", "Folders First", "Show Second Pane", "Name", "Date Modified", "Size", "Kind", "Refresh", "Back", "Forward", "Enclosing Folder", "Home", "Desktop", "Downloads", "Go to Folder\u{2026}", "Minimize", "New Folder", "Rename", "Duplicate", "Undo", "Copy", "Paste", "Copy to Other Pane", "Move to Other Pane", if mac { "Move Item Here" } else { "Cut" }, if mac { "Move to Trash" } else { "Delete" }, if mac { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }] { has(l, true); }
+            for l in ["Redo", if mac { "Cut" } else { "Redo" }, if mac { "Get Info" } else { "Properties" }] { has(l, false); }
             // the two that move files between the panes have NO key (row 450)
             for (_, nodes) in &s { walk(nodes, &mut |n| if let Node::Item { label, sc, .. } = n { if label.ends_with("Other Pane") { assert!(sc.is_none()); } }); }
         }
@@ -252,7 +259,9 @@ mod tests {
         assert_eq!(cmd_shift("N").unwrap().label(false), "Ctrl+Shift+N"); assert_eq!(alt("Left").unwrap().label(false), "Alt+Left"); assert_eq!(bare("F5").unwrap().label(false), "F5"); assert_eq!(Sc { cmd: false, shift: true, alt: false, key: "Delete" }.label(false), "Shift+Delete");
         assert_eq!(cmd_shift("G").unwrap().label(true), "\u{21e7}\u{2318}G"); assert_eq!(cmd("Up").unwrap().label(true), "\u{2318}\u{2191}"); assert_eq!(cmd_alt("L").unwrap().label(true), "\u{2325}\u{2318}L");
         assert_eq!(key_label(true, Cmd::Back).as_deref(), Some("\u{2318}[")); assert_eq!(key_label(false, Cmd::Back).as_deref(), Some("Alt+Left")); assert_eq!(key_label(false, Cmd::SecondPane), None);
-        let st = State { grid: true, hidden: false, folders_first: true, second: false, sort: SortBy::Size, can_back: false, can_forward: true, can_up: true, chosen: 1, undo: false, writable: true };
+        let st = State { grid: true, hidden: false, folders_first: true, second: false, sort: SortBy::Size, can_back: false, can_forward: true, can_up: true, chosen: 1, undo: false, writable: true, typing: false, other: false };
+        assert!(st.enabled(Cmd::Copy) && st.enabled(Cmd::Paste) && !st.enabled(Cmd::CopyToOther) && State { other: true, ..st }.enabled(Cmd::MoveToOther) && !State { other: true, writable: false, ..st }.enabled(Cmd::MoveToOther));
+        assert!(!State { chosen: 0, ..st }.enabled(Cmd::Copy) && State { chosen: 0, typing: true, ..st }.enabled(Cmd::Copy) && !State { writable: false, ..st }.enabled(Cmd::Paste));
         // what changes files follows the choice, the undo list and whether this folder may be changed
         assert!(st.enabled(Cmd::Rename) && st.enabled(Cmd::Trash) && st.enabled(Cmd::NewFolder) && !st.enabled(Cmd::Undo));
         assert!(!State { chosen: 2, ..st }.enabled(Cmd::Rename) && State { chosen: 2, ..st }.enabled(Cmd::Duplicate) && !State { chosen: 0, ..st }.enabled(Cmd::Trash) && State { undo: true, ..st }.enabled(Cmd::Undo));

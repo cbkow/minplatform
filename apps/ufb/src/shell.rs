@@ -24,6 +24,8 @@ struct App {
     first: Option<PathBuf>, favorites: Vec<Place>, proxy: Arc<EventLoopProxy>, windows: HashMap<WindowId, Win>, focused: Option<WindowId>,
     /// (shift, the command key - Ctrl on Windows -, Alt / Option)
     mods: (bool, bool, bool), alt_clean: bool, clipboard: Option<arboard::Clipboard>,
+    /// the files that were CUT (Windows' habit): pasted, they are moved
+    cut: Option<Vec<PathBuf>>,
     #[cfg(target_os = "macos")] menu: Option<crate::menu::AppMenu>,
 }
 #[cfg(target_os = "macos")]
@@ -77,6 +79,18 @@ impl App {
             Out::Close => { self.windows.remove(&id); if self.focused == Some(id) { self.focused = None; } }
             Out::Minimize => if let Some(w) = self.windows.get(&id) { w.window.set_minimized(true); },
             Out::Quit => done = true,
+            // the clipboard: files onto it and from it; the text of the field in hand
+            Out::CopyFiles { paths, cut } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
+                if let Some(cb) = self.clipboard.as_mut() { if cb.set().file_list(&paths).is_ok() { self.cut = if cut { Some(paths) } else { None }; } } }
+            Out::PasteFiles { mv } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
+                let list = self.clipboard.as_mut().and_then(|cb| cb.get().file_list().ok()).unwrap_or_default();
+                // files that were CUT here (and are still what the clipboard holds) are moved by a paste, once
+                let was_cut = self.cut.as_ref().is_some_and(|c| *c == list); if was_cut { self.cut = None; }
+                if let Some(w) = self.windows.get_mut(&id) { w.ui.paste_files(list, mv || was_cut); w.window.request_redraw(); } }
+            Out::FieldCopy { cut } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
+                if let (Some(cb), Some(w)) = (self.clipboard.as_mut(), self.windows.get_mut(&id)) { if let Some(text) = w.ui.copy(cut) { let _ = cb.set_text(text); } w.window.request_redraw(); } }
+            Out::FieldPaste => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
+                if let (Some(cb), Some(w)) = (self.clipboard.as_mut(), self.windows.get_mut(&id)) { if let Ok(text) = cb.get_text() { w.ui.paste(&text); } w.window.request_redraw(); } }
             // the system's menu: handed to the run loop (never shown from inside this callback - S19); a row of ours comes back through `proxy_wake_up`
             Out::Menu(ask) => { #[cfg(target_os = "macos")] if let Some(w) = self.windows.get(&id) { use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                     if let Ok(RawWindowHandle::AppKit(h)) = w.window.window_handle().map(|h| h.as_raw()) { let proxy = self.proxy.clone(); crate::ctxmenu::sys::show(h.ns_view.as_ptr(), id, ask, Arc::new(move || proxy.wake_up())); } }
@@ -179,5 +193,5 @@ pub fn run(folder: PathBuf, favorites: Vec<Place>) {
     #[cfg(target_os = "macos")] crate::menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let el = EventLoop::new().expect("the event loop"); let proxy = Arc::new(el.create_proxy());
     #[cfg(target_os = "macos")] { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
-    let _ = el.run_app(App { first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), alt_clean: false, clipboard: None, #[cfg(target_os = "macos")] menu: None });
+    let _ = el.run_app(App { first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
 }
