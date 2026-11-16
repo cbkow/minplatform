@@ -51,10 +51,57 @@ pub struct Sub { pub name: String, pub path: PathBuf }
 
 fn now_ms() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) }
 const OS: &str = if cfg!(windows) { "win" } else { "mac" };
-/// A path of this machine in 1.4.2's storage form (no volume is registered yet: `native:`).
-pub fn to_identity(p: &Path) -> String { format!("native:{OS}/{}", p.to_string_lossy()) }
-/// The path of this machine a stored identity names; none for another system's, and for a volume's (not yet).
-pub fn to_native(id: &str) -> Option<PathBuf> { let (os, path) = id.strip_prefix("native:")?.split_once('/')?; (os == OS && !path.is_empty()).then(|| PathBuf::from(path)) }
+
+// ------------------------------------------------------------------ shared paths (row 494; 1.4.2's `identity.rs`, `volumes.rs`)
+/// A share as two machines know it: where it is on Windows and where on macOS. Its identity is derived from that
+/// pair alone, so every machine with the same pair has the same one (1.4.2's derivation, to the byte).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mapping { pub win: String, pub mac: String, pub uuid: String }
+impl Mapping {
+    pub fn new(win: &str, mac: &str) -> Mapping { Mapping { win: win.trim().to_string(), mac: mac.trim().to_string(), uuid: volume_uuid(win, mac) } }
+    /// Where the share is on THIS machine.
+    pub fn local(&self) -> &str { if cfg!(windows) { &self.win } else { &self.mac } }
+}
+/// The identity of a share from its two sides: the separators and a slash at the end do not count, nor the letters' case.
+pub fn volume_uuid(win: &str, mac: &str) -> String {
+    const NS: uuid::Uuid = uuid::Uuid::from_u128(0x9e1d_4f60_8b2a_4c17_a3e5_6f0c_2d7b_41a8);
+    let key = |s: &str| s.trim().replace('\\', "/").trim_end_matches('/').to_lowercase();
+    uuid::Uuid::new_v5(&NS, format!("{}|{}", key(win), key(mac)).as_bytes()).to_string()
+}
+static MAPPINGS: OnceLock<Vec<Mapping>> = OnceLock::new();
+/// The shares this build was started with (`--map <windows side>=<macOS side>`; the installed application will take
+/// them from its saved shares). Set once, before the database is opened.
+pub fn set_mappings(m: Vec<Mapping>) { let _ = MAPPINGS.set(m); }
+pub fn mappings() -> &'static [Mapping] { MAPPINGS.get().map(Vec::as_slice).unwrap_or(&[]) }
+/// A path or a prefix as it is compared: slashes one way, a drive letter dropped, no slash at either end (1.4.2).
+fn norm(s: &str) -> String { let t = s.replace('\\', "/"); let b = t.as_bytes(); let t = if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() { &t[2..] } else { &t[..] }; t.trim_start_matches('/').trim_end_matches('/').to_string() }
+/// The path under `prefix`, with forward slashes and its own letters' case; none when it is not under it. Compared
+/// without regard to separators, a drive letter or case, and only at the edge of a component.
+fn rel_under(path: &str, prefix: &str) -> Option<String> {
+    let (p, pre) = (norm(path), norm(prefix)); if pre.is_empty() { return None } let (pk, prek) = (p.to_lowercase(), pre.to_lowercase());
+    if pk == prek { return Some(String::new()) }
+    let with = format!("{prek}/"); pk.starts_with(&with).then(|| p[with.len()..].trim_start_matches('/').to_string())
+}
+/// A path of this machine in 1.4.2's storage form: `vol:{uuid}/{rel}` under a mapped share (shared with the other
+/// machines), `native:{mac|win}/{path}` otherwise (this machine's own; never shared).
+pub fn identity_in(p: &Path, maps: &[Mapping]) -> String {
+    let text = p.to_string_lossy();
+    // the longest prefix first: a share inside another wins over it; either side of a mapping counts (1.4.2)
+    let mut pre: Vec<(&str, &str)> = maps.iter().flat_map(|m| [(m.uuid.as_str(), m.win.as_str()), (m.uuid.as_str(), m.mac.as_str())]).filter(|x| !norm(x.1).is_empty()).collect(); pre.sort_by_key(|x| std::cmp::Reverse(norm(x.1).len()));
+    for (uuid, prefix) in pre { if let Some(rel) = rel_under(&text, prefix) { return if rel.is_empty() { format!("vol:{uuid}") } else { format!("vol:{uuid}/{rel}") } } }
+    format!("native:{OS}/{text}")
+}
+/// The path of this machine a stored identity names. None: another system's own path, or a share that is not mapped here.
+pub fn native_in(id: &str, maps: &[Mapping]) -> Option<PathBuf> {
+    if let Some(rest) = id.strip_prefix("vol:") { let (uuid, rel) = rest.split_once('/').unwrap_or((rest, "")); let root = maps.iter().find(|m| m.uuid == uuid)?.local(); if root.trim().is_empty() { return None }
+        let joined = if rel.is_empty() { root.to_string() } else { format!("{}/{rel}", root.trim_end_matches(['/', '\\'])) };
+        return Some(PathBuf::from(if cfg!(windows) { joined.replace('/', "\\") } else { joined.replace('\\', "/") })) }
+    let (os, path) = id.strip_prefix("native:")?.split_once('/')?; (os == OS && !path.is_empty()).then(|| PathBuf::from(path))
+}
+pub fn to_identity(p: &Path) -> String { identity_in(p, mappings()) }
+pub fn to_native(id: &str) -> Option<PathBuf> { native_in(id, mappings()) }
+/// What separates the folders in a stored identity: a shared one is written with forward slashes on every system.
+fn sep_of(id: &str) -> &'static str { if id.starts_with("vol:") { "/" } else { std::path::MAIN_SEPARATOR_STR } }
 
 impl Db {
     /// Open (or make) the database in a folder, as 1.4.2 opens its own: write-ahead log, foreign keys, a wait on a busy file.
@@ -69,7 +116,21 @@ impl Db {
         }
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         if v < USER_VERSION { conn.execute_batch(&format!("PRAGMA user_version = {USER_VERSION}")).map_err(|e| e.to_string())?; }
-        Ok(Db { conn })
+        let db = Db { conn }; db.classify(mappings()).map_err(|e| e.to_string())?; Ok(db)
+    }
+    /// Rows stored as this machine's own that lie under a mapped share become the share's (what 1.4.2's migration did
+    /// once, done here at every start: a share mapped later takes its rows along). A shared row that is already there
+    /// stays; the machine's own copy of it goes. Returns how many rows changed.
+    pub fn classify(&self, maps: &[Mapping]) -> rusqlite::Result<usize> {
+        let mut n = 0;
+        for (table, cols) in [("subscriptions", &["job_path"][..]), ("item_metadata", &["item_path", "job_path"]), ("column_definitions", &["job_path"]), ("column_layout_personal", &["job_path"])] { for col in cols {
+            let rows: Vec<String> = { let mut st = self.conn.prepare(&format!("SELECT DISTINCT {col} FROM {table} WHERE {col} LIKE 'native:{OS}/%'"))?; let v = st.query_map([], |r| r.get::<_, String>(0))?.flatten().collect(); v };
+            for old in rows { let Some(path) = old.strip_prefix(&format!("native:{OS}/")) else { continue }; let new = identity_in(Path::new(path), maps); if new == old { continue }
+                n += self.conn.execute(&format!("UPDATE OR IGNORE {table} SET {col} = ?2 WHERE {col} = ?1"), rusqlite::params![old, new])?;
+                // (a row that could not move - the shared one is there already - is this machine's stale copy)
+                if *col == "item_path" || table == "subscriptions" { self.conn.execute(&format!("DELETE FROM {table} WHERE {col} = ?1"), [&old])?; } }
+        } }
+        Ok(n)
     }
     /// A job is shown in the sidebar (1.4.2's statement: an unsubscribed one comes back, its name is taken anew). An
     /// empty name becomes the folder's.
@@ -188,7 +249,7 @@ impl Db {
     /// reads the database). A top-level folder of a job renamed in place takes the section's name in those rows along.
     /// What already lay at the new path is replaced. Returns how many rows moved.
     pub fn move_paths(&self, from: &Path, to: &Path) -> Result<usize, String> {
-        let (old, new, now) = (to_identity(from), to_identity(to), now_ms()); let sep = std::path::MAIN_SEPARATOR.to_string(); if old == new { return Ok(0) }
+        let (old, new, now) = (to_identity(from), to_identity(to), now_ms()); let sep = sep_of(&old).to_string(); if old == new { return Ok(0) }
         // (a row is the folder's own, or lies under it: the text after the old path is kept)
         let under = "({c} = ?1 OR substr({c}, 1, length(?1) + 1) = ?1 || ?3)"; let moved = "?2 || substr({c}, length(?1) + 1)";
         let run = || -> rusqlite::Result<usize> {
@@ -337,6 +398,34 @@ mod tests {
         // relink and remove
         let gone = job.join("cg").join("lost"); db.set_tracked(&job, &gone, "cg", true).unwrap(); let found = job.join("ae").join("found"); db.relink(&gone, &found, Some((&job, "ae"))).unwrap();
         assert!(db.folder_meta(&job, "ae")[&found].tracked); assert!(!db.folder_meta(&job, "cg").contains_key(&gone)); db.remove_item(&found).unwrap(); assert!(db.folder_meta(&job, "ae").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_mapped_share_gives_the_same_identity_on_both_systems() {
+        // 1.4.2's derivation: separators, a slash at the end and case do not count
+        let m = Mapping::new("C:\\Volumes\\gfx\\", "/Volumes/gfx"); assert_eq!(m.uuid, volume_uuid("c:/volumes/GFX", "/volumes/gfx/")); assert_ne!(m.uuid, volume_uuid("D:\\gfx", "/Volumes/gfx")); assert_eq!(m.uuid.len(), 36);
+        let maps = [m.clone()];
+        // either side's spelling of a path under the share is the same identity; the rest keeps its case and gets forward slashes
+        let (a, b) = (identity_in(Path::new("/Volumes/gfx/jobs/0001_Test/3d/sh010"), &maps), identity_in(Path::new("C:\\Volumes\\gfx\\jobs\\0001_Test\\3d\\sh010"), &maps));
+        assert_eq!(a, format!("vol:{}/jobs/0001_Test/3d/sh010", m.uuid)); assert_eq!(a, b); assert_eq!(identity_in(Path::new("/volumes/GFX"), &maps), format!("vol:{}", m.uuid));
+        // only at the edge of a component: a share whose name merely begins the same is another place
+        assert!(identity_in(Path::new("/Volumes/gfx-2/jobs"), &maps).starts_with("native:")); assert!(identity_in(Path::new("/Users/a/Desktop"), &maps).starts_with("native:"));
+        // back to this machine's own spelling
+        let here = native_in(&a, &maps).unwrap(); assert_eq!(here, PathBuf::from(if cfg!(windows) { "C:\\Volumes\\gfx\\jobs\\0001_Test\\3d\\sh010" } else { "/Volumes/gfx/jobs/0001_Test/3d/sh010" }));
+        assert_eq!(native_in("vol:0000/x", &maps), None, "a share that is not mapped here"); assert_eq!(native_in(&format!("vol:{}", m.uuid), &maps), Some(PathBuf::from(m.local())));
+        // a share inside another wins over it
+        let inner = Mapping::new("C:\\Volumes\\gfx\\jobs", "/Volumes/gfx/jobs"); assert_eq!(identity_in(Path::new("/Volumes/gfx/jobs/x"), &[m.clone(), inner.clone()]), format!("vol:{}/x", inner.uuid));
+    }
+    #[test]
+    fn rows_of_this_machine_under_a_share_mapped_later_become_the_shares() {
+        let dir = temp("classify"); let db = Db::open(&dir).unwrap(); let root = if cfg!(windows) { "C:\\Volumes\\gfx" } else { "/Volumes/gfx" }; let job = Path::new(root).join("jobs").join("0001_Test"); let local = Path::new(if cfg!(windows) { "C:\\local\\job" } else { "/local/job" });
+        db.subscribe(&job, "").unwrap(); db.subscribe(local, "").unwrap(); db.add_column(&job, "3d", "Status", "text", &[]).unwrap(); let uuid = db.columns(&job, "3d")[0].uuid.clone();
+        db.set_field(&job, &job.join("3d").join("sh010"), "3d", &uuid, serde_json::json!("WIP")).unwrap();
+        let maps = [Mapping::new("C:\\Volumes\\gfx", "/Volumes/gfx")]; let n = db.classify(&maps).unwrap(); assert!(n >= 4, "{n}");
+        let stored: Vec<String> = db.conn.prepare("SELECT job_path FROM subscriptions ORDER BY job_path").unwrap().query_map([], |r| r.get(0)).unwrap().flatten().collect();
+        assert_eq!(stored.len(), 2); assert!(stored[0].starts_with("native:"), "what is not under the share stays this machine's"); assert_eq!(stored[1], format!("vol:{}/jobs/0001_Test", maps[0].uuid));
+        let (item, jobp): (String, String) = db.conn.query_row("SELECT item_path, job_path FROM item_metadata", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap(); assert_eq!(item, format!("vol:{}/jobs/0001_Test/3d/sh010", maps[0].uuid)); assert_eq!(jobp, stored[1]);
+        assert_eq!(db.classify(&maps).unwrap(), 0, "done once");
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

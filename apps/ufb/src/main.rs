@@ -42,6 +42,7 @@ pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Ve
     let abs = |p: &str| std::path::absolute(p).unwrap_or_else(|_| std::path::PathBuf::from(p));
     let (mut folder, mut favorites, mut extra, mut jobs, mut i) = (None, vec![], vec![], vec![], 0);
     while i < args.len() {
+        if matches!(args[i].as_str(), "--map" | "--mesh" | "--mesh-node" | "--mesh-only") { i += 2; continue }
         if args[i] == "--allow-writes" { if let Some(p) = args.get(i + 1) { extra.push(abs(p)); } i += 2; continue }
         // a jobs folder (row 482): a favorite with the jobs' mark, where New Job makes jobs
         if args[i] == "--jobs" { if let Some(p) = args.get(i + 1) { let path = abs(p); favorites.push(places::Place { label: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone()), path: path.clone(), icon: "briefcase" }); jobs.push(path); } i += 2; continue }
@@ -59,6 +60,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]..."); return }
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
+    // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
+    db::set_mappings(args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect());
     // (files promised by another application arrive in a folder of our own first: the engine may take them out of it)
     let mut writes = writes; let incoming = dnd::staging(); if std::fs::create_dir_all(&incoming).is_ok() { writes.push(incoming); }
     ops::init(&writes);
