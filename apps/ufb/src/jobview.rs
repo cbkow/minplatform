@@ -62,6 +62,10 @@ pub fn two_tier(items: &[(bool, bool)]) -> bool { items.iter().any(|(p, r)| *p &
 /// Where the browser goes for an item: (the first pane, the second) - its project and renders folders, or itself.
 pub fn targets(item: &Path) -> (PathBuf, PathBuf) { (named(item, &PROJECT_NAMES).unwrap_or_else(|| item.to_path_buf()), named(item, &RENDER_NAMES).unwrap_or_else(|| item.to_path_buf())) }
 
+/// What a section showed when it was left: the chosen item; each pane's top folder and the folder it was in (the
+/// second pane's when it was shown).
+pub type Kept = (Option<PathBuf>, (PathBuf, PathBuf), Option<(PathBuf, PathBuf)>);
+
 pub struct Job {
     pub path: PathBuf, pub name: String,
     /// the sections (folder names), the one in front, its items, the chosen one
@@ -74,7 +78,7 @@ pub struct Job {
     /// what each section showed when it was left, in this tab (1.4.2's session memory): the chosen item, the first
     /// pane's folder, the second's if it was shown. `hold`: such a view was just put back - the browser is not sent
     /// to the item's folders over it when the section's read arrives
-    pub memory: std::collections::HashMap<String, (Option<PathBuf>, PathBuf, Option<PathBuf>)>, pub hold: bool,
+    pub memory: std::collections::HashMap<String, Kept>, pub hold: bool,
     /// an item to choose once it is there (it was just made); the section changed: the browser is to follow
     pub choose: Option<PathBuf>, pub moved: bool,
     req: u64, tx: Sender<Read>, rx: Receiver<Read>, wake: Arc<dyn Fn() + Send + Sync>,

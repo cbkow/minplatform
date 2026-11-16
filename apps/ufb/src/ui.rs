@@ -210,10 +210,11 @@ impl Ui {
         let Some(j) = self.job.as_ref() else { return }; let port = self.port.clone(); if j.hold { return }
         // (nothing chosen: nothing is shown - the panes are not drawn, `blank`)
         let Some(it) = j.chosen_item() else { return };
-        let (root, a) = (it.path.clone(), it.project.clone()); let b = match it.proxies.clone().filter(|_| j.proxies) { Some(p) => p, None => it.renders.clone() };
-        // each pane is the ITEM's from here on (row 486): Up stops at the item, and its history begins anew - Back cannot leave the shot
-        if first { self.panes[0].rooted(&port, root.clone(), a); }
-        if second && self.two && self.panes.len() > 1 { self.panes[1].rooted(&port, root, b); }
+        let a = it.project.clone(); let b = match it.proxies.clone().filter(|_| j.proxies) { Some(p) => p, None => it.renders.clone() };
+        // each pane is given to the folder it STARTS in (rows 486, 487) - the item's project folder, its renders; the item
+        // itself where it has none: Up stops there, and its history begins anew - Back cannot leave it
+        if first { self.panes[0].rooted(&port, a.clone(), a); }
+        if second && self.two && self.panes.len() > 1 { self.panes[1].rooted(&port, b.clone(), b); }
     }
     /// In a job nothing is chosen: the panes show nothing (row 486 - not the section's folder, which only repeats the item list).
     fn blank(&self) -> bool { self.job.as_ref().is_some_and(|j| j.chosen_item().is_none()) }
@@ -225,15 +226,15 @@ impl Ui {
     fn job_show_section(&mut self, name: &str) {
         let port = self.port.clone(); let two = self.two && self.panes.len() > 1;
         let Some(j) = self.job.as_mut() else { return }; if j.section.as_deref() == Some(name) { return }
-        if let Some(old) = j.section.clone() { j.memory.insert(old, (j.chosen_item().map(|i| i.path.clone()), self.panes[0].path().to_path_buf(), two.then(|| self.panes[1].path().to_path_buf()))); }
+        if let Some(old) = j.section.clone() { let at = |p: &Pane| (p.root.clone().unwrap_or_else(|| p.path().to_path_buf()), p.path().to_path_buf()); j.memory.insert(old, (j.chosen_item().map(|i| i.path.clone()), at(&self.panes[0]), two.then(|| at(&self.panes[1])))); }
         let dir = j.path.join(name); let kept = j.memory.get(name).cloned();
         j.show_section(name); self.job_scroll = ScrollBar::default();
         match kept {
             // (what it showed when it was left: the item, and where each pane was inside it)
-            Some((Some(item), p0, p1)) => { j.choose = Some(item.clone()); j.hold = true; let on = p1.is_some();
+            Some((Some(item), p0, p1)) => { j.choose = Some(item); j.hold = true; let on = p1.is_some();
                 if on != self.two { self.set_two(on); }
-                self.panes[0].rooted(&port, item.clone(), p0);
-                if let Some(p1) = p1 { if self.panes.len() > 1 { self.panes[1].rooted(&port, item, p1); } } }
+                self.panes[0].rooted(&port, p0.0, p0.1);
+                if let Some(p1) = p1 { if self.panes.len() > 1 { self.panes[1].rooted(&port, p1.0, p1.1); } } }
             // (a first visit, or one left with nothing chosen: nothing is shown until an item is chosen)
             _ => { let _ = dir; }
         }
@@ -1352,7 +1353,8 @@ impl Ui {
                 if here { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, if self.focus == Focus::Items { t::RAIL_ROW_ACTIVE_FILL } else { t::HOVER_BACKGROUND_COLOR }); } else if self.job_hover == Some(i) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
                 let color = if here && self.focus == Focus::Items { paint::color(t::RAIL_ROW_ACTIVE_LABEL) } else { ink };
                 let mut tx = r.x0 + 8.0 * s;
-                if let Some(g) = fonts.icon("folder-simple", 15.0 * s as f32, if here && self.focus == Focus::Items { color } else { sub }) { draw_layout(scene, &g, Affine::translate((tx, y + (row_h - g.height() as f64) / 2.0))); } tx += 22.0 * s;
+                // (no folder icon: an item is a shot, a posting, an asset - not a folder to go into, row 487)
+                tx += 2.0 * s;
                 let dl = fonts.layout(&crate::format::date_text(it.modified, today), Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, if here && self.focus == Focus::Items { color } else { sub });
                 let date_w = if r.width() > 210.0 * s { dl.width() as f64 + 10.0 * s } else { 0.0 };
                 let nl = fonts.layout_fit(&it.name, Family::Sans, small, t::FONT_WEIGHT_REGULAR as f32, color, (r.x1 - tx - date_w - 8.0 * s).max(10.0));
