@@ -207,7 +207,10 @@ impl Lightbox {
 impl View {
     pub fn info(&self) -> Option<Info> { match self.state { State::Ready(i) => Some(i), _ => None } }
     /// Screen pixels a picture pixel, in `area`.
-    pub fn scale(&self, area: Rect) -> f64 { let Some(i) = self.info() else { return 1.0 }; self.zoom.unwrap_or_else(|| (area.width() / i.w as f64).min(area.height() / i.h as f64).min(1.0)) }
+    pub fn scale(&self, area: Rect) -> f64 { let Some(i) = self.info() else { return 1.0 }; self.zoom.unwrap_or_else(|| (area.width() / i.w as f64).min(area.height() / i.h as f64).min(self.fit_cap())) }
+    /// How far "fit" may enlarge: a still is never enlarged at first (row 473); something that PLAYS fills the window to
+    /// its width or height, whatever its size (owner 2026-11-16: "Videos should fit w or h right?").
+    fn fit_cap(&self) -> f64 { if self.player.is_some() { f64::INFINITY } else { 1.0 } }
     pub fn fitted(&self) -> bool { self.zoom.is_none() }
     /// Where the picture lies (it may reach past `area`): what the presenter is told.
     pub fn place(&self, area: Rect) -> Option<Rect> {
@@ -226,7 +229,7 @@ impl View {
     /// fitted size and 32 screen pixels a picture pixel.
     pub fn zoom_by(&mut self, factor: f64, at: (f64, f64), area: Rect) {
         let Some(i) = self.info() else { return }; let old = self.scale(area);
-        let fit = (area.width() / i.w as f64).min(area.height() / i.h as f64).min(1.0);
+        let fit = (area.width() / i.w as f64).min(area.height() / i.h as f64).min(self.fit_cap());
         let new = (old * factor).clamp(fit * 0.1, 32.0); if (new - old).abs() < 1e-9 { return }
         let c = area.center(); let (dx, dy) = (at.0 - c.x - self.pan.0, at.1 - c.y - self.pan.1);
         self.pan = (self.pan.0 + dx * (1.0 - new / old), self.pan.1 + dy * (1.0 - new / old));
