@@ -1443,7 +1443,7 @@ impl Ui {
             "boardsay" => match self.board.as_ref() { Some(b) => eprintln!("UFB_DEMO: board by {:?}: {}", b.by, b.lanes.iter().map(|l| format!("{} [{}]", l.title, l.items.iter().filter_map(|i| self.job.as_ref().and_then(|j| j.items.get(*i))).map(|it| it.name.as_str()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(" | ")), None => eprintln!("UFB_DEMO: no board (the list)") },
             "carddrop" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { if let Some(v) = self.board.as_ref().and_then(|b| b.lanes.get(k).map(|l| l.value.clone())) { self.board_acts(vec![crate::board::Act::Drop(i, v)]); } } },
             // the mesh: `mesh` says its state
-            "mesh" => eprintln!("UFB_DEMO: mesh {:?}", crate::mesh::status().map(|m| format!("{} leader {:?} peers {} pending {} written {} merged {}", m.node, m.leader, m.peers, m.pending, m.written > 0, m.merged > 0))),
+            "mesh" => eprintln!("UFB_DEMO: mesh {:?}", crate::mesh::status().map(|m| format!("{} leader {:?} peers {} pending {} written {} merged {} secret {} strangers {}", m.node, m.leader, m.peers, m.pending, m.written > 0, m.merged > 0, !m.secret.is_empty(), m.strangers))),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
@@ -1834,6 +1834,7 @@ impl Ui {
                     for (i, row) in rows.iter().enumerate() { let rl = fonts.layout_fit(row, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, if i == 0 { ink } else { sub }, pw - 24.0 * s); draw_layout(scene, &rl, Affine::translate((card.x0 + 12.0 * s, card.y0 + 6.0 * s + i as f64 * rh + (rh - rl.height() as f64) / 2.0))); } }
             } else { self.op_list = false; if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); } }
             let mesh = crate::mesh::status().map(|m| { let who = if m.leading { if m.peers == 0 { "Sync: no other machine".to_string() } else { format!("Sync: leading, {} other{}", m.peers, if m.peers == 1 { "" } else { "s" }) } } else { match &m.leader { Some(l) => format!("Sync: with {l}"), None => "Sync: looking for the others".to_string() } };
+                let who = if m.strangers > 0 { format!("{who}  \u{b7}  {} with another secret", m.strangers) } else { who };
                 if m.pending > 0 { format!("{who}  \u{b7}  {} edit{} not yet synced", m.pending, if m.pending == 1 { "" } else { "s" }) } else { who } });
             let l = fonts.layout_fit(&if blank { mesh.clone().unwrap_or_default() } else { let base = match p.hidden_sort() { Some(f) => format!("{}  \u{b7}  sorted by {f}", p.status()), None => p.status() }; match &mesh { Some(m) => format!("{base}  \u{b7}  {m}"), None => base } }, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, sub, (fx - 24.0 * s - area.x0 - 12.0 * s).max(40.0 * s));
             draw_layout(scene, &l, Affine::translate((area.x0 + 12.0 * s, status.y0 + (status.height() - l.height() as f64) / 2.0))); }

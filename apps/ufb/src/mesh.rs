@@ -26,7 +26,13 @@
 //! ours: what its sender changed is taken, what this machine changed is kept, and when the two are not the same in the
 //! end ours is sent on.
 //!
-//! NOT here yet: the shared secret (row 442), the columns' shared templates.
+//! **The shared secret** (rows 442, 497; as minRender has it - the family's systems are not to diverge): a secret in
+//! the farm's folder, made by the first node that finds none, sent with every request but the status (`Authorization:
+//! Bearer`), its fingerprint shown in every node's status. A request with another secret is refused; one with none is
+//! a 1.4.2 node's, and is taken only while a 1.4.2 node is among those that answer. Two nodes that each made a secret
+//! at a first start settle on the one the folder kept.
+//!
+//! NOT here yet: the columns' shared templates.
 //!
 //! THE DEVELOPMENT BUILD'S BELT: the epoch is a TEST epoch unless `UFB_MESH_EPOCH` says otherwise - a node of another
 //! epoch is ignored entirely, by 1.4.2's own rule, so no installed UFB can see or be seen by a test node; and
@@ -53,23 +59,30 @@ pub const TEST_EPOCH: u32 = 9006;
 pub struct Config { pub farm: PathBuf, pub node: String, pub epoch: u32, pub ctl: u16, pub data: u16, pub udp: u16, pub tags: Vec<String>, /// only rows under this identity are sent and taken (a test's playground)
     pub only: Option<String> }
 #[derive(Clone, Debug, PartialEq)]
-struct Peer { ip: String, port: u16, data_port: u16, tags: Vec<String>, alive: bool, fails: u8, stamp: i64 }
+struct Peer { ip: String, port: u16, data_port: u16, tags: Vec<String>, alive: bool, fails: u8, stamp: i64, /// its secret's fingerprint, as its status says it (none: a 1.4.2 node, which has no secret)
+    print: Option<String> }
 /// What the window says of the mesh.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Status { pub node: String, pub leader: Option<String>, pub leading: bool, pub peers: usize, pub pending: usize, /// when a snapshot was last written here, and last merged here (ms; 0: never)
-    pub written: i64, pub merged: i64 }
+    pub written: i64, pub merged: i64, /// the secret's fingerprint as this node holds it; how many nodes that answer hold another
+    pub secret: String, pub strangers: usize }
 
 struct Shared { cfg: Config, peers: Mutex<HashMap<String, Peer>>, leader: Mutex<Option<String>>, pending: AtomicUsize, rev: AtomicU64, stop: Arc<AtomicBool>, wakers: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>, ip: Mutex<String>,
     /// the snapshot: something changed since the last one was written; a look at the file is wanted now; when one was written and merged here; what this node already passed on to the others (it leaves the queue with the next snapshot)
     snap_needed: AtomicBool, snap_look: AtomicBool, written: AtomicU64, merged: AtomicU64, relayed: Mutex<std::collections::HashSet<i64>>,
     /// a test's switch (`UFB_MESH_FILES_ONLY=1`): this node neither answers nor asks - as over a VPN that passes the shared folder and nothing else
-    files_only: bool }
+    files_only: bool,
+    /// the farm's secret as this node holds it (empty: the folder gave none)
+    secret: Mutex<String> }
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 fn now_ms() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) }
 fn say(s: &Shared, what: &str) { if std::env::var_os("UFB_MESH_LOG").is_some() { eprintln!("UFB_MESH[{}]: {what}", s.cfg.node); } }
 
 /// The mesh's state, for the window; none when the mesh is not running.
-pub fn status() -> Option<Status> { let s = SHARED.get()?; let leader = s.leader.lock().unwrap().clone(); Some(Status { node: s.cfg.node.clone(), leading: leader.as_deref() == Some(s.cfg.node.as_str()), leader, peers: s.peers.lock().unwrap().values().filter(|p| p.alive).count(), pending: s.pending.load(Ordering::Relaxed), written: s.written.load(Ordering::Relaxed) as i64, merged: s.merged.load(Ordering::Relaxed) as i64 }) }
+pub fn status() -> Option<Status> { let s = SHARED.get()?; let leader = s.leader.lock().unwrap().clone();
+    // (each lock taken and let go in a statement of its own: two of one lock in one expression wait for each other for good)
+    let mine = fingerprint(&s.secret.lock().unwrap()); let strangers = s.peers.lock().unwrap().values().filter(|p| p.alive && p.print.as_ref().is_some_and(|f| *f != mine)).count(); let peers = s.peers.lock().unwrap().values().filter(|p| p.alive).count();
+    Some(Status { node: s.cfg.node.clone(), leading: leader.as_deref() == Some(s.cfg.node.as_str()), leader, peers, pending: s.pending.load(Ordering::Relaxed), written: s.written.load(Ordering::Relaxed) as i64, merged: s.merged.load(Ordering::Relaxed) as i64, secret: mine, strangers }) }
 /// A number that changes whenever something arrived from another node (the windows read their lists again).
 pub fn rev() -> u64 { SHARED.get().map(|s| s.rev.load(Ordering::Relaxed)).unwrap_or(0) }
 /// A window asks to be woken when something arrives.
@@ -90,8 +103,10 @@ fn local_ip() -> String { UdpSocket::bind("0.0.0.0:0").and_then(|s| { s.connect(
 
 /// Start the node. Twice: nothing the second time.
 pub fn start(cfg: Config) {
-    let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()), snap_needed: AtomicBool::new(true), snap_look: AtomicBool::new(true), written: AtomicU64::new(0), merged: AtomicU64::new(0), relayed: Default::default(), files_only: std::env::var_os("UFB_MESH_FILES_ONLY").is_some() });
+    let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()), snap_needed: AtomicBool::new(true), snap_look: AtomicBool::new(true), written: AtomicU64::new(0), merged: AtomicU64::new(0), relayed: Default::default(), files_only: std::env::var_os("UFB_MESH_FILES_ONLY").is_some(), secret: Mutex::new(String::new()) });
     if SHARED.set(s.clone()).is_err() { return }
+    // the farm's secret: the folder's, or one made now (a test can hold another: `UFB_MESH_SECRET`)
+    *s.secret.lock().unwrap() = std::env::var("UFB_MESH_SECRET").ok().unwrap_or_else(|| farm_secret(&s, true).unwrap_or_default());
     say(&s, &format!("epoch {} farm {} ports {}/{}/{} only {:?}", s.cfg.epoch, s.cfg.farm.display(), s.cfg.ctl, s.cfg.data, s.cfg.udp, s.cfg.only));
     // the two servers: the status on the control port, everything else on the data port
     for (port, data) in [(s.cfg.ctl, false), (s.cfg.data, true)] { if s.files_only { break }
@@ -108,10 +123,13 @@ pub fn start(cfg: Config) {
 fn serve_ctl(s: &Shared, q: Request) -> Response {
     if q.method != "GET" || q.path.split('?').next() != Some("/api/status") { return Response::empty(404) }
     let st = status().unwrap_or_default();
-    Response::json(200, json!({ "node_id": s.cfg.node, "is_leader": st.leading, "peer_count": st.peers, "last_snapshot_time": 0, "enabled": true, "tags": s.cfg.tags, "mesh_epoch": s.cfg.epoch }))
+    // (1.4.2's fields, and one more that it does not read: the secret's fingerprint)
+    Response::json(200, json!({ "node_id": s.cfg.node, "is_leader": st.leading, "peer_count": st.peers, "last_snapshot_time": st.written, "enabled": true, "tags": s.cfg.tags, "mesh_epoch": s.cfg.epoch, "secret_fingerprint": st.secret }))
 }
 fn serve_data(s: &Arc<Shared>, q: Request) -> Response {
     let path = q.path.split('?').next().unwrap_or("").to_string(); if q.method != "POST" { return Response::empty(if path.starts_with("/api/") { 405 } else { 404 }) }
+    // the secret: every request but the status carries it
+    { let old = s.peers.lock().unwrap().values().any(|p| p.alive && p.print.is_none()); if !allowed(&s.secret.lock().unwrap(), q.authorization.as_deref(), old) { say(s, &format!("refused {path}: {}", if q.authorization.is_some() { "another secret" } else { "no secret" })); return Response::error(401, "unauthorized") } }
     // a snapshot was written: it is looked at now (1.4.2's leader ignores the notice; ours merges too - row 442)
     if path == "/api/snapshot/notify" { s.snap_look.store(true, Ordering::Relaxed); return Response::ok() }
     if path != "/api/metadata/update" && path != "/api/table/update" { return Response::empty(404) }
@@ -138,7 +156,25 @@ fn relay(s: &Shared, path: &str, body: &str) -> bool {
         if !ok { say(s, &format!("{id} did not take {path}")); all = false; } }
     all
 }
-fn post(at: &str, path: &str, body: &str) -> bool { http::call(at, "POST", path, None, Some(body), Duration::from_secs(3), Duration::from_secs(5)).is_some_and(|(code, _)| (200..300).contains(&code)) }
+fn post(at: &str, path: &str, body: &str) -> bool { let secret = SHARED.get().map(|s| s.secret.lock().unwrap().clone()).filter(|x| !x.is_empty()); http::call(at, "POST", path, secret.as_deref(), Some(body), Duration::from_secs(3), Duration::from_secs(5)).is_some_and(|(code, _)| (200..300).contains(&code)) }
+/// The first four bytes of the secret's SHA-256, in hex (minRender's fingerprint): what a node shows of its secret.
+pub fn fingerprint(secret: &str) -> String { use sha2::Digest; if secret.is_empty() { return String::new() } sha2::Sha256::digest(secret.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect() }
+/// A request is taken: it carries this node's secret; or it carries none - a 1.4.2 node's - while a 1.4.2 node is
+/// among those that answer (`old`); or this node has no secret itself (the folder gave none: as 1.4.2, open).
+pub fn allowed(secret: &str, authorization: Option<&str>, old: bool) -> bool { if secret.is_empty() { return true } match authorization { Some(a) => a.strip_prefix("Bearer ").is_some_and(|x| x == secret), None => old } }
+fn secret_file(s: &Shared) -> PathBuf { s.cfg.farm.join(format!("v{}", s.cfg.epoch)).join("secret.json") }
+/// The farm's secret as its folder has it; `make`: one is made when there is none (under a temporary name of this
+/// node's own, then renamed - and read back: on storage that syncs another node's may be the one that stays).
+fn farm_secret(s: &Shared, make: bool) -> Option<String> {
+    let read = || -> Option<String> { let v: Value = serde_json::from_str(&std::fs::read_to_string(secret_file(s)).ok()?).ok()?; v["api_secret"].as_str().filter(|x| !x.is_empty()).map(str::to_string) };
+    if let Some(x) = read() { return Some(x) } if !make { return None }
+    let file = secret_file(s); std::fs::create_dir_all(file.parent()?).ok()?;
+    let secret = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let tmp = file.with_file_name(format!("secret.json.{}.tmp", s.cfg.node)); std::fs::write(&tmp, serde_json::to_vec_pretty(&json!({ "_version": 1, "created_by": s.cfg.node, "created_at_ms": now_ms(), "api_secret": secret })).ok()?).ok()?;
+    // (a file that came meanwhile is not replaced)
+    if file.exists() { let _ = std::fs::remove_file(&tmp); } else if std::fs::rename(&tmp, &file).is_err() { let _ = std::fs::remove_file(&tmp); }
+    read()
+}
 
 /// What waits in the database is sent: by a follower to the leader, by the leader to every node that is alive. What
 /// was accepted leaves the queue; what was not stays, and is tried again at the next pass - for as long as it takes.
@@ -189,7 +225,7 @@ fn peers_loop(s: &Shared) {
             let mut peers = s.peers.lock().unwrap(); let ipv = v["ip"].as_str().unwrap_or("").to_string();
             match peers.get_mut(&id) { Some(p) => { p.stamp = stamp; if !p.alive { p.ip = ipv; p.port = port; p.data_port = data; } }
                 // (it is alive when it answers - row 442; 1.4.2 takes a fresh entry's word for it)
-                None => { say(s, &format!("found {id} at {ipv}:{port}")); peers.insert(id, Peer { ip: ipv, port, data_port: data, tags, alive: false, fails: 0, stamp }); } }
+                None => { say(s, &format!("found {id} at {ipv}:{port}")); peers.insert(id, Peer { ip: ipv, port, data_port: data, tags, alive: false, fails: 0, stamp, print: None }); } }
         } }
         // a heartbeat to the local network
         if let Some(u) = udp.as_ref().filter(|_| !s.files_only) { let hb = json!({ "t": "hb", "from": s.cfg.node, "n": s.cfg.node, "ip": ip, "port": s.cfg.ctl, "data_port": s.cfg.data, "epoch": s.cfg.epoch, "tags": s.cfg.tags }).to_string(); let _ = u.send_to(hb.as_bytes(), SocketAddr::from((GROUP, s.cfg.udp))); }
@@ -198,10 +234,13 @@ fn peers_loop(s: &Shared) {
         for (id, at) in known { if s.files_only { break }
             let got = http::call(&at, "GET", "/api/status", None, None, Duration::from_secs(3), Duration::from_secs(3)).filter(|(c, _)| *c == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok());
             let mut peers = s.peers.lock().unwrap(); let Some(p) = peers.get_mut(&id) else { continue };
-            match got { Some(v) if v["mesh_epoch"].as_u64() == Some(s.cfg.epoch as u64) => { if !p.alive { say(s, &format!("{id} is alive")); } p.alive = true; p.fails = 0; p.tags = v["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(); }
+            match got { Some(v) if v["mesh_epoch"].as_u64() == Some(s.cfg.epoch as u64) => { if !p.alive { say(s, &format!("{id} is alive")); } p.alive = true; p.fails = 0; p.print = v["secret_fingerprint"].as_str().map(str::to_string); p.tags = v["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(); }
                 Some(_) => { peers.remove(&id); }
                 None => if p.alive { p.fails += 1; if p.fails >= DEAD_AFTER { p.alive = false; say(s, &format!("{id} does not answer")); } } }
         }
+        // a node that answers holds ANOTHER secret: the folder's file is read again - two nodes each made one at a first
+        // start and the storage kept one; this node takes the folder's (minRender's way, row 429)
+        if std::env::var_os("UFB_MESH_SECRET").is_none() { let mine = fingerprint(&s.secret.lock().unwrap()); if s.peers.lock().unwrap().values().any(|p| p.alive && p.print.as_ref().is_some_and(|f| !f.is_empty() && *f != mine)) { if let Some(now) = farm_secret(s, false) { if now != *s.secret.lock().unwrap() { say(s, "the folder holds another secret than this node started with: taken"); *s.secret.lock().unwrap() = now; changed(s); } } } }
         // who leads: this node and every node that is alive (or whose entry is fresh)
         let mut nodes = vec![(s.cfg.node.clone(), s.cfg.tags.clone())]; nodes.extend(s.peers.lock().unwrap().iter().filter(|(_, p)| p.alive).map(|(id, p)| (id.clone(), p.tags.clone())));
         let leader = elect(nodes); let was = s.leader.lock().unwrap().clone(); if leader != was { say(s, &format!("the leader is {leader:?}")); let mine = leader.as_deref() == Some(s.cfg.node.as_str()); *s.leader.lock().unwrap() = leader; if mine { s.snap_needed.store(true, Ordering::Relaxed); } s.snap_look.store(true, Ordering::Relaxed); changed(s); }
@@ -220,7 +259,7 @@ fn udp_listen(s: &Shared) {
                 // (a node heard is KNOWN, at the address it says; whether it is alive is what its answer says - a heartbeat
                 // passes where a firewall stops everything else)
                 let mut peers = s.peers.lock().unwrap(); let (ip, port) = (v["ip"].as_str().unwrap_or("").to_string(), v["port"].as_u64().unwrap_or(0) as u16);
-                match peers.get_mut(&id) { Some(p) => if !p.alive { p.ip = ip; p.port = port; p.data_port = data; }, None => { say(s, &format!("heard {id} at {ip}:{port}")); peers.insert(id, Peer { ip, port, data_port: data, tags: vec![], alive: false, fails: 0, stamp: now_ms() }); } } }
+                match peers.get_mut(&id) { Some(p) => if !p.alive { p.ip = ip; p.port = port; p.data_port = data; }, None => { say(s, &format!("heard {id} at {ip}:{port}")); peers.insert(id, Peer { ip, port, data_port: data, tags: vec![], alive: false, fails: 0, stamp: now_ms(), print: None }); } } }
             Some("bye") => { if let Some(p) = s.peers.lock().unwrap().get_mut(&id) { p.alive = false; } }
             _ => {}
         }
@@ -293,6 +332,13 @@ mod tests {
         assert_eq!(elect(vec![n("box", &[]), n("mac", &["leader"])]).as_deref(), Some("mac"), "the tag leader first");
         assert_eq!(elect(vec![n("box", &["noleader"]), n("mac", &[])]).as_deref(), Some("mac"), "noleader last"); assert_eq!(elect(vec![n("box", &["noleader"])]).as_deref(), Some("box"), "alone, it leads all the same");
         assert_eq!(elect(vec![]), None);
+    }
+    #[test]
+    fn the_secret_opens_the_door() {
+        // this node's secret: taken; another: refused; none (a 1.4.2 node's request): only while a 1.4.2 node is among those that answer
+        assert!(allowed("s3cret", Some("Bearer s3cret"), false)); assert!(!allowed("s3cret", Some("Bearer other"), false)); assert!(!allowed("s3cret", Some("Bearer other"), true)); assert!(!allowed("s3cret", Some("s3cret"), false));
+        assert!(!allowed("s3cret", None, false)); assert!(allowed("s3cret", None, true)); assert!(allowed("", None, false), "no secret here: open, as 1.4.2 is");
+        assert_eq!(fingerprint(""), ""); assert_eq!(fingerprint("s3cret").len(), 8); assert_ne!(fingerprint("s3cret"), fingerprint("other"));
     }
     #[test]
     fn only_what_is_shared_and_in_the_playground_goes_through() {

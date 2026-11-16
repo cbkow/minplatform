@@ -41,6 +41,7 @@ ufb-projtype = { path = "../../crates/ufb-projtype" }
 uuid = { workspace = true }
 rfd = "0.18"
 socket2 = { version = "0.5", features = ["all"] }
+sha2 = "0.10"
 serde_json = "1"
 # PDF pages in the lightbox (the family's reader)
 min-pdf = { path = "../../crates/min-pdf" }
