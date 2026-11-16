@@ -129,6 +129,8 @@ pub mod tests {
         pub fn new(tag: &str) -> Temp { let p = std::env::temp_dir().join(format!("ufb-test-{tag}-{}-{}", std::process::id(), next_req())); let _ = std::fs::remove_dir_all(&p); std::fs::create_dir_all(&p).unwrap(); Temp(p) }
         pub fn file(&self, rel: &str, bytes: usize) { let p = self.0.join(rel); std::fs::create_dir_all(p.parent().unwrap()).unwrap(); std::fs::write(p, vec![b'x'; bytes]).unwrap(); }
         pub fn dir(&self, rel: &str) { std::fs::create_dir_all(self.0.join(rel)).unwrap(); }
+        /// A file that is hidden as its system hides one: a name with a dot (Unix); the hidden attribute (Windows).
+        pub fn hidden_file(&self, rel: &str, bytes: usize) { self.file(rel, bytes); #[cfg(windows)] { let _ = std::process::Command::new("attrib").arg("+h").arg(self.0.join(rel)).status(); } }
     }
     impl Drop for Temp { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
     pub fn read_all(path: &Path) -> Result<Vec<RawEntry>, String> { let mut all = vec![]; read(path, &AtomicBool::new(false), |c| all.extend(c))?; Ok(all) }

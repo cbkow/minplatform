@@ -375,7 +375,7 @@ mod tests {
     fn the_belt_holds_everything_to_the_folders_given() {
         let t = Temp::new("ops-guard"); t.dir("job"); t.file("job/a.txt", 1); t.file("outside.txt", 1);
         let g = Guard::new(&[t.0.join("job")]);
-        assert!(g.allows(&t.0.join("job/a.txt")) && g.allows(&t.0.join("job/new-name")) && g.allows(&t.0.join("job/sub/../b")) == false, "a name inside is allowed; an enclosing folder that is not there is not");
+        assert!(g.allows(&t.0.join("job/a.txt")) && g.allows(&t.0.join("job/new-name")), "a name inside is allowed"); assert!(!g.allows(&t.0.join("job/sub/b")), "an enclosing folder that is not there is not");
         assert!(!g.allows(&t.0.join("outside.txt")) && !g.allows(&t.0.join("job")), "not beside the folder, and not the folder itself"); assert!(!g.allows(&t.0.join("job/../outside.txt")), "a way round is resolved");
         #[cfg(unix)] { std::os::unix::fs::symlink(&t.0, t.0.join("job/link")).unwrap(); assert!(!g.allows(&t.0.join("job/link/outside.txt")), "a link does not lead outside"); }
         let mut e = Engine::new(g);
@@ -408,12 +408,14 @@ mod tests {
     #[test]
     fn a_duplicate_is_whole_keeps_its_times_and_never_replaces() {
         let _sweep = Sweep;
-        let t = Temp::new("ops-dup"); t.file("plate.exr", 5000); t.file("shots/010/comp.nk", 20); t.file("shots/010/renders/beauty.exr", 300); t.file("plate copy.exr", 1);
+        let t = Temp::new("ops-dup"); t.file("plate.exr", 5000); t.file("shots/010/comp.nk", 20); t.file("shots/010/renders/beauty.exr", 300);
+        // the name the first copy would take is taken
+        let first = copy_name("plate.exr", false, 1); t.file(&first, 1);
         let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         std::fs::File::options().write(true).open(t.0.join("plate.exr")).unwrap().set_modified(old).unwrap();
         let mut e = engine(&t);
         let r = ok(e.run(Op::Duplicate { paths: vec![t.0.join("plate.exr"), t.0.join("shots")] }));
-        assert_eq!(r.made, [t.0.join(copy_name("plate.exr", false, 2)), t.0.join(copy_name("shots", true, 1))], "the first copy's name was taken: the second is given"); assert_eq!(std::fs::metadata(t.0.join("plate copy.exr")).map(|m| m.len()).unwrap_or(1), 1, "what was there is as it was");
+        assert_eq!(r.made, [t.0.join(copy_name("plate.exr", false, 2)), t.0.join(copy_name("shots", true, 1))], "the first copy's name was taken: the second is given"); assert_eq!(std::fs::metadata(t.0.join(&first)).unwrap().len(), 1, "what was there is as it was");
         let copy = &r.made[0]; let m = std::fs::metadata(copy).unwrap(); assert_eq!(m.len(), 5000); assert_eq!(m.modified().unwrap(), old, "the copy keeps the file's time");
         assert_eq!(std::fs::metadata(r.made[1].join("010/renders/beauty.exr")).unwrap().len(), 300, "a folder is copied with everything in it");
         assert!(!names(&t.0).iter().any(|n| n.contains("ufb-partial")), "no partial file is left"); assert_eq!(e.undo_label().as_deref(), Some("Duplicate of 2 Items"));
@@ -428,7 +430,7 @@ mod tests {
         assert!(copy_tree(&t.0.join("plate.exr"), &dst, &mut Progress { cancel: &cancel, bytes: &mut none }).is_err()); assert!(!dst.exists() && !partial(&dst).exists());
         let dst = t.0.join("never-folder"); assert!(copy_tree(&t.0.join("shots"), &dst, &mut Progress { cancel: &cancel, bytes: &mut none }).is_err()); assert!(!dst.exists());
         // ... and a copy onto a name that is taken is refused, the file there untouched
-        let cancel = AtomicBool::new(false); assert_eq!(copy_tree(&t.0.join("plate.exr"), &t.0.join("plate copy.exr"), &mut Progress { cancel: &cancel, bytes: &mut none }).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists); assert_eq!(std::fs::metadata(t.0.join("plate copy.exr")).unwrap().len(), 1);
+        let cancel = AtomicBool::new(false); assert_eq!(copy_tree(&t.0.join("plate.exr"), &t.0.join(&first), &mut Progress { cancel: &cancel, bytes: &mut none }).unwrap_err().kind(), std::io::ErrorKind::AlreadyExists); assert_eq!(std::fs::metadata(t.0.join(&first)).unwrap().len(), 1);
     }
     #[cfg(target_os = "macos")]
     #[test]

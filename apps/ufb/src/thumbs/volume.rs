@@ -95,7 +95,8 @@ mod tests {
         assert_eq!(a.vol, b.vol, "one volume"); assert!(!a.vol.is_empty()); assert_eq!(b.dir, format!("{}/b", a.dir), "the place follows the folders");
         assert_eq!(locate(&t.join("a")), Some(a), "asked again: the same");
         #[cfg(target_os = "macos")] { let root = locate(Path::new("/")).unwrap(); assert!(root.vol.starts_with("vol:") && root.vol.len() == 36, "the startup disk has a UUID: {}", root.vol); assert_eq!(root.dir, ""); }
-        assert_eq!(locate(&t.join("not-there")), None);
+        // (macOS asks the system about the folder itself; Windows goes by the path's drive)
+        #[cfg(not(windows))] assert_eq!(locate(&t.join("not-there")), None);
         let _ = std::fs::remove_dir_all(&t);
     }
 }

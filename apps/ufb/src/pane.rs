@@ -323,7 +323,7 @@ mod tests {
     fn settle(p: &mut Pane, port: &Port, rx: &Receiver<Msg>) { while p.loading() { let m = rx.recv_timeout(Duration::from_secs(30)).expect("the worker answers"); let mut m = Some(m); p.on_msg(port, &mut m); } }
     fn names(p: &Pane) -> Vec<String> { (0..p.model.len()).map(|i| match p.model.row(i) { Some(id) => format!("{}{}", "  ".repeat(p.model.node(id).depth as usize), p.model.node(id).name), None => "  <note>".into() }).collect() }
     fn chosen(p: &Pane) -> Vec<String> { p.sel().iter().filter_map(|i| p.model.row(i)).map(|id| p.model.node(id).name.to_string()).collect() }
-    fn tree() -> Temp { let t = Temp::new("pane"); for f in ["shot_10.exr", "shot_2.exr", "notes.pdf", ".secret"] { t.file(f, 10); } t.file("renders/beauty_2.exr", 100); t.file("renders/beauty_10.exr", 100); t.file("renders/v002/a.txt", 1); t.dir("assets"); t }
+    fn tree() -> Temp { let t = Temp::new("pane"); for f in ["shot_10.exr", "shot_2.exr", "notes.pdf"] { t.file(f, 10); } t.hidden_file(".secret", 10); t.file("renders/beauty_2.exr", 100); t.file("renders/beauty_10.exr", 100); t.file("renders/v002/a.txt", 1); t.dir("assets"); t }
 
     #[test]
     fn a_folder_is_listed_sorted_and_opened_in_place() {
