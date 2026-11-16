@@ -34,6 +34,7 @@ min-image = { path = "../../crates/min-image" }
 # a video's frame: the family's player (FFmpeg) and its colour stage; Radiance HDR: the `image` crate's reader
 qcv-player = { path = "../../crates/qcv-player" }
 qcv-meta = { path = "../../crates/qcv-meta" }
+qcv-timeline = { path = "../../crates/qcv-timeline" }
 image = { version = "0.25", default-features = false, features = ["hdr"] }
 # the thumbnails' cache on disk, opened by the helpers (canon row 456, point 4)
 rusqlite = { workspace = true }

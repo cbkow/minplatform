@@ -236,6 +236,16 @@ impl Pane {
     pub fn open_chosen(&mut self, port: &Port) { if let Some(c) = self.sel().cursor.filter(|c| self.sel().is_selected(*c)) { match self.model.row(c) { Some(id) if !self.model.node(id).dir => self.open_default = Some(self.model.path_of(id, self.path())), _ => self.activate(port, c) } } }
     /// What row `row` is, for the lightbox: (where, its name, its size, its kind, whether it is a folder).
     pub fn entry(&self, row: usize) -> Option<(PathBuf, String, u64, String, bool)> { let id = self.model.row(row)?; let n = self.model.node(id); Some((self.model.path_of(self.model.rep(id), self.path()), n.name.to_string(), n.size, self.model.kind(id).to_string(), n.dir)) }
+    /// The sequence at a row, as the player opens it: the pattern of its frames' names (`dir/shot_010.%04d.exr`), its
+    /// first and last frame. None: no sequence, or one made by hand whose names are no such pattern.
+    pub fn sequence_at(&self, row: usize) -> Option<(String, i64, i64)> {
+        let id = self.model.row(row)?; if !self.model.is_sequence(id) { return None } let files = self.model.files_of(id);
+        let parse = |f: u32| min_paths::sequence::parse_frame(&self.model.node(f).name).map(|(b, s, d, e)| (b, s, d, e.to_string()));
+        let (base, sep, digits, ext) = parse(*files.first()?)?; let (b2, s2, last, e2) = parse(*files.last()?)?;
+        if (b2.to_lowercase(), s2, e2.to_lowercase(), last.len()) != (base.to_lowercase(), sep.clone(), ext.to_lowercase(), digits.len()) { return None }
+        let dir = self.model.path_of(*files.first()?, self.path()).parent()?.to_path_buf(); let esc = |t: &str| t.replace('%', "%%");
+        Some((dir.join(format!("{}{}%0{}d.{}", esc(&base), esc(&sep), digits.len(), esc(&ext))).to_string_lossy().into_owned(), digits.parse().ok()?, last.parse().ok()?))
+    }
     /// The row under the cursor, when it is chosen.
     pub fn cursor_row(&self) -> Option<usize> { self.sel().cursor.filter(|c| self.sel().is_selected(*c)) }
     /// The row the entry at `path` is shown at.

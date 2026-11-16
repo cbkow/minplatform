@@ -6273,6 +6273,7 @@ dependencies = [
  "png 0.17.16",
  "qcv-meta",
  "qcv-player",
+ "qcv-timeline",
  "raw-window-handle",
  "rusqlite",
  "vello",

@@ -15,3 +15,13 @@ pub fn open(path: &Path) {
     }
     #[cfg(not(any(target_os = "macos", windows)))] { let _ = path; }
 }
+
+/// The file is handed to ONE application (macOS: its bundle).
+pub fn open_with(path: &Path, app: &Path) {
+    #[cfg(target_os = "macos")] {
+        use objc2_foundation::{NSArray, NSString, NSURL};
+        let url = |p: &Path| NSURL::fileURLWithPath(&NSString::from_str(&p.to_string_lossy()));
+        let _ = objc2::exception::catch(std::panic::AssertUnwindSafe(|| objc2_app_kit::NSWorkspace::sharedWorkspace().openURLs_withApplicationAtURL_configuration_completionHandler(&NSArray::from_retained_slice(&[url(path)]), &url(app), &objc2_app_kit::NSWorkspaceOpenConfiguration::configuration(), None)));
+    }
+    #[cfg(not(target_os = "macos"))] { let _ = app; open(path); }
+}

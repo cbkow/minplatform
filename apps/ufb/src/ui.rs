@@ -31,8 +31,8 @@ pub enum Out { /// the clipboard is the application's to reach: files to put on 
     /// (`mv`: "Move Item Here"); the text field in hand copies (`cut`) or pastes
     /// the system's drag of these files begins (a press on them was moved)
     Drag(Vec<PathBuf>),
-    /// a file to hand to the system: it opens in its default application
-    OpenDefault(PathBuf),
+    /// a file to hand to the system: it opens in its default application; or in the application named
+    OpenDefault(PathBuf), OpenWith(PathBuf, PathBuf),
     CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste,
     NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
@@ -50,7 +50,7 @@ enum Drag { Sidebar(f64, f64), Split }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
 
 /// Logical px.
-const LB_STRIP: f64 = 34.0; const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
+const LB_STRIP: f64 = 34.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
@@ -79,7 +79,10 @@ pub struct Ui {
     /// the lightbox (rows 452, 473): the file shown large; its close button; its last press (two make a double click)
     lightbox: crate::lightbox::Lightbox, lb_close: ActionButton, lb_press: Option<(Instant, (f64, f64))>, /// the contact sheet's tiles as they were drawn, and the one under the pointer
     lb_tiles: Vec<Rect>, lb_hover: Option<usize>, /// sequences as one entry, or every file by itself (row 475)
-    seq_btn: ActionButton, preview_btn: ActionButton,
+    seq_btn: ActionButton,
+    /// the lightbox's transport (row 473): play / pause, loop, mute, "Open in QCView"; the line as it was drawn; a press on the picture that has not moved yet (a click plays or pauses);
+    /// the system's hardware decoder, found at the first clip
+    lb_play: ActionButton, lb_loop: ActionButton, lb_mute: ActionButton, lb_qcv: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
@@ -118,7 +121,8 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()), preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
+            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
@@ -164,7 +168,17 @@ impl Ui {
     fn open_lightbox(&mut self, pane: usize, row: usize) {
         let Some((path, name, size, kind, dir)) = self.panes.get(pane).and_then(|p| p.entry(row)) else { return }; if dir { return }
         self.end_rename(); self.leave_path(); self.leave_search(); self.lb_press = None;
-        let ext = crate::lightbox::ext_of(&path); self.lightbox.open(path, name, size, kind, &ext, pane);
+        let ext = crate::lightbox::ext_of(&path);
+        // what the player plays: a sequence shown as one entry, a video, a sound
+        let media = match self.panes[pane].sequence_at(row) { Some((pattern, start, end)) => crate::lightbox::Media::Sequence { pattern, start, end }, None => crate::lightbox::media_of(&ext) };
+        let played = matches!(media, crate::lightbox::Media::Video | crate::lightbox::Media::Audio | crate::lightbox::Media::Sequence { .. });
+        { let e = &mut self.presenter.engine; e.clear_picture(); }
+        self.lightbox.open(path.clone(), name, size, kind, &ext, pane, played); self.lb_click = None;
+        if played {
+            let hw = self.hw.get_or_insert_with(|| { #[cfg(windows)] let dev = self.presenter.engine.dx12_device_raw(); #[cfg(not(windows))] let dev = None; qcv_player::HwDevice::platform(dev) }).clone();
+            let player = crate::lightbox::Player::open(&media, &path, hw, self.presenter.engine.uploader());
+            self.lightbox.attach(player);
+        }
     }
     fn close_lightbox(&mut self) {
         if !self.lightbox.is_open() { return } self.lightbox.close();
@@ -176,11 +190,35 @@ impl Ui {
         let Some(p) = self.panes.get_mut(pane) else { return }; let Some(next) = p.row_at_path(&path).and_then(|r| p.next_file(r, step)) else { return };
         p.choose_row(next); self.open_lightbox(pane, next);
     }
-    /// Where the picture may lie: the window above the lightbox's strip.
-    fn lightbox_area(&self) -> Rect { let size = self.window.surface_size(); Rect::new(0.0, 0.0, size.width as f64, (size.height as f64 - LB_STRIP * self.scale()).max(1.0)) }
+    /// Where the picture may lie: the window above the lightbox's strip - and above the transport, when something plays.
+    fn lightbox_area(&self) -> Rect { let size = self.window.surface_size(); let bar = if self.lightbox.view.as_ref().is_some_and(|v| v.player.is_some()) { LB_BAR } else { 0.0 }; Rect::new(0.0, 0.0, size.width as f64, (size.height as f64 - (LB_STRIP + bar) * self.scale()).max(1.0)) }
+    /// A key let go while the lightbox plays: a held shuttle ends.
+    pub fn key_up(&mut self, name: &str) { if matches!(name, "J" | "L" | "A" | "D") { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.act(qcv_player::Action::ShuttleEnd); } } }
+    /// "Open in QCView" (row 452): the file is handed to QCView, when it is installed where the system keeps applications.
+    fn qcview() -> Option<PathBuf> { if cfg!(target_os = "macos") { let p = PathBuf::from("/Applications/QCView.app"); p.is_dir().then_some(p) } else { None } }
     fn lightbox_pointer(&mut self, e: &Event) {
         let now = Instant::now(); let area = self.lightbox_area(); let s = self.scale();
         if self.lb_close.event(e, now) == Response::Clicked { self.close_lightbox(); return }
+        // the transport of what plays: its buttons, and the line (a press takes hold of it; it is dragged until let go)
+        if self.lightbox.view.as_ref().is_some_and(|v| v.player.is_some()) {
+            use qcv_player::Action as A;
+            let (play, lp, mute, qcv) = (self.lb_play.event(e, now) == Response::Clicked, self.lb_loop.event(e, now) == Response::Clicked, self.lb_mute.event(e, now) == Response::Clicked, self.lb_qcv.rect.width() > 0.0 && self.lb_qcv.event(e, now) == Response::Clicked);
+            if qcv { if let (Some(app), Some(v)) = (Self::qcview(), self.lightbox.view.as_ref()) { self.out.push(Out::OpenWith(v.path.clone(), app)); } return }
+            let line = self.lb_line; let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) else { return };
+            if play { p.act(A::TogglePlayback); return } if lp { p.act(A::ToggleLoop); return } if mute { p.act(A::ToggleMute); return }
+            let at = |x: f64| (x - line.x0) / line.width().max(1.0);
+            match *e {
+                Event::Down { x, y, button: Button::Primary } if line.inflate(0.0, 10.0 * s).contains(kurbo::Point::new(x, y)) => { p.scrub(at(x)); return }
+                Event::Move { x, .. } if p.scrubbing => { p.scrub(at(x)); return }
+                Event::Up { button: Button::Primary, .. } | Event::Leave if p.scrubbing => { p.scrub_end(); return }
+                _ => {}
+            }
+            // on the picture: a press that does not move plays or pauses; one that moves takes hold of the picture (below)
+            match *e { Event::Down { x, y, button: Button::Primary } if area.contains(kurbo::Point::new(x, y)) => self.lb_click = Some((x, y)),
+                Event::Move { x, y } => if self.lb_click.is_some_and(|c| (c.0 - x).hypot(c.1 - y) > 5.0 * s) { self.lb_click = None; },
+                Event::Up { button: Button::Primary, .. } => if self.lb_click.take().is_some() { p.act(A::TogglePlayback); },
+                _ => {} }
+        }
         // the contact sheet of an EXR's layers: a press on one shows it large
         if self.lightbox.view.as_ref().is_some_and(|v| v.state == crate::lightbox::State::Layers) {
             self.lb_hover = e.pos().and_then(|(x, y)| self.lb_tiles.iter().position(|r| r.contains(kurbo::Point::new(x, y))));
@@ -202,6 +240,14 @@ impl Ui {
         let area = self.lightbox_area(); let mid = (area.center().x, area.center().y);
         // Escape (and Backspace) step back from one layer to the sheet of layers first (1.4.2's keys)
         if matches!(name, "Escape" | "Backspace") && self.lightbox.back_to_layers() { let e = &mut self.presenter.engine; e.clear_picture(); return }
+        // what plays has 1.4.2's keys (row 473, point 3): K plays and pauses, Q / E step a frame, J / L (A / D) shuttle while held,
+        // M mutes, V loops, Up / Down are the volume, Home / End the ends
+        if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) {
+            use qcv_player::Action as A;
+            let a = match name { "K" | "W" | "S" => Some(A::TogglePlayback), "Q" => Some(A::Step(-1)), "E" => Some(A::Step(1)), "J" | "A" => Some(A::ShuttleBegin(-1)), "L" | "D" => Some(A::ShuttleBegin(1)), "M" => Some(A::ToggleMute), "V" => Some(A::ToggleLoop),
+                "Up" => Some(A::VolumeUp), "Down" => Some(A::VolumeDown), "Home" => Some(A::SeekToStart), "End" => Some(A::SeekToEnd), _ => None };
+            if let Some(a) = a { if !(matches!(a, A::ShuttleBegin(_)) && p.t.is_fast_seeking()) { p.act(a); } return }
+        }
         match name { "Space" | "Escape" => return self.close_lightbox(), "Left" | "Up" => return self.step_lightbox(-1), "Right" | "Down" => return self.step_lightbox(1), _ => {} }
         let Some(v) = self.lightbox.view.as_mut() else { return };
         match &k.key { Key::Char(c) => match c.as_str() { "0" | "f" | "F" => v.fit(), "1" => v.actual(mid, area), "=" | "+" => v.zoom_by(1.25, mid, area), "-" | "_" => v.zoom_by(0.8, mid, area), _ => {} }, _ => {} }
@@ -218,8 +264,12 @@ impl Ui {
         if let Some((frame, alpha)) = self.lightbox.take_frame() {
             match self.presenter.engine.show(&frame) { Ok(()) => self.presenter.engine.set_background(if alpha { 2 } else { 1 }), Err(e) => if let Some(v) = self.lightbox.view.as_mut() { v.state = crate::lightbox::State::Failed(format!("This file could not be shown: {e}.")); } }
         }
+        // what plays: the player's frame of this moment goes to the presenter
+        if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) {
+            match p.t.tick(now) { Some(f) => { if self.presenter.engine.show(&f.frame).is_ok() { if !p.shown { self.presenter.engine.set_background(1); } p.shown = true; } } None => p.t.idle_refresh() }
+        }
         let Some(v) = self.lightbox.view.as_ref() else { return };
-        let ready = v.info().is_some();
+        let ready = v.info().is_some() && v.player.as_ref().is_none_or(|p| p.shown);
         if ready { self.presenter.engine.set_place(v.place(area).map(|r| [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32])); } else { self.presenter.engine.clear_picture(); }
         let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT));
         let scene: &mut Scene = self.layer.scene_mut(); scene.reset(); let fonts = &mut self.fonts;
@@ -243,13 +293,35 @@ impl Ui {
                 let l = fonts.layout_fit(lname, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, ink, cell.width()); draw_layout(scene, &l, Affine::translate((cell.center().x - l.width() as f64 / 2.0, cell.y1 - label + (label - l.height() as f64) / 2.0)));
                 self.lb_tiles.push(cell);
             }
+        } else if v.state == crate::lightbox::State::Audio {
+            // a sound has no picture: its kind's sign, large
+            paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
+            if let Some(g) = fonts.icon("waveform", 96.0 * s as f32, sub) { draw_layout(scene, &g, Affine::translate(((w - g.width() as f64) / 2.0, area.center().y - g.height() as f64 / 2.0))); }
         } else if !ready {
             paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
             let text = match &v.state { crate::lightbox::State::Loading => if now.duration_since(v.since) > Duration::from_millis(250) { "Loading\u{2026}".to_string() } else { String::new() }, crate::lightbox::State::Failed(why) => why.clone(), _ => "No preview of this kind yet. Open it with the Open command.".to_string() };
             if !text.is_empty() { let l = fonts.layout_fit(&text, Family::Sans, t::BODY_SIZE_M * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, w - 80.0 * s); draw_layout(scene, &l, Affine::translate(((w - l.width() as f64) / 2.0, area.center().y - l.height() as f64 / 2.0))); }
         }
+        // the transport of what plays: play / pause, where it is, the line, loop, mute, "Open in QCView"
+        self.lb_line = Rect::ZERO;
+        if let Some(p) = v.player.as_ref() {
+            let bar = Rect::new(0.0, area.y1, w, area.y1 + LB_BAR * s); paint::rect(scene, bar, t::BACKGROUND_LAYER_2_COLOR); paint::hline(scene, 0.0, w, bar.y0, s, t::DIVIDER_COLOR);
+            let bh = t::ACTION_BUTTON_HEIGHT_M as f64 * s; let by = bar.y0 + (bar.height() - bh) / 2.0; let rad = t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s; let mut x = 12.0 * s;
+            self.lb_play.icon = if p.t.is_playing() { "pause" } else { "play" }; self.lb_play.rect = Rect::new(x, by, x + bh, by + bh); self.lb_play.corners = Corners::all(rad); self.lb_play.paint(scene, fonts, s, now); x += bh + 10.0 * s;
+            let (at, of) = p.clock(); let clock = fonts.layout(&format!("{at}  /  {of}"), Family::Mono, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, ink);
+            draw_layout(scene, &clock, Affine::translate((x, bar.y0 + (bar.height() - clock.height() as f64) / 2.0))); x += clock.width() as f64 + 14.0 * s;
+            let mut r = w - 12.0 * s;
+            self.lb_qcv.rect = if Self::qcview().is_some() && w / s > 760.0 { let bw = self.lb_qcv.measure(fonts, s).0; let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
+            if self.lb_qcv.rect.width() > 0.0 { self.lb_qcv.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_qcv.paint(scene, fonts, s, now); }
+            self.lb_mute.icon = if p.t.audio.is_muted() { "speaker-slash" } else { "speaker-high" }; self.lb_mute.rect = Rect::new(r - bh, by, r, by + bh); self.lb_mute.corners = Corners::all(rad); self.lb_mute.selected = p.t.audio.is_muted(); self.lb_mute.paint(scene, fonts, s, now); r -= bh + 4.0 * s;
+            self.lb_loop.rect = Rect::new(r - bh, by, r, by + bh); self.lb_loop.corners = Corners::all(rad); self.lb_loop.selected = p.t.loop_enabled(); self.lb_loop.paint(scene, fonts, s, now); r -= bh + 14.0 * s;
+            // the line: what has played of it, and where it stands
+            let line = Rect::new(x, bar.center().y - 2.0 * s, r.max(x + 20.0 * s), bar.center().y + 2.0 * s); self.lb_line = line;
+            paint::rounded(scene, line, 2.0 * s, t::SWITCH_TRACK_COLOR_OFF); let px = line.x0 + line.width() * p.progress();
+            paint::rounded(scene, Rect::new(line.x0, line.y0, px, line.y1), 2.0 * s, t::NEUTRAL_CONTENT_COLOR_DEFAULT); paint::rounded(scene, Rect::new(px - 5.0 * s, line.center().y - 5.0 * s, px + 5.0 * s, line.center().y + 5.0 * s), 5.0 * s, t::NEUTRAL_CONTENT_COLOR_DEFAULT);
+        }
         // the strip: the name, then what the picture is
-        let strip = Rect::new(0.0, area.y1, w, h); paint::rect(scene, strip, t::BACKGROUND_LAYER_2_COLOR); paint::hline(scene, 0.0, w, strip.y0, s, t::DIVIDER_COLOR);
+        let strip = Rect::new(0.0, area.y1 + if v.player.is_some() { LB_BAR * s } else { 0.0 }, w, h); paint::rect(scene, strip, t::BACKGROUND_LAYER_2_COLOR); paint::hline(scene, 0.0, w, strip.y0, s, t::DIVIDER_COLOR);
         let size_px = t::BODY_SIZE_S * s as f32;
         let facts = fonts.layout_fit(&v.facts(area), Family::Sans, size_px, t::FONT_WEIGHT_REGULAR as f32, sub, (w * 0.62).max(80.0 * s)); let fx = w - 14.0 * s - facts.width() as f64;
         draw_layout(scene, &facts, Affine::translate((fx, strip.y0 + (strip.height() - facts.height() as f64) / 2.0)));
@@ -295,7 +367,7 @@ impl Ui {
     }
     /// Files from the clipboard are put into the active pane's folder (`mv`: moved there).
     pub fn paste_files(&mut self, paths: Vec<PathBuf>, mv: bool) {
-        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.dragging()) || self.lb_close.animating(Instant::now()) || !self.recheck.is_empty() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
+        if paths.is_empty() || self.focus != Focus::Pane || crate::ops::status().is_some() || self.lightbox.loading() || self.lightbox.view.as_ref().is_some_and(|v| v.dragging() || v.player.as_ref().is_some_and(|p| p.busy(Instant::now()))) || self.lb_close.animating(Instant::now()) || !self.recheck.is_empty() || !self.asks.is_empty() || self.dialog.is_some() { return } let dest = self.pane().path().to_path_buf();
         crate::ops::submit(self.id, crate::ops::Op::Transfer { paths, dest, mv });
     }
     fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_files() }
@@ -458,7 +530,7 @@ impl Ui {
     /// shows that kind, else the default application's; "Open" on a file is always the default application's (row 473, point 2).
     fn after_pane_events(&mut self) {
         for i in 0..self.panes.len() {
-            if let Some(row) = self.panes[i].preview.take() { match self.panes[i].entry(row) { Some((path, ..)) if !crate::lightbox::shows(&crate::lightbox::ext_of(&path)) => self.out.push(Out::OpenDefault(path)), Some(_) => self.open_lightbox(i, row), None => {} } }
+            if let Some(row) = self.panes[i].preview.take() { match self.panes[i].entry(row) { Some((path, ..)) if !crate::lightbox::handles(&crate::lightbox::ext_of(&path)) => self.out.push(Out::OpenDefault(path)), Some(_) => self.open_lightbox(i, row), None => {} } }
             if let Some(path) = self.panes[i].open_default.take() { self.out.push(Out::OpenDefault(path)); }
         }
     }
@@ -635,6 +707,9 @@ impl Ui {
             // sequences (row 475): `sequences` (the toggle) `split` (the chosen sequence as its files) `group` (the chosen files as one)
             "sequences" => self.command(Cmd::Sequences), "split" => self.pane().split_chosen(), "group" => { let ok = self.pane().group_chosen(); eprintln!("UFB_DEMO: grouped by hand: {ok}"); }
             // the lightbox: `preview` (the row under the cursor; again closes it) `lbnext` `lbprev` `lbzoom:<factor>` `lbactual` `lbfit` `lbpan:<dx>,<dy>`
+            // what plays: `lbkey:<K|Q|E|M|V|Home|End|Up|Down>` (a key of the transport) `lbseek:<0-1>` (the line taken to there)
+            "lbkey" => { let k = KeyEvent { key: Key::Char(arg.to_lowercase()), text: None, shift: false, cmd: false }; self.lightbox_key(&k, arg); }
+            "lbseek" => if let (Ok(at), Some(p)) = (arg.parse::<f64>(), self.lightbox.view.as_mut().and_then(|v| v.player.as_mut())) { p.scrub(at); p.scrub_end(); },
             "lblayer" => if let Some(i) = num(arg) { self.lightbox.pick_layer(i); }, "lbback" => { if self.lightbox.back_to_layers() { self.presenter.engine.clear_picture(); } }
             "preview" => self.command(Cmd::Preview), "lbnext" => self.step_lightbox(1), "lbprev" => self.step_lightbox(-1),
             "lbzoom" | "lbactual" | "lbfit" | "lbpan" => { let area = self.lightbox_area(); let mid = (area.center().x, area.center().y); if let Some(v) = self.lightbox.view.as_mut() { match word {
@@ -901,7 +976,7 @@ impl Ui {
         // (the scripted picture: UFB_SHOT=<file.png> saves the window as drawn - no OS screenshot - once the steps are done,
         // the panes have their listings and the icons have come; then the application ends)
         if self.shot.is_some() && !self.done {
-            let idle = self.demo.is_empty() && self.demo_until.is_none_or(|t| now >= t) && !self.busy() && self.icons.pending() == 0 && self.thumbs.pending() == 0 && !self.lightbox.loading();
+            let idle = self.demo.is_empty() && self.demo_until.is_none_or(|t| now >= t) && !self.busy() && self.icons.pending() == 0 && self.thumbs.pending() == 0 && !self.lightbox.loading() && self.lightbox.view.as_ref().and_then(|v| v.player.as_ref()).is_none_or(|p| p.shown || p.audio_only);
             if !idle { self.settled = None; } else if self.settled.is_none() { self.settled = Some(now); }
             if self.settled.is_some_and(|t0| now.duration_since(t0) > Duration::from_millis(500)) || self.born.elapsed() > Duration::from_secs(60) {
                 if let (Some(path), Some((px, w, h))) = (self.shot.take(), self.presenter.capture_window()) {
