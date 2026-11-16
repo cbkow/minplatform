@@ -12,8 +12,17 @@
 //! was accepted - by the leader, or, when this node leads, by every node that is alive. Nothing is dropped after a
 //! number of tries, a quit loses nothing, and what waited is sent when a leader is found again.
 //!
-//! NOT here yet: the snapshot file (what a node that was away, or is new, catches up from), the merge by cell (row
-//! 440), the shared secret (row 442), the columns' shared templates.
+//! **The snapshot** (rows 442, 495) is the mesh on the shared folder alone: the node that leads writes the shared rows
+//! as a SQLite file - 1.4.2's file, table for table - and every node merges it. A node that was away, or is new,
+//! catches up from it; and machines that reach the folder but NOT each other (a VPN that passes the share and nothing
+//! else, a firewall) each lead alone, each merge what is there before they write, and so hold the same in the end
+//! with no message between them. Mended against 1.4.2 (row 442): a temporary name of the writer's own; the file
+//! checked before it is merged, and waited for when it is not whole; the others told AFTER it was written; a leader
+//! merges too - what is there before it publishes its own, and what another leader wrote; and a node counts as alive
+//! when it ANSWERS, not when its entry in the phonebook looks fresh - so one that cannot be reached is never the leader
+//! this node waits for.
+//!
+//! NOT here yet: the merge by cell (row 440), the shared secret (row 442), the columns' shared templates.
 //!
 //! THE DEVELOPMENT BUILD'S BELT: the epoch is a TEST epoch unless `UFB_MESH_EPOCH` says otherwise - a node of another
 //! epoch is ignored entirely, by 1.4.2's own rule, so no installed UFB can see or be seen by a test node; and
@@ -30,7 +39,9 @@ use std::time::Duration;
 /// 1.4.2's numbers.
 #[allow(dead_code)]
 pub const EPOCH: u32 = 6; pub const CTL_PORT: u16 = 49221; pub const DATA_PORT: u16 = 49222; pub const UDP_PORT: u16 = 4265;
-const GROUP: Ipv4Addr = Ipv4Addr::new(239, 42, 6, 3); const PASS: Duration = Duration::from_millis(3000); const FRESH_MS: i64 = 15_000; const DEAD_AFTER: u8 = 3;
+const GROUP: Ipv4Addr = Ipv4Addr::new(239, 42, 6, 3); const PASS: Duration = Duration::from_millis(3000); const DEAD_AFTER: u8 = 3;
+/// The snapshot (1.4.2's numbers): not oftener than every 30 s; written again every 10 min while there is something; another node's, younger than 60 s, is not written over; looked for every 10 s.
+const SNAP_EVERY: Duration = Duration::from_secs(30); const SNAP_REARM: Duration = Duration::from_secs(600); const SNAP_FENCE_MS: i64 = 60_000; const SNAP_LOOK: Duration = Duration::from_secs(10);
 /// The epoch a development build's mesh runs at: no installed UFB is of it.
 pub const TEST_EPOCH: u32 = 9006;
 
@@ -41,15 +52,20 @@ pub struct Config { pub farm: PathBuf, pub node: String, pub epoch: u32, pub ctl
 struct Peer { ip: String, port: u16, data_port: u16, tags: Vec<String>, alive: bool, fails: u8, stamp: i64 }
 /// What the window says of the mesh.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Status { pub node: String, pub leader: Option<String>, pub leading: bool, pub peers: usize, pub pending: usize }
+pub struct Status { pub node: String, pub leader: Option<String>, pub leading: bool, pub peers: usize, pub pending: usize, /// when a snapshot was last written here, and last merged here (ms; 0: never)
+    pub written: i64, pub merged: i64 }
 
-struct Shared { cfg: Config, peers: Mutex<HashMap<String, Peer>>, leader: Mutex<Option<String>>, pending: AtomicUsize, rev: AtomicU64, stop: Arc<AtomicBool>, wakers: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>, ip: Mutex<String> }
+struct Shared { cfg: Config, peers: Mutex<HashMap<String, Peer>>, leader: Mutex<Option<String>>, pending: AtomicUsize, rev: AtomicU64, stop: Arc<AtomicBool>, wakers: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>, ip: Mutex<String>,
+    /// the snapshot: something changed since the last one was written; a look at the file is wanted now; when one was written and merged here; what this node already passed on to the others (it leaves the queue with the next snapshot)
+    snap_needed: AtomicBool, snap_look: AtomicBool, written: AtomicU64, merged: AtomicU64, relayed: Mutex<std::collections::HashSet<i64>>,
+    /// a test's switch (`UFB_MESH_FILES_ONLY=1`): this node neither answers nor asks - as over a VPN that passes the shared folder and nothing else
+    files_only: bool }
 static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 fn now_ms() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) }
 fn say(s: &Shared, what: &str) { if std::env::var_os("UFB_MESH_LOG").is_some() { eprintln!("UFB_MESH[{}]: {what}", s.cfg.node); } }
 
 /// The mesh's state, for the window; none when the mesh is not running.
-pub fn status() -> Option<Status> { let s = SHARED.get()?; let leader = s.leader.lock().unwrap().clone(); Some(Status { node: s.cfg.node.clone(), leading: leader.as_deref() == Some(s.cfg.node.as_str()), leader, peers: s.peers.lock().unwrap().values().filter(|p| p.alive).count(), pending: s.pending.load(Ordering::Relaxed) }) }
+pub fn status() -> Option<Status> { let s = SHARED.get()?; let leader = s.leader.lock().unwrap().clone(); Some(Status { node: s.cfg.node.clone(), leading: leader.as_deref() == Some(s.cfg.node.as_str()), leader, peers: s.peers.lock().unwrap().values().filter(|p| p.alive).count(), pending: s.pending.load(Ordering::Relaxed), written: s.written.load(Ordering::Relaxed) as i64, merged: s.merged.load(Ordering::Relaxed) as i64 }) }
 /// A number that changes whenever something arrived from another node (the windows read their lists again).
 pub fn rev() -> u64 { SHARED.get().map(|s| s.rev.load(Ordering::Relaxed)).unwrap_or(0) }
 /// A window asks to be woken when something arrives.
@@ -70,18 +86,19 @@ fn local_ip() -> String { UdpSocket::bind("0.0.0.0:0").and_then(|s| { s.connect(
 
 /// Start the node. Twice: nothing the second time.
 pub fn start(cfg: Config) {
-    let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()) });
+    let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()), snap_needed: AtomicBool::new(true), snap_look: AtomicBool::new(true), written: AtomicU64::new(0), merged: AtomicU64::new(0), relayed: Default::default(), files_only: std::env::var_os("UFB_MESH_FILES_ONLY").is_some() });
     if SHARED.set(s.clone()).is_err() { return }
     say(&s, &format!("epoch {} farm {} ports {}/{}/{} only {:?}", s.cfg.epoch, s.cfg.farm.display(), s.cfg.ctl, s.cfg.data, s.cfg.udp, s.cfg.only));
     // the two servers: the status on the control port, everything else on the data port
-    for (port, data) in [(s.cfg.ctl, false), (s.cfg.data, true)] {
+    for (port, data) in [(s.cfg.ctl, false), (s.cfg.data, true)] { if s.files_only { break }
         let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).and_then(|k| { k.set_reuse_address(true)?; k.bind(&SocketAddr::from(([0, 0, 0, 0], port)).into())?; k.listen(1024)?; Ok(k) });
         match sock { Ok(k) => { let (st, stop) = (s.clone(), s.stop.clone()); let _ = std::thread::Builder::new().name("ufb-mesh-http".into()).spawn(move || http::serve(k.into(), stop, move |q| if data { serve_data(&st, q) } else { serve_ctl(&st, q) })); }
             Err(e) => eprintln!("UFB: the mesh's port {port} could not be opened: {e}") }
     }
     { let st = s.clone(); let _ = std::thread::Builder::new().name("ufb-mesh-peers".into()).spawn(move || peers_loop(&st)); }
     { let st = s.clone(); let _ = std::thread::Builder::new().name("ufb-mesh-send".into()).spawn(move || send_loop(&st)); }
-    { let st = s.clone(); let _ = std::thread::Builder::new().name("ufb-mesh-udp".into()).spawn(move || udp_listen(&st)); }
+    if !s.files_only { let st = s.clone(); let _ = std::thread::Builder::new().name("ufb-mesh-udp".into()).spawn(move || udp_listen(&st)); }
+    { let st = s.clone(); let _ = std::thread::Builder::new().name("ufb-mesh-snapshot".into()).spawn(move || snapshot_loop(&st)); }
 }
 
 fn serve_ctl(s: &Shared, q: Request) -> Response {
@@ -91,7 +108,8 @@ fn serve_ctl(s: &Shared, q: Request) -> Response {
 }
 fn serve_data(s: &Arc<Shared>, q: Request) -> Response {
     let path = q.path.split('?').next().unwrap_or("").to_string(); if q.method != "POST" { return Response::empty(if path.starts_with("/api/") { 405 } else { 404 }) }
-    if path == "/api/snapshot/notify" { return Response::ok() }   // (no snapshot yet: accepted, as 1.4.2's leader accepts and ignores it)
+    // a snapshot was written: it is looked at now (1.4.2's leader ignores the notice; ours merges too - row 442)
+    if path == "/api/snapshot/notify" { s.snap_look.store(true, Ordering::Relaxed); return Response::ok() }
     if path != "/api/metadata/update" && path != "/api/table/update" { return Response::empty(404) }
     let Ok(v) = serde_json::from_slice::<Value>(&q.body) else { return Response::empty(400) };
     // another epoch's node is not of this mesh
@@ -100,7 +118,7 @@ fn serve_data(s: &Arc<Shared>, q: Request) -> Response {
     if !in_scope(&s.cfg, &scope_of(&v)) { say(s, &format!("left out (not in what this node shares): {}", scope_of(&v))); return Response::ok() }
     let r = crate::db::with(|d| if meta { d.apply_meta(&v) } else { d.apply_table(&v) });
     match r {
-        Some(Ok(took)) => { say(s, &format!("in {path}: {}", if took { "taken" } else { "not newer" })); if took { changed(s); }
+        Some(Ok(took)) => { say(s, &format!("in {path}: {}", if took { "taken" } else { "not newer" })); if took { changed(s); s.snap_needed.store(true, Ordering::Relaxed); }
             // the leader passes it on to every other node (1.4.2: to all, the one it came from among them)
             if status().is_some_and(|t| t.leading) { let (st, body) = (s.clone(), String::from_utf8_lossy(&q.body).into_owned()); let _ = std::thread::Builder::new().name("ufb-mesh-relay".into()).spawn(move || { relay(&st, &path, &body); }); }
             Response::ok() }
@@ -127,16 +145,18 @@ fn send_loop(s: &Shared) {
         if pending.is_empty() { continue }
         let (leader, me) = (s.leader.lock().unwrap().clone(), s.cfg.node.clone()); let Some(leader) = leader else { continue };
         let target = if leader == me { None } else { s.peers.lock().unwrap().get(&leader).filter(|p| p.alive).map(|p| format!("{}:{}", p.ip, p.data_port)) };
-        // (this node leads and is alone: its changes wait for somebody to give them to)
-        if leader == me && !s.peers.lock().unwrap().values().any(|p| p.alive) { continue }
         if leader != me && target.is_none() { continue }
         for (id, kind, key, payload) in pending {
             let msg: Option<Value> = match (&payload, kind.as_str()) { (Some(p), _) => serde_json::from_str(p).ok(), (None, "meta") => crate::db::with(|d| d.meta_wire(&key)).flatten(), (None, _) => crate::db::with(|d| d.col_wire(&key)).flatten() };
             // (the row is gone, or it is not of what this node shares: nothing to send)
             let Some(mut msg) = msg.filter(|m| in_scope(&s.cfg, &scope_of(m))) else { crate::db::with(|d| d.pending_done(id)); continue };
+            // this node leads: what it changed is passed on to those that answer - once - and is in the next snapshot,
+            // which is what everybody else gets it from; it leaves the queue when that snapshot is written
+            if target.is_none() { if s.relayed.lock().unwrap().contains(&id) { continue } s.snap_needed.store(true, Ordering::Relaxed); }
             msg["mesh_epoch"] = s.cfg.epoch.into(); let (path, body) = (if kind == "meta" { "/api/metadata/update" } else { "/api/table/update" }, msg.to_string());
             let ok = match &target { Some(at) => post(at, path, &body), None => relay(s, path, &body) };
             say(s, &format!("out {path} {key}: {}", if ok { "accepted" } else { "not yet" }));
+            if target.is_none() { s.relayed.lock().unwrap().insert(id); continue }
             if ok { crate::db::with(|d| d.pending_done(id)); } else { break }
         }
         s.pending.store(crate::db::with(|d| d.pending_count()).unwrap_or(0), Ordering::Relaxed); changed(s);
@@ -160,14 +180,14 @@ fn peers_loop(s: &Shared) {
             let stamp = v["timestamp_ms"].as_i64().unwrap_or(0); let tags: Vec<String> = v["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default();
             let mut peers = s.peers.lock().unwrap(); let ipv = v["ip"].as_str().unwrap_or("").to_string();
             match peers.get_mut(&id) { Some(p) => { p.stamp = stamp; if !p.alive { p.ip = ipv; p.port = port; p.data_port = data; } }
-                // (a fresh entry starts alive, a stale one waits for an answer)
-                None => { say(s, &format!("found {id} at {ipv}:{port}")); peers.insert(id, Peer { ip: ipv, port, data_port: data, tags, alive: now - stamp < FRESH_MS, fails: 0, stamp }); } }
+                // (it is alive when it answers - row 442; 1.4.2 takes a fresh entry's word for it)
+                None => { say(s, &format!("found {id} at {ipv}:{port}")); peers.insert(id, Peer { ip: ipv, port, data_port: data, tags, alive: false, fails: 0, stamp }); } }
         } }
         // a heartbeat to the local network
-        if let Some(u) = &udp { let hb = json!({ "t": "hb", "from": s.cfg.node, "n": s.cfg.node, "ip": ip, "port": s.cfg.ctl, "data_port": s.cfg.data, "epoch": s.cfg.epoch, "tags": s.cfg.tags }).to_string(); let _ = u.send_to(hb.as_bytes(), SocketAddr::from((GROUP, s.cfg.udp))); }
+        if let Some(u) = udp.as_ref().filter(|_| !s.files_only) { let hb = json!({ "t": "hb", "from": s.cfg.node, "n": s.cfg.node, "ip": ip, "port": s.cfg.ctl, "data_port": s.cfg.data, "epoch": s.cfg.epoch, "tags": s.cfg.tags }).to_string(); let _ = u.send_to(hb.as_bytes(), SocketAddr::from((GROUP, s.cfg.udp))); }
         // a look at each: alive when it answers, of this epoch (1.4.2: dead after three looks without an answer)
         let known: Vec<(String, String)> = s.peers.lock().unwrap().iter().map(|(id, p)| (id.clone(), format!("{}:{}", p.ip, p.port))).collect();
-        for (id, at) in known {
+        for (id, at) in known { if s.files_only { break }
             let got = http::call(&at, "GET", "/api/status", None, None, Duration::from_secs(3), Duration::from_secs(3)).filter(|(c, _)| *c == 200).and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok());
             let mut peers = s.peers.lock().unwrap(); let Some(p) = peers.get_mut(&id) else { continue };
             match got { Some(v) if v["mesh_epoch"].as_u64() == Some(s.cfg.epoch as u64) => { if !p.alive { say(s, &format!("{id} is alive")); } p.alive = true; p.fails = 0; p.tags = v["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(); }
@@ -175,8 +195,8 @@ fn peers_loop(s: &Shared) {
                 None => if p.alive { p.fails += 1; if p.fails >= DEAD_AFTER { p.alive = false; say(s, &format!("{id} does not answer")); } } }
         }
         // who leads: this node and every node that is alive (or whose entry is fresh)
-        let mut nodes = vec![(s.cfg.node.clone(), s.cfg.tags.clone())]; nodes.extend(s.peers.lock().unwrap().iter().filter(|(_, p)| p.alive || now - p.stamp < FRESH_MS).map(|(id, p)| (id.clone(), p.tags.clone())));
-        let leader = elect(nodes); let was = s.leader.lock().unwrap().clone(); if leader != was { say(s, &format!("the leader is {leader:?}")); *s.leader.lock().unwrap() = leader; changed(s); }
+        let mut nodes = vec![(s.cfg.node.clone(), s.cfg.tags.clone())]; nodes.extend(s.peers.lock().unwrap().iter().filter(|(_, p)| p.alive).map(|(id, p)| (id.clone(), p.tags.clone())));
+        let leader = elect(nodes); let was = s.leader.lock().unwrap().clone(); if leader != was { say(s, &format!("the leader is {leader:?}")); let mine = leader.as_deref() == Some(s.cfg.node.as_str()); *s.leader.lock().unwrap() = leader; if mine { s.snap_needed.store(true, Ordering::Relaxed); } s.snap_look.store(true, Ordering::Relaxed); changed(s); }
         std::thread::sleep(PASS);
     }
 }
@@ -189,11 +209,69 @@ fn udp_listen(s: &Shared) {
         let id = v["n"].as_str().or(v["from"].as_str()).unwrap_or("").to_string(); if id.is_empty() || v["from"].as_str() == Some(s.cfg.node.as_str()) { continue }
         match v["t"].as_str() {
             Some("hb") => { let data = v["data_port"].as_u64().unwrap_or(0) as u16; if data == 0 || v["epoch"].as_u64() != Some(s.cfg.epoch as u64) { continue }
-                let p = Peer { ip: v["ip"].as_str().unwrap_or("").to_string(), port: v["port"].as_u64().unwrap_or(0) as u16, data_port: data, tags: v["tags"].as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(), alive: true, fails: 0, stamp: now_ms() };
-                let mut peers = s.peers.lock().unwrap(); if !peers.get(&id).is_some_and(|o| o.alive) { say(s, &format!("heard {id} at {}:{}", p.ip, p.port)); } peers.insert(id, p); }
+                // (a node heard is KNOWN, at the address it says; whether it is alive is what its answer says - a heartbeat
+                // passes where a firewall stops everything else)
+                let mut peers = s.peers.lock().unwrap(); let (ip, port) = (v["ip"].as_str().unwrap_or("").to_string(), v["port"].as_u64().unwrap_or(0) as u16);
+                match peers.get_mut(&id) { Some(p) => if !p.alive { p.ip = ip; p.port = port; p.data_port = data; }, None => { say(s, &format!("heard {id} at {ip}:{port}")); peers.insert(id, Peer { ip, port, data_port: data, tags: vec![], alive: false, fails: 0, stamp: now_ms() }); } } }
             Some("bye") => { if let Some(p) = s.peers.lock().unwrap().get_mut(&id) { p.alive = false; } }
             _ => {}
         }
+    }
+}
+
+fn snap_file(s: &Shared) -> PathBuf { s.cfg.farm.join(format!("v{}", s.cfg.epoch)).join("snapshots").join(format!("ufb_snapshot_v{}.db", s.cfg.epoch)) }
+fn snap_meta(s: &Shared) -> PathBuf { snap_file(s).with_file_name(format!("ufb_snapshot_v{}.meta.json", s.cfg.epoch)) }
+fn mtime_ms(p: &std::path::Path) -> Option<u64> { std::fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as u64) }
+/// Who wrote the snapshot that is there, and when (its sidecar; 1.4.2's: `{"node_id", "written_at"}`).
+fn snap_author(s: &Shared) -> Option<(String, i64)> { let v: Value = serde_json::from_str(&std::fs::read_to_string(snap_meta(s)).ok()?).ok()?; Some((v["node_id"].as_str()?.to_string(), v["written_at"].as_i64().unwrap_or(0))) }
+/// The snapshot that is there is merged into this database, when it is another one than the last this node merged
+/// or wrote. It is copied to this machine first and checked: a file that is not whole (still on its way) is left for
+/// the next look. True: something was taken from it.
+fn snap_merge(s: &Shared, seen: &mut u64) -> bool {
+    let file = snap_file(s); let Some(stamp) = mtime_ms(&file) else { return false }; if stamp == *seen { return false }
+    let local = std::env::temp_dir().join(format!("ufb_snapshot_restore_{}_{}.db", s.cfg.node, now_ms()));
+    let r = std::fs::copy(&file, &local).map_err(|e| e.to_string()).and_then(|_| crate::db::with(|d| d.merge_snapshot(&local, s.cfg.only.as_deref())).unwrap_or_else(|| Err("the database could not be opened".into())));
+    let _ = std::fs::remove_file(&local);
+    match r { Ok(n) => { *seen = stamp; s.merged.store(now_ms() as u64, Ordering::Relaxed); say(s, &format!("snapshot merged: {n} row(s) taken")); if n > 0 { changed(s); } n > 0 }
+        Err(e) => { say(s, &format!("snapshot not merged yet ({e})")); false } }
+}
+/// This node's shared rows are written as the snapshot: built on this machine, copied beside the snapshot under a
+/// temporary name of this node's own, renamed over it; then the sidecar the same way; then the others are told.
+fn snap_write(s: &Shared, seen: &mut u64) -> bool {
+    let through = crate::db::with(|d| d.pending_last()).unwrap_or(0);
+    let local = std::env::temp_dir().join(format!("ufb_snapshot_take_{}_{}.db", s.cfg.node, now_ms())); let file = snap_file(s);
+    let wrote = crate::db::with(|d| d.write_snapshot(&local, s.cfg.only.as_deref())).unwrap_or_else(|| Err("the database could not be opened".into()));
+    let r = match wrote { Ok(false) => { let _ = std::fs::remove_file(&local); return false } Err(e) => Err(e),
+        Ok(true) => (|| -> std::io::Result<()> { if let Some(d) = file.parent() { std::fs::create_dir_all(d)?; }
+            let tmp = file.with_file_name(format!("ufb_snapshot_v{}.db.{}.tmp", s.cfg.epoch, s.cfg.node)); std::fs::copy(&local, &tmp)?; std::fs::rename(&tmp, &file).inspect_err(|_| { let _ = std::fs::remove_file(&tmp); })?;
+            let mtmp = snap_meta(s).with_file_name(format!("ufb_snapshot_v{}.meta.json.{}.tmp", s.cfg.epoch, s.cfg.node)); std::fs::write(&mtmp, json!({ "node_id": s.cfg.node, "written_at": now_ms() }).to_string())?; let _ = std::fs::rename(&mtmp, snap_meta(s)); Ok(()) })().map_err(|e| e.to_string()) };
+    let _ = std::fs::remove_file(&local);
+    match r { Ok(()) => { *seen = mtime_ms(&file).unwrap_or(0); s.written.store(now_ms() as u64, Ordering::Relaxed); say(s, "snapshot written");
+            // what this node changed up to here is in it: it leaves the queue
+            crate::db::with(|d| d.pending_done_through(through)); s.relayed.lock().unwrap().retain(|id| *id > through); s.pending.store(crate::db::with(|d| d.pending_count()).unwrap_or(0), Ordering::Relaxed); changed(s);
+            // the others are told, now that it is there (1.4.2 tells them before)
+            if !s.files_only { let peers: Vec<String> = s.peers.lock().unwrap().values().filter(|p| p.alive).map(|p| format!("{}:{}", p.ip, p.data_port)).collect(); for at in peers { post(&at, "/api/snapshot/notify", "{}"); } }
+            true }
+        Err(e) => { say(s, &format!("snapshot not written ({e})")); false } }
+}
+/// The snapshot's turn: every node looks for a newer file and merges it; the node that leads writes its own when
+/// something changed - after merging what is there, and not over another node's that is younger than a minute.
+fn snapshot_loop(s: &Shared) {
+    let every = std::env::var("UFB_MESH_SNAPSHOT_SECS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs).unwrap_or(SNAP_EVERY);
+    let (mut seen, mut looked, mut wrote, mut armed) = (0u64, std::time::Instant::now() - SNAP_LOOK, None::<std::time::Instant>, std::time::Instant::now());
+    while !s.stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(700));
+        if s.snap_look.swap(false, Ordering::Relaxed) || looked.elapsed() >= SNAP_LOOK.min(every) { looked = std::time::Instant::now();
+            // what another node wrote brought something this node had not: when it leads, its own snapshot is due (the two sides of a split end up with one)
+            if snap_merge(s, &mut seen) { s.snap_needed.store(true, Ordering::Relaxed); } }
+        if armed.elapsed() >= SNAP_REARM { armed = std::time::Instant::now(); s.snap_needed.store(true, Ordering::Relaxed); }
+        let leading = s.leader.lock().unwrap().as_deref() == Some(s.cfg.node.as_str());
+        if !leading || !s.snap_needed.load(Ordering::Relaxed) || wrote.is_some_and(|t| t.elapsed() < every) { continue }
+        // another node's snapshot, younger than a minute, is not written over (1.4.2's fence) - it is merged, and this one's turn comes
+        if snap_author(s).is_some_and(|(who, at)| who != s.cfg.node && now_ms() - at < SNAP_FENCE_MS.min(every.as_millis() as i64 * 2)) { snap_merge(s, &mut seen); wrote = Some(std::time::Instant::now() - every + Duration::from_secs(2)); continue }
+        snap_merge(s, &mut seen);
+        s.snap_needed.store(false, Ordering::Relaxed); wrote = Some(std::time::Instant::now());
+        if !snap_write(s, &mut seen) { /* nothing shared yet, or the folder is not there: at the next change */ }
     }
 }
 

@@ -363,6 +363,67 @@ impl Db {
         if let Some(h) = hash { def["templateHash"] = h.into(); } if let Some(t) = trashed { def["trashedAt"] = t.into(); }
         Some(serde_json::json!({ "action": "col_add", "def": def.to_string(), "modified_time": modified }))
     }
+    pub fn pending_done_through(&self, id: i64) { let _ = self.conn.execute("DELETE FROM mesh_pending WHERE id <= ?1", [id]); }
+    pub fn pending_last(&self) -> i64 { self.conn.query_row("SELECT COALESCE(MAX(id), 0) FROM mesh_pending", [], |r| r.get(0)).unwrap_or(0) }
+    /// The shared rows as a snapshot file (1.4.2's, to the statement: a SQLite file of four tables - `subscriptions`,
+    /// always empty; the columns; their options; the items' rows - with what is deleted or in the trash among them).
+    /// `only`: nothing but the rows under this identity (a test's playground). False: there is nothing shared to write.
+    pub fn write_snapshot(&self, to: &Path, only: Option<&str>) -> Result<bool, String> {
+        let _ = std::fs::remove_file(to); let e = |x: rusqlite::Error| x.to_string();
+        let scope = |c: &str| match only { Some(o) => { let o = o.replace('\'', "''"); format!("({c} = '{o}' OR substr({c}, 1, {}) = '{o}/')", o.chars().count() + 1) } None => format!("{c} LIKE 'vol:%'") };
+        let any: i64 = self.conn.query_row(&format!("SELECT (SELECT count(*) FROM item_metadata WHERE item_path LIKE 'vol:%' AND {}) + (SELECT count(*) FROM column_definitions WHERE {})", scope("job_path"), scope("job_path")), [], |r| r.get(0)).map_err(e)?;
+        if any == 0 { return Ok(false) }
+        self.conn.execute("ATTACH DATABASE ?1 AS snap", [to.to_string_lossy()]).map_err(e)?;
+        let run = || -> rusqlite::Result<()> {
+            self.conn.execute_batch("CREATE TABLE snap.subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, job_path TEXT NOT NULL UNIQUE, job_name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, subscribed_time INTEGER NOT NULL, last_sync_time INTEGER, sync_status TEXT NOT NULL DEFAULT 'Pending', shot_count INTEGER NOT NULL DEFAULT 0, modified_time INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER);
+                CREATE TABLE snap.column_definitions (id INTEGER PRIMARY KEY AUTOINCREMENT, job_path TEXT NOT NULL, folder_name TEXT NOT NULL, column_name TEXT NOT NULL, column_type TEXT NOT NULL DEFAULT 'text', column_order INTEGER NOT NULL DEFAULT 0, column_width REAL NOT NULL DEFAULT 120.0, is_visible INTEGER NOT NULL DEFAULT 1, default_value TEXT, modified_time INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, template_hash TEXT, trashed_at INTEGER, column_uuid TEXT);
+                CREATE TABLE snap.column_options (id INTEGER PRIMARY KEY AUTOINCREMENT, column_id INTEGER NOT NULL, option_name TEXT NOT NULL, option_color TEXT, modified_time INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, FOREIGN KEY (column_id) REFERENCES column_definitions(id) ON DELETE CASCADE);
+                CREATE TABLE snap.item_metadata (item_path TEXT NOT NULL, job_path TEXT NOT NULL, folder_name TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', is_tracked INTEGER NOT NULL DEFAULT 0, created_time INTEGER, modified_time INTEGER, device_id TEXT, deleted_at INTEGER, PRIMARY KEY (item_path));")?;
+            self.conn.execute(&format!("INSERT INTO snap.column_definitions (id, job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, template_hash, trashed_at, column_uuid) SELECT id, job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, template_hash, trashed_at, column_uuid FROM main.column_definitions WHERE {}", scope("job_path")), [])?;
+            self.conn.execute("INSERT INTO snap.column_options (id, column_id, option_name, option_color, modified_time, deleted_at) SELECT id, column_id, option_name, option_color, modified_time, deleted_at FROM main.column_options WHERE column_id IN (SELECT id FROM snap.column_definitions)", [])?;
+            self.conn.execute(&format!("INSERT INTO snap.item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at) SELECT item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at FROM main.item_metadata WHERE item_path LIKE 'vol:%' AND {}", scope("job_path")), [])?;
+            Ok(())
+        };
+        let r = run(); let _ = self.conn.execute_batch("DETACH DATABASE snap"); r.map_err(e)?; Ok(true)
+    }
+    /// A snapshot file is merged into this database (1.4.2's rules): an item's row that is not here is taken, one that
+    /// is here is replaced when the snapshot's is NEWER; a column is found by its uuid - taken when it is not here,
+    /// brought up to date when the snapshot's is newer, and what is in the trash or deleted THERE is so here whichever
+    /// is newer; nothing is ever deleted here. The file is checked first (row 442: a file still on its way - a share
+    /// that syncs - is not merged): Err says it is not whole. Returns how many rows changed.
+    pub fn merge_snapshot(&self, from: &Path, only: Option<&str>) -> Result<usize, String> {
+        let e = |x: rusqlite::Error| x.to_string();
+        // (looked at by a connection of its own first: what is no database, or a broken one, is never attached)
+        { let c = Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(e)?; let ok: String = c.query_row("PRAGMA quick_check", [], |r| r.get(0)).map_err(e)?; if ok != "ok" { return Err(format!("the snapshot is not whole: {ok}")) }
+            let tables: i64 = c.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('item_metadata', 'column_definitions', 'column_options')", [], |r| r.get(0)).map_err(e)?; if tables != 3 { return Err("the snapshot is not whole: tables are missing".into()) } }
+        let scope = |c: &str| match only { Some(o) => { let o = o.replace('\'', "''"); format!("({c} = '{o}' OR substr({c}, 1, {}) = '{o}/')", o.chars().count() + 1) } None => format!("{c} LIKE 'vol:%'") };
+        self.conn.execute("ATTACH DATABASE ?1 AS snap", [from.to_string_lossy()]).map_err(e)?;
+        let run = || -> rusqlite::Result<usize> {
+            let mut n = self.conn.execute(&format!("INSERT INTO main.item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at)
+                 SELECT item_path, job_path, folder_name, metadata_json, is_tracked, created_time, modified_time, device_id, deleted_at FROM snap.item_metadata WHERE item_path LIKE 'vol:%' AND {}
+                 ON CONFLICT(item_path) DO UPDATE SET job_path = excluded.job_path, folder_name = excluded.folder_name, metadata_json = excluded.metadata_json, is_tracked = excluded.is_tracked, modified_time = excluded.modified_time, deleted_at = excluded.deleted_at
+                 WHERE excluded.modified_time > COALESCE(item_metadata.modified_time, -1)", scope("job_path")), [])?;
+            type Col = (i64, String, String, String, String, i64, f64, i64, Option<String>, i64, Option<i64>, Option<String>, Option<i64>, Option<String>);
+            let cols: Vec<Col> = { let mut st = self.conn.prepare(&format!("SELECT id, job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, template_hash, trashed_at, column_uuid FROM snap.column_definitions WHERE {}", scope("job_path")))?;
+                let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?)))?.flatten().collect(); v };
+            for (sid, job, folder, name, kind, order, width, visible, default, time, deleted, hash, trashed, uuid) in cols {
+                let uuid = uuid.filter(|u| !u.is_empty()).unwrap_or_else(|| column_uuid(&job, &folder, &name, &kind));
+                let local: Option<(i64, i64, Option<i64>, Option<i64>)> = self.conn.query_row("SELECT id, modified_time, deleted_at, trashed_at FROM column_definitions WHERE column_uuid = ?1 ORDER BY deleted_at IS NOT NULL LIMIT 1", [&uuid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok()
+                    .or_else(|| self.conn.query_row("SELECT id, modified_time, deleted_at, trashed_at FROM column_definitions WHERE job_path = ?1 AND folder_name = ?2 AND column_name = ?3 AND (column_uuid IS NULL OR column_uuid = '') LIMIT 1", rusqlite::params![job, folder, name], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).ok());
+                let (id, whole) = match local {
+                    None => { self.conn.execute("INSERT INTO column_definitions (job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, default_value, modified_time, deleted_at, template_hash, trashed_at, column_uuid) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)", rusqlite::params![job, folder, name, kind, order, width, visible, default, time, deleted, hash, trashed, uuid])?; n += 1; (self.conn.last_insert_rowid(), true) }
+                    Some((id, lt, _, _)) if time > lt => { n += self.conn.execute("UPDATE column_definitions SET job_path = ?1, folder_name = ?2, column_name = ?3, column_type = ?4, column_order = ?5, column_width = ?6, is_visible = ?7, default_value = ?8, modified_time = ?9, deleted_at = ?10, template_hash = ?11, trashed_at = ?12, column_uuid = ?13 WHERE id = ?14", rusqlite::params![job, folder, name, kind, order, width, visible, default, time, deleted, hash, trashed, uuid, id])?; (id, true) }
+                    // (not newer - but the trash and a deletion are final: taken all the same)
+                    Some((id, _, ld, lt)) => { if (deleted.is_some() && ld.is_none()) || (trashed.is_some() && lt.is_none() && ld.is_none()) { n += self.conn.execute("UPDATE column_definitions SET deleted_at = COALESCE(deleted_at, ?1), trashed_at = COALESCE(trashed_at, ?2) WHERE id = ?3", rusqlite::params![deleted, trashed, id])?; } (id, false) }
+                };
+                // the options: the snapshot's own when the column was taken from it; else those that are not here yet, by name
+                if whole { self.conn.execute("DELETE FROM column_options WHERE column_id = ?1", [id])?; }
+                n += self.conn.execute("INSERT INTO column_options (column_id, option_name, option_color, modified_time, deleted_at) SELECT ?1, o.option_name, o.option_color, o.modified_time, o.deleted_at FROM snap.column_options o WHERE o.column_id = ?2 AND NOT EXISTS (SELECT 1 FROM column_options m WHERE m.column_id = ?1 AND m.option_name = o.option_name) ORDER BY o.id", rusqlite::params![id, sid])?;
+            }
+            Ok(n)
+        };
+        let r = run(); let _ = self.conn.execute_batch("DETACH DATABASE snap"); r.map_err(e)
+    }
     /// A path as a message carries it, in storage form: an identity as it is; a plain path of this machine classified (1.4.2 accepts both).
     fn wire_path(s: &str) -> String { if s.starts_with("vol:") || s.starts_with("native:") { s.to_string() } else { to_identity(Path::new(s)) } }
     /// An item's row arrived (1.4.2's rule): it replaces ours when it is not older; a time of 0 is "now". True: taken.
@@ -564,6 +625,38 @@ mod tests {
         assert!(b.apply_table(&serde_json::json!({ "action": "col_delete", "column_uuid": "u-status", "deleted_at": 5000 })).unwrap());
         let p = a.pending(); a.pending_done(p[0].0); assert_eq!(a.pending_count(), 1);
         let _ = std::fs::remove_dir_all(&da); let _ = std::fs::remove_dir_all(&db_);
+    }
+    #[test]
+    fn a_snapshot_carries_what_is_shared_and_two_machines_that_only_share_a_folder_converge() {
+        let (da, db_, dir) = (temp("snap-a"), temp("snap-b"), temp("snap-files")); let (a, b) = (Db::open(&da).unwrap(), Db::open(&db_).unwrap()); std::fs::create_dir_all(&dir).unwrap();
+        let job = "vol:1111/jobs/0001_Test"; let (i1, i2) = (format!("{job}/3d/sh010"), format!("{job}/3d/sh020"));
+        let col = |d: &Db, name: &str, uuid: &str, time: i64, opts: &[&str]| { d.conn.execute("INSERT INTO column_definitions (job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, modified_time, column_uuid) VALUES (?1, '3d', ?2, 'dropdown', 0, 120.0, 1, ?3, ?4)", rusqlite::params![job, name, time, uuid]).unwrap(); let id = d.conn.last_insert_rowid(); d.set_options(id, &opts.iter().map(|o| (o.to_string(), None)).collect::<Vec<_>>(), time).unwrap(); };
+        let row = |d: &Db, item: &str, doc: &str, time: i64| { d.conn.execute("INSERT OR REPLACE INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, '3d', ?3, 1, ?4)", rusqlite::params![item, job, doc, time]).unwrap(); };
+        let doc = |d: &Db, item: &str| d.conn.query_row("SELECT metadata_json FROM item_metadata WHERE item_path = ?1", [item], |r| r.get::<_, String>(0)).ok();
+        // nothing shared: nothing is written
+        let f = dir.join("s1.db"); assert!(!a.write_snapshot(&f, None).unwrap()); a.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name) VALUES ('native:mac//x/i', 'native:mac//x', '3d')", []).unwrap(); assert!(!a.write_snapshot(&f, None).unwrap(), "this machine's own rows are never in a snapshot");
+        // A has a column and a row; B has another row, and an OLDER copy of A's
+        col(&a, "Status", "u-status", 1000, &["WIP", "Final"]); row(&a, &i1, "{\"u-status\":\"WIP\"}", 2000); row(&b, &i1, "{}", 1500); row(&b, &i2, "{\"u-status\":\"Final\"}", 3000);
+        assert!(a.write_snapshot(&f, None).unwrap());
+        // the file is 1.4.2's: four tables, the subscriptions' empty
+        { let c = Connection::open(&f).unwrap(); let names: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap().query_map([], |r| r.get(0)).unwrap().flatten().collect(); assert_eq!(names, ["column_definitions", "column_options", "item_metadata", "subscriptions"]);
+            assert_eq!(c.query_row("SELECT count(*) FROM subscriptions", [], |r| r.get::<_, i64>(0)).unwrap(), 0); assert_eq!(c.query_row("SELECT count(*) FROM item_metadata", [], |r| r.get::<_, i64>(0)).unwrap(), 1); }
+        // B merges A's: the newer row replaces its older one, the column and its options arrive, its own row stays
+        assert!(b.merge_snapshot(&f, None).unwrap() >= 2); assert_eq!(doc(&b, &i1).as_deref(), Some("{\"u-status\":\"WIP\"}")); assert_eq!(doc(&b, &i2).as_deref(), Some("{\"u-status\":\"Final\"}"));
+        assert_eq!(b.conn.query_row("SELECT count(*) FROM column_options o JOIN column_definitions d ON d.id = o.column_id WHERE d.column_uuid = 'u-status'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(b.merge_snapshot(&f, None).unwrap(), 0, "the same again changes nothing");
+        // B writes ITS snapshot (now the union), A merges it: both hold the same - through the folder alone, no message between them
+        let g = dir.join("s2.db"); assert!(b.write_snapshot(&g, None).unwrap()); assert!(a.merge_snapshot(&g, None).unwrap() >= 1); assert_eq!(doc(&a, &i2).as_deref(), Some("{\"u-status\":\"Final\"}")); assert_eq!(doc(&a, &i1), doc(&b, &i1));
+        // an older row in a snapshot does not replace a newer one here; a column in the trash there is in the trash here even when ours is newer
+        row(&a, &i1, "{\"u-status\":\"Final\"}", 9000); b.conn.execute("UPDATE column_definitions SET trashed_at = 5000 WHERE column_uuid = 'u-status'", []).unwrap(); a.conn.execute("UPDATE column_definitions SET modified_time = 8000 WHERE column_uuid = 'u-status'", []).unwrap();
+        let h = dir.join("s3.db"); b.write_snapshot(&h, None).unwrap(); a.merge_snapshot(&h, None).unwrap(); assert_eq!(doc(&a, &i1).as_deref(), Some("{\"u-status\":\"Final\"}"));
+        assert_eq!(a.conn.query_row("SELECT trashed_at FROM column_definitions WHERE column_uuid = 'u-status'", [], |r| r.get::<_, Option<i64>>(0)).unwrap(), Some(5000));
+        // the playground: only what is under it is written and merged
+        row(&a, "vol:1111/jobs/other/3d/x", "{}", 100); let k = dir.join("s4.db"); a.write_snapshot(&k, Some(job)).unwrap(); let c = Connection::open(&k).unwrap(); assert_eq!(c.query_row("SELECT count(*) FROM item_metadata WHERE job_path != ?1", [job], |r| r.get::<_, i64>(0)).unwrap(), 0); drop(c);
+        // a file that is not whole is refused, and nothing is changed
+        let bad = dir.join("bad.db"); let bytes = std::fs::read(&f).unwrap(); std::fs::write(&bad, &bytes[..bytes.len() / 2]).unwrap(); assert!(b.merge_snapshot(&bad, None).is_err()); std::fs::write(&bad, b"not a database").unwrap(); assert!(b.merge_snapshot(&bad, None).is_err());
+        assert_eq!(a.pending_count() + b.pending_count(), 0, "what a snapshot brings is not sent on as a change of this machine's");
+        for d in [da, db_, dir] { let _ = std::fs::remove_dir_all(d); }
     }
     #[test]
     fn identities_of_this_machine_only() {

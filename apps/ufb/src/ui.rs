@@ -1443,7 +1443,7 @@ impl Ui {
             "boardsay" => match self.board.as_ref() { Some(b) => eprintln!("UFB_DEMO: board by {:?}: {}", b.by, b.lanes.iter().map(|l| format!("{} [{}]", l.title, l.items.iter().filter_map(|i| self.job.as_ref().and_then(|j| j.items.get(*i))).map(|it| it.name.as_str()).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(" | ")), None => eprintln!("UFB_DEMO: no board (the list)") },
             "carddrop" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { if let Some(v) = self.board.as_ref().and_then(|b| b.lanes.get(k).map(|l| l.value.clone())) { self.board_acts(vec![crate::board::Act::Drop(i, v)]); } } },
             // the mesh: `mesh` says its state
-            "mesh" => eprintln!("UFB_DEMO: mesh {:?}", crate::mesh::status()),
+            "mesh" => eprintln!("UFB_DEMO: mesh {:?}", crate::mesh::status().map(|m| format!("{} leader {:?} peers {} pending {} written {} merged {}", m.node, m.leader, m.peers, m.pending, m.written > 0, m.merged > 0))),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),
             "itemfocus" => if self.job.is_some() { self.focus = Focus::Items; },
