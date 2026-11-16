@@ -88,6 +88,11 @@ impl Grid {
     pub fn cell_rect(&self, i: usize) -> Rect { let c = self.geom.cell(i); Rect::new(c.x0 + self.rect.x0, c.y0 + self.rect.y0 - self.bar.offset, c.x1 + self.rect.x0, c.y1 + self.rect.y0 - self.bar.offset) }
     fn page(&self) -> usize { ((self.rect.height() / self.geom.cell_h) as usize).max(1) * self.geom.cols }
     /// Scroll so that tile `i` is in view.
+    /// Where the NAME of tile `i` is written (under its picture, the tile's width): the place of a field that renames it.
+    pub fn label_rect(&self, i: usize) -> Rect {
+        let c = self.cell_rect(i); let s = self.scale; let side = (self.tile * s).min(c.width() - 2.0 * s); let y = c.y0 + PAD * s + side + PAD * s / 2.0;
+        Rect::new(c.x0 + 2.0 * s, y, c.x1 - 2.0 * s, y + LINE * s)
+    }
     pub fn reveal(&mut self, i: usize) {
         let c = self.geom.cell(i); let h = self.rect.height();
         let o = if c.y0 - self.geom.top < self.bar.offset { c.y0 - self.geom.top } else if c.y1 + self.geom.top > self.bar.offset + h { c.y1 + self.geom.top - h } else { self.bar.offset };

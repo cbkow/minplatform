@@ -4,11 +4,11 @@ version = "2.0.0-dev"
 edition = "2024"
 publish = false
 license = "GPL-3.0-or-later"
-description = "UFB on the platform (Phase 5): a file browser. Slice 2: a browser to look around in - read-only"
+description = "UFB on the platform (Phase 5): a file browser"
 
-# UFB, the rebuild (Phase 5; canon rows 434-467). This slice reads folders and nothing else: no settings file, no
-# database of an installed 1.4.x, and no file of the user's is ever created, renamed, moved or deleted by it. The one
-# thing it writes is its own thumbnail cache, in the system's cache location (row 465).
+# UFB, the rebuild (Phase 5; canon rows 434-469). No settings file, no database of an installed 1.4.x. It changes
+# files only inside the folders it is started with (row 468's safety belt), and writes its own thumbnail cache in the
+# system's cache location (row 465).
 [[bin]]
 name = "UFB"
 path = "src/main.rs"

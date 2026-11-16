@@ -120,6 +120,25 @@ impl Pane {
     pub fn up(&mut self, port: &Port) { let look = self.look(); if let Some(stop) = self.history.up(look) { self.read(port, Some(stop.look), vec![]); } }
     /// Read again what is shown: the choice, the scroll and the folders opened in place are kept as far as they still exist.
     pub fn refresh(&mut self, port: &Port) { let (look, open, search) = (self.look(), self.model.expanded(), self.search.clone()); self.read(port, Some(look), open); self.model.set_filter(&search); self.search = search; }
+    /// Read again and, once read, choose the entries with these names (what an operation made).
+    pub fn refresh_choosing(&mut self, port: &Port, names: Vec<String>) {
+        let (mut look, open, search) = (self.look(), self.model.expanded(), self.search.clone()); if !names.is_empty() { look.selected = names; }
+        self.read(port, Some(look), open); self.model.set_filter(&search); self.search = search;
+    }
+    /// How many entries are chosen.
+    pub fn chosen_count(&self) -> usize { self.chosen.0 }
+    /// The entry at `path`, when it is in this pane's listing (the folder's own, or one opened in place).
+    fn id_at(&self, path: &Path) -> Option<u32> { let rel: Vec<String> = path.strip_prefix(self.path()).ok()?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect(); self.model.id_of(&rel) }
+    /// Where the name of the entry at `path` is written now: the place of the field that renames it.
+    pub fn name_rect(&self, path: &Path) -> Option<Rect> {
+        let id = self.id_at(path)?; let row = self.model.row_of(id)?;
+        Some(if self.mode == Mode::List { let n = self.model.node(id); self.table.name_rect(row, &RowInfo { indent: n.depth, expandable: n.dir, expanded: false, dim: false, plain: false }) } else { self.grid.label_rect(row) })
+    }
+    /// Another entry beside the one at `path` already has `name` (letters' case apart).
+    pub fn name_taken(&self, path: &Path, name: &str) -> bool {
+        let Some(id) = self.id_at(path) else { return false };
+        self.model.find_ci(self.model.node(id).parent, name).is_some_and(|other| other != id)
+    }
     /// The window became active: ask (off this thread) whether the folder changed since it was read.
     pub fn activated(&mut self, port: &Port) { if self.load == Load::Loading || self.probe.is_some() { return } let req = lister::next_req(); self.probe = Some(req); lister::probe(port, req, self.path().to_path_buf()); }
 

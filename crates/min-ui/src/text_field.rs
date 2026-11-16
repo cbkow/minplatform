@@ -64,6 +64,8 @@ impl TextField {
         let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.move_to_byte(caret * B); drop(d);
         self.follow_caret(fonts);
     }
+    /// Choose the bytes `start..end` of the text (a file's name without its extension, for a rename).
+    pub fn select_range(&mut self, start: usize, end: usize, fonts: &mut Fonts) { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.select_byte_range(start, end); drop(d); self.follow_caret(fonts); }
     pub fn select_all(&mut self, fonts: &mut Fonts) { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.select_all(); }
     pub fn hovered(&self) -> bool { self.hovered }
     /// A drag-select is in progress (the owner keeps feeding Move / Up wherever the pointer goes).

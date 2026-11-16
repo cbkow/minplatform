@@ -25,6 +25,8 @@ pub enum Msg {
     Places { volumes: Vec<crate::places::Place>, root: String },
     /// An icon came (see `icons.rs`); nothing to carry - the loop only has to draw again.
     Icon,
+    /// A file operation ended (`ops.rs`): every window hears of it.
+    Op(Arc<crate::ops::Report>),
 }
 
 /// Where a worker sends, and how it wakes the window's loop.

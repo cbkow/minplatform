@@ -124,6 +124,13 @@ impl Table {
         let b = self.body(); if !b.contains(kurbo::Point::new(x, y)) { return None }
         let i = ((y - b.y0 + self.bar.offset) / self.rh()) as usize; (i < self.rows).then_some(i)
     }
+    /// Where the NAME of row `i` is written (the first column, after its indent, its triangle and its icon): the place
+    /// of a field that renames it.
+    pub fn name_rect(&self, i: usize, info: &RowInfo) -> Rect {
+        let r = self.row_rect(i); let s = self.scale; let (x0, x1) = self.cols.first().copied().unwrap_or((r.x0, r.x1));
+        let x = x0 + PAD * s + info.indent as f64 * INDENT * s + SLOT * s + if info.plain { 0.0 } else { (ICON + 6.0) * s };
+        Rect::new(x.min(x1), r.y0, x1.max(x), r.y1)
+    }
     /// Where row `i` lies now (it may be out of view).
     pub fn row_rect(&self, i: usize) -> Rect { let b = self.body(); let y = b.y0 + i as f64 * self.rh() - self.bar.offset; Rect::new(b.x0, y, b.x1, y + self.rh()) }
     fn page(&self) -> usize { ((self.body().height() / self.rh()) as usize).saturating_sub(1).max(1) }

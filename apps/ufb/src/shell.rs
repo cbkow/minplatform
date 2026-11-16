@@ -83,7 +83,7 @@ impl App {
                 #[cfg(not(target_os = "macos"))] { let _ = (id, ask); } }
         } }
         if done || self.windows.is_empty() { self.windows.clear(); el.exit(); }
-        #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); }
+        #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); m.set_undo(crate::ops::undo_label()); }
     }
     /// The drawn menu bar's keys (Windows' rules, as minNotes'): Alt alone, F10, Alt with a letter; while it is open, the arrows, Return, Escape and letters are its own.
     fn menu_bar_takes(&mut self, id: WindowId, event: &winit::event::KeyEvent) -> bool {

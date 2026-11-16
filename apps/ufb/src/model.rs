@@ -119,6 +119,13 @@ impl Model {
     pub fn find_top(&self, name: &str) -> Option<u32> { self.top.iter().copied().find(|id| &*self.nodes[*id as usize].name == name) }
     /// The entry called `name` in `parent` ([`TOP`]: the folder in view), as far as it is read.
     pub fn find_in(&self, parent: u32, name: &str) -> Option<u32> { if parent == TOP { self.find_top(name) } else { self.opened.get(&parent)?.children.iter().copied().find(|id| &*self.nodes[*id as usize].name == name) } }
+    /// The entry of `parent` whose name is `name` but for the case of its letters (a volume that does not tell them apart).
+    pub fn find_ci(&self, parent: u32, name: &str) -> Option<u32> {
+        let want = name.to_lowercase(); let is = |id: &u32| self.nodes[*id as usize].name.to_lowercase() == want;
+        if parent == TOP { self.top.iter().copied().find(|id| is(id)) } else { self.opened.get(&parent)?.children.iter().copied().find(|id| is(id)) }
+    }
+    /// The entry at a path of names from the folder in view.
+    pub fn id_of(&self, rel: &[String]) -> Option<u32> { let mut at = TOP; for name in rel { at = self.find_in(at, name)?; } (at != TOP).then_some(at) }
     /// A path of names may still appear: a folder on the way to it is still being read.
     pub fn waits(&self, path: &[String]) -> bool {
         let mut at = TOP;

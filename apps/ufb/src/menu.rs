@@ -2,16 +2,15 @@
 //! the window on Windows (as minNotes'), and each system's own keys. One table ([`spec`]) feeds both menus and the
 //! key map, so that a key and the menu row that shows it cannot drift apart.
 //!
-//! This slice looks around and changes nothing: what it can do is enabled and wired; everything else the rulings name
-//! (rename, copy, paste, delete, undo, new folder, the Project items) is THERE and disabled, so that the menus already
-//! read as they will.
+//! What is built is enabled and wired; everything else the rulings name (copy, cut, paste, redo, Get Info, the Project
+//! items) is THERE and disabled, so that the menus already read as they will.
 use crate::model::SortBy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Cmd { NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
+pub enum Cmd { NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit }
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]   // the ids are the native menu's (macOS)
 impl Cmd {
-    const ALL: [Cmd; 24] = [Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
+    const ALL: [Cmd; 30] = [Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
     pub fn id(self) -> String { format!("{self:?}") }
     pub fn from_id(id: &str) -> Option<Cmd> { Cmd::ALL.into_iter().find(|c| c.id() == id) }
 }
@@ -52,14 +51,16 @@ pub fn spec(mac: bool) -> Vec<(&'static str, Vec<Node>)> {
     let m = mac;
     vec![
         ("File", vec![
-            item("New Window", cmd("N"), Cmd::NewWindow), later("New Folder", cmd_shift("N")), Node::Sep,
+            item("New Window", cmd("N"), Cmd::NewWindow), item("New Folder", cmd_shift("N"), Cmd::NewFolder), Node::Sep,
             item("Open", if m { cmd("O") } else { bare("Enter") }, Cmd::Open), later("Open With", None), Node::Sep,
-            later("Rename", if m { bare("Enter") } else { bare("F2") }), later("Duplicate", if m { cmd("D") } else { None }), later(if m { "Get Info" } else { "Properties" }, if m { cmd("I") } else { alt("Enter") }),
-            later(if m { "Move to Trash" } else { "Delete" }, if m { cmd("Delete") } else { bare("Delete") }), Node::Sep,
+            item("Rename", if m { bare("Enter") } else { bare("F2") }, Cmd::Rename), item("Duplicate", if m { cmd("D") } else { None }, Cmd::Duplicate), later(if m { "Get Info" } else { "Properties" }, if m { cmd("I") } else { alt("Enter") }),
+            item(if m { "Move to Trash" } else { "Delete" }, if m { cmd("Delete") } else { bare("Delete") }, Cmd::Trash),
+            // (for good: it always asks first)
+            item(if m { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }, if m { cmd_alt("Delete") } else { Some(Sc { cmd: false, shift: true, alt: false, key: "Delete" }) }, Cmd::DeleteNow), Node::Sep,
             item("Close Window", cmd("W"), Cmd::CloseWindow),
         ]),
         ("Edit", vec![
-            later("Undo", cmd("Z")), later("Redo", if m { cmd_shift("Z") } else { cmd("Y") }), Node::Sep,
+            item("Undo", cmd("Z"), Cmd::Undo), later("Redo", if m { cmd_shift("Z") } else { cmd("Y") }), Node::Sep,
             later("Cut", cmd("X")), later("Copy", cmd("C")), later("Paste", cmd("V")), Node::Sep,
             item("Select All", cmd("A"), Cmd::SelectAll), Node::Sep,
             // (row 450: these two have no key on purpose - not a thing to do by accident)
@@ -108,10 +109,13 @@ pub fn tip(text: &str, c: Cmd) -> String { match key_label(cfg!(target_os = "mac
 
 /// What the menus show of the window in front: the ticks, and which rows can act.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct State { pub grid: bool, pub hidden: bool, pub folders_first: bool, pub second: bool, pub sort: SortBy, pub can_back: bool, pub can_forward: bool, pub can_up: bool }
+pub struct State { pub grid: bool, pub hidden: bool, pub folders_first: bool, pub second: bool, pub sort: SortBy, pub can_back: bool, pub can_forward: bool, pub can_up: bool,
+    /// how many entries are chosen in the active pane (2: more than one); something can be undone; things may be changed in this folder
+    pub chosen: u8, pub undo: bool, pub writable: bool }
 impl State {
     fn checked(&self, c: Cmd) -> bool { match c { Cmd::AsList => !self.grid, Cmd::AsGrid => self.grid, Cmd::Hidden => self.hidden, Cmd::FoldersFirst => self.folders_first, Cmd::SecondPane => self.second, Cmd::Sort(i) => self.sort.column() == i as usize, _ => false } }
-    fn enabled(&self, c: Cmd) -> bool { match c { Cmd::Back => self.can_back, Cmd::Forward => self.can_forward, Cmd::Up => self.can_up, _ => true } }
+    fn enabled(&self, c: Cmd) -> bool { match c { Cmd::Back => self.can_back, Cmd::Forward => self.can_forward, Cmd::Up => self.can_up,
+        Cmd::NewFolder => self.writable, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo, _ => true } }
 }
 
 /// The menu bar drawn in the window (Windows; `UFB_MENU_BAR=1` shows it on macOS, to look at).
@@ -148,7 +152,7 @@ mod native {
     use muda::{accelerator::{Accelerator, Code, Modifiers}, AboutMetadata, CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
     /// The application's menu bar. Its rows carry the command's name as their id.
-    pub struct AppMenu { pub menu: Menu, checks: Vec<(Cmd, CheckMenuItem)>, items: Vec<(Cmd, MenuItem)>, state: Option<State> }
+    pub struct AppMenu { pub menu: Menu, checks: Vec<(Cmd, CheckMenuItem)>, items: Vec<(Cmd, MenuItem)>, state: Option<State>, undo: Option<String> }
 
     /// A key as AppKit's key equivalent. Only keys WITH the command key become one: a bare Return or Delete as a menu's
     /// key would be taken from every text field.
@@ -180,7 +184,7 @@ mod native {
                 &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
             let _ = menu.append(&app);
             for (title, nodes) in spec(true) { let sub = Submenu::new(title, true); fill(&sub, nodes, &mut checks, &mut items); let _ = menu.append(&sub); if title == "Window" { sub.set_as_windows_menu_for_nsapp(); } }
-            AppMenu { menu, checks, items, state: None }
+            AppMenu { menu, checks, items, state: None, undo: None }
         }
         /// Before the application launches: no "Enter Full Screen" and no window tabs added by AppKit to our menus (as minNotes).
         pub fn quiet_appkit_extras() {
@@ -190,6 +194,12 @@ mod native {
             NSUserDefaults::standardUserDefaults().setBool_forKey(false, &NSString::from_str("NSFullScreenMenuItemEverywhere"));
         }
         /// The ticks and the rows that can act, for the window in front.
+        /// The Edit menu names the step Undo would undo ("Undo Rename").
+        pub fn set_undo(&mut self, label: Option<String>) {
+            if self.undo == label { return }
+            if let Some((_, i)) = self.items.iter().find(|(c, _)| *c == Cmd::Undo) { i.set_text(match &label { Some(l) => format!("Undo {l}"), None => "Undo".into() }); }
+            self.undo = label;
+        }
         pub fn sync(&mut self, st: State) {
             if self.state == Some(st) { return } self.state = Some(st);
             for (c, i) in &self.checks { i.set_checked(st.checked(*c)); }
@@ -206,20 +216,22 @@ mod tests {
         // macOS (row 450)
         assert_eq!(shortcut(true, "[", true, false, false), Some(Cmd::Back)); assert_eq!(shortcut(true, "]", true, false, false), Some(Cmd::Forward)); assert_eq!(shortcut(true, "Up", true, false, false), Some(Cmd::Up));
         assert_eq!(shortcut(true, "Down", true, false, false), Some(Cmd::Open)); assert_eq!(shortcut(true, "o", true, false, false), Some(Cmd::Open)); assert_eq!(shortcut(true, "g", true, true, false), Some(Cmd::GoToFolder));
-        assert_eq!(shortcut(true, ".", true, true, false), Some(Cmd::Hidden)); assert_eq!(shortcut(true, "r", true, false, false), Some(Cmd::Refresh)); assert_eq!(shortcut(true, "Enter", false, false, false), None, "Return is Rename on macOS - not this slice's");
+        assert_eq!(shortcut(true, ".", true, true, false), Some(Cmd::Hidden)); assert_eq!(shortcut(true, "r", true, false, false), Some(Cmd::Refresh)); assert_eq!(shortcut(true, "Enter", false, false, false), Some(Cmd::Rename), "Return is Rename on macOS");
+        assert_eq!(shortcut(true, "Delete", true, false, false), Some(Cmd::Trash)); assert_eq!(shortcut(true, "Delete", true, false, true), Some(Cmd::DeleteNow)); assert_eq!(shortcut(true, "d", true, false, false), Some(Cmd::Duplicate)); assert_eq!(shortcut(true, "Delete", false, false, false), None, "a bare Delete does nothing on macOS");
         assert_eq!(shortcut(true, "Left", false, false, true), None); assert_eq!(shortcut(true, "F5", false, false, false), None);
         // Windows
         assert_eq!(shortcut(false, "Left", false, false, true), Some(Cmd::Back)); assert_eq!(shortcut(false, "Right", false, false, true), Some(Cmd::Forward)); assert_eq!(shortcut(false, "Up", false, false, true), Some(Cmd::Up));
         assert_eq!(shortcut(false, "Backspace", false, false, false), Some(Cmd::Back)); assert_eq!(shortcut(false, "F5", false, false, false), Some(Cmd::Refresh)); assert_eq!(shortcut(false, "r", true, false, false), Some(Cmd::Refresh));
         assert_eq!(shortcut(false, "l", true, false, false), Some(Cmd::GoToFolder)); assert_eq!(shortcut(false, "F4", false, false, false), Some(Cmd::GoToFolder)); assert_eq!(shortcut(false, "Enter", false, false, false), Some(Cmd::Open));
+        assert_eq!(shortcut(false, "F2", false, false, false), Some(Cmd::Rename)); assert_eq!(shortcut(false, "Delete", false, false, false), Some(Cmd::Trash)); assert_eq!(shortcut(false, "Delete", false, true, false), Some(Cmd::DeleteNow), "Shift+Delete: for good (it asks)");
         assert_eq!(shortcut(false, "h", true, false, false), Some(Cmd::Hidden)); assert_eq!(shortcut(false, ".", true, true, false), Some(Cmd::Hidden)); assert_eq!(shortcut(false, "[", true, false, false), None);
         // both
         for mac in [true, false] {
             assert_eq!(shortcut(mac, "1", true, false, false), Some(Cmd::AsList)); assert_eq!(shortcut(mac, "2", true, false, false), Some(Cmd::AsGrid)); assert_eq!(shortcut(mac, "n", true, false, false), Some(Cmd::NewWindow));
             assert_eq!(shortcut(mac, "w", true, false, false), Some(Cmd::CloseWindow)); assert_eq!(shortcut(mac, "f", true, false, false), Some(Cmd::Find)); assert_eq!(shortcut(mac, "a", true, false, false), Some(Cmd::SelectAll));
-            // what is not this slice's has a row and a key shown, and no command: copy, paste, undo, new folder, delete
-            for (key, sh) in [("c", false), ("v", false), ("x", false), ("z", false), ("n", true)] { assert_eq!(shortcut(mac, key, true, sh, false), None, "{key}"); }
-            assert_eq!(shortcut(mac, "Delete", mac, false, false), None);
+            assert_eq!(shortcut(mac, "z", true, false, false), Some(Cmd::Undo)); assert_eq!(shortcut(mac, "n", true, true, false), Some(Cmd::NewFolder));
+            // what is not built yet has a row and a key shown, and no command: copy, cut, paste
+            for key in ["c", "v", "x"] { assert_eq!(shortcut(mac, key, true, false, false), None, "{key}"); }
         }
     }
     #[test]
@@ -228,8 +240,8 @@ mod tests {
             let s = spec(mac); assert_eq!(s.iter().map(|m| m.0).collect::<Vec<_>>(), ["File", "Edit", "View", "Go", "Project", "Window", "Help"]);
             let mut rows: Vec<(&str, bool)> = vec![]; for (_, nodes) in &s { walk(nodes, &mut |n| match n { Node::Item { label, cmd, .. } => rows.push((label, cmd.is_some())), Node::Check { label, .. } => rows.push((label, true)), _ => {} }); }
             let has = |label: &str, on: bool| assert!(rows.contains(&(label, on)), "{label} ({})", if on { "enabled" } else { "disabled" });
-            for l in ["New Window", "Close Window", "Open", "Select All", "as List", "as Grid", "Show Hidden Files", "Folders First", "Show Second Pane", "Name", "Date Modified", "Size", "Kind", "Refresh", "Back", "Forward", "Enclosing Folder", "Home", "Desktop", "Downloads", "Go to Folder\u{2026}", "Minimize"] { has(l, true); }
-            for l in ["New Folder", "Rename", "Undo", "Redo", "Cut", "Copy", "Paste", "Copy to Other Pane", "Move to Other Pane", if mac { "Move to Trash" } else { "Delete" }, if mac { "Get Info" } else { "Properties" }] { has(l, false); }
+            for l in ["New Window", "Close Window", "Open", "Select All", "as List", "as Grid", "Show Hidden Files", "Folders First", "Show Second Pane", "Name", "Date Modified", "Size", "Kind", "Refresh", "Back", "Forward", "Enclosing Folder", "Home", "Desktop", "Downloads", "Go to Folder\u{2026}", "Minimize", "New Folder", "Rename", "Duplicate", "Undo", if mac { "Move to Trash" } else { "Delete" }, if mac { "Delete Immediately\u{2026}" } else { "Delete Permanently\u{2026}" }] { has(l, true); }
+            for l in ["Redo", "Cut", "Copy", "Paste", "Copy to Other Pane", "Move to Other Pane", if mac { "Get Info" } else { "Properties" }] { has(l, false); }
             // the two that move files between the panes have NO key (row 450)
             for (_, nodes) in &s { walk(nodes, &mut |n| if let Node::Item { label, sc, .. } = n { if label.ends_with("Other Pane") { assert!(sc.is_none()); } }); }
         }
@@ -240,7 +252,11 @@ mod tests {
         assert_eq!(cmd_shift("N").unwrap().label(false), "Ctrl+Shift+N"); assert_eq!(alt("Left").unwrap().label(false), "Alt+Left"); assert_eq!(bare("F5").unwrap().label(false), "F5"); assert_eq!(Sc { cmd: false, shift: true, alt: false, key: "Delete" }.label(false), "Shift+Delete");
         assert_eq!(cmd_shift("G").unwrap().label(true), "\u{21e7}\u{2318}G"); assert_eq!(cmd("Up").unwrap().label(true), "\u{2318}\u{2191}"); assert_eq!(cmd_alt("L").unwrap().label(true), "\u{2325}\u{2318}L");
         assert_eq!(key_label(true, Cmd::Back).as_deref(), Some("\u{2318}[")); assert_eq!(key_label(false, Cmd::Back).as_deref(), Some("Alt+Left")); assert_eq!(key_label(false, Cmd::SecondPane), None);
-        let st = State { grid: true, hidden: false, folders_first: true, second: false, sort: SortBy::Size, can_back: false, can_forward: true, can_up: true };
+        let st = State { grid: true, hidden: false, folders_first: true, second: false, sort: SortBy::Size, can_back: false, can_forward: true, can_up: true, chosen: 1, undo: false, writable: true };
+        // what changes files follows the choice, the undo list and whether this folder may be changed
+        assert!(st.enabled(Cmd::Rename) && st.enabled(Cmd::Trash) && st.enabled(Cmd::NewFolder) && !st.enabled(Cmd::Undo));
+        assert!(!State { chosen: 2, ..st }.enabled(Cmd::Rename) && State { chosen: 2, ..st }.enabled(Cmd::Duplicate) && !State { chosen: 0, ..st }.enabled(Cmd::Trash) && State { undo: true, ..st }.enabled(Cmd::Undo));
+        assert!(!State { writable: false, ..st }.enabled(Cmd::NewFolder) && !State { writable: false, ..st }.enabled(Cmd::DeleteNow));
         assert!(st.checked(Cmd::AsGrid) && !st.checked(Cmd::AsList) && st.checked(Cmd::Sort(2)) && !st.checked(Cmd::Sort(0)) && st.checked(Cmd::FoldersFirst)); assert!(!st.enabled(Cmd::Back) && st.enabled(Cmd::Forward) && st.enabled(Cmd::Refresh));
     }
 }

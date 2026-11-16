@@ -30,7 +30,13 @@ use winit31::window::Window;
 pub enum Out { NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Focus { Pane, Path, Search }
+enum Focus { Pane, Path, Search, Rename }
+/// A name being changed in place (row 437): the entry, its field over the name.
+struct Renaming { pane: usize, path: PathBuf, dir: bool, field: TextField }
+/// What an open question is about.
+enum Asked { /// delete these for good
+    Delete(Vec<PathBuf>), /// the extension would change: the entry, the name typed, the name with the old extension kept
+    Extension { path: PathBuf, typed: String, kept: String } }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split }
 struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool }
@@ -54,6 +60,11 @@ pub struct Ui {
     /// the scripted looks: the steps still to do, a wait, the picture to save, since when nothing is pending
     /// the window's title as it was last set: the active pane's folder
     titled: String,
+    /// this window among the application's (a file operation's report says which window asked)
+    id: u64,
+    /// a name being changed in place; a question that is open; what went wrong, said at the window's foot;
+    /// the entry to rename as soon as its folder is read again (a new folder goes straight into its name)
+    rename: Option<Renaming>, dialog: Option<(min_ui::dialog::Dialog, Asked)>, toast: min_ui::toast::Toast, rename_next: Option<PathBuf>,
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
     menu_for: Option<(Option<usize>, PathBuf)>,
     demo: VecDeque<String>, demo_until: Option<Instant>, shot: Option<PathBuf>, settled: Option<Instant>, tip_demo: Option<String>, born: Instant,
@@ -76,6 +87,8 @@ impl Ui {
         static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true); let first = FIRST.swap(false, std::sync::atomic::Ordering::Relaxed);
         let demo = std::env::var("UFB_DEMO").ok().filter(|_| first).map(|d| d.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let key = |c: Cmd, text: &str| menu::tip(text, c);
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1); let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::ops::subscribe(port.clone());
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
@@ -84,14 +97,15 @@ impl Ui {
             path_rect: Rect::ZERO, crumbs: vec![], crumbs_for: None, field: TextField::new(Family::Sans, t::BODY_SIZE_S), path_error: None, check: None,
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 2], over_gap: None, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
-            titled: String::new(), menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
     fn pane(&mut self) -> &mut Pane { let i = self.active.min(self.panes.len() - 1); &mut self.panes[i] }
     fn shown(&self) -> usize { if self.two { self.panes.len().min(2) } else { 1 } }
     /// What the menus show of this window.
-    pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some() } }
+    pub fn menu_state(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.history.parent().is_some(),
+        chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()) } }
 
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
@@ -103,6 +117,7 @@ impl Ui {
                 Msg::Places { volumes, root } => { self.volumes = volumes; self.root = root; self.crumbs_for = None; }
                 Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); let port = self.port.clone(); self.pane().go(&port, path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
                 Msg::Icon => { self.icons.poll(); self.thumbs.poll(); }
+                Msg::Op(rep) => self.on_report(&rep),
                 other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { if std::mem::take(&mut p.listed) { self.thumbs.listed(p.path()); } break } } }
             }
         }
@@ -111,6 +126,74 @@ impl Ui {
     /// The window became active: the volumes are looked for again, and each pane asks whether its folder changed.
     pub fn activated(&mut self) { places::refresh(&self.port); let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } }
     pub fn deactivated(&mut self) { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
+
+    // ---------------------------------------------------------------- file operations (`ops.rs`)
+    /// An operation ended (in this window or another): the panes that show a folder it changed read it again; the
+    /// window that asked chooses what was made, says what went wrong, and asks what is left to ask.
+    fn on_report(&mut self, rep: &crate::ops::Report) {
+        let mine = rep.origin == self.id; let port = self.port.clone(); let now = Instant::now();
+        for (i, p) in self.panes.iter_mut().enumerate() {
+            if !rep.changed.iter().any(|c| c.starts_with(p.path())) { continue }
+            let here: Vec<String> = if mine && i == self.active { rep.made.iter().filter(|m| m.parent() == Some(p.path())).filter_map(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()).collect() } else { vec![] };
+            p.refresh_choosing(&port, here);
+        }
+        if self.rename.as_ref().is_some_and(|r| rep.changed.iter().any(|c| r.path.starts_with(c))) { self.end_rename(); }
+        if !mine { return }
+        if let Some(why) = &rep.error { self.toast.show(why, min_ui::toast::ToastKind::Negative, now); }
+        // a new folder goes straight into its name (row 437)
+        if rep.kind == Some(crate::ops::Kind::NewFolder) { self.rename_next = rep.made.first().cloned(); }
+        if !rep.no_trash.is_empty() { self.ask_delete(rep.no_trash.clone(), true); }
+    }
+    fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_entries(usize::MAX).into_iter().map(|e| e.0).collect() }
+    /// "Delete for good?" - always asked (row 468, point 3). `no_trash`: asked because the volume has no Trash.
+    fn ask_delete(&mut self, paths: Vec<PathBuf>, no_trash: bool) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        if paths.is_empty() { return }
+        let what = if paths.len() == 1 { format!("\u{201c}{}\u{201d}", paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) } else { format!("{} items", crate::pane::group(paths.len())) };
+        let body = if no_trash { "This volume has no Trash. What is deleted here is gone at once and cannot be brought back." } else { "This cannot be undone." };
+        // (the last button is the one Return gives: it is Cancel)
+        let mut d = Dialog::new(&format!("Delete {what} immediately?"), body, vec![("Delete", Variant::Negative), ("Cancel", Variant::Primary)]); d.show();
+        self.dialog = Some((d, Asked::Delete(paths)));
+    }
+    /// A button of the open question was chosen (`button`: its place; the last one is the careful answer).
+    fn answer(&mut self, button: usize) {
+        let Some((_, asked)) = self.dialog.take() else { return };
+        match asked {
+            Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
+            Asked::Extension { path, typed, kept } => { let name = if button == 0 { typed } else { kept }; if path.file_name().is_some_and(|n| n.to_string_lossy() != name.as_str()) { crate::ops::submit(self.id, crate::ops::Op::Rename { path, name }); } }
+        }
+    }
+    /// Rename in place (row 437): the one chosen entry's name becomes a field, the name chosen without its extension.
+    fn start_rename(&mut self) {
+        let i = self.active.min(self.panes.len() - 1); let entries = self.panes[i].chosen_entries(2); if entries.len() != 1 { return }
+        let (path, dir, _) = entries.into_iter().next().unwrap(); let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
+        if !crate::ops::allowed_in(path.parent().unwrap_or(&path)) { self.toast.show(crate::ops::GUARDED, min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        let mut field = TextField::new(Family::Sans, t::BODY_SIZE_S); field.set_text(&name); field.focused = true;
+        let stem = if dir { name.len() } else { match name.rfind('.') { Some(k) if k > 0 => k, _ => name.len() } };
+        field.select_range(0, stem, &mut self.fonts);
+        self.leave_path(); self.leave_search(); self.focus = Focus::Rename; self.rename = Some(Renaming { pane: i, path, dir, field });
+    }
+    fn end_rename(&mut self) { self.rename = None; if self.focus == Focus::Rename { self.focus = Focus::Pane; } }
+    /// The field's name is taken. A name that cannot be given, or that another entry has, is refused and the field
+    /// stays open; a changed extension is asked about first, as Finder asks (Windows does not).
+    fn commit_rename(&mut self) {
+        let Some(r) = self.rename.as_mut() else { return }; let now = Instant::now();
+        let typed = r.field.text().to_string(); let old = r.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if typed == old || typed.is_empty() { self.end_rename(); return }
+        let fault = crate::ops::name_fault(&typed).or_else(|| self.panes.get(r.pane).is_some_and(|p| p.name_taken(&r.path, &typed)).then(|| crate::ops::taken(&typed)));
+        if let Some(why) = fault { r.field.error = true; self.toast.show(&why, min_ui::toast::ToastKind::Negative, now); return }
+        let (path, dir) = (r.path.clone(), r.dir); self.end_rename();
+        let ext = |n: &str| match n.rfind('.') { Some(k) if k > 0 && k + 1 < n.len() => n[k..].to_string(), _ => String::new() };
+        let (was, is) = (ext(&old), ext(&typed));
+        if cfg!(target_os = "macos") && !dir && was.to_lowercase() != is.to_lowercase() && !was.is_empty() {
+            use min_ui::{dialog::Dialog, text_button::Variant};
+            let stem = if is.is_empty() { typed.as_str() } else { &typed[..typed.len() - is.len()] }; let kept = format!("{stem}{was}");
+            let (title, change) = if is.is_empty() { (format!("Are you sure you want to remove the extension \u{201c}{was}\u{201d}?"), "Remove".to_string()) } else { (format!("Are you sure you want to change the extension from \u{201c}{was}\u{201d} to \u{201c}{is}\u{201d}?"), format!("Use {is}")) };
+            let mut d = Dialog::new(&title, "If you make this change, your file may open in a different application.", vec![(change.as_str(), Variant::Secondary), (format!("Keep {was}").as_str(), Variant::Primary)]); d.show();
+            self.dialog = Some((d, Asked::Extension { path, typed, kept })); return
+        }
+        crate::ops::submit(self.id, crate::ops::Op::Rename { path, name: typed });
+    }
 
     // ---------------------------------------------------------------- commands
     fn go(&mut self, path: PathBuf) { let port = self.port.clone(); self.pane().go(&port, path); }
@@ -136,11 +219,20 @@ impl Ui {
     fn leave_search(&mut self) { if self.focus == Focus::Search { self.focus = Focus::Pane; } self.search.focused = false; }
     pub fn command(&mut self, c: Cmd) {
         let port = self.port.clone();
+        // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
+        // and not under an open question (the system's menu keys would otherwise reach them from a text field)
+        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
         match c {
+            Cmd::NewFolder => { let dir = self.pane().path().to_path_buf(); crate::ops::submit(self.id, crate::ops::Op::NewFolder { dir }); }
+            Cmd::Rename => self.start_rename(),
+            Cmd::Duplicate => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Duplicate { paths }); } }
+            Cmd::Trash => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Trash { paths }); } }
+            Cmd::DeleteNow => { let paths = self.chosen_paths(); self.ask_delete(paths, false); }
+            Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo),
             Cmd::NewWindow => { let p = self.pane().path().to_path_buf(); self.out.push(Out::NewWindow(p)); }
             Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.out.push(Out::Quit),
             Cmd::Open => self.pane().open_chosen(&port),
-            Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Pane => self.pane().select_all() },
+            Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all() },
             Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } }
@@ -181,12 +273,13 @@ impl Ui {
     }
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
-        use crate::ctxmenu::{CONTENTS, NEW_WINDOW, OPEN, REFRESH};
+        use crate::ctxmenu::{CONTENTS, DUPLICATE, NEW_FOLDER, NEW_WINDOW, OPEN, REFRESH, RENAME, TRASH};
         let Some((pane, folder)) = self.menu_for.clone() else { return };
         match id {
             OPEN | CONTENTS => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.go(folder); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
-            REFRESH => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Refresh); }
+            REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
+                self.command(match id { RENAME => Cmd::Rename, TRASH => Cmd::Trash, NEW_FOLDER => Cmd::NewFolder, DUPLICATE => Cmd::Duplicate, _ => Cmd::Refresh }); }
             _ => {}
         }
     }
@@ -196,6 +289,15 @@ impl Ui {
         if matches!(e, Event::Down { .. }) { self.tips.pressed(now); self.tip_demo = None; }
         // the drawn menu bar and its open menus take the pointer first
         if let Some(mb) = self.menubar.as_mut() { let (chosen, _, consumed) = mb.bar.event(e, &mut self.fonts); if let Some(c) = chosen.and_then(|id| mb.cmd(id)) { self.command(c); return } if consumed { return } }
+        // an open question takes everything
+        if let Some((d, _)) = self.dialog.as_mut() { let (clicked, _) = d.event(e, now); if let Some(b) = clicked { self.answer(b); } return }
+        { let (_, _, consumed) = self.toast.event(e); if consumed { return } }
+        // a name being changed: the field takes what is on it; a press anywhere else takes the name as typed (as Finder does)
+        if let Some(r) = self.rename.as_mut() {
+            let on = e.pos().is_some_and(|(x, y)| r.field.hit(x, y));
+            if on || r.field.dragging() { r.field.pointer(e, &mut self.fonts); return }
+            if matches!(e, Event::Down { .. }) { self.commit_rename(); if self.rename.is_some() || self.dialog.is_some() { return } }
+        }
         // a new window (row 448): the middle button on a folder, a sidebar row or a segment of the path; the command key
         // (Ctrl on Windows) with a click on a sidebar row or a segment - in a pane that click is the selection's
         if let Event::Down { x, y, button } = *e { let middle = button == Button::Middle;
@@ -257,18 +359,25 @@ impl Ui {
         self.set_cursor(if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
-    pub fn paste(&mut self, text: &str) { match self.focus { Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Pane => {} } }
+    pub fn paste(&mut self, text: &str) { match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Pane => {} } }
     /// A key for the drawn menu bar: (the command of the row chosen, redraw, the key was the bar's).
     pub fn with_menu_key(&mut self, k: &min_ui::BarKey) -> (Option<Cmd>, bool, bool) { match self.menubar.as_mut() { Some(mb) => { let (id, redraw, consumed) = mb.bar.key(k, &mut self.fonts); (id.and_then(|i| mb.cmd(i)), redraw, consumed) } None => (None, false, false) } }
     /// A text field holds the keyboard (the clipboard's keys are its).
     pub fn typing(&self) -> bool { self.focus != Focus::Pane }
     /// The chosen text of the field in hand, for a copy; `cut` takes it out.
-    pub fn copy(&mut self, cut: bool) -> Option<String> { match self.focus { Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Pane => None } }
+    pub fn copy(&mut self, cut: bool) -> Option<String> { match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Pane => None } }
     /// A key. `name`: the key as the key map names it ("N", "[", "Up", "F5"); `alt`: the Alt / Option key is down;
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
+        // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
+        if self.dialog.is_some() { if matches!(k.key, Key::Named(Named::Enter | Named::Escape)) { let last = self.dialog.as_ref().map(|(d, _)| d.buttons.len().saturating_sub(1)).unwrap_or(0); self.answer(last); } return }
         match self.focus {
+            Focus::Rename => {
+                let Some(r) = self.rename.as_mut() else { self.focus = Focus::Pane; return };
+                match r.field.key(k, &mut self.fonts) { FieldResponse::Accepted => self.commit_rename(), FieldResponse::Cancelled => self.end_rename(), FieldResponse::Changed => r.field.error = false, FieldResponse::None => {} }
+                return
+            }
             Focus::Path => {
                 match self.field.key(k, &mut self.fonts) { FieldResponse::Accepted => self.submit_path(), FieldResponse::Cancelled => self.leave_path(), FieldResponse::Changed => { self.path_error = None; self.field.error = false; } FieldResponse::None => {} }
                 return
@@ -292,7 +401,6 @@ impl Ui {
             Key::Named(Named::Tab) if !k.cmd && !alt => { if self.two && self.panes.len() > 1 { self.active = 1 - self.active.min(1); } return }
             // Space is the lightbox's (a later slice): nothing yet, and it is not a letter to find a name by
             Key::Char(c) if c == " " && !k.cmd => { if self.pane().sel().typed(now).is_empty() { return } }
-            // Return is Rename on macOS (row 450) - not this slice's; it does not open
             Key::Named(Named::Enter) if mac => return,
             Key::Named(Named::Escape) => { if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } return }
             _ => {}
@@ -326,6 +434,11 @@ impl Ui {
             "sidebar" => if let Ok(px) = arg.parse::<f64>() { self.side_w = px.clamp(SIDE_MIN, SIDE_MAX); },
             "menu" => if let (Some(mb), Some(ch)) = (self.menubar.as_mut(), arg.chars().next()) { mb.bar.key(&min_ui::BarKey::Alt(ch.to_ascii_lowercase()), &mut self.fonts); },
             "newwindow" => self.command(Cmd::NewWindow),
+            // the file operations, as the menus give them: `newfolder` `rename` `type:<text>` (into the name's field) `accept` `cancel` `duplicate` `trash` `deletenow` `undo` `answer:<button>`
+            "newfolder" => self.command(Cmd::NewFolder), "rename" => self.command(Cmd::Rename), "duplicate" => self.command(Cmd::Duplicate), "trash" => self.command(Cmd::Trash), "deletenow" => self.command(Cmd::DeleteNow), "undo" => self.command(Cmd::Undo),
+            "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
+            "accept" => self.commit_rename(), "cancel" => self.end_rename(),
+            "answer" => if let Some(b) = num(arg) { self.answer(b); },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
             "context" => { let at = if arg == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(n) = arg.strip_prefix("side").and_then(num) { self.side_rows.get(n).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(arg).and_then(|n| self.pane().row_point(n)) };
                 if let Some((x, y)) = at { self.pointer(&Event::Down { x, y, button: Button::Secondary }); self.pointer(&Event::Up { x, y, button: Button::Secondary }); } }
@@ -349,7 +462,7 @@ impl Ui {
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
         self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn].iter().any(|b| b.animating(now))
-            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.focus != Focus::Pane || self.path_error.is_some() || !self.demo.is_empty() || (self.shot.is_some() && !self.done)
+            || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.focus != Focus::Pane || self.dialog.is_some() || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || !self.demo.is_empty() || (self.shot.is_some() && !self.done)
     }
     /// The path bar's segments as buttons, made anew when the path, the startup disk's name or the room changes.
     fn make_crumbs(&mut self, room: f64, s: f64) {
@@ -386,6 +499,17 @@ impl Ui {
         let head_h = if n == 2 { HEAD * s } else { 0.0 };
         for i in 0..n { let (x0, x1) = if n == 1 { (body.x0, body.x1) } else if i == 0 { (body.x0, split_x) } else { (split_x + s, body.x1) };
             self.pane_heads[i] = Rect::new(x0, body.y0, x1, body.y0 + head_h); let active = i == self.active; self.panes[i].layout(Rect::new(x0, body.y0 + head_h, x1, body.y1), s, active); }
+        // a new folder goes straight into its name, as soon as its row is there
+        if let Some(path) = self.rename_next.clone() { let i = self.active; if !self.panes[i].loading() { self.rename_next = None; if self.focus == Focus::Pane && self.dialog.is_none() && self.panes[i].name_rect(&path).is_some() { self.start_rename(); } } }
+        // the field of a name being changed lies over the name (its entry gone: the rename is over)
+        if let Some(r) = self.rename.as_mut() {
+            match self.panes.get(r.pane).filter(|_| r.pane < n).and_then(|p| p.name_rect(&r.path).map(|q| (q, p.rect, p.mode))) {
+                Some((q, pane, mode)) => { let fh = (t::FIELD_HEIGHT_M as f64 * s).min(30.0 * s); let cy = (q.y0 + q.y1) / 2.0;
+                    let (x0, x1) = if mode == Mode::List { (q.x0 - 6.0 * s, (q.x0 + 420.0 * s).min(q.x1).max(q.x0 + 80.0 * s)) } else { (q.x0, q.x1) };
+                    r.field.layout(&mut self.fonts, Rect::new(x0.max(pane.x0), cy - fh / 2.0, x1.min(pane.x1), cy + fh / 2.0), s); }
+                None => { self.rename = None; if self.focus == Focus::Rename { self.focus = Focus::Pane; } }
+            }
+        }
         // the toolbar's controls, from both ends; the path bar takes what is left
         let bh = t::ACTION_BUTTON_HEIGHT_M as f64 * s; let by = tool.y0 + (tool.height() - bh) / 2.0; let pad = 8.0 * s; let radius = t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s;
         let grid_mode = self.panes[self.active].mode == Mode::Grid; let wide = tool.width() / s;
@@ -428,6 +552,7 @@ impl Ui {
             self.panes[i].paint(scene, fonts, &mut self.icons, &mut self.thumbs, s, now);
         }
         self.thumbs.end_frame();
+        if let Some(r) = self.rename.as_mut() { let clip = self.panes[r.pane.min(n - 1)].rect; scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &clip); r.field.paint(scene, fonts, s); scene.pop_layer(); }
         if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); paint::rect(scene, Rect::new(split_x, body.y0, split_x + if hot { 2.0 * s } else { s }, body.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
 
         // -- the toolbar
@@ -513,6 +638,9 @@ impl Ui {
         let shown_now = if self.tip_demo.is_some() { now - Duration::from_millis(t::TOOLTIP_DELAY as u64 + 50).min(now.duration_since(self.born)) } else { now };
         self.tips.hover(over.as_ref().map(|(k, r, text)| (*k, *r, text.as_str())), shown_now); self.tips.tick(now); self.tips.paint(scene, fonts, s, Rect::new(0.0, 0.0, w, h), now);
         if let Some(mb) = self.menubar.as_ref() { mb.bar.paint_menus(scene, fonts, s); }
+        // what went wrong, at the window's foot; an open question over everything
+        self.toast.tick(now); self.toast.paint(scene, fonts, Rect::new(0.0, 0.0, w, status.y0), s, now);
+        if let Some((d, _)) = self.dialog.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); d.layout(fonts, bounds, s); d.paint(scene, fonts, s, bounds, now); }
 
         self.layer.render(&self.presenter.engine.device, &self.presenter.engine.queue);
         let window = self.window.clone(); self.presenter.draw(|| window.pre_present_notify());
