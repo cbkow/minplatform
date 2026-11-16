@@ -6,7 +6,7 @@ publish = false
 license = "GPL-3.0-or-later"
 description = "UFB on the platform (Phase 5): a file browser. Slice 2: a browser to look around in - read-only"
 
-# UFB, the rebuild (Phase 5; canon rows 434-466). This slice reads folders and nothing else: no settings file, no
+# UFB, the rebuild (Phase 5; canon rows 434-467). This slice reads folders and nothing else: no settings file, no
 # database of an installed 1.4.x, and no file of the user's is ever created, renamed, moved or deleted by it. The one
 # thing it writes is its own thumbnail cache, in the system's cache location (row 465).
 [[bin]]
@@ -27,6 +27,10 @@ png = { workspace = true }
 arboard = { workspace = true }
 # the family's decoders, used in the HELPER copies of this executable only (canon row 456)
 min-image = { path = "../../crates/min-image" }
+# a video's frame: the family's player (FFmpeg) and its colour stage; Radiance HDR: the `image` crate's reader
+qcv-player = { path = "../../crates/qcv-player" }
+qcv-meta = { path = "../../crates/qcv-meta" }
+image = { version = "0.25", default-features = false, features = ["hdr"] }
 # the thumbnails' cache on disk, opened by the helpers (canon row 456, point 4)
 rusqlite = { workspace = true }
 

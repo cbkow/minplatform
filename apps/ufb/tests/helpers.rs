@@ -25,6 +25,12 @@ fn our_decoder_answers_a_fitted_picture_with_its_transparency() {
     assert_eq!((d.id, d.status, d.w, d.h), (1, OK, 256, 128)); assert_eq!(d.payload.len(), 256 * 128 * 4);
     assert_eq!(&d.payload[..4], [255, 0, 0, 255], "opaque red"); assert_eq!(&d.payload[255 * 4..256 * 4], [0, 0, 0, 0], "clear: colour multiplied by its alpha");
     assert_eq!(p.counts().2, 1, "one request, one helper");
+    // a Radiance picture (linear light): 3 x 2 of one colour, 1.0 / 0.5 / 0.0 - shown clipped, with the sRGB curve
+    let mut hdr = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 3\n".to_vec(); for _ in 0..6 { hdr.extend_from_slice(&[128, 64, 0, 129]); } std::fs::write(t.path("light.hdr"), hdr).unwrap();
+    p.submit(job(9, OP_DECODE, &t.path("light.hdr"), 20_000)); let d = next(&p); assert_eq!((d.status, d.w, d.h), (OK, 3, 2)); assert_eq!(&d.payload[..4], [255, 188, 0, 255]);
+    // a file that is no film: the player says so, and its helper lives
+    std::fs::write(t.path("noise.mov"), vec![7u8; 5000]).unwrap();
+    p.submit(job(10, OP_VIDEO, &t.path("noise.mov"), 20_000)); assert_eq!(next(&p).status, FAILED);
     // a file that is no picture, and one that is not there: an answer, not a death
     std::fs::write(t.path("noise.exr"), vec![7u8; 5000]).unwrap();
     p.submit(job(2, OP_DECODE, &t.path("noise.exr"), 20_000)); p.submit(job(3, OP_DECODE, &t.path("gone.tif"), 20_000));

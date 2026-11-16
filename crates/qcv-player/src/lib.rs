@@ -12,6 +12,7 @@ pub mod key_map;
 pub mod transport;
 pub mod dual;
 pub mod playback;
+pub mod poster;
 pub mod thumbnail_cache;
 pub mod scrub_decoder;
 pub mod scrub_frame_cache;

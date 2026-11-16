@@ -1,9 +1,9 @@
 //! Thumbnails and the icons of single files (canon row 456; spike S18). Nothing of a file's CONTENTS is read in the
 //! application: every picture is made in a helper copy of this executable (`helper.rs`) and comes back over a pipe.
 //!
-//! Who draws (row 456, point 1): our own decoders FIRST for the production formats the family reads - a frame looks
-//! the same here as in the family's other applications - and the system's own thumbnail for everything else, and for
-//! a file our decoder refused. A file with no picture keeps its type's icon, and is not asked about again while it is
+//! Who draws (row 456, point 1): our own decoders FIRST for the production formats the family reads, and the family's
+//! player for a video (its middle frame) - a frame looks the same here as in the family's other applications - and
+//! the system's own thumbnail for everything else, and for a file ours refused. A file with no picture keeps its type's icon, and is not asked about again while it is
 //! unchanged ("cannot preview" is remembered by path, size and date).
 //!
 //! What is in view is done first and ONLY that is asked for: each frame the views say what they show ([`Thumbs::want`]);
@@ -11,8 +11,8 @@
 //!
 //! Two stores: the pictures of what was shown lately, in memory (a cap, the least recently shown dropped first); and
 //! the cache on disk (row 456, point 4; `cache.rs`), which the HELPERS read and write - a picture is first asked of
-//! it ([`OP_CACHED`]), and only made when it is not there. Video, sequences and Radiance HDR through our own decoders
-//! are later slices.
+//! it ([`OP_CACHED`]), and only made when it is not there. One picture for a whole image sequence comes with the slice
+//! that shows a sequence as one item.
 pub mod cache;
 pub mod helper;
 pub mod volume;
@@ -77,13 +77,15 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
 }
 
 enum Slot { Waiting { id: u64, seen: u64 }, Ready { img: peniko::ImageBrush, bytes: usize, used: u64 } }
-struct Ask { key: u64, path: String, px: u32, op: u8, /// our decoders make this file's picture (else the system)
-    ours: bool, fsize: u64, mtime: i64 }
+struct Ask { key: u64, path: String, px: u32, op: u8, /// who makes this file's picture first: our decoders, the player, the system (an op)
+    maker: u8, fsize: u64, mtime: i64 }
 
 pub struct Thumbs {
     /// our decoders: several helpers; the system's thumbnails and icons: apart, so that a plug-in of the system's
     /// that hangs never holds a decoder
     decode: Pool, system: Pool,
+    /// ... and the player's frames of videos: apart too - each of its helpers holds a decoder and an engine on the GPU
+    video: Pool,
     slots: HashMap<u64, Slot>, asked: HashMap<u64, Ask>, none: HashSet<u64>,
     frame: u64, bytes: usize, next: u64,
     /// there is a cache on disk (the helpers were told where)
@@ -108,16 +110,16 @@ impl Thumbs {
         let sys_n = std::env::var("UFB_SYS_HELPERS").ok().and_then(|v| v.parse().ok()).unwrap_or(SYS_HELPERS);
         // the helpers are told where the cache is (an empty word: there is none)
         let dir = cache_dir(); let env = vec![("UFB_THUMB_CACHE".to_string(), dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())];
-        Thumbs { decode: Pool::new(exe.clone(), env.clone(), decoders(cores), IDLE, wake.clone()), system: Pool::new(exe, env, sys_n, IDLE, wake),
+        Thumbs { decode: Pool::new(exe.clone(), env.clone(), decoders(cores), IDLE, wake.clone()), system: Pool::new(exe.clone(), env.clone(), sys_n, IDLE, wake.clone()), video: Pool::new(exe, env, VIDEO_HELPERS, IDLE, wake),
             slots: HashMap::new(), asked: HashMap::new(), none: HashSet::new(), frame: 1, bytes: 0, next: 1, cached: dir.is_some(), made: 0, failed: 0 }
     }
     fn submit(&mut self, a: Ask) -> u64 {
         let id = self.next; self.next += 1;
-        let (soft, hard) = match a.op { OP_DECODE => (0, DECODE_HARD), OP_CACHED => (0, CACHE_HARD), _ => (SYS_SOFT, SYS_HARD) };
-        let flags = if self.cached && matches!(a.op, OP_DECODE | OP_THUMB) { KEEP } else { 0 };
+        let (soft, hard) = match a.op { OP_DECODE | OP_VIDEO => (0, DECODE_HARD), OP_CACHED => (0, CACHE_HARD), _ => (SYS_SOFT, SYS_HARD) };
+        let flags = if self.cached && matches!(a.op, OP_DECODE | OP_VIDEO | OP_THUMB) { KEEP } else { 0 };
         let job = Job { req: Request { id, op: a.op, flags, size: a.px as u16, soft_ms: soft, fsize: a.fsize, mtime: a.mtime, path: a.path.clone() }, hard_ms: hard };
         // the cache's questions go to the decoders' helpers: the system's are kept for the system (one that hangs there holds no answer back)
-        if matches!(a.op, OP_DECODE | OP_CACHED) { self.decode.submit(job) } else { self.system.submit(job) }
+        if matches!(a.op, OP_DECODE | OP_CACHED) { self.decode.submit(job) } else if a.op == OP_VIDEO { self.video.submit(job) } else { self.system.submit(job) }
         self.asked.insert(id, a); id
     }
     /// Something said to the cache that nothing waits for (its answer is dropped).
@@ -135,10 +137,10 @@ impl Thumbs {
             Some(Slot::Waiting { seen, .. }) => *seen = frame,
             Some(Slot::Ready { used, .. }) => *used = frame,
             None => if !self.none.contains(&key) {
-                let ours = helper::ours(ext);
+                let maker = helper::maker(ext);
                 // a picture is first asked of the cache on disk; an icon of one file is the system's to keep
-                let op = match kind { Kind::Icon => OP_ICON, Kind::Picture => if self.cached { OP_CACHED } else if ours { OP_DECODE } else { OP_THUMB } };
-                let id = self.submit(Ask { key, path: path.to_string_lossy().into_owned(), px, op, ours, fsize: size, mtime }); self.slots.insert(key, Slot::Waiting { id, seen: frame });
+                let op = match kind { Kind::Icon => OP_ICON, Kind::Picture => if self.cached { OP_CACHED } else { maker } };
+                let id = self.submit(Ask { key, path: path.to_string_lossy().into_owned(), px, op, maker, fsize: size, mtime }); self.slots.insert(key, Slot::Waiting { id, seen: frame });
             },
         }
         key
@@ -152,7 +154,7 @@ impl Thumbs {
         let frame = self.frame;
         let stale: Vec<u64> = self.slots.values().filter_map(|s| match s { Slot::Waiting { id, seen } if *seen < frame => Some(*id), _ => None }).collect();
         if stale.is_empty() { return }
-        let mut freed = self.decode.cancel(&stale); freed.extend(self.system.cancel(&stale));
+        let mut freed = self.decode.cancel(&stale); freed.extend(self.system.cancel(&stale)); freed.extend(self.video.cancel(&stale));
         for id in freed { if let Some(a) = self.asked.remove(&id) { self.slots.remove(&a.key); } }
     }
     /// Take in what the helpers answered. True when something came.
@@ -160,6 +162,7 @@ impl Thumbs {
         let mut done = vec![];
         while let Ok(d) = self.decode.rx.try_recv() { done.push(d); }
         while let Ok(d) = self.system.rx.try_recv() { done.push(d); }
+        while let Ok(d) = self.video.rx.try_recv() { done.push(d); }
         let any = !done.is_empty();
         for d in done {
             let Some(a) = self.asked.remove(&d.id) else { continue };
@@ -172,10 +175,10 @@ impl Thumbs {
             } else if a.op == OP_CACHED && d.status == NONE {
                 // known to have no picture (a damaged file is not tried again at every launch; Refresh asks again)
                 self.slots.remove(&a.key); self.none.insert(a.key); self.failed += 1;
-            } else if matches!(a.op, OP_CACHED | OP_DECODE) && d.status != NO_HELPER {
-                // not in the cache: it is made - by our decoder, or by the system; and what our decoder refused (or
-                // what ended its helper) the system may still have a picture of
-                let op = if a.op == OP_CACHED && a.ours { OP_DECODE } else { OP_THUMB };
+            } else if matches!(a.op, OP_CACHED | OP_DECODE | OP_VIDEO) && d.status != NO_HELPER {
+                // not in the cache: it is made - by our decoder, by the player, or by the system; and what ours refused
+                // (or what ended its helper) the system may still have a picture of
+                let op = if a.op == OP_CACHED { a.maker } else { OP_THUMB };
                 let key = a.key; let id = self.submit(Ask { op, ..a }); self.slots.insert(key, Slot::Waiting { id, seen });
             } else {
                 self.slots.remove(&a.key); self.none.insert(a.key); self.failed += 1;
@@ -199,6 +202,8 @@ impl Thumbs {
 }
 /// Helpers for the system's thumbnails and icons.
 const SYS_HELPERS: usize = 2;
+/// Helpers for the frames of videos.
+const VIDEO_HELPERS: usize = 2;
 
 #[cfg(test)]
 mod tests {

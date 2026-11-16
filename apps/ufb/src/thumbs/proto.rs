@@ -12,6 +12,8 @@ pub const OP_DECODE: u8 = 1;
 pub const OP_THUMB: u8 = 2;
 /// The system's icon of THIS file (an application's own, a shortcut's).
 pub const OP_ICON: u8 = 3;
+/// A frame of a video, by the family's player (the middle of the clip), its colour by the presenter's pipeline.
+pub const OP_VIDEO: u8 = 4;
 pub const OP_PING: u8 = 5;
 /// The cache on disk (canon row 456, point 4; `cache.rs`): the file's picture as it was kept - [`OK`] with it,
 /// [`MISS`] when there is none for the file as it is now, [`NONE`] when the file is known to have no picture.
@@ -22,7 +24,7 @@ pub const OP_MARK: u8 = 7;
 pub const OP_PRUNE: u8 = 8;
 /// `path` is a folder: forget which of its files have no picture (Refresh asks again).
 pub const OP_FORGET: u8 = 9;
-/// A flag of [`OP_DECODE`] and [`OP_THUMB`]: the picture is made at the cache's size, kept there, and answered at `size`.
+/// A flag of [`OP_DECODE`], [`OP_VIDEO`] and [`OP_THUMB`]: the picture is made at the cache's size, kept there, and answered at `size`.
 pub const KEEP: u8 = 1;
 /// Tests only (honoured when the helper was started with `UFB_HELPER_TEST` set): end at once; never answer.
 pub const OP_TEST_ABORT: u8 = 250;
