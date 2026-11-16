@@ -10,6 +10,7 @@ use crate::history::{History, Look};
 use crate::icons::{bucket, Icons};
 use crate::lister::{self, Msg, Port};
 use crate::model::{Kids, Model, SortBy, TOP};
+use crate::thumbs::{self, Thumbs};
 use kurbo::{Affine, Rect};
 use min_theme::tokens as t;
 use min_ui::{fonts::draw_layout, grid::Grid, paint, selection::Selection, table::{self, Column, RowInfo, Table, TableSource}, Event, Family, Fonts, GridSource, KeyEvent, Mods, ViewEvent};
@@ -42,7 +43,15 @@ pub struct Pane {
 }
 
 /// The table's rows as the model has them.
-struct Rows<'a> { model: &'a Model, icons: &'a Icons, px: u32, today: Civil }
+struct Rows<'a> { model: &'a Model, icons: &'a Icons, px: u32, today: Civil,
+    /// the pictures of single files: the numbers they are looked up by, for the rows in view from `first` on
+    thumbs: &'a Thumbs, keys: &'a [Option<u64>], first: usize }
+impl Rows<'_> {
+    /// A row's own picture (a thumbnail, the icon of that very file) when it has come; else its type's icon.
+    fn picture(&self, i: usize) -> Option<&peniko::ImageBrush> {
+        i.checked_sub(self.first).and_then(|k| self.keys.get(k)).copied().flatten().and_then(|k| self.thumbs.peek(k)).or_else(|| self.icons.peek(self.model.ext(self.model.row(i)?), self.px))
+    }
+}
 impl TableSource for Rows<'_> {
     fn len(&self) -> usize { self.model.len() }
     fn row(&self, i: usize) -> RowInfo {
@@ -54,12 +63,12 @@ impl TableSource for Rows<'_> {
         let n = self.model.node(id);
         match col { 0 => Cow::Borrowed(&*n.name), 1 => Cow::Owned(format::date_text(n.mtime, self.today)), 2 => if n.dir { Cow::Borrowed("--") } else { Cow::Owned(format::size_text(n.size, format::DECIMAL)) }, _ => Cow::Borrowed(self.model.kind(id)) }
     }
-    fn icon(&self, i: usize) -> Option<&peniko::ImageBrush> { self.icons.peek(self.model.ext(self.model.row(i)?), self.px) }
+    fn icon(&self, i: usize) -> Option<&peniko::ImageBrush> { self.picture(i) }
 }
 impl GridSource for Rows<'_> {
     fn len(&self) -> usize { self.model.len() }
     fn name(&self, i: usize) -> Cow<'_, str> { match self.model.row(i) { Some(id) => Cow::Borrowed(&*self.model.node(id).name), None => Cow::Borrowed("") } }
-    fn image(&self, i: usize) -> Option<&peniko::ImageBrush> { self.icons.peek(self.model.ext(self.model.row(i)?), self.px) }
+    fn image(&self, i: usize) -> Option<&peniko::ImageBrush> { self.picture(i) }
     fn dim(&self, i: usize) -> bool { self.model.row(i).is_some_and(|id| self.model.node(id).hidden) }
 }
 /// The rows' names alone: what the keys need (type-ahead, the triangle), with no icons in hand.
@@ -224,14 +233,25 @@ impl Pane {
         self.table.focused = active; self.grid.focused = active;
         if self.mode == Mode::List { self.table.layout(rect, n, scale); } else { self.grid.layout(rect, n, scale); }
     }
-    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, icons: &mut Icons, scale: f64, now: Instant) {
+    pub fn paint(&mut self, scene: &mut Scene, fonts: &mut Fonts, icons: &mut Icons, thumbs: &mut Thumbs, scale: f64, now: Instant) {
         let rect = self.rect; if rect.width() <= 1.0 || rect.height() <= 1.0 { return }
         let today = format::local(format::now_secs());
         // the icons of what is in view are asked for (they come later, on their own thread)
         let px = if self.mode == Mode::List { bucket(16.0 * scale) } else { bucket(self.grid.tile * scale) };
         let (a, b) = if self.mode == Mode::List { table::visible_rows(self.table.bar.offset, self.table.body().height(), table::ROW_HEIGHT * scale, self.model.len()) } else { self.grid.geometry().visible(self.grid.bar.offset, rect.height(), self.model.len()) };
-        for i in a..b { if let Some(id) = self.model.row(i) { icons.get(self.model.ext(id), px); } }
-        let rows = Rows { model: &self.model, icons, px, today };
+        // ... and so are the pictures of single files, made in the helpers; only what is in view is asked for
+        let grid = self.mode == Mode::Grid; let tpx = if grid { thumbs::picture_px(self.grid.tile * scale) } else { 32 };
+        let mut keys: Vec<Option<u64>> = Vec::with_capacity(b.saturating_sub(a));
+        for i in a..b {
+            let mut key = None;
+            if let Some(id) = self.model.row(i) {
+                icons.get(self.model.ext(id), px);
+                let n = self.model.node(id);
+                if let Some(kind) = thumbs::plan(self.model.ext(id), &n.name, n.dir, n.size, grid) { key = Some(thumbs.want(&self.model.path_of(id, self.history.current()), self.model.ext(id), n.size, n.mtime, tpx, kind)); }
+            }
+            keys.push(key);
+        }
+        let rows = Rows { model: &self.model, icons, px, today, thumbs, keys: &keys, first: a };
         if self.mode == Mode::List { self.table.paint(scene, fonts, &rows, now); } else { self.grid.paint(scene, fonts, &rows, now); }
         // an empty pane says why
         if self.model.len() == 0 {

@@ -1,5 +1,5 @@
-//! UFB (the rebuild, Phase 5; canon rows 434-463). Slice 2a: a browser to LOOK AROUND in - it reads folders and
-//! changes nothing.
+//! UFB (the rebuild, Phase 5; canon rows 434-464). Slice 2: a browser to LOOK AROUND in - it reads folders and
+//! changes nothing. Pictures are made in helper copies of this executable (`UFB --thumb-helper`, see `thumbs`).
 //!   UFB [folder] [--favorite <path>]...
 //! opens the folder given (the home folder without one); each `--favorite` adds a test entry to the sidebar's
 //! Favorites. This slice reads no settings file, no database and nothing of an installed 1.4.x (row 463, point 5).
@@ -17,6 +17,7 @@ mod model;
 mod pane;
 mod places;
 mod shell;
+mod thumbs;
 mod ui;
 
 /// What the command line asked for: the folder to open, the test favorites.
@@ -32,6 +33,8 @@ pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Ve
 }
 
 fn main() {
+    // a helper copy of the executable (thumbnails, canon row 456): the first branch, before anything else is set up
+    if std::env::args_os().nth(1).is_some_and(|a| a == thumbs::pool::HELPER_ARG) { thumbs::helper::run() }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]..."); return }
     let (folder, favorites) = parse(&args, &places::home());

@@ -7,6 +7,7 @@
 //! channel (`lister::Port`), which also wakes the loop.
 use crate::crumbs;
 use crate::icons::Icons;
+use crate::thumbs::Thumbs;
 use crate::lister::{self, Msg, Port};
 use crate::menu::{self, Cmd, InWindowMenu};
 use crate::model::SortBy;
@@ -38,7 +39,7 @@ const TOOLBAR: f64 = 44.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; con
 
 pub struct Ui {
     window: Arc<Box<dyn Window>>, presenter: Presenter, layer: UiLayer, fonts: Fonts, tips: Tooltips,
-    port: Port, rx: Receiver<Msg>, icons: Icons,
+    port: Port, rx: Receiver<Msg>, icons: Icons, thumbs: Thumbs,
     /// one pane, or two side by side; the one the toolbar, the sidebar and the menus act on; the first pane's share of the width
     panes: Vec<Pane>, active: usize, two: bool, split: f64, pane_heads: [Rect; 2],
     /// options of the window (both panes follow)
@@ -70,7 +71,7 @@ impl Ui {
         static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true); let first = FIRST.swap(false, std::sync::atomic::Ordering::Relaxed);
         let demo = std::env::var("UFB_DEMO").ok().filter(|_| first).map(|d| d.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
         let key = |c: Cmd, text: &str| menu::tip(text, c);
-        Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), port, rx,
+        Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
@@ -90,13 +91,13 @@ impl Ui {
     // ---------------------------------------------------------------- what the workers send
     /// Take in what the worker threads sent. True when anything came.
     pub fn poll(&mut self) -> bool {
-        let mut any = self.icons.poll();
+        let mut any = self.icons.poll(); any |= self.thumbs.poll();
         while let Ok(m) = self.rx.try_recv() {
             any = true;
             match m {
                 Msg::Places { volumes, root } => { self.volumes = volumes; self.root = root; self.crumbs_for = None; }
                 Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); let port = self.port.clone(); self.pane().go(&port, path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
-                Msg::Icon => { self.icons.poll(); }
+                Msg::Icon => { self.icons.poll(); self.thumbs.poll(); }
                 other => { let mut m = Some(other); let port = self.port.clone(); for p in self.panes.iter_mut() { if p.on_msg(&port, &mut m) { break } } }
             }
         }
@@ -140,7 +141,7 @@ impl Ui {
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } }
             Cmd::SecondPane => self.set_two(!self.two),
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
-            Cmd::Refresh => { self.pane().refresh(&port); places::refresh(&port); }
+            Cmd::Refresh => { self.thumbs.retry(); self.pane().refresh(&port); places::refresh(&port); }
             Cmd::Back => self.pane().back(&port), Cmd::Forward => self.pane().forward(&port), Cmd::Up => self.pane().up(&port),
             Cmd::Home => self.go(places::home()), Cmd::Desktop => self.go(places::home().join("Desktop")), Cmd::Downloads => self.go(places::home().join("Downloads")),
             Cmd::GoToFolder => self.edit_path(), Cmd::Find => self.focus_search(),
@@ -361,6 +362,7 @@ impl Ui {
         paint::rect(scene, Rect::new(0.0, 0.0, w, h), t::BACKGROUND_LAYER_1_COLOR);
 
         // -- the panes
+        self.thumbs.begin_frame();
         for i in 0..n {
             if n == 2 {
                 let hr = self.pane_heads[i]; let active = i == self.active;
@@ -372,8 +374,9 @@ impl Ui {
                 let l = fonts.layout_fit(&self.panes[i].title(), Family::Sans, t::BODY_SIZE_S * s as f32, if active { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, if active { ink } else { sub }, hr.x1 - tx - 10.0 * s);
                 draw_layout(scene, &l, Affine::translate((tx, hr.y0 + s + (hr.height() - l.height() as f64) / 2.0)));
             }
-            self.panes[i].paint(scene, fonts, &mut self.icons, s, now);
+            self.panes[i].paint(scene, fonts, &mut self.icons, &mut self.thumbs, s, now);
         }
+        self.thumbs.end_frame();
         if n == 2 { let hot = self.over_gap == Some(1) || self.drag == Some(Drag::Split); paint::rect(scene, Rect::new(split_x, body.y0, split_x + if hot { 2.0 * s } else { s }, body.y1), if hot { t::RAIL_SPLITTER_COLOR_HOVER } else { t::DIVIDER_COLOR_MEDIUM }); }
 
         // -- the toolbar
@@ -466,7 +469,7 @@ impl Ui {
         // (the scripted picture: UFB_SHOT=<file.png> saves the window as drawn - no OS screenshot - once the steps are done,
         // the panes have their listings and the icons have come; then the application ends)
         if self.shot.is_some() && !self.done {
-            let idle = self.demo.is_empty() && self.demo_until.is_none_or(|t| now >= t) && !self.busy() && self.icons.pending() == 0;
+            let idle = self.demo.is_empty() && self.demo_until.is_none_or(|t| now >= t) && !self.busy() && self.icons.pending() == 0 && self.thumbs.pending() == 0;
             if !idle { self.settled = None; } else if self.settled.is_none() { self.settled = Some(now); }
             if self.settled.is_some_and(|t0| now.duration_since(t0) > Duration::from_millis(500)) || self.born.elapsed() > Duration::from_secs(60) {
                 if let (Some(path), Some((px, w, h))) = (self.shot.take(), self.presenter.capture_window()) {

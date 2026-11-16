@@ -6237,8 +6237,10 @@ name = "ufb"
 version = "2.0.0-dev"
 dependencies = [
  "arboard",
+ "block2 0.6.2",
  "kurbo 0.13.1",
  "libc",
+ "min-image",
  "min-present",
  "min-theme",
  "min-ui",
@@ -6248,6 +6250,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-quick-look-thumbnailing",
  "objc2-uniform-type-identifiers 0.3.2",
  "peniko",
  "png 0.17.16",
