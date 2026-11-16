@@ -109,27 +109,30 @@ fn has_composite(res: &[u8]) -> bool {
     true
 }
 
+#[doc(hidden)]
+/// For tests, here and in the applications: a 4 x 2 RGB file: the left half red, the right half blue; `rle` packs each row; `big` writes a PSB.
+pub fn sample_file(big: bool, rle: bool, depth: u16, real: bool) -> Vec<u8> {
+    let mut f = b"8BPS".to_vec(); f.extend_from_slice(&(if big { 2u16 } else { 1 }).to_be_bytes()); f.extend_from_slice(&[0; 6]);
+    f.extend_from_slice(&4u16.to_be_bytes()); f.extend_from_slice(&2u32.to_be_bytes()); f.extend_from_slice(&4u32.to_be_bytes()); f.extend_from_slice(&depth.to_be_bytes()); f.extend_from_slice(&3u16.to_be_bytes());
+    f.extend_from_slice(&0u32.to_be_bytes());
+    let mut res = b"8BIM".to_vec(); res.extend_from_slice(&0x0421u16.to_be_bytes()); res.extend_from_slice(&[0, 0]); res.extend_from_slice(&6u32.to_be_bytes()); res.extend_from_slice(&[0, 0, 0, 1, real as u8, 0]);
+    f.extend_from_slice(&(res.len() as u32).to_be_bytes()); f.extend_from_slice(&res);
+    if big { f.extend_from_slice(&0u64.to_be_bytes()) } else { f.extend_from_slice(&0u32.to_be_bytes()) }
+    f.extend_from_slice(&(rle as u16).to_be_bytes());
+    // four channels: R, G, B and a saved selection that must be ignored
+    let rows: Vec<Vec<u8>> = [[255u8, 255, 0, 0], [0, 0, 0, 0], [0, 0, 255, 255], [9, 9, 9, 9]].iter().flat_map(|ch| { let one: Vec<u8> = ch.iter().flat_map(|v| if depth == 16 { vec![*v, *v] } else { vec![*v] }).collect(); vec![one.clone(), one] }).collect();
+    if rle {
+        let packed: Vec<Vec<u8>> = rows.iter().map(|r| { let half = r.len() / 2; vec![(257 - half) as u8, r[0], (half - 1) as u8].into_iter().chain(r[half..].iter().copied()).collect() }).collect();
+        for p in &packed { if big { f.extend_from_slice(&(p.len() as u32).to_be_bytes()) } else { f.extend_from_slice(&(p.len() as u16).to_be_bytes()) } }
+        for p in packed { f.extend_from_slice(&p); }
+    } else { for r in rows { f.extend_from_slice(&r); } }
+    f
+}
+
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    /// A 4 x 2 RGB file: the left half red, the right half blue; `rle` packs each row; `big` writes a PSB.
-    pub(crate) fn file(big: bool, rle: bool, depth: u16, real: bool) -> Vec<u8> {
-        let mut f = b"8BPS".to_vec(); f.extend_from_slice(&(if big { 2u16 } else { 1 }).to_be_bytes()); f.extend_from_slice(&[0; 6]);
-        f.extend_from_slice(&4u16.to_be_bytes()); f.extend_from_slice(&2u32.to_be_bytes()); f.extend_from_slice(&4u32.to_be_bytes()); f.extend_from_slice(&depth.to_be_bytes()); f.extend_from_slice(&3u16.to_be_bytes());
-        f.extend_from_slice(&0u32.to_be_bytes());
-        let mut res = b"8BIM".to_vec(); res.extend_from_slice(&0x0421u16.to_be_bytes()); res.extend_from_slice(&[0, 0]); res.extend_from_slice(&6u32.to_be_bytes()); res.extend_from_slice(&[0, 0, 0, 1, real as u8, 0]);
-        f.extend_from_slice(&(res.len() as u32).to_be_bytes()); f.extend_from_slice(&res);
-        if big { f.extend_from_slice(&0u64.to_be_bytes()) } else { f.extend_from_slice(&0u32.to_be_bytes()) }
-        f.extend_from_slice(&(rle as u16).to_be_bytes());
-        // four channels: R, G, B and a saved selection that must be ignored
-        let rows: Vec<Vec<u8>> = [[255u8, 255, 0, 0], [0, 0, 0, 0], [0, 0, 255, 255], [9, 9, 9, 9]].iter().flat_map(|ch| { let one: Vec<u8> = ch.iter().flat_map(|v| if depth == 16 { vec![*v, *v] } else { vec![*v] }).collect(); vec![one.clone(), one] }).collect();
-        if rle {
-            let packed: Vec<Vec<u8>> = rows.iter().map(|r| { let half = r.len() / 2; vec![(257 - half) as u8, r[0], (half - 1) as u8].into_iter().chain(r[half..].iter().copied()).collect() }).collect();
-            for p in &packed { if big { f.extend_from_slice(&(p.len() as u32).to_be_bytes()) } else { f.extend_from_slice(&(p.len() as u16).to_be_bytes()) } }
-            for p in packed { f.extend_from_slice(&p); }
-        } else { for r in rows { f.extend_from_slice(&r); } }
-        f
-    }
+    use super::sample_file as file;
     #[test]
     fn the_flattened_picture_is_read_raw_and_packed_from_both_file_kinds_and_reduced() {
         let dir = std::env::temp_dir().join(format!("mn-psd-test-{}", std::process::id())); std::fs::create_dir_all(&dir).unwrap();

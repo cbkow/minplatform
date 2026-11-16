@@ -123,23 +123,25 @@ impl PageText {
     }
 }
 
+#[doc(hidden)]
+/// For tests, here and in the applications: a one-page PDF, 200 x 100 points, with two lines of Helvetica (a font every reader has) and a red square.
+pub fn sample() -> Vec<u8> {
+    let content = "1 0 0 rg 150 10 40 40 re f 0 g BT /F1 12 Tf 20 70 Td (Hello page) Tj 0 -20 Td (Second line) Tj ET";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(), "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()), "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string() ];
+    let mut out = b"%PDF-1.4\n".to_vec(); let mut at = vec![];
+    for (i, o) in objs.iter().enumerate() { at.push(out.len()); out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes()); }
+    let xref = out.len(); out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for a in at { out.extend_from_slice(format!("{a:010} 00000 n \n").as_bytes()); }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes()); out
+}
+
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    /// A one-page PDF, 200 x 100 points, with two lines of Helvetica (a font every reader has) and a red square.
-    pub(crate) fn sample() -> Vec<u8> {
-        let content = "1 0 0 rg 150 10 40 40 re f 0 g BT /F1 12 Tf 20 70 Td (Hello page) Tj 0 -20 Td (Second line) Tj ET";
-        let objs = [
-            "<< /Type /Catalog /Pages 2 0 R >>".to_string(), "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
-            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()), "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string() ];
-        let mut out = b"%PDF-1.4\n".to_vec(); let mut at = vec![];
-        for (i, o) in objs.iter().enumerate() { at.push(out.len()); out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes()); }
-        let xref = out.len(); out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
-        for a in at { out.extend_from_slice(format!("{a:010} 00000 n \n").as_bytes()); }
-        out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes()); out
-    }
-    /// A measurement, not a check (`MN_PDF_BENCH=<file.pdf> cargo test -p mn --release pdf_bench -- --ignored --nocapture`):
+    /// A measurement, not a check (`MN_PDF_BENCH=<file.pdf> cargo test -p min-pdf --release pdf_bench -- --ignored --nocapture`):
     /// how long a document takes to open, a page to draw at the widths a studio would ask for, and its text to be read.
     #[test] #[ignore]
     fn pdf_bench() {

@@ -16,6 +16,10 @@ pub mod tga_bmp;
 pub mod png;
 pub mod tiff;
 pub mod write;
+/// A Photoshop file's flattened picture (lifted out of minNotes for the family, canon row 459).
+pub mod psd;
+/// HEIC / HEIF and camera RAW through macOS' own decoders (lifted out of minNotes, canon row 459).
+#[cfg(target_os = "macos")] pub mod imageio;
 mod sys;
 
 #[derive(thiserror::Error, Debug)]

@@ -18,6 +18,12 @@ tiff = "0.11"
 # TGA + BMP only (canon row 191): the pure-Rust decoders, no other format
 image = { version = "0.25", default-features = false, features = ["tga", "bmp"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# HEIC and camera RAW through the system's decoders (ImageIO)
+objc2-image-io = { version = "0.3.2", default-features = false, features = ["std", "CGImageSource", "objc2-core-graphics"] }
+objc2-core-graphics = { workspace = true, features = ["CGImage", "CGContext", "CGBitmapContext", "CGColorSpace", "CGGeometry"] }
+objc2-core-foundation = { workspace = true, features = ["CFURL", "CFDictionary", "CFNumber", "CFString", "CFBase", "CFCGTypes"] }
+
 [dev-dependencies]
 
 [build-dependencies]

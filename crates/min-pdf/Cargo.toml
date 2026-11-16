@@ -1,0 +1,13 @@
+[package]
+name = "min-pdf"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform - PDF pages: how many and how large, a page drawn at a width, a page's characters with their places (canon row 315; lifted out of minNotes for the family, row 459). The one place that knows the engine."
+
+[dependencies]
+hayro = "0.9"

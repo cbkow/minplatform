@@ -40,13 +40,13 @@ mod footer;
 mod colours;
 mod clip;
 mod media;
-mod psd;
+mod psd { pub use min_image::psd::*; #[cfg(test)] pub(crate) mod tests { pub(crate) use min_image::psd::sample_file as file; } }   // the shared reader (row 459)
 mod paste;
 mod import;
 mod import_office;
 mod import_old;
 mod xml;
-mod pdf;
+mod pdf { pub use min_pdf::*; #[cfg(test)] pub(crate) mod tests { pub(crate) use min_pdf::sample; } }   // the shared reader (row 459)
 mod video;
 mod choice;
 mod linkedit;
@@ -69,7 +69,7 @@ mod search;
 mod canvas;
 mod ink;
 mod open;
-#[cfg(target_os = "macos")] mod imageio;
+#[cfg(target_os = "macos")] use min_image::imageio;
 #[cfg(target_os = "macos")]
 mod text_element;
 
