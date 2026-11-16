@@ -157,6 +157,8 @@ pub mod win {
             Ok(None) => {}
             Err(e) => eprintln!("UFB: the shell's menu could not be shown: {e}"),
         }
+        // (the window draws nothing while the shell's menu is up, and nothing tells it to begin again: we do)
+        CHOSEN.lock().unwrap().push((spec.window, 0)); (spec.wake)();
     }
     /// Explorer's menu for these files (all in one folder), at a point of the window's content (pixels). Returns at
     /// once: the menu is shown when the window's own message loop reaches our message.
