@@ -179,7 +179,8 @@ impl ApplicationHandler for App {
             WindowEvent::SurfaceResized(sz) => w.ui.resize(sz.width, sz.height),
             WindowEvent::ScaleFactorChanged { .. } => {}
             WindowEvent::Focused(on) => { if on { self.focused = Some(id); w.ui.activated(); } else { w.ui.deactivated(); self.alt_clean = false; } }
-            WindowEvent::MouseWheel { delta, .. } => { let s = w.window.scale_factor(); let dy = match delta { MouseScrollDelta::LineDelta(_, y) => y as f64 * 60.0 * s, MouseScrollDelta::PixelDelta(p) => p.y, _ => 0.0 }; w.ui.wheel(-dy); }
+            // (sideways too: a trackpad's swipe, a tilting wheel - and macOS turns the wheel sideways itself while Shift is held)
+            WindowEvent::MouseWheel { delta, .. } => { let s = w.window.scale_factor(); let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) }; if dy != 0.0 { w.ui.wheel(-dy); } if dx != 0.0 { w.ui.wheel_x(-dx); } }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); w.ui.mods = min_ui::Mods { shift: self.mods.0, cmd: self.mods.1 }; redraw = false; }
             WindowEvent::PointerMoved { position, .. } => w.ui.pointer(&min_ui::Event::Move { x: position.x, y: position.y }),
             WindowEvent::PointerButton { state, position, button: ButtonSource::Mouse(b), .. } => {

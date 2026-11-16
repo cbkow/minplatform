@@ -971,6 +971,14 @@ impl Ui {
         if self.blank() { return }
         let n = self.shown(); for pane in self.panes.iter_mut().take(n) { if pane.rect.contains(p) { pane.wheel(dy, now); return } }
     }
+    /// The wheel turned SIDEWAYS (a trackpad, a tilting wheel, macOS's Shift with the wheel): the board, the item list or
+    /// the tracker under the pointer scrolls sideways.
+    pub fn wheel_x(&mut self, dx: f64) {
+        if self.lightbox.is_open() || self.coledit.is_some() || self.chip.is_some() { return }
+        let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1); if !self.job_list.contains(p) { return }
+        if self.tracker.is_none() { if let Some(b) = self.board.as_mut() { b.hbar.wheel(dx, now); return } }
+        if self.job.is_some() || self.tracker.is_some() { self.list_mut().hbar.wheel(dx, now); }
+    }
     /// The folder under the pointer that a new window can be opened on: a sidebar row, a segment of the path, and -
     /// `panes` - a folder in a pane.
     fn folder_at(&self, x: f64, y: f64, panes: bool) -> Option<PathBuf> {
