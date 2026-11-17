@@ -10,9 +10,12 @@
 #             it laid down - /Applications/UFB/ with its agent and its Finder extension - must go; see below).
 # No entitlements, as QCView 3: nothing here runs a script engine or loads a library signed by another team.
 # The identity and the notary profile live in the login keychain; nothing secret is in this file.
-# Run from the repo root:  zsh packaging/macos/sign-macos-ufb.sh [test|release] [--skip-notarize]
+# SINCE THE RELEASE AFTER 2.0.3 (row 546) the installer package is made only when asked for (`--with-installer`):
+# 2.0.3 was the last version an installed 1.4.x is led to (the old feed, appcast-mac.xml, ends with it); from then
+# on an update is the disk image, installed in place by Sparkle from the new feed (appcast.xml).
+# Run from the repo root:  zsh packaging/macos/sign-macos-ufb.sh [test|release] [--skip-notarize] [--with-installer]
 set -euo pipefail
-MODE="${1:-test}"; SKIP=0; [ "${2:-}" = "--skip-notarize" ] && SKIP=1
+MODE="${1:-test}"; SKIP=0; INSTALLER_PKG=0; for a in "$@"; do case "$a" in --skip-notarize) SKIP=1 ;; --with-installer) INSTALLER_PKG=1 ;; esac; done
 case "$MODE" in test) NAME="UFB Test"; ASSET="UFB-Test" ;; release) NAME="UFB"; ASSET="UFB" ;; *) echo "usage: sign-macos-ufb.sh [test|release] [--skip-notarize]" >&2; exit 1 ;; esac
 ROOT="$PWD"; SRC="$ROOT/target/dist/$NAME.app"; OUT="$ROOT/target/dist/release-ufb"; APP="$OUT/$NAME.app"
 PROFILE="${NOTARY_PROFILE:-QCView}"; TEAM="${CODESIGN_TEAM_ID:-5Z4S9VHV56}"
@@ -51,7 +54,8 @@ fi
 # the old processes and removes the old folder; the package id is 1.4.x's, so its receipt is replaced. Signed with the
 # Developer ID INSTALLER identity (not the application's: Installer refuses that), notarized and stapled.
 # UFB-<version>-arm64.pkg is the name 1.4.x's feed entries link to.
-if [ "$MODE" = release ]; then
+if [ "$MODE" = release ] && [ $INSTALLER_PKG = 0 ]; then rm -rf "$APP"; fi   # (the signed copy of the release's bundle is not left lying)
+if [ "$MODE" = release ] && [ $INSTALLER_PKG = 1 ]; then
   echo "==> the installer package"
   INSTALLER="${INSTALLER_IDENTITY:-$(security find-identity -v | sed -n "s/.*\"\(Developer ID Installer: .*(${TEAM})\)\".*/\1/p" | head -1)}"
   [ -n "$INSTALLER" ] || { echo "no Developer ID Installer identity for team $TEAM in the keychain" >&2; exit 1; }

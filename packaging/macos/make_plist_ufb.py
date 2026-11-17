@@ -30,6 +30,6 @@ plist = {
                         [{"CFBundleURLName": "UFB link", "CFBundleTypeRole": "Viewer", "CFBundleURLSchemes": ["ufb", "union"]}],
 }
 # the release keeps 1.4.x's update feed and key (canon rows 457, 536): an installed 1.4.x only ever trusts those
-if not test: plist.update({"SUFeedURL": "https://ufbrowser.com/appcast-mac.xml", "SUPublicEDKey": "+Xlrad3WswxIRTyzBTp8KaTEjyfPO5Ap4llmPdZf3RQ=", "SUEnableAutomaticChecks": True, "SUScheduledCheckInterval": 86400, "SUEnableSystemProfiling": False})
+if not test: plist.update({"SUFeedURL": "https://ufbrowser.com/appcast.xml", "SUPublicEDKey": "+Xlrad3WswxIRTyzBTp8KaTEjyfPO5Ap4llmPdZf3RQ=", "SUEnableAutomaticChecks": True, "SUScheduledCheckInterval": 86400, "SUEnableSystemProfiling": False})
 with open(out, "wb") as f: plistlib.dump(plist, f, sort_keys=False)
 print(f"Info.plist: {name} {version}")
