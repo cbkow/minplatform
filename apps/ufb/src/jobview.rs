@@ -121,12 +121,44 @@ impl Job {
 static ROOTS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
 pub fn set_roots(roots: Vec<PathBuf>) { let _ = ROOTS.set(roots); }
 /// ... and the saved shares marked as jobs folders, where each is now (`shares.rs`).
-static SHARE_ROOTS: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Vec::new());
-pub fn set_share_roots(roots: Vec<PathBuf>) { *SHARE_ROOTS.write().unwrap() = roots; }
-pub fn is_jobs_folder(dir: &Path) -> bool { ROOTS.get().is_some_and(|r| r.iter().any(|j| j == dir)) || SHARE_ROOTS.read().unwrap().iter().any(|j| j == dir) }
+/// (each with its PROJECT TYPE's name - empty: the built-in one; row 454: a job's type is that of its jobs folder)
+static SHARE_ROOTS: std::sync::RwLock<Vec<(PathBuf, String)>> = std::sync::RwLock::new(Vec::new());
+pub fn set_share_roots(roots: Vec<(PathBuf, String)>) { *SHARE_ROOTS.write().unwrap() = roots; }
+pub fn is_jobs_folder(dir: &Path) -> bool { ROOTS.get().is_some_and(|r| r.iter().any(|j| j == dir)) || SHARE_ROOTS.read().unwrap().iter().any(|j| j.0 == dir) }
 
-/// The project type of every job, for now: the built-in one (a jobs folder's own type comes with its step, row 454).
-pub fn project_type() -> &'static ufb_projtype::ProjectType { static T: std::sync::OnceLock<ufb_projtype::ProjectType> = std::sync::OnceLock::new(); T.get_or_init(ufb_projtype::ProjectType::builtin) }
+// ---------------------------------------------------------------- a studio's own types (rows 454, 461, 502)
+/// A project type as it is used: what it says, and the folder its skeletons are in.
+#[derive(Clone)]
+pub struct TypeAt { pub ty: std::sync::Arc<ufb_projtype::ProjectType>, pub skeletons: PathBuf }
+/// Where types are looked for, in order: the farm's folder (`<farm>/types` - every machine of the studio reads the
+/// same ones) and this machine's settings folder (`types`). A type is a FOLDER there: `type.toml` and `skeletons/`.
+static TYPE_DIRS: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Vec::new());
+pub fn set_type_dirs(dirs: Vec<PathBuf>) { *TYPE_DIRS.write().unwrap() = dirs; }
+/// The types found, by their folder's name (the first place that has a name wins): (name, folder).
+pub fn known_types() -> Vec<(String, PathBuf)> { known_in(&TYPE_DIRS.read().unwrap()) }
+pub fn known_in(dirs: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = vec![];
+    for d in dirs { let Ok(rd) = std::fs::read_dir(d) else { continue }; let mut here: Vec<(String, PathBuf)> = rd.flatten().filter(|e| e.path().join("type.toml").is_file()).map(|e| (e.file_name().to_string_lossy().into_owned(), e.path())).filter(|(n, _)| !n.starts_with('.')).collect(); here.sort();
+        for t in here { if !out.iter().any(|o| o.0.eq_ignore_ascii_case(&t.0)) { out.push(t); } } }
+    out
+}
+/// A type by its name: read from its folder (again when its file changed); Err: why it cannot be used.
+pub fn load_type(name: &str) -> Result<TypeAt, String> {
+    static CACHE: std::sync::Mutex<Vec<(PathBuf, Option<std::time::SystemTime>, TypeAt)>> = std::sync::Mutex::new(Vec::new());
+    let Some((_, dir)) = known_types().into_iter().find(|t| t.0.eq_ignore_ascii_case(name)) else { return Err(format!("The project type \"{name}\" is not there.")) };
+    let stamp = std::fs::metadata(dir.join("type.toml")).and_then(|m| m.modified()).ok(); let mut c = CACHE.lock().unwrap();
+    if let Some(hit) = c.iter().find(|x| x.0 == dir && x.1 == stamp) { return Ok(hit.2.clone()) }
+    let at = TypeAt { ty: std::sync::Arc::new(ufb_projtype::ProjectType::load(&dir)?), skeletons: dir.join("skeletons") };
+    c.retain(|x| x.0 != dir); c.push((dir, stamp, at.clone())); Ok(at)
+}
+/// The type of what lies at `path`: that of the jobs folder it is in; the built-in one when the folder names none, or
+/// when its type cannot be read (a job is never left without its sections because a file on a share is broken).
+pub fn type_for(path: &Path) -> TypeAt {
+    let name = SHARE_ROOTS.read().unwrap().iter().filter(|(root, _)| path.starts_with(root)).max_by_key(|(root, _)| root.as_os_str().len()).map(|(_, n)| n.clone()).unwrap_or_default();
+    if !name.is_empty() { if let Ok(at) = load_type(&name) { return at } }
+    static BUILTIN: std::sync::OnceLock<std::sync::Arc<ufb_projtype::ProjectType>> = std::sync::OnceLock::new();
+    TypeAt { ty: BUILTIN.get_or_init(|| std::sync::Arc::new(ufb_projtype::ProjectType::builtin())).clone(), skeletons: skeletons() }
+}
 
 /// The local date as `YYMMDD` (a dated item's prefix).
 pub fn today() -> String { let c = crate::format::local(crate::format::now_secs()); format!("{:02}{:02}{:02}", c.year.rem_euclid(100), c.month, c.day) }
@@ -143,6 +175,16 @@ pub fn skeletons() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_studios_types_are_found_by_their_folders_the_first_place_winning() {
+        let root = std::env::temp_dir().join(format!("ufb-types-{}", std::process::id())); let (farm, own) = (root.join("farm"), root.join("own"));
+        let make = |dir: &Path, name: &str, label: &str| { std::fs::create_dir_all(dir.join(name)).unwrap(); std::fs::write(dir.join(name).join("type.toml"), format!("name = \"{label}\"\n[[section]]\nfolder = \"shots\"\nkind = \"folder\"\n")).unwrap(); };
+        make(&farm, "episodic", "from the farm"); make(&own, "Episodic", "this machine's"); make(&own, "shorts", "shorts"); std::fs::create_dir_all(own.join("not-a-type")).unwrap(); make(&own, ".hidden", "x");
+        let found = known_in(&[farm.clone(), own.clone(), root.join("absent")]);
+        assert_eq!(found.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["episodic", "shorts"], "a folder without type.toml is no type; a name is taken once, the farm's first");
+        assert_eq!(found[0].1, farm.join("episodic")); assert_eq!(ufb_projtype::ProjectType::load(&found[0].1).unwrap().name, "from the farm");
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use super::*;
     fn temp(name: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("ufb-job-{name}-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d }
     #[test]

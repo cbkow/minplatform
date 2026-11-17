@@ -24,6 +24,8 @@ pub struct Share {
     pub local: String,
     /// its folders are jobs; connect it when the application starts; (Windows) the letter it is given
     pub jobs: bool, pub at_launch: bool, pub letter: String,
+    /// (a jobs folder) the project type of its jobs, by name; empty: the built-in one
+    pub ptype: String,
     /// the two sides of its identity (`\\server\share`, `/Volumes/share`): the same on every machine that has it
     pub win: String, pub mac: String,
     /// this application connected it (it may disconnect it: only then)
@@ -76,9 +78,9 @@ pub fn set_started_with(m: Vec<Mapping>) { *STARTED_WITH.write().unwrap() = m; }
 pub fn started_with() -> Vec<Mapping> { STARTED_WITH.read().unwrap().clone() }
 
 // ---------------------------------------------------------------- kept in the settings
-fn to_json(s: &Share) -> Value { json!({ "id": s.id, "name": s.name, "server": s.server, "share": s.share, "local": s.local, "jobs": s.jobs, "atLaunch": s.at_launch, "letter": s.letter, "win": s.win, "mac": s.mac, "ours": s.ours }) }
+fn to_json(s: &Share) -> Value { json!({ "id": s.id, "name": s.name, "server": s.server, "share": s.share, "local": s.local, "jobs": s.jobs, "atLaunch": s.at_launch, "letter": s.letter, "type": s.ptype, "win": s.win, "mac": s.mac, "ours": s.ours }) }
 fn from_json(v: &Value) -> Option<Share> { let t = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string(); let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
-    let s = Share { id: t("id"), name: t("name"), server: t("server"), share: t("share"), local: t("local"), jobs: b("jobs"), at_launch: b("atLaunch"), letter: t("letter"), win: t("win"), mac: t("mac"), ours: b("ours") }; (!s.id.is_empty() && (!s.server.is_empty() || !s.local.is_empty())).then_some(s) }
+    let s = Share { id: t("id"), name: t("name"), server: t("server"), share: t("share"), local: t("local"), jobs: b("jobs"), at_launch: b("atLaunch"), letter: t("letter"), ptype: t("type"), win: t("win"), mac: t("mac"), ours: b("ours") }; (!s.id.is_empty() && (!s.server.is_empty() || !s.local.is_empty())).then_some(s) }
 pub fn load() -> Vec<Share> { let text = crate::settings::with(|s| s.string("shares/list")); serde_json::from_str::<Value>(&text).ok().and_then(|v| v.as_array().map(|a| a.iter().filter_map(from_json).collect())).unwrap_or_default() }
 pub fn save(shares: &[Share]) { let text = Value::Array(shares.iter().map(to_json).collect()).to_string(); crate::settings::with(|s| s.set_str("shares/list", &text)); }
 

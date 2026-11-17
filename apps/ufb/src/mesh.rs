@@ -116,6 +116,8 @@ fn local_ip() -> String { UdpSocket::bind("0.0.0.0:0").and_then(|s| { s.connect(
 /// machine holds those).
 pub const TEST_PORTS: (u16, u16, u16) = (49321, 49322, 4365);
 pub fn running() -> bool { shared().is_some() }
+/// The farm's folder of the node that runs.
+pub fn farm() -> Option<PathBuf> { shared().map(|s| s.cfg.farm.clone()) }
 /// This machine's name as a node's id: `given`, else the system's; only letters, digits, `-` and `_`.
 pub fn node_name(given: &str) -> String {
     let name = if given.trim().is_empty() { std::env::var("COMPUTERNAME").ok().or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())).unwrap_or_else(|| "node".into()) } else { given.trim().to_string() };

@@ -181,7 +181,7 @@ impl Ui {
         crate::ops::subscribe(id, port.clone());
         let lightbox = { let p = port.clone(); crate::lightbox::Lightbox::new(Arc::new(move || p.send(Msg::Icon))) };
         let (made_tx, made_rx) = std::sync::mpsc::channel();
-        let (share_tx, share_rx) = std::sync::mpsc::channel(); let shares = crate::shares::load();
+        let (share_tx, share_rx) = std::sync::mpsc::channel(); let shares = crate::shares::load(); Self::set_type_dirs();
         let mesh_rev = { let p = port.clone(); crate::mesh::on_change(Arc::new(move || p.send(Msg::Icon))); crate::mesh::rev() };
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
@@ -457,7 +457,7 @@ impl Ui {
     /// "Add" in the section in front: what it is called and whether there is one (the section's kind, by the project type).
     fn job_add_label(&self) -> Option<&'static str> {
         use ufb_projtype::Kind; let sec = self.job.as_ref()?.section.as_deref()?;
-        match crate::jobview::project_type().kind(sec) { Kind::Shot => Some("Add Shot"), Kind::Dated => Some("Add Item"), Kind::Folder => Some("Add Folder"), Kind::None => None }
+        match crate::jobview::type_for(&self.job.as_ref()?.path).ty.kind(sec) { Kind::Shot => Some("Add Shot"), Kind::Dated => Some("Add Item"), Kind::Folder => Some("Add Folder"), Kind::None => None }
     }
     fn ask_add_item(&mut self) {
         use min_ui::{dialog::Dialog, text_button::Variant};
@@ -476,7 +476,7 @@ impl Ui {
     /// A question with fields says what the answer would make - the very folder name (1.4.2's preview differed from
     /// what was made for runs of spaces, and always showed the letter `a`) - and its last button waits for a usable answer.
     fn dialog_preview(&mut self) {
-        let Some((d, asked)) = self.dialog.as_mut() else { return }; let ty = crate::jobview::project_type();
+        let Some((d, asked)) = self.dialog.as_mut() else { return }; let ty = match asked { Asked::NewJob(p) | Asked::AddItem(p) => crate::jobview::type_for(p).ty, _ => crate::jobview::type_for(Path::new("")).ty };
         let made = match asked {
             Asked::NewJob(_) => Some(ty.job_folder_name(&d.value_at(0), &d.value_at(1))),
             Asked::AddItem(dir) => { let name = d.value_at(0); let sec = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -568,11 +568,11 @@ impl Ui {
     fn apply_sync(&mut self) {
         let (on, farm, node, leader, only) = crate::settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only"))); let now = Instant::now();
         // (a node that runs is stopped first: it starts again with what the settings say now, or stays off)
-        if crate::mesh::running() { crate::mesh::stop(); self.reload_lists(); }
+        if crate::mesh::running() { crate::mesh::stop(); self.reload_lists(); } Self::set_type_dirs();
         if !on { return } if farm.trim().is_empty() { self.ask_sync(); return }
         if !Path::new(farm.trim()).is_dir() { self.toast.show("The farm's folder is not there.", min_ui::toast::ToastKind::Negative, now); return }
         crate::mesh::start_with(Path::new(farm.trim()), &node, &leader, (!only.trim().is_empty()).then(|| Path::new(only.trim())));
-        let p = self.port.clone(); crate::mesh::on_change(Arc::new(move || p.send(Msg::Icon))); self.mesh_rev = crate::mesh::rev();
+        let p = self.port.clone(); crate::mesh::on_change(Arc::new(move || p.send(Msg::Icon))); self.mesh_rev = crate::mesh::rev(); Self::set_type_dirs();
     }
     fn sync_chosen(&mut self, id: u32) {
         use crate::ctxmenu::*;
@@ -598,7 +598,9 @@ impl Ui {
         if maps != crate::db::mappings() { crate::db::set_mappings(maps);
             // (rows of this machine's own under a share that came are the share's from now on; the lists are read by the new places)
             let _ = crate::db::with(|d| d.classify(&crate::db::mappings())); self.reload_jobs(); self.reload_lists(); if let Some(j) = self.job.as_mut() { j.reload(); } }
-        crate::jobview::set_share_roots(self.shares.iter().zip(self.share_states.iter()).filter(|(s, _)| s.jobs).filter_map(|(_, st)| st.root().map(Path::to_path_buf)).collect());
+        crate::jobview::set_share_roots(self.shares.iter().zip(self.share_states.iter()).filter(|(s, _)| s.jobs).filter_map(|(s, st)| st.root().map(|p| (p.to_path_buf(), s.ptype.clone()))).collect());
+        // (the sections' labels are the type's: read again)
+        self.job_secs_for.clear();
         // the shares marked for it are asked for once, silently, when the application starts
         if !std::mem::replace(&mut self.shares_launched, true) { for i in 0..self.shares.len() { if self.shares[i].at_launch && !self.shares[i].server.is_empty() && self.share_states.get(i) == Some(&crate::shares::State::NotConnected) { self.connect_share(i, false); } } }
     }
@@ -648,6 +650,20 @@ impl Ui {
                 if !self.shares[i].server.is_empty() { self.connect_share(i, true); } else { self.refresh_shares(); } }
             Err(why) => self.toast.show(&why, min_ui::toast::ToastKind::Notice, Instant::now()),
         }
+    }
+    /// A jobs folder's project type was chosen (0: the built-in one; else the k-th of the types found). One that cannot
+    /// be read is not taken, and why is said.
+    fn share_type_chosen(&mut self, k: usize) {
+        let Some(i) = self.share_menu.filter(|i| *i < self.shares.len()) else { return };
+        let name = if k == 0 { String::new() } else { match crate::jobview::known_types().get(k - 1) { Some(t) => t.0.clone(), None => return } };
+        if !name.is_empty() { if let Err(why) = crate::jobview::load_type(&name) { self.toast.show(&format!("That type cannot be used: {why}"), min_ui::toast::ToastKind::Negative, Instant::now()); return } }
+        self.shares[i].ptype = name; crate::shares::save(&self.shares); self.apply_shares();
+    }
+    /// The places project types are looked for: the farm's folder, then this machine's settings folder.
+    fn set_type_dirs() {
+        let mut dirs = vec![]; if let Some(f) = crate::mesh::farm() { dirs.push(f.join("types")); } else { let f = crate::settings::with(|s| s.string("sync/farm")); if !f.trim().is_empty() { dirs.push(Path::new(f.trim()).join("types")); } }
+        if let Some(d) = min_settings::Settings::dir_for("UFB-test", "UFB") { dirs.push(d.join("types")); }
+        crate::jobview::set_type_dirs(dirs);
     }
     /// A row of a share's menu was chosen.
     fn share_chosen(&mut self, id: u32) {
@@ -1014,9 +1030,9 @@ impl Ui {
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
             // (made off this thread: a skeleton may be copied to a share)
             Asked::NewJob(parent) => if button == 1 { let (number, name, tx, port) = (d.value_at(0), d.value_at(1), self.made_tx.clone(), self.port.clone()); self.making = true;
-                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Job(crate::jobview::project_type().new_job(&parent, &number, &name))); port.send(Msg::Icon); }); },
+                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Job(crate::jobview::type_for(&parent).ty.new_job(&parent, &number, &name))); port.send(Msg::Icon); }); },
             Asked::AddItem(dir) => if button == 1 { let (name, tx, port) = (d.value_at(0), self.made_tx.clone(), self.port.clone()); self.making = true;
-                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Item(crate::jobview::project_type().add_item(&dir, &name, &crate::jobview::skeletons(), &crate::jobview::today()))); port.send(Msg::Icon); }); },
+                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let at = crate::jobview::type_for(&dir); let _ = tx.send(Made::Item(at.ty.add_item(&dir, &name, &at.skeletons, &crate::jobview::today()))); port.send(Msg::Icon); }); },
             Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), d.value_at(2)); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
             Asked::ShareLetter(i) => if button == 1 { match crate::shares::letter_of(&d.value_at(0)) { Some(l) => if let Some(sh) = self.shares.get_mut(i) { sh.letter = l; crate::shares::save(&self.shares); }, None => self.toast.show("A drive letter is one letter, A to Z.", min_ui::toast::ToastKind::Notice, Instant::now()) } },
             Asked::AddShare => if button == 1 { let text = d.value_at(0); self.add_share(&text); },
@@ -1223,6 +1239,7 @@ impl Ui {
     pub fn menu_chosen(&mut self, id: u32) {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         // (a saved share's own rows)
+        if (crate::ctxmenu::SHARE_TYPE..crate::ctxmenu::SHARE_TYPE + 500).contains(&id) { return self.share_type_chosen((id - crate::ctxmenu::SHARE_TYPE) as usize) }
         if (crate::ctxmenu::SYNC_SET..=crate::ctxmenu::SYNC_NEVER).contains(&id) { return self.sync_chosen(id) }
         if (crate::ctxmenu::SHARE_CONNECT..crate::ctxmenu::SYNC_SET).contains(&id) || id == crate::ctxmenu::SHARE_LETTER { return self.share_chosen(id) }
         // (the item list's own rows: columns, options, the star)
@@ -1347,7 +1364,7 @@ impl Ui {
         if let Event::Down { x, y, button: Button::Secondary } = *e { let p = kurbo::Point::new(x, y); if let Some(k) = self.side_rows.iter().find(|r| r.rect.contains(p)).and_then(|r| r.share).filter(|_| self.side_rect.contains(p)) {
             let (sh, st) = (self.shares[k].clone(), self.share_states.get(k).cloned().unwrap_or(crate::shares::State::NotConnected)); let root = st.root().map(Path::to_path_buf);
             self.share_menu = Some(k); self.menu_job = false; self.menu_for = root.clone().map(|r| (None, r));
-            self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: root.into_iter().collect(), rows: crate::ctxmenu::rows_for_share(st.root().is_some(), sh.ours, !sh.server.is_empty(), sh.at_launch, sh.jobs) }); return } }
+            self.show_menu(crate::ctxmenu::Ask { at: (x, y), paths: root.into_iter().collect(), rows: crate::ctxmenu::rows_for_share(st.root().is_some(), sh.ours, !sh.server.is_empty(), sh.at_launch, sh.jobs, &crate::jobview::known_types().into_iter().map(|t| t.0).collect::<Vec<_>>(), &sh.ptype) }); return } }
         for sec in self.sections.iter_mut() { sec.event(e, now); }
         self.side_hover = at.filter(|p| self.side_rect.contains(*p)).and_then(|p| self.side_rows.iter().position(|r| r.rect.contains(p)));
         if let Event::Down { x, y, button: Button::Primary } = *e { let p = kurbo::Point::new(x, y);
@@ -1599,6 +1616,9 @@ impl Ui {
             "share" => { let (what, rest) = arg.split_once(':').unwrap_or((arg, "")); match what { "add" => self.add_share(rest), "connect" => if let Some(n) = num(rest) { self.connect_share(n, true); }, other => if let Some(n) = num(rest) { self.share_menu = Some(n); self.share_chosen(match other { "disconnect" => crate::ctxmenu::SHARE_DISCONNECT, "jobs" => crate::ctxmenu::SHARE_JOBS, "remove" => crate::ctxmenu::SHARE_REMOVE, _ => 0 }); } } },
             // sync's settings as its dialog saves them: `sync:<farm>|<name>|<only>`
             "sync" => { let mut it = arg.split('|'); let (farm, node, only) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or("")); crate::settings::with(|s| { s.set_str("sync/farm", farm); s.set_str("sync/node", node); s.set_str("sync/only", only); s.set_bool("sync/on", true); }); self.apply_sync(); },
+            // a jobs folder's type: `share:type:<n>:<name>` is done here (`sharetype:<n>:<name>`; an empty name: the built-in one); `types` says those found
+            "sharetype" => { let (n, name) = arg.split_once(':').unwrap_or((arg, "")); if let Some(n) = num(n) { self.share_menu = Some(n); let k = if name.is_empty() { Some(0) } else { crate::jobview::known_types().iter().position(|t| t.0.eq_ignore_ascii_case(name)).map(|k| k + 1) }; match k { Some(k) => self.share_type_chosen(k), None => eprintln!("UFB_DEMO: no type {name}") } } },
+            "types" => eprintln!("UFB_DEMO: types: {} | shares: {}", crate::jobview::known_types().iter().map(|t| t.0.clone()).collect::<Vec<_>>().join(", "), self.shares.iter().map(|s| format!("{}={}", s.name, if s.ptype.is_empty() { "built-in" } else { &s.ptype })).collect::<Vec<_>>().join(", ")),
             "syncoff" => self.sync_chosen(crate::ctxmenu::SYNC_ONOFF),
             "shares" => eprintln!("UFB_DEMO: shares: {}", self.shares.iter().enumerate().map(|(i, sh)| format!("{} [{}{}{}] {:?}", sh.name, if sh.server.is_empty() { format!("folder {}", sh.local) } else { format!("smb://{}/{}", sh.server, sh.share) }, if sh.jobs { ", jobs" } else { "" }, if sh.ours { ", ours" } else { "" }, (self.share_states.get(i), self.share_holders.contains_key(&sh.id).then_some("held")))).collect::<Vec<_>>().join(" | ")),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
@@ -1739,7 +1759,7 @@ impl Ui {
         let list_w = if trk { area.width() } else if in_job { (self.job_w * s).min((area.width() * 0.6).round()).max((JOB_LIST_MIN * s).min(area.width() * 0.6)) } else { 0.0 };
         self.job_list = Rect::new(area.x0, (tool.y1 + trk_strip).min(area.y1), area.x0 + list_w, area.y1); self.panes_x0 = area.x0 + list_w;
         let body = Rect::new(area.x0 + list_w, tool.y1, area.x1, area.y1);
-        if let Some(j) = &self.job { if self.job_secs_for != j.sections { self.job_secs_for = j.sections.clone(); self.job_secs = j.sections.iter().map(|n| { let label = crate::jobview::project_type().section(n).map(|s| s.label().to_string()).unwrap_or_else(|| n.clone()); let mut b = ActionButton::new("", "").size_s(); b.label = Some(label); b }).collect(); } }
+        if let Some(j) = &self.job { if self.job_secs_for != j.sections { self.job_secs_for = j.sections.clone(); self.job_secs = j.sections.iter().map(|n| { let label = crate::jobview::type_for(&j.path).ty.section(n).map(|s| s.label().to_string()).unwrap_or_else(|| n.clone()); let mut b = ActionButton::new("", "").size_s(); b.label = Some(label); b }).collect(); } }
         let add_label = self.job_add_label();
         self.gaps[0] = Rect::new(side_w - GAP * s / 2.0, menu_h, side_w + GAP * s / 2.0, status.y0);
         self.gaps[2] = if in_job && !trk { Rect::new(body.x0 - GAP * s / 2.0, tool.y1, body.x0 + GAP * s / 2.0, area.y1) } else { Rect::ZERO };

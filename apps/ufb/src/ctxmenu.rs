@@ -96,14 +96,21 @@ pub fn rows_for_sync(on: bool, leader: &str) -> Vec<Row> {
 // A saved share of the sidebar (row 498).
 pub const SHARE_CONNECT: u32 = 70; pub const SHARE_DISCONNECT: u32 = 71; pub const SHARE_LAUNCH: u32 = 72; pub const SHARE_JOBS: u32 = 73; pub const SHARE_RENAME: u32 = 74; pub const SHARE_REMOVE: u32 = 75; pub const SHARE_LETTER: u32 = 81;
 /// `there`: it is connected (`ours`: by this application - only then can it be disconnected); `network`: it is a share with an address (a folder has nothing to connect); the two ticks as they stand.
-pub fn rows_for_share(there: bool, mine: bool, network: bool, at_launch: bool, jobs: bool) -> Vec<Row> {
+/// A jobs folder's project type: the built-in one, or one of the types found (row 502).
+pub const SHARE_TYPE: u32 = 5000;
+pub fn rows_for_share(there: bool, mine: bool, network: bool, at_launch: bool, jobs: bool, types: &[String], ptype: &str) -> Vec<Row> {
     let mut rows = vec![];
     if there { rows.extend([ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep]); }
     if network { if !there { rows.push(ours_row(SHARE_CONNECT, "Connect")); } else if mine { rows.push(ours_row(SHARE_DISCONNECT, "Disconnect")); }
         rows.push(ours_row(SHARE_LAUNCH, if at_launch { "Do Not Connect at Launch" } else { "Connect at Launch" }));
         // (Windows: the letter it is given the next time it is connected)
         if cfg!(windows) { rows.push(ours_row(SHARE_LETTER, "Drive Letter\u{2026}")); } }
-    rows.extend([ours_row(SHARE_JOBS, if jobs { "Not a Jobs Folder" } else { "Is a Jobs Folder" }), Row::Sep, ours_row(SHARE_RENAME, "Rename\u{2026}"), ours_row(SHARE_REMOVE, "Remove from the Sidebar")]);
+    rows.push(ours_row(SHARE_JOBS, if jobs { "Not a Jobs Folder" } else { "Is a Jobs Folder" }));
+    // (its jobs' type: the one in force is ticked; shown when there is a choice, or one that is no longer there)
+    if jobs && (!types.is_empty() || !ptype.is_empty()) { let tick = |on: bool, l: String| if on { format!("\u{2713} Type: {l}") } else { format!("Type: {l}") };
+        rows.push(Row::Sep); rows.push(Row::Ours { id: SHARE_TYPE, label: tick(ptype.is_empty(), "Built-in".into()).into() });
+        for (k, n) in types.iter().enumerate() { rows.push(Row::Ours { id: SHARE_TYPE + 1 + k as u32, label: tick(n.eq_ignore_ascii_case(ptype), n.clone()).into() }); } }
+    rows.extend([Row::Sep, ours_row(SHARE_RENAME, "Rename\u{2026}"), ours_row(SHARE_REMOVE, "Remove from the Sidebar")]);
     rows
 }
 fn ours_row(id: u32, label: &'static str) -> Row { Row::Ours { id, label: label.into() } }
