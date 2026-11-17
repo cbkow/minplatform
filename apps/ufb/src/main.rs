@@ -29,6 +29,7 @@ mod lightbox;
 mod lister;
 mod logfile;
 mod menu;
+mod migrate;
 mod mesh;
 mod model;
 mod ops;
@@ -50,7 +51,7 @@ mod webview;
 /// things in (row 468, point 2): the folder it was started with, the favorites, each `--allow-writes <folder>`.
 /// The one thing a launch is asked to open: its first argument that is neither an option nor an option's value.
 fn positional(args: &[String]) -> Option<String> {
-    let mut i = 0; while i < args.len() { if matches!(args[i].as_str(), "--map" | "--mesh" | "--mesh-node" | "--mesh-only" | "--allow-writes" | "--favorite" | "--jobs") { i += 2; continue } if args[i].starts_with("--") { i += 1; continue } return Some(args[i].clone()) } None
+    let mut i = 0; while i < args.len() { if matches!(args[i].as_str(), "--map" | "--mesh" | "--mesh-node" | "--mesh-only" | "--allow-writes" | "--favorite" | "--jobs" | "--import-1.4") { i += 2; continue } if args[i].starts_with("--") { i += 1; continue } return Some(args[i].clone()) } None
 }
 pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Vec<places::Place>, Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
     let abs = |p: &str| std::path::absolute(p).unwrap_or_else(|_| std::path::PathBuf::from(p));
@@ -74,6 +75,10 @@ fn main() {
     if std::env::args_os().nth(1).is_some_and(|a| a == thumbs::pool::HELPER_ARG) { thumbs::helper::run() }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]... [--map <windows side>=<macOS side>]... [--mesh <farm folder> [--mesh-node <id>] [--mesh-only <folder>]]"); return }
+    // `--import-1.4 <folder>`: what a UFB 1.4.x keeps in that data folder (or a copy of it) is taken into this build's
+    // own, it is said in numbers what was taken, and the application ends (row 532)
+    if let Some(from) = args.windows(2).find(|w| w[0] == "--import-1.4").map(|w| std::path::PathBuf::from(&w[1])) {
+        match migrate::import(&from) { Ok(d) => println!("{}", migrate::report(&d)), Err(e) => { eprintln!("UFB: nothing was taken over: {e}"); std::process::exit(1) } } return }
     // one UFB a user (row 519): a second launch hands what it was asked to open to the one that runs, and ends
     if instance::takes_part() { if let Some(dir) = identity::data_dir() {
         let asked = positional(&args).unwrap_or_default(); let asked = if asked.is_empty() || asked.starts_with("ufb:") || asked.starts_with("union:") { asked } else { std::path::absolute(&asked).map(|p| p.to_string_lossy().into_owned()).unwrap_or(asked) };
