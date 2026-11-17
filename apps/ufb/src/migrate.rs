@@ -87,6 +87,21 @@ pub fn import(from: &Path) -> Result<Imported, String> {
     crate::settings::with(|s| s.set_str("migrate/from_1_4", &crate::format::now_secs().to_string()));
     Ok(done)
 }
+/// The move from 1.4.x is made by the application itself, at a first launch, in the versions up to 2.0.3 alone (row 547):
+/// from the next version on nothing is taken over unasked - no mapping, favourite or share can come in twice from an
+/// old folder. A version that cannot be read counts as a later one.
+pub fn by_itself(version: &str) -> bool {
+    let mut n = version.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(|p| p.parse::<u32>().unwrap_or(u32::MAX));
+    match (n.next(), n.next(), n.next()) { (Some(a), Some(b), Some(c)) => (a, b, c) <= (2, 0, 3), _ => false }
+}
+#[cfg(test)]
+mod by_itself_tests {
+    #[test] fn up_to_2_0_3_alone() {
+        for v in ["2.0.0", "2.0.1", "2.0.3", "2.0.3-dev"] { assert!(super::by_itself(v), "{v}"); }
+        for v in ["2.0.4", "2.1.0", "3.0.0", "", "x"] { assert!(!super::by_itself(v), "{v}"); }
+    }
+}
+
 /// What was taken over, in numbers (no name of a job, a share or a folder is said).
 pub fn report(d: &Imported) -> String {
     let mut s = format!("path mappings: {} taken, {} were there already\nfavourites: {}; jobs folders: {}; bookmarks that lead nowhere on this machine: {}\nsync: the farm's folder {}; switched {}",

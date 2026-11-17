@@ -92,7 +92,9 @@ fn main() {
     if logfile::wanted() { if let Some(p) = logfile::install(identity::data_name()) { eprintln!("UFB: the log is {}", p.display()); } }
     // the release, at its first launch in a folder a 1.4.x has used: the move is made by itself, before anything opens
     // the database (rows 532, 534). Should it fail, it is said in the log and tried again at the next launch.
-    if identity::kind() == identity::Kind::Release && settings::with(|s| s.string("migrate/from_1_4")).is_empty() {
+    // ONLY UP TO 2.0.3 (row 547): 2.0.3 is the last version that takes 1.4.x over by itself, on both systems - a later
+    // version opens the database as it finds it and takes nothing else (`--import-1.4 <folder>` stays, by hand).
+    if migrate::by_itself(env!("CARGO_PKG_VERSION")) && identity::kind() == identity::Kind::Release && settings::with(|s| s.string("migrate/from_1_4")).is_empty() {
         if let Some(dir) = identity::data_dir() { if dir.join("ufb_v5.db").is_file() || dir.join("settings.json").is_file() { match migrate::import(&dir) { Ok(d) => eprintln!("UFB: taken over from 1.4.x:\n{}", migrate::report(&d)), Err(e) => eprintln!("UFB: the move from 1.4.x was not made: {e}") } } else { settings::with(|s| s.set_str("migrate/from_1_4", "nothing to take")); } } }
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
     // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
