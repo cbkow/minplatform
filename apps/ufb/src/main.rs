@@ -31,6 +31,7 @@ mod model;
 mod ops;
 mod pane;
 mod places;
+mod prefs;
 mod settings;
 mod shares;
 mod shell;

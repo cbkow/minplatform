@@ -86,6 +86,8 @@ struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool, /// a subscri
 /// Logical px.
 const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 380.0; const JOB_LIST_MIN: f64 = 200.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
+/// A new pane shows what the settings say (row 516): hidden files, folders first, sequences as one entry, a grid.
+fn seed(p: &mut Pane, view: (bool, bool, bool, bool)) { p.set_hidden(view.0); p.set_folders_first(view.1); p.set_sequences(view.2); if view.3 { p.set_mode(Mode::Grid); } }
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
     window: Arc<Box<dyn Window>>, presenter: Presenter, layer: UiLayer, fonts: Fonts, tips: Tooltips,
@@ -101,7 +103,8 @@ pub struct Ui {
     job: Option<Job>, jobs: Vec<crate::db::Sub>, job_secs: Vec<ActionButton>, job_secs_for: Vec<String>, job_refresh: ActionButton, job_add: ActionButton,
     job_list: Rect, panes_x0: f64, /// the item list itself (row 489): its columns, what the items carry, its field; the foot's Columns button; what its last menu was about (the column in view, the item, the columns that can be shown again, those in the trash)
     /// the chips (row 490): the popover that picks a dropdown cell's value; a column's editor (a question of its own, over everything)
-    chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>,
+    chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>, /// the Settings card (row 516)
+    prefs: Option<crate::prefs::Prefs>,
     /// the tracker the tab in front shows, if it shows one (row 491): a job's (beside its sections), or All Tracked;
     /// its button in a job's bar, the Due chips, its last press (two on one row open the item)
     /// the board (row 492): the section in front shown as lanes of cards in the item list's place; what each (job, section) is grouped by, while the window lives; its button at the list's foot; the columns its last menu offered
@@ -178,7 +181,7 @@ impl Ui {
         let mut presenter = Presenter::new(&instance, surface, (size.width.max(1), size.height.max(1)), Output::Auto, view).ok()?; presenter.engine.set_ui_scale(window.scale_factor() as f32);
         let layer = UiLayer::new(&presenter.engine.device, size.width.max(1), size.height.max(1)).ok()?; presenter.engine.set_overlay(Some(layer.view()));
         let mut search = TextField::new(Family::Sans, t::BODY_SIZE_S); search.placeholder = "Search".into();
-        let pane = Pane::new(path, &port); places::refresh(&port);
+        let view = crate::prefs::view(); let mut pane = Pane::new(path, &port); seed(&mut pane, view); places::refresh(&port);
         // (the scripted looks are the FIRST window's: a window they open does not run them again)
         static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true); let first = FIRST.swap(false, std::sync::atomic::Ordering::Relaxed);
         let demo = std::env::var("UFB_DEMO").ok().filter(|_| first).map(|d| d.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
@@ -192,7 +195,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, prefs: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: view.0, folders_first: view.1,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -217,7 +220,7 @@ impl Ui {
     fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
     /// A new tab on this folder, after the one in front, and shown: one pane, with the view of the pane it was asked from.
     fn new_tab(&mut self, path: PathBuf) {
-        let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first);
+        let mut p = Pane::new(path, &self.port); seed(&mut p, crate::prefs::view()); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first);
         { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } }
         self.leave_tab(); self.swap_tab(); self.tab += 1; self.tabs.insert(self.tab, Tab::default());
         self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5; self.job = None; self.tracker = None;
@@ -568,6 +571,19 @@ impl Ui {
             .with_field("Farm folder", "a folder on shared storage").with_field("This machine's name", &crate::mesh::node_name("")).with_field("Only under (this test build's belt)", "a folder; empty: everything shared");
         d.show_with(&farm, &mut self.fonts); d.fields[1].1.set_text_end(&node, &mut self.fonts); d.fields[2].1.set_text_end(&only, &mut self.fonts); self.dialog = Some((d, Asked::SyncSet));
     }
+    /// The Settings card (row 516): opened over the window; Save applies what it holds to this window's panes and, when
+    /// sync's settings changed, starts sync again.
+    fn open_prefs(&mut self) { if self.prefs.is_some() || self.dialog.is_some() || self.lightbox.is_open() { return } self.ctx.close(); self.end_rename(); self.leave_path(); self.leave_search(); self.op_list = false; self.prefs = Some(crate::prefs::Prefs::open(&mut self.fonts)); }
+    fn prefs_done(&mut self, out: crate::prefs::Out) {
+        match out { crate::prefs::Out::None => {} crate::prefs::Out::Close => self.prefs = None,
+            crate::prefs::Out::Saved { sync } => { self.prefs = None; self.apply_view(); if sync { self.apply_sync(); } } }
+    }
+    /// The panes are made what the settings say they show (after Save; a new pane is made so from the start).
+    fn apply_view(&mut self) {
+        let (hidden, folders_first, sequences, grid) = crate::prefs::view(); self.hidden = hidden; self.folders_first = folders_first; let mode = if grid { Mode::Grid } else { Mode::List };
+        for p in self.panes.iter_mut() { p.set_hidden(hidden); p.set_folders_first(folders_first); p.set_sequences(sequences); if p.mode != mode { p.set_mode(mode); } }
+        for p in self.hidden_panes() { p.set_hidden(hidden); p.set_folders_first(folders_first); p.set_sequences(sequences); if p.mode != mode { p.set_mode(mode); } }
+    }
     /// Sync is made what the settings say (row 500): stopped, started, or started again with the new settings.
     fn apply_sync(&mut self) {
         let (on, farm, node, leader, only) = crate::settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only"))); let now = Instant::now();
@@ -703,7 +719,7 @@ impl Ui {
         }
     }
     /// A text is being typed somewhere (a field of the window, or of an open question).
-    fn text_focus(&self) -> bool { self.chip.is_some() || self.coledit.is_some() || matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
+    fn text_focus(&self) -> bool { self.chip.is_some() || self.coledit.is_some() || self.prefs.as_ref().is_some_and(|p| p.typing()) || matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
 
     /// Every pane of the tabs that are behind.
     fn hidden_panes(&mut self) -> impl Iterator<Item = &mut Pane> { self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) }
@@ -1166,7 +1182,7 @@ impl Ui {
     }
     fn set_two(&mut self, on: bool) {
         self.two = on;
-        if on && self.panes.len() < 2 { let path = self.panes[0].path().to_path_buf(); let mut p = Pane::new(path, &self.port); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first); self.panes.push(p); }
+        if on && self.panes.len() < 2 { let path = self.panes[0].path().to_path_buf(); let mut p = Pane::new(path, &self.port); seed(&mut p, crate::prefs::view()); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first); self.panes.push(p); }
         if !on { self.active = 0; }
         // (in a job the second pane shows the chosen item's renders; the first stays where it is)
         if on { self.job_follow(false, true); }
@@ -1196,7 +1212,7 @@ impl Ui {
     pub fn command(&mut self, c: Cmd) {
         let port = self.port.clone();
         // while the lightbox is open the window's own commands and Preview act; the browser's wait
-        if self.coledit.is_some() && !matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::Minimize | Cmd::Quit) { return }
+        if (self.coledit.is_some() || self.prefs.is_some()) && !matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::Minimize | Cmd::Quit) { return }
         if self.chip.is_some() { self.chip = None; }
         if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow | Cmd::NewTab | Cmd::CloseTab | Cmd::NextTab | Cmd::PrevTab) { return }
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
@@ -1231,13 +1247,15 @@ impl Ui {
             Cmd::Open => { self.pane().open_chosen(&port); self.after_pane_events(); }
             Cmd::Preview => if self.lightbox.is_open() { self.close_lightbox(); } else if self.focus == Focus::Pane && self.dialog.is_none() { let i = self.active.min(self.panes.len() - 1); if let Some(row) = self.panes[i].cursor_row() { self.open_lightbox(i, row); } },
             Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all(), Focus::Items => {}, Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.select_all(&mut self.fonts); } } },
-            Cmd::AsList => self.pane().set_mode(Mode::List), Cmd::AsGrid => self.pane().set_mode(Mode::Grid),
-            Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
-            Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
+            // (the View menu's rows are remembered: they are the Settings card's switches, row 516)
+            Cmd::Settings => self.open_prefs(),
+            Cmd::AsList => { self.pane().set_mode(Mode::List); crate::settings::with(|s| s.set_bool("view/grid", false)); } Cmd::AsGrid => { self.pane().set_mode(Mode::Grid); crate::settings::with(|s| s.set_bool("view/grid", true)); }
+            Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; crate::settings::with(|s| s.set_bool("view/hidden", on)); for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
+            Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; crate::settings::with(|s| s.set_bool("view/folders_first", on)); for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
             // (a flat section of a job has ONE view: two panes on the same folder, one above the other, only confuse - row 485)
             Cmd::SecondPane if self.job.as_ref().is_some_and(|j| !j.two_tier) => self.toast.show("This section has a single view.", min_ui::toast::ToastKind::Notice, Instant::now()),
             Cmd::SecondPane => { self.set_two(!self.two); let on = self.two; if let Some(j) = self.job.as_mut() { if let Some(sec) = j.section.clone() { j.pane2.insert(sec, on); } } }
-            Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); }
+            Cmd::Sequences => { let on = !self.pane().model.sequences; self.pane().set_sequences(on); crate::settings::with(|s| s.set_bool("view/sequences", on)); }
             Cmd::Column(i) => self.toggle_column(i as usize),
             Cmd::Sort(i) => { let by = SortBy::of_column(i as usize); let p = self.pane(); let asc = if p.model.sort == by { !p.model.ascending } else { true }; p.set_sort(by, asc); }
             Cmd::Refresh => { let dir = self.pane().path().to_path_buf(); self.thumbs.retry(&dir); self.pane().refresh(&port); places::refresh(&port); if let Some(j) = self.job.as_mut() { j.reload(); } }
@@ -1375,6 +1393,7 @@ impl Ui {
         if let Some(p) = e.pos() { self.pointer = p; } let now = Instant::now(); let s = self.scale(); let port = self.port.clone();
         if self.lightbox.is_open() { return self.lightbox_pointer(e) }
         // a column's editor is a question of its own: it takes everything; the chips' popover takes the pointer while it is open
+        if let Some(p) = self.prefs.as_mut() { let out = p.pointer(e, &mut self.fonts); self.prefs_done(out); return }
         if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.event(e, &mut self.fonts, now) { self.column_done(done); } return }
         if let Some(p) = self.chip.as_mut() { let (pick, close) = p.event(e); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
         // the drawn context menu takes the pointer while it is open
@@ -1547,18 +1566,19 @@ impl Ui {
         self.set_cursor(if self.over_gap == Some(1) && self.stacked { winit31::cursor::CursorIcon::RowResize } else if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
-    pub fn paste(&mut self, text: &str) { if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { d.paste(text, &mut self.fonts); self.dialog_preview(); return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); } } Focus::Pane | Focus::Items => {} } }
+    pub fn paste(&mut self, text: &str) { if let Some(p) = self.prefs.as_mut() { p.paste(text, &mut self.fonts); return } if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { d.paste(text, &mut self.fonts); self.dialog_preview(); return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); } } Focus::Pane | Focus::Items => {} } }
     /// A key for the drawn menu bar: (the command of the row chosen, redraw, the key was the bar's).
     pub fn with_menu_key(&mut self, k: &min_ui::BarKey) -> (Option<Cmd>, bool, bool) { match self.menubar.as_mut() { Some(mb) => { let (id, redraw, consumed) = mb.bar.key(k, &mut self.fonts); (id.and_then(|i| mb.cmd(i)), redraw, consumed) } None => (None, false, false) } }
     /// A text field holds the keyboard (the clipboard's keys are its).
     pub fn typing(&self) -> bool { self.text_focus() }
     /// The chosen text of the field in hand, for a copy; `cut` takes it out.
-    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.copy(cut, &mut self.fonts); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; l.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)) } Focus::Pane | Focus::Items => None } }
+    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(p) = self.prefs.as_mut() { return p.copy(cut, &mut self.fonts) } if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.copy(cut, &mut self.fonts); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; l.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)) } Focus::Pane | Focus::Items => None } }
     /// A key. `name`: the key as the key map names it ("N", "[", "Up", "F5"); `alt`: the Alt / Option key is down;
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
         if self.lightbox.is_open() { return self.lightbox_key(k, name) }
+        if let Some(p) = self.prefs.as_mut() { let out = p.key(k, &mut self.fonts); self.prefs_done(out); return }
         if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.key(k, &mut self.fonts) { self.column_done(done); } return }
         if matches!(k.key, Key::Named(Named::Escape)) && self.board.as_mut().is_some_and(|b| b.cancel_drag()) { return }
         if let Some(p) = self.chip.as_mut() { let s = self.window.scale_factor(); let (pick, close) = p.key(k, &mut self.fonts, s); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
@@ -1794,6 +1814,12 @@ impl Ui {
             "taskstop" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::cancel(t.id); },
             "taskdismiss" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::dismiss(t.id); },
             "taskclear" => crate::tasks::clear_finished(),
+            // the Settings card: `prefs` (open it) `prefset:<hidden|foldersfirst|sequences|grid|sync>:<on|off>` `prefset:<farm|node|only>:<text>` `prefsave` `prefcancel` `prefsay`
+            "prefs" => self.open_prefs(),
+            "prefset" => if let (Some(p), Some((what, value))) = (self.prefs.as_mut(), arg.split_once(':')) { p.demo_set(what, value, &mut self.fonts); },
+            "prefsave" => if let Some(p) = self.prefs.as_mut() { let out = p.demo_save(); if out == crate::prefs::Out::None { eprintln!("UFB_DEMO: settings not saved: {}", self.prefs.as_ref().and_then(|p| p.error()).unwrap_or("")); } self.prefs_done(out); },
+            "prefcancel" => self.prefs = None,
+            "prefsay" => { let v = crate::prefs::view(); eprintln!("UFB_DEMO: settings: hidden {} folders-first {} sequences {} grid {}; sync {}; this window: hidden {} mode {:?} sequences {}", v.0, v.1, v.2, v.3, crate::settings::with(|s| format!("{} farm \"{}\" node \"{}\"", s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"))), self.hidden, self.panes[self.active].mode, self.panes[self.active].model.sequences); },
             // `extract` `compress` (the chosen entries) `password:<text>` (answer the password question)
             // `searchbelow:<text>` (Return in the search field) `enclosing` (the chosen find, where it lies) `searchclear`
             "searchbelow" => { self.search.set_text(arg); let port = self.port.clone(); self.pane().search_below(&port, arg); },
@@ -1824,7 +1850,7 @@ impl Ui {
     // ---------------------------------------------------------------- drawing
     pub fn animating(&self) -> bool {
         let now = Instant::now(); let n = self.shown();
-        self.tips.next_change(now).is_some() || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
+        self.tips.next_change(now).is_some() || self.prefs.as_ref().is_some_and(|p| p.animating(now)) || self.side_bar.animating(now) || self.panes.iter().take(n).any(|p| p.animating(now) || (p.load == Load::Loading)) || [&self.back, &self.forward, &self.up, &self.list_btn, &self.grid_btn, &self.pane2_btn, &self.tab_new].iter().any(|b| b.animating(now)) || self.tab_close.iter().any(|b| b.animating(now))
             || self.crumbs.iter().any(|(b, _)| b.animating(now)) || self.sections.iter().any(|sec| sec.animating(now)) || self.size.animating(now) || self.text_focus() || self.dialog.is_some() || self.making || self.job.as_ref().is_some_and(|j| j.loading) || self.items.animating(now) || !self.share_busy.is_empty() || self.share_add.animating(now) || self.share_btns.iter().any(|b| b.animating(now)) || self.board.as_ref().is_some_and(|b| b.animating(now)) || self.board_btn.animating(now) || self.tracker.as_ref().is_some_and(|t| t.list.animating(now)) || self.trk_btn.animating(now) || self.due_btns.iter().any(|b| b.animating(now)) || self.chip.is_some() || self.coledit.as_ref().is_some_and(|e| e.animating(now)) || self.job_meta.animating(now) || self.job_refresh.animating(now) || self.job_add.animating(now) || self.job_secs.iter().any(|b| b.animating(now)) || self.toast.is_shown() || self.rename_next.is_some() || self.path_error.is_some() || self.lightbox_live(now)
             // (a scripted look keeps the window drawing by itself - which HID that a playing clip did not: `UFB_DEMO_IDLE=1`
             // stops that once the lightbox is open, so that what is measured is what a person gets)
@@ -2240,6 +2266,7 @@ impl Ui {
         self.ctx.paint(scene, fonts, s);
         if let Some(p) = self.chip.as_mut() { p.paint(scene, fonts, s); }
         if let Some(ed) = self.coledit.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); ed.layout(fonts, bounds, s); ed.paint(scene, fonts, bounds, now); }
+        if let Some(p) = self.prefs.as_mut() { p.paint(scene, fonts, Rect::new(0.0, 0.0, w, h), s, now); }
         // what went wrong, at the window's foot; an open question over everything
         self.toast.tick(now); self.toast.paint(scene, fonts, Rect::new(0.0, 0.0, w, status.y0), s, now);
         if let Some((d, _)) = self.dialog.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); d.layout(fonts, bounds, s); d.paint(scene, fonts, s, bounds, now); }
