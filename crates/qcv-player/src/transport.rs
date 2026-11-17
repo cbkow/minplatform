@@ -119,7 +119,21 @@ impl Default for TransportOptions { fn default() -> Self { TransportOptions { hw
 enum After { Scrub(i32), Seek(i64, i32), AtIn }
 struct Pending { clip: usize, rx: mpsc::Receiver<Result<Slot, Error>>, autoplay: bool, after: After }
 /// A slot that leaves the transport is dropped on a thread: its decoders join their threads (seconds on a NAS / Windows).
-fn drop_off_thread(s: Slot) { thread::Builder::new().name("qcv-slot-drop".into()).spawn(move || drop(s)).ok(); }
+fn drop_off_thread(s: Slot) {
+    struct Leaving; impl Drop for Leaving { fn drop(&mut self) { RETIRING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst); } }
+    RETIRING.fetch_add(1, std::sync::atomic::Ordering::SeqCst); let leaving = Leaving;
+    thread::Builder::new().name("qcv-slot-drop".into()).spawn(move || { let _leaving = leaving; drop(s); }).ok();   // (not started: the closure - and the slot - are dropped here)
+}
+/// Slots being dropped on their threads right now.
+static RETIRING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Before the GPU device goes at the end of the process: wait (at most `most`) for the slots still being dropped on
+/// their threads - they release hardware frames, and on Windows a release that runs while Direct3D is being unloaded
+/// is a fault. True: none is left.
+pub fn wait_retired(most: std::time::Duration) -> bool {
+    let until = std::time::Instant::now() + most;
+    while RETIRING.load(std::sync::atomic::Ordering::SeqCst) > 0 { if std::time::Instant::now() >= until { return false } thread::sleep(std::time::Duration::from_millis(5)); }
+    true
+}
 
 /// A decoder slot: one clip's streaming decoder (+ its scrub decoder), with the clip's source window.
 pub struct Slot { pub clip: usize, pub decoder: SlotDecoder, pub scrub: Option<ScrubDecoder>, pub info: SessionInfo, pub index: Arc<FrameIndex>, pub path: String, pub src_rate: Rate, pub src_in: i64, pub src_out: i64, /// parked on its in-point with the lookahead queued (a prewarmed slot); false once it has played

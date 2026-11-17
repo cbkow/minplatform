@@ -1,6 +1,6 @@
 [package]
 name = "ufb"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 publish = false
 license = "GPL-3.0-or-later"

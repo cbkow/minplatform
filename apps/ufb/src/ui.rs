@@ -96,7 +96,9 @@ fn seed(p: &mut Pane, view: (bool, bool, bool, bool)) { p.set_hidden(view.0); p.
 // (the teardown's order is QCView's: the player - its decoders hold hardware frames -, then the hardware device context
 // WHILE the GPU device is alive, then the presenter with the rest. Left to the fields' order, the presenter went
 // first and Windows ended a session that had previewed a video with a fault inside Direct3D.)
-impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); self.lightbox.close(); self.hw = None; } }
+impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); self.lightbox.close();
+    // (a player let go is ended on threads of its own: they are waited for, or they release their frames while Direct3D is being unloaded)
+    qcv_player::wait_retired(std::time::Duration::from_secs(3)); self.hw = None; } }
 pub struct Ui {
     window: Arc<Box<dyn Window>>, presenter: Presenter, layer: UiLayer, fonts: Fonts, tips: Tooltips,
     port: Port, rx: Receiver<Msg>, icons: Icons, thumbs: Thumbs,

@@ -30,7 +30,7 @@ pub use hw::HwDevice;
 pub use rgb_range::RangeOverride;
 pub use scrub_decoder::{ScrubDecoder, ScrubOptions, Served};
 pub use audio::{AudioPlayer, AudioStats, RoutingMode, WaveformProbeEngine, ColumnPeak, audio_stream_count};
-pub use transport::{Transport, TransportOptions, AudioHooks, NoAudio, Stats};
+pub use transport::{Transport, TransportOptions, AudioHooks, NoAudio, Stats, wait_retired};
 pub use dual::{DualTransport, Side, SideUpdate};
 pub use playback::{Playback, TimecodeInfo};
 pub use playback_timer::{PlaybackTimer, ClockPolicy};
