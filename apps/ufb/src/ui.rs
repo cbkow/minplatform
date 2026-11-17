@@ -93,7 +93,10 @@ const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46
 
 /// A new pane shows what the settings say (row 516): hidden files, folders first, sequences as one entry, a grid.
 fn seed(p: &mut Pane, view: (bool, bool, bool, bool)) { p.set_hidden(view.0); p.set_folders_first(view.1); if !p.has_own_view() { p.set_sequences(view.2); if view.3 { p.set_mode(Mode::Grid); } } p.view_synced(); }
-impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
+// (the teardown's order is QCView's: the player - its decoders hold hardware frames -, then the hardware device context
+// WHILE the GPU device is alive, then the presenter with the rest. Left to the fields' order, the presenter went
+// first and Windows ended a session that had previewed a video with a fault inside Direct3D.)
+impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); self.lightbox.close(); self.hw = None; } }
 pub struct Ui {
     window: Arc<Box<dyn Window>>, presenter: Presenter, layer: UiLayer, fonts: Fonts, tips: Tooltips,
     port: Port, rx: Receiver<Msg>, icons: Icons, thumbs: Thumbs,

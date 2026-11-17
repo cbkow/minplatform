@@ -23,7 +23,8 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-struct Win { window: Arc<Box<dyn Window>>, ui: Ui }
+// (the interface - with its presenter - is dropped before the window it draws into)
+struct Win { ui: Ui, window: Arc<Box<dyn Window>> }
 struct App {
     first: Option<PathBuf>, favorites: Vec<Place>, proxy: Arc<EventLoopProxy>, windows: HashMap<WindowId, Win>, focused: Option<WindowId>,
     /// (shift, the command key - Ctrl on Windows -, Alt / Option)
