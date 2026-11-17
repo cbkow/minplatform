@@ -63,7 +63,7 @@ impl Prefs {
         me.set_focus(usize::MAX); me
     }
     fn fields(&mut self) -> Vec<&mut TextField> { let mut v: Vec<&mut TextField> = vec![&mut self.farm, &mut self.node]; if crate::identity::belt() { v.push(&mut self.only); } for p in self.pairs.iter_mut() { v.push(&mut p.win); v.push(&mut p.mac); } for m in self.maps.iter_mut() { v.push(&mut m.name); v.push(&mut m.win); v.push(&mut m.mac); } v }
-    fn count(&self) -> usize { if crate::identity::belt() { 3 } else { 2 } + self.pairs.len() * 2 + self.maps.len() * 3 }
+    fn count(&self) -> usize { (if crate::identity::belt() { 3 } else { 2 }) + self.pairs.len() * 2 + self.maps.len() * 3 }
     fn set_focus(&mut self, to: usize) { self.focus = to; for (i, f) in self.fields().into_iter().enumerate() { f.focused = i == to; } }
     pub fn typing(&self) -> bool { self.focus < self.count() }
     /// Save: the settings are written, or what is wrong is said and nothing is.
