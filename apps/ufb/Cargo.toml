@@ -53,6 +53,7 @@ sha2 = "0.10"
 serde_json = "1"
 # PDF pages in the lightbox (the family's reader)
 min-pdf = { path = "../../crates/min-pdf" }
+min-transcode = { path = "../../crates/min-transcode" }
 image = { version = "0.25", default-features = false, features = ["hdr"] }
 # the thumbnails' cache on disk, opened by the helpers (canon row 456, point 4)
 rusqlite = { workspace = true }

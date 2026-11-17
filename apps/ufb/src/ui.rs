@@ -1063,6 +1063,12 @@ impl Ui {
         if !crate::ops::allowed_in(self.pane().path()) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
         for archive in paths { crate::archive::submit(self.id, crate::archive::Job::Extract { archive, password: None }); }
     }
+    /// Transcode to MP4 for the chosen videos and sequences (rows 508 points 10-12, 513): a task of the lane each.
+    fn transcode_chosen(&mut self) {
+        let Some(sources) = self.pane().chosen_media() else { return };
+        if !crate::ops::allowed_in(self.pane().path()) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        for source in sources { crate::archive::submit(self.id, crate::archive::Job::Transcode { source }); }
+    }
     fn compress_chosen(&mut self) {
         let paths = self.pane().chosen_files(); if paths.is_empty() { return }
         if !crate::archive::zip_place(&paths).is_some_and(|(dir, _)| crate::ops::allowed_in(&dir)) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
@@ -1274,6 +1280,7 @@ impl Ui {
                 // archives (row 508): what is chosen is compressed; chosen archives are unpacked where they lie
                 { let n = entries.len(); let archives = entries.iter().all(|e| !e.1 && e.0.file_name().is_some_and(|f| crate::archive::is_archive(&f.to_string_lossy())));
                     let mut add = vec![ctxmenu::Row::Sep]; if archives { add.push(ctxmenu::named(ctxmenu::EXTRACT, if n == 1 { "Extract Here".to_string() } else { format!("Extract {n} Archives Here") })); }
+                    if pane.chosen_media().is_some() { add.push(ctxmenu::named(ctxmenu::TRANSCODE, "Transcode to MP4".to_string())); }
                     add.push(ctxmenu::named(ctxmenu::COMPRESS, if n == 1 { "Compress to ZIP".to_string() } else { format!("Compress {n} Items to ZIP") }));
                     let at_row = rows.iter().rposition(|r| *r == ctxmenu::Row::Sep).unwrap_or(rows.len()); rows.splice(at_row..at_row, add); }
                 self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows } };
@@ -1338,7 +1345,7 @@ impl Ui {
             id if (COLUMN + 1..COLUMN + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.toggle_column((id - COLUMN) as usize); }
             id if (SORT..SORT + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Sort((id - SORT) as u8)); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
-            crate::ctxmenu::EXTRACT | crate::ctxmenu::COMPRESS => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; if id == crate::ctxmenu::EXTRACT { self.extract_chosen(); } else { self.compress_chosen(); } },
+            crate::ctxmenu::EXTRACT | crate::ctxmenu::COMPRESS | crate::ctxmenu::TRANSCODE => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; match id { crate::ctxmenu::EXTRACT => self.extract_chosen(), crate::ctxmenu::COMPRESS => self.compress_chosen(), _ => self.transcode_chosen() } },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
@@ -1778,7 +1785,7 @@ impl Ui {
             "taskdismiss" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::dismiss(t.id); },
             "taskclear" => crate::tasks::clear_finished(),
             // `extract` `compress` (the chosen entries) `password:<text>` (answer the password question)
-            "extract" => self.extract_chosen(), "compress" => self.compress_chosen(),
+            "extract" => self.extract_chosen(), "compress" => self.compress_chosen(), "transcode" => self.transcode_chosen(),
             "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.answer(1); },
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)

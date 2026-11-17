@@ -325,6 +325,11 @@ impl FrameReader {
         let session = Session::open(path, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: None, fast: false, live: None }).ok()?;
         Some(FrameReader { session, sws: VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range: crate::rgb_range::RangeOverride::Auto, flags: SWS_BICUBIC }, eof: false })
     }
+    /// The frames of an image sequence (the path is an image2 pattern; UFB's "Transcode to MP4" of a sequence, canon row 513).
+    pub fn open_sequence(pattern: &str, seq: crate::ffmpeg::SeqOptions) -> Option<FrameReader> {
+        let session = Session::open(pattern, &OpenOptions { threads: crate::thread_policy::dual_side_thread_count(), hw: None, hw_intra: None, seq: Some(seq), fast: false, live: None }).ok()?;
+        Some(FrameReader { session, sws: VideoThumbLoaderSws { sws: std::ptr::null_mut(), sws_key: (0, 0, 0, 0, 0), range: crate::rgb_range::RangeOverride::Auto, flags: SWS_BICUBIC }, eof: false })
+    }
     pub fn info(&self) -> &min_ffmpeg::SessionInfo { &self.session.info }
     /// The next frame, its longer side `max_size` at most (0: as it is); None at the file's end (or where it cannot be read on).
     pub fn next_frame(&mut self, max_size: u32) -> Option<ThumbPixels> {

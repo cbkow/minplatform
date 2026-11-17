@@ -358,14 +358,15 @@ mod tests {
 // ---------------------------------------------------------------- the lane (row 508, point 3)
 
 /// What the lane does: one at a time, beside the engine's file operations (a long archive does not hold up a copy).
-pub enum Job { Extract { archive: PathBuf, password: Option<String> }, Compress { paths: Vec<PathBuf> } }
+pub enum Job { Extract { archive: PathBuf, password: Option<String> }, Compress { paths: Vec<PathBuf> }, /// a video or an image sequence to MP4 (`transcode.rs`)
+    Transcode { source: crate::transcode::Source } }
 type Sent = (u64, u64, Arc<AtomicBool>, Job);
 static LANE: std::sync::OnceLock<std::sync::mpsc::Sender<Sent>> = std::sync::OnceLock::new();
 
 /// Ask for it: a row of the tasks' list from now on. `origin`: the window that asked.
 pub fn submit(origin: u64, job: Job) {
     let quoted = |p: &Path| format!("\u{201c}{}\u{201d}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-    let label = match &job { Job::Extract { archive, .. } => format!("Extract {}", quoted(archive)), Job::Compress { paths } => if paths.len() == 1 { format!("Compress {}", quoted(&paths[0])) } else { format!("Compress {} items", paths.len()) } };
+    let label = match &job { Job::Extract { archive, .. } => format!("Extract {}", quoted(archive)), Job::Compress { paths } => if paths.len() == 1 { format!("Compress {}", quoted(&paths[0])) } else { format!("Compress {} items", paths.len()) }, Job::Transcode { source } => format!("Transcode \u{201c}{}\u{201d} to MP4", crate::transcode::label(source)) };
     let (id, flag) = crate::tasks::add(&label);
     let tx = LANE.get_or_init(|| { let (tx, rx) = std::sync::mpsc::channel::<Sent>(); let _ = std::thread::Builder::new().name("ufb-lane".into()).spawn(move || { while let Ok((origin, id, flag, job)) = rx.recv() { run(origin, id, &flag, job); crate::ops::wake(); } }); tx });
     let _ = tx.send((origin, id, flag, job)); crate::ops::wake();
@@ -391,6 +392,13 @@ fn run(origin: u64, id: u64, flag: &AtomicBool, job: Job) {
             Ok(made) => { crate::tasks::finish(id, Ok(Some(made.clone()))); crate::ops::announce(Report { origin, kind: Some(Kind::Compress), changed: parent_of(&made), made: vec![made.clone()], ..Default::default() }); crate::ops::submit(origin, Op::Note { made, label: "Compress" }); }
             Err(Fail::Stopped) | Err(Fail::Password) => crate::tasks::finish(id, Err("Stopped".into())),
             Err(Fail::Other(why)) => { crate::tasks::finish(id, Err(why.clone())); crate::ops::announce(Report { origin, kind: Some(Kind::Compress), error: Some(format!("The archive could not be made: {why}")), ..Default::default() }); }
+        },
+        Job::Transcode { source } => match crate::transcode::transcode(&source, flag, &mut say) {
+            // (the MP4 folder may be new: the folder the source lies in changed too)
+            Ok(made) => { crate::tasks::finish(id, Ok(Some(made.clone()))); let mut changed = parent_of(&made); if let Some(up) = changed.first().and_then(|d| d.parent()).map(Path::to_path_buf) { changed.push(up); }
+                crate::ops::announce(Report { origin, kind: Some(Kind::Transcode), changed, made: vec![made.clone()], ..Default::default() }); crate::ops::submit(origin, Op::Note { made, label: "Transcode" }); }
+            Err(why) if why == "Stopped" => crate::tasks::finish(id, Err(why)),
+            Err(why) => { crate::tasks::finish(id, Err(why.clone())); crate::ops::announce(Report { origin, kind: Some(Kind::Transcode), error: Some(format!("\u{201c}{}\u{201d} could not be transcoded: {why}", crate::transcode::label(&source))), ..Default::default() }); }
         },
     }
 }

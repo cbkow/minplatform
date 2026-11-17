@@ -1,0 +1,12 @@
+[package]
+name = "min-transcode"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+description = "minplatform - a video made by FFmpeg's own program, run as a child: where the program is found, a run that tells its frames and can be stopped, a run that is fed frames (canon rows 340, 343; lifted out of minNotes for the family, rows 508, 513)."
+
+[dependencies]

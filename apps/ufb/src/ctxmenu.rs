@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 /// Our own rows.
 pub const OPEN: u32 = 1; pub const NEW_WINDOW: u32 = 2; pub const CONTENTS: u32 = 3; pub const REFRESH: u32 = 4;
-pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 = 7; pub const DUPLICATE: u32 = 8; pub const COPY: u32 = 9; pub const PASTE: u32 = 10; pub const PREVIEW: u32 = 11; pub const SPLIT: u32 = 12; pub const GROUP: u32 = 13; pub const NEW_TAB: u32 = 14; pub const SUBSCRIBE: u32 = 15; pub const UNSUBSCRIBE: u32 = 16; pub const EXTRACT: u32 = 17; pub const COMPRESS: u32 = 18;
+pub const RENAME: u32 = 5; pub const TRASH: u32 = 6; pub const NEW_FOLDER: u32 = 7; pub const DUPLICATE: u32 = 8; pub const COPY: u32 = 9; pub const PASTE: u32 = 10; pub const PREVIEW: u32 = 11; pub const SPLIT: u32 = 12; pub const GROUP: u32 = 13; pub const NEW_TAB: u32 = 14; pub const SUBSCRIBE: u32 = 15; pub const UNSUBSCRIBE: u32 = 16; pub const EXTRACT: u32 = 17; pub const COMPRESS: u32 = 18; pub const TRANSCODE: u32 = 19;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {

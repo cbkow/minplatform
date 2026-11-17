@@ -38,6 +38,7 @@ mod sysopen;
 mod tasks;
 mod thumbs;
 mod tracker;
+mod transcode;
 mod ui;
 mod webview;
 

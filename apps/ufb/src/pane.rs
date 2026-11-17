@@ -316,6 +316,14 @@ impl Pane {
     pub fn chosen_entries(&self, max: usize) -> Vec<(PathBuf, bool, bool)> {
         self.sel().iter().filter_map(|i| self.model.row(i)).take(max).map(|id| { let n = self.model.node(id); (self.model.path_of(self.model.rep(id), self.path()), n.dir, n.package) }).collect()
     }
+    /// The chosen entries as what can be transcoded: a video file, or a sequence shown as one entry (at the rate
+    /// remembered for it). None when one of them is neither.
+    pub fn chosen_media(&self) -> Option<Vec<crate::transcode::Source>> {
+        let rows: Vec<usize> = self.sel().iter().collect(); if rows.is_empty() { return None }
+        rows.into_iter().map(|row| { let id = self.model.row(row)?; let n = self.model.node(id);
+            if let Some((pattern, start, end)) = self.sequence_at(row) { let rate = crate::settings::sequence_rate(&pattern); return Some(crate::transcode::Source::Sequence { pattern, start, end, rate }) }
+            (!n.dir && !self.model.is_sequence(id) && crate::transcode::is_video(&n.name)).then(|| crate::transcode::Source::File(self.model.path_of(id, self.path()))) }).collect()
+    }
     /// Every file and folder the chosen entries stand for: a sequence is all of its frames (copy, move, trash, a drag).
     pub fn chosen_files(&self) -> Vec<PathBuf> { self.sel().iter().filter_map(|i| self.model.row(i)).flat_map(|id| self.model.files_of(id)).map(|id| self.model.path_of(id, self.path())).collect() }
     /// The chosen entries for Duplicate: the plain files and folders; and each chosen sequence as its frames - (the

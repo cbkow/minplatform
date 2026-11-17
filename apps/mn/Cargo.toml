@@ -37,6 +37,7 @@ mn-edit = { path = "../../crates/mn-edit" }
 arboard = { workspace = true, features = ["image-data"] }
 min-image = { path = "../../crates/min-image" }
 min-pdf = { path = "../../crates/min-pdf" }
+min-transcode = { path = "../../crates/min-transcode" }
 # GIF and WebP (their first frame): formats the notes take that the family's decoder (QCView's formats) does not
 image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
 # SVG, drawn to pixels at the size wanted (text with the machine's fonts)

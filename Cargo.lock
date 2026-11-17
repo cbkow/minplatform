@@ -3263,6 +3263,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "min-transcode"
+version = "0.1.0"
+
+[[package]]
 name = "min-ui"
 version = "0.1.0"
 dependencies = [
@@ -3321,6 +3325,7 @@ dependencies = [
  "min-pdf",
  "min-present",
  "min-theme",
+ "min-transcode",
  "min-ui",
  "mn-doc",
  "mn-edit",
@@ -6542,6 +6547,7 @@ dependencies = [
  "min-present",
  "min-settings",
  "min-theme",
+ "min-transcode",
  "min-ui",
  "muda 0.21.2",
  "objc2 0.6.5",

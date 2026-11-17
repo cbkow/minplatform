@@ -11,21 +11,13 @@
 //!   as sRGB, and the finished frames are fed to FFmpeg, which encodes them and takes the sound from the file. It
 //!   needs the graphics card; without one such a clip stays stills.
 use crate::export::site::{Clip, Videos};
-use std::{io::{BufRead, BufReader, Read}, path::{Path, PathBuf}, process::{Command, Stdio}, sync::atomic::{AtomicBool, Ordering::Relaxed}};
+use std::{path::{Path, PathBuf}, process::{Command, Stdio}, sync::atomic::AtomicBool};
 
 /// The longer side of a playable copy, at most.
 pub const LONGEST: u32 = 1920;
 
-/// FFmpeg's program: named by `MN_FFMPEG`, beside the application (on macOS in the bundle's `Helpers`, where QCView's
-/// release keeps it), or - a build run from the source tree - in the tree's `external/ffmpeg/<os>/bin`.
-pub fn ffmpeg() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    if let Some(p) = std::env::var_os("MN_FFMPEG").map(PathBuf::from).filter(|p| p.is_file()) { return Some(p) }
-    let me = std::env::current_exe().ok()?; let here = me.parent()?;
-    for p in [here.join(exe), here.join("../Helpers").join(exe), here.join("../Frameworks").join(exe), here.join("../Resources").join(exe)] { if p.is_file() { return Some(p) } }
-    let os = if cfg!(target_os = "macos") { "macos-arm64" } else if cfg!(windows) { "win64" } else { "linux" };
-    here.ancestors().map(|a| a.join("external/ffmpeg").join(os).join("bin").join(exe)).find(|p| p.is_file())
-}
+/// FFmpeg's program: named by `MN_FFMPEG`, beside the application, or in the source tree (the family's finder).
+pub fn ffmpeg() -> Option<PathBuf> { min_transcode::program("MN_FFMPEG") }
 
 /// What `plan` learned of a file, for `make`: its size as stored, its rate as a fraction, its colour tags, and whether it goes through our colour stage.
 #[derive(Clone, Copy)]
@@ -89,42 +81,20 @@ impl Videos for Ffmpeg {
         c.args(["-g", &gop, "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart"]);
         if ours.is_none() { c.args(["-progress", "pipe:1", "-stats_period", "0.5"]); }
         c.args(["-f", "mp4"]).arg(out);
-        c.stdin(if ours.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(if ours.is_some() { Stdio::null() } else { Stdio::piped() }).stderr(Stdio::piped());
-        #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }   // no console window
-        let mut child = c.spawn().map_err(|e| format!("FFmpeg could not be started ({e})"))?;
-        // what it says of errors is read beside its progress (a full pipe would hold it)
-        let said = child.stderr.take().map(|mut e| std::thread::spawn(move || { let mut s = String::new(); let _ = e.read_to_string(&mut s); s }));
+        // (how the program is run - its frames told, its stop, what it said when it fails - is the family's: min-transcode)
         if let Some((mut reader, first, k)) = ours {
             // frame after frame: through the colour stage, into FFmpeg (a frame that will not pass ends it: the copy is not made)
-            use std::io::Write;
-            let mut pipe = child.stdin.take(); let (mut next, mut n, mut failed) = (Some(first), 0i64, None);
-            while let (Some(px), Some(w)) = (next.take(), pipe.as_mut()) {
-                if stop.load(Relaxed) { break }
-                let Some((rgb, fw, fh)) = self.poster.sdr_rgb(self.gpu.as_ref().map(|g| (&g.0, &g.1)), &px, &k.meta) else { failed = Some("The colour stage could not show a frame"); break };
-                if (fw, fh) != (px.width, px.height) { failed = Some("The colour stage gave a frame of another size"); break }
-                if w.write_all(&rgb).is_err() { break }   // FFmpeg ended: what it said is read below
-                n += 1; if n % 4 == 0 { done(n as f32 / clip.frames.max(1) as f32); }
-                next = reader.next_frame(LONGEST);
-            }
-            drop(pipe);
-            if stop.load(Relaxed) || failed.is_some() { let _ = child.kill(); }
-            let status = child.wait().map_err(|e| format!("FFmpeg did not end ({e})"))?; let said = said.and_then(|t| t.join().ok()).unwrap_or_default();
-            if stop.load(Relaxed) { return Err("Stopped".into()) }
-            if let Some(f) = failed { return Err(f.into()) }
-            if !status.success() { let last = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no reason given").trim().chars().take(160).collect::<String>(); return Err(format!("The video could not be made: {last}")) }
-            return Ok(())
+            let (mut next, mut n) = (Some(first), 0i64); let (poster, gpu, frames) = (&mut self.poster, self.gpu.as_ref(), clip.frames.max(1));
+            return min_transcode::run_fed(c, stop, &mut |w| {
+                let Some(px) = next.take() else { return Ok(false) };
+                let Some((rgb, fw, fh)) = poster.sdr_rgb(gpu.map(|g| (&g.0, &g.1)), &px, &k.meta) else { return Err("The colour stage could not show a frame") };
+                if (fw, fh) != (px.width, px.height) { return Err("The colour stage gave a frame of another size") }
+                if w.write_all(&rgb).is_err() { return Ok(false) }   // FFmpeg ended: what it said is the reason
+                n += 1; if n % 4 == 0 { done(n as f32 / frames as f32); }
+                next = reader.next_frame(LONGEST); Ok(true)
+            })
         }
-        if let Some(o) = child.stdout.take() {
-            for line in BufReader::new(o).lines().map_while(Result::ok) {
-                if stop.load(Relaxed) { let _ = child.kill(); break }
-                if let Some(n) = line.strip_prefix("frame=").and_then(|v| v.trim().parse::<f32>().ok()) { done(n / clip.frames.max(1) as f32); }
-            }
-        }
-        let status = child.wait().map_err(|e| format!("FFmpeg did not end ({e})"))?;
-        let said = said.and_then(|t| t.join().ok()).unwrap_or_default();
-        if stop.load(Relaxed) { return Err("Stopped".into()) }
-        if !status.success() { let last = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no reason given").trim().chars().take(160).collect::<String>(); return Err(format!("The video could not be made: {last}")) }
-        Ok(())
+        min_transcode::run(c, stop, &mut |n| done(n / clip.frames.max(1) as f32))
     }
 }
 

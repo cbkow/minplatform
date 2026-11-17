@@ -61,7 +61,7 @@ pub enum Op {
     Undo,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem, Extract, Compress }
+pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem, Extract, Compress, Transcode }
 
 /// What to do about a name that is taken. `Stop`: nothing more of this operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
