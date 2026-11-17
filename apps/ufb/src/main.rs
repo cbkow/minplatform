@@ -30,7 +30,6 @@ mod lister;
 mod logfile;
 mod login;
 mod menu;
-mod migrate;
 mod mesh;
 mod model;
 mod ops;
@@ -53,7 +52,7 @@ mod webview;
 /// things in (row 468, point 2): the folder it was started with, the favorites, each `--allow-writes <folder>`.
 /// The one thing a launch is asked to open: its first argument that is neither an option nor an option's value.
 fn positional(args: &[String]) -> Option<String> {
-    let mut i = 0; while i < args.len() { if matches!(args[i].as_str(), "--map" | "--mesh" | "--mesh-node" | "--mesh-only" | "--allow-writes" | "--favorite" | "--jobs" | "--import-1.4") { i += 2; continue } if args[i].starts_with("--") { i += 1; continue } return Some(args[i].clone()) } None
+    let mut i = 0; while i < args.len() { if matches!(args[i].as_str(), "--map" | "--mesh" | "--mesh-node" | "--mesh-only" | "--allow-writes" | "--favorite" | "--jobs") { i += 2; continue } if args[i].starts_with("--") { i += 1; continue } return Some(args[i].clone()) } None
 }
 pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Vec<places::Place>, Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
     let abs = |p: &str| std::path::absolute(p).unwrap_or_else(|_| std::path::PathBuf::from(p));
@@ -80,22 +79,14 @@ fn main() {
     #[cfg(windows)] if identity::kind() == identity::Kind::Release && std::env::var_os("UFB_SETTINGS_DIR").is_none() { if let Some(local) = std::env::var_os("LOCALAPPDATA") { unsafe { std::env::set_var("UFB_SETTINGS_DIR", std::path::PathBuf::from(local).join("ufb")); } } }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]... [--map <windows side>=<macOS side>]... [--mesh <farm folder> [--mesh-node <id>] [--mesh-only <folder>]]"); return }
-    // `--import-1.4 <folder>`: what a UFB 1.4.x keeps in that data folder (or a copy of it) is taken into this build's
-    // own, it is said in numbers what was taken, and the application ends (row 532)
-    if let Some(from) = args.windows(2).find(|w| w[0] == "--import-1.4").map(|w| std::path::PathBuf::from(&w[1])) {
-        match migrate::import(&from) { Ok(d) => println!("{}", migrate::report(&d)), Err(e) => { eprintln!("UFB: nothing was taken over: {e}"); std::process::exit(1) } } return }
     // one UFB a user (row 519): a second launch hands what it was asked to open to the one that runs, and ends
     if instance::takes_part() { if let Some(dir) = identity::data_dir() {
         let asked = positional(&args).unwrap_or_default(); let asked = if asked.is_empty() || asked.starts_with("ufb:") || asked.starts_with("union:") { asked } else { std::path::absolute(&asked).map(|p| p.to_string_lossy().into_owned()).unwrap_or(asked) };
         if instance::hand_over(&dir, &asked) { return } instance::claim(&dir); } }
     // what the application says of itself goes to its log file (not in a scripted look, whose script reads the console)
     if logfile::wanted() { if let Some(p) = logfile::install(identity::data_name()) { eprintln!("UFB: the log is {}", p.display()); } }
-    // the release, at its first launch in a folder a 1.4.x has used: the move is made by itself, before anything opens
-    // the database (rows 532, 534). Should it fail, it is said in the log and tried again at the next launch.
-    // ONLY UP TO 2.0.3 (row 547): 2.0.3 is the last version that takes 1.4.x over by itself, on both systems - a later
-    // version opens the database as it finds it and takes nothing else (`--import-1.4 <folder>` stays, by hand).
-    if migrate::by_itself(env!("CARGO_PKG_VERSION")) && identity::kind() == identity::Kind::Release && settings::with(|s| s.string("migrate/from_1_4")).is_empty() {
-        if let Some(dir) = identity::data_dir() { if dir.join("ufb_v5.db").is_file() || dir.join("settings.json").is_file() { match migrate::import(&dir) { Ok(d) => eprintln!("UFB: taken over from 1.4.x:\n{}", migrate::report(&d)), Err(e) => eprintln!("UFB: the move from 1.4.x was not made: {e}") } } else { settings::with(|s| s.set_str("migrate/from_1_4", "nothing to take")); } } }
+    // (Nothing is taken over from UFB 1.4.x any more - row 549: 2.0.1 to 2.0.3 did that at their first launch, and
+    // the versions after them open the data folder as they find it. The code is in the tag `ufb-v2.0.3`.)
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
     // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
     { let started: Vec<db::Mapping> = args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect(); shares::set_started_with(started.clone());

@@ -40,7 +40,7 @@ static SCHEMA: Schema = Schema { keys: &[
 ] };
 static STORE: OnceLock<Mutex<Settings>> = OnceLock::new();
 /// This application's own settings file (row 534). NOT `settings.json`: in the release this build's data folder is UFB
-/// 1.4.x's, and that name is 1.4.x's own file there - read once by the move (`migrate.rs`), never written by us.
+/// 1.4.x's, and that name is 1.4.x's own file there - never written by us (2.0.1 to 2.0.3 read it once, to take 1.4.x over).
 pub const FILE: &str = "ufb2-settings.json";
 /// Builds before row 534 kept their settings as `settings.json`: in the development build and the test package, whose
 /// folders are theirs alone, that file is taken over once. Never in the release - there it is 1.4.x's.
