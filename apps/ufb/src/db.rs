@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS migration_orphans (id INTEGER PRIMARY KEY AUTOINCREME
 /// is (an item that is no longer here under that path), else what the row holds when it is sent.
 const OURS: &str = "CREATE TABLE IF NOT EXISTS mesh_pending (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, key TEXT NOT NULL, payload TEXT, queued_time INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_mesh_pending_key ON mesh_pending(kind, key);
-CREATE TABLE IF NOT EXISTS mesh_base (item_path TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, is_tracked INTEGER NOT NULL, modified_time INTEGER NOT NULL DEFAULT 0);";
+CREATE TABLE IF NOT EXISTS mesh_base (item_path TEXT PRIMARY KEY, metadata_json TEXT NOT NULL, is_tracked INTEGER NOT NULL, modified_time INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS folder_view (path TEXT PRIMARY KEY, view TEXT NOT NULL, updated_at INTEGER NOT NULL);";
 /// `mesh_base`, also ours: for every item, the version this machine last had IN COMMON with the others (row 440) - what
 /// it sent and was taken, what it took. Against it a row that arrives shows which cells its sender changed.
 /// The columns 1.4.2 adds after the tables (each only where it is missing).
@@ -307,6 +308,13 @@ impl Db {
     /// them, a subscription - in ONE step; the items' rows are stamped as changed (they are ordinary edits to whoever
     /// reads the database). A top-level folder of a job renamed in place takes the section's name in those rows along.
     /// What already lay at the new path is replaced. Returns how many rows moved.
+    /// How a folder was last shown (row 526; ours, this machine's alone, never sent): by the folder's identity, so a
+    /// share that lands elsewhere is still the same folder. The newest 5,000 are kept.
+    pub fn folder_view(&self, dir: &Path) -> Option<String> { self.conn.query_row("SELECT view FROM folder_view WHERE path = ?1", [to_identity(dir)], |r| r.get(0)).ok() }
+    pub fn set_folder_view(&self, dir: &Path, view: &str) -> Result<(), String> {
+        self.conn.execute("INSERT INTO folder_view (path, view, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(path) DO UPDATE SET view = excluded.view, updated_at = excluded.updated_at", rusqlite::params![to_identity(dir), view, now_ms()]).map_err(|e| e.to_string())?;
+        let _ = self.conn.execute("DELETE FROM folder_view WHERE path IN (SELECT path FROM folder_view ORDER BY updated_at DESC LIMIT -1 OFFSET 5000)", []); Ok(())
+    }
     /// A share's pair was changed (row 517): its identity is another, and this machine's rows under the old one are
     /// the new one's from now on - the paths below the share stay as they are. What already lies under the new
     /// identity at the same path makes way. How many rows changed.

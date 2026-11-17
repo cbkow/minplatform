@@ -89,7 +89,7 @@ const TASK_ROWS: usize = 8;
 const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 380.0; const JOB_LIST_MIN: f64 = 200.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 /// A new pane shows what the settings say (row 516): hidden files, folders first, sequences as one entry, a grid.
-fn seed(p: &mut Pane, view: (bool, bool, bool, bool)) { p.set_hidden(view.0); p.set_folders_first(view.1); p.set_sequences(view.2); if view.3 { p.set_mode(Mode::Grid); } }
+fn seed(p: &mut Pane, view: (bool, bool, bool, bool)) { p.set_hidden(view.0); p.set_folders_first(view.1); if !p.has_own_view() { p.set_sequences(view.2); if view.3 { p.set_mode(Mode::Grid); } } p.view_synced(); }
 impl Drop for Ui { fn drop(&mut self) { crate::ops::unsubscribe(self.id); } }
 pub struct Ui {
     window: Arc<Box<dyn Window>>, presenter: Presenter, layer: UiLayer, fonts: Fonts, tips: Tooltips,
@@ -224,7 +224,8 @@ impl Ui {
     /// A new tab on this folder, after the one in front, and shown: one pane, with the view of the pane it was asked from.
     fn new_tab(&mut self, path: PathBuf) {
         let mut p = Pane::new(path, &self.port); seed(&mut p, crate::prefs::view()); p.set_hidden(self.hidden); p.set_folders_first(self.folders_first);
-        { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } }
+        // (a folder with a view of its own keeps it in a new tab too; any other is shown as the tab one comes from)
+        if !p.has_own_view() { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } } p.view_synced();
         self.leave_tab(); self.swap_tab(); self.tab += 1; self.tabs.insert(self.tab, Tab::default());
         self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5; self.job = None; self.tracker = None;
     }
@@ -594,7 +595,7 @@ impl Ui {
     /// The panes are made what the settings say they show (after Save; a new pane is made so from the start).
     fn apply_view(&mut self) {
         let (hidden, folders_first, sequences, grid) = crate::prefs::view(); self.hidden = hidden; self.folders_first = folders_first; let mode = if grid { Mode::Grid } else { Mode::List };
-        for p in self.panes.iter_mut() { p.set_hidden(hidden); p.set_folders_first(folders_first); p.set_sequences(sequences); if p.mode != mode { p.set_mode(mode); } }
+        for p in self.panes.iter_mut() { p.set_hidden(hidden); p.set_folders_first(folders_first); p.set_sequences(sequences); if p.mode != mode { p.set_mode(mode); } p.view_synced(); }
         for p in self.hidden_panes() { p.set_hidden(hidden); p.set_folders_first(folders_first); p.set_sequences(sequences); if p.mode != mode { p.set_mode(mode); } }
     }
     /// Sync is made what the settings say (row 500): stopped, started, or started again with the new settings.
@@ -1906,6 +1907,8 @@ impl Ui {
         self.crumbs = out;
     }
     pub fn redraw(&mut self) {
+        // a view changed in a folder is that folder's from now on (row 526)
+        for p in self.panes.iter_mut() { p.keep_view(); }
         let s = self.scale(); let size = self.window.surface_size(); let (w, h) = (size.width as f64, size.height as f64); if w < 1.0 || h < 1.0 { return }
         self.poll(); self.run_demo();
         if self.lightbox.is_open() { return self.redraw_lightbox() }

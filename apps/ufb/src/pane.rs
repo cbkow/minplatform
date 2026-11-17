@@ -43,6 +43,9 @@ pub struct Pane {
     restore: Option<Look>, reopen: Vec<Vec<String>>,
     /// (how many are chosen, the bytes of the chosen files)
     chosen: (usize, u64),
+    /// the folder whose remembered view was looked up last (row 526), and the view as it was then - a view that is
+    /// another now was changed by the user here, and is kept for the folder
+    viewed: Option<PathBuf>, view_was: String,
     /// what was searched for below this folder, while the pane shows what was found (none: the folder itself is shown)
     found: Option<String>,
     /// the search field's text for this pane (it filters the folder in view; a navigation clears it)
@@ -129,7 +132,7 @@ pub fn set_cut(paths: &[PathBuf]) { *CUT.lock().unwrap() = paths.to_vec(); CUT_A
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { found: None, root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { viewed: None, view_was: String::new(), found: None, root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
@@ -149,11 +152,34 @@ impl Pane {
     /// Read the current folder anew. `restore`: what to choose and where to scroll once it is read.
     fn read(&mut self, port: &Port, restore: Option<Look>, reopen: Vec<Vec<String>>) {
         for (_, (_, cancel)) in self.reqs.drain() { cancel.store(true, Ordering::Relaxed); }
+        self.recall_view();
         self.model.clear(); self.model.tree = self.mode == Mode::List; self.model.rebuild();
         self.table.sel.reset(); self.grid.sel.reset(); self.table.sel.resize(0); self.grid.sel.resize(0); self.table.bar.offset = 0.0; self.grid.bar.offset = 0.0;
         self.free = None; self.inner.clear(); self.load = Load::Loading; self.restore = restore; self.reopen = reopen; self.chosen = (0, 0); self.probe = None; self.search.clear(); self.found = None;
         let (req, cancel) = (lister::next_req(), Arc::new(AtomicBool::new(false)));
         self.reqs.insert(req, (TOP, cancel.clone())); lister::list(port, req, self.path().to_path_buf(), cancel);
+    }
+    /// The view as text: list or grid, the tiles' size, what it is sorted by and which way, sequences as one entry.
+    fn view_now(&self) -> String { format!("{}|{}|{}|{}|{}", if self.mode == Mode::Grid { "grid" } else { "list" }, self.grid.tile.round(), self.model.sort.column(), self.model.ascending as u8, self.model.sequences as u8) }
+    /// Coming to another folder (row 526): one that was given a view of its own is shown that way again; any other is
+    /// shown as the pane is now (as Finder's windows do).
+    fn recall_view(&mut self) {
+        if self.viewed.as_deref() == Some(self.path()) { return } self.viewed = Some(self.path().to_path_buf());
+        // (a pane made by a test asks no database: the tests' panes must not open this build's own)
+        let kept = if cfg!(test) { None } else { crate::db::with(|d| d.folder_view(self.path())).flatten() };
+        if let Some(v) = kept { let p: Vec<&str> = v.split('|').collect(); if p.len() == 5 {
+            self.mode = if p[0] == "grid" { Mode::Grid } else { Mode::List }; if let Ok(t) = p[1].parse::<f64>() { self.grid.tile = t.clamp(min_ui::grid::TILE_MIN, min_ui::grid::TILE_MAX); }
+            let by = SortBy::of_column(p[2].parse().unwrap_or(0)); let asc = p[3] != "0"; self.table.sort = (self.cols.iter().position(|c| *c == by.column()).unwrap_or(usize::MAX), asc); self.model.sort = by; self.model.ascending = asc; self.model.sequences = p[4] != "0"; } }
+        self.view_was = self.view_now();
+    }
+    /// The folder in view was given a view of its own.
+    pub fn has_own_view(&self) -> bool { !cfg!(test) && crate::db::with(|d| d.folder_view(self.path())).flatten().is_some() }
+    /// The view is taken as it stands, without being kept for the folder (the settings were applied, not this folder changed).
+    pub fn view_synced(&mut self) { self.view_was = self.view_now(); }
+    /// The view was changed in this folder: it is kept for it. (Not while a search's finds are shown.)
+    pub fn keep_view(&mut self) {
+        let now = self.view_now(); if now == self.view_was { return } self.view_was = now.clone();
+        if self.found.is_some() || self.viewed.is_none() { return } let dir = self.path().to_path_buf(); let _ = crate::db::with(|d| d.set_folder_view(&dir, &now));
     }
     /// Search below the folder in view (rows 508 points 13-15, 514): the pane shows what is found, as it is found -
     /// a flat listing of this folder whose entries are named by their paths from it, so everything a listing can do
