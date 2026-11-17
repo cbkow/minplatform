@@ -1046,7 +1046,8 @@ impl Ui {
         if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow | Cmd::NewTab | Cmd::CloseTab | Cmd::NextTab | Cmd::PrevTab) { return }
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
-        if self.dialog.is_some() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return }
+        // (a question with a FIELD keeps copy, cut and paste: they are its field's - the menu's keys reach it this way on macOS)
+        if let Some((d, _)) = self.dialog.as_ref() { let field = !d.fields.is_empty() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste); if !field && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return } }
         if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewJob | Cmd::Subscribe) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
         // in a job with nothing chosen there is no pane to act on (row 486)
         if self.blank() && !self.text_focus() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Open | Cmd::Preview | Cmd::SelectAll | Cmd::Back | Cmd::Forward | Cmd::Up | Cmd::Find | Cmd::Subscribe | Cmd::Sort(_)) { return }
