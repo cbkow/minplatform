@@ -168,7 +168,8 @@ pub struct Ui {
     /// what the lightbox's layer showed when it was last rendered (it is rendered again only when this changes)
     lb_key: Option<u64>,
     lb_play: ActionButton, lb_loop: ActionButton, lb_mute: ActionButton, lb_qcv: ActionButton, /// the rate a sequence plays at: a press steps it on (the secondary button: back)
-    lb_fps: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
+    lb_fps: ActionButton, /// an EXR sequence's layers: the chip names the one shown, a press lists them (row 551)
+    lb_layer: ActionButton, lb_line: Rect, lb_click: Option<(f64, f64)>, hw: Option<Option<qcv_player::HwDevice>>, preview_btn: ActionButton,
     pub dnd: crate::dnd::Handle,
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
@@ -219,7 +220,7 @@ impl Ui {
             focus: Focus::Pane, drag: None, gaps: [Rect::ZERO; 3], over_gap: None, stacked: false, panes_area: Rect::ZERO, job_w: { let w = crate::settings::with(|s| s.float("window/job_list")); if w > 0.0 { w.clamp(JOB_LIST_MIN, 1200.0) } else { JOB_LIST } }, cursor: winit31::cursor::CursorIcon::Default,
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
-            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
+            lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_layer: { let mut b = ActionButton::new("stack", "Layer shown: press to choose another").size_s(); b.label = Some("Layers".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
             dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] };
         // (a window opens on a browser view: with its second pane when the settings say so, row 543)
         if crate::prefs::second_pane() { me.set_two(true); me.active = 0; }
@@ -922,7 +923,7 @@ impl Ui {
             match crate::webview::create(&self.window, self.web_rect(), self.scale(), &path, wake) { Ok(w) => self.lightbox.attach_web(w), Err(why) => if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: no web view ({why}): the page's source is shown"); } } }
     }
     fn close_lightbox(&mut self) {
-        if !self.lightbox.is_open() { return } self.lightbox.close(); self.lb_key = None;
+        if !self.lightbox.is_open() { return } self.lightbox.close(); self.lb_key = None; self.ctx.close();
         let e = &mut self.presenter.engine; e.clear_picture(); e.set_place(None); e.set_background(0);
     }
     /// The next file of the folder (or the one before): the pane's cursor goes with it.
@@ -948,6 +949,8 @@ impl Ui {
     }
     fn lightbox_pointer(&mut self, e: &Event) {
         let now = Instant::now(); let area = self.lightbox_area(); let s = self.scale();
+        // the drawn menu of the layers (where menus are drawn: Windows) takes the pointer while it is open - row 551
+        if self.ctx.is_open() { let (chosen, _, consumed) = self.ctx.event(e); if let Some(i) = chosen { self.ctx_pick(i); } self.lb_key = None; if consumed || matches!(e, Event::Down { .. }) { if matches!(e, Event::Down { .. }) && !consumed { self.ctx.close(); } return } }
         if self.lb_close.event(e, now) == Response::Clicked { self.close_lightbox(); return }
         // the pointer is on something of ours beside the web view: the keys come back to our own view
         if let Some(w) = self.lightbox.view.as_ref().and_then(|v| v.web.as_ref()) { if matches!(e, Event::Down { .. }) { w.focus_parent(); } return }
@@ -959,6 +962,8 @@ impl Ui {
             // the sequence's rate: a press steps it to the next, the secondary button to the one before
             if self.lb_fps.rect.width() > 0.0 { let back = matches!(e, Event::Down { x, y, button: Button::Secondary } if self.lb_fps.hit(*x, *y)); let fwd = self.lb_fps.event(e, now) == Response::Clicked;
                 if fwd || back { if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(if back { -1 } else { 1 }); } self.lb_key = None; return } }
+            // the sequence's layers: the list, the one shown ticked
+            if self.lb_layer.rect.width() > 0.0 && self.lb_layer.event(e, now) == Response::Clicked { self.ask_seq_layer(); self.lb_key = None; return }
             let line = self.lb_line; let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) else { return };
             if play { p.act(A::TogglePlayback); return } if lp { p.act(A::ToggleLoop); return } if mute { p.act(A::ToggleMute); return }
             let at = |x: f64| (x - line.x0) / line.width().max(1.0);
@@ -1042,7 +1047,9 @@ impl Ui {
             if let Some(p) = v.player.as_ref() { (p.t.current_frame(), p.t.is_playing(), p.t.audio.is_muted(), p.t.loop_enabled(), p.shown, p.rate()).hash(&mut k); }
             // (a text that appears after a while; buttons that light up under the pointer)
             (v.state == crate::lightbox::State::Loading && now.duration_since(v.since) > Duration::from_millis(250)).hash(&mut k);
-            [&self.lb_close, &self.lb_play, &self.lb_loop, &self.lb_mute, &self.lb_qcv, &self.lb_fps].iter().for_each(|b| (b.hovered(), b.animating(now)).hash(&mut k));
+            [&self.lb_close, &self.lb_play, &self.lb_loop, &self.lb_mute, &self.lb_qcv, &self.lb_fps, &self.lb_layer].iter().for_each(|b| (b.hovered(), b.animating(now)).hash(&mut k));
+            // (the layers of an EXR sequence come a moment after it opens, and the one shown is chosen: the chip is drawn anew)
+            if let Some(p) = v.player.as_ref() { (p.layers.len(), &p.layer).hash(&mut k); }
             k.finish() };
         if self.lb_key == Some(key) && !self.lb_close.animating(now) && !v.doc.as_ref().is_some_and(|d| d.borrow().busy(now)) {
             if ready { let r = v.place(area); self.presenter.engine.set_place(r.map(|r| [r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32])); } else { self.presenter.engine.clear_picture(); }
@@ -1103,6 +1110,9 @@ impl Ui {
             // a sequence's rate is the owner's to say: the chip (row 478)
             self.lb_fps.rect = if p.sequence.is_some() { self.lb_fps.label = Some(format!("{} fps", crate::lightbox::rate_text(p.rate()))); let bw = self.lb_fps.measure(fonts, s).0; let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
             if self.lb_fps.rect.width() > 0.0 { self.lb_fps.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_fps.paint(scene, fonts, s, now); }
+            // an EXR sequence of several layers: the chip names the one shown
+            self.lb_layer.rect = if p.layers.len() > 1 { self.lb_layer.label = Some(if p.layer.is_empty() { "Layers".to_string() } else { p.layer.clone() }); let bw = self.lb_layer.measure(fonts, s).0.min(260.0 * s); let hh = t::ACTION_BUTTON_HEIGHT_S as f64 * s; let q = Rect::new(r - bw, bar.y0 + (bar.height() - hh) / 2.0, r, bar.y0 + (bar.height() + hh) / 2.0); r -= bw + 12.0 * s; q } else { Rect::ZERO };
+            if self.lb_layer.rect.width() > 0.0 { self.lb_layer.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); self.lb_layer.paint(scene, fonts, s, now); }
             self.lb_mute.icon = if p.t.audio.is_muted() { "speaker-slash" } else { "speaker-high" }; self.lb_mute.rect = Rect::new(r - bh, by, r, by + bh); self.lb_mute.corners = Corners::all(rad); self.lb_mute.selected = p.t.audio.is_muted(); self.lb_mute.paint(scene, fonts, s, now); r -= bh + 4.0 * s;
             self.lb_loop.rect = Rect::new(r - bh, by, r, by + bh); self.lb_loop.corners = Corners::all(rad); self.lb_loop.selected = p.t.loop_enabled(); self.lb_loop.paint(scene, fonts, s, now); r -= bh + 14.0 * s;
             // the line: what has played of it, and where it stands
@@ -1120,6 +1130,8 @@ impl Ui {
         // the close button, clear of the window's own buttons: top right
         let bh = t::ACTION_BUTTON_HEIGHT_M as f64 * s; self.lb_close.rect = Rect::new(w - bh - 12.0 * s, 12.0 * s, w - 12.0 * s, 12.0 * s + bh); self.lb_close.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s);
         paint::rounded(scene, self.lb_close.rect, t::ACTION_BUTTON_CORNER_RADIUS_M as f64 * s, t::BACKGROUND_LAYER_2_COLOR); self.lb_close.paint(scene, fonts, s, now);
+        // (the drawn menu, over everything of the lightbox; while it is open the frame is drawn anew each time)
+        if self.ctx.is_open() { self.ctx.paint(scene, fonts, s); self.lb_key = None; }
         self.present(now);
         if measuring { self.lb_cost.push(now.elapsed().as_secs_f32() * 1000.0); }
     }
@@ -1463,6 +1475,12 @@ impl Ui {
     }
     /// A context menu is shown: macOS, the system's own with our rows in it (the application's loop shows it);
     /// Windows, our own drawn one, whose last row opens Explorer's (row 460, point 2).
+    /// The layers of the EXR sequence that plays, as a menu by the playbar's chip (row 551).
+    fn ask_seq_layer(&mut self) {
+        let Some((names, shown)) = self.lightbox.seq_layers() else { return };
+        let rows = names.iter().enumerate().map(|(i, n)| crate::ctxmenu::named(crate::ctxmenu::LB_LAYER + i as u32, if n == shown { format!("\u{2713} {n}") } else { n.clone() })).collect();
+        let at = (self.lb_layer.rect.x0, self.lb_layer.rect.y0); self.menu_for = None; self.show_menu(crate::ctxmenu::Ask { at, paths: vec![], rows }); self.lb_key = None;
+    }
     fn show_menu(&mut self, mut ask: crate::ctxmenu::Ask) {
         use crate::ctxmenu::Row;
         // (whatever has a path can be copied as text: its path, its name, a link to it - row 503)
@@ -1485,7 +1503,12 @@ impl Ui {
         if (cfg!(windows) || std::env::var_os("UFB_DRAWN_MENU").is_some()) && !ask.paths.is_empty() { items.push(min_ui::MenuItem::Separator); rows.push(CtxRow::Rule); items.push(min_ui::MenuItem::action("Show more options", cfg!(windows))); rows.push(CtxRow::More); }
         let size = self.window.surface_size(); let s = self.scale();
         self.ctx_rows = rows; self.ctx_paths = ask.paths; self.ctx_at = ask.at;
-        self.ctx.open_at(items, &mut self.fonts, ask.at.0, ask.at.1, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s);
+        // (a row written with a tick in front - the layer shown, a share's type in force - is a CHECKED row of the drawn menu:
+        // the tick is the icon face's, in a gutter; typed into the label it is a letter the text face does not have)
+        let mut checks: Vec<Option<bool>> = vec![];
+        if items.iter().any(|i| matches!(i, min_ui::MenuItem::Action { label, .. } if label.starts_with("\u{2713} "))) {
+            for it in items.iter_mut() { checks.push(match it { min_ui::MenuItem::Action { label, .. } => { let on = label.starts_with("\u{2713} "); if on { *label = label.trim_start_matches("\u{2713} ").to_string(); } Some(on) } _ => None }); } }
+        self.ctx.open_checked_at(items, checks, &mut self.fonts, ask.at.0, ask.at.1, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s);
         if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the drawn menu: {}", self.ctx.items.iter().map(|i| match i { min_ui::MenuItem::Action { label, enabled, .. } => format!("{label}{}", if *enabled { "" } else { " (off)" }), _ => "--".into() }).collect::<Vec<_>>().join(" | ")); }
     }
     /// A row of the drawn context menu was chosen.
@@ -1504,6 +1527,7 @@ impl Ui {
     pub fn menu_chosen(&mut self, id: u32) {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         if id == crate::ctxmenu::BULK_UNTRACK || (crate::ctxmenu::BULK_SET..crate::ctxmenu::BULK_SET + 100).contains(&id) { return self.bulk_chosen(id) }
+        if (crate::ctxmenu::LB_LAYER..crate::ctxmenu::LB_LAYER + 1000).contains(&id) { self.lightbox.set_seq_layer((id - crate::ctxmenu::LB_LAYER) as usize); return }
         if (crate::ctxmenu::COPY_PATH..=crate::ctxmenu::COPY_UNION).contains(&id) { if let Some(text) = Self::copy_text(id, &self.menu_paths) { self.out.push(Out::CopyText(text)); } return }
         // (a saved share's own rows)
         if (crate::ctxmenu::SHARE_TYPE..crate::ctxmenu::SHARE_TYPE + 500).contains(&id) { return self.share_type_chosen((id - crate::ctxmenu::SHARE_TYPE) as usize) }
@@ -1739,7 +1763,7 @@ impl Ui {
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
         let now = Instant::now(); let port = self.port.clone(); let mac = cfg!(target_os = "macos"); self.tip_demo = None;
-        if self.lightbox.is_open() { return self.lightbox_key(k, name) }
+        if self.lightbox.is_open() { if self.ctx.is_open() { if matches!(k.key, Key::Named(Named::Escape)) { self.ctx.close(); self.lb_key = None; } return } return self.lightbox_key(k, name) }
         if let Some(p) = self.prefs.as_mut() { let out = p.key(k, &mut self.fonts); self.prefs_done(out); return }
         if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.key(k, &mut self.fonts) { self.column_done(done); } return }
         if matches!(k.key, Key::Named(Named::Escape)) && self.board.as_mut().is_some_and(|b| b.cancel_drag()) { return }
@@ -1960,6 +1984,8 @@ impl Ui {
             "lbfps" => if let Some(p) = self.lightbox.view.as_mut().and_then(|v| v.player.as_mut()) { p.step_rate(arg.parse().unwrap_or(1)); eprintln!("UFB_DEMO: the sequence plays at {} fps", crate::lightbox::rate_text(p.rate())); self.lb_key = None; },
             "lbkey" => { let k = KeyEvent { key: Key::Char(arg.to_lowercase()), text: None, shift: false, cmd: false }; self.lightbox_key(&k, arg); }
             "lbseek" => if let (Ok(at), Some(p)) = (arg.parse::<f64>(), self.lightbox.view.as_mut().and_then(|v| v.player.as_mut())) { p.scrub(at); p.scrub_end(); },
+            "lbseqlayer" => if let Some(i) = num(arg) { self.lightbox.set_seq_layer(i); }, "lbseqmenu" => self.ask_seq_layer(),
+            "lbseqsay" => eprintln!("UFB_DEMO: sequence layers: {:?}", self.lightbox.seq_layers().map(|(n, s)| (n.to_vec(), s.to_string()))),
             "lblayer" => if let Some(i) = num(arg) { self.lightbox.pick_layer(i); }, "lbback" => { if self.lightbox.back_to_layers() { self.presenter.engine.clear_picture(); } }
             "preview" => self.command(Cmd::Preview), "lbnext" => self.step_lightbox(1), "lbprev" => self.step_lightbox(-1),
             "lbzoom" | "lbactual" | "lbfit" | "lbpan" => { let area = self.lightbox_area(); let mid = (area.center().x, area.center().y); if let Some(v) = self.lightbox.view.as_mut() { match word {

@@ -39,7 +39,20 @@ pub fn handles(ext: &str) -> bool { media_of(ext) != Media::None || crate::docvi
 pub struct Player { pub t: qcv_player::Transport, pub shown: bool, /// frames are drawn until then although nothing plays (a seek's picture comes a little after it was asked)
     pub awake: Instant, pub audio_only: bool, /// the line is being dragged
     pub scrubbing: bool, /// an image sequence: the pattern it was opened by (its rate is chosen by hand and remembered for it, row 478)
-    pub sequence: Option<String> }
+    pub sequence: Option<String>, /// an EXR sequence: its first frame's file (asked which layers it has), the layers when it has
+    /// several, and the one chosen ("" = the file's own first choice) - row 551
+    pub first: Option<String>, pub layers: Vec<String>, pub layer: String }
+/// A frame's file by a pattern as the player reads one: `%04d`, `%d`, `%%`.
+pub fn frame_file(pattern: &str, n: i64) -> String {
+    let (mut out, mut it) = (String::new(), pattern.chars().peekable());
+    while let Some(c) = it.next() {
+        if c != '%' { out.push(c); continue }
+        if it.peek() == Some(&'%') { it.next(); out.push('%'); continue }
+        let mut spec = String::new(); while let Some(d) = it.peek().copied().filter(|d| d.is_ascii_digit()) { spec.push(d); it.next(); }
+        if it.peek() == Some(&'d') { it.next(); let w: usize = spec.trim_start_matches('0').parse().unwrap_or(0); out.push_str(&if spec.starts_with('0') { format!("{n:0w$}") } else { format!("{n:w$}") }); } else { out.push('%'); out.push_str(&spec); }
+    }
+    out
+}
 /// The rates an image sequence can be played at (the chip steps through them).
 pub const RATES: &[(u32, u32)] = &[(24000, 1001), (24, 1), (25, 1), (30000, 1001), (30, 1), (48, 1), (50, 1), (60000, 1001), (60, 1)];
 /// A rate as the chip writes it: `24`, `23.976`.
@@ -64,7 +77,8 @@ impl Player {
         // it plays as soon as it is opened (owner 2026-11-16: "should videos autoplay and auto loop too?"; the loop is on
         // unless it was turned off). A scripted look starts it itself - after muting it.
         if std::env::var_os("UFB_DEMO").is_none() || std::env::var_os("UFB_AUTOPLAY").is_some() { t.apply(qcv_player::Action::TogglePlayback, Instant::now()); }
-        Ok(Player { t, shown: false, awake: Instant::now() + Duration::from_millis(800), audio_only, scrubbing: false, sequence: match media { Media::Sequence { pattern, .. } => Some(pattern.clone()), _ => None } })
+        Ok(Player { t, shown: false, awake: Instant::now() + Duration::from_millis(800), audio_only, scrubbing: false, sequence: match media { Media::Sequence { pattern, .. } => Some(pattern.clone()), _ => None },
+            first: match media { Media::Sequence { pattern, start, .. } if pattern.to_lowercase().ends_with(".exr") => Some(frame_file(pattern, *start)), _ => None }, layers: vec![], layer: String::new() })
     }
     fn keep_settings(&self) { let (l, m, v) = (self.t.loop_enabled(), self.t.audio.is_muted(), self.t.audio.volume() as f64); crate::settings::with(|s| { s.set_bool("player/loop", l); s.set_bool("player/muted", m); s.set_float("player/volume", v); }); }
     /// The rate a sequence plays at now.
@@ -124,7 +138,8 @@ pub struct View {
 
 pub struct Lightbox { wake: Arc<dyn Fn() + Send + Sync>, pool: Pool, next: u64, waiting: Option<u64>, pub view: Option<View>, frame: Option<(Frame, bool)>,
     /// the question "which layers" that is out; the small pictures of the sheet that are out (request -> layer)
-    asked_layers: Option<u64>, tiles: std::collections::HashMap<u64, usize> }
+    asked_layers: Option<u64>, tiles: std::collections::HashMap<u64, usize>, /// the same question about an EXR SEQUENCE's first frame (the player's picker, row 551)
+    asked_seq: Option<u64> }
 
 /// The decoder's planes as the presenter's frame (QCView's still pipeline: RGB at full range; 8 / 16-bit stills are
 /// display-referred sRGB, half floats linear light).
@@ -139,7 +154,7 @@ impl Lightbox {
     /// One helper of its own, started at the first picture and ended after a while without one.
     pub fn new(wake: Arc<dyn Fn() + Send + Sync>) -> Lightbox {
         let _ = HELPER_ARG;
-        Lightbox { wake: wake.clone(), pool: Pool::new(std::env::current_exe().unwrap_or_default(), vec![], 1, Duration::from_secs(30), wake), next: 1, waiting: None, view: None, frame: None, asked_layers: None, tiles: Default::default() }
+        Lightbox { wake: wake.clone(), pool: Pool::new(std::env::current_exe().unwrap_or_default(), vec![], 1, Duration::from_secs(30), wake), next: 1, waiting: None, view: None, frame: None, asked_layers: None, tiles: Default::default(), asked_seq: None }
     }
     pub fn is_open(&self) -> bool { self.view.is_some() }
     pub fn loading(&self) -> bool { self.view.as_ref().is_some_and(|v| v.state == State::Loading) || !self.tiles.is_empty() }
@@ -161,7 +176,7 @@ impl Lightbox {
     fn id(&mut self) -> u64 { let id = self.next; self.next += 1; id }
     fn ask_full(&mut self, path: String) { let id = self.id(); self.waiting = Some(id); self.pool.submit(Job { req: Request::new(id, OP_FULL, 0, 0, path), hard_ms: 60_000, max: MAX_FULL }); }
     /// What still waits is called off (the file shown changes, or the lightbox closes).
-    fn call_off(&mut self) { let mut ids: Vec<u64> = self.tiles.drain().map(|(id, _)| id).collect(); ids.extend(self.waiting.take()); ids.extend(self.asked_layers.take()); if !ids.is_empty() { self.pool.cancel(&ids); } }
+    fn call_off(&mut self) { let mut ids: Vec<u64> = self.tiles.drain().map(|(id, _)| id).collect(); ids.extend(self.waiting.take()); ids.extend(self.asked_layers.take()); ids.extend(self.asked_seq.take()); if !ids.is_empty() { self.pool.cancel(&ids); } }
     pub fn close(&mut self) { self.call_off(); self.retire(); self.view = None; self.frame = None; }
     /// The player of the file shown is let go (its decoders end off this thread).
     fn retire(&mut self) { if let Some(p) = self.view.as_mut().and_then(|v| v.player.take()) { p.t.retire(); } }
@@ -169,7 +184,9 @@ impl Lightbox {
     pub fn attach(&mut self, player: Result<Player, String>) {
         let Some(v) = self.view.as_mut() else { if let Ok(p) = player { p.t.retire(); } return };
         match player {
-            Ok(p) => { let i = p.t.info(); v.state = if p.audio_only { State::Audio } else { State::Ready(Info { w: i.width.max(1), h: i.height.max(1), orig: (i.width, i.height), reduced: 1, alpha: false, depth: i.meta.bit_depth.min(255) as u8 }) }; v.player = Some(p); }
+            Ok(p) => { // an EXR sequence is asked which layers it has (its first frame's): several give the playbar its picker
+                if let Some(first) = p.first.clone() { let id = self.next; self.next += 1; self.asked_seq = Some(id); self.pool.submit(Job::new(Request::new(id, OP_LAYERS, 0, 0, first), 20_000)); }
+                let i = p.t.info(); v.state = if p.audio_only { State::Audio } else { State::Ready(Info { w: i.width.max(1), h: i.height.max(1), orig: (i.width, i.height), reduced: 1, alpha: false, depth: i.meta.bit_depth.min(255) as u8 }) }; v.player = Some(p); }
             Err(why) => v.state = State::Failed(format!("This file could not be played: {why}.")),
         }
     }
@@ -177,6 +194,13 @@ impl Lightbox {
     pub fn attach_web(&mut self, web: crate::webview::Web) { if let Some(v) = self.view.as_mut() { v.doc = None; v.state = State::Web; v.web = Some(web); } }
     /// What the page in the web view told since last asked.
     pub fn web_msgs(&mut self) -> Vec<String> { self.view.as_ref().and_then(|v| v.web.as_ref()).map(|w| std::mem::take(&mut *w.msgs.borrow_mut())).unwrap_or_default() }
+    /// The layers of the EXR sequence that plays, and the one shown ("" = the file's own first choice). None: no picker.
+    pub fn seq_layers(&self) -> Option<(&[String], &str)> { self.view.as_ref().and_then(|v| v.player.as_ref()).filter(|p| p.layers.len() > 1).map(|p| (p.layers.as_slice(), p.layer.as_str())) }
+    /// The sequence that plays shows this layer from now on: the picture changes where it stands, playing goes on.
+    pub fn set_seq_layer(&mut self, i: usize) {
+        let Some(p) = self.view.as_mut().and_then(|v| v.player.as_mut()) else { return }; let Some(name) = p.layers.get(i).cloned() else { return };
+        p.t.set_sequence_layer(&name); p.layer = name; p.awake = Instant::now() + Duration::from_millis(1500);
+    }
     /// A layer of the contact sheet is chosen: it is shown large.
     pub fn pick_layer(&mut self, i: usize) {
         let Some(v) = self.view.as_mut() else { return }; let Some((name, _)) = v.layers.get(i) else { return };
@@ -197,6 +221,11 @@ impl Lightbox {
             if let Some(i) = self.tiles.remove(&d.id) { let (w, h) = (d.w as u32, d.h as u32);
                 if let (Some(v), true) = (self.view.as_mut(), d.status == OK && w > 0 && h > 0 && d.payload.len() == (w * h * 4) as usize) { if let Some(t) = v.layers.get_mut(i) {
                     t.1 = Some(peniko::ImageBrush::new(peniko::ImageData { data: peniko::Blob::new(Arc::new(d.payload)), format: peniko::ImageFormat::Rgba8, alpha_type: peniko::ImageAlphaType::AlphaPremultiplied, width: w, height: h })); } }
+                continue }
+            // which layers a sequence's frames have
+            if self.asked_seq == Some(d.id) { self.asked_seq = None;
+                let names: Vec<String> = if d.status == OK { String::from_utf8_lossy(&d.payload).lines().filter(|l| !l.is_empty()).map(str::to_string).collect() } else { vec![] };
+                if let Some(p) = self.view.as_mut().and_then(|v| v.player.as_mut()) { if names.len() > 1 { p.layers = names; } }
                 continue }
             // which layers the file has
             if self.asked_layers == Some(d.id) { self.asked_layers = None;
