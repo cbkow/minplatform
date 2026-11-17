@@ -65,15 +65,17 @@ pub struct Board {
     lane_rects: Vec<Rect>, cards: Vec<(usize, Rect)>, hover: Option<usize>,
     /// a card pressed: (the item, where it was pressed, it is being dragged), and where the pointer is
     press: Option<(usize, (f64, f64), bool)>, at: (f64, f64), scale: f64,
+    /// the cards chosen together (the items' places; row 530): a drag of one of them takes them all
+    pub sel: Vec<usize>,
 }
 impl Board {
-    pub fn new(by: LaneBy) -> Board { Board { by, lanes: vec![], rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), lane_rects: vec![], cards: vec![], hover: None, press: None, at: (0.0, 0.0), scale: 1.0 } }
+    pub fn new(by: LaneBy) -> Board { Board { by, lanes: vec![], rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), lane_rects: vec![], cards: vec![], hover: None, press: None, at: (0.0, 0.0), scale: 1.0, sel: vec![] } }
     /// The lanes are made anew from the items and what they carry. False: the board cannot stand any more.
     pub fn rebuild(&mut self, items: &[Item], list: &ItemList) -> bool { match lanes(&self.by, items, list) { Some(l) => { self.lanes = l; true } None => false } }
     pub fn dragging(&self) -> bool { self.press.is_some_and(|p| p.2) }
     pub fn animating(&self, now: Instant) -> bool { self.bar.animating(now) || self.hbar.animating(now) || self.dragging() }
     fn lane_at(&self, x: f64, y: f64) -> Option<usize> { self.lane_rects.iter().position(|r| r.contains(kurbo::Point::new(x, y))) }
-    fn lane_of(&self, item: usize) -> Option<usize> { self.lanes.iter().position(|l| l.items.contains(&item)) }
+    pub fn lane_of(&self, item: usize) -> Option<usize> { self.lanes.iter().position(|l| l.items.contains(&item)) }
 
     pub fn layout(&mut self, rect: Rect, s: f64) {
         self.rect = rect; self.scale = s; let n = self.lanes.len().max(1) as f64; let pad = PAD * s;
@@ -141,7 +143,7 @@ impl Board {
         }
         // the cards, under the lanes' heads
         let body = Rect::new(self.rect.x0, self.rect.y0 + HEAD * s, self.rect.x1, self.rect.y1); scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &body);
-        for (i, r) in &self.cards { if r.y1 < body.y0 || r.y0 > body.y1 || r.x1 < body.x0 || r.x0 > body.x1 || in_hand == Some(*i) { continue } if let Some(it) = items.get(*i) { self.card(scene, fonts, it, list, *r, chosen == Some(*i), focused, self.hover == Some(*i) && in_hand.is_none(), today); } }
+        for (i, r) in &self.cards { if r.y1 < body.y0 || r.y0 > body.y1 || r.x1 < body.x0 || r.x0 > body.x1 || in_hand == Some(*i) { continue } if let Some(it) = items.get(*i) { self.card(scene, fonts, it, list, *r, chosen == Some(*i) || self.sel.contains(i), focused, self.hover == Some(*i) && in_hand.is_none(), today); } }
         scene.pop_layer(); scene.pop_layer();
         self.bar.paint(scene, now); self.hbar.paint(scene, now);
         // the card in hand follows the pointer, over everything of the board

@@ -24,7 +24,8 @@ pub const DUES: [(Due, &str); 5] = [(Due::All, "All"), (Due::Overdue, "Overdue")
 
 pub struct Tracker {
     pub scope: Scope, pub list: ItemList, /// the rows shown, and the one chosen
-    pub rows: Vec<Item>, pub chosen: Option<usize>, pub due: Due, /// a date column is among those in view: the Due chips are offered
+    pub rows: Vec<Item>, pub chosen: Option<usize>, /// the rows chosen together, by their paths (row 530) - they stay chosen through a reload
+    pub sel: Vec<PathBuf>, pub due: Due, /// a date column is among those in view: the Due chips are offered
     pub dated: bool,
     /// every tracked row: (the item, its job, its section, what it carries)
     all: Vec<(Item, PathBuf, String)>, /// the real columns of each (job, section), by the merged column's key
@@ -42,7 +43,7 @@ pub fn in_bucket(due: Due, date: i64, today: i64) -> bool {
 }
 
 impl Tracker {
-    pub fn new(scope: Scope, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> Tracker { let (tx, rx) = std::sync::mpsc::channel(); let mut t = Tracker { scope, list: ItemList::default(), rows: vec![], chosen: None, due: Due::All, dated: false, all: vec![], real: HashMap::new(), req: 0, tx, rx, wake }; t.list.show_modified = true; t.reload(); t }
+    pub fn new(scope: Scope, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> Tracker { let (tx, rx) = std::sync::mpsc::channel(); let mut t = Tracker { scope, list: ItemList::default(), rows: vec![], chosen: None, sel: vec![], due: Due::All, dated: false, all: vec![], real: HashMap::new(), req: 0, tx, rx, wake }; t.list.show_modified = true; t.reload(); t }
     /// The answers about the rows' folders are taken in. True when one came.
     pub fn poll(&mut self) -> bool { let mut any = false; while let Ok((req, missing)) = self.rx.try_recv() { if req == self.req { self.list.missing = missing.into_iter().collect(); any = true; } } any }
     /// A row's folder is not there (it was renamed or moved outside the application, or by a 1.4.2 node).

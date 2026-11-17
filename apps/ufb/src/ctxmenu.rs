@@ -76,6 +76,8 @@ pub fn rows_for_columns(column: bool, hidden: &[String], trashed: &[String], mod
     rows
 }
 pub const TRK_RELINK: u32 = 60; pub const TRK_REMOVE: u32 = 61;
+/// Several rows of the tracker chosen (row 530): untrack them all; give them all a value (the number counts on from here).
+pub const BULK_UNTRACK: u32 = 62; pub const BULK_SET: u32 = 6000;
 /// The rows for a row of the tracker whose folder is not there (row 439).
 pub fn rows_for_lost() -> Vec<Row> { vec![ours(TRK_RELINK, "Relink\u{2026}"), Row::Sep, ours(TRK_REMOVE, "Remove from the Tracker")] }
 pub const TRK_OPEN: u32 = 58; pub const BOARD_LIST: u32 = 59; pub const BOARD_BY: u32 = 4000;

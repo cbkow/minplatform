@@ -39,6 +39,8 @@ pub struct ItemList {
     pub cols: Vec<ColDef>, pub hidden: Vec<ColDef>, pub meta: HashMap<PathBuf, ItemMeta>,
     /// rows whose folder is not there (the tracker, row 493): their name says so
     pub missing: std::collections::HashSet<PathBuf>,
+    /// items chosen beside the one in front (their places among the items; row 530): shown chosen as it is
+    pub also: std::collections::BTreeSet<usize>,
     pub sort: Option<(SortBy, bool)>, /// the items' places in the job's list, in the order shown
     pub order: Vec<usize>, pub show_modified: bool,
     pub rect: Rect, pub bar: ScrollBar, /// sideways, when the columns are wider than the list (Shift with the wheel, or the bar at its foot)
@@ -122,7 +124,7 @@ fn compare(kind: &str, a: Option<&Value>, b: Option<&Value>) -> std::cmp::Orderi
     text_of(kind, a).to_lowercase().cmp(&text_of(kind, b).to_lowercase())
 }
 
-impl Default for ItemList { fn default() -> ItemList { ItemList { cols: vec![], hidden: vec![], meta: HashMap::new(), missing: Default::default(), sort: None, order: vec![], show_modified: true, rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), hover: None, edit: None, name_x: (0.0, 0.0), xs: vec![], mod_x: None, drag: None, over_div: false, scale: 1.0 } } }
+impl Default for ItemList { fn default() -> ItemList { ItemList { cols: vec![], hidden: vec![], meta: HashMap::new(), missing: Default::default(), also: Default::default(), sort: None, order: vec![], show_modified: true, rect: Rect::ZERO, bar: ScrollBar::default(), hbar: ScrollBar::horizontal(), hover: None, edit: None, name_x: (0.0, 0.0), xs: vec![], mod_x: None, drag: None, over_div: false, scale: 1.0 } } }
 impl ItemList {
     /// The columns and the values of a (job, section), as the database has them now.
     pub fn load(&mut self, job: &std::path::Path, folder: &str) {
@@ -255,7 +257,7 @@ impl ItemList {
         scene.push_clip_layer(peniko::Fill::NonZero, Affine::IDENTITY, &body);
         for (pos, i) in self.order.iter().enumerate() {
             let Some(it) = items.get(*i) else { continue }; let row = self.row_rect(pos); if row.y1 < body.y0 || row.y0 > body.y1 { continue }
-            let r = Rect::new(row.x0 + 6.0 * s, row.y0, row.x1 - 6.0 * s, row.y1); let here = chosen == Some(*i); let strong = here && focused;
+            let r = Rect::new(row.x0 + 6.0 * s, row.y0, row.x1 - 6.0 * s, row.y1); let here = chosen == Some(*i) || self.also.contains(i); let strong = here && focused;
             if here { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, if focused { t::RAIL_ROW_ACTIVE_FILL } else { t::HOVER_BACKGROUND_COLOR }); } else if self.hover == Some(pos) { paint::rounded(scene, r, t::CORNER_RADIUS_SMALL_DEFAULT as f64 * s, t::HOVER_BACKGROUND_COLOR); }
             let color = if strong { paint::color(t::RAIL_ROW_ACTIVE_LABEL) } else { ink }; let quiet = if strong { color } else { sub }; let mid = |h: f64| row.y0 + (row.height() - h) / 2.0;
             // the star: filled when the item is tracked
