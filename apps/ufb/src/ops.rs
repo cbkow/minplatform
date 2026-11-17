@@ -595,10 +595,10 @@ impl Engine {
                 let cancel = AtomicBool::new(false); let mut none = |_: u64| {};
                 for (from, to) in moved.into_iter().rev() { if let Some(dir) = from.parent() { let _ = std::fs::create_dir_all(dir); }
                     match move_one(&to, &from, &mut Progress { cancel: &cancel, bytes: &mut none }) { Ok(()) => { note(&mut rep, from.parent()); note(&mut rep, to.parent()); rep.moved.push((to.clone(), from.clone())); rep.made.push(from); } Err(_) => left += 1 } }
-                for (orig, at) in replaced { match rename_no_replace(&at, &orig) { Ok(()) => { forget_recycled(&at); note(&mut rep, orig.parent()) } Err(_) => left += 1 } }
+                for (orig, at) in replaced { match rename_no_replace(&at, &orig) { Ok(()) => { { restored(&at); forget_recycled(&at) }; note(&mut rep, orig.parent()) } Err(_) => left += 1 } }
                 if left > 0 { rep.error = Some(if left == 1 { "One item was changed since, or is in the way, and was left where it is.".into() } else { format!("{left} items were changed since, or are in the way, and were left where they are.") }); } }
             Record::Trash(moved) => { let mut left = 0;
-                for (orig, at) in moved { match rename_no_replace(&at, &orig) { Ok(()) => { forget_recycled(&at); note(&mut rep, orig.parent()); rep.made.push(orig); } Err(_) => left += 1 } }
+                for (orig, at) in moved { match rename_no_replace(&at, &orig) { Ok(()) => { { restored(&at); forget_recycled(&at) }; note(&mut rep, orig.parent()); rep.made.push(orig); } Err(_) => left += 1 } }
                 if left > 0 { rep.error = Some(if left == 1 { "One item could not be put back: its name is taken, or it is no longer in the Trash.".into() } else { format!("{left} items could not be put back: their names are taken, or they are no longer in the Trash.") }); } }
         }
         // (what was taken back whole can be done again)
@@ -606,6 +606,11 @@ impl Engine {
         rep
     }
 }
+
+/// An item came back out of the Trash. (Under test: it is no longer one of those the test sweeps out of the Trash when
+/// it ends - the place it had there may by then be ANOTHER test's item of the same name; that was the suite's
+/// intermittent failure, rows 474 and 527.)
+fn restored(at: &Path) { #[cfg(test)] tests::TRASHED.with(|t| t.borrow_mut().retain(|p| p != at)); let _ = at; }
 
 // ---------------------------------------------------------------- the application's one engine
 
