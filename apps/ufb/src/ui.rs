@@ -56,7 +56,8 @@ enum Asked { /// delete these for good
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
     NewJob(PathBuf), AddItem(PathBuf), /// a share to add (its address, or a folder); a share's name
     AddShare, RenameShare(usize), ShareLetter(usize), /// quit although tasks run or wait
-    Quit, /// sync's settings: the farm's folder, this machine's name, the belt
+    Quit, /// the password of this archive
+    Password(PathBuf), /// sync's settings: the farm's folder, this machine's name, the belt
     SyncSet }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
 /// What a thread that looked at the shares, or asked the system to connect one, found.
@@ -1025,6 +1026,8 @@ impl Ui {
         if self.rename.as_ref().is_some_and(|r| rep.changed.iter().any(|c| r.path.starts_with(c))) { self.end_rename(); }
         if !mine { return }
         if let Some(why) = &rep.error { self.toast.show(why, min_ui::toast::ToastKind::Negative, now); }
+        else if let Some(what) = &rep.notice { self.toast.show(what, min_ui::toast::ToastKind::Notice, now); }
+        if let Some((archive, wrong)) = &rep.password { if self.dialog.is_none() { self.ask_password(archive.clone(), *wrong); } }
         // a new folder goes straight into its name (row 437)
         if rep.kind == Some(crate::ops::Kind::NewFolder) { self.rename_next = rep.made.first().cloned(); }
         if !rep.no_trash.is_empty() { self.ask_delete(rep.no_trash.clone(), true); }
@@ -1051,6 +1054,25 @@ impl Ui {
     }
     fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_files() }
     /// "Delete for good?" - always asked (row 468, point 3). `no_trash`: asked because the volume has no Trash.
+    /// Extract Here for the chosen archives; Compress to ZIP for what is chosen (row 508, points 5-9): tasks of the lane.
+    fn extract_chosen(&mut self) {
+        let paths: Vec<PathBuf> = self.pane().chosen_entries(2000).into_iter().filter(|e| !e.1 && e.0.file_name().is_some_and(|f| crate::archive::is_archive(&f.to_string_lossy()))).map(|e| e.0).collect();
+        if paths.is_empty() { return }
+        if !crate::ops::allowed_in(self.pane().path()) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        for archive in paths { crate::archive::submit(self.id, crate::archive::Job::Extract { archive, password: None }); }
+    }
+    fn compress_chosen(&mut self) {
+        let paths = self.pane().chosen_files(); if paths.is_empty() { return }
+        if !crate::archive::zip_place(&paths).is_some_and(|(dir, _)| crate::ops::allowed_in(&dir)) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        crate::archive::submit(self.id, crate::archive::Job::Compress { paths });
+    }
+    /// An archive wants its password: asked for, and the answer is a new task.
+    fn ask_password(&mut self, archive: PathBuf, wrong: bool) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut d = Dialog::new(&format!("\u{201c}{name}\u{201d} is locked with a password"), if wrong { "That password did not open it." } else { "" }, vec![("Cancel", Variant::Secondary), ("Extract", Variant::Primary)]).with_field("Password", ""); d.show_with("", &mut self.fonts);
+        self.dialog = Some((d, Asked::Password(archive)));
+    }
     /// Quit: at once when nothing runs; with tasks running or waiting it is asked first (row 508, point 4 - nothing of
     /// the list is kept: what is done stays done, the rest is not done).
     pub fn ask_quit(&mut self) {
@@ -1075,6 +1097,7 @@ impl Ui {
             Asked::Conflict(id) => { use crate::ops::Choice; crate::ops::answer(id, [Choice::Stop, Choice::Replace, Choice::Skip, Choice::KeepBoth][button.min(3)], d.checked()); }
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
             Asked::Quit => if button == 0 { self.out.push(Out::Quit); },
+            Asked::Password(archive) => if button == 1 { crate::archive::submit(self.id, crate::archive::Job::Extract { archive, password: Some(d.value_at(0)) }); },
             // (made off this thread: a skeleton may be copied to a share)
             // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
             Asked::NewJob(parent) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewJob { parent, number: d.value_at(0), name: d.value_at(1) }); },
@@ -1246,6 +1269,11 @@ impl Ui {
             else { let kinds: Vec<(bool, bool)> = entries.iter().map(|e| (e.1, e.2)).collect(); let folder = if entries.len() == 1 && (entries[0].1 || entries[0].2) { entries[0].0.clone() } else { here };
                 // one folder: it can be made a job of the sidebar, or taken out of it
                 let mut rows = ctxmenu::rows_for(&kinds, sequence); if kinds.len() == 1 && kinds[0].0 && !kinds[0].1 { let on = self.jobs.iter().any(|j| j.path == folder); if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Sep) { rows.insert(k, ctxmenu::row_subscribe(on)); } }
+                // archives (row 508): what is chosen is compressed; chosen archives are unpacked where they lie
+                { let n = entries.len(); let archives = entries.iter().all(|e| !e.1 && e.0.file_name().is_some_and(|f| crate::archive::is_archive(&f.to_string_lossy())));
+                    let mut add = vec![ctxmenu::Row::Sep]; if archives { add.push(ctxmenu::named(ctxmenu::EXTRACT, if n == 1 { "Extract Here".to_string() } else { format!("Extract {n} Archives Here") })); }
+                    add.push(ctxmenu::named(ctxmenu::COMPRESS, if n == 1 { "Compress to ZIP".to_string() } else { format!("Compress {n} Items to ZIP") }));
+                    let at_row = rows.iter().rposition(|r| *r == ctxmenu::Row::Sep).unwrap_or(rows.len()); rows.splice(at_row..at_row, add); }
                 self.menu_for = Some((Some(i), folder)); Ask { at, paths: entries.into_iter().map(|e| e.0).collect(), rows } };
         self.menu_job = false;
         self.show_menu(ask);
@@ -1308,6 +1336,7 @@ impl Ui {
             id if (COLUMN + 1..COLUMN + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.toggle_column((id - COLUMN) as usize); }
             id if (SORT..SORT + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Sort((id - SORT) as u8)); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
+            crate::ctxmenu::EXTRACT | crate::ctxmenu::COMPRESS => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; if id == crate::ctxmenu::EXTRACT { self.extract_chosen(); } else { self.compress_chosen(); } },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
@@ -1746,6 +1775,9 @@ impl Ui {
             "taskstop" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::cancel(t.id); },
             "taskdismiss" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::dismiss(t.id); },
             "taskclear" => crate::tasks::clear_finished(),
+            // `extract` `compress` (the chosen entries) `password:<text>` (answer the password question)
+            "extract" => self.extract_chosen(), "compress" => self.compress_chosen(),
+            "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.answer(1); },
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
             "context" => { let at = if arg == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(n) = arg.strip_prefix("side").and_then(num) { self.side_rows.get(n).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(arg).and_then(|n| self.pane().row_point(n)) };

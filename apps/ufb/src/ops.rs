@@ -56,10 +56,12 @@ pub enum Op {
     NewJob { parent: PathBuf, number: String, name: String },
     /// An item is added to a job's section `dir`, by the kind the project type gives the section.
     AddItem { dir: PathBuf, name: String },
+    /// Something another worker made (an archive, what was unpacked from one) joins the undo list under its name.
+    Note { made: PathBuf, label: &'static str },
     Undo,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem }
+pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem, Extract, Compress }
 
 /// What to do about a name that is taken. `Stop`: nothing more of this operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +89,10 @@ pub struct Report {
     pub no_trash: Vec<PathBuf>,
     /// jobs an undo took away again (to the Trash): they leave the sidebar
     pub unmade: Vec<PathBuf>,
+    /// an archive that wants a password before it is unpacked (and whether one was already tried)
+    pub password: Option<(PathBuf, bool)>,
+    /// something to say that is no failure (entries of an archive that were left out)
+    pub notice: Option<String>,
 }
 
 /// (size, modification time) of what a copy made: undo leaves an item alone that is not as it was made.
@@ -94,13 +100,14 @@ type Stamp = (u64, Option<std::time::SystemTime>);
 fn stamp(p: &Path) -> Option<Stamp> { let m = std::fs::symlink_metadata(p).ok()?; Some((if m.is_dir() { 0 } else { m.len() }, m.modified().ok())) }
 
 enum Record { NewFolder(PathBuf), /// a job (`job`) or an item of a section, made by the project type
-    Made { path: PathBuf, job: bool }, Rename { from: PathBuf, to: PathBuf }, Copies(Vec<(PathBuf, Stamp)>), Trash(Vec<(PathBuf, PathBuf)>),
+    Made { path: PathBuf, job: bool }, /// what a worker of the tasks' lane made
+    Result { path: PathBuf, label: &'static str }, Rename { from: PathBuf, to: PathBuf }, Copies(Vec<(PathBuf, Stamp)>), Trash(Vec<(PathBuf, PathBuf)>),
     /// a copy or a move into a folder: what was copied; what was moved (from, to); what was replaced (where it was, where in the Trash it is)
     Transfer { mv: bool, copied: Vec<(PathBuf, Stamp)>, moved: Vec<(PathBuf, PathBuf)>, replaced: Vec<(PathBuf, PathBuf)> } }
 impl Record {
     fn label(&self) -> String {
         let items = |n: usize| if n == 1 { "1 Item".to_string() } else { format!("{n} Items") };
-        match self { Record::NewFolder(_) => "New Folder".into(), Record::Made { job, .. } => if *job { "New Job".into() } else { "Add Item".into() }, Record::Rename { .. } => "Rename".into(), Record::Copies(v) => format!("Duplicate of {}", items(v.len())), Record::Trash(v) => format!("Move to Trash of {}", items(v.len())),
+        match self { Record::NewFolder(_) => "New Folder".into(), Record::Made { job, .. } => if *job { "New Job".into() } else { "Add Item".into() }, Record::Result { label, .. } => label.to_string(), Record::Rename { .. } => "Rename".into(), Record::Copies(v) => format!("Duplicate of {}", items(v.len())), Record::Trash(v) => format!("Move to Trash of {}", items(v.len())),
             Record::Transfer { mv, copied, moved, .. } => format!("{} of {}", if *mv { "Move" } else { "Copy" }, items(copied.len() + moved.len())) }
     }
 }
@@ -502,6 +509,7 @@ impl Engine {
                 }
                 rep
             }
+            Op::Note { made, label } => { self.done(Record::Result { path: made, label }); Report::default() }
             Op::Undo => self.undo_last(),
         }
     }
@@ -541,6 +549,10 @@ impl Engine {
             // a job or an item made by the project type: as a new folder - to the Trash with whatever came into it since
             Record::Made { path, job } => match trash(&path) {
                 Ok(_) => { note(&mut rep, path.parent()); if job { rep.unmade.push(path); } }
+                Err(why) => rep.error = Some(format!("\u{201c}{}\u{201d} could not be taken back{}", name_of(&path), why.map(|w| format!(": {w}")).unwrap_or_else(|| ": its volume has no Trash.".into()))),
+            },
+            Record::Result { path, .. } => match trash(&path) {
+                Ok(_) => note(&mut rep, path.parent()),
                 Err(why) => rep.error = Some(format!("\u{201c}{}\u{201d} could not be taken back{}", name_of(&path), why.map(|w| format!(": {w}")).unwrap_or_else(|| ": its volume has no Trash.".into()))),
             },
             Record::Rename { from, to } => match rename_no_replace(&to, &from) {
@@ -588,7 +600,7 @@ fn label_of(op: &Op) -> String {
     // (one item is said by its name: the tasks' panel shows several of these under one another)
     let what = |paths: &[PathBuf]| if paths.len() == 1 { format!("\u{201c}{}\u{201d}", name_of(&paths[0])) } else { format!("{} items", paths.len()) };
     match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
-        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into() }
+        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into() }
 }
 
 /// Start the engine's thread. `roots`: the folders this build may change things in.
@@ -633,6 +645,10 @@ pub fn submit(origin: u64, op: Op) { if let Some(s) = SHARED.get() { let label =
     s.waiting.lock().unwrap().push(label); let _ = s.tx.send((origin, op, task)); } }
 /// The task that runs in the engine now is shown with the engine's own account of it.
 pub fn running_task() -> Option<u64> { let s = SHARED.get()?; s.status.lock().unwrap().as_ref()?; let cur = s.current.lock().unwrap().clone(); crate::tasks::list().into_iter().find(|t| t.state == crate::tasks::State::Running && Arc::ptr_eq(&t.cancel, &cur)).map(|t| t.id) }
+/// What a worker outside the engine did is told to every window, as the engine's own reports are.
+pub fn announce(rep: Report) { if let Some(s) = SHARED.get() { let rep = Arc::new(rep); for (_, port) in s.ports.lock().unwrap().iter() { port.send(crate::lister::Msg::Op(rep.clone())); } } }
+/// The windows look again (a task of the lane has moved on).
+pub fn wake() { if let Some(s) = SHARED.get() { for (_, port) in s.ports.lock().unwrap().iter() { port.send(crate::lister::Msg::Icon); } } }
 pub fn answer(question: u64, choice: Choice, all: bool) { if let Some(s) = SHARED.get() { let _ = s.answers.send((question, choice, all)); } }
 pub fn undo_label() -> Option<String> { SHARED.get().and_then(|s| s.undo.lock().unwrap().clone()) }
 /// The operation that runs now, and what waits behind it.

@@ -9,6 +9,7 @@
 //! `UFB_DEMO=<steps;...>` does the steps first (see `ui.rs`), `UFB_SIZE=1440x900` sets the window's size,
 //! `UFB_MENU_BAR=1` shows the drawn menu bar on macOS too.
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod archive;
 mod board;
 mod chips;
 mod crumbs;

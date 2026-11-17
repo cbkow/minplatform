@@ -40,6 +40,14 @@ min-settings = { path = "../../crates/min-settings" }
 ufb-projtype = { path = "../../crates/ufb-projtype" }
 uuid = { workspace = true }
 rfd = "0.18"
+# archives (row 508, points 5-9): our own code, no bundled tool. All pure Rust (nothing to build in C on either system).
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2", "aes-crypto"] }
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+bzip2 = "0.6"
+ruzstd = "0.8"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["aes256", "bzip2", "deflate", "ppmd"] }
 socket2 = { version = "0.5", features = ["all"] }
 sha2 = "0.10"
 serde_json = "1"
