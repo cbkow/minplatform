@@ -145,66 +145,78 @@ impl Prefs {
         // (what is not shown takes no press: every place is given anew below, by the section in view)
         for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.sign_in, &mut self.sync] { sw.rect = Rect::ZERO; } self.browse.rect = Rect::ZERO; self.add.rect = Rect::ZERO;
         for f in self.fields() { f.layout(fonts, Rect::ZERO, s); } for m in self.maps.iter_mut() { m.on.rect = Rect::ZERO; m.remove.rect = Rect::ZERO; }
-        let body = 40.0 * s + (head + 5.0 * row).max(head + 22.0 * s + (self.pairs.len() + self.maps.len()) as f64 * map_row + 34.0 * s).max(head + row + 3.0 * (row + 4.0 * s) + 20.0 * s) + 34.0 * s;
+        let body = 40.0 * s + (head + 5.0 * row + 40.0 * s).max(head + 22.0 * s + (self.pairs.len() + self.maps.len()) as f64 * (map_row + 20.0 * s) + 34.0 * s).max(head + row + 3.0 * (row + 4.0 * s) + 20.0 * s + 56.0 * s) + 34.0 * s;
         let (w, h) = ((760.0 * s).min(view.width() - 48.0 * s), (pad * 2.0 + 40.0 * s + body + 56.0 * s).min(view.height() - 24.0 * s)); let (x0, y0) = (view.x0 + (view.width() - w) / 2.0, view.y0 + (view.height() - h) / 2.0); let card = Rect::new(x0, y0, x0 + w, y0 + h);
         paint::rect(scene, view, t::DIALOG_SCRIM_COLOR); let rad = t::DIALOG_CORNER_RADIUS as f64 * s;
         for sh in t::POPOVER_SHADOW { scene.draw_blurred_rounded_rect(Affine::translate((sh.x as f64 * s, sh.y as f64 * s)), card.inflate(sh.spread as f64 * s, sh.spread as f64 * s), c(sh.color), rad, (sh.blur as f64 * s / 2.0).max(0.1)); }
         scene.fill(peniko::Fill::NonZero, Affine::IDENTITY, c(t::BACKGROUND_LAYER_1_COLOR), None, &RoundedRect::from_rect(card, rad));
         // a line of text, its middle at `cy`; its width
         let line = |scene: &mut Scene, fonts: &mut Fonts, text: &str, x: f64, cy: f64, size: f32, bold: bool, color: peniko::Color, room: f64| -> f64 { let l = fonts.layout_fit(text, Family::Sans, size * s as f32, if bold { t::FONT_WEIGHT_BOLD } else { t::FONT_WEIGHT_REGULAR } as f32, color, room.max(8.0)); draw_layout(scene, &l, Affine::translate((x, cy - l.height() as f64 / 2.0))); l.width() as f64 };
-        let (lx, x1) = (x0 + pad, x0 + w - pad); let fx = lx + 190.0 * s; let mut y = y0 + pad; let (sw, shh) = (t::SWITCH_TRACK_WIDTH as f64 * s, t::SWITCH_TRACK_HEIGHT as f64 * s);
+        let (lx, x1) = (x0 + pad, x0 + w - pad); let mut y = y0 + pad; let (sw, shh) = (t::SWITCH_TRACK_WIDTH as f64 * s, t::SWITCH_TRACK_HEIGHT as f64 * s);
         line(scene, fonts, "Settings", lx, y + 12.0 * s, t::DIALOG_TITLE_SIZE, true, ink, w); y += 40.0 * s;
+        // each group of rows lies on a panel of its own, one layer up from the card (row 518): the card's edges are the
+        // panels'; what is in a panel is set in from them
+        let (ox0, ox1) = (lx, x1); let inset = 14.0 * s; let (lx, x1) = (ox0 + inset, ox1 - inset); let fx = lx + 190.0 * s;
+        let panel = |scene: &mut Scene, ya: f64, yb: f64| paint::rounded(scene, Rect::new(ox0, ya, ox1, yb), t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
         let toggle = |scene: &mut Scene, fonts: &mut Fonts, label: &str, sw_: &mut Switch, note: &str, y: &mut f64| {
             line(scene, fonts, label, lx, *y + row / 2.0, t::BODY_SIZE_S, false, if sw_.enabled { ink } else { sub }, x1 - lx - sw - 16.0 * s);
             if !note.is_empty() { let lw = fonts.layout(label, Family::Sans, t::BODY_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, ink).width() as f64; line(scene, fonts, note, lx + lw + 12.0 * s, *y + row / 2.0, t::DETAIL_SIZE_S, false, sub, x1 - lx - lw - sw - 32.0 * s); }
             sw_.rect = Rect::new(x1 - sw, *y + (row - shh) / 2.0, x1, *y + (row + shh) / 2.0); sw_.paint(scene, s, now); *y += row; };
         // the sections, one at a time (the card stays a size a small window holds, however many mappings there are)
-        { let mut x = lx; for (k, b) in self.tabs.iter_mut().enumerate() { b.variant = if k == self.tab { Variant::Primary } else { Variant::Secondary }; let (bw, bh) = b.measure(fonts, s); b.rect = Rect::new(x, y, x + bw, y + bh); b.paint(scene, fonts, s, now); x += bw + 8.0 * s; } y += 40.0 * s; }
+        { let mut x = ox0; for (k, b) in self.tabs.iter_mut().enumerate() { b.variant = if k == self.tab { Variant::Primary } else { Variant::Secondary }; let (bw, bh) = b.measure(fonts, s); b.rect = Rect::new(x, y, x + bw, y + bh); b.paint(scene, fonts, s, now); x += bw + 8.0 * s; } y += 40.0 * s; }
         if self.tab == 0 {
         // -- General
-        line(scene, fonts, "General", lx, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
+        line(scene, fonts, "What a pane shows from the start", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 400.0 * s); y += head;
+        panel(scene, y, y + 4.0 * row + 12.0 * s); y += 6.0 * s;
         toggle(scene, fonts, "Show hidden files", &mut self.hidden, "", &mut y);
         toggle(scene, fonts, "Folders before files", &mut self.folders_first, "", &mut y);
         toggle(scene, fonts, "Image sequences as one entry", &mut self.sequences, "", &mut y);
         toggle(scene, fonts, "Show folders as a grid", &mut self.grid, "", &mut y);
+        y += 6.0 * s + 10.0 * s; panel(scene, y, y + row + 12.0 * s); y += 6.0 * s;
         toggle(scene, fonts, "Start at sign-in", &mut self.sign_in, "with the installed application", &mut y);
         }
         if self.tab == 1 {
         // -- Sync
-        line(scene, fonts, "Sync", lx, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
+        line(scene, fonts, "Sync", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
+        panel(scene, y, y + row + 12.0 * s); y += 6.0 * s;
         toggle(scene, fonts, "Sync metadata with the other machines", &mut self.sync, &format!("now: {}", crate::ui::Ui::sync_words()), &mut y);
+        y += 6.0 * s + 10.0 * s; panel(scene, y, y + 3.0 * (row + 4.0 * s) + 12.0 * s); y += 8.0 * s;
         let dim = if self.sync.on { ink } else { sub };
         line(scene, fonts, "Farm folder", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); let bw = self.browse.measure(fonts, s).0;
         self.farm.layout(fonts, Rect::new(fx, y, x1 - bw - 8.0 * s, y + fh), s); self.farm.paint(scene, fonts, s); self.browse.rect = Rect::new(x1 - bw, y + 3.0 * s, x1, y + fh - 3.0 * s); self.browse.paint(scene, fonts, s, now); y += row + 4.0 * s;
         line(scene, fonts, "This machine's name", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); self.node.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.node.paint(scene, fonts, s); y += row + 4.0 * s;
         line(scene, fonts, "Only under (test build)", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); self.only.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.only.paint(scene, fonts, s); y += row + 4.0 * s;
-        line(scene, fonts, "The farm's folder is the one every machine shares; each machine has a name of its own in it.", lx, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
+        y += 8.0 * s; line(scene, fonts, "The farm's folder is the one every machine shares; each machine has a name of its own in it.", ox0, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
         }
         if self.tab == 2 {
         // -- Path mappings: a saved share's pair, then the hand-written ones; under each, where it is on this machine now
-        line(scene, fonts, "Path mappings", lx, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
-        line(scene, fonts, "A share as both systems know it: its Windows side and its macOS side. The same pair on every machine means the same metadata.", lx, y + 6.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 22.0 * s;
+        line(scene, fonts, "Path mappings", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
+        line(scene, fonts, "A share as both systems know it: its Windows side and its macOS side. The same pair on every machine means the same metadata.", ox0, y + 6.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 22.0 * s;
         let rw = self.add.measure(fonts, s).0.max(70.0 * s); let cols = x1 - lx - rw - sw - 40.0 * s; let (c0, c1) = (cols * 0.22, cols * 0.39);
         for p in self.pairs.iter_mut() {
+            panel(scene, y, y + map_row + 12.0 * s); y += 8.0 * s;
             line(scene, fonts, &p.name, lx, y + fh / 2.0, t::BODY_SIZE_S, false, ink, c0 - 8.0 * s); line(scene, fonts, "saved share", x1 - rw - sw - 16.0 * s, y + fh / 2.0, t::DETAIL_SIZE_S, false, sub, rw + sw + 16.0 * s);
             p.win.layout(fonts, Rect::new(lx + c0 + 8.0 * s, y, lx + c0 + 8.0 * s + c1, y + fh), s); p.mac.layout(fonts, Rect::new(lx + c0 + c1 + 16.0 * s, y, lx + c0 + 2.0 * c1 + 16.0 * s, y + fh), s); p.win.paint(scene, fonts, s); p.mac.paint(scene, fonts, s);
-            line(scene, fonts, &p.here, lx + c0 + 8.0 * s, y + fh + 9.0 * s, t::DETAIL_SIZE_S, false, sub, 2.0 * c1 + 8.0 * s); y += map_row;
+            line(scene, fonts, &p.here, lx + c0 + 8.0 * s, y + fh + 9.0 * s, t::DETAIL_SIZE_S, false, sub, 2.0 * c1 + 8.0 * s); y += map_row + 4.0 * s + 8.0 * s;
         }
         for m in self.maps.iter_mut() {
+            panel(scene, y, y + map_row + 12.0 * s); y += 8.0 * s;
             m.name.layout(fonts, Rect::new(lx, y, lx + c0, y + fh), s); m.win.layout(fonts, Rect::new(lx + c0 + 8.0 * s, y, lx + c0 + 8.0 * s + c1, y + fh), s); m.mac.layout(fonts, Rect::new(lx + c0 + c1 + 16.0 * s, y, lx + c0 + 2.0 * c1 + 16.0 * s, y + fh), s);
             m.name.paint(scene, fonts, s); m.win.paint(scene, fonts, s); m.mac.paint(scene, fonts, s);
             m.on.rect = Rect::new(x1 - rw - sw - 8.0 * s, y + (fh - shh) / 2.0, x1 - rw - 8.0 * s, y + (fh + shh) / 2.0); m.on.paint(scene, s, now); m.remove.rect = Rect::new(x1 - rw, y + 3.0 * s, x1, y + fh - 3.0 * s); m.remove.paint(scene, fonts, s, now);
-            line(scene, fonts, &m.here, lx + c0 + 8.0 * s, y + fh + 9.0 * s, t::DETAIL_SIZE_S, false, sub, 2.0 * c1 + 8.0 * s); y += map_row;
+            line(scene, fonts, &m.here, lx + c0 + 8.0 * s, y + fh + 9.0 * s, t::DETAIL_SIZE_S, false, sub, 2.0 * c1 + 8.0 * s); y += map_row + 4.0 * s + 8.0 * s;
         }
-        let aw = self.add.measure(fonts, s).0; self.add.rect = Rect::new(lx, y, lx + aw, y + 24.0 * s); self.add.paint(scene, fonts, s, now); y += 34.0 * s;
+        let aw = self.add.measure(fonts, s).0; self.add.rect = Rect::new(ox0, y, ox0 + aw, y + 24.0 * s); self.add.paint(scene, fonts, s, now); y += 34.0 * s;
         }
         if self.tab == 3 {
         // -- About
-        line(scene, fonts, "About", lx, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
+        line(scene, fonts, "About", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
+        panel(scene, y, y + 40.0 * s + 20.0 * s); y += 10.0 * s;
         line(scene, fonts, concat!("UFB ", env!("CARGO_PKG_VERSION"), "  \u{b7}  GPL-3.0-or-later"), lx, y + 10.0 * s, t::BODY_SIZE_S, false, ink, w - 2.0 * pad); y += 20.0 * s;
         line(scene, fonts, "Updates and the licence notices come with the installed application.", lx, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
         }
-        let _ = y; let y = y0 + h - pad - t::BUTTON_HEIGHT_M as f64 * s - 34.0 * s;
+        let (lx, x1) = (ox0, ox1); let _ = (y, fx);
+        let y = y0 + h - pad - t::BUTTON_HEIGHT_M as f64 * s - 34.0 * s;
         if let Some(e) = &self.error { line(scene, fonts, e, lx, y + 14.0 * s, t::DETAIL_SIZE_M, false, c(t::NEGATIVE_VISUAL_COLOR), w - 2.0 * pad); }
         let bh = t::BUTTON_HEIGHT_M as f64 * s; let by = y0 + h - pad - bh; let (ws, _) = self.save.measure(fonts, s); let (wc, _) = self.cancel.measure(fonts, s);
         self.save.rect = Rect::new(x1 - ws, by, x1, by + bh); self.cancel.rect = Rect::new(self.save.rect.x0 - 8.0 * s - wc, by, self.save.rect.x0 - 8.0 * s, by + bh); self.cancel.paint(scene, fonts, s, now); self.save.paint(scene, fonts, s, now);
