@@ -31,6 +31,7 @@ mod ops;
 mod pane;
 mod places;
 mod settings;
+mod shares;
 mod shell;
 mod sysopen;
 mod thumbs;

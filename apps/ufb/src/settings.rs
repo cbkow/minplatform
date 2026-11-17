@@ -16,6 +16,8 @@ static SCHEMA: Schema = Schema { keys: &[
     // the columns of a list, a kind of panel (row 488): the browser's panes, a job's first pane, a job's second - `shown|widths`
     // the item list of a job shows the date its items were changed
     Key::bool("columns/items_modified", true),
+    // the saved shares (row 498): a list, as JSON - names and addresses, never a password (the system keeps those)
+    Key::str("shares/list", ""),
     Key::str("columns/browser", "1,1,1|150,86,150"), Key::str("columns/job_top", "1,0,0|150,86,150"), Key::str("columns/job_low", "1,0,0|150,86,150"),
 ] };
 static STORE: OnceLock<Mutex<Settings>> = OnceLock::new();

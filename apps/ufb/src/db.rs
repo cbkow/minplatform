@@ -65,11 +65,13 @@ const OS: &str = if cfg!(windows) { "win" } else { "mac" };
 /// A share as two machines know it: where it is on Windows and where on macOS. Its identity is derived from that
 /// pair alone, so every machine with the same pair has the same one (1.4.2's derivation, to the byte).
 #[derive(Clone, Debug, PartialEq)]
-pub struct Mapping { pub win: String, pub mac: String, pub uuid: String }
+pub struct Mapping { pub win: String, pub mac: String, pub uuid: String, /// where the share REALLY is on this machine now (row 498): the system's answer - a Mac may have it as `Mount-2`, Windows under any letter; none: not looked up, or not there
+    pub here: Option<String> }
 impl Mapping {
-    pub fn new(win: &str, mac: &str) -> Mapping { Mapping { win: win.trim().to_string(), mac: mac.trim().to_string(), uuid: volume_uuid(win, mac) } }
-    /// Where the share is on THIS machine.
-    pub fn local(&self) -> &str { if cfg!(windows) { &self.win } else { &self.mac } }
+    pub fn new(win: &str, mac: &str) -> Mapping { Mapping { win: win.trim().to_string(), mac: mac.trim().to_string(), uuid: volume_uuid(win, mac), here: None } }
+    pub fn at(mut self, here: Option<String>) -> Mapping { self.here = here.filter(|h| !h.trim().is_empty()); self }
+    /// Where the share is on THIS machine: where the system says it is, else this system's side of the pair.
+    pub fn local(&self) -> &str { match &self.here { Some(h) => h, None => if cfg!(windows) { &self.win } else { &self.mac } } }
 }
 /// The identity of a share from its two sides: the separators and a slash at the end do not count, nor the letters' case.
 pub fn volume_uuid(win: &str, mac: &str) -> String {
@@ -77,11 +79,11 @@ pub fn volume_uuid(win: &str, mac: &str) -> String {
     let key = |s: &str| s.trim().replace('\\', "/").trim_end_matches('/').to_lowercase();
     uuid::Uuid::new_v5(&NS, format!("{}|{}", key(win), key(mac)).as_bytes()).to_string()
 }
-static MAPPINGS: OnceLock<Vec<Mapping>> = OnceLock::new();
-/// The shares this build was started with (`--map <windows side>=<macOS side>`; the installed application will take
-/// them from its saved shares). Set once, before the database is opened.
-pub fn set_mappings(m: Vec<Mapping>) { let _ = MAPPINGS.set(m); }
-pub fn mappings() -> &'static [Mapping] { MAPPINGS.get().map(Vec::as_slice).unwrap_or(&[]) }
+static MAPPINGS: std::sync::RwLock<Vec<Mapping>> = std::sync::RwLock::new(Vec::new());
+/// The shares as they are known now: the saved ones (`shares.rs`) with where each really is, and those the build was
+/// started with (`--map <windows side>=<macOS side>`). Set again whenever a share comes, goes or lands elsewhere.
+pub fn set_mappings(m: Vec<Mapping>) { *MAPPINGS.write().unwrap() = m; }
+pub fn mappings() -> Vec<Mapping> { MAPPINGS.read().unwrap().clone() }
 /// A path or a prefix as it is compared: slashes one way, a drive letter dropped, no slash at either end (1.4.2).
 fn norm(s: &str) -> String { let t = s.replace('\\', "/"); let b = t.as_bytes(); let t = if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() { &t[2..] } else { &t[..] }; t.trim_start_matches('/').trim_end_matches('/').to_string() }
 /// The path under `prefix`, with forward slashes and its own letters' case; none when it is not under it. Compared
@@ -95,6 +97,12 @@ fn rel_under(path: &str, prefix: &str) -> Option<String> {
 /// machines), `native:{mac|win}/{path}` otherwise (this machine's own; never shared).
 pub fn identity_in(p: &Path, maps: &[Mapping]) -> String {
     let text = p.to_string_lossy();
+    // where a share REALLY is on this machine comes first (the system's answer: `Mount-2`, a drive letter)
+    let mut real: Vec<(&str, &str)> = maps.iter().filter_map(|m| m.here.as_deref().map(|h| (m.uuid.as_str(), h))).collect(); real.sort_by_key(|x| std::cmp::Reverse(norm(x.1).len()));
+    for (uuid, prefix) in real { if let Some(rel) = rel_under(&text, prefix) { return if rel.is_empty() { format!("vol:{uuid}") } else { format!("vol:{uuid}/{rel}") } } }
+    // a path that arrives as TEXT with a numbered landing in it (`/Volumes/Mount-2/...`: pasted, in a link, from an
+    // older version, from another machine) is its share's all the same (row 445)
+    let text = landing(&text, maps);
     // the longest prefix first: a share inside another wins over it; either side of a mapping counts (1.4.2)
     let mut pre: Vec<(&str, &str)> = maps.iter().flat_map(|m| [(m.uuid.as_str(), m.win.as_str()), (m.uuid.as_str(), m.mac.as_str())]).filter(|x| !norm(x.1).is_empty()).collect(); pre.sort_by_key(|x| std::cmp::Reverse(norm(x.1).len()));
     for (uuid, prefix) in pre { if let Some(rel) = rel_under(&text, prefix) { return if rel.is_empty() { format!("vol:{uuid}") } else { format!("vol:{uuid}/{rel}") } } }
@@ -107,8 +115,28 @@ pub fn native_in(id: &str, maps: &[Mapping]) -> Option<PathBuf> {
         return Some(PathBuf::from(if cfg!(windows) { joined.replace('/', "\\") } else { joined.replace('\\', "/") })) }
     let (os, path) = id.strip_prefix("native:")?.split_once('/')?; (os == OS && !path.is_empty()).then(|| PathBuf::from(path))
 }
-pub fn to_identity(p: &Path) -> String { identity_in(p, mappings()) }
-pub fn to_native(id: &str) -> Option<PathBuf> { native_in(id, mappings()) }
+/// `/Volumes/<name>-<digits>/...` as `/Volumes/<name>/...` when `<name>` is a share's macOS side directly under
+/// `/Volumes` and NO share's own side is `<name>-<digits>` (then each is itself alone). Only digits count: `jobs-extra`
+/// stays another volume. Anything else is given back as it is.
+pub fn landing(path: &str, maps: &[Mapping]) -> String {
+    let t = path.replace('\\', "/"); let Some(rest) = t.strip_prefix("/Volumes/").or_else(|| t.strip_prefix("/volumes/")) else { return path.to_string() };
+    let (first, tail) = rest.split_once('/').map(|(a, b)| (a, Some(b))).unwrap_or((rest, None));
+    let Some((name, digits)) = first.rsplit_once('-') else { return path.to_string() }; if name.is_empty() || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { return path.to_string() }
+    let side = |m: &Mapping, leaf: &str| norm(&m.mac).to_lowercase() == format!("volumes/{}", leaf.to_lowercase());
+    if maps.iter().any(|m| side(m, first)) || !maps.iter().any(|m| side(m, name)) { return path.to_string() }
+    match tail { Some(t) => format!("/Volumes/{name}/{t}"), None => format!("/Volumes/{name}") }
+}
+pub fn to_identity(p: &Path) -> String { identity_in(p, &mappings()) }
+pub fn to_native(id: &str) -> Option<PathBuf> { native_in(id, &mappings()) }
+/// A path as text from anywhere - another machine's spelling, a numbered landing, either system's separators - as
+/// THIS machine's path to the same thing; none when it is under no share this machine knows.
+pub fn translate(text: &str) -> Option<PathBuf> { let maps = mappings(); let id = identity_in(Path::new(text), &maps); if id.starts_with("vol:") { native_in(&id, &maps) } else { None } }
+/// A path of this machine as the OTHERS should read it: under a share, the share's own side for this system (never
+/// the landing's name, never a drive letter the others do not have); else as it is.
+pub fn canonical(p: &Path) -> String { let maps = mappings(); let id = identity_in(p, &maps); let Some(rest) = id.strip_prefix("vol:") else { return p.to_string_lossy().into_owned() };
+    let (uuid, rel) = rest.split_once('/').unwrap_or((rest, "")); let Some(m) = maps.iter().find(|m| m.uuid == uuid) else { return p.to_string_lossy().into_owned() };
+    let root = if cfg!(windows) { &m.win } else { &m.mac }; let joined = if rel.is_empty() { root.clone() } else { format!("{}/{rel}", root.trim_end_matches(['/', '\\'])) };
+    if cfg!(windows) { joined.replace('/', "\\") } else { joined.replace('\\', "/") } }
 /// What separates the folders in a stored identity: a shared one is written with forward slashes on every system.
 fn sep_of(id: &str) -> &'static str { if id.starts_with("vol:") { "/" } else { std::path::MAIN_SEPARATOR_STR } }
 
@@ -125,7 +153,7 @@ impl Db {
         }
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         if v < USER_VERSION { conn.execute_batch(&format!("PRAGMA user_version = {USER_VERSION}")).map_err(|e| e.to_string())?; }
-        let db = Db { conn }; db.classify(mappings()).map_err(|e| e.to_string())?; Ok(db)
+        let db = Db { conn }; db.classify(&mappings()).map_err(|e| e.to_string())?; Ok(db)
     }
     /// Rows stored as this machine's own that lie under a mapped share become the share's (what 1.4.2's migration did
     /// once, done here at every start: a share mapped later takes its rows along). A shared row that is already there
@@ -628,12 +656,32 @@ mod tests {
         let (a, b) = (identity_in(Path::new("/Volumes/gfx/jobs/0001_Test/3d/sh010"), &maps), identity_in(Path::new("C:\\Volumes\\gfx\\jobs\\0001_Test\\3d\\sh010"), &maps));
         assert_eq!(a, format!("vol:{}/jobs/0001_Test/3d/sh010", m.uuid)); assert_eq!(a, b); assert_eq!(identity_in(Path::new("/volumes/GFX"), &maps), format!("vol:{}", m.uuid));
         // only at the edge of a component: a share whose name merely begins the same is another place
-        assert!(identity_in(Path::new("/Volumes/gfx-2/jobs"), &maps).starts_with("native:")); assert!(identity_in(Path::new("/Users/a/Desktop"), &maps).starts_with("native:"));
+        assert!(identity_in(Path::new("/Volumes/gfx-backup/jobs"), &maps).starts_with("native:")); assert!(identity_in(Path::new("/Volumes/gfxtra/jobs"), &maps).starts_with("native:")); assert!(identity_in(Path::new("/Users/a/Desktop"), &maps).starts_with("native:"));
         // back to this machine's own spelling
         let here = native_in(&a, &maps).unwrap(); assert_eq!(here, PathBuf::from(if cfg!(windows) { "C:\\Volumes\\gfx\\jobs\\0001_Test\\3d\\sh010" } else { "/Volumes/gfx/jobs/0001_Test/3d/sh010" }));
         assert_eq!(native_in("vol:0000/x", &maps), None, "a share that is not mapped here"); assert_eq!(native_in(&format!("vol:{}", m.uuid), &maps), Some(PathBuf::from(m.local())));
         // a share inside another wins over it
         let inner = Mapping::new("C:\\Volumes\\gfx\\jobs", "/Volumes/gfx/jobs"); assert_eq!(identity_in(Path::new("/Volumes/gfx/jobs/x"), &[m.clone(), inner.clone()]), format!("vol:{}/x", inner.uuid));
+    }
+    #[test]
+    fn a_share_is_found_wherever_it_landed() {
+        let jobs = Mapping::new("\\\\nas\\Jobs", "/Volumes/Jobs"); let id = |p: &str, maps: &[Mapping]| identity_in(Path::new(p), maps);
+        // as TEXT: the numbered landing is the share (only digits count; the rest of the path is kept)
+        let maps = [jobs.clone()]; let want = format!("vol:{}/2601_a/3d", jobs.uuid);
+        assert_eq!(id("/Volumes/Jobs/2601_a/3d", &maps), want); assert_eq!(id("/Volumes/Jobs-2/2601_a/3d", &maps), want); assert_eq!(id("/Volumes/Jobs-17/2601_a/3d", &maps), want); assert_eq!(id("/Volumes/Jobs-2", &maps), format!("vol:{}", jobs.uuid));
+        assert!(id("/Volumes/Jobs-extra/x", &maps).starts_with("native:"), "not digits: another volume"); assert!(id("/Volumes/Jobs-/x", &maps).starts_with("native:")); assert!(id("/Volumes/Other-2/x", &maps).starts_with("native:"));
+        assert_eq!(landing("/Volumes/Jobs-2/a b/c", &maps), "/Volumes/Jobs/a b/c"); assert_eq!(landing("/Users/a/Jobs-2/x", &maps), "/Users/a/Jobs-2/x", "only directly under /Volumes");
+        // where `Jobs` and `Jobs-2` are BOTH shares, each is itself alone
+        let two = Mapping::new("\\\\nas\\Jobs-2", "/Volumes/Jobs-2"); let both = [jobs.clone(), two.clone()];
+        assert_eq!(id("/Volumes/Jobs-2/x", &both), format!("vol:{}/x", two.uuid)); assert_eq!(id("/Volumes/Jobs/x", &both), format!("vol:{}/x", jobs.uuid));
+        // ON the machine: the share is where the system says it is - a landing on a Mac, a letter on Windows - and that is
+        // where a stored identity leads back to; what the others are told is the share's own side, never the landing
+        let here = if cfg!(windows) { "J:\\" } else { "/Volumes/Jobs-3" }; let landed = [jobs.clone().at(Some(here.into()))];
+        let inside = Path::new(here).join("2601_a"); assert_eq!(identity_in(&inside, &landed), format!("vol:{}/2601_a", jobs.uuid));
+        assert_eq!(native_in(&format!("vol:{}/2601_a", jobs.uuid), &landed), Some(inside.clone()));
+        set_mappings(landed.to_vec()); assert_eq!(canonical(&inside), if cfg!(windows) { "\\\\nas\\Jobs\\2601_a" } else { "/Volumes/Jobs/2601_a" });
+        // a path from another machine, with ITS landing in it, opens here where the share is here
+        assert_eq!(translate("/Volumes/Jobs-9/2601_a"), Some(inside)); assert_eq!(translate("/Users/a/Desktop"), None); set_mappings(vec![]);
     }
     #[test]
     fn rows_of_this_machine_under_a_share_mapped_later_become_the_shares() {
