@@ -40,6 +40,7 @@ mod prefs;
 mod settings;
 mod shares;
 mod shell;
+#[cfg(target_os = "macos")] mod sparkle;
 mod sysopen;
 mod tasks;
 mod thumbs;

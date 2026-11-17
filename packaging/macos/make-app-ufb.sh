@@ -1,17 +1,21 @@
 #!/bin/zsh
-# The macOS bundle of UFB - so far the TEST package alone (canon rows 519 point 1, 521): target/dist/UFB Test.app,
-# built with UFB_IDENTITY=test (its own data folders, the test mesh, NO safety belt - see apps/ufb/src/identity.rs),
-# with its own bundle id and without link schemes or an updater, so that it installs beside a real UFB 1.4.2 and
-# shares nothing with it. minNotes' make-app-minnotes.sh is the model, step for step: the release binary on the
-# vendored libraries, Info.plist and the icon, every non-system dylib copied into Contents/Frameworks (@rpath ids; a
-# Homebrew library is REFUSED), FFmpeg's program in Contents/Helpers (Transcode to MP4), the built-in project type's
-# skeletons in Contents/Resources, and an ad hoc signature so the bundle runs on this machine.
-# NOT here yet (the release's): Sparkle, the third-party notices, the Developer ID signature and notarization, the
-# transition installer package.
-# Run from the repo root:  zsh packaging/macos/make-app-ufb.sh
+# The macOS bundle of UFB (canon rows 457, 519, 521, 536), in two kinds:
+#   test (the default)  target/dist/UFB Test.app - built with UFB_IDENTITY=test (its own data folders, the test mesh, no
+#                       safety belt: apps/ufb/src/identity.rs), its own bundle id and link scheme, no updater: it
+#                       installs beside a real UFB 1.4.2 and shares nothing with it.
+#   release             target/dist/UFB.app - UFB_IDENTITY=release: 1.4.x's bundle id, link schemes, update feed and
+#                       key, its data folder; with Sparkle. It takes 1.4.x's place: NOT to be started on a machine
+#                       whose 1.4.x data matters until the owner says so (it opens that data in place).
+# minNotes' make-app-minnotes.sh is the model, step for step: the release binary on the vendored libraries, Info.plist
+# and the icon, every non-system dylib copied into Contents/Frameworks (@rpath ids; a Homebrew library is REFUSED),
+# FFmpeg's program in Contents/Helpers (Transcode to MP4), the built-in project type's skeletons and the third-party
+# notices in Contents/Resources, and an ad hoc signature so the bundle runs on this machine. The Developer ID
+# signature, notarization and the package are sign-macos-ufb.sh's.
+# Run from the repo root:  zsh packaging/macos/make-app-ufb.sh [test|release]
 set -euo pipefail
-MODE="test"; NAME="UFB Test"
-ROOT="$PWD"; APP="$ROOT/target/dist/$NAME.app"; C="$APP/Contents"; ICONS="$ROOT/apps/ufb/assets/icons"; OUT="$ROOT/target/ufb-testpkg"
+MODE="${1:-test}"
+case "$MODE" in test) NAME="UFB Test"; OUT_NAME="ufb-testpkg" ;; release) NAME="UFB"; OUT_NAME="ufb-release" ;; *) echo "usage: make-app-ufb.sh [test|release]" >&2; exit 1 ;; esac
+ROOT="$PWD"; APP="$ROOT/target/dist/$NAME.app"; C="$APP/Contents"; ICONS="$ROOT/apps/ufb/assets/icons"; OUT="$ROOT/target/$OUT_NAME"
 [ -f "$ROOT/external/ffmpeg/macos-arm64/bin/ffmpeg" ] || { echo "run tools/ffmpeg/build-macos.sh first: the bundle carries the family's FFmpeg" >&2; exit 1; }
 SKEL="$ROOT/apps/ufb/resources/types/studio/skeletons"
 [ -d "$SKEL" ] || { echo "the built-in project type's skeletons are not in apps/ufb/resources (they are not in the repository): Add would make empty shots" >&2; exit 1; }
@@ -51,11 +55,19 @@ for bin in "$EXE" "$C/Helpers/ffmpeg"; do
   for rp in $(otool -l "$bin" | awk '/LC_RPATH/{f=1} f&&/ path /{print $2; f=0}'); do install_name_tool -delete_rpath "$rp" "$bin" 2> /dev/null; done   # the build machine's paths
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$bin" 2> /dev/null
 done
+# the release's updater: Sparkle (tools/sparkle/fetch.sh), the framework whole, symlinks kept; loaded at run time
+if [ "$MODE" = release ]; then
+  [ -d "$ROOT/external/sparkle/Sparkle.framework" ] || { echo "run tools/sparkle/fetch.sh first: the release carries its updater" >&2; exit 1; }
+  ditto "$ROOT/external/sparkle/Sparkle.framework" "$FW/Sparkle.framework"
+fi
+# the third-party notices: generated for this bundle; it FAILS if a shipped binary has no entry or a crate's licence is
+# not an accepted one. Settings > About > Licence Notices opens it.
+python3 "$ROOT/packaging/notices/make_notices.py" macos --app ufb --out "$C/Resources/THIRD-PARTY-NOTICES.html" --stage "$APP"
 leaks=0
 for f in "$EXE" "$C/Helpers/ffmpeg" "$FW"/*.dylib; do
   for dep in $(deps_of "$f"); do echo "LEAK ${f:t} -> $dep" >&2; leaks=1; done
   m="$(vtool -show-build "$f" | awk '$1=="minos"{print $2}')"; [ "$m" = "13.0" ] || { echo "minos $m: ${f:t}" >&2; leaks=1; }
 done
 [ $leaks = 0 ] || exit 1
-codesign --force -s - "$FW"/*.dylib "$C/Helpers"/* 2> /dev/null; codesign --force -s - "$APP" 2> /dev/null
+codesign --force -s - "$FW"/*.dylib "$C/Helpers"/* 2> /dev/null; [ -d "$FW/Sparkle.framework" ] && codesign --force --deep -s - "$FW/Sparkle.framework" 2> /dev/null; codesign --force -s - "$APP" 2> /dev/null
 echo "built $APP - $(ls "$FW" | wc -l | tr -d ' ') dylibs, $(du -sh "$APP" | cut -f1)"

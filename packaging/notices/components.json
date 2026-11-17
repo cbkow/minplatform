@@ -29,7 +29,7 @@
       "apps": [
         "qcv",
         "mn"
-      ]
+      , "ufb"]
     },
     {
       "name": "OpenColorIO",
@@ -295,7 +295,7 @@
       "apps": [
         "qcv",
         "mn"
-      ]
+      , "ufb"]
     },
     {
       "name": "libspng",
@@ -328,7 +328,7 @@
       "apps": [
         "qcv",
         "mn"
-      ]
+      , "ufb"]
     },
     {
       "name": "SRT (Secure Reliable Transport)",
@@ -346,7 +346,7 @@
       "apps": [
         "qcv",
         "mn"
-      ]
+      , "ufb"]
     },
     {
       "name": "Mbed TLS",
@@ -364,7 +364,7 @@
       "apps": [
         "qcv",
         "mn"
-      ]
+      , "ufb"]
     },
     {
       "name": "Sparkle",
@@ -384,7 +384,7 @@
         "qcv",
         "mn",
         "mr"
-      ]
+      , "ufb"]
     },
     {
       "name": "DirectX Shader Compiler",
@@ -432,7 +432,7 @@
       "apps": [
         "qcv",
         "mn"
-      ]
+      , "ufb"]
     },
     {
       "name": "Geist and Geist Mono (fonts)",
@@ -498,8 +498,7 @@
     "qcview.exe",
     "minNotes",
     "minRender",
-    "minRender.exe"
-  ],
+    "minRender.exe", "UFB", "UFB.exe"],
   "ffmpeg_libraries": {
     "_": "FFmpeg's --enable-<name> flags → what is linked in. null = a feature of FFmpeg itself or of the OS, no third-party code. A flag missing from this table FAILS the notices.",
     "gpl": null,

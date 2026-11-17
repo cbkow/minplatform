@@ -24,7 +24,8 @@ pub struct Prefs {
     hidden: Switch, folders_first: Switch, sequences: Switch, grid: Switch, sign_in: Switch,
     sync: Switch, farm: TextField, browse: TextButton, node: TextField, only: TextField,
     /// the saved shares' pairs (their id, their name, the pair as it was), and the hand-written mappings (the pair each had when the card opened)
-    pairs: Vec<Pair>, maps: Vec<Row>, add: TextButton, confirmed: bool, /// the section shown: General, Sync, Path mappings, About
+    pairs: Vec<Pair>, maps: Vec<Row>, add: TextButton, confirmed: bool, /// About: the licence notices (the page that lies with the installed application); the updater (the release on macOS)
+    notices: TextButton, updates: TextButton, /// the section shown: General, Sync, Path mappings, About
     tab: usize, tabs: [TextButton; 4],
     focus: usize, cancel: TextButton, save: TextButton, error: Option<String>, picked: Arc<Mutex<Option<String>>>,
     /// sync's settings as they were when the card opened (changed: sync is started again on Save)
@@ -43,6 +44,12 @@ fn here_words(win: &str, mac: &str, state: Option<&crate::shares::State>, mounts
     match at { Some(p) if p.trim_end_matches(['/', '\\']) == side.trim_end_matches(['/', '\\']) => format!("on this machine: {p}"), Some(p) => format!("on this machine now: {p}"), None => "not there on this machine now".to_string() }
 }
 
+/// The page of the third-party licences, where it lies with the installed application (macOS: the bundle's Resources;
+/// Windows: beside the executable). None in a build run from the source tree.
+pub fn notices_page() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?; let dir = exe.parent()?;
+    [dir.join("../Resources/THIRD-PARTY-NOTICES.html"), dir.join("THIRD-PARTY-NOTICES.html")].into_iter().find(|p| p.is_file())
+}
 /// What a pane shows from the start, as the settings have it: (hidden files, folders first, sequences as one, a grid).
 pub fn view() -> (bool, bool, bool, bool) { crate::settings::with(|s| (s.bool("view/hidden"), s.bool("view/folders_first"), s.bool("view/sequences"), s.bool("view/grid"))) }
 
@@ -59,7 +66,7 @@ impl Prefs {
         let _ = sign_in; let mut sign = Switch::new(crate::login::enabled()); sign.enabled = crate::login::available();
         let mut me = Prefs { hidden: Switch::new(hidden), folders_first: Switch::new(folders_first), sequences: Switch::new(sequences), grid: Switch::new(grid), sign_in: sign,
             sync: Switch::new(on), farm: field(&farm, "a folder on shared storage", fonts), browse: TextButton::new("Browse", Variant::Secondary).size_s(), node: field(&node, &crate::mesh::node_name(""), fonts), only: field(&only, "a folder; empty: everything shared", fonts),
-            pairs, maps, add: TextButton::new("Add Mapping", Variant::Secondary).size_s(), confirmed: false, tab: 0, tabs: ["General", "Sync", "Path mappings", "About"].map(|n| TextButton::new(n, Variant::Secondary).size_s()),
+            pairs, maps, add: TextButton::new("Add Mapping", Variant::Secondary).size_s(), confirmed: false, notices: TextButton::new("Licence Notices", Variant::Secondary).size_s(), updates: TextButton::new("Check for Updates\u{2026}", Variant::Secondary).size_s(), tab: 0, tabs: ["General", "Sync", "Path mappings", "About"].map(|n| TextButton::new(n, Variant::Secondary).size_s()),
             focus: 0, cancel: TextButton::new("Cancel", Variant::Secondary), save: TextButton::new("Save", Variant::Primary), error: None, picked: Arc::new(Mutex::new(None)), was: (on, farm, node, only) };
         me.set_focus(usize::MAX); me
     }
@@ -125,6 +132,8 @@ impl Prefs {
         if self.browse.event(e, now).0 { let (picked, at) = (self.picked.clone(), self.farm.text().to_string()); std::thread::spawn(move || { let mut d = rfd::FileDialog::new().set_title("The farm's folder"); if std::path::Path::new(&at).is_dir() { d = d.set_directory(&at); } if let Some(p) = d.pick_folder() { *picked.lock().unwrap() = Some(p.to_string_lossy().into_owned()); } }); return Out::None }
         for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.sync, &mut self.sign_in] { sw.event(e, now); }
         if self.add.event(e, now).0 { self.add_row(fonts); return Out::None }
+        if self.notices.event(e, now).0 { if let Some(p) = notices_page() { crate::sysopen::open(&p); } return Out::None }
+        if self.updates.event(e, now).0 { #[cfg(target_os = "macos")] crate::sparkle::check_now(); return Out::None }
         let mut gone = None; for (i, m) in self.maps.iter_mut().enumerate() { m.on.event(e, now); if m.remove.event(e, now).0 { gone = Some(i); } } if let Some(i) = gone { self.maps.remove(i); self.set_focus(usize::MAX); return Out::None }
         if let Event::Down { x, y, button: Button::Primary } = *e { let hit = self.fields().iter().position(|f| f.hit(x, y)); self.set_focus(hit.unwrap_or(usize::MAX)); }
         let focus = self.focus; if let Some(f) = self.fields().into_iter().nth(focus) { f.pointer(e, fonts); }
@@ -147,7 +156,7 @@ impl Prefs {
         let c = paint::color; let pad = t::DIALOG_PADDING as f64 * s; let (ink, sub) = (c(t::NEUTRAL_CONTENT_COLOR_DEFAULT), c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)); let (row, fh, head) = (34.0 * s, 30.0 * s, 30.0 * s);
         let map_row = row + 18.0 * s;
         // (what is not shown takes no press: every place is given anew below, by the section in view)
-        for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.sign_in, &mut self.sync] { sw.rect = Rect::ZERO; } self.browse.rect = Rect::ZERO; self.add.rect = Rect::ZERO;
+        for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.sign_in, &mut self.sync] { sw.rect = Rect::ZERO; } self.browse.rect = Rect::ZERO; self.add.rect = Rect::ZERO; self.notices.rect = Rect::ZERO; self.updates.rect = Rect::ZERO;
         for f in self.fields() { f.layout(fonts, Rect::ZERO, s); } for m in self.maps.iter_mut() { m.on.rect = Rect::ZERO; m.remove.rect = Rect::ZERO; }
         let body = 40.0 * s + (head + 5.0 * row + 40.0 * s).max(head + 22.0 * s + (self.pairs.len() + self.maps.len()) as f64 * (map_row + 20.0 * s) + 34.0 * s).max(head + row + 3.0 * (row + 4.0 * s) + 20.0 * s + 56.0 * s) + 34.0 * s;
         let (w, h) = ((760.0 * s).min(view.width() - 48.0 * s), (pad * 2.0 + 40.0 * s + body + 56.0 * s).min(view.height() - 24.0 * s)); let (x0, y0) = (view.x0 + (view.width() - w) / 2.0, view.y0 + (view.height() - h) / 2.0); let card = Rect::new(x0, y0, x0 + w, y0 + h);
@@ -219,7 +228,12 @@ impl Prefs {
         line(scene, fonts, "About", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
         panel(scene, y, y + 40.0 * s + 20.0 * s); y += 10.0 * s;
         line(scene, fonts, &format!("{} {}  \u{b7}  GPL-3.0-or-later", crate::identity::display_name(), env!("CARGO_PKG_VERSION")), lx, y + 10.0 * s, t::BODY_SIZE_S, false, ink, w - 2.0 * pad); y += 20.0 * s;
-        line(scene, fonts, "Updates and the licence notices come with the installed application.", lx, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
+        let (has_notices, has_updates) = (notices_page().is_some(), cfg!(target_os = "macos") && crate::identity::kind() == crate::identity::Kind::Release);
+        line(scene, fonts, if has_notices { if cfg!(windows) { "Updates come through the Microsoft Store." } else if has_updates { "Updates are looked for once a day." } else { "This build has no updater." } } else { "Updates and the licence notices come with the installed application." }, lx, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
+        // (under the panel: the page of the licences, and the updater where there is one)
+        y += 18.0 * s; let mut bx = ox0;
+        if has_notices { let (bw, bh) = self.notices.measure(fonts, s); self.notices.rect = Rect::new(bx, y, bx + bw, y + bh); self.notices.paint(scene, fonts, s, now); bx += bw + 8.0 * s; }
+        if has_updates { let (bw, bh) = self.updates.measure(fonts, s); self.updates.rect = Rect::new(bx, y, bx + bw, y + bh); self.updates.paint(scene, fonts, s, now); }
         }
         let (lx, x1) = (ox0, ox1); let _ = (y, fx);
         let y = y0 + h - pad - t::BUTTON_HEIGHT_M as f64 * s - 34.0 * s;

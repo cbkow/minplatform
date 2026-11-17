@@ -240,7 +240,9 @@ impl ApplicationHandler for App {
         if !self.windows.is_empty() { return }
         #[cfg(target_os = "macos")] if self.menu.is_none() && !crate::menu::InWindowMenu::wanted() { let m = crate::menu::AppMenu::new(); m.menu.init_for_nsapp(); self.menu = Some(m); }
         if let Some(path) = self.first.take() { self.open(el, path); }
-        if self.windows.is_empty() { el.exit(); } else { self.make_tray(); }
+        if self.windows.is_empty() { el.exit(); } else { self.make_tray();
+            // the release's updater (macOS; row 536): started once the first window is there - not in a scripted look
+            #[cfg(target_os = "macos")] if crate::identity::kind() == crate::identity::Kind::Release && std::env::var_os("UFB_DEMO").is_none() && std::env::var_os("UFB_SHOT").is_none() { crate::sparkle::start(); } }
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, id: WindowId, e: WindowEvent) {
         if let WindowEvent::KeyboardInput { event, .. } = &e { if self.menu_bar_takes(id, event) { self.settle(el); return } }
