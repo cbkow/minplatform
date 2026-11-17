@@ -860,7 +860,8 @@ impl Ui {
             // a link to the web that was pressed in the page: the system's browser has it (rows 460, 512) - not in a scripted run
             if let Some(url) = m.strip_prefix("open:") { if crate::webview::outward(url) && std::env::var_os("UFB_DEMO").is_none() { crate::sysopen::open_url(url); } } }
         // what a drag left for the loop: drops to carry out (the engine's work, as a paste is); a drag of ours that ended
-        let (drops, ended) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended)) };
+        let (drops, ended, favs) = { let mut d = self.dnd.borrow_mut(); (std::mem::take(&mut d.drops), std::mem::take(&mut d.ended), std::mem::take(&mut d.favs)) };
+        if !favs.is_empty() { let mut added = false; for f in favs { added |= crate::places::add_favorite(&f, ""); } if added { self.reload_favorites(); } any = true; }
         for d in drops { any = true; crate::ops::submit(self.id, crate::ops::Op::Transfer { paths: d.paths, dest: d.dest, mv: d.mv }); }
         // a drag of ours ended: the panes ask whether their folders changed - now, and a few times more, because the
         // application that took the files moves them after the drag is over (no watcher, row 438: a bounded look after OUR OWN drag)
@@ -1948,11 +1949,11 @@ impl Ui {
             // `drop:<row|bg|side<n>>:<path>[:copy|move]` lets it go there - on a row's folder, the pane itself, a sidebar row
             "over" | "drop" => { let (target, rest) = arg.split_once(':').unwrap_or((arg, ""));   // (a Windows path has a colon of its own: only a last ":copy" / ":move" is the keys')
                 let (path, keys) = match rest.rsplit_once(':') { Some((p, k)) if k == "copy" || k == "move" => (p, k), _ => (rest, "") };
-                let at = if target == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(k) = target.strip_prefix("side").and_then(num) { self.side_rows.get(k).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(target).and_then(|k| self.pane().row_point(k)) };
+                let at = if target == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if target == "fav" { let r = self.sections[0].rect; Some((r.x0 + 40.0, (r.y0 + r.y1) / 2.0)) } else if let Some(k) = target.strip_prefix("side").and_then(num) { self.side_rows.get(k).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(target).and_then(|k| self.pane().row_point(k)) };
                 if let Some((x, y)) = at { use min_dnd::{DragEvent, Notice, Payload, Phase, COPY, LINK, MOVE};
                     let allowed = match keys { "copy" => COPY, "move" => MOVE, _ => COPY | MOVE | LINK }; let payload = std::rc::Rc::new(Payload { paths: vec![PathBuf::from(path)], ..Default::default() });
                     let tell = |phase| crate::dnd::on_notice(&self.dnd, Notice::Drag(DragEvent { win: 0, phase, x, y, allowed, detail: String::new(), mine: None, payload: payload.clone() }));
-                    let op = tell(Phase::Enter); eprintln!("UFB_DEMO: a drag over {target} would be {}", match op { COPY => "a copy", MOVE => "a move", _ => "refused" });
+                    let op = tell(Phase::Enter); eprintln!("UFB_DEMO: a drag over {target} would be {}", match op { COPY => "a copy", MOVE => "a move", LINK => "a favourite made", _ => "refused" });
                     if word == "drop" { tell(Phase::Drop); } } }
             // `copyother` `moveother` (the chosen entries into the other pane's folder) `all` (tick "Apply to all") `stopop` (call the running operation off) `oplist`
             // the chosen entries shown as CUT (the look only: a script never touches the clipboard)
@@ -2422,10 +2423,13 @@ impl Ui {
         // drags of files: where a drop can go, for the layer to answer from (folders in view first, then the panes, the
         // sidebar's rows, the path's segments); and the place that would take the drag in hand, outlined
         { let mut zones: Vec<crate::dnd::Zone> = vec![];
-            for p in self.panes.iter().take(n) { zones.extend(p.folder_zones().into_iter().map(|(rect, folder)| crate::dnd::Zone { rect, folder })); }
-            for r in &self.side_rows { if let (Some(path), true) = (&r.path, r.enabled) { let rect = r.rect.intersect(self.side_rect); if rect.width() > 0.0 && rect.height() > 0.0 { zones.push(crate::dnd::Zone { rect, folder: path.clone() }); } } }
-            if self.focus != Focus::Path { for (b, path) in &self.crumbs { if let Some(path) = path { zones.push(crate::dnd::Zone { rect: b.rect, folder: path.clone() }); } } }
-            for p in self.panes.iter().take(n) { zones.push(crate::dnd::Zone { rect: p.rect, folder: p.path().to_path_buf() }); }
+            for p in self.panes.iter().take(n) { zones.extend(p.folder_zones().into_iter().map(|(rect, folder)| crate::dnd::Zone { rect, folder, favorite: false })); }
+            for r in &self.side_rows { if let (Some(path), true) = (&r.path, r.enabled) { let rect = r.rect.intersect(self.side_rect); if rect.width() > 0.0 && rect.height() > 0.0 { zones.push(crate::dnd::Zone { rect, folder: path.clone(), favorite: false }); } } }
+            // the Favorites - its heading and whatever of the section holds no row: a folder let go there becomes a favourite
+            // (row 533; a favourite's own row came before this, and a drop ON it still goes INTO that folder)
+            { let (a, b) = (self.sections[0].rect, self.sections[1].rect); let rect = Rect::new(a.x0, a.y0, a.x1, if b.y0 > a.y1 { b.y0 } else { a.y1 }).intersect(self.side_rect); if rect.width() > 0.0 && rect.height() > 0.0 { zones.push(crate::dnd::Zone { rect, folder: PathBuf::new(), favorite: true }); } }
+            if self.focus != Focus::Path { for (b, path) in &self.crumbs { if let Some(path) = path { zones.push(crate::dnd::Zone { rect: b.rect, folder: path.clone(), favorite: false }); } } }
+            for p in self.panes.iter().take(n) { zones.push(crate::dnd::Zone { rect: p.rect, folder: p.path().to_path_buf(), favorite: false }); }
             let mut d = self.dnd.borrow_mut(); d.zones = zones;
             if let Some(r) = d.hover { let (k, c) = (2.0 * s, t::FOCUS_INDICATOR_COLOR); for q in [Rect::new(r.x0, r.y0, r.x1, r.y0 + k), Rect::new(r.x0, r.y1 - k, r.x1, r.y1), Rect::new(r.x0, r.y0, r.x0 + k, r.y1), Rect::new(r.x1 - k, r.y0, r.x1, r.y1)] { paint::rect(scene, q, c); } } }
         self.ctx.paint(scene, fonts, s);

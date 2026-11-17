@@ -9,7 +9,7 @@
 //! copy, Shift: move). A drop into the folder the items are in, or into one of the items, is refused. The file
 //! operation itself is the engine's (`ops`): the same question about a taken name, the same undo, the same belt.
 use kurbo::Rect;
-use min_dnd::{DragEvent, Notice, Phase, COPY, MOVE};
+use min_dnd::{DragEvent, Notice, Phase, COPY, LINK, MOVE};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,8 @@ use std::rc::Rc;
 
 /// A place a drop can go: where it is in the window (physical px) and the folder a drop there goes INTO.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Zone { pub rect: Rect, pub folder: PathBuf }
+pub struct Zone { pub rect: Rect, pub folder: PathBuf, /// the sidebar's Favorites - its heading and its empty part: a folder let go there becomes a FAVOURITE (row 533); nothing is copied or moved
+    pub favorite: bool }
 /// A drop to carry out: these into that folder.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dropped { pub paths: Vec<PathBuf>, pub dest: PathBuf, pub mv: bool }
@@ -30,6 +31,8 @@ pub struct Shared {
     pub hover: Option<Rect>,
     /// drops to carry out; a drag of our own has ended (its sources may be gone: the panes read again)
     pub drops: Vec<Dropped>, pub ended: bool,
+    /// folders let go on the sidebar's Favorites: to be made favourites
+    pub favs: Vec<PathBuf>,
     /// where promised files of the last drop go once they have arrived
     promised_into: Option<PathBuf>,
     /// the volume of a folder asked about before (the system is asked once a folder)
@@ -71,6 +74,14 @@ pub fn on_notice(shared: &Handle, n: Notice) -> u32 {
         Notice::Drag(e) => {
             let mut s = shared.borrow_mut(); let p = kurbo::Point::new(e.x, e.y);
             let Some(zone) = s.zones.iter().find(|z| z.rect.contains(p)).cloned() else { s.hover = None; return 0 };
+            // the Favorites: folders are taken (as a link - nothing is copied, nothing moved), anything else is refused
+            if zone.favorite {
+                let dirs: Vec<PathBuf> = e.payload.paths.iter().filter(|p| p.is_dir()).cloned().collect();
+                let op = if dirs.is_empty() { 0 } else if e.allowed & LINK != 0 { LINK } else if e.allowed & COPY != 0 { COPY } else { 0 };
+                s.hover = (op != 0 && e.phase != Phase::Drop).then_some(zone.rect);
+                if e.phase == Phase::Drop && op != 0 { s.favs.extend(dirs); }
+                return op
+            }
             let may_put = crate::ops::allowed_in(&zone.folder);
             let op = if let Some(first) = e.payload.paths.first() {
                 let dv = *s.volumes.entry(zone.folder.clone()).or_insert_with(|| volume(&zone.folder)); let key = first.parent().unwrap_or(first).to_path_buf(); let sv = *s.volumes.entry(key.clone()).or_insert_with(|| volume(&key));
