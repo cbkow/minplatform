@@ -123,6 +123,26 @@ pub fn resolve(s: &Share, mounts: &[Mount], exists: &dyn Fn(&Path) -> bool) -> S
         return if landed { State::Landed(root) } else { State::Connected(root) } }
     State::NotConnected
 }
+/// A STALE PLACEHOLDER (macOS; 1.4.2's finding, row 445): an ordinary, empty folder left under `/Volumes` with the
+/// share's own name - not a mount - because of which the system puts the share's next connection at `<name>-2`.
+/// None: there is none (or the name is held by a real volume, or the folder holds something: never ours to remove).
+pub fn placeholder(s: &Share) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")] { use std::os::unix::fs::MetadataExt;
+        if s.server.is_empty() || leaf(&s.share).is_empty() { return None } let p = Path::new("/Volumes").join(leaf(&s.share));
+        let (m, up) = (std::fs::symlink_metadata(&p).ok()?, std::fs::metadata("/Volumes").ok()?);
+        // a folder itself (no link), on the SAME device as `/Volumes` (a mount point is on its own), with nothing in it
+        (m.file_type().is_dir() && m.dev() == up.dev() && std::fs::read_dir(&p).ok()?.next().is_none()).then_some(p) }
+    #[cfg(not(target_os = "macos"))] { let _ = s; None }
+}
+/// The placeholder is removed: `rmdir` (which removes nothing but an EMPTY folder) with the system's own question
+/// for an administrator's password - asked only here, only on the user's press.
+pub fn fix(s: &Share) -> Result<(), String> {
+    let Some(p) = placeholder(s) else { return Ok(()) };   // (gone meanwhile)
+    #[cfg(target_os = "macos")] { let script = format!("do shell script \"/bin/rmdir \" & quoted form of \"{}\" with administrator privileges", p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\""));
+        let out = std::process::Command::new("/usr/bin/osascript").arg("-e").arg(script).output().map_err(|e| e.to_string())?;
+        if out.status.success() { Ok(()) } else { let e = String::from_utf8_lossy(&out.stderr); Err(if e.contains("-128") { "The password was not given.".into() } else { e.trim().to_string() }) } }
+    #[cfg(not(target_os = "macos"))] { let _ = p; Ok(()) }
+}
 /// The shares as path mappings, with where each really is now.
 pub fn mappings_of(shares: &[Share], states: &[State]) -> Vec<Mapping> { shares.iter().enumerate().map(|(i, s)| Mapping::new(&s.win, &s.mac).at(states.get(i).and_then(|st| st.root()).map(|p| p.to_string_lossy().into_owned()))).collect() }
 
