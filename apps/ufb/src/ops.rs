@@ -46,6 +46,8 @@ impl Guard {
 pub enum Op {
     NewFolder { dir: PathBuf },
     Rename { path: PathBuf, name: String },
+    /// Several are renamed in one step (row 528): each entry and its new name. All of them, or none.
+    RenameMany { pairs: Vec<(PathBuf, String)> },
     Duplicate { paths: Vec<PathBuf> },
     /// Duplicate an image sequence AS a sequence: every frame is copied beside itself under the copy's name of the
     /// sequence's BASE, its frame number kept (`shot_010 copy.1001.exr`, not `shot_010.1001 copy.exr`). Each frame:
@@ -105,7 +107,8 @@ pub struct Report {
 type Stamp = (u64, Option<std::time::SystemTime>);
 fn stamp(p: &Path) -> Option<Stamp> { let m = std::fs::symlink_metadata(p).ok()?; Some((if m.is_dir() { 0 } else { m.len() }, m.modified().ok())) }
 
-enum Record { NewFolder(PathBuf), /// a job (`job`) or an item of a section, made by the project type
+enum Record { NewFolder(PathBuf), /// several renamed in one step: (as it was, as it is)
+    Renames(Vec<(PathBuf, PathBuf)>), /// a job (`job`) or an item of a section, made by the project type
     Made { path: PathBuf, job: bool }, /// what a worker of the tasks' lane made
     Result { path: PathBuf, label: &'static str }, Rename { from: PathBuf, to: PathBuf }, Copies(Vec<(PathBuf, Stamp)>), Trash(Vec<(PathBuf, PathBuf)>),
     /// a copy or a move into a folder: what was copied; what was moved (from, to); what was replaced (where it was, where in the Trash it is)
@@ -113,7 +116,7 @@ enum Record { NewFolder(PathBuf), /// a job (`job`) or an item of a section, mad
 impl Record {
     fn label(&self) -> String {
         let items = |n: usize| if n == 1 { "1 Item".to_string() } else { format!("{n} Items") };
-        match self { Record::NewFolder(_) => "New Folder".into(), Record::Made { job, .. } => if *job { "New Job".into() } else { "Add Item".into() }, Record::Result { label, .. } => label.to_string(), Record::Rename { .. } => "Rename".into(), Record::Copies(v) => format!("Duplicate of {}", items(v.len())), Record::Trash(v) => format!("Move to Trash of {}", items(v.len())),
+        match self { Record::NewFolder(_) => "New Folder".into(), Record::Renames(v) => format!("Rename of {}", items(v.len())), Record::Made { job, .. } => if *job { "New Job".into() } else { "Add Item".into() }, Record::Result { label, .. } => label.to_string(), Record::Rename { .. } => "Rename".into(), Record::Copies(v) => format!("Duplicate of {}", items(v.len())), Record::Trash(v) => format!("Move to Trash of {}", items(v.len())),
             Record::Transfer { mv, copied, moved, .. } => format!("{} of {}", if *mv { "Move" } else { "Copy" }, items(copied.len() + moved.len())) }
     }
 }
@@ -144,6 +147,13 @@ pub fn name_fault(name: &str) -> Option<String> {
 pub fn keep_both_name(name: &str, dir: bool, n: usize) -> String {
     let (stem, ext) = match name.rfind('.') { Some(i) if !dir && i > 0 && i + 1 < name.len() => (&name[..i], &name[i..]), _ => (name, "") };
     if cfg!(windows) { format!("{stem} ({n}){ext}") } else { format!("{stem} {n}{ext}") }
+}
+/// A name with `find` replaced by `with` wherever it stands - in the name itself, not in a file's extension (a
+/// folder has none). Letters' case counts. Nothing to find: the name as it is.
+pub fn replaced_name(name: &str, dir: bool, find: &str, with: &str) -> String {
+    if find.is_empty() { return name.to_string() }
+    let cut = if dir { name.len() } else { match name.rfind('.') { Some(i) if i > 0 && i + 1 < name.len() => i, _ => name.len() } };
+    format!("{}{}", name[..cut].replace(find, with), &name[cut..])
 }
 pub fn taken(name: &str) -> String { format!("The name \u{201c}{name}\u{201d} is already taken. Please choose a different name.") }
 
@@ -403,7 +413,7 @@ pub struct Engine { pub guard: Guard, /// what can be undone, each with the oper
     undo: Vec<(Record, Option<Op>)>, /// what was undone and can be done again, the newest last; a new operation empties it
     redo: Vec<Op>, running: Option<Op> }
 /// An operation's name as the Edit menu says it after "Redo".
-fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } => "New Folder", Op::Rename { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
+fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } => "New Folder", Op::Rename { .. } | Op::RenameMany { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
 impl Engine {
     pub fn new(guard: Guard) -> Engine { Engine { guard, undo: vec![], redo: vec![], running: None } }
     /// What Undo would undo, as the Edit menu names it.
@@ -440,6 +450,34 @@ impl Engine {
                     }
                 }
                 rep.error = Some("The folder could not be made.".into()); rep
+            }
+            Op::RenameMany { pairs } => {
+                let mut rep = Report { kind: Some(Kind::Rename), ..Default::default() };
+                // everything is looked at first: a name that will not do, a place this build may not change, two that would
+                // take one name, a name that is taken - and then nothing is renamed
+                let mut plan: Vec<(PathBuf, PathBuf, bool)> = vec![]; let mut seen: Vec<String> = vec![];
+                for (path, name) in &pairs {
+                    let old = name_of(path); if *name == old { continue }
+                    if let Some(why) = name_fault(name) { rep.error = Some(why); return rep }
+                    let to = path.with_file_name(name);
+                    if let Err(e) = self.guard.check(path).and_then(|_| self.guard.check(&to)) { rep.error = Some(e); return rep }
+                    let key = to.to_string_lossy().to_lowercase(); if seen.contains(&key) { rep.error = Some(format!("Two of them would be called \u{201c}{name}\u{201d}.")); return rep } seen.push(key);
+                    let same = old.to_lowercase() == name.to_lowercase();
+                    if !same && std::fs::symlink_metadata(&to).is_ok() { rep.error = Some(taken(name)); return rep }
+                    plan.push((path.clone(), to, same));
+                }
+                let mut done: Vec<(PathBuf, PathBuf)> = vec![];
+                for (from, to, same) in plan {
+                    if cancel.load(Ordering::Relaxed) { break }
+                    match if same { std::fs::rename(&from, &to) } else { rename_no_replace(&from, &to) } {
+                        Ok(()) => done.push((from, to)),
+                        // one will not: those already renamed are given their names back - all of them, or none
+                        Err(e) => { for (a, b) in done.drain(..).rev() { let _ = rename_no_replace(&b, &a); } rep.error = Some(if e.kind() == std::io::ErrorKind::AlreadyExists { taken(&name_of(&to)) } else { format!("\u{201c}{}\u{201d} could not be renamed: {}. Nothing was renamed.", name_of(&from), plain(&e)) }); return rep }
+                    }
+                }
+                for (from, to) in &done { if let Some(dir) = from.parent() { if !rep.changed.iter().any(|c| c == dir) { rep.changed.push(dir.to_path_buf()); } } rep.made.push(to.clone()); rep.moved.push((from.clone(), to.clone())); }
+                if !done.is_empty() { self.done(Record::Renames(done)); }
+                rep
             }
             Op::Rename { path, name } => {
                 let mut rep = Report { kind: Some(Kind::Rename), ..Default::default() };
@@ -577,6 +615,9 @@ impl Engine {
                 Ok(_) => note(&mut rep, path.parent()),
                 Err(why) => rep.error = Some(format!("\u{201c}{}\u{201d} could not be taken back{}", name_of(&path), why.map(|w| format!(": {w}")).unwrap_or_else(|| ": its volume has no Trash.".into()))),
             },
+            Record::Renames(pairs) => { let mut left = 0;
+                for (from, to) in pairs.into_iter().rev() { match rename_no_replace(&to, &from) { Ok(()) => { note(&mut rep, from.parent()); rep.moved.push((to, from.clone())); rep.made.push(from); } Err(_) => left += 1 } }
+                if left > 0 { rep.error = Some(if left == 1 { "One item could not be given its old name back: it is taken again, or the item is gone.".into() } else { format!("{left} items could not be given their old names back: the names are taken again, or the items are gone.") }); } }
             Record::Rename { from, to } => match rename_no_replace(&to, &from) {
                 Ok(()) => { note(&mut rep, from.parent()); rep.moved.push((to.clone(), from.clone())); rep.made.push(from); }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => rep.error = Some(format!("The rename could not be undone: \u{201c}{}\u{201d} is taken again.", name_of(&from))),
@@ -628,7 +669,7 @@ static SHARED: OnceLock<Shared> = OnceLock::new();
 fn label_of(op: &Op) -> String {
     // (one item is said by its name: the tasks' panel shows several of these under one another)
     let what = |paths: &[PathBuf]| if paths.len() == 1 { format!("\u{201c}{}\u{201d}", name_of(&paths[0])) } else { format!("{} items", paths.len()) };
-    match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
+    match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::RenameMany { pairs } => format!("Rename {} items", pairs.len()), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
         Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into(), Op::Redo => "Redo".into() }
 }
 
@@ -752,6 +793,25 @@ mod tests {
         ok(e.run(Op::Undo)); assert!(!made.exists()); assert_eq!(e.redo_label().as_deref(), Some("New Folder"));
         t.file("b.exr", 1); ok(e.run(Op::Trash { paths: vec![t.0.join("b.exr")] })); assert!(e.redo_label().is_none(), "a new operation: nothing to do again");
         ok(e.run(Op::Undo)); assert!(t.0.join("b.exr").exists()); assert_eq!(e.redo_label().as_deref(), Some("Move to Trash")); ok(e.run(Op::Redo)); assert!(!t.0.join("b.exr").exists());
+    }
+    #[test]
+    fn several_are_renamed_in_one_step_all_or_none() {
+        let t = Temp::new("many"); let mut e = engine(&t); for n in ["shot_010.1001.exr", "shot_010.1002.exr", "shot_010_notes.txt", "other.txt"] { t.file(n, 2); } t.dir("shot_010.v2");
+        assert_eq!(replaced_name("shot_010.1001.exr", false, "010", "020"), "shot_020.1001.exr"); assert_eq!(replaced_name("a.exr", false, "exr", "png"), "a.exr", "the extension is not touched");
+        assert_eq!(replaced_name("shot_010.v2", true, "v2", "v3"), "shot_010.v3", "a folder has no extension"); assert_eq!(replaced_name("x.txt", false, "", "y"), "x.txt");
+        let pairs = |find: &str, with: &str| -> Vec<(PathBuf, String)> { names(&t.0).into_iter().map(|n| { let p = t.0.join(&n); let d = p.is_dir(); (p, replaced_name(&n, d, find, with)) }).collect() };
+        let r = ok(e.run(Op::RenameMany { pairs: pairs("shot_010", "shot_020") })); assert_eq!(r.made.len(), 4); assert_eq!(r.moved.len(), 4);
+        assert_eq!(names(&t.0), ["other.txt", "shot_020.1001.exr", "shot_020.1002.exr", "shot_020.v2", "shot_020_notes.txt"]); assert_eq!(e.undo_label().as_deref(), Some("Rename of 4 Items"));
+        // one step back, and one step forward again
+        ok(e.run(Op::Undo)); assert!(names(&t.0).contains(&"shot_010.1001.exr".to_string()) && !names(&t.0).iter().any(|n| n.contains("020")));
+        ok(e.run(Op::Redo)); assert!(names(&t.0).contains(&"shot_020.1001.exr".to_string()));
+        // a name that is taken, two that would be one, a name that will not do: nothing is renamed
+        t.file("shot_030.1001.exr", 1);
+        let before = names(&t.0);
+        assert!(e.run(Op::RenameMany { pairs: vec![(t.0.join("shot_020.1001.exr"), "shot_030.1001.exr".into()), (t.0.join("shot_020.1002.exr"), "fine.exr".into())] }).error.is_some_and(|w| w.contains("already taken")));
+        assert!(e.run(Op::RenameMany { pairs: vec![(t.0.join("shot_020.1001.exr"), "same.exr".into()), (t.0.join("shot_020.1002.exr"), "SAME.exr".into())] }).error.is_some_and(|w| w.contains("Two of them")));
+        assert!(e.run(Op::RenameMany { pairs: vec![(t.0.join("shot_020.1001.exr"), "a/b.exr".into())] }).error.is_some());
+        assert_eq!(names(&t.0), before);
     }
     #[test]
     fn a_new_folder_and_a_rename_and_their_undo() {

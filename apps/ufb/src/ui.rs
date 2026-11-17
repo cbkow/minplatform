@@ -56,7 +56,8 @@ enum Asked { /// delete these for good
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
     NewJob(PathBuf), AddItem(PathBuf), /// a share to add (its address, or a folder); a share's name
     AddShare, RenameShare(usize), ShareLetter(usize), /// quit although tasks run or wait
-    Quit, /// the password of this archive
+    Quit, /// several entries to rename in one step (each: its path, whether it is a folder)
+    BatchRename(Vec<(PathBuf, bool)>), /// the password of this archive
     Password(PathBuf), /// sync's settings: the farm's folder, this machine's name, the belt
     SyncSet }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
@@ -498,6 +499,15 @@ impl Ui {
                 Some(if name.is_empty() { String::new() } else if ty.kind(&sec) == ufb_projtype::Kind::Dated { let taken = self.job.as_ref().map(|j| j.dated_names.clone()).unwrap_or_default(); ufb_projtype::dated_name(&taken, &crate::jobview::today(), &name).unwrap_or_default() } else { name }) }
             _ => None,
         };
+        if let Asked::BatchRename(items) = asked {
+            // (the fields as typed, spaces and all: a space may be what is to be found or put in)
+            let (find, with) = (d.fields[0].1.text().to_string(), d.fields[1].1.text().to_string()); let pairs = Self::batch_names(items, &find, &with);
+            let fault = pairs.iter().find_map(|(_, n)| crate::ops::name_fault(n)); let mut seen = std::collections::HashSet::new(); let twice = pairs.iter().any(|(p, n)| !seen.insert(p.with_file_name(n).to_string_lossy().to_lowercase()));
+            d.body = if find.is_empty() { "Type what is to be found in the names.".into() } else if pairs.is_empty() { "No name holds that.".into() } else if let Some(why) = &fault { why.clone() } else if twice { "Two of them would get the same name.".into() }
+                else { let (p, n) = &pairs[0]; format!("{}  \u{2192}  {n}   \u{b7}   {} of {} change", p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), crate::pane::group(pairs.len()), crate::pane::group(items.len())) };
+            if let Some(b) = d.buttons.last_mut() { b.enabled = !pairs.is_empty() && fault.is_none() && !twice; }
+            return
+        }
         if let Some(name) = made { let ok = ufb_projtype::check_name("name", &name).is_ok(); d.body = if name.is_empty() { "Folder:".into() } else { format!("Folder:  {name}") }; if let Some(b) = d.buttons.last_mut() { b.enabled = ok; } }
     }
     /// What was made off the window's thread has come.
@@ -1112,6 +1122,21 @@ impl Ui {
         if !crate::archive::zip_place(&paths).is_some_and(|(dir, _)| crate::ops::allowed_in(&dir)) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
         crate::archive::submit(self.id, crate::archive::Job::Compress { paths });
     }
+    /// Rename several in one step (row 528; Finder's "Rename N Items", its "Replace Text"): what is typed into Find is
+    /// replaced in every chosen name - not in a file's extension - and the question says what that makes of them before
+    /// anything is renamed.
+    fn ask_batch_rename(&mut self) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        let paths = self.pane().chosen_files(); if paths.len() < 2 { return }
+        if !crate::ops::allowed_in(self.pane().path()) { self.toast.show(crate::ops::GUARDED, min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        let items: Vec<(PathBuf, bool)> = paths.into_iter().map(|p| { let d = p.is_dir(); (p, d) }).collect();
+        let mut d = Dialog::new(&format!("Rename {} Items", crate::pane::group(items.len())), "", vec![("Cancel", Variant::Secondary), ("Rename", Variant::Primary)]).with_field("Find", "text in the names").with_field("Replace with", "nothing: the text is taken out"); d.show_with("", &mut self.fonts);
+        self.dialog = Some((d, Asked::BatchRename(items))); self.dialog_preview();
+    }
+    /// The names a batch rename would give: (the entry, its new name) for those that change.
+    fn batch_names(items: &[(PathBuf, bool)], find: &str, with: &str) -> Vec<(PathBuf, String)> {
+        items.iter().filter_map(|(p, dir)| { let old = p.file_name()?.to_string_lossy().into_owned(); let new = crate::ops::replaced_name(&old, *dir, find, with); (new != old).then(|| (p.clone(), new)) }).collect()
+    }
     /// An archive wants its password: asked for, and the answer is a new task.
     fn ask_password(&mut self, archive: PathBuf, wrong: bool) {
         use min_ui::{dialog::Dialog, text_button::Variant};
@@ -1143,6 +1168,7 @@ impl Ui {
             Asked::Conflict(id) => { use crate::ops::Choice; crate::ops::answer(id, [Choice::Stop, Choice::Replace, Choice::Skip, Choice::KeepBoth][button.min(3)], d.checked()); }
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
             Asked::Quit => if button == 0 { self.out.push(Out::Quit); },
+            Asked::BatchRename(items) => if button == 1 { let pairs = Self::batch_names(&items, d.fields[0].1.text(), d.fields[1].1.text()); if !pairs.is_empty() { crate::ops::submit(self.id, crate::ops::Op::RenameMany { pairs }); } },
             Asked::Password(archive) => if button == 1 { crate::archive::submit(self.id, crate::archive::Job::Extract { archive, password: Some(d.value_at(0)) }); },
             // (made off this thread: a skeleton may be copied to a share)
             // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
@@ -1157,9 +1183,9 @@ impl Ui {
     }
     /// Rename in place (row 437): the one chosen entry's name becomes a field, the name chosen without its extension.
     fn start_rename(&mut self) {
-        let i = self.active.min(self.panes.len() - 1); let entries = self.panes[i].chosen_entries(2); if entries.len() != 1 { return }
-        // (a sequence's frames each have a name of their own: renaming them together is batch rename - later, row 437)
-        if self.panes[i].chosen_sequence() { self.toast.show("A sequence is renamed frame by frame for now: show it as separate files first.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
+        let i = self.active.min(self.panes.len() - 1); let entries = self.panes[i].chosen_entries(2); if entries.is_empty() { return }
+        // several chosen, or a sequence (its frames each have a name of their own): they are renamed together (row 528)
+        if entries.len() != 1 || self.panes[i].chosen_sequence() { self.ask_batch_rename(); return }
         let (path, dir, _) = entries.into_iter().next().unwrap(); let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
         if !crate::ops::allowed_in(path.parent().unwrap_or(&path)) { self.toast.show(crate::ops::GUARDED, min_ui::toast::ToastKind::Notice, Instant::now()); return }
         let mut field = TextField::new(Family::Sans, t::BODY_SIZE_S); field.set_text(&name); field.focused = true;
@@ -1326,6 +1352,7 @@ impl Ui {
                 { let n = entries.len(); let archives = entries.iter().all(|e| !e.1 && e.0.file_name().is_some_and(|f| crate::archive::is_archive(&f.to_string_lossy())));
                     let mut add = vec![ctxmenu::Row::Sep]; if archives { add.push(ctxmenu::named(ctxmenu::EXTRACT, if n == 1 { "Extract Here".to_string() } else { format!("Extract {n} Archives Here") })); }
                     if n == 1 && pane.found().is_some() { if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Reveal) { rows.insert(k, ctxmenu::named(ctxmenu::ENCLOSING, "Show in Enclosing Folder".to_string())); } }
+                    if n > 1 || sequence { if let Some(k) = rows.iter().position(|r| matches!(r, ctxmenu::Row::Ours { id, .. } if *id == ctxmenu::DUPLICATE)) { rows.insert(k, ctxmenu::named(ctxmenu::RENAME, if sequence && n == 1 { "Rename Sequence\u{2026}".to_string() } else { format!("Rename {n} Items\u{2026}") })); } }
                     if pane.chosen_media().is_some() { add.push(ctxmenu::named(ctxmenu::TRANSCODE, "Transcode to MP4".to_string())); }
                     add.push(ctxmenu::named(ctxmenu::COMPRESS, if n == 1 { "Compress to ZIP".to_string() } else { format!("Compress {n} Items to ZIP") }));
                     let at_row = rows.iter().rposition(|r| *r == ctxmenu::Row::Sep).unwrap_or(rows.len()); rows.splice(at_row..at_row, add); }
@@ -1853,6 +1880,9 @@ impl Ui {
             "searchbelow" => { self.search.set_text(arg); let port = self.port.clone(); self.pane().search_below(&port, arg); },
             "enclosing" => self.show_enclosing(),
             "searchclear" => { self.search.clear(); let port = self.port.clone(); self.pane().leave_found(&port); self.pane().set_search(""); },
+            // `batchrename:<find>|<replace with>` (the chosen entries, as Rename with several chosen; it is carried out when it may be)
+            "batchrename" => { self.ask_batch_rename(); let (f, w) = arg.split_once('|').unwrap_or((arg, "")); if let Some((d, Asked::BatchRename(_))) = self.dialog.as_mut() { d.fields[0].1.set_text(f); d.fields[1].1.set_text(w); } self.dialog_preview();
+                if let Some((d, _)) = self.dialog.as_ref() { eprintln!("UFB_DEMO: batch rename: {}", d.body); } if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } else { self.dialog = None; } },
             "extract" => self.extract_chosen(), "compress" => self.compress_chosen(), "transcode" => self.transcode_chosen(),
             "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.paste(arg, &mut self.fonts); } self.answer(1); },   // (as pasted: the field hides its text and takes none set from outside)
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },

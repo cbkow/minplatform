@@ -131,7 +131,7 @@ pub struct State { pub grid: bool, pub hidden: bool, pub folders_first: bool, pu
 impl State {
     fn checked(&self, c: Cmd) -> bool { match c { Cmd::AsList => !self.grid, Cmd::AsGrid => self.grid, Cmd::Hidden => self.hidden, Cmd::FoldersFirst => self.folders_first, Cmd::SecondPane => self.second, Cmd::Sequences => self.sequences, Cmd::Sort(i) => self.sort.column() == i as usize, Cmd::Column(i) => self.columns.get(i as usize).copied().unwrap_or(false), _ => false } }
     fn enabled(&self, c: Cmd) -> bool { match c { Cmd::Back => self.can_back, Cmd::Forward => self.can_forward, Cmd::Up => self.can_up,
-        Cmd::NewFolder => self.writable, Cmd::NewJob => self.jobs_folder && self.writable && !self.typing, Cmd::Subscribe => self.chosen == 1 && !self.typing, Cmd::Rename => self.writable && self.chosen == 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo, Cmd::Redo => self.redo, Cmd::Preview => self.chosen >= 1,
+        Cmd::NewFolder => self.writable, Cmd::NewJob => self.jobs_folder && self.writable && !self.typing, Cmd::Subscribe => self.chosen == 1 && !self.typing, Cmd::Rename => self.writable && self.chosen >= 1, Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow => self.writable && self.chosen >= 1, Cmd::Undo => self.undo, Cmd::Redo => self.redo, Cmd::Preview => self.chosen >= 1,
         Cmd::Copy => self.typing || self.chosen >= 1, Cmd::Cut => self.typing || (self.writable && self.chosen >= 1), Cmd::Paste => self.typing || self.writable, Cmd::PasteMove => !self.typing && self.writable,
         Cmd::CopyToOther => self.other && self.chosen >= 1, Cmd::MoveToOther => self.other && self.writable && self.chosen >= 1, _ => true } }
 }
@@ -282,7 +282,7 @@ mod tests {
         assert!(!State { chosen: 0, ..st }.enabled(Cmd::Copy) && State { chosen: 0, typing: true, ..st }.enabled(Cmd::Copy) && !State { writable: false, ..st }.enabled(Cmd::Paste));
         // what changes files follows the choice, the undo list and whether this folder may be changed
         assert!(st.enabled(Cmd::Rename) && st.enabled(Cmd::Trash) && st.enabled(Cmd::NewFolder) && !st.enabled(Cmd::Undo));
-        assert!(!State { chosen: 2, ..st }.enabled(Cmd::Rename) && State { chosen: 2, ..st }.enabled(Cmd::Duplicate) && !State { chosen: 0, ..st }.enabled(Cmd::Trash) && State { undo: true, ..st }.enabled(Cmd::Undo));
+        assert!(State { chosen: 2, ..st }.enabled(Cmd::Rename) && !State { chosen: 0, ..st }.enabled(Cmd::Rename) && State { chosen: 2, ..st }.enabled(Cmd::Duplicate) && !State { chosen: 0, ..st }.enabled(Cmd::Trash) && State { undo: true, ..st }.enabled(Cmd::Undo));
         assert!(!State { writable: false, ..st }.enabled(Cmd::NewFolder) && !State { writable: false, ..st }.enabled(Cmd::DeleteNow));
         assert!(st.checked(Cmd::AsGrid) && !st.checked(Cmd::AsList) && st.checked(Cmd::Sort(2)) && !st.checked(Cmd::Sort(0)) && st.checked(Cmd::FoldersFirst)); assert!(!st.enabled(Cmd::Back) && st.enabled(Cmd::Forward) && st.enabled(Cmd::Refresh));
     }
