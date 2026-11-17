@@ -36,7 +36,8 @@ pub enum Out { /// the clipboard is the application's to reach: files to put on 
     OpenDefault(PathBuf), OpenWith(PathBuf, PathBuf),
     /// the system's "Open with" chooser; these shown in the system's file browser; Explorer's own menu for these, at a point (Windows)
     OpenAs(PathBuf), Reveal(Vec<PathBuf>), ShellMenu((f64, f64), Vec<PathBuf>),
-    CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste,
+    CopyFiles { paths: Vec<PathBuf>, cut: bool }, PasteFiles { mv: bool }, FieldCopy { cut: bool }, FieldPaste, /// a text for the clipboard (a path, a name, a link)
+    CopyText(String),
     NewWindow(PathBuf), Close, Minimize, Quit, /// a context menu to show (the application's loop does: it is the system's)
     Menu(crate::ctxmenu::Ask) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +110,8 @@ pub struct Ui {
     /// shares marked for it were asked for once at the start
     shares: Vec<crate::shares::Share>, share_states: Vec<crate::shares::State>, share_busy: std::collections::HashSet<String>, share_tx: std::sync::mpsc::Sender<ShareNews>, share_rx: Receiver<ShareNews>, share_btns: Vec<ActionButton>, share_add: ActionButton, share_menu: Option<usize>, shares_launched: bool, /// the stale placeholders (by share's id); the shares seen connected in this run (one silent retry when one drops)
     share_holders: std::collections::HashMap<String, PathBuf>, share_seen: std::collections::HashSet<String>, /// the Sync entry's row at the sidebar's foot
-    sync_rect: Rect,
+    sync_rect: Rect, /// what the open menu is about (its paths): what Copy Path, Copy Name and Copy Link take
+    menu_paths: Vec<PathBuf>,
     /// the mesh's count of what arrived, as this window last saw it (its lists are read again when it moves on)
     mesh_rev: u64,
     /// the columns of the lists, a kind of panel (row 488): 0 the browser's panes, 1 a job's first pane, 2 its second
@@ -186,7 +188,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: 0.5, pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: false, folders_first: true,
             side_w: t::RAIL_WIDTH_MIN as f64, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -651,6 +653,18 @@ impl Ui {
             Err(why) => self.toast.show(&why, min_ui::toast::ToastKind::Notice, Instant::now()),
         }
     }
+    /// What Copy Path / Copy Name / Copy Link put on the clipboard: a line each; a path in the share's own spelling
+    /// (never a landing's name, row 445), a link every machine of the studio can open.
+    fn copy_text(id: u32, paths: &[PathBuf]) -> Option<String> {
+        let lines: Vec<String> = paths.iter().map(|p| match id { crate::ctxmenu::COPY_NAME => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned()), crate::ctxmenu::COPY_LINK => crate::db::link_to(p), _ => crate::db::canonical(p) }).collect();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+    /// To what a link or a typed path leads: a folder is gone to; a file's folder, with the file chosen.
+    fn go_file(&mut self, file: PathBuf) {
+        let (Some(dir), Some(name)) = (file.parent().map(Path::to_path_buf), file.file_name().map(|n| n.to_string_lossy().into_owned())) else { return };
+        if self.job.is_some() || self.tracker.is_some() { let inside = !self.blank() && self.pane().root.clone().is_some_and(|r| dir.starts_with(&r)); if !inside { self.new_tab(dir.clone()); } }
+        let port = self.port.clone(); self.pane().go_select(&port, dir, name);
+    }
     /// A jobs folder's project type was chosen (0: the built-in one; else the k-th of the types found). One that cannot
     /// be read is not taken, and why is said.
     fn share_type_chosen(&mut self, k: usize) {
@@ -733,7 +747,7 @@ impl Ui {
             any = true;
             match m {
                 Msg::Places { volumes, root } => { self.volumes = volumes; self.root = root; self.crumbs_for = None; }
-                Msg::Checked { req, path, dir } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); self.go(path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
+                Msg::Checked { req, path, dir, file } => if self.check == Some(req) { self.check = None; if dir { self.leave_path(); self.go(path); } else if file { self.leave_path(); self.go_file(path); } else { self.path_error = Some(("No such folder".into(), Instant::now())); self.field.error = true; } },
                 Msg::Icon => { self.icons.poll(); self.thumbs.poll(); self.lightbox.poll(); }
                 Msg::Op(rep) => self.on_report(&rep),
                 Msg::Ask(q) => if q.origin == self.id { self.asks.push_back(q); },
@@ -1096,7 +1110,10 @@ impl Ui {
     fn submit_path(&mut self) {
         let current = self.here();
         // a path from another machine - the other system's spelling, a numbered landing - is this machine's path to the same thing (row 498)
-        let typed = crate::db::translate(self.field.text().trim()).or_else(|| crumbs::typed_path(self.field.text(), &places::home(), &current));
+        // ... and a LINK is the path it leads to (row 503)
+        let text = self.field.text().trim().to_string(); let link = text.starts_with("ufb:") || text.starts_with("union:");
+        if link && crate::db::from_link(&text).is_none() { self.path_error = Some(("That link leads nowhere on this machine".into(), Instant::now())); self.field.error = true; return }
+        let typed = if link { crate::db::from_link(&text) } else { crate::db::translate(&text).or_else(|| crumbs::typed_path(self.field.text(), &places::home(), &current)) };
         match typed {
             // whether it is a folder is asked off this thread; the answer navigates or shows the error
             Some(p) => { let req = lister::next_req(); self.check = Some(req); self.path_error = None; self.field.error = false; lister::check(&self.port, req, p); }
@@ -1201,8 +1218,10 @@ impl Ui {
     }
     /// A context menu is shown: macOS, the system's own with our rows in it (the application's loop shows it);
     /// Windows, our own drawn one, whose last row opens Explorer's (row 460, point 2).
-    fn show_menu(&mut self, ask: crate::ctxmenu::Ask) {
+    fn show_menu(&mut self, mut ask: crate::ctxmenu::Ask) {
         use crate::ctxmenu::Row;
+        // (whatever has a path can be copied as text: its path, its name, a link to it - row 503)
+        self.menu_paths = ask.paths.clone(); if !ask.paths.is_empty() { ask.rows = crate::ctxmenu::with_copies(ask.rows); }
         if cfg!(target_os = "macos") && std::env::var_os("UFB_DRAWN_MENU").is_none() { self.out.push(Out::Menu(ask)); return }
         let (mut items, mut rows) = (vec![], vec![]);
         for r in &ask.rows { let (item, row) = match r {
@@ -1238,6 +1257,7 @@ impl Ui {
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
+        if (crate::ctxmenu::COPY_PATH..=crate::ctxmenu::COPY_LINK).contains(&id) { if let Some(text) = Self::copy_text(id, &self.menu_paths) { self.out.push(Out::CopyText(text)); } return }
         // (a saved share's own rows)
         if (crate::ctxmenu::SHARE_TYPE..crate::ctxmenu::SHARE_TYPE + 500).contains(&id) { return self.share_type_chosen((id - crate::ctxmenu::SHARE_TYPE) as usize) }
         if (crate::ctxmenu::SYNC_SET..=crate::ctxmenu::SYNC_NEVER).contains(&id) { return self.sync_chosen(id) }
@@ -1619,6 +1639,9 @@ impl Ui {
             // a jobs folder's type: `share:type:<n>:<name>` is done here (`sharetype:<n>:<name>`; an empty name: the built-in one); `types` says those found
             "sharetype" => { let (n, name) = arg.split_once(':').unwrap_or((arg, "")); if let Some(n) = num(n) { self.share_menu = Some(n); let k = if name.is_empty() { Some(0) } else { crate::jobview::known_types().iter().position(|t| t.0.eq_ignore_ascii_case(name)).map(|k| k + 1) }; match k { Some(k) => self.share_type_chosen(k), None => eprintln!("UFB_DEMO: no type {name}") } } },
             "types" => eprintln!("UFB_DEMO: types: {} | shares: {}", crate::jobview::known_types().iter().map(|t| t.0.clone()).collect::<Vec<_>>().join(", "), self.shares.iter().map(|s| format!("{}={}", s.name, if s.ptype.is_empty() { "built-in" } else { &s.ptype })).collect::<Vec<_>>().join(", ")),
+            // what the three copies would put on the clipboard (said, not copied): `copytext:<path|name|link>:<path>`; a text as typed into the path bar: `typed:<text>`
+            "copytext" => { let (what, p) = arg.split_once(':').unwrap_or((arg, "")); eprintln!("UFB_DEMO: copy {what}: {:?}", Self::copy_text(match what { "name" => crate::ctxmenu::COPY_NAME, "link" => crate::ctxmenu::COPY_LINK, _ => crate::ctxmenu::COPY_PATH }, &[PathBuf::from(p)])); },
+            "typed" => { self.edit_path(); self.field.set_text(arg); self.submit_path(); },
             "syncoff" => self.sync_chosen(crate::ctxmenu::SYNC_ONOFF),
             "shares" => eprintln!("UFB_DEMO: shares: {}", self.shares.iter().enumerate().map(|(i, sh)| format!("{} [{}{}{}] {:?}", sh.name, if sh.server.is_empty() { format!("folder {}", sh.local) } else { format!("smb://{}/{}", sh.server, sh.share) }, if sh.jobs { ", jobs" } else { "" }, if sh.ours { ", ours" } else { "" }, (self.share_states.get(i), self.share_holders.contains_key(&sh.id).then_some("held")))).collect::<Vec<_>>().join(" | ")),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },

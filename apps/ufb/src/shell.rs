@@ -126,6 +126,7 @@ impl App {
                 if let Some(w) = self.windows.get_mut(&id) { w.ui.paste_files(list, mv || was_cut); w.window.request_redraw(); } }
             Out::FieldCopy { cut } => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
                 if let (Some(cb), Some(w)) = (self.clipboard.as_mut(), self.windows.get_mut(&id)) { if let Some(text) = w.ui.copy(cut) { let _ = cb.set_text(text); } w.window.request_redraw(); } }
+            Out::CopyText(text) => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); } if let Some(cb) = self.clipboard.as_mut() { let _ = cb.set_text(text); } }
             Out::FieldPaste => { if self.clipboard.is_none() { self.clipboard = arboard::Clipboard::new().ok(); }
                 if let (Some(cb), Some(w)) = (self.clipboard.as_mut(), self.windows.get_mut(&id)) { if let Ok(text) = cb.get_text() { w.ui.paste(&text); } w.window.request_redraw(); } }
             // the system's menu: handed to the run loop (never shown from inside this callback - S19); a row of ours comes back through `proxy_wake_up`

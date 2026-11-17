@@ -21,7 +21,8 @@ pub enum Msg {
     /// folders opened in place inside it is no longer as it was read.
     Probed { req: u64, mtime: Option<i64>, inner_changed: bool },
     /// A typed path was looked at: is it a folder that can be gone to.
-    Checked { req: u64, path: PathBuf, dir: bool },
+    Checked { req: u64, path: PathBuf, dir: bool, /// ... or a file (a link may lead to one: its folder is gone to, the file chosen)
+        file: bool },
     /// The volumes, and the startup disk's name.
     Places { volumes: Vec<crate::places::Place>, root: String },
     /// An icon came (see `icons.rs`); nothing to carry - the loop only has to draw again.
@@ -124,7 +125,7 @@ pub fn list(port: &Port, req: u64, path: PathBuf, cancel: Arc<AtomicBool>) {
 /// `inner`: the folders opened in place, each with its modification time as it was read.
 pub fn probe(port: &Port, req: u64, path: PathBuf, inner: Vec<(PathBuf, Option<i64>)>) { let port = port.clone(); let _ = std::thread::Builder::new().name("ufb-probe".into()).spawn(move || { let inner_changed = inner.iter().any(|(p, was)| dir_mtime(p) != *was); port.send(Msg::Probed { req, mtime: dir_mtime(&path), inner_changed }) }); }
 /// Ask whether a typed path is a folder.
-pub fn check(port: &Port, req: u64, path: PathBuf) { let port = port.clone(); let _ = std::thread::Builder::new().name("ufb-check".into()).spawn(move || { let dir = path.is_dir(); port.send(Msg::Checked { req, path, dir }); }); }
+pub fn check(port: &Port, req: u64, path: PathBuf) { let port = port.clone(); let _ = std::thread::Builder::new().name("ufb-check".into()).spawn(move || { let dir = path.is_dir(); let file = !dir && path.is_file(); port.send(Msg::Checked { req, path, dir, file }); }); }
 
 #[cfg(test)]
 pub mod tests {

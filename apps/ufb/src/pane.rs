@@ -158,6 +158,11 @@ impl Pane {
     /// Back cannot lead out of it (row 486).
     pub fn rooted(&mut self, port: &Port, root: PathBuf, at: PathBuf) { self.root = Some(root); self.history = History::new(at); self.read(port, None, vec![]); }
     pub fn go(&mut self, port: &Port, path: PathBuf) { let look = self.look(); if self.history.go(path, look) { self.read(port, None, vec![]); } }
+    /// To a folder, with one of its entries chosen and in view once it is read (a link to a file, row 503).
+    pub fn go_select(&mut self, port: &Port, dir: PathBuf, name: String) {
+        let look = self.look(); let want = Look { selected: vec![name], scroll: 0.0 };
+        if self.history.go(dir, look) { self.read(port, Some(want), vec![]); } else if matches!(self.load, Load::Loading) { self.restore = Some(want); } else { self.choose(&want.selected); if let Some(c) = self.sel().cursor { self.reveal_later(c); } }
+    }
     pub fn back(&mut self, port: &Port) { let look = self.look(); if let Some(stop) = self.history.back(look) { self.read(port, Some(stop.look), vec![]); } }
     pub fn forward(&mut self, port: &Port) { let look = self.look(); if let Some(stop) = self.history.forward(look) { self.read(port, Some(stop.look), vec![]); } }
     /// To the enclosing folder; the folder left is the one chosen there.

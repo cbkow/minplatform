@@ -50,7 +50,8 @@ pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Ve
         // a jobs folder (row 482): a favorite with the jobs' mark, where New Job makes jobs
         if args[i] == "--jobs" { if let Some(p) = args.get(i + 1) { let path = abs(p); favorites.push(places::Place { label: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone()), path: path.clone(), icon: "briefcase" }); jobs.push(path); } i += 2; continue }
         if args[i] == "--favorite" { if let Some(p) = args.get(i + 1) { let path = abs(p); favorites.push(places::Place { label: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone()), path, icon: "star" }); } i += 2; continue }
-        if !args[i].starts_with("--") && folder.is_none() { folder = Some(abs(&args[i])); }
+        // (a link handed over by the system: kept as it is here, resolved once the shares are known)
+        if !args[i].starts_with("--") && folder.is_none() { folder = Some(if args[i].starts_with("ufb:") || args[i].starts_with("union:") { std::path::PathBuf::from(&args[i]) } else { abs(&args[i]) }); }
         i += 1;
     }
     let mut writes: Vec<std::path::PathBuf> = folder.iter().cloned().chain(favorites.iter().map(|f: &places::Place| f.path.clone())).chain(extra).collect(); writes.dedup();
@@ -80,6 +81,8 @@ fn main() {
     // ... else what the Sync entry of the sidebar saved (row 499)
     else { let (on, farm, node, leader, only) = settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only")));
         if on && !farm.trim().is_empty() { mesh::start_with(std::path::Path::new(farm.trim()), &node, &leader, (!only.trim().is_empty()).then(|| std::path::Path::new(only.trim()))); } }
+    // a link as the folder to start in: where it leads on this machine (a file: its folder), else the home folder
+    let folder = match folder.to_str().filter(|t| t.starts_with("ufb:") || t.starts_with("union:")) { Some(link) => db::from_link(link).map(|p| if p.is_dir() { p } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) }).filter(|p| p.is_dir()).unwrap_or_else(places::home), None => folder };
     shell::run(folder, favorites);
 }
 

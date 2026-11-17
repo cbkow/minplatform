@@ -138,9 +138,18 @@ pub fn to_native(id: &str) -> Option<PathBuf> { native_in(id, &mappings()) }
 /// A path as text from anywhere - another machine's spelling, a numbered landing, either system's separators - as
 /// THIS machine's path to the same thing; none when it is under no share this machine knows.
 pub fn translate(text: &str) -> Option<PathBuf> { let maps = mappings(); let id = identity_in(Path::new(text), &maps); if id.starts_with("vol:") { native_in(&id, &maps) } else { None } }
+/// A link (`ufb:///...`, `union:///...`: 1.4.x's two schemes, read alike) as this machine's path: through the shares
+/// when it lies under one - whichever system wrote it, wherever the share landed there or here -, else as it is when
+/// this system wrote it. None: no link, or another system's path under no share this machine knows.
+pub fn from_link(text: &str) -> Option<PathBuf> {
+    let (os, path) = min_paths::links::parse_ufb_link(text.trim())?; if path.is_empty() { return None }
+    if let Some(p) = translate(&path) { return Some(p) }
+    (os == min_paths::Os::current()).then(|| PathBuf::from(if cfg!(windows) { path.replace('/', "\\") } else { path }))
+}
+/// The link to a path of this machine, as every machine can read it: the share's own spelling inside (`canonical`).
+pub fn link_to(p: &Path) -> String { min_paths::links::ufb_link(&canonical(p)) }
 /// A path of this machine as the OTHERS should read it: under a share, the share's own side for this system (never
 /// the landing's name, never a drive letter the others do not have); else as it is.
-#[allow(dead_code)]   // (what links and copied paths will carry: the next part of the slice)
 pub fn canonical(p: &Path) -> String { let maps = mappings(); let id = identity_in(p, &maps); let Some(rest) = id.strip_prefix("vol:") else { return p.to_string_lossy().into_owned() };
     let (uuid, rel) = rest.split_once('/').unwrap_or((rest, "")); let Some(m) = maps.iter().find(|m| m.uuid == uuid) else { return p.to_string_lossy().into_owned() };
     let root = if cfg!(windows) { &m.win } else { &m.mac }; let joined = if rel.is_empty() { root.clone() } else { format!("{}/{rel}", root.trim_end_matches(['/', '\\'])) };
@@ -689,6 +698,11 @@ mod tests {
         assert_eq!(native_in(&format!("vol:{}/2601_a", jobs.uuid), &landed), Some(inside.clone()));
         assert_eq!(rel_real("J:\\2601_a\\3d", "J:\\"), Some("2601_a/3d".into())); assert_eq!(rel_real("K:\\2601_a", "J:\\"), None, "the letter counts"); assert_eq!(rel_real("J:\\", "J:\\"), Some(String::new())); assert_eq!(rel_real("/Volumes/Jobs-30/x", "/Volumes/Jobs-3"), None);
         set_mappings(landed.to_vec()); assert_eq!(canonical(&inside), if cfg!(windows) { "\\\\nas\\Jobs\\2601_a" } else { "/Volumes/Jobs/2601_a" });
+        // a link: written with the share's own spelling, read back to where the share is here - from either system's link
+        assert_eq!(link_to(&inside), if cfg!(windows) { "ufb:///win///nas/Jobs/2601_a" } else { "ufb:///mac//Volumes/Jobs/2601_a" });
+        assert_eq!(from_link("ufb:///mac//Volumes/Jobs-4/2601_a"), Some(inside.clone())); assert_eq!(from_link("union:///win///nas/Jobs/2601_a"), Some(inside.clone())); assert_eq!(from_link("ufb:///win/%5C%5Cnas%5CJobs%5C2601_a"), Some(inside.clone()));
+        assert_eq!(from_link("https://example.com"), None); assert_eq!(from_link(if cfg!(windows) { "ufb:///mac//Users/a/x" } else { "ufb:///win/C%3A/Users/a/x" }), None, "another system's own folder: nowhere here");
+        assert_eq!(from_link(if cfg!(windows) { "ufb:///win/C%3A/Users/a/x" } else { "ufb:///mac//Users/a/x" }), Some(PathBuf::from(if cfg!(windows) { "C:\\Users\\a\\x" } else { "/Users/a/x" })));
         // a path from another machine, with ITS landing in it, opens here where the share is here
         assert_eq!(translate("/Volumes/Jobs-9/2601_a"), Some(inside)); assert_eq!(translate("/Users/a/Desktop"), None); set_mappings(vec![]);
     }

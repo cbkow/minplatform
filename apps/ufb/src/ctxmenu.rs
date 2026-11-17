@@ -85,6 +85,10 @@ pub fn rows_for_board(by: &[String], on: bool) -> Vec<Row> { let mut rows: Vec<R
 pub fn rows_for_tracked() -> Vec<Row> { vec![ours(TRK_OPEN, "Open in Job"), Row::Reveal, Row::Sep, ours(META_TRACK, "Untrack")] }
 /// The rows for an item of a job's list.
 pub fn rows_for_item(tracked: bool) -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(META_TRACK, if tracked { "Untrack" } else { "Mark as Tracked" })] }
+// What is copied as TEXT (row 503): the path, the name, a link - each as every machine reads it.
+pub const COPY_PATH: u32 = 82; pub const COPY_NAME: u32 = 83; pub const COPY_LINK: u32 = 84;
+/// The three rows, put after "Show in Finder" wherever a menu is about something that has a path.
+pub fn with_copies(mut rows: Vec<Row>) -> Vec<Row> { if let Some(k) = rows.iter().position(|r| *r == Row::Reveal) { rows.splice(k + 1..k + 1, [ours_row(COPY_PATH, "Copy Path"), ours_row(COPY_NAME, "Copy Name"), ours_row(COPY_LINK, "Copy Link")]); } rows }
 // The Sync entry of the sidebar (row 499).
 pub const SYNC_SET: u32 = 76; pub const SYNC_ONOFF: u32 = 77; pub const SYNC_AUTO: u32 = 78; pub const SYNC_LEAD: u32 = 79; pub const SYNC_NEVER: u32 = 80;
 /// `on`: sync is switched on in the settings; `leader`: "" | "leader" | "noleader" (the one in force is named).
