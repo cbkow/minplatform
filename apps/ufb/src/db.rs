@@ -93,13 +93,20 @@ fn rel_under(path: &str, prefix: &str) -> Option<String> {
     if pk == prek { return Some(String::new()) }
     let with = format!("{prek}/"); pk.starts_with(&with).then(|| p[with.len()..].trim_start_matches('/').to_string())
 }
+/// The path under a REAL place of this machine (where the system has a share): as `rel_under`, but the drive letter
+/// counts - a share at `J:\\` holds `J:\\x` and not `K:\\x`.
+fn rel_real(path: &str, place: &str) -> Option<String> {
+    let f = |t: &str| t.replace('\\', "/").trim_end_matches('/').to_string(); let (p, pre) = (f(path), f(place)); if pre.is_empty() { return None } let (pk, prek) = (p.to_lowercase(), pre.to_lowercase());
+    if pk == prek { return Some(String::new()) }
+    let with = format!("{prek}/"); pk.starts_with(&with).then(|| p[with.len()..].trim_start_matches('/').to_string())
+}
 /// A path of this machine in 1.4.2's storage form: `vol:{uuid}/{rel}` under a mapped share (shared with the other
 /// machines), `native:{mac|win}/{path}` otherwise (this machine's own; never shared).
 pub fn identity_in(p: &Path, maps: &[Mapping]) -> String {
     let text = p.to_string_lossy();
     // where a share REALLY is on this machine comes first (the system's answer: `Mount-2`, a drive letter)
     let mut real: Vec<(&str, &str)> = maps.iter().filter_map(|m| m.here.as_deref().map(|h| (m.uuid.as_str(), h))).collect(); real.sort_by_key(|x| std::cmp::Reverse(norm(x.1).len()));
-    for (uuid, prefix) in real { if let Some(rel) = rel_under(&text, prefix) { return if rel.is_empty() { format!("vol:{uuid}") } else { format!("vol:{uuid}/{rel}") } } }
+    for (uuid, prefix) in real { if let Some(rel) = rel_real(&text, prefix) { return if rel.is_empty() { format!("vol:{uuid}") } else { format!("vol:{uuid}/{rel}") } } }
     // a path that arrives as TEXT with a numbered landing in it (`/Volumes/Mount-2/...`: pasted, in a link, from an
     // older version, from another machine) is its share's all the same (row 445)
     let text = landing(&text, maps);
@@ -680,6 +687,7 @@ mod tests {
         let here = if cfg!(windows) { "J:\\" } else { "/Volumes/Jobs-3" }; let landed = [jobs.clone().at(Some(here.into()))];
         let inside = Path::new(here).join("2601_a"); assert_eq!(identity_in(&inside, &landed), format!("vol:{}/2601_a", jobs.uuid));
         assert_eq!(native_in(&format!("vol:{}/2601_a", jobs.uuid), &landed), Some(inside.clone()));
+        assert_eq!(rel_real("J:\\2601_a\\3d", "J:\\"), Some("2601_a/3d".into())); assert_eq!(rel_real("K:\\2601_a", "J:\\"), None, "the letter counts"); assert_eq!(rel_real("J:\\", "J:\\"), Some(String::new())); assert_eq!(rel_real("/Volumes/Jobs-30/x", "/Volumes/Jobs-3"), None);
         set_mappings(landed.to_vec()); assert_eq!(canonical(&inside), if cfg!(windows) { "\\\\nas\\Jobs\\2601_a" } else { "/Volumes/Jobs/2601_a" });
         // a path from another machine, with ITS landing in it, opens here where the share is here
         assert_eq!(translate("/Volumes/Jobs-9/2601_a"), Some(inside)); assert_eq!(translate("/Users/a/Desktop"), None); set_mappings(vec![]);
