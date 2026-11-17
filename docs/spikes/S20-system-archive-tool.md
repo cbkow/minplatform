@@ -46,6 +46,12 @@ file and on macOS as a link (not counted there as a file).
 - A locked RAR ends with exit 1 and no word about a password ("Error exit delayed from previous errors"); what it
   wrote must be thrown away. There is no way to hand it a password for RAR.
 
+**Found when the application ran it on Windows (the same day):** the spike's Windows run was in an administrator's
+session, where the tool may make links. In the desktop session it may not: an archive that holds a link ends with
+exit 1 although every file was unpacked - the tool says `x <name>: Can't create ...` for the link alone. The
+application therefore reads the tool's lines: an entry it "can't create" is left out and counted (as our own code
+leaves links out on Windows); any other complaint (a locked RAR complains of every entry) is a failure.
+
 Not tried: wim (no sample; libarchive does not list it among what it reads), a large archive, a solid RAR of many
 files, Windows 10, an archive on a share.
 

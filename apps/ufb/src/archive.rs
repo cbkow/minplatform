@@ -182,16 +182,23 @@ fn unsystem(archive: &Path, sink: &mut Sink) -> Result<(), Fail> {
     let count = list.output().map(|o| o.stdout.iter().filter(|b| **b == b'\n').count()).unwrap_or(0);
     let mut x = Command::new(&tool); x.arg("-xvf").arg(archive).arg("-C").arg(&sink.root).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()); quiet(&mut x);
     let mut child = x.spawn()?; let err = child.stderr.take().ok_or_else(|| Fail::Other("The system's tool could not be started.".into()))?;
-    // (its lines are the entries as they are unpacked - `x name`; what is no such line is what it complains of)
-    let (mut seen, mut said) = (0usize, String::new());
+    // Its lines are the entries as they are unpacked: `x name`, or `x name: complaint`. An entry it "can't create" is
+    // a link this user may not make (Windows without the right for it): left out and counted, as our own code leaves
+    // links out there. Any other complaint is a failure of the archive (a locked RAR: every entry complains).
+    let (mut seen, mut left, mut fatal, mut said) = (0usize, 0usize, false, String::new());
     for line in BufReader::new(err).split(b'\n').flatten() {
         if sink.cancel.load(Ordering::Relaxed) { let _ = child.kill(); let _ = child.wait(); return Err(Fail::Stopped) }
         let line = String::from_utf8_lossy(&line).trim().to_string();
-        match line.strip_prefix("x ") { Some(name) => { seen += 1; let short = name.rsplit(['/', '\\']).find(|p| !p.is_empty()).unwrap_or(name).to_string(); if sink.said.elapsed() >= Duration::from_millis(120) { sink.said = Instant::now(); (sink.say)((count > 0).then(|| (seen as f64 / count as f64).min(1.0)), &short); } } None => if !line.is_empty() && said.is_empty() { said = line } }
+        match line.strip_prefix("x ") {
+            Some(rest) => { seen += 1; let name = match rest.split_once(": ") { Some((name, why)) => { if why.starts_with("Can't create") { left += 1; } else { fatal = true; if said.is_empty() { said = line.clone(); } } name } None => rest };
+                let short = name.rsplit(['/', '\\']).find(|p| !p.is_empty()).unwrap_or(name).to_string(); if sink.said.elapsed() >= Duration::from_millis(120) { sink.said = Instant::now(); (sink.say)((count > 0).then(|| (seen as f64 / count as f64).min(1.0)), &short); } }
+            None => if !line.is_empty() && said.is_empty() && !line.contains("Error exit delayed") { said = line }
+        }
     }
     let ok = child.wait()?.success();
     if sink.cancel.load(Ordering::Relaxed) { return Err(Fail::Stopped) }
-    if !ok { return Err(Fail::Other(format!("The system's archive tool could not unpack it{} A RAR locked with a password is not opened by it.", if said.is_empty() { ".".to_string() } else { format!(" ({said}).") }))) }
+    if !ok && (fatal || left == 0 || left >= seen) { return Err(Fail::Other(format!("The system's archive tool could not unpack it{} A RAR locked with a password is not opened by it.", if said.is_empty() { ".".to_string() } else { format!(" ({said}).") }))) }
+    sink.skipped += left;
     for e in std::fs::read_dir(&sink.root)?.flatten() { sink.tops.insert(e.file_name().to_string_lossy().into_owned()); }
     Ok(())
 }
