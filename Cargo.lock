@@ -6312,6 +6312,7 @@ dependencies = [
  "ufb-projtype",
  "uuid",
  "vello",
+ "webview2-com",
  "wgpu",
  "windows",
  "winit 0.31.0-beta.4",

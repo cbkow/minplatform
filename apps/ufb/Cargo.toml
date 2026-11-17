@@ -66,9 +66,12 @@ objc2-core-foundation = { workspace = true, features = ["CFCGTypes"] }
 objc2-core-graphics = { workspace = true, features = ["CGBitmapContext", "CGContext", "CGImage", "CGColorSpace"] }
 objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSImage", "NSImageRep", "NSGraphicsContext", "NSWindow", "NSView", "NSResponder", "NSApplication", "objc2-uniform-type-identifiers", "objc2-core-graphics"] }
 objc2-uniform-type-identifiers = { version = "0.3.2", features = ["UTType"] }
-# an HTML file in the lightbox: the system's own web view (spike S15; no engine is bundled). macOS only until S15 has run on Windows.
+# an HTML file in the lightbox: the system's own web view (spike S15; no engine is bundled).
 wry = { version = "=0.57.2", default-features = false, features = ["os-webview"] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKScriptMessageHandler", "WKScriptMessage", "WKUserContentController", "WKContentRuleList", "WKContentRuleListStore"] }
 
 [target.'cfg(windows)'.dependencies]
+# an HTML file in the lightbox: WebView2 through wry (spike S15); webview2-com is wry's own, named for the folder mapping and the request filter
+wry = { version = "=0.57.2", default-features = false, features = ["os-webview"] }
+webview2-com = "=0.39.1"
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Storage_FileSystem", "Win32_System_Time", "Win32_System_SystemInformation", "Win32_UI_Shell_Common", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_Debug", "Win32_Security", "Win32_NetworkManagement_WNet", "Win32_System_Ole", "Win32_System_Registry", "Win32_UI_Input_KeyboardAndMouse"] }
