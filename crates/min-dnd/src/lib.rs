@@ -40,13 +40,14 @@ pub type Sink = Rc<dyn Fn(Notice) -> u32>;
 pub struct DragImage { pub w: u32, pub h: u32, pub rgba: Vec<u8>, pub hot: (f64, f64), pub scale: f64 }
 
 #[cfg(target_os = "macos")] mod mac;
-#[cfg(target_os = "macos")] pub use mac::{attach, start_drag};
+#[cfg(target_os = "macos")] pub use mac::{attach, detach, start_drag};
 #[cfg(windows)] mod win;
-#[cfg(windows)] pub use win::{attach, start_drag};
+#[cfg(windows)] pub use win::{attach, detach, start_drag};
 #[cfg(not(any(target_os = "macos", windows)))]
 mod none {
     use super::*;
     pub fn attach(_w: &dyn winit31::window::Window, _win: usize, _dest: &std::path::Path, _sink: Sink) -> Result<String, String> { Err("no platform layer".into()) }
+    pub fn detach(_w: &dyn winit31::window::Window) {}
     pub fn start_drag(_w: &dyn winit31::window::Window, _paths: &[PathBuf], _img: DragImage, _ops: u32, _sink: Sink) -> Result<u64, String> { Err("no platform layer".into()) }
 }
 #[cfg(not(any(target_os = "macos", windows)))] pub use none::{attach, start_drag};

@@ -57,12 +57,15 @@ fn key_name(event: &winit::event::KeyEvent) -> String {
     match &event.logical_key { Key::Character(c) => c.to_uppercase(), _ => String::new() }
 }
 
+static CLOSE_NOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 impl App {
     /// What the drag-and-drop layer calls: it answers from what the window last drew (`dnd::on_notice`), asks for a
     /// frame, and wakes the loop for what a drop left to do. Nothing of the application is borrowed by it.
     fn sink(ui: &Ui, window: &Arc<Box<dyn Window>>, proxy: &Arc<EventLoopProxy>) -> min_dnd::Sink {
-        let (shared, window, proxy) = (ui.dnd.clone(), window.clone(), proxy.clone());
-        std::rc::Rc::new(move |n| { let before = shared.borrow().hover; let op = crate::dnd::on_notice(&shared, n); window.request_redraw(); proxy.wake_up();
+        // (the window is held WEAKLY: the layer keeps this sink for as long as it likes, and a window the application
+        // has dropped must close - closing the last window with the tray there left it standing, row 515)
+        let (shared, window, proxy) = (ui.dnd.clone(), Arc::downgrade(window), proxy.clone());
+        std::rc::Rc::new(move |n| { let before = shared.borrow().hover; let op = crate::dnd::on_notice(&shared, n); let Some(window) = window.upgrade() else { return op }; window.request_redraw(); proxy.wake_up();
             // Windows, a drag of OUR OWN: the system's drag runs inside the pointer's event, and the redraws asked for wait
             // until it has returned - so the outline of the place under the pointer is drawn here, at once (row 478)
             if before != shared.borrow().hover { let id = window.id(); let ui = OWN_DRAG.with(|d| d.borrow().iter().find(|(w, _)| *w == id).map(|(_, u)| *u)); if let Some(ui) = ui { unsafe { (*ui).redraw(); } } }
@@ -90,6 +93,9 @@ impl App {
         static WINDOWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         if let Err(why) = min_dnd::attach(&**window, WINDOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed), &crate::dnd::staging(), Self::sink(&ui, &window, &self.proxy)) { eprintln!("UFB: this window takes no drops: {why}"); }
         if cfg!(windows) { ui.redraw(); window.set_visible(true); }
+        // `UFB_CLOSE_AFTER=<seconds>`: the windows are closed as their close button closes them, after that long (a check of
+        // "the last window closed leaves the application in the tray" that needs no hand)
+        if let Some(secs) = std::env::var("UFB_CLOSE_AFTER").ok().and_then(|v| v.parse::<u64>().ok()) { let proxy = self.proxy.clone(); let _ = std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs(secs)); CLOSE_NOW.store(true, std::sync::atomic::Ordering::Relaxed); proxy.wake_up(); }); }
         window.request_redraw(); let id = window.id(); self.focused = Some(id); self.windows.insert(id, Win { window, ui });
     }
     /// What the windows asked for: a new window, to close, to minimise, to quit. The last window closed ends the application.
@@ -118,10 +124,15 @@ impl App {
     fn tray_open(&mut self, el: &dyn ActiveEventLoop) { match self.focused.and_then(|id| self.windows.get(&id)).or_else(|| self.windows.values().next()) { Some(w) => { w.window.set_minimized(false); w.window.focus_window(); } None => { let home = self.home.clone(); self.open(el, home); } } }
     fn settle(&mut self, el: &dyn ActiveEventLoop) {
         let mut asks: Vec<(WindowId, Out)> = vec![]; let mut done = false;
+        if CLOSE_NOW.swap(false, std::sync::atomic::Ordering::Relaxed) { for w in self.windows.values_mut() { w.ui.out.push(Out::Close); } }
         for (id, w) in self.windows.iter_mut() { for o in w.ui.out.drain(..) { asks.push((*id, o)); } done |= w.ui.done; }
         for (id, o) in asks { match o {
             Out::NewWindow(path) => self.open(el, path),
-            Out::Close => { self.windows.remove(&id); if self.focused == Some(id) { self.focused = None; } }
+            // (the drag-and-drop layer lets go of the window first: what it keeps must not outlive it)
+            Out::Close => { if let Some(w) = self.windows.remove(&id) { min_dnd::detach(&**w.window);
+                    // (a check without a hand, `UFB_CLOSE_AFTER`: who else still holds the window - anyone, and it stays on the screen)
+                    if std::env::var_os("UFB_CLOSE_AFTER").is_some() { let Win { window, ui } = w; drop(ui); eprintln!("UFB: a window was closed; others still holding it: {}; windows left: {}; tray: {}", Arc::strong_count(&window) - 1, self.windows.len(), self.tray.is_some()); } }
+                if self.focused == Some(id) { self.focused = None; } }
             Out::Minimize => if let Some(w) = self.windows.get(&id) { w.window.set_minimized(true); },
             Out::Quit => done = true,
             Out::OpenDefault(path) => crate::sysopen::open(&path),

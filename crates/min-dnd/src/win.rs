@@ -134,12 +134,15 @@ impl IDropTarget_Impl for DropTarget_Impl {
         if let Some(h) = &self.helper { unsafe { let _ = h.Drop(data, &POINT { x: pt.x, y: pt.y }, *effect); } } Ok(()) }
 }
 /// Makes the window the drop target. The window must have been made with winit's own handling off.
+/// The window is about to go: its drop target is taken back from the system and let go, with the application's sink
+/// and whatever that holds. (Without it a sink that holds the window keeps the window open after it was dropped.)
+pub fn detach(window: &dyn winit31::window::Window) { unsafe { if let Some(hwnd) = hwnd_of(window) { let _ = RevokeDragDrop(hwnd); TARGETS.with(|t| t.borrow_mut().retain(|(h, _)| *h != hwnd.0 as usize)); } } }
 pub fn attach(window: &dyn winit31::window::Window, win: usize, dest: &Path, sink: Sink) -> Result<String, String> { unsafe {
     let hwnd = hwnd_of(window).ok_or("no HWND")?; let ole = OleInitialize(None);
     let revoked = RevokeDragDrop(hwnd).is_ok();   // (nothing to revoke when winit was told to keep out: this says so in the log)
     let helper: Option<IDropTargetHelper> = CoCreateInstance(&CLSID_DragDropHelper, None, CLSCTX_INPROC_SERVER).ok();
     let target: IDropTarget = DropTarget { hwnd, win, sink, dest: dest.to_path_buf(), helper: helper.clone(), seen: RefCell::new(None) }.into();
-    RegisterDragDrop(hwnd, &target).map_err(|e| format!("RegisterDragDrop: {e}"))?; TARGETS.with(|t| t.borrow_mut().push((win, target)));
+    RegisterDragDrop(hwnd, &target).map_err(|e| format!("RegisterDragDrop: {e}"))?; TARGETS.with(|t| t.borrow_mut().push((hwnd.0 as usize, target)));
     Ok(format!("IDropTarget registered (OleInitialize: {}; a target of winit's was {}; the shell's picture helper: {})", if ole.is_ok() { "ok" } else { "failed" }, if revoked { "FOUND and revoked" } else { "not there" }, if helper.is_some() { "yes" } else { "no" })) } }
 
 // --- the source ---

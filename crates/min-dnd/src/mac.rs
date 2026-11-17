@@ -110,6 +110,9 @@ fn subclass(of: &AnyClass) -> Option<&'static AnyClass> {
     Some(b.register())
 }
 /// Makes the window's view the drop target for files, URLs, text and promised files. `dest`: where promised files are received.
+/// The window is about to go: what was kept for its view - the application's sink with whatever that holds - is let go.
+/// (Without it a sink that holds the window keeps the window open after the application has dropped it.)
+pub fn detach(window: &dyn winit31::window::Window) { if let Some(view) = view_of(window) { view.unregisterDraggedTypes(); VIEWS.with(|v| v.borrow_mut().remove(&(&*view as *const NSView as usize))); } }
 pub fn attach(window: &dyn winit31::window::Window, win: usize, dest: &Path, sink: Sink) -> Result<String, String> {
     let view = view_of(window).ok_or("no NSView")?; let was = view.class().name().to_string_lossy().to_string();
     let cls = subclass(view.class()).ok_or("the subclass could not be made")?;
