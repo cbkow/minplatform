@@ -1,0 +1,16 @@
+wait:800
+go:@ROOT@/Media/Stills
+grid
+size:230
+wait:2500
+prefs
+preftab:2
+prefmap:add
+prefmap:0:name:Jobs
+prefmap:0:win:P:\Jobs
+prefmap:0:mac:/Volumes/Jobs
+prefmap:add
+prefmap:1:name:Library
+prefmap:1:win:L:\Library
+prefmap:1:mac:/Volumes/Library
+wait:500

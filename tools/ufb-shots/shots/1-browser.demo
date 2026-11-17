@@ -1,0 +1,7 @@
+wait:800
+go:@ROOT@/Media/Stills
+grid
+size:230
+wait:3500
+select:1
+wait:300

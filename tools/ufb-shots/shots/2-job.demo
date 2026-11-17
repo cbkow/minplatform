@@ -1,0 +1,12 @@
+wait:800
+job:0
+wait:500
+section:3d
+joblist:1010
+wait:300
+item:2
+wait:600
+tab
+grid
+size:150
+wait:3000
