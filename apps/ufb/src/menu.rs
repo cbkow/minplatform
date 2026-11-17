@@ -7,10 +7,10 @@
 use crate::model::SortBy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Cmd { Sequences, Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, NewTab, CloseTab, NextTab, PrevTab, NewJob, Subscribe, Column(u8), CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit, Settings, Redo }
+pub enum Cmd { CheckForUpdates, Sequences, Preview, Copy, Cut, Paste, PasteMove, CopyToOther, MoveToOther, NewFolder, Rename, Duplicate, Trash, DeleteNow, Undo, NewWindow, NewTab, CloseTab, NextTab, PrevTab, NewJob, Subscribe, Column(u8), CloseWindow, Open, SelectAll, AsList, AsGrid, Hidden, FoldersFirst, SecondPane, Sort(u8), Refresh, Back, Forward, Up, Home, Desktop, Downloads, GoToFolder, Find, Minimize, Quit, Settings, Redo }
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]   // the ids are the native menu's (macOS)
 impl Cmd {
-    const ALL: [Cmd; 49] = [Cmd::Settings, Cmd::Redo, Cmd::Sequences, Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::NewTab, Cmd::CloseTab, Cmd::NextTab, Cmd::PrevTab, Cmd::NewJob, Cmd::Subscribe, Cmd::Column(1), Cmd::Column(2), Cmd::Column(3), Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
+    const ALL: [Cmd; 50] = [Cmd::CheckForUpdates, Cmd::Settings, Cmd::Redo, Cmd::Sequences, Cmd::Preview, Cmd::Copy, Cmd::Cut, Cmd::Paste, Cmd::PasteMove, Cmd::CopyToOther, Cmd::MoveToOther, Cmd::NewFolder, Cmd::Rename, Cmd::Duplicate, Cmd::Trash, Cmd::DeleteNow, Cmd::Undo, Cmd::NewWindow, Cmd::NewTab, Cmd::CloseTab, Cmd::NextTab, Cmd::PrevTab, Cmd::NewJob, Cmd::Subscribe, Cmd::Column(1), Cmd::Column(2), Cmd::Column(3), Cmd::CloseWindow, Cmd::Open, Cmd::SelectAll, Cmd::AsList, Cmd::AsGrid, Cmd::Hidden, Cmd::FoldersFirst, Cmd::SecondPane, Cmd::Sort(0), Cmd::Sort(1), Cmd::Sort(2), Cmd::Sort(3), Cmd::Refresh, Cmd::Back, Cmd::Forward, Cmd::Up, Cmd::Home, Cmd::Desktop, Cmd::Downloads, Cmd::GoToFolder, Cmd::Find, Cmd::Minimize, Cmd::Quit];
     pub fn id(self) -> String { format!("{self:?}") }
     pub fn from_id(id: &str) -> Option<Cmd> { Cmd::ALL.into_iter().find(|c| c.id() == id) }
 }
@@ -198,7 +198,12 @@ mod native {
             let app = Submenu::new("UFB", true);
             let about = AboutMetadata { name: Some("UFB".into()), version: Some(env!("CARGO_PKG_VERSION").into()), ..Default::default() };
             let quit = MenuItem::with_id(Cmd::Quit.id(), "Quit UFB", true, accel(Sc { cmd: true, shift: false, alt: false, key: "Q" }));
-            let _ = app.append_items(&[&PredefinedMenuItem::about(Some("About UFB"), Some(about)), &PredefinedMenuItem::separator(), &MenuItem::with_id(Cmd::Settings.id(), "Settings\u{2026}", true, accel(Sc { cmd: true, shift: false, alt: false, key: "," })), &PredefinedMenuItem::separator(),
+            // Check for Updates… is Sparkle's: in the RELEASE alone, which has the updater (row 545; QCView has it under About). It
+            // exists on macOS only - Windows is updated by the Microsoft Store and shows no such row anywhere.
+            let _ = app.append_items(&[&PredefinedMenuItem::about(Some("About UFB"), Some(about))]);
+            // (`UFB_MENU_UPDATES=1`: shown in another build too, for a look at the menu - there it finds no updater and does nothing)
+            if crate::identity::kind() == crate::identity::Kind::Release || std::env::var_os("UFB_MENU_UPDATES").is_some() { let _ = app.append_items(&[&MenuItem::with_id(Cmd::CheckForUpdates.id(), "Check for Updates\u{2026}", true, None)]); }
+            let _ = app.append_items(&[&PredefinedMenuItem::separator(), &MenuItem::with_id(Cmd::Settings.id(), "Settings\u{2026}", true, accel(Sc { cmd: true, shift: false, alt: false, key: "," })), &PredefinedMenuItem::separator(),
                 &PredefinedMenuItem::services(None), &PredefinedMenuItem::separator(), &PredefinedMenuItem::hide(None), &PredefinedMenuItem::hide_others(None), &PredefinedMenuItem::show_all(None), &PredefinedMenuItem::separator(), &quit]);
             let _ = menu.append(&app);
             for (title, nodes) in spec(true) { let sub = Submenu::new(title, true); fill(&sub, nodes, &mut checks, &mut items); let _ = menu.append(&sub); if title == "Window" { sub.set_as_windows_menu_for_nsapp(); } }

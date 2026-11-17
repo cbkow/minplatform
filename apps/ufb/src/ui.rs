@@ -1386,6 +1386,7 @@ impl Ui {
             Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all(), Focus::Items => {}, Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.select_all(&mut self.fonts); } } },
             // (the View menu's rows are remembered: they are the Settings card's switches, row 516)
             Cmd::Settings => self.open_prefs(),
+            Cmd::CheckForUpdates => { #[cfg(target_os = "macos")] crate::sparkle::check_now(); }
             Cmd::AsList => { self.pane().set_mode(Mode::List); crate::settings::with(|s| s.set_bool("view/grid", false)); } Cmd::AsGrid => { self.pane().set_mode(Mode::Grid); crate::settings::with(|s| s.set_bool("view/grid", true)); }
             Cmd::Hidden => { self.hidden = !self.hidden; let on = self.hidden; crate::settings::with(|s| s.set_bool("view/hidden", on)); for p in self.panes.iter_mut() { p.set_hidden(on); } for p in self.hidden_panes() { p.set_hidden(on); } }
             Cmd::FoldersFirst => { self.folders_first = !self.folders_first; let on = self.folders_first; crate::settings::with(|s| s.set_bool("view/folders_first", on)); for p in self.panes.iter_mut() { p.set_folders_first(on); } for p in self.hidden_panes() { p.set_folders_first(on); } }
