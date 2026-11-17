@@ -85,6 +85,14 @@ pub fn rows_for_board(by: &[String], on: bool) -> Vec<Row> { let mut rows: Vec<R
 pub fn rows_for_tracked() -> Vec<Row> { vec![ours(TRK_OPEN, "Open in Job"), Row::Reveal, Row::Sep, ours(META_TRACK, "Untrack")] }
 /// The rows for an item of a job's list.
 pub fn rows_for_item(tracked: bool) -> Vec<Row> { vec![ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep, ours(META_TRACK, if tracked { "Untrack" } else { "Mark as Tracked" })] }
+// The Sync entry of the sidebar (row 499).
+pub const SYNC_SET: u32 = 76; pub const SYNC_ONOFF: u32 = 77; pub const SYNC_AUTO: u32 = 78; pub const SYNC_LEAD: u32 = 79; pub const SYNC_NEVER: u32 = 80;
+/// `on`: sync is switched on in the settings; `leader`: "" | "leader" | "noleader" (the one in force is named).
+pub fn rows_for_sync(on: bool, leader: &str) -> Vec<Row> {
+    let tick = |is: bool, label: &str| -> Row { Row::Ours { id: 0, label: if is { format!("\u{2713} {label}") } else { label.to_string() }.into() } }; let with = |id: u32, r: Row| match r { Row::Ours { label, .. } => Row::Ours { id, label }, o => o };
+    vec![ours_row(SYNC_SET, "Sync Settings\u{2026}"), ours_row(SYNC_ONOFF, if on { "Turn Sync Off" } else { "Turn Sync On" }), Row::Sep,
+        with(SYNC_AUTO, tick(leader.is_empty(), "May Lead (Automatic)")), with(SYNC_LEAD, tick(leader == "leader", "Prefer This Machine as Leader")), with(SYNC_NEVER, tick(leader == "noleader", "Never Lead"))]
+}
 // A saved share of the sidebar (row 498).
 pub const SHARE_CONNECT: u32 = 70; pub const SHARE_DISCONNECT: u32 = 71; pub const SHARE_LAUNCH: u32 = 72; pub const SHARE_JOBS: u32 = 73; pub const SHARE_RENAME: u32 = 74; pub const SHARE_REMOVE: u32 = 75;
 /// `there`: it is connected (`ours`: by this application - only then can it be disconnected); `network`: it is a share with an address (a folder has nothing to connect); the two ticks as they stand.

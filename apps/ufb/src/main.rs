@@ -76,14 +76,10 @@ fn main() {
     // machine's name); `--mesh-only <folder>` keeps everything but that folder's rows out of it. A development build
     // runs at a TEST epoch (no installed UFB is of it) unless `UFB_MESH_EPOCH` says otherwise; `UFB_MESH_PORTS=c,d,u`.
     let arg = |name: &str| args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone());
-    if let Some(farm) = arg("--mesh") {
-        let host = std::env::var("COMPUTERNAME").ok().or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())).unwrap_or_else(|| "node".into());
-        let node: String = arg("--mesh-node").unwrap_or(host).chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
-        let ports: Vec<u16> = std::env::var("UFB_MESH_PORTS").ok().map(|p| p.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
-        let only = arg("--mesh-only").map(|p| db::to_identity(&std::path::absolute(&p).unwrap_or_else(|_| p.clone().into())));
-        mesh::start(mesh::Config { farm: std::path::absolute(&farm).unwrap_or_else(|_| farm.clone().into()), node, epoch: std::env::var("UFB_MESH_EPOCH").ok().and_then(|e| e.parse().ok()).unwrap_or(mesh::TEST_EPOCH),
-            ctl: ports.first().copied().unwrap_or(mesh::CTL_PORT), data: ports.get(1).copied().unwrap_or(mesh::DATA_PORT), udp: ports.get(2).copied().unwrap_or(mesh::UDP_PORT), tags: std::env::var("UFB_MESH_TAGS").ok().map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default(), only });
-    }
+    if let Some(farm) = arg("--mesh") { mesh::start_with(std::path::Path::new(&farm), &arg("--mesh-node").unwrap_or_default(), "", arg("--mesh-only").as_deref().map(std::path::Path::new)); }
+    // ... else what the Sync entry of the sidebar saved (row 499)
+    else { let (on, farm, node, leader, only) = settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only")));
+        if on && !farm.trim().is_empty() { mesh::start_with(std::path::Path::new(farm.trim()), &node, &leader, (!only.trim().is_empty()).then(|| std::path::Path::new(only.trim()))); } }
     shell::run(folder, favorites);
 }
 

@@ -48,7 +48,9 @@ use std::time::Duration;
 
 /// 1.4.2's numbers.
 #[allow(dead_code)]
-pub const EPOCH: u32 = 6; pub const CTL_PORT: u16 = 49221; pub const DATA_PORT: u16 = 49222; pub const UDP_PORT: u16 = 4265;
+pub const EPOCH: u32 = 6;
+// (1.4.2's ports: what the installed application will take - a development build never does, see `TEST_PORTS`)
+#[allow(dead_code)] pub const CTL_PORT: u16 = 49221; #[allow(dead_code)] pub const DATA_PORT: u16 = 49222; #[allow(dead_code)] pub const UDP_PORT: u16 = 4265;
 const GROUP: Ipv4Addr = Ipv4Addr::new(239, 42, 6, 3); const PASS: Duration = Duration::from_millis(3000); const DEAD_AFTER: u8 = 3;
 /// The snapshot (1.4.2's numbers): not oftener than every 30 s; written again every 10 min while there is something; another node's, younger than 60 s, is not written over; looked for every 10 s.
 const SNAP_EVERY: Duration = Duration::from_secs(30); const SNAP_REARM: Duration = Duration::from_secs(600); const SNAP_FENCE_MS: i64 = 60_000; const SNAP_LOOK: Duration = Duration::from_secs(10);
@@ -102,6 +104,26 @@ fn scope_of(v: &Value) -> String { v.get("job_path").and_then(|x| x.as_str()).ma
 fn local_ip() -> String { UdpSocket::bind("0.0.0.0:0").and_then(|s| { s.connect("192.0.2.1:9")?; s.local_addr() }).map(|a| a.ip().to_string()).unwrap_or_else(|_| "127.0.0.1".into()) }
 
 /// Start the node. Twice: nothing the second time.
+/// The ports a development build's node takes when nothing says otherwise: never 1.4.2's (an installed UFB on this
+/// machine holds those).
+pub const TEST_PORTS: (u16, u16, u16) = (49321, 49322, 4365);
+pub fn running() -> bool { SHARED.get().is_some() }
+/// This machine's name as a node's id: `given`, else the system's; only letters, digits, `-` and `_`.
+pub fn node_name(given: &str) -> String {
+    let name = if given.trim().is_empty() { std::env::var("COMPUTERNAME").ok().or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())).unwrap_or_else(|| "node".into()) } else { given.trim().to_string() };
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect()
+}
+/// The node is started from what the start-up arguments or the settings say (row 499). A development build runs at
+/// the TEST epoch and on the TEST ports unless `UFB_MESH_EPOCH` / `UFB_MESH_PORTS=c,d,u` say otherwise. `leader`:
+/// "" | "leader" | "noleader"; `only`: a folder - nothing but its rows takes part.
+pub fn start_with(farm: &std::path::Path, node: &str, leader: &str, only: Option<&std::path::Path>) {
+    let ports: Vec<u16> = std::env::var("UFB_MESH_PORTS").ok().map(|p| p.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+    let mut tags: Vec<String> = std::env::var("UFB_MESH_TAGS").ok().map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+    if !leader.is_empty() && !tags.iter().any(|t| t == leader) { tags.push(leader.to_string()); }
+    let abs = |p: &std::path::Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    start(Config { farm: abs(farm), node: node_name(node), epoch: std::env::var("UFB_MESH_EPOCH").ok().and_then(|e| e.parse().ok()).unwrap_or(TEST_EPOCH),
+        ctl: ports.first().copied().unwrap_or(TEST_PORTS.0), data: ports.get(1).copied().unwrap_or(TEST_PORTS.1), udp: ports.get(2).copied().unwrap_or(TEST_PORTS.2), tags, only: only.map(|p| crate::db::to_identity(&abs(p))) });
+}
 pub fn start(cfg: Config) {
     let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()), snap_needed: AtomicBool::new(true), snap_look: AtomicBool::new(true), written: AtomicU64::new(0), merged: AtomicU64::new(0), relayed: Default::default(), files_only: std::env::var_os("UFB_MESH_FILES_ONLY").is_some(), secret: Mutex::new(String::new()) });
     if SHARED.set(s.clone()).is_err() { return }
