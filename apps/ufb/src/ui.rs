@@ -84,6 +84,8 @@ struct SideRow { rect: Rect, path: Option<PathBuf>, enabled: bool, /// a subscri
     share: Option<usize> }
 
 /// Logical px.
+/// The rows the tasks' panel shows at a time.
+const TASK_ROWS: usize = 8;
 const LB_STRIP: f64 = 34.0; const LB_WEB_TOP: f64 = 52.0; const LB_BAR: f64 = 46.0; const TOOLBAR: f64 = 44.0; const JOB_BAR: f64 = 40.0; const JOB_LIST: f64 = 380.0; const JOB_LIST_MIN: f64 = 200.0; const TABS: f64 = 36.0; const TAB_PILL: f64 = 26.0; const TAB_MAX: f64 = 220.0; const STATUS: f64 = 26.0; const HEAD: f64 = 26.0; const SIDE_ROW: f64 = 28.0; const SIDE_MIN: f64 = 150.0; const SIDE_MAX: f64 = 420.0; const GAP: f64 = 5.0;
 
 /// A new pane shows what the settings say (row 516): hidden files, folders first, sequences as one entry, a grid.
@@ -161,7 +163,8 @@ pub struct Ui {
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
     recheck: Vec<Instant>,
     asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool, /// the tasks' panel (row 508): its card, a button a row (stop or dismiss), Clear Finished, the list as last seen
-    task_card: Rect, task_btns: Vec<(u64, ActionButton)>, task_clear: min_ui::text_button::TextButton, tasks_rev: u64,
+    task_card: Rect, /// how many rows the panel is scrolled back from its newest
+    task_off: usize, task_btns: Vec<(u64, ActionButton)>, task_clear: min_ui::text_button::TextButton, tasks_rev: u64,
     /// the context menu drawn by us (Windows, row 460; `UFB_DRAWN_MENU=1` shows it on macOS too, to look at): what each of its rows is, the files it is about, where it was asked for
     ctx: min_ui::Menu, ctx_rows: Vec<CtxRow>, ctx_paths: Vec<PathBuf>, ctx_at: (f64, f64),
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
@@ -204,7 +207,7 @@ impl Ui {
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
             lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
-            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -1112,7 +1115,7 @@ impl Ui {
     fn ask_password(&mut self, archive: PathBuf, wrong: bool) {
         use min_ui::{dialog::Dialog, text_button::Variant};
         let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut d = Dialog::new(&format!("\u{201c}{name}\u{201d} is locked with a password"), if wrong { "That password did not open it." } else { "" }, vec![("Cancel", Variant::Secondary), ("Extract", Variant::Primary)]).with_field("Password", ""); d.show_with("", &mut self.fonts);
+        let mut d = Dialog::new(&format!("\u{201c}{name}\u{201d} is locked with a password"), if wrong { "That password did not open it." } else { "" }, vec![("Cancel", Variant::Secondary), ("Extract", Variant::Primary)]).with_secret_field("Password", ""); d.show_with("", &mut self.fonts);
         self.dialog = Some((d, Asked::Password(archive)));
     }
     /// Quit: at once when nothing runs; with tasks running or waiting it is asked first (row 508, point 4 - nothing of
@@ -1284,6 +1287,8 @@ impl Ui {
         if self.lightbox.is_open() { return self.lightbox_wheel(dy) }
         let now = Instant::now(); let p = kurbo::Point::new(self.pointer.0, self.pointer.1);
         if self.menubar.as_ref().is_some_and(|m| m.bar.is_open()) { return }
+        // the tasks' panel scrolls through its rows, eight at a time in view (row 524)
+        if self.op_list && self.task_card.contains(p) { let n = crate::tasks::list().len(); let most = n.saturating_sub(TASK_ROWS); let step = if dy.abs() >= 20.0 { 1 } else { 0 }; self.task_off = if dy < 0.0 { (self.task_off + step).min(most) } else { self.task_off.saturating_sub(step) }; return }
         if self.side_rect.contains(p) { self.side_bar.wheel(dy, now); return }
         if self.tracker.is_none() && self.job_list.contains(p) { if let Some(b) = self.board.as_mut() { if self.mods.shift { b.hbar.wheel(dy, now); } else { b.bar.wheel(dy, now); } return } }
         if (self.job.is_some() || self.tracker.is_some()) && self.job_list.contains(p) { let shift = self.mods.shift; let l = self.list_mut(); if shift { l.hbar.wheel(dy, now); } else { l.bar.wheel(dy, now); } return }
@@ -1830,6 +1835,7 @@ impl Ui {
             "taskstop" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::cancel(t.id); },
             "taskdismiss" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::dismiss(t.id); },
             "taskclear" => crate::tasks::clear_finished(),
+            "taskscroll" => if let Some(n) = num(arg) { self.task_off = n; },
             // the Settings card: `prefs` (open it) `prefset:<hidden|foldersfirst|sequences|grid|sync>:<on|off>` `prefset:<farm|node|only>:<text>` `prefsave` `prefcancel` `prefsay`
             "prefs" => self.open_prefs(),
             "prefset" => if let (Some(p), Some((what, value))) = (self.prefs.as_mut(), arg.split_once(':')) { p.demo_set(what, value, &mut self.fonts); },
@@ -1847,7 +1853,7 @@ impl Ui {
             "enclosing" => self.show_enclosing(),
             "searchclear" => { self.search.clear(); let port = self.port.clone(); self.pane().leave_found(&port); self.pane().set_search(""); },
             "extract" => self.extract_chosen(), "compress" => self.compress_chosen(), "transcode" => self.transcode_chosen(),
-            "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.answer(1); },
+            "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.paste(arg, &mut self.fonts); } self.answer(1); },   // (as pasted: the field hides its text and takes none set from outside)
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
             "context" => { let at = if arg == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(n) = arg.strip_prefix("side").and_then(num) { self.side_rows.get(n).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(arg).and_then(|n| self.pane().row_point(n)) };
@@ -2220,7 +2226,8 @@ impl Ui {
             // twelve; a row's button stops what runs or waits and dismisses what is over
             self.task_card = Rect::ZERO; for (_, b) in self.task_btns.iter_mut() { b.rect = Rect::ZERO; } self.task_clear.rect = Rect::ZERO;
             if self.op_list {
-                let all = crate::tasks::list(); let tasks: Vec<&crate::tasks::Task> = all.iter().skip(all.len().saturating_sub(12)).collect();
+                let all = crate::tasks::list(); self.task_off = self.task_off.min(all.len().saturating_sub(TASK_ROWS)); let last = all.len() - self.task_off; let first = last.saturating_sub(TASK_ROWS);
+                let tasks: Vec<&crate::tasks::Task> = all[first..last].iter().collect();
                 if tasks.is_empty() { self.op_list = false; } else {
                     let (running, st) = (crate::ops::running_task(), crate::ops::status());
                     let (rh, pw, foot, bh) = (44.0 * s, 460.0 * s, 40.0 * s, t::ACTION_BUTTON_HEIGHT_S as f64 * s);
@@ -2244,7 +2251,8 @@ impl Ui {
                         if i > 0 { paint::hline(scene, card.x0 + 12.0 * s, card.x1 - 12.0 * s, y0, s, t::DIVIDER_COLOR); }
                     }
                     let fy = card.y1 - foot; paint::hline(scene, card.x0, card.x1, fy, s, t::DIVIDER_COLOR);
-                    self.task_clear.enabled = tasks.iter().any(|t| t.state.over()); let (cw, ch) = self.task_clear.measure(fonts, s);
+                    if all.len() > tasks.len() { let l = fonts.layout(&format!("{}\u{2013}{} of {}", first + 1, last, all.len()), Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub); draw_layout(scene, &l, Affine::translate((card.x0 + 12.0 * s, fy + (foot - l.height() as f64) / 2.0))); }
+                    self.task_clear.enabled = all.iter().any(|t| t.state.over()); let (cw, ch) = self.task_clear.measure(fonts, s);
                     self.task_clear.rect = Rect::new(card.x1 - 10.0 * s - cw, fy + (foot - ch) / 2.0, card.x1 - 10.0 * s, fy + (foot + ch) / 2.0); self.task_clear.paint(scene, fonts, s, now);
                 }
             }
