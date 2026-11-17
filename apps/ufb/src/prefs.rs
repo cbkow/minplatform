@@ -29,7 +29,8 @@ pub struct Prefs {
     tab: usize, tabs: [TextButton; 4],
     focus: usize, cancel: TextButton, save: TextButton, error: Option<String>, picked: Arc<Mutex<Option<String>>>,
     /// sync's settings as they were when the card opened (changed: sync is started again on Save)
-    was: (bool, String, String, String),
+    was: (bool, String, String, String), /// Sync: whether this machine may lead - as it finds (0), preferred (1), never (2) - the sidebar entry's three, here too (row 552)
+    lead: usize, lead_was: usize, lead_btns: Vec<TextButton>,
 }
 struct Pair { id: String, name: String, win: TextField, mac: TextField, was: (String, String), here: String }
 struct Row { name: TextField, win: TextField, mac: TextField, on: Switch, remove: TextButton, was: Option<(String, String)>, here: String }
@@ -67,13 +68,15 @@ impl Prefs {
         let pairs: Vec<Pair> = shares.iter().enumerate().map(|(i, sh)| Pair { id: sh.id.clone(), name: sh.name.clone(), win: field(&sh.win, "\\\\server\\share or P:\\", fonts), mac: field(&sh.mac, "/Volumes/Name", fonts), was: (sh.win.clone(), sh.mac.clone()), here: here_words(&sh.win, &sh.mac, states.get(i), &mounts, &vols) }).collect();
         let maps: Vec<Row> = crate::shares::load_manual().into_iter().map(|m| { let here = here_words(&m.win, &m.mac, None, &mounts, &vols); Row { name: field(&m.name, "Name", fonts), win: field(&m.win, "\\\\server\\share or P:\\", fonts), mac: field(&m.mac, "/Volumes/Name", fonts), on: Switch::new(m.on), remove: TextButton::new("Remove", Variant::Secondary).size_s(), was: Some((m.win, m.mac)), here } }).collect();
         let (hidden, folders_first, sequences, grid) = view();
+        let lead = match crate::settings::with(|s| s.string("sync/leader")).as_str() { "leader" => 1, "noleader" => 2, _ => 0 };
         let (on, farm, node, only, sign_in) = crate::settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/only"), s.bool("general/start_at_sign_in")));
         // (start at sign-in is the installed application's: how it stands is the SYSTEM's to say, not a setting of ours)
         let _ = sign_in; let mut sign = Switch::new(crate::login::enabled()); sign.enabled = crate::login::available();
         let mut me = Prefs { hidden: Switch::new(hidden), folders_first: Switch::new(folders_first), sequences: Switch::new(sequences), grid: Switch::new(grid), second: Switch::new(crate::settings::with(|s| s.bool("view/second_pane"))), sign_in: sign,
             sync: Switch::new(on), farm: field(&farm, "a folder on shared storage", fonts), browse: TextButton::new("Browse", Variant::Secondary).size_s(), node: field(&node, &crate::mesh::node_name(""), fonts), only: field(&only, "a folder; empty: everything shared", fonts),
             pairs, maps, add: TextButton::new("Add Mapping", Variant::Secondary).size_s(), confirmed: false, notices: TextButton::new("Licence Notices", Variant::Secondary).size_s(), updates: TextButton::new("Check for Updates\u{2026}", Variant::Secondary).size_s(), tab: 0, tabs: ["General", "Sync", "Path mappings", "About"].map(|n| TextButton::new(n, Variant::Secondary).size_s()),
-            focus: 0, cancel: TextButton::new("Cancel", Variant::Secondary), save: TextButton::new("Save", Variant::Primary), error: None, picked: Arc::new(Mutex::new(None)), was: (on, farm, node, only) };
+            focus: 0, cancel: TextButton::new("Cancel", Variant::Secondary), save: TextButton::new("Save", Variant::Primary), error: None, picked: Arc::new(Mutex::new(None)), was: (on, farm, node, only), lead, lead_was: lead,
+            lead_btns: ["Automatic", "Prefer this machine", "Never lead"].iter().map(|l| TextButton::new(l, Variant::Secondary).size_s()).collect() };
         me.set_focus(usize::MAX); me
     }
     fn fields(&mut self) -> Vec<&mut TextField> { let mut v: Vec<&mut TextField> = vec![&mut self.farm, &mut self.node]; if crate::identity::belt() { v.push(&mut self.only); } for p in self.pairs.iter_mut() { v.push(&mut p.win); v.push(&mut p.mac); } for m in self.maps.iter_mut() { v.push(&mut m.name); v.push(&mut m.win); v.push(&mut m.mac); } v }
@@ -105,16 +108,17 @@ impl Prefs {
         let pairs: Vec<(String, String, String)> = self.pairs.iter().map(|p| (p.id.clone(), t(&p.win), t(&p.mac))).collect();
         // start at sign-in: asked of the system when the switch was moved; what it will not do is said, and nothing is saved
         if self.sign_in.enabled && self.sign_in.on != crate::login::enabled() { if let Err(why) = crate::login::set(self.sign_in.on) { self.tab = 0; self.sign_in.set(crate::login::enabled(), Instant::now()); self.error = Some(why); return Out::None } }
+        let lead_changed = self.lead != self.lead_was; crate::settings::with(|s| s.set_str("sync/leader", ["", "leader", "noleader"][self.lead.min(2)]));
         let now = (self.sync.on, farm, node, only);
         SECOND_CHANGED.store(crate::settings::with(|s| s.bool("view/second_pane")) != self.second.on, std::sync::atomic::Ordering::Relaxed);
         crate::settings::with(|s| { s.set_bool("view/hidden", self.hidden.on); s.set_bool("view/folders_first", self.folders_first.on); s.set_bool("view/sequences", self.sequences.on); s.set_bool("view/grid", self.grid.on); s.set_bool("view/second_pane", self.second.on);
             s.set_bool("sync/on", now.0); s.set_str("sync/farm", &now.1); s.set_str("sync/node", &now.2); s.set_str("sync/only", &now.3); });
-        Out::Saved { sync: now != self.was, pairs, rekeys }
+        Out::Saved { sync: now != self.was || lead_changed, pairs, rekeys }
     }
     /// (scripted looks) set a switch or a field by its name, as a hand would.
     pub fn demo_set(&mut self, what: &str, value: &str, fonts: &mut Fonts) {
         let (on, now) = (matches!(value, "on" | "1" | "true"), Instant::now()); self.error = None;
-        match what { "hidden" => self.hidden.set(on, now), "foldersfirst" => self.folders_first.set(on, now), "sequences" => self.sequences.set(on, now), "grid" => self.grid.set(on, now), "secondpane" => self.second.set(on, now), "sync" => self.sync.set(on, now),
+        match what { "hidden" => self.hidden.set(on, now), "foldersfirst" => self.folders_first.set(on, now), "sequences" => self.sequences.set(on, now), "grid" => self.grid.set(on, now), "secondpane" => self.second.set(on, now), "leader" => self.lead = match value { "leader" | "prefer" => 1, "never" | "noleader" => 2, _ => 0 }, "sync" => self.sync.set(on, now),
             "farm" => self.farm.set_text_end(value, fonts), "node" => self.node.set_text_end(value, fonts), "only" => self.only.set_text_end(value, fonts), _ => {} }
     }
     /// (scripted looks) the mappings: `add`, `<n>:<name|win|mac>:<text>`, `<n>:on|off|remove`; `share`: the n-th saved share's pair instead.
@@ -135,6 +139,7 @@ impl Prefs {
     pub fn pointer(&mut self, e: &Event, fonts: &mut Fonts) -> Out {
         let now = Instant::now();
         if self.cancel.event(e, now).0 { return Out::Close } if self.save.event(e, now).0 { return self.commit() }
+        if self.tab == 1 { let mut to = None; for (k, b) in self.lead_btns.iter_mut().enumerate() { if b.rect.width() > 0.0 && b.event(e, now).0 { to = Some(k); } } if let Some(k) = to { self.lead = k; self.error = None; return Out::None } }
         { let mut to = None; for (k, b) in self.tabs.iter_mut().enumerate() { if b.event(e, now).0 { to = Some(k); } } if let Some(k) = to { self.tab = k; self.set_focus(usize::MAX); return Out::None } }
         if self.browse.event(e, now).0 { let (picked, at) = (self.picked.clone(), self.farm.text().to_string()); std::thread::spawn(move || { let mut d = rfd::FileDialog::new().set_title("The farm's folder"); if std::path::Path::new(&at).is_dir() { d = d.set_directory(&at); } if let Some(p) = d.pick_folder() { *picked.lock().unwrap() = Some(p.to_string_lossy().into_owned()); } }); return Out::None }
         for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.second, &mut self.sync, &mut self.sign_in] { sw.event(e, now); }
@@ -163,9 +168,9 @@ impl Prefs {
         let c = paint::color; let pad = t::DIALOG_PADDING as f64 * s; let (ink, sub) = (c(t::NEUTRAL_CONTENT_COLOR_DEFAULT), c(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)); let (row, fh, head) = (34.0 * s, 30.0 * s, 30.0 * s);
         let map_row = row + 18.0 * s;
         // (what is not shown takes no press: every place is given anew below, by the section in view)
-        for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.second, &mut self.sign_in, &mut self.sync] { sw.rect = Rect::ZERO; } self.browse.rect = Rect::ZERO; self.add.rect = Rect::ZERO; self.notices.rect = Rect::ZERO; self.updates.rect = Rect::ZERO;
+        for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.second, &mut self.sign_in, &mut self.sync] { sw.rect = Rect::ZERO; } self.browse.rect = Rect::ZERO; for b in self.lead_btns.iter_mut() { b.rect = Rect::ZERO; } self.add.rect = Rect::ZERO; self.notices.rect = Rect::ZERO; self.updates.rect = Rect::ZERO;
         for f in self.fields() { f.layout(fonts, Rect::ZERO, s); } for m in self.maps.iter_mut() { m.on.rect = Rect::ZERO; m.remove.rect = Rect::ZERO; }
-        let body = 40.0 * s + (head + 6.0 * row + 40.0 * s).max(head + 22.0 * s + (self.pairs.len() + self.maps.len()) as f64 * (map_row + 20.0 * s) + 34.0 * s).max(head + row + 3.0 * (row + 4.0 * s) + 20.0 * s + 56.0 * s) + 34.0 * s;
+        let body = 40.0 * s + (head + 6.0 * row + 40.0 * s).max(head + 22.0 * s + (self.pairs.len() + self.maps.len()) as f64 * (map_row + 20.0 * s) + 34.0 * s).max(head + row + 4.0 * (row + 4.0 * s) + 40.0 * s + 56.0 * s) + 34.0 * s;
         let (w, h) = ((760.0 * s).min(view.width() - 48.0 * s), (pad * 2.0 + 40.0 * s + body + 56.0 * s).min(view.height() - 24.0 * s)); let (x0, y0) = (view.x0 + (view.width() - w) / 2.0, view.y0 + (view.height() - h) / 2.0); let card = Rect::new(x0, y0, x0 + w, y0 + h);
         paint::rect(scene, view, t::DIALOG_SCRIM_COLOR); let rad = t::DIALOG_CORNER_RADIUS as f64 * s;
         for sh in t::POPOVER_SHADOW { scene.draw_blurred_rounded_rect(Affine::translate((sh.x as f64 * s, sh.y as f64 * s)), card.inflate(sh.spread as f64 * s, sh.spread as f64 * s), c(sh.color), rad, (sh.blur as f64 * s / 2.0).max(0.1)); }
@@ -202,14 +207,18 @@ impl Prefs {
         line(scene, fonts, "Sync", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
         panel(scene, y, y + row + 12.0 * s); y += 6.0 * s;
         toggle(scene, fonts, "Sync metadata with the other machines", &mut self.sync, &format!("now: {}", crate::ui::Ui::sync_words()), &mut y);
-        y += 6.0 * s + 10.0 * s; panel(scene, y, y + if crate::identity::belt() { 3.0 } else { 2.0 } * (row + 4.0 * s) + 12.0 * s); y += 8.0 * s;
+        y += 6.0 * s + 10.0 * s; panel(scene, y, y + if crate::identity::belt() { 4.0 } else { 3.0 } * (row + 4.0 * s) + 12.0 * s); y += 8.0 * s;
         let dim = if self.sync.on { ink } else { sub };
         line(scene, fonts, "Farm folder", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); let bw = self.browse.measure(fonts, s).0;
         self.farm.layout(fonts, Rect::new(fx, y, x1 - bw - 8.0 * s, y + fh), s); self.farm.paint(scene, fonts, s); self.browse.rect = Rect::new(x1 - bw, y + 3.0 * s, x1, y + fh - 3.0 * s); self.browse.paint(scene, fonts, s, now); y += row + 4.0 * s;
         line(scene, fonts, "This machine's name", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s); self.node.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.node.paint(scene, fonts, s); y += row + 4.0 * s;
         // (the development build's belt for sync - row 494: not a setting of the test package or of the release)
+        // who leads: one machine of the studio keeps the snapshot the others catch up from
+        line(scene, fonts, "Leader", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 180.0 * s);
+        { let mut x = fx; for (k, b) in self.lead_btns.iter_mut().enumerate() { b.variant = if k == self.lead { Variant::Primary } else { Variant::Secondary }; let (bw, bh) = b.measure(fonts, s); b.rect = Rect::new(x, y + (fh - bh) / 2.0, x + bw, y + (fh + bh) / 2.0); b.paint(scene, fonts, s, now); x += bw + 8.0 * s; } } y += row + 4.0 * s;
         if crate::identity::belt() { line(scene, fonts, "Only under (development build)", lx, y + fh / 2.0, t::BODY_SIZE_S, false, dim, 220.0 * s); self.only.layout(fonts, Rect::new(fx, y, x1, y + fh), s); self.only.paint(scene, fonts, s); y += row + 4.0 * s; }
         y += 8.0 * s; line(scene, fonts, "The farm's folder is the one every machine shares; each machine has a name of its own in it.", ox0, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
+        line(scene, fonts, "One machine leads and keeps the snapshot the others catch up from. Automatic lets the machines settle it.", ox0, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
         }
         if self.tab == 2 {
         // -- Path mappings: a saved share's pair, then the hand-written ones; under each, where it is on this machine now
