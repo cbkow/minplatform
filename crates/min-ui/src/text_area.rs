@@ -89,6 +89,10 @@ impl TextArea {
           match e { ImeEvent::Preedit(text, cursor) => if text.is_empty() { d.clear_compose() } else { d.set_compose(text, *cursor) }, ImeEvent::Commit(text) => d.insert_or_replace_selection(text) } }
         self.follow_caret(fonts);
     }
+    /// Text put in at the caret, in the place of what is chosen (a paste): its line breaks stay, other control characters go.
+    pub fn paste(&mut self, text: &str, fonts: &mut Fonts) { let clean: String = text.replace("\r\n", "\n").chars().filter(|c| !c.is_control() || *c == '\n').collect(); if clean.is_empty() { return } { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.insert_or_replace_selection(&clean); } self.follow_caret(fonts); }
+    /// What is chosen, for a copy; `cut`: it is taken out too.
+    pub fn copy(&mut self, cut: bool, fonts: &mut Fonts) -> Option<String> { let t = self.editor.selected_text().filter(|t| !t.is_empty())?.to_string(); if cut { { let mut d = self.editor.driver(&mut fonts.font_cx, &mut fonts.layout_cx); d.delete_selection(); } self.follow_caret(fonts); } Some(t) }
     pub fn key(&mut self, k: &KeyEvent, fonts: &mut Fonts) -> FieldResponse {
         if !self.focused { return FieldResponse::None }
         let before = self.editor.raw_text().to_string();

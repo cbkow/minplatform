@@ -69,6 +69,8 @@ enum ShareNews { /// how each stands (by its id)
 enum Made { /// a `union:` link's target was looked for (off the window's thread: a share may be slow): it is shown in the file manager, or said to be gone
     Shown(PathBuf, bool), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
     Relink(PathBuf, Option<PathBuf>) }
+/// A notes or links cell open for writing: several lines, in a card of its own by the cell.
+struct NoteEdit { item: PathBuf, col: usize, title: String, area: min_ui::text_area::TextArea, card: Rect, at: (f64, f64) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split, /// the item list's edge in a job (the pointer's x and the width at the press)
     JobList(f64, f64) }
@@ -107,7 +109,8 @@ pub struct Ui {
     job_list: Rect, panes_x0: f64, /// the item list itself (row 489): its columns, what the items carry, its field; the foot's Columns button; what its last menu was about (the column in view, the item, the columns that can be shown again, those in the trash)
     /// the chips (row 490): the popover that picks a dropdown cell's value; a column's editor (a question of its own, over everything)
     chip: Option<crate::chips::ChipPicker>, coledit: Option<crate::chips::ColumnEditor>, /// the Settings card (row 516)
-    prefs: Option<crate::prefs::Prefs>,
+    prefs: Option<crate::prefs::Prefs>, /// a notes or links cell being written in its own small editor (row 529)
+    note: Option<NoteEdit>,
     /// the tracker the tab in front shows, if it shows one (row 491): a job's (beside its sections), or All Tracked;
     /// its button in a job's bar, the Due chips, its last press (two on one row open the item)
     /// the board (row 492): the section in front shown as lanes of cards in the item list's place; what each (job, section) is grouped by, while the window lives; its button at the list's foot; the columns its last menu offered
@@ -199,7 +202,7 @@ impl Ui {
         Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: crate::settings::with(|s| s.float("window/split")), pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
-            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, prefs: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: view.0, folders_first: view.1,
+            job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, prefs: None, note: None, board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: view.0, folders_first: view.1,
             side_w: { let w = crate::settings::with(|s| s.float("window/sidebar")); if w > 0.0 { w.clamp(SIDE_MIN, SIDE_MAX) } else { t::RAIL_WIDTH_MIN as f64 } }, side_rect: Rect::ZERO, sections: [Section::new("Favorites", true), Section::new("Shares", true), Section::new("Jobs", true), Section::new("Places", true)], favorites, fixed: places::fixed(), volumes: vec![], root: String::new(), side_bar: ScrollBar::default(), side_rows: vec![], side_hover: None,
             back: icon_button("arrow-left", key(Cmd::Back, "Back")), forward: icon_button("arrow-right", key(Cmd::Forward, "Forward")), up: icon_button("arrow-up", key(Cmd::Up, "Enclosing folder")),
             list_btn: icon_button("list", key(Cmd::AsList, "List")), grid_btn: icon_button("squares-four", key(Cmd::AsGrid, "Grid")), pane2_btn: icon_button("columns", "Second pane  (Tab switches panes)".to_string()), size: Slider::new(((96.0 - grid::TILE_MIN) / (grid::TILE_MAX - grid::TILE_MIN)) as f32), search,
@@ -218,7 +221,7 @@ impl Ui {
     /// The tab in front is put into its place in the list, or taken out of it (the same exchange both ways).
     fn swap_tab(&mut self) { let t = &mut self.tabs[self.tab]; std::mem::swap(&mut self.panes, &mut t.panes); std::mem::swap(&mut self.active, &mut t.active); std::mem::swap(&mut self.two, &mut t.two); std::mem::swap(&mut self.split, &mut t.split); std::mem::swap(&mut self.job, &mut t.job); std::mem::swap(&mut self.tracker, &mut t.tracker); }
     /// What belongs to the tab in front and does not go with it is ended: a name or a path being typed, an open menu, the lightbox.
-    fn leave_tab(&mut self) { if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.board = None; self.items.edit = None; if let Some(t) = self.tracker.as_mut() { t.list.edit = None; } self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
+    fn leave_tab(&mut self) { self.note = None; if self.lightbox.is_open() { self.close_lightbox(); } self.end_rename(); self.leave_path(); self.leave_search(); self.ctx.close(); self.menu_for = None; self.rename_next = None; self.crumbs_for = None; self.side_hover = None; self.board = None; self.items.edit = None; if let Some(t) = self.tracker.as_mut() { t.list.edit = None; } self.chip = None; self.coledit = None; self.job_secs_for.clear(); self.focus = Focus::Pane; }
     /// The tab now in front is looked at again: its folders may have changed while it was behind.
     fn enter_tab(&mut self) { let port = self.port.clone(); let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); } if let Some(j) = self.job.as_mut() { j.reload(); } }
     fn show_tab(&mut self, i: usize) { if i == self.tab || i >= self.tabs.len() { return } self.leave_tab(); self.swap_tab(); self.tab = i; self.swap_tab(); self.enter_tab(); }
@@ -344,7 +347,20 @@ impl Ui {
     fn edit_cell(&mut self, item: usize, col: usize) {
         match self.tracker.as_mut() { Some(t) => { let Some(path) = t.rows.get(item).map(|r| r.path.clone()) else { return }; if t.target(&path, col).is_none() { return } t.list.begin_edit(&mut self.fonts, &t.rows, item, col); }
             None => if let Some(j) = self.job.as_ref() { self.items.begin_edit(&mut self.fonts, &j.items, item, col); } }
+        // notes and links hold several lines: they are written in a small editor by the cell, not in the row (row 529)
+        let wide = { let l = self.list_ref(); l.edit.as_ref().and_then(|e| l.cols.get(e.col).map(|c| (crate::db::kind_of(&c.kind), c.name.clone()))).filter(|(k, _)| matches!(*k, "notes" | "links")) };
+        if let (Some((_, title)), Some(e)) = (wide, self.list_mut().edit.take()) {
+            let mut area = min_ui::text_area::TextArea::new(Family::Sans, t::BODY_SIZE_S); area.set_text(e.field.text()); area.focused = true;
+            self.leave_path(); self.leave_search(); self.chip = None; self.note = Some(NoteEdit { item: e.item, col: e.col, title, area, card: Rect::ZERO, at: self.pointer }); return
+        }
         if self.list_mut().edit.is_some() { self.leave_path(); self.leave_search(); self.focus = Focus::Cell; }
+    }
+    fn list_ref(&self) -> &crate::itemlist::ItemList { match self.tracker.as_ref() { Some(t) => &t.list, None => &self.items } }
+    /// The small editor's text becomes the cell's value (nothing typed: the cell is cleared); or it is left as it was.
+    fn note_done(&mut self, save: bool) {
+        let Some(n) = self.note.take() else { return }; if !save { return }
+        let text = n.area.text().trim_end().to_string(); let v = if text.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(text) };
+        if let Some((job, sec, c)) = self.cell_target(&n.item, n.col) { let r = crate::db::with(|d| d.set_field(&job, &n.item, &sec, &c.uuid, v)); self.meta_err(r); } self.reload_lists();
     }
     /// The list in front: the tracker's, or the section's item list.
     fn list_mut(&mut self) -> &mut crate::itemlist::ItemList { match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items } }
@@ -745,7 +761,7 @@ impl Ui {
         }
     }
     /// A text is being typed somewhere (a field of the window, or of an open question).
-    fn text_focus(&self) -> bool { self.chip.is_some() || self.coledit.is_some() || self.prefs.as_ref().is_some_and(|p| p.typing()) || matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
+    fn text_focus(&self) -> bool { self.note.is_some() || self.chip.is_some() || self.coledit.is_some() || self.prefs.as_ref().is_some_and(|p| p.typing()) || matches!(self.focus, Focus::Path | Focus::Search | Focus::Rename | Focus::Cell) || self.dialog.as_ref().is_some_and(|(d, _)| !d.fields.is_empty()) }
 
     /// Every pane of the tabs that are behind.
     fn hidden_panes(&mut self) -> impl Iterator<Item = &mut Pane> { self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) }
@@ -1256,7 +1272,7 @@ impl Ui {
     pub fn command(&mut self, c: Cmd) {
         let port = self.port.clone();
         // while the lightbox is open the window's own commands and Preview act; the browser's wait
-        if (self.coledit.is_some() || self.prefs.is_some()) && !matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::Minimize | Cmd::Quit) { return }
+        if (self.coledit.is_some() || self.prefs.is_some() || self.note.is_some()) && !matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::Minimize | Cmd::Quit) { return }
         if self.chip.is_some() { self.chip = None; }
         if self.lightbox.is_open() && !matches!(c, Cmd::Preview | Cmd::CloseWindow | Cmd::Minimize | Cmd::Quit | Cmd::NewWindow | Cmd::NewTab | Cmd::CloseTab | Cmd::NextTab | Cmd::PrevTab) { return }
         // the commands that change files act on the pane's choice: not while a name, a path or a search is being typed,
@@ -1442,6 +1458,9 @@ impl Ui {
         // a column's editor is a question of its own: it takes everything; the chips' popover takes the pointer while it is open
         if let Some(p) = self.prefs.as_mut() { let out = p.pointer(e, &mut self.fonts); self.prefs_done(out); return }
         if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.event(e, &mut self.fonts, now) { self.column_done(done); } return }
+        // the small editor of a notes cell: the pointer is its own inside its card; a press outside it saves and closes
+        if let Some(n) = self.note.as_mut() { let inside = e.pos().is_some_and(|(x, y)| n.card.contains(kurbo::Point::new(x, y)));
+            if matches!(e, Event::Down { .. }) && !inside { self.note_done(true); return } n.area.pointer(e, &mut self.fonts); return }
         if let Some(p) = self.chip.as_mut() { let (pick, close) = p.event(e); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
         // the drawn context menu takes the pointer while it is open
         if self.ctx.is_open() { let (chosen, _, consumed) = self.ctx.event(e); if let Some(i) = chosen { self.ctx_pick(i); } if consumed { return } }
@@ -1615,13 +1634,13 @@ impl Ui {
         self.set_cursor(if self.over_gap == Some(1) && self.stacked { winit31::cursor::CursorIcon::RowResize } else if resizing { winit31::cursor::CursorIcon::ColResize } else if text { winit31::cursor::CursorIcon::Text } else { winit31::cursor::CursorIcon::Default });
     }
     /// Text from the clipboard, at the command key with V in a text field. (The window asks for it; this type holds no clipboard.)
-    pub fn paste(&mut self, text: &str) { if let Some(p) = self.prefs.as_mut() { p.paste(text, &mut self.fonts); return } if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { d.paste(text, &mut self.fonts); self.dialog_preview(); return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); } } Focus::Pane | Focus::Items => {} } }
+    pub fn paste(&mut self, text: &str) { if let Some(n) = self.note.as_mut() { n.area.paste(text, &mut self.fonts); return } if let Some(p) = self.prefs.as_mut() { p.paste(text, &mut self.fonts); return } if let Some(ed) = self.coledit.as_mut() { ed.paste(text, &mut self.fonts); return } if self.chip.is_some() { return } if let Some((d, _)) = self.dialog.as_mut() { d.paste(text, &mut self.fonts); self.dialog_preview(); return } match self.focus { Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.error = false; r.field.paste(text, &mut self.fonts); }, Focus::Path => { self.field.paste(text, &mut self.fonts); } Focus::Search => { if self.search.paste(text, &mut self.fonts) == FieldResponse::Changed { let t = self.search.text().to_string(); self.pane().set_search(&t); } } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.error = false; e.field.paste(text, &mut self.fonts); } } Focus::Pane | Focus::Items => {} } }
     /// A key for the drawn menu bar: (the command of the row chosen, redraw, the key was the bar's).
     pub fn with_menu_key(&mut self, k: &min_ui::BarKey) -> (Option<Cmd>, bool, bool) { match self.menubar.as_mut() { Some(mb) => { let (id, redraw, consumed) = mb.bar.key(k, &mut self.fonts); (id.and_then(|i| mb.cmd(i)), redraw, consumed) } None => (None, false, false) } }
     /// A text field holds the keyboard (the clipboard's keys are its).
     pub fn typing(&self) -> bool { self.text_focus() }
     /// The chosen text of the field in hand, for a copy; `cut` takes it out.
-    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(p) = self.prefs.as_mut() { return p.copy(cut, &mut self.fonts) } if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.copy(cut, &mut self.fonts); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; l.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)) } Focus::Pane | Focus::Items => None } }
+    pub fn copy(&mut self, cut: bool) -> Option<String> { if let Some(n) = self.note.as_mut() { return n.area.copy(cut, &mut self.fonts) } if let Some(p) = self.prefs.as_mut() { return p.copy(cut, &mut self.fonts) } if let Some(ed) = self.coledit.as_mut() { return ed.copy(cut, &mut self.fonts) } if self.chip.is_some() { return None } if let Some((d, _)) = self.dialog.as_mut() { let r = d.copy(cut, &mut self.fonts); if cut { self.dialog_preview(); } return r } match self.focus { Focus::Rename => self.rename.as_mut().and_then(|r| r.field.copy(cut, &mut self.fonts)), Focus::Path => self.field.copy(cut, &mut self.fonts), Focus::Search => { let r = self.search.copy(cut, &mut self.fonts); if cut { let t = self.search.text().to_string(); self.pane().set_search(&t); } r } Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; l.edit.as_mut().and_then(|e| e.field.copy(cut, &mut self.fonts)) } Focus::Pane | Focus::Items => None } }
     /// A key. `name`: the key as the key map names it ("N", "[", "Up", "F5"); `alt`: the Alt / Option key is down;
     /// `menu_keys`: the system's menu bar answers the command-key shortcuts itself (macOS), so they are not taken here.
     pub fn key(&mut self, k: &KeyEvent, name: &str, alt: bool, menu_keys: bool) {
@@ -1630,6 +1649,8 @@ impl Ui {
         if let Some(p) = self.prefs.as_mut() { let out = p.key(k, &mut self.fonts); self.prefs_done(out); return }
         if let Some(ed) = self.coledit.as_mut() { if let Some(done) = ed.key(k, &mut self.fonts) { self.column_done(done); } return }
         if matches!(k.key, Key::Named(Named::Escape)) && self.board.as_mut().is_some_and(|b| b.cancel_drag()) { return }
+        // (Return is a new line in a note; the command key with Return saves, Escape leaves it as it was)
+        if let Some(n) = self.note.as_mut() { match n.area.key(k, &mut self.fonts) { FieldResponse::Accepted => self.note_done(true), FieldResponse::Cancelled => self.note_done(false), _ => {} } return }
         if let Some(p) = self.chip.as_mut() { let s = self.window.scale_factor(); let (pick, close) = p.key(k, &mut self.fonts, s); let (item, col) = (p.item.clone(), p.col); if close { self.chip = None; } if let Some(pick) = pick { self.chip_picked(item, col, pick); } return }
         if self.ctx.is_open() { if matches!(k.key, Key::Named(Named::Escape)) { self.ctx.close(); } return }
         // an open question: Return and Escape both give its last button - the careful answer; a button is pressed by the mouse
@@ -1756,7 +1777,10 @@ impl Ui {
             // the items' metadata: `col:<type>:<name>[:<options>]` (a column added) `cell:<item>:<column>:<text>` (typed into a cell, as its field would)
             // `star:<item>` `check:<item>:<column>` `option:<item>:<column>:<n>` `colsort:<name|modified|column number>` `colmenu[:<column>]` `colpick:<row>` `meta` (says the list)
             "col" => { let mut p = arg.splitn(3, ':'); if let (Some(kind), Some(name), Some((job, sec))) = (p.next(), p.next(), self.section_key()) { let opts = crate::itemlist::parse_options(p.next().unwrap_or("")); let r = crate::db::with(|d| d.add_column(&job, &sec, name, kind, &opts).map(|_| ())); self.meta_err(r); self.items_reload(); } },
-            "cell" => { let mut p = arg.splitn(3, ':'); if let (Some(i), Some(k), Some(text)) = (p.next().and_then(num), p.next().and_then(num), p.next()) { self.edit_cell(i, k); if let Some(e) = self.list_mut().edit.as_mut() { e.field.set_text(text); } let ok = self.commit_cell(); if !ok { eprintln!("UFB_DEMO: the cell did not take {text:?}"); self.cancel_cell(); } } },
+            "cell" => { let mut p = arg.splitn(3, ':'); if let (Some(i), Some(k), Some(text)) = (p.next().and_then(num), p.next().and_then(num), p.next()) { self.edit_cell(i, k);
+                // (a notes or links cell opens its small editor: `\n` in the step's text is a new line)
+                if let Some(n) = self.note.as_mut() { n.area.set_text(&text.replace("\\n", "\n")); self.note_done(true); return } if let Some(e) = self.list_mut().edit.as_mut() { e.field.set_text(text); } let ok = self.commit_cell(); if !ok { eprintln!("UFB_DEMO: the cell did not take {text:?}"); self.cancel_cell(); } } },
+            "notesay" => eprintln!("UFB_DEMO: note open: {:?}", self.note.as_ref().map(|n| n.area.text().to_string())), "notecancel" => self.note_done(false),
             "celledit" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { self.edit_cell(i, k); } },
             "star" => if let Some(i) = num(arg) { if self.tracker.is_some() { self.tracker_acts(vec![crate::itemlist::Act::Star(i)]); } else { self.items_acts(vec![crate::itemlist::Act::Star(i)]); } },
             "check" => { let mut p = arg.splitn(2, ':'); if let (Some(i), Some(k)) = (p.next().and_then(num), p.next().and_then(num)) { if self.tracker.is_some() { self.tracker_acts(vec![crate::itemlist::Act::Check(i, k)]); } else { self.items_acts(vec![crate::itemlist::Act::Check(i, k)]); } } },
@@ -2327,6 +2351,19 @@ impl Ui {
             if let Some(r) = d.hover { let (k, c) = (2.0 * s, t::FOCUS_INDICATOR_COLOR); for q in [Rect::new(r.x0, r.y0, r.x1, r.y0 + k), Rect::new(r.x0, r.y1 - k, r.x1, r.y1), Rect::new(r.x0, r.y0, r.x0 + k, r.y1), Rect::new(r.x1 - k, r.y0, r.x1, r.y1)] { paint::rect(scene, q, c); } } }
         self.ctx.paint(scene, fonts, s);
         if let Some(p) = self.chip.as_mut() { p.paint(scene, fonts, s); }
+        // the small editor of a notes or links cell: a card by the cell, kept inside the window
+        if let Some(n) = self.note.as_mut() {
+            let (cw, ch) = ((420.0 * s).min(w - 24.0 * s), (220.0 * s).min(h - 24.0 * s)); let x0 = (n.at.0 - 24.0 * s).clamp(12.0 * s, (w - cw - 12.0 * s).max(12.0 * s)); let y0 = if n.at.1 + 16.0 * s + ch < h - 12.0 * s { n.at.1 + 16.0 * s } else { (n.at.1 - 16.0 * s - ch).max(12.0 * s) };
+            let card = Rect::new(x0, y0, x0 + cw, y0 + ch); n.card = card; let rad = t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s;
+            for sh in t::POPOVER_SHADOW { scene.draw_blurred_rounded_rect(Affine::translate((sh.x as f64 * s, sh.y as f64 * s)), card.inflate(sh.spread as f64 * s, sh.spread as f64 * s), paint::color(sh.color), rad, (sh.blur as f64 * s / 2.0).max(0.1)); }
+            paint::rounded(scene, card.inflate(s, s), rad + s, t::DIVIDER_COLOR_MEDIUM); paint::rounded(scene, card, rad, t::BACKGROUND_LAYER_2_COLOR);
+            let (ink, sub) = (paint::color(t::NEUTRAL_CONTENT_COLOR_DEFAULT), paint::color(t::NEUTRAL_SUBDUED_CONTENT_COLOR_DEFAULT)); let pad = 12.0 * s;
+            let name = n.item.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let tl = fonts.layout_fit(&format!("{}  \u{b7}  {name}", n.title), Family::Sans, t::DETAIL_SIZE_M * s as f32, t::FONT_WEIGHT_BOLD as f32, ink, cw - 2.0 * pad); draw_layout(scene, &tl, Affine::translate((card.x0 + pad, card.y0 + pad)));
+            let hint = if cfg!(target_os = "macos") { "\u{2318}Return saves  \u{b7}  Esc leaves it as it was" } else { "Ctrl+Enter saves  \u{b7}  Esc leaves it as it was" };
+            let hl = fonts.layout_fit(hint, Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, sub, cw - 2.0 * pad); draw_layout(scene, &hl, Affine::translate((card.x0 + pad, card.y1 - pad - hl.height() as f64)));
+            n.area.layout(fonts, Rect::new(card.x0 + pad, card.y0 + pad + tl.height() as f64 + 8.0 * s, card.x1 - pad, card.y1 - pad - hl.height() as f64 - 8.0 * s), s); n.area.paint(scene, fonts, s);
+        }
         if let Some(ed) = self.coledit.as_mut() { let bounds = Rect::new(0.0, 0.0, w, h); ed.layout(fonts, bounds, s); ed.paint(scene, fonts, bounds, now); }
         if let Some(p) = self.prefs.as_mut() { p.paint(scene, fonts, Rect::new(0.0, 0.0, w, h), s, now); }
         // what went wrong, at the window's foot; an open question over everything
