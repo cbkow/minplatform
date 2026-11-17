@@ -136,6 +136,7 @@ impl App {
     /// last window is closed - sync goes on. Not in a scripted run (those end with their window).
     fn make_tray(&mut self) {
         if self.tray.is_some() || std::env::var_os("UFB_SHOT").is_some() || std::env::var_os("UFB_DEMO").is_some() || std::env::var_os("UFB_NO_TRAY").is_some() { return }
+        #[cfg(target_os = "macos")] links::install_reopen();
         use muda::{Menu, MenuItem, PredefinedMenuItem};
         let status = MenuItem::with_id("tray-status", "Sync: off", false, None); let menu = Menu::new();
         let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &MenuItem::with_id("tray-open", "Open a Window", true, None), &PredefinedMenuItem::separator(), &MenuItem::with_id("tray-quit", "Quit UFB", true, None)]);
@@ -359,6 +360,10 @@ mod links {
         #[unsafe(super(NSObject))] #[thread_kind = MainThreadOnly] #[name = "UFBLinkHandler"]
         struct Handler;
         impl Handler {
+            // the application was opened AGAIN while it runs - its icon in the Dock, in Finder, by Spotlight ('aevt' 'rapp'):
+            // with only the tray left there is no window to come forward, so one is asked for as a second launch asks
+            #[unsafe(method(handleReopen:withReply:))]
+            fn reopen(&self, _event: &AnyObject, _reply: &AnyObject) { crate::instance::ask(String::new()); if let Some(w) = WAKE.get() { w(); } }
             #[unsafe(method(handleLink:withReply:))]
             fn handle(&self, event: &AnyObject, _reply: &AnyObject) {
                 // the event's direct object ('----') is the address, as text
@@ -367,6 +372,15 @@ mod links {
             }
         }
     );
+    /// "Reopen application" ('aevt' 'rapp') is taken by a handler of ours. Asked for AFTER the application has finished
+    /// launching (with the tray): the system installs its own handler for this event while launching, over one set earlier.
+    pub fn install_reopen() {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let h: Retained<Handler> = unsafe { msg_send![Handler::alloc(mtm), init] };
+        unsafe { let mgr: *mut AnyObject = msg_send![class!(NSAppleEventManager), sharedAppleEventManager]; if mgr.is_null() { return }
+            let _: () = msg_send![mgr, setEventHandler: &*h, andSelector: sel!(handleReopen:withReply:), forEventClass: 0x6165_7674u32, andEventID: 0x7261_7070u32]; }
+        std::mem::forget(h);
+    }
     pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
         let Some(mtm) = MainThreadMarker::new() else { return }; let _ = WAKE.set(wake);
         let h: Retained<Handler> = unsafe { msg_send![Handler::alloc(mtm), init] };

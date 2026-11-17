@@ -208,7 +208,7 @@ impl Ui {
         let (made_tx, made_rx) = std::sync::mpsc::channel();
         let (share_tx, share_rx) = std::sync::mpsc::channel(); let shares = crate::shares::load(); Self::set_type_dirs();
         let mesh_rev = { let p = port.clone(); crate::mesh::on_change(Arc::new(move || p.send(Msg::Icon))); crate::mesh::rev() };
-        Some(Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
+        let mut me = Ui { window, presenter, layer, fonts: Fonts::new(), tips: Tooltips::default(), icons: Icons::new(port.clone()), thumbs: { let p = port.clone(); Thumbs::new(std::sync::Arc::new(move || p.send(Msg::Icon))) }, port, rx,
             panes: vec![pane], active: 0, two: false, split: crate::settings::with(|s| s.float("window/split")), pane_heads: [Rect::ZERO; 2], tabs: vec![Tab::default()], tab: 0, tab_rects: vec![], tab_close: vec![], tab_new: icon_button("plus", key(Cmd::NewTab, "New tab")).size_s(),
             job: None, jobs: crate::db::with(|d| d.subscriptions()).unwrap_or_default(), job_secs: vec![], job_secs_for: vec![], job_refresh: icon_button("arrow-clockwise", key(Cmd::Refresh, "Read the job again")).size_s(), job_add: { let mut b = ActionButton::new("plus", "").size_s(); b.label = Some("Add".into()); b },
             job_list: Rect::ZERO, panes_x0: 0.0, chip: None, coledit: None, prefs: None, note: None, started_favorites: started, bulk: vec![], board: None, board_of: Default::default(), board_btn: { let mut b = ActionButton::new("kanban", "Show the items as a board, or as the list").size_s(); b.label = Some("Board".into()); b }, board_ctx: vec![], tracker: None, trk_btn: { let mut b = ActionButton::new("list-checks", "The job's tracked items").size_s(); b.label = Some("Tracker".into()); b }, due_btns: crate::tracker::DUES.iter().map(|(_, label)| { let mut b = ActionButton::new("", "").size_s(); b.label = Some(label.to_string()); b }).collect(), trk_press: None, items: { let mut l = crate::itemlist::ItemList::default(); l.show_modified = crate::settings::with(|s| s.bool("columns/items_modified")); l }, job_meta: { let mut b = ActionButton::new("columns", "Add, show and restore metadata columns").size_s(); b.label = Some("Columns".into()); b }, meta_ctx: (None, None, vec![], vec![]), made_tx, made_rx, making: false, share_states: vec![crate::shares::State::NotConnected; shares.len()], shares, share_busy: Default::default(), share_tx, share_rx, share_btns: vec![], share_add: ActionButton::new("plus", "Add a share: its address, or a folder").size_s(), share_menu: None, shares_launched: false, share_holders: Default::default(), share_seen: Default::default(), sync_rect: Rect::ZERO, menu_paths: vec![], mesh_rev, col_layouts: { let get = |k: &str| crate::settings::with(|s| crate::pane::ColLayout::parse(&s.string(k))).unwrap_or_else(crate::pane::ColLayout::all); [get("columns/browser"), get("columns/job_top"), get("columns/job_low")] }, menu_job: false, job_prox: { let mut b = ActionButton::new("", "Show the item's proxies in place of its renders").size_s(); b.label = Some("Proxies".into()); b }, hidden: view.0, folders_first: view.1,
@@ -220,7 +220,10 @@ impl Ui {
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
             lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
-            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_off: 0, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] };
+        // (a window opens on a browser view: with its second pane when the settings say so, row 543)
+        if crate::prefs::second_pane() { me.set_two(true); me.active = 0; }
+        Some(me)
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -241,6 +244,8 @@ impl Ui {
         if !p.has_own_view() { let from = &self.panes[self.active.min(self.panes.len() - 1)]; let (mode, tile, seq) = (from.mode, from.grid.tile, from.model.sequences); p.set_mode(mode); p.grid.tile = tile; if p.model.sequences != seq { p.set_sequences(seq); } } p.view_synced();
         self.leave_tab(); self.swap_tab(); self.tab += 1; self.tabs.insert(self.tab, Tab::default());
         self.panes = vec![p]; self.active = 0; self.two = false; self.split = 0.5; self.job = None; self.tracker = None;
+        // (a browser view starts with its second pane when the settings say so; a job that is opened in the tab decides for itself)
+        if crate::prefs::second_pane() { self.set_two(true); self.active = 0; }
     }
     /// A tab is closed; the last one closes the window.
     fn close_tab(&mut self, i: usize) {
@@ -677,7 +682,7 @@ impl Ui {
     fn open_prefs(&mut self) { if self.prefs.is_some() || self.dialog.is_some() || self.lightbox.is_open() { return } self.ctx.close(); self.end_rename(); self.leave_path(); self.leave_search(); self.op_list = false; self.prefs = Some(crate::prefs::Prefs::open(&mut self.fonts, &self.shares, &self.share_states)); }
     fn prefs_done(&mut self, out: crate::prefs::Out) {
         match out { crate::prefs::Out::None => {} crate::prefs::Out::Close => self.prefs = None,
-            crate::prefs::Out::Saved { sync, pairs, rekeys } => { self.prefs = None; self.apply_view();
+            crate::prefs::Out::Saved { sync, pairs, rekeys } => { self.prefs = None; self.apply_view(); self.apply_second();
                 // a saved share's pair as the card has it now; rows under a changed pair go to its new identity; then every path is read anew
                 let mut changed = false; for (id, win, mac) in pairs { if let Some(sh) = self.shares.iter_mut().find(|s| s.id == id) { if (sh.win.as_str(), sh.mac.as_str()) != (win.as_str(), mac.as_str()) { sh.win = win; sh.mac = mac; changed = true; } } }
                 if changed { crate::shares::save(&self.shares); }
@@ -686,6 +691,8 @@ impl Ui {
                 if sync { self.apply_sync(); } } }
     }
     /// The panes are made what the settings say they show (after Save; a new pane is made so from the start).
+    /// The setting for the second pane was changed: the browser view in front follows it (a job decides for itself).
+    fn apply_second(&mut self) { let on = crate::settings::with(|s| s.bool("view/second_pane")); if crate::prefs::second_changed() && self.job.is_none() && self.tracker.is_none() && self.two != on { self.set_two(on); } }
     fn apply_view(&mut self) {
         let (hidden, folders_first, sequences, grid) = crate::prefs::view(); self.hidden = hidden; self.folders_first = folders_first; let mode = if grid { Mode::Grid } else { Mode::List };
         for p in self.panes.iter_mut() { p.set_hidden(hidden); p.set_folders_first(folders_first); p.set_sequences(sequences); if p.mode != mode { p.set_mode(mode); } p.view_synced(); }
