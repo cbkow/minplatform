@@ -21,10 +21,12 @@ mod format;
 mod history;
 mod http;
 mod icons;
+mod instance;
 mod itemlist;
 mod jobview;
 mod lightbox;
 mod lister;
+mod logfile;
 mod menu;
 mod mesh;
 mod model;
@@ -45,6 +47,10 @@ mod webview;
 
 /// What the command line asked for: the folder to open, the test favorites, and the folders this build may CHANGE
 /// things in (row 468, point 2): the folder it was started with, the favorites, each `--allow-writes <folder>`.
+/// The one thing a launch is asked to open: its first argument that is neither an option nor an option's value.
+fn positional(args: &[String]) -> Option<String> {
+    let mut i = 0; while i < args.len() { if matches!(args[i].as_str(), "--map" | "--mesh" | "--mesh-node" | "--mesh-only" | "--allow-writes" | "--favorite" | "--jobs") { i += 2; continue } if args[i].starts_with("--") { i += 1; continue } return Some(args[i].clone()) } None
+}
 pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Vec<places::Place>, Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
     let abs = |p: &str| std::path::absolute(p).unwrap_or_else(|_| std::path::PathBuf::from(p));
     let (mut folder, mut favorites, mut extra, mut jobs, mut i) = (None, vec![], vec![], vec![], 0);
@@ -67,6 +73,12 @@ fn main() {
     if std::env::args_os().nth(1).is_some_and(|a| a == thumbs::pool::HELPER_ARG) { thumbs::helper::run() }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]... [--map <windows side>=<macOS side>]... [--mesh <farm folder> [--mesh-node <id>] [--mesh-only <folder>]]"); return }
+    // one UFB a user (row 519): a second launch hands what it was asked to open to the one that runs, and ends
+    if instance::takes_part() { if let Some(dir) = min_settings::Settings::dir_for("UFB-test", "UFB") {
+        let asked = positional(&args).unwrap_or_default(); let asked = if asked.is_empty() || asked.starts_with("ufb:") || asked.starts_with("union:") { asked } else { std::path::absolute(&asked).map(|p| p.to_string_lossy().into_owned()).unwrap_or(asked) };
+        if instance::hand_over(&dir, &asked) { return } instance::claim(&dir); } }
+    // what the application says of itself goes to its log file (not in a scripted look, whose script reads the console)
+    if logfile::wanted() { if let Some(p) = logfile::install("UFB-test") { eprintln!("UFB: the log is {}", p.display()); } }
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
     // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
     { let started: Vec<db::Mapping> = args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect(); shares::set_started_with(started.clone());
@@ -90,7 +102,7 @@ fn main() {
     if let Some(p) = folder.to_str().filter(|t| db::is_union(t)).and_then(db::from_link) { if p.exists() { sysopen::reveal(&[p]); } }
     let folder = if folder.to_str().is_some_and(db::is_union) { places::home() } else { folder };
     let folder = match folder.to_str().filter(|t| t.starts_with("ufb:") || t.starts_with("union:")) { Some(link) => db::from_link(link).map(|p| if p.is_dir() { p } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) }).filter(|p| p.is_dir()).unwrap_or_else(places::home), None => folder };
-    shell::run(folder, favorites);
+    shell::run(folder, favorites); instance::release();
 }
 
 #[cfg(test)]

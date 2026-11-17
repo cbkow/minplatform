@@ -264,6 +264,14 @@ impl ApplicationHandler for App {
         // the menu bar's rows go to the window in front
         // the tray: its icon pressed (Windows), a row of its menu
         if TRAY_CLICKED.swap(false, std::sync::atomic::Ordering::Relaxed) { self.tray_open(el); }
+        // a second launch handed something over (row 519): a window comes forward (one is opened when none is), and what
+        // was asked for is opened in it - a `union:` link is shown in the file manager instead, as at a start
+        for asked in crate::instance::take() {
+            eprintln!("UFB: a second launch asked for {}", if asked.is_empty() { "a window" } else { asked.as_str() });
+            if crate::db::is_union(&asked) { if let Some(p) = crate::db::from_link(&asked) { if p.exists() { crate::sysopen::reveal(&[p]); } } continue }
+            self.tray_open(el);
+            if !asked.is_empty() { if let Some(w) = self.focused.and_then(|id| self.windows.get_mut(&id)).or(None) { w.ui.open_text(&asked); w.window.request_redraw(); } }
+        }
         { let mut events = MENU_EVENTS.lock().unwrap(); let (tray, rest): (Vec<muda::MenuEvent>, Vec<muda::MenuEvent>) = std::mem::take(&mut *events).into_iter().partition(|e| e.id.0.starts_with("tray-")); *events = rest; drop(events);
             for ev in tray { match ev.id.0.as_str() { "tray-open" => self.tray_open(el), "tray-quit" => {
                 // with tasks running it is asked first: in a window when there is one, by the system's own box when none is open
@@ -285,6 +293,7 @@ impl ApplicationHandler for App {
 pub fn run(folder: PathBuf, favorites: Vec<Place>) {
     #[cfg(target_os = "macos")] crate::menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let el = EventLoop::new().expect("the event loop"); let proxy = Arc::new(el.create_proxy());
+    { let p = proxy.clone(); crate::instance::serve(Arc::new(move || p.wake_up())); }
     { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
     let _ = el.run_app(App { tray: None, tray_status: None, tray_says: String::new(), home: crate::places::home(), first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), ctrl: false, alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
 }

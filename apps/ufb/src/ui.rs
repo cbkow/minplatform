@@ -1200,6 +1200,8 @@ impl Ui {
         self.field.set_text(&text); self.field.focused = true; self.field.error = false; self.field.select_all(&mut self.fonts); self.search.focused = false; self.focus = Focus::Path; self.path_error = None;
     }
     fn leave_path(&mut self) { if self.focus == Focus::Path { self.focus = Focus::Pane; } self.field.focused = false; self.field.error = false; self.path_error = None; self.check = None; }
+    /// A path or a link is opened as if it were typed into the path bar (a second launch handed it over, row 519).
+    pub fn open_text(&mut self, text: &str) { if self.prefs.is_some() || self.dialog.is_some() { return } if self.lightbox.is_open() { self.close_lightbox(); } self.edit_path(); self.field.set_text(text); self.submit_path(); }
     fn submit_path(&mut self) {
         let current = self.here();
         // a path from another machine - the other system's spelling, a numbered landing - is this machine's path to the same thing (row 498)
