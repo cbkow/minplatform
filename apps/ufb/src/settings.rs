@@ -25,6 +25,11 @@ static SCHEMA: Schema = Schema { keys: &[
     Key::bool("view/hidden", false), Key::bool("view/folders_first", true), Key::bool("view/sequences", true), Key::bool("view/grid", false),
     // (the installed application's: wired with packaging)
     Key::bool("general/start_at_sign_in", false),
+    // the window as it was left (row 523): its size in points (`1280x800`), whether it filled the screen, and the
+    // dividers - the sidebar's width, the two panes' share side by side, the same in a job (one above the other),
+    // the width of a job's item list
+    Key::str("window/size", ""), Key::bool("window/maximized", false),
+    Key::float("window/sidebar", 0.0, 0.0, 4000.0), Key::float("window/split", 0.5, 0.15, 0.85), Key::float("window/job_split", 0.5, 0.15, 0.85), Key::float("window/job_list", 0.0, 0.0, 4000.0),
     // path mappings that are no saved share's (row 517): a list, as JSON - a name, the Windows side, the macOS side, on or off
     Key::str("mappings/list", ""),
     Key::str("columns/browser", "1,1,1|150,86,150"), Key::str("columns/job_top", "1,0,0|150,86,150"), Key::str("columns/job_low", "1,0,0|150,86,150"),

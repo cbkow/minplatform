@@ -40,7 +40,20 @@ static TRAY_CLICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 static MENU_EVENTS: std::sync::Mutex<Vec<muda::MenuEvent>> = std::sync::Mutex::new(Vec::new());
 
 /// The window's size in logical px: `UFB_SIZE=1440x900`, else 1280 x 800.
-fn wanted_size() -> (f64, f64) { std::env::var("UFB_SIZE").ok().and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))).filter(|(w, h)| *w >= 320.0 && *h >= 240.0).unwrap_or((1280.0, 800.0)) }
+/// The size a window opens at, in points: `UFB_SIZE` (a scripted look), else the size the last one was left at (row 523), else 1280 x 800.
+fn wanted_size() -> (f64, f64) {
+    let read = |v: String| v.split_once('x').and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))).filter(|(w, h)| *w >= 320.0 && *h >= 240.0);
+    std::env::var("UFB_SIZE").ok().and_then(read).or_else(|| remembers().then(|| read(crate::settings::with(|s| s.string("window/size")))).flatten()).unwrap_or((1280.0, 800.0))
+}
+/// A scripted look neither reads nor writes the window's memory: its pictures are of the size it asked for.
+fn remembers() -> bool { std::env::var_os("UFB_DEMO").is_none() && std::env::var_os("UFB_SHOT").is_none() && std::env::var_os("UFB_SIZE").is_none() }
+/// The window's size is kept as it is now (when it loses the keys, when it closes, when the application ends): a window
+/// that fills the screen keeps the size it had before, and that it filled it.
+fn remember(window: &dyn Window) {
+    if !remembers() || window.is_minimized() == Some(true) { return }
+    let max = window.is_maximized(); let (sz, k) = (window.surface_size(), window.scale_factor().max(0.1));
+    crate::settings::with(|s| { s.set_bool("window/maximized", max); if !max && window.fullscreen().is_none() && sz.width > 0 { s.set_str("window/size", &format!("{}x{}", (sz.width as f64 / k).round(), (sz.height as f64 / k).round())); } });
+}
 
 /// A key as the key map names it: the letter or digit of the physical key (found on any layout), the punctuation the
 /// map uses, the named keys.
@@ -74,7 +87,7 @@ impl App {
     fn open(&mut self, el: &dyn ActiveEventLoop, path: PathBuf) {
         if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: a window on {}", path.display()); }
         let (w, h) = wanted_size();
-        #[allow(unused_mut)] let mut attrs = WindowAttributes::default().with_title("UFB").with_surface_size(winit::dpi::LogicalSize::new(w, h)).with_min_surface_size(winit::dpi::LogicalSize::new(480.0, 320.0));
+        #[allow(unused_mut)] let mut attrs = WindowAttributes::default().with_title("UFB").with_surface_size(winit::dpi::LogicalSize::new(w, h)).with_maximized(remembers() && crate::settings::with(|s| s.bool("window/maximized"))).with_min_surface_size(winit::dpi::LogicalSize::new(480.0, 320.0));
         // Windows: the caption takes the menu row's colour, so the window is one surface from its top edge down (as minNotes');
         // and it is made unseen, to be shown after its first frame
         #[cfg(windows)] {
@@ -136,7 +149,7 @@ impl App {
         for (id, o) in asks { match o {
             Out::NewWindow(path) => self.open(el, path),
             // (the drag-and-drop layer lets go of the window first: what it keeps must not outlive it)
-            Out::Close => { if let Some(w) = self.windows.remove(&id) { min_dnd::detach(&**w.window);
+            Out::Close => { if let Some(w) = self.windows.remove(&id) { remember(&**w.window); min_dnd::detach(&**w.window);
                     // (a check without a hand, `UFB_CLOSE_AFTER`: who else still holds the window - anyone, and it stays on the screen)
                     if std::env::var_os("UFB_CLOSE_AFTER").is_some() { let Win { window, ui } = w; drop(ui); eprintln!("UFB: a window was closed; others still holding it: {}; windows left: {}; tray: {}", Arc::strong_count(&window) - 1, self.windows.len(), self.tray.is_some()); } }
                 if self.focused == Some(id) { self.focused = None; } }
@@ -179,7 +192,7 @@ impl App {
                 #[cfg(not(target_os = "macos"))] { let _ = (id, ask); } }
         } }
         // (with the tray the application stays when its last window is closed: sync goes on - rows 445, 457)
-        if done || (self.windows.is_empty() && self.tray.is_none()) { self.windows.clear(); el.exit(); }
+        if done || (self.windows.is_empty() && self.tray.is_none()) { if let Some(w) = self.focused.and_then(|id| self.windows.get(&id)).or_else(|| self.windows.values().next()) { remember(&**w.window); } self.windows.clear(); el.exit(); }
         self.tray_refresh();
         #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); m.set_undo(crate::ops::undo_label()); }
     }
@@ -225,7 +238,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => { w.ui.redraw(); redraw = w.ui.animating(); }
             WindowEvent::SurfaceResized(sz) => w.ui.resize(sz.width, sz.height),
             WindowEvent::ScaleFactorChanged { .. } => {}
-            WindowEvent::Focused(on) => { if on { self.focused = Some(id); w.ui.activated(); } else { w.ui.deactivated(); self.alt_clean = false; } }
+            WindowEvent::Focused(on) => { if on { self.focused = Some(id); w.ui.activated(); } else { remember(&**w.window); w.ui.deactivated(); self.alt_clean = false; } }
             // (sideways too: a trackpad's swipe, a tilting wheel - and macOS turns the wheel sideways itself while Shift is held)
             WindowEvent::MouseWheel { delta, .. } => { let s = w.window.scale_factor(); let (dx, dy) = match delta { MouseScrollDelta::LineDelta(x, y) => (x as f64 * 60.0 * s, y as f64 * 60.0 * s), MouseScrollDelta::PixelDelta(p) => (p.x, p.y), _ => (0.0, 0.0) }; if dy != 0.0 { w.ui.wheel(-dy); } if dx != 0.0 { w.ui.wheel_x(-dx); } }
             WindowEvent::ModifiersChanged(m) => { let st = m.state(); self.ctrl = st.control_key(); self.mods = (st.shift_key(), if cfg!(target_os = "macos") { st.meta_key() } else { st.control_key() }, st.alt_key()); w.ui.mods = min_ui::Mods { shift: self.mods.0, cmd: self.mods.1 }; redraw = false; }
