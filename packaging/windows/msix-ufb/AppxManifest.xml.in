@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Microsoft Store package's manifest of UFB (canon rows 457, 519 point 9, 537): UFB 1.4.2's own manifest, element for
+  element (its repository's packaging/windows/msix/AppxManifest.xml.in), with make-msix-ufb.ps1's placeholders:
+    @NAME@ @VERSION@ @DISPLAY@   the identity (cbkow.ufBrowser / cbkow.ufBrowserTest), the four-part version, the name shown
+    @PROTOCOLS@                  the link schemes: ufb and union - or ufbtest alone for the test package
+    @TCPMIN@ @TCPMAX@ @UDP@      the mesh's ports the firewall is opened for (1.4.2's, or the test mesh's)
+  The capabilities are EXACTLY 1.4.2's - privateNetworkClientServer and runFullTrust; the executable is `ufb.exe` and the
+  startup task's id `ufbStartup`, as there, so the Store replaces 1.4.x in place. The script strips these notes.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop desktop2 rescap">
+
+  <Identity
+    Name="@NAME@"
+    Version="@VERSION@"
+    Publisher="CN=C64A1D41-EFAA-4EED-AE81-0C074867D4E9"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>@DISPLAY@</DisplayName>
+    <PublisherDisplayName>cbkow</PublisherDisplayName>
+    <Logo>images\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="ufb" Executable="ufb.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="@DISPLAY@"
+        Description="File browser and project manager for post-production"
+        BackgroundColor="transparent"
+        Square150x150Logo="images\Square150x150Logo.png"
+        Square44x44Logo="images\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="images\Wide310x150Logo.png" />
+      </uap:VisualElements>
+
+      <Extensions>
+@PROTOCOLS@
+        <desktop:Extension Category="windows.startupTask" Executable="ufb.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="ufbStartup" Enabled="true" DisplayName="@DISPLAY@" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Extensions>
+    <desktop2:Extension Category="windows.firewallRules">
+      <desktop2:FirewallRules Executable="ufb.exe">
+        <desktop2:Rule Direction="in" IPProtocol="TCP" LocalPortMin="@TCPMIN@" LocalPortMax="@TCPMAX@" Profile="all" />
+        <desktop2:Rule Direction="in" IPProtocol="UDP" LocalPortMin="@UDP@" LocalPortMax="@UDP@" Profile="all" />
+      </desktop2:FirewallRules>
+    </desktop2:Extension>
+  </Extensions>
+
+  <Capabilities>
+    <Capability Name="privateNetworkClientServer" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>
