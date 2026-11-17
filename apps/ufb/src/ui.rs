@@ -63,7 +63,8 @@ enum ShareNews { /// how each stands (by its id)
     States(Vec<(String, crate::shares::State)>), /// the answer to a request to connect (`asked`: by the user - a failure is said)
     Connected(String, crate::shares::State, bool, bool), /// the stale placeholders found (by share), each look; a Fix ended
     Holders(Vec<(String, PathBuf)>), Fixed(String, Result<(), String>) }
-enum Made { Job(Result<PathBuf, String>), Item(Result<PathBuf, String>), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
+enum Made { /// a `union:` link's target was looked for (off the window's thread: a share may be slow): it is shown in the file manager, or said to be gone
+    Shown(PathBuf, bool), Job(Result<PathBuf, String>), Item(Result<PathBuf, String>), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
     Relink(PathBuf, Option<PathBuf>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split, /// the item list's edge in a job (the pointer's x and the width at the press)
@@ -492,6 +493,7 @@ impl Ui {
         self.making = false; let now = Instant::now(); let port = self.port.clone();
         let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); }
         match m {
+            Made::Shown(p, there) => if there { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: shown in the file manager: {}", p.display()); } else { crate::sysopen::reveal(&[p]); } } else { self.toast.show("That link leads to nothing that is there now.", min_ui::toast::ToastKind::Notice, Instant::now()); },
             Made::Job(Ok(job)) => { let _ = crate::db::with(|d| d.subscribe(&job, "")); self.reload_jobs(); self.open_place(job, true); }
             Made::Item(Ok(item)) => if let Some(j) = self.job.as_mut() { j.choose = Some(item); j.reload(); },
             Made::Job(Err(e)) | Made::Item(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, now),
@@ -584,7 +586,7 @@ impl Ui {
             _ => {} }
     }
     /// The Sync row's words: what it is doing, or that it is off.
-    fn sync_words() -> String {
+    pub fn sync_words() -> String {
         match crate::mesh::status() { Some(m) => if m.leading { if m.peers == 0 { "alone".to_string() } else { format!("leading {}", m.peers) } } else { match &m.leader { Some(l) => format!("with {l}"), None => "looking\u{2026}".to_string() } },
             None => if crate::settings::with(|s| s.bool("sync/on")) { "not set up".to_string() } else { "off".to_string() } }
     }
@@ -656,7 +658,7 @@ impl Ui {
     /// What Copy Path / Copy Name / Copy Link put on the clipboard: a line each; a path in the share's own spelling
     /// (never a landing's name, row 445), a link every machine of the studio can open.
     fn copy_text(id: u32, paths: &[PathBuf]) -> Option<String> {
-        let lines: Vec<String> = paths.iter().map(|p| match id { crate::ctxmenu::COPY_NAME => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned()), crate::ctxmenu::COPY_LINK => crate::db::link_to(p), _ => crate::db::canonical(p) }).collect();
+        let lines: Vec<String> = paths.iter().map(|p| match id { crate::ctxmenu::COPY_NAME => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned()), crate::ctxmenu::COPY_LINK => crate::db::link_to(p), crate::ctxmenu::COPY_UNION => crate::db::union_link_to(p), _ => crate::db::canonical(p) }).collect();
         (!lines.is_empty()).then(|| lines.join("\n"))
     }
     /// To what a link or a typed path leads: a folder is gone to; a file's folder, with the file chosen.
@@ -1113,6 +1115,8 @@ impl Ui {
         // ... and a LINK is the path it leads to (row 503)
         let text = self.field.text().trim().to_string(); let link = text.starts_with("ufb:") || text.starts_with("union:");
         if link && crate::db::from_link(&text).is_none() { self.path_error = Some(("That link leads nowhere on this machine".into(), Instant::now())); self.field.error = true; return }
+        // a `union:` link is handed to the system's file manager, which shows the thing; a `ufb:` link is opened here (row 505)
+        if crate::db::is_union(&text) { if let Some(p) = crate::db::from_link(&text) { let (tx, port) = (self.made_tx.clone(), self.port.clone()); let _ = std::thread::Builder::new().name("ufb-reveal".into()).spawn(move || { let there = p.exists(); let _ = tx.send(Made::Shown(p, there)); port.send(Msg::Icon); }); } self.leave_path(); return }
         let typed = if link { crate::db::from_link(&text) } else { crate::db::translate(&text).or_else(|| crumbs::typed_path(self.field.text(), &places::home(), &current)) };
         match typed {
             // whether it is a folder is asked off this thread; the answer navigates or shows the error
@@ -1257,7 +1261,7 @@ impl Ui {
     /// A row of OUR OWN in the context menu was chosen.
     pub fn menu_chosen(&mut self, id: u32) {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
-        if (crate::ctxmenu::COPY_PATH..=crate::ctxmenu::COPY_LINK).contains(&id) { if let Some(text) = Self::copy_text(id, &self.menu_paths) { self.out.push(Out::CopyText(text)); } return }
+        if (crate::ctxmenu::COPY_PATH..=crate::ctxmenu::COPY_UNION).contains(&id) { if let Some(text) = Self::copy_text(id, &self.menu_paths) { self.out.push(Out::CopyText(text)); } return }
         // (a saved share's own rows)
         if (crate::ctxmenu::SHARE_TYPE..crate::ctxmenu::SHARE_TYPE + 500).contains(&id) { return self.share_type_chosen((id - crate::ctxmenu::SHARE_TYPE) as usize) }
         if (crate::ctxmenu::SYNC_SET..=crate::ctxmenu::SYNC_NEVER).contains(&id) { return self.sync_chosen(id) }
@@ -1640,7 +1644,7 @@ impl Ui {
             "sharetype" => { let (n, name) = arg.split_once(':').unwrap_or((arg, "")); if let Some(n) = num(n) { self.share_menu = Some(n); let k = if name.is_empty() { Some(0) } else { crate::jobview::known_types().iter().position(|t| t.0.eq_ignore_ascii_case(name)).map(|k| k + 1) }; match k { Some(k) => self.share_type_chosen(k), None => eprintln!("UFB_DEMO: no type {name}") } } },
             "types" => eprintln!("UFB_DEMO: types: {} | shares: {}", crate::jobview::known_types().iter().map(|t| t.0.clone()).collect::<Vec<_>>().join(", "), self.shares.iter().map(|s| format!("{}={}", s.name, if s.ptype.is_empty() { "built-in" } else { &s.ptype })).collect::<Vec<_>>().join(", ")),
             // what the three copies would put on the clipboard (said, not copied): `copytext:<path|name|link>:<path>`; a text as typed into the path bar: `typed:<text>`
-            "copytext" => { let (what, p) = arg.split_once(':').unwrap_or((arg, "")); eprintln!("UFB_DEMO: copy {what}: {:?}", Self::copy_text(match what { "name" => crate::ctxmenu::COPY_NAME, "link" => crate::ctxmenu::COPY_LINK, _ => crate::ctxmenu::COPY_PATH }, &[PathBuf::from(p)])); },
+            "copytext" => { let (what, p) = arg.split_once(':').unwrap_or((arg, "")); eprintln!("UFB_DEMO: copy {what}: {:?}", Self::copy_text(match what { "name" => crate::ctxmenu::COPY_NAME, "link" => crate::ctxmenu::COPY_LINK, "union" => crate::ctxmenu::COPY_UNION, _ => crate::ctxmenu::COPY_PATH }, &[PathBuf::from(p)])); },
             "typed" => { self.edit_path(); self.field.set_text(arg); self.submit_path(); },
             "syncoff" => self.sync_chosen(crate::ctxmenu::SYNC_ONOFF),
             "shares" => eprintln!("UFB_DEMO: shares: {}", self.shares.iter().enumerate().map(|(i, sh)| format!("{} [{}{}{}] {:?}", sh.name, if sh.server.is_empty() { format!("folder {}", sh.local) } else { format!("smb://{}/{}", sh.server, sh.share) }, if sh.jobs { ", jobs" } else { "" }, if sh.ours { ", ours" } else { "" }, (self.share_states.get(i), self.share_holders.contains_key(&sh.id).then_some("held")))).collect::<Vec<_>>().join(" | ")),

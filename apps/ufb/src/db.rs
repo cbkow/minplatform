@@ -148,6 +148,11 @@ pub fn from_link(text: &str) -> Option<PathBuf> {
 }
 /// The link to a path of this machine, as every machine can read it: the share's own spelling inside (`canonical`).
 pub fn link_to(p: &Path) -> String { min_paths::links::ufb_link(&canonical(p)) }
+/// The same as a `union:` link (1.4.x's second scheme, row 505): opened, it SHOWS the thing in Finder or Explorer,
+/// where a `ufb:` link opens it in UFB.
+pub fn union_link_to(p: &Path) -> String { let l = link_to(p); match l.strip_prefix("ufb:") { Some(rest) => format!("union:{rest}"), None => l } }
+/// A link is of the kind that shows its target in the system's file manager.
+pub fn is_union(text: &str) -> bool { text.trim_start().starts_with("union:") }
 /// A path of this machine as the OTHERS should read it: under a share, the share's own side for this system (never
 /// the landing's name, never a drive letter the others do not have); else as it is.
 pub fn canonical(p: &Path) -> String { let maps = mappings(); let id = identity_in(p, &maps); let Some(rest) = id.strip_prefix("vol:") else { return p.to_string_lossy().into_owned() };
@@ -701,6 +706,7 @@ mod tests {
         // a link: written with the share's own spelling, read back to where the share is here - from either system's link
         assert_eq!(link_to(&inside), if cfg!(windows) { "ufb:///win///nas/Jobs/2601_a" } else { "ufb:///mac//Volumes/Jobs/2601_a" });
         assert_eq!(from_link("ufb:///mac//Volumes/Jobs-4/2601_a"), Some(inside.clone())); assert_eq!(from_link("union:///win///nas/Jobs/2601_a"), Some(inside.clone())); assert_eq!(from_link("ufb:///win/%5C%5Cnas%5CJobs%5C2601_a"), Some(inside.clone()));
+        assert_eq!(union_link_to(&inside), link_to(&inside).replacen("ufb:", "union:", 1)); assert!(is_union(&union_link_to(&inside)) && !is_union(&link_to(&inside))); assert_eq!(from_link(&union_link_to(&inside)), Some(inside.clone()));
         assert_eq!(from_link("https://example.com"), None); assert_eq!(from_link(if cfg!(windows) { "ufb:///mac//Users/a/x" } else { "ufb:///win/C%3A/Users/a/x" }), None, "another system's own folder: nowhere here");
         assert_eq!(from_link(if cfg!(windows) { "ufb:///win/C%3A/Users/a/x" } else { "ufb:///mac//Users/a/x" }), Some(PathBuf::from(if cfg!(windows) { "C:\\Users\\a\\x" } else { "/Users/a/x" })));
         // a path from another machine, with ITS landing in it, opens here where the share is here

@@ -82,6 +82,9 @@ fn main() {
     else { let (on, farm, node, leader, only) = settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only")));
         if on && !farm.trim().is_empty() { mesh::start_with(std::path::Path::new(farm.trim()), &node, &leader, (!only.trim().is_empty()).then(|| std::path::Path::new(only.trim()))); } }
     // a link as the folder to start in: where it leads on this machine (a file: its folder), else the home folder
+    // (a `union:` link handed over at the start is shown in the file manager; the window opens on the home folder)
+    if let Some(p) = folder.to_str().filter(|t| db::is_union(t)).and_then(db::from_link) { if p.exists() { sysopen::reveal(&[p]); } }
+    let folder = if folder.to_str().is_some_and(db::is_union) { places::home() } else { folder };
     let folder = match folder.to_str().filter(|t| t.starts_with("ufb:") || t.starts_with("union:")) { Some(link) => db::from_link(link).map(|p| if p.is_dir() { p } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p) }).filter(|p| p.is_dir()).unwrap_or_else(places::home), None => folder };
     shell::run(folder, favorites);
 }

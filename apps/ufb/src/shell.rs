@@ -32,8 +32,11 @@ struct App {
     /// the files that were CUT (Windows' habit): pasted, they are moved
     cut: Option<Vec<PathBuf>>,
     #[cfg(target_os = "macos")] menu: Option<crate::menu::AppMenu>,
+    /// the tray (row 505): its icon, its status line and what that says now; the folder a window asked for from it opens in
+    tray: Option<tray_icon::TrayIcon>, tray_status: Option<muda::MenuItem>, tray_says: String, home: PathBuf,
 }
-#[cfg(target_os = "macos")]
+/// The tray's icon was pressed (Windows: a window is shown).
+static TRAY_CLICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MENU_EVENTS: std::sync::Mutex<Vec<muda::MenuEvent>> = std::sync::Mutex::new(Vec::new());
 
 /// The window's size in logical px: `UFB_SIZE=1440x900`, else 1280 x 800.
@@ -90,6 +93,29 @@ impl App {
         window.request_redraw(); let id = window.id(); self.focused = Some(id); self.windows.insert(id, Win { window, ui });
     }
     /// What the windows asked for: a new window, to close, to minimise, to quit. The last window closed ends the application.
+    /// The tray (row 505; rows 445, 457: one process, in the tray): made once, after the first window, on the main
+    /// thread (S14's rule). Its menu: what sync is doing, Open a Window, Quit UFB. With it the application stays when its
+    /// last window is closed - sync goes on. Not in a scripted run (those end with their window).
+    fn make_tray(&mut self) {
+        if self.tray.is_some() || std::env::var_os("UFB_SHOT").is_some() || std::env::var_os("UFB_DEMO").is_some() || std::env::var_os("UFB_NO_TRAY").is_some() { return }
+        use muda::{Menu, MenuItem, PredefinedMenuItem};
+        let status = MenuItem::with_id("tray-status", "Sync: off", false, None); let menu = Menu::new();
+        let _ = menu.append_items(&[&status, &PredefinedMenuItem::separator(), &MenuItem::with_id("tray-open", "Open a Window", true, None), &PredefinedMenuItem::separator(), &MenuItem::with_id("tray-quit", "Quit UFB", true, None)]);
+        // UFB's own mark, as 1.4.x shows it: a template for the macOS menu bar (the system tints it), the colour mark on Windows
+        let bytes: &[u8] = if cfg!(target_os = "macos") { include_bytes!("../assets/icons/tray-macos.png") } else { include_bytes!("../assets/icons/tray-windows.png") };
+        let icon = (|| { let mut d = png::Decoder::new(std::io::Cursor::new(bytes)); d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16); let mut r = d.read_info().ok()?; let mut buf = vec![0u8; r.output_buffer_size()]; let info = r.next_frame(&mut buf).ok()?; buf.truncate(info.buffer_size());
+            let rgba: Vec<u8> = match info.color_type { png::ColorType::Rgba => buf, png::ColorType::Rgb => buf.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(), png::ColorType::GrayscaleAlpha => buf.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(), _ => buf.iter().flat_map(|g| [*g, *g, *g, 255]).collect() };
+            // (the pictures are 512 px: 64 is plenty for a tray on any screen)
+            let small = image::imageops::resize(&image::RgbaImage::from_raw(info.width, info.height, rgba)?, 64, 64, image::imageops::FilterType::Triangle);
+            tray_icon::Icon::from_rgba(small.into_raw(), 64, 64).ok() })();
+        tray_icon::TrayIconEvent::set_event_handler(Some({ let p = self.proxy.clone(); move |e: tray_icon::TrayIconEvent| { if let tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. } = e { TRAY_CLICKED.store(true, std::sync::atomic::Ordering::Relaxed); p.wake_up(); } } }));
+        self.tray = icon.and_then(|icon| { let b = tray_icon::TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("UFB").with_menu_on_left_click(cfg!(target_os = "macos")); if cfg!(target_os = "macos") { b.with_icon_templated(icon) } else { b.with_icon(icon) }.build().ok() });
+        if self.tray.is_none() { eprintln!("UFB: no tray icon could be made: the application ends with its last window"); } self.tray_status = Some(status);
+    }
+    /// The tray's status line follows sync (set when it changes).
+    fn tray_refresh(&mut self) { if self.tray.is_none() { return } let says = format!("Sync: {}", crate::ui::Ui::sync_words()); if says != self.tray_says { if let Some(s) = &self.tray_status { s.set_text(&says); } if let Some(t) = &self.tray { let _ = t.set_tooltip(Some(format!("UFB - {says}"))); } self.tray_says = says; } }
+    /// A window from the tray: the one in front is brought forward, or a new one is opened.
+    fn tray_open(&mut self, el: &dyn ActiveEventLoop) { match self.focused.and_then(|id| self.windows.get(&id)).or_else(|| self.windows.values().next()) { Some(w) => { w.window.set_minimized(false); w.window.focus_window(); } None => { let home = self.home.clone(); self.open(el, home); } } }
     fn settle(&mut self, el: &dyn ActiveEventLoop) {
         let mut asks: Vec<(WindowId, Out)> = vec![]; let mut done = false;
         for (id, w) in self.windows.iter_mut() { for o in w.ui.out.drain(..) { asks.push((*id, o)); } done |= w.ui.done; }
@@ -134,7 +160,9 @@ impl App {
                     if let Ok(RawWindowHandle::AppKit(h)) = w.window.window_handle().map(|h| h.as_raw()) { let proxy = self.proxy.clone(); crate::ctxmenu::sys::show(h.ns_view.as_ptr(), id, ask, Arc::new(move || proxy.wake_up())); } }
                 #[cfg(not(target_os = "macos"))] { let _ = (id, ask); } }
         } }
-        if done || self.windows.is_empty() { self.windows.clear(); el.exit(); }
+        // (with the tray the application stays when its last window is closed: sync goes on - rows 445, 457)
+        if done || (self.windows.is_empty() && self.tray.is_none()) { self.windows.clear(); el.exit(); }
+        self.tray_refresh();
         #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); m.set_undo(crate::ops::undo_label()); }
     }
     /// The drawn menu bar's keys (Windows' rules, as minNotes'): Alt alone, F10, Alt with a letter; while it is open, the arrows, Return, Escape and letters are its own.
@@ -167,7 +195,7 @@ impl ApplicationHandler for App {
         if !self.windows.is_empty() { return }
         #[cfg(target_os = "macos")] if self.menu.is_none() && !crate::menu::InWindowMenu::wanted() { let m = crate::menu::AppMenu::new(); m.menu.init_for_nsapp(); self.menu = Some(m); }
         if let Some(path) = self.first.take() { self.open(el, path); }
-        if self.windows.is_empty() { el.exit(); }
+        if self.windows.is_empty() { el.exit(); } else { self.make_tray(); }
     }
     fn window_event(&mut self, el: &dyn ActiveEventLoop, id: WindowId, e: WindowEvent) {
         if let WindowEvent::KeyboardInput { event, .. } = &e { if self.menu_bar_takes(id, event) { self.settle(el); return } }
@@ -223,8 +251,13 @@ impl ApplicationHandler for App {
     }
     fn proxy_wake_up(&mut self, el: &dyn ActiveEventLoop) {
         // the menu bar's rows go to the window in front
+        // the tray: its icon pressed (Windows), a row of its menu
+        if TRAY_CLICKED.swap(false, std::sync::atomic::Ordering::Relaxed) { self.tray_open(el); }
+        { let mut events = MENU_EVENTS.lock().unwrap(); let (tray, rest): (Vec<muda::MenuEvent>, Vec<muda::MenuEvent>) = std::mem::take(&mut *events).into_iter().partition(|e| e.id.0.starts_with("tray-")); *events = rest; drop(events);
+            for ev in tray { match ev.id.0.as_str() { "tray-open" => self.tray_open(el), "tray-quit" => { self.windows.clear(); el.exit(); return } _ => {} } } }
+        #[cfg(not(target_os = "macos"))] MENU_EVENTS.lock().unwrap().clear();
         #[cfg(target_os = "macos")] { let events: Vec<muda::MenuEvent> = std::mem::take(&mut *MENU_EVENTS.lock().unwrap());
-            for ev in events { if let (Some(c), Some(w)) = (Cmd::from_id(&ev.id.0), self.focused.and_then(|id| self.windows.get_mut(&id)).or(None)) { w.ui.command(c); w.window.request_redraw(); } else if Cmd::from_id(&ev.id.0) == Some(Cmd::Quit) { self.windows.clear(); el.exit(); return } } }
+            for ev in events { if self.windows.is_empty() && Cmd::from_id(&ev.id.0) == Some(Cmd::NewWindow) { let home = self.home.clone(); self.open(el, home); continue } if let (Some(c), Some(w)) = (Cmd::from_id(&ev.id.0), self.focused.and_then(|id| self.windows.get_mut(&id)).or(None)) { w.ui.command(c); w.window.request_redraw(); } else if Cmd::from_id(&ev.id.0) == Some(Cmd::Quit) { self.windows.clear(); el.exit(); return } } }
         // a row of ours chosen in a context menu goes to the window the menu was for
         for (id, row) in crate::ctxmenu::take() { if let Some(w) = self.windows.get_mut(&id) { w.ui.menu_chosen(row); w.window.request_redraw(); } }
         // what the workers sent: every window takes its own and draws again
@@ -236,6 +269,6 @@ impl ApplicationHandler for App {
 pub fn run(folder: PathBuf, favorites: Vec<Place>) {
     #[cfg(target_os = "macos")] crate::menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let el = EventLoop::new().expect("the event loop"); let proxy = Arc::new(el.create_proxy());
-    #[cfg(target_os = "macos")] { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
-    let _ = el.run_app(App { first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), ctrl: false, alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
+    { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
+    let _ = el.run_app(App { tray: None, tray_status: None, tray_says: String::new(), home: crate::places::home(), first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), ctrl: false, alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
 }
