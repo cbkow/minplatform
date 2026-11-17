@@ -364,7 +364,8 @@ impl Ui {
             None => if let Some(j) = self.job.as_ref() { self.items.begin_edit(&mut self.fonts, &j.items, item, col); } }
         // notes and links hold several lines: they are written in a small editor by the cell, not in the row (row 529)
         let wide = { let l = self.list_ref(); l.edit.as_ref().and_then(|e| l.cols.get(e.col).map(|c| (crate::db::kind_of(&c.kind), c.name.clone()))).filter(|(k, _)| matches!(*k, "notes" | "links")) };
-        if let (Some((_, title)), Some(e)) = (wide, self.list_mut().edit.take()) {
+        // (the field is taken out of the row ONLY for those two: taking it first closed every other cell's field)
+        if let Some((_, title)) = wide { let Some(e) = self.list_mut().edit.take() else { return };
             let mut area = min_ui::text_area::TextArea::new(Family::Sans, t::BODY_SIZE_S); area.set_text(e.field.text()); area.focused = true;
             self.leave_path(); self.leave_search(); self.chip = None; self.note = Some(NoteEdit { item: e.item, col: e.col, title, area, card: Rect::ZERO, at: self.pointer }); return
         }
