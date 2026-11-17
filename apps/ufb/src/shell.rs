@@ -254,10 +254,15 @@ impl ApplicationHandler for App {
         // the tray: its icon pressed (Windows), a row of its menu
         if TRAY_CLICKED.swap(false, std::sync::atomic::Ordering::Relaxed) { self.tray_open(el); }
         { let mut events = MENU_EVENTS.lock().unwrap(); let (tray, rest): (Vec<muda::MenuEvent>, Vec<muda::MenuEvent>) = std::mem::take(&mut *events).into_iter().partition(|e| e.id.0.starts_with("tray-")); *events = rest; drop(events);
-            for ev in tray { match ev.id.0.as_str() { "tray-open" => self.tray_open(el), "tray-quit" => { self.windows.clear(); el.exit(); return } _ => {} } } }
+            for ev in tray { match ev.id.0.as_str() { "tray-open" => self.tray_open(el), "tray-quit" => {
+                // with tasks running it is asked first: in a window when there is one, by the system's own box when none is open
+                if crate::tasks::busy() { match self.focused.filter(|id| self.windows.contains_key(id)).or_else(|| self.windows.keys().next().copied()) {
+                    Some(id) => { let w = self.windows.get_mut(&id).unwrap(); w.window.set_minimized(false); w.window.focus_window(); w.ui.ask_quit(); w.window.request_redraw(); continue }
+                    None => if !quit_anyway() { continue } } }
+                self.windows.clear(); el.exit(); return } _ => {} } } }
         #[cfg(not(target_os = "macos"))] MENU_EVENTS.lock().unwrap().clear();
         #[cfg(target_os = "macos")] { let events: Vec<muda::MenuEvent> = std::mem::take(&mut *MENU_EVENTS.lock().unwrap());
-            for ev in events { if self.windows.is_empty() && Cmd::from_id(&ev.id.0) == Some(Cmd::NewWindow) { let home = self.home.clone(); self.open(el, home); continue } if let (Some(c), Some(w)) = (Cmd::from_id(&ev.id.0), self.focused.and_then(|id| self.windows.get_mut(&id)).or(None)) { w.ui.command(c); w.window.request_redraw(); } else if Cmd::from_id(&ev.id.0) == Some(Cmd::Quit) { self.windows.clear(); el.exit(); return } } }
+            for ev in events { if self.windows.is_empty() && Cmd::from_id(&ev.id.0) == Some(Cmd::NewWindow) { let home = self.home.clone(); self.open(el, home); continue } if let (Some(c), Some(w)) = (Cmd::from_id(&ev.id.0), self.focused.and_then(|id| self.windows.get_mut(&id)).or(None)) { w.ui.command(c); w.window.request_redraw(); } else if Cmd::from_id(&ev.id.0) == Some(Cmd::Quit) { if crate::tasks::busy() && !quit_anyway() { continue } self.windows.clear(); el.exit(); return } } }
         // a row of ours chosen in a context menu goes to the window the menu was for
         for (id, row) in crate::ctxmenu::take() { if let Some(w) = self.windows.get_mut(&id) { w.ui.menu_chosen(row); w.window.request_redraw(); } }
         // what the workers sent: every window takes its own and draws again
@@ -271,4 +276,11 @@ pub fn run(folder: PathBuf, favorites: Vec<Place>) {
     let el = EventLoop::new().expect("the event loop"); let proxy = Arc::new(el.create_proxy());
     { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
     let _ = el.run_app(App { tray: None, tray_status: None, tray_says: String::new(), home: crate::places::home(), first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), ctrl: false, alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
+}
+
+/// No window is open and tasks still run: the system's own box asks whether to quit all the same.
+fn quit_anyway() -> bool {
+    let n = crate::tasks::counts().0;
+    let r = rfd::MessageDialog::new().set_level(rfd::MessageLevel::Warning).set_title("Quit UFB?").set_description(if n == 1 { "A task is still running. What is done stays done; the rest is stopped.".to_string() } else { format!("{n} tasks are still running or waiting. What is done stays done; the rest is stopped.") }).set_buttons(rfd::MessageButtons::OkCancelCustom("Quit".into(), "Cancel".into())).show();
+    matches!(r, rfd::MessageDialogResult::Ok) || r == rfd::MessageDialogResult::Custom("Quit".into())
 }

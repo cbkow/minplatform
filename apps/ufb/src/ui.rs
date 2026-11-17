@@ -55,7 +55,8 @@ enum Asked { /// delete these for good
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
     NewJob(PathBuf), AddItem(PathBuf), /// a share to add (its address, or a folder); a share's name
-    AddShare, RenameShare(usize), ShareLetter(usize), /// sync's settings: the farm's folder, this machine's name, the belt
+    AddShare, RenameShare(usize), ShareLetter(usize), /// quit although tasks run or wait
+    Quit, /// sync's settings: the farm's folder, this machine's name, the belt
     SyncSet }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
 /// What a thread that looked at the shares, or asked the system to connect one, found.
@@ -155,7 +156,8 @@ pub struct Ui {
     /// after a drag of ours ended: the moments at which the panes ask again whether their folders changed (the
     /// application that took the files moves them AFTER the drag is over - the owner's walk, 2026-11-16)
     recheck: Vec<Instant>,
-    asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool,
+    asks: VecDeque<Arc<crate::ops::Question>>, op_cancel: ActionButton, op_rect: Rect, op_list: bool, /// the tasks' panel (row 508): its card, a button a row (stop or dismiss), Clear Finished, the list as last seen
+    task_card: Rect, task_btns: Vec<(u64, ActionButton)>, task_clear: min_ui::text_button::TextButton, tasks_rev: u64,
     /// the context menu drawn by us (Windows, row 460; `UFB_DRAWN_MENU=1` shows it on macOS too, to look at): what each of its rows is, the files it is about, where it was asked for
     ctx: min_ui::Menu, ctx_rows: Vec<CtxRow>, ctx_paths: Vec<PathBuf>, ctx_at: (f64, f64),
     /// what the context menu last asked for is about: the pane (none: the sidebar) and the folder its own rows act on
@@ -198,7 +200,7 @@ impl Ui {
             menubar: InWindowMenu::wanted().then(InWindowMenu::new), pointer: (0.0, 0.0), mods: Mods::default(),
             titled: String::new(), id, rename: None, dialog: None, toast: min_ui::toast::Toast::new(), rename_next: None, ctx: min_ui::Menu::new(), ctx_rows: vec![], ctx_paths: vec![], ctx_at: (0.0, 0.0), lightbox, lb_close: ActionButton::new("x", "Close  (Space)"), lb_press: None, lb_tiles: vec![], lb_hover: None, seq_btn: icon_button("stack", "Group sequences".to_string()),
             lb_play: ActionButton::new("play", "Play / pause  (K)"), lb_loop: ActionButton::new("repeat", "Loop  (V)"), lb_mute: ActionButton::new("speaker-high", "Mute  (M)"), lb_qcv: { let mut b = ActionButton::new("", "Open in QCView").size_s(); b.label = Some("Open in QCView".into()); b }, lb_fps: { let mut b = ActionButton::new("", "Frames a second: press to change (remembered for this sequence)").size_s(); b.label = Some("24 fps".into()); b }, lb_line: Rect::ZERO, lb_click: None, hw: None, lb_last: None, lb_gaps: vec![], lb_cost: vec![], lb_key: None, preview_btn: icon_button("eye", "Preview  (Space)".to_string()),
-            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
+            dnd: Default::default(), recheck: vec![], asks: VecDeque::new(), op_cancel: ActionButton::new("x", "Stop").size_s(), op_rect: Rect::ZERO, op_list: false, task_card: Rect::ZERO, task_btns: vec![], task_clear: min_ui::text_button::TextButton::new("Clear Finished", min_ui::text_button::Variant::Secondary).size_s(), tasks_rev: 0, menu_for: None, demo, demo_until: None, shot: std::env::var_os("UFB_SHOT").filter(|_| first).map(PathBuf::from), settled: None, tip_demo: None, born: Instant::now(), done: false, out: vec![] })
     }
     pub fn resize(&mut self, w: u32, h: u32) { if w == 0 || h == 0 { return } self.presenter.resize(w, h); self.presenter.engine.set_ui_scale(self.window.scale_factor() as f32); self.layer.resize(&self.presenter.engine.device, w, h); self.presenter.engine.set_overlay(Some(self.layer.view())); if let Some(mb) = self.menubar.as_mut() { mb.bar.cancel(); } }
     fn scale(&self) -> f64 { self.window.scale_factor() }
@@ -731,6 +733,7 @@ impl Ui {
         if let Some(t) = self.tracker.as_mut() { any |= t.poll(); }
         while let Ok(n) = self.share_rx.try_recv() { any = true; self.share_news(n); }
         // something arrived from another machine (or left for one): the lists show it
+        { let r = crate::tasks::rev(); if r != self.tasks_rev { self.tasks_rev = r; any = true; } }
         { let r = crate::mesh::rev(); if r != self.mesh_rev { self.mesh_rev = r; any = true; if self.list_mut().edit.is_none() && self.chip.is_none() && self.coledit.is_none() && !self.board.as_ref().is_some_and(|b| b.dragging()) { self.reload_lists(); } } }
         // what a page in the web view told: Escape pressed inside it closes the lightbox
         for m in self.lightbox.web_msgs() { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: the page: {m}"); } if m == "key:Escape" { self.close_lightbox(); break } }
@@ -1048,6 +1051,14 @@ impl Ui {
     }
     fn chosen_paths(&mut self) -> Vec<PathBuf> { self.pane().chosen_files() }
     /// "Delete for good?" - always asked (row 468, point 3). `no_trash`: asked because the volume has no Trash.
+    /// Quit: at once when nothing runs; with tasks running or waiting it is asked first (row 508, point 4 - nothing of
+    /// the list is kept: what is done stays done, the rest is not done).
+    pub fn ask_quit(&mut self) {
+        use min_ui::{dialog::Dialog, text_button::Variant};
+        let n = crate::tasks::counts().0; if n == 0 { self.out.push(Out::Quit); return }
+        let mut d = Dialog::new(&if n == 1 { "A task is still running. Quit UFB?".to_string() } else { format!("{n} tasks are still running or waiting. Quit UFB?") }, "What is done stays done; the rest is stopped and not taken up again.", vec![("Quit", Variant::Negative), ("Cancel", Variant::Primary)]); d.show();
+        self.dialog = Some((d, Asked::Quit));
+    }
     fn ask_delete(&mut self, paths: Vec<PathBuf>, no_trash: bool) {
         use min_ui::{dialog::Dialog, text_button::Variant};
         if paths.is_empty() { return }
@@ -1063,6 +1074,7 @@ impl Ui {
         match asked {
             Asked::Conflict(id) => { use crate::ops::Choice; crate::ops::answer(id, [Choice::Stop, Choice::Replace, Choice::Skip, Choice::KeepBoth][button.min(3)], d.checked()); }
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
+            Asked::Quit => if button == 0 { self.out.push(Out::Quit); },
             // (made off this thread: a skeleton may be copied to a share)
             // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
             Asked::NewJob(parent) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewJob { parent, number: d.value_at(0), name: d.value_at(1) }); },
@@ -1177,7 +1189,7 @@ impl Ui {
             Cmd::NextTab | Cmd::PrevTab => { let n = self.tabs.len(); if n > 1 { self.show_tab((self.tab + if c == Cmd::NextTab { 1 } else { n - 1 }) % n); } }
             Cmd::NewJob => self.ask_new_job(),
             Cmd::Subscribe => { let e = self.pane().chosen_entries(2); if e.len() == 1 && e[0].1 && !e[0].2 { let p = e[0].0.clone(); self.subscribe(p, true); } else { self.toast.show("Choose one folder to subscribe to it as a job.", min_ui::toast::ToastKind::Notice, Instant::now()); } }
-            Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.out.push(Out::Quit),
+            Cmd::CloseWindow => self.out.push(Out::Close), Cmd::Minimize => self.out.push(Out::Minimize), Cmd::Quit => self.ask_quit(),
             Cmd::Open => { self.pane().open_chosen(&port); self.after_pane_events(); }
             Cmd::Preview => if self.lightbox.is_open() { self.close_lightbox(); } else if self.focus == Focus::Pane && self.dialog.is_none() { let i = self.active.min(self.panes.len() - 1); if let Some(row) = self.panes[i].cursor_row() { self.open_lightbox(i, row); } },
             Cmd::SelectAll => match self.focus { Focus::Path => self.field.select_all(&mut self.fonts), Focus::Search => self.search.select_all(&mut self.fonts), Focus::Rename => if let Some(r) = self.rename.as_mut() { r.field.select_all(&mut self.fonts); }, Focus::Pane => self.pane().select_all(), Focus::Items => {}, Focus::Cell => { let l = match self.tracker.as_mut() { Some(t) => &mut t.list, None => &mut self.items }; if let Some(e) = l.edit.as_mut() { e.field.select_all(&mut self.fonts); } } },
@@ -1333,9 +1345,15 @@ impl Ui {
             if matches!(e, Event::Down { .. }) { self.commit_rename(); if self.rename.is_some() || self.dialog.is_some() { return } }
         }
         // the running operation in the status bar: its cancel; a press on it opens (or closes) the list of what waits
+        if self.op_list && self.task_card.width() > 0.0 {
+            let mut act = None; for (id, b) in self.task_btns.iter_mut() { if b.rect.width() > 0.0 && b.event(e, now) == Response::Clicked { act = Some(*id); } }
+            if let Some(id) = act { if crate::tasks::list().iter().any(|t| t.id == id && t.state.over()) { crate::tasks::dismiss(id); } else { crate::tasks::cancel(id); } return }
+            if self.task_clear.event(e, now).0 { crate::tasks::clear_finished(); return }
+            if let Some((x, y)) = e.pos() { if self.task_card.contains(kurbo::Point::new(x, y)) { return } }
+        }
         if self.op_rect.width() > 0.0 {
-            if self.op_cancel.event(e, now) == Response::Clicked { crate::ops::cancel(); return }
-            if let Event::Down { x, y, button: Button::Primary } = *e { if self.op_rect.contains(kurbo::Point::new(x, y)) && !self.op_cancel.hit(x, y) { self.op_list = !self.op_list; return } else if self.op_list { self.op_list = false; } }
+            if self.op_cancel.rect.width() > 0.0 && self.op_cancel.event(e, now) == Response::Clicked { crate::ops::cancel(); return }
+            if let Event::Down { x, y, button: Button::Primary } = *e { if self.op_rect.contains(kurbo::Point::new(x, y)) && !(self.op_cancel.rect.width() > 0.0 && self.op_cancel.hit(x, y)) { self.op_list = !self.op_list; return } else if self.op_list { self.op_list = false; } }
         }
         // the strip of tabs (row 480; drawn when there are two or more): a press shows a tab, its cross or the middle
         // button closes it, the plus makes a new one
@@ -1723,6 +1741,11 @@ impl Ui {
             // the chosen entries shown as CUT (the look only: a script never touches the clipboard)
             "cutshow" => { let paths = self.chosen_paths(); crate::pane::set_cut(&paths); },
             "copyother" => self.command(Cmd::CopyToOther), "moveother" => self.command(Cmd::MoveToOther), "stopop" => crate::ops::cancel(), "oplist" => self.op_list = true,
+            // `tasks` (say the list) `taskstop:<n>` `taskdismiss:<n>` (the n-th row of the list) `taskclear`
+            "tasksay" => eprintln!("UFB_DEMO: tasks: {}", crate::tasks::list().iter().map(|t| format!("{} [{:?}]", t.label, t.state)).collect::<Vec<_>>().join(" | ")),
+            "taskstop" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::cancel(t.id); },
+            "taskdismiss" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::dismiss(t.id); },
+            "taskclear" => crate::tasks::clear_finished(),
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },
             // the secondary button on a row, on the pane's empty part (`context:bg`), on a sidebar row (`context:side<n>`)
             "context" => { let at = if arg == "bg" { let r = self.pane().rect; Some((r.x1 - 30.0, r.y1 - 30.0)) } else if let Some(n) = arg.strip_prefix("side").and_then(num) { self.side_rows.get(n).map(|r| ((r.rect.x0 + r.rect.x1) / 2.0, (r.rect.y0 + r.rect.y1) / 2.0)) } else { num(arg).and_then(|n| self.pane().row_point(n)) };
@@ -2078,12 +2101,51 @@ impl Ui {
                 draw_layout(scene, &l, Affine::translate((lx, status.y0 + (status.height() - l.height() as f64) / 2.0)));
                 min_ui::progress::bar(scene, bar, frac, min_ui::progress::Tone::Neutral); self.op_cancel.paint(scene, fonts, s, now);
                 self.op_rect = Rect::new(lx - 6.0 * s, status.y0, status.x1, status.y1); fx = lx - 24.0 * s;
-                // the list: the one that runs (with the item in hand), then those that wait
-                if self.op_list { let mut rows = vec![if st.current.is_empty() { st.label.clone() } else { format!("{}  \u{2014}  {}", st.label, st.current) }]; rows.extend(crate::ops::waiting().into_iter().map(|w| format!("Waiting:  {w}")));
-                    let rh = 22.0 * s; let pw = 420.0 * s; let card = Rect::new(status.x1 - 8.0 * s - pw, status.y0 - 8.0 * s - rows.len() as f64 * rh - 12.0 * s, status.x1 - 8.0 * s, status.y0 - 8.0 * s);
+            } else {
+                self.op_cancel.rect = Rect::ZERO;
+                // nothing runs: what is left in the list is said beside the room on the volume, and opens the panel
+                let (active, done, failed) = crate::tasks::counts();
+                if active + done + failed > 0 {
+                    let mut parts = vec![]; if active > 0 { parts.push(format!("{active} waiting")); } if done > 0 { parts.push(format!("{done} finished")); } if failed > 0 { parts.push(format!("{failed} failed")); }
+                    let l = fonts.layout(&format!("Tasks: {}", parts.join("  \u{b7}  ")), Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, if failed > 0 { paint::color(t::NEGATIVE_CONTENT_COLOR_DEFAULT) } else { ink });
+                    let lx = fx - 24.0 * s - l.width() as f64;
+                    if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); }
+                    if lx > status.x0 + side_w { draw_layout(scene, &l, Affine::translate((lx, status.y0 + (status.height() - l.height() as f64) / 2.0))); self.op_rect = Rect::new(lx - 6.0 * s, status.y0, lx + l.width() as f64 + 6.0 * s, status.y1); }
+                    fx = lx;
+                } else { self.op_list = false; if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); } }
+            }
+            // the tasks' panel (row 508): every task from the moment it is asked for until it is dismissed - the newest
+            // twelve; a row's button stops what runs or waits and dismisses what is over
+            self.task_card = Rect::ZERO; for (_, b) in self.task_btns.iter_mut() { b.rect = Rect::ZERO; } self.task_clear.rect = Rect::ZERO;
+            if self.op_list {
+                let all = crate::tasks::list(); let tasks: Vec<&crate::tasks::Task> = all.iter().skip(all.len().saturating_sub(12)).collect();
+                if tasks.is_empty() { self.op_list = false; } else {
+                    let (running, st) = (crate::ops::running_task(), crate::ops::status());
+                    let (rh, pw, foot, bh) = (44.0 * s, 460.0 * s, 40.0 * s, t::ACTION_BUTTON_HEIGHT_S as f64 * s);
+                    let card = Rect::new(status.x1 - 8.0 * s - pw, status.y0 - 8.0 * s - tasks.len() as f64 * rh - foot - 8.0 * s, status.x1 - 8.0 * s, status.y0 - 8.0 * s); self.task_card = card;
                     paint::rounded(scene, card.inflate(s, s), t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s + s, t::DIVIDER_COLOR_MEDIUM); paint::rounded(scene, card, t::CORNER_RADIUS_MEDIUM_DEFAULT as f64 * s, t::BACKGROUND_LAYER_2_COLOR);
-                    for (i, row) in rows.iter().enumerate() { let rl = fonts.layout_fit(row, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, if i == 0 { ink } else { sub }, pw - 24.0 * s); draw_layout(scene, &rl, Affine::translate((card.x0 + 12.0 * s, card.y0 + 6.0 * s + i as f64 * rh + (rh - rl.height() as f64) / 2.0))); } }
-            } else { self.op_list = false; if fx > status.x0 + side_w { draw_layout(scene, &fl, Affine::translate((fx, status.y0 + (status.height() - fl.height() as f64) / 2.0))); } }
+                    self.task_btns.retain(|(id, _)| tasks.iter().any(|t| t.id == *id));
+                    for (i, task) in tasks.iter().enumerate() {
+                        let y0 = card.y0 + 8.0 * s + i as f64 * rh; let over = task.state.over();
+                        if !self.task_btns.iter().any(|(id, _)| *id == task.id) { self.task_btns.push((task.id, ActionButton::new("x", "Stop").size_s())); }
+                        let b = &mut self.task_btns.iter_mut().find(|(id, _)| *id == task.id).unwrap().1; b.tooltip = if over { "Dismiss".into() } else { "Stop".into() };
+                        b.rect = Rect::new(card.x1 - 10.0 * s - bh, y0 + (rh - bh) / 2.0, card.x1 - 10.0 * s, y0 + (rh + bh) / 2.0); b.corners = Corners::all(t::ACTION_BUTTON_CORNER_RADIUS_S as f64 * s); b.paint(scene, fonts, s, now);
+                        let tw = pw - 24.0 * s - bh - 12.0 * s;
+                        let l = fonts.layout_fit(&task.label, Family::Sans, size, t::FONT_WEIGHT_REGULAR as f32, ink, tw); draw_layout(scene, &l, Affine::translate((card.x0 + 12.0 * s, y0 + 5.0 * s)));
+                        use crate::tasks::State as TS;
+                        let (frac, detail) = if running == Some(task.id) { match &st { Some(st) => (Some(if st.bytes.1 > 0 { st.bytes.0 as f64 / st.bytes.1 as f64 } else if st.items.1 > 0 { st.items.0 as f64 / st.items.1 as f64 } else { 0.0 }), st.current.clone()), None => (None, String::new()) } } else { (task.progress, task.detail.clone()) };
+                        let (words, tone) = match &task.state { TS::Waiting => ("Waiting".to_string(), sub), TS::Running => (if detail.is_empty() { "Running".to_string() } else { detail }, sub), TS::Done => ("Done".to_string(), sub), TS::Stopped => ("Stopped".to_string(), sub), TS::Failed(e) => (e.clone(), paint::color(t::NEGATIVE_CONTENT_COLOR_DEFAULT)) };
+                        let bar_w = if task.state == TS::Running && frac.is_some() { 110.0 * s } else { 0.0 };
+                        let l2 = fonts.layout_fit(&words, Family::Sans, t::DETAIL_SIZE_S * s as f32, t::FONT_WEIGHT_REGULAR as f32, tone, tw - bar_w - if bar_w > 0.0 { 10.0 * s } else { 0.0 }); let y2 = y0 + 5.0 * s + l.height() as f64 + 2.0 * s;
+                        draw_layout(scene, &l2, Affine::translate((card.x0 + 12.0 * s, y2)));
+                        if let (true, Some(f)) = (bar_w > 0.0, frac) { let ph = min_ui::progress::height(s); let by = y2 + (l2.height() as f64 - ph) / 2.0; min_ui::progress::bar(scene, Rect::new(card.x0 + 12.0 * s + tw - bar_w, by, card.x0 + 12.0 * s + tw, by + ph), f, min_ui::progress::Tone::Neutral); }
+                        if i > 0 { paint::hline(scene, card.x0 + 12.0 * s, card.x1 - 12.0 * s, y0, s, t::DIVIDER_COLOR); }
+                    }
+                    let fy = card.y1 - foot; paint::hline(scene, card.x0, card.x1, fy, s, t::DIVIDER_COLOR);
+                    self.task_clear.enabled = tasks.iter().any(|t| t.state.over()); let (cw, ch) = self.task_clear.measure(fonts, s);
+                    self.task_clear.rect = Rect::new(card.x1 - 10.0 * s - cw, fy + (foot - ch) / 2.0, card.x1 - 10.0 * s, fy + (foot + ch) / 2.0); self.task_clear.paint(scene, fonts, s, now);
+                }
+            }
             let mesh = crate::mesh::status().map(|m| { let who = if m.leading { if m.peers == 0 { "Sync: no other machine".to_string() } else { format!("Sync: leading, {} other{}", m.peers, if m.peers == 1 { "" } else { "s" }) } } else { match &m.leader { Some(l) => format!("Sync: with {l}"), None => "Sync: looking for the others".to_string() } };
                 let who = if m.strangers > 0 { format!("{who}  \u{b7}  {} with another secret", m.strangers) } else { who };
                 if m.pending > 0 { format!("{who}  \u{b7}  {} edit{} not yet synced", m.pending, if m.pending == 1 { "" } else { "s" }) } else { who } });

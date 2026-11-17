@@ -34,6 +34,7 @@ mod settings;
 mod shares;
 mod shell;
 mod sysopen;
+mod tasks;
 mod thumbs;
 mod tracker;
 mod ui;

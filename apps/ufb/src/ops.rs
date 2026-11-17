@@ -576,29 +576,35 @@ impl Engine {
 /// A question the engine waits on: asked of the window that started the operation.
 #[derive(Debug)]
 pub struct Question { pub id: u64, pub origin: u64, pub conflict: Conflict }
-struct Shared { tx: Sender<(u64, Op)>, undo: Arc<Mutex<Option<String>>>, guard: Guard, ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>>,
+struct Shared { tx: Sender<(u64, Op, Option<(u64, Arc<AtomicBool>)>)>, /// the flag of the operation that runs now
+    current: Arc<Mutex<Arc<AtomicBool>>>, undo: Arc<Mutex<Option<String>>>, guard: Guard, ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>>,
     /// the running operation: how it stands, how it is called off; what waits behind it (what the status bar says of each)
-    status: Arc<Mutex<Option<Status>>>, cancel: Arc<AtomicBool>, waiting: Arc<Mutex<Vec<String>>>,
+    status: Arc<Mutex<Option<Status>>>, waiting: Arc<Mutex<Vec<String>>>,
     /// the answers to the engine's questions; the question that is open (its number, the window asked)
     answers: Sender<(u64, Choice, bool)>, open: Arc<Mutex<Option<(u64, u64)>>> }
 static SHARED: OnceLock<Shared> = OnceLock::new();
 
 fn label_of(op: &Op) -> String {
-    let items = |n: usize| if n == 1 { "1 item".to_string() } else { format!("{n} items") };
-    match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", items(paths.len())), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", items(paths.len())), Op::Delete { paths } => format!("Delete {}", items(paths.len())),
-        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, items(paths.len()), name_of(dest)), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into() }
+    // (one item is said by its name: the tasks' panel shows several of these under one another)
+    let what = |paths: &[PathBuf]| if paths.len() == 1 { format!("\u{201c}{}\u{201d}", name_of(&paths[0])) } else { format!("{} items", paths.len()) };
+    match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
+        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into() }
 }
 
 /// Start the engine's thread. `roots`: the folders this build may change things in.
 pub fn init(roots: &[PathBuf]) {
-    let (tx, rx) = channel::<(u64, Op)>(); let (answers, answered) = channel::<(u64, Choice, bool)>();
+    let (tx, rx) = channel::<(u64, Op, Option<(u64, Arc<AtomicBool>)>)>(); let (answers, answered) = channel::<(u64, Choice, bool)>();
     let undo = Arc::new(Mutex::new(None)); let ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>> = Arc::new(Mutex::new(vec![])); let guard = Guard::new(roots);
-    let (status, cancel, waiting, open) = (Arc::new(Mutex::new(None)), Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(Mutex::new(None)));
-    let (u, p, g, st, ca, wa, op) = (undo.clone(), ports.clone(), guard.clone(), status.clone(), cancel.clone(), waiting.clone(), open.clone());
+    let (status, current, waiting, open) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(Mutex::new(None)));
+    let (u, p, g, st, cur, wa, op) = (undo.clone(), ports.clone(), guard.clone(), status.clone(), current.clone(), waiting.clone(), open.clone());
     let _ = std::thread::Builder::new().name("ufb-ops".into()).spawn(move || {
         let mut engine = Engine::new(g); let mut next = 1u64;
-        while let Ok((origin, job)) = rx.recv() {
-            { let mut w = wa.lock().unwrap(); if !w.is_empty() { w.remove(0); } } ca.store(false, Ordering::Relaxed);
+        while let Ok((origin, job, task)) = rx.recv() {
+            { let mut w = wa.lock().unwrap(); if !w.is_empty() { w.remove(0); } }
+            // (a task called off while it waited never starts; one that runs is called off by its own flag)
+            let ca = match &task { Some((_, flag)) => flag.clone(), None => Arc::new(AtomicBool::new(false)) };
+            if ca.load(Ordering::Relaxed) { continue }
+            *cur.lock().unwrap() = ca.clone(); if let Some((id, _)) = &task { crate::tasks::start(*id); }
             // a question goes to the window that asked for the operation, and the engine waits: for its answer, for the
             // operation being called off, or for that window to be gone
             let mut ask = |c: &Conflict| -> (Choice, bool) {
@@ -610,24 +616,30 @@ pub fn init(roots: &[PathBuf]) {
                 *op.lock().unwrap() = None; got
             };
             let mut rep = engine.run_with(job, &mut Ctl { cancel: &ca, status: &st, ask: &mut ask }); rep.origin = origin; *u.lock().unwrap() = engine.undo_label(); *st.lock().unwrap() = None;
+            if let Some((id, _)) = &task { crate::tasks::finish(*id, match &rep.error { Some(e) => Err(e.clone()), None => Ok(None) }); }
             // every window hears of it (a folder may be shown in several)
             let rep = Arc::new(rep); for (_, port) in p.lock().unwrap().iter() { port.send(crate::lister::Msg::Op(rep.clone())); }
         }
     });
-    let _ = SHARED.set(Shared { tx, undo, guard, ports, status, cancel, waiting, answers, open });
+    let _ = SHARED.set(Shared { tx, current, undo, guard, ports, status, waiting, answers, open });
 }
 /// A window's port: it hears of every operation from now on, and is asked the questions of its own.
 pub fn subscribe(window: u64, port: crate::lister::Port) { if let Some(s) = SHARED.get() { s.ports.lock().unwrap().push((window, port)); } }
 /// A window is gone: a question that waits on it is answered "stop".
 pub fn unsubscribe(window: u64) { if let Some(s) = SHARED.get() { s.ports.lock().unwrap().retain(|(w, _)| *w != window); if let Some((id, w)) = *s.open.lock().unwrap() { if w == window { let _ = s.answers.send((id, Choice::Stop, false)); } } } }
-pub fn submit(origin: u64, op: Op) { if let Some(s) = SHARED.get() { s.waiting.lock().unwrap().push(label_of(&op)); let _ = s.tx.send((origin, op)); } }
+/// What takes time is a task of the list (row 508): a copy, a move, a duplicate, a delete. The rest is over at once.
+pub fn submit(origin: u64, op: Op) { if let Some(s) = SHARED.get() { let label = label_of(&op);
+    let task = matches!(op, Op::Transfer { .. } | Op::Duplicate { .. } | Op::DuplicateSequence { .. } | Op::Trash { .. } | Op::Delete { .. }).then(|| crate::tasks::add(&label));
+    s.waiting.lock().unwrap().push(label); let _ = s.tx.send((origin, op, task)); } }
+/// The task that runs in the engine now is shown with the engine's own account of it.
+pub fn running_task() -> Option<u64> { let s = SHARED.get()?; s.status.lock().unwrap().as_ref()?; let cur = s.current.lock().unwrap().clone(); crate::tasks::list().into_iter().find(|t| t.state == crate::tasks::State::Running && Arc::ptr_eq(&t.cancel, &cur)).map(|t| t.id) }
 pub fn answer(question: u64, choice: Choice, all: bool) { if let Some(s) = SHARED.get() { let _ = s.answers.send((question, choice, all)); } }
 pub fn undo_label() -> Option<String> { SHARED.get().and_then(|s| s.undo.lock().unwrap().clone()) }
 /// The operation that runs now, and what waits behind it.
 pub fn status() -> Option<Status> { SHARED.get().and_then(|s| s.status.lock().unwrap().clone()) }
 pub fn waiting() -> Vec<String> { SHARED.get().map(|s| s.waiting.lock().unwrap().clone()).unwrap_or_default() }
 /// Call the running operation off: what it has done stays done (and can be undone).
-pub fn cancel() { if let Some(s) = SHARED.get() { s.cancel.store(true, Ordering::Relaxed); } }
+pub fn cancel() { if let Some(s) = SHARED.get() { s.current.lock().unwrap().store(true, Ordering::Relaxed); } }
 /// Whether this build may change things in `dir` (the menus say so before anything is tried).
 pub fn allowed_in(dir: &Path) -> bool { SHARED.get().is_some_and(|s| s.guard.allows(&dir.join("x"))) }
 
