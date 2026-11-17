@@ -2,7 +2,13 @@ wait:800
 side:3
 go:@ROOT@/Media/Stills
 grid
-size:230
+size:200
+pane2
+tab
+go:@ROOT@/Media/Plates
+grid
+size:200
 wait:3500
+tab
 select:1
-wait:300
+wait:400
