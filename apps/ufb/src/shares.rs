@@ -59,7 +59,10 @@ pub fn parse(text: &str) -> Result<Share, String> {
     let p = Path::new(t); if !p.is_absolute() { return Err("That is neither a share's address nor a folder's path.".into()) }
     // a folder: its name is the share's on the other system too (`C:\Volumes\X` and `/Volumes/X` - 1.4.x's habit)
     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| t.to_string());
-    let (win, mac) = if cfg!(windows) { (t.to_string(), format!("/Volumes/{name}")) } else { (format!("C:\\Volumes\\{name}"), t.to_string()) };
+    // (a folder under `/Volumes` or `C:\\Volumes` keeps its WHOLE path on the other system: `/Volumes/a/b` is `C:\\Volumes\\a\\b`)
+    let sl = t.replace('\\', "/"); let low = sl.to_lowercase(); let under = low.strip_prefix("/volumes/").or_else(|| low.strip_prefix("c:/volumes/")).map(|r| sl[sl.len() - r.len()..].trim_matches('/').to_string()).filter(|r| !r.is_empty());
+    let (other_win, other_mac) = match &under { Some(rest) => (format!("C:\\Volumes\\{}", rest.replace('/', "\\")), format!("/Volumes/{rest}")), None => (format!("C:\\Volumes\\{name}"), format!("/Volumes/{name}")) };
+    let (win, mac) = if cfg!(windows) { (t.to_string(), other_mac) } else { (other_win, t.to_string()) };
     Ok(Share { id: new_id(), name, local: t.to_string(), win, mac, ..Default::default() })
 }
 fn new_id() -> String { uuid::Uuid::new_v4().simple().to_string()[..12].to_string() }
@@ -195,6 +198,8 @@ mod tests {
         assert!(parse("smb://server").is_err()); assert!(parse("  ").is_err()); assert!(parse("relative/path").is_err());
         // a folder of this machine: the same name on the other system
         let f = parse(if cfg!(windows) { "C:\\Volumes\\gfx" } else { "/Volumes/gfx" }).unwrap(); assert!(f.server.is_empty()); assert_eq!((f.name.as_str(), f.win.as_str(), f.mac.as_str()), ("gfx", "C:\\Volumes\\gfx", "/Volumes/gfx"));
+        // a folder deeper under the volumes' folder keeps its whole path on the other system: the same pair from either machine
+        let d = parse(if cfg!(windows) { "C:\\Volumes\\gfx\\jobs" } else { "/Volumes/gfx/jobs" }).unwrap(); assert_eq!((d.name.as_str(), d.win.as_str(), d.mac.as_str()), ("jobs", "C:\\Volumes\\gfx\\jobs", "/Volumes/gfx/jobs"));
         assert_eq!(from_json(&to_json(&c)), Some(c));
     }
     #[test]
