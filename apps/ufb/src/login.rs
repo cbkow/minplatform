@@ -33,13 +33,13 @@ mod imp {
 mod imp {
     use windows::ApplicationModel::{StartupTask, StartupTaskState}; use windows::core::HSTRING;
     /// The package's startup task; none when this is no package (a build run from a folder).
-    fn task() -> Option<StartupTask> { StartupTask::GetAsync(&HSTRING::from("ufbStartup")).ok()?.get().ok() }
+    fn task() -> Option<StartupTask> { StartupTask::GetAsync(&HSTRING::from("ufbStartup")).ok()?.join().ok() }
     pub fn available() -> bool { task().is_some() }
     pub fn enabled() -> bool { task().and_then(|t| t.State().ok()).is_some_and(|s| s == StartupTaskState::Enabled || s == StartupTaskState::EnabledByPolicy) }
     pub fn set(on: bool) -> Result<(), String> {
         let t = task().ok_or("Only the installed application starts at sign-in.")?;
         if !on { return t.Disable().map_err(|e| format!("Start at sign-in could not be turned off: {e}")) }
-        match t.RequestEnableAsync().and_then(|a| a.get()) {
+        match t.RequestEnableAsync().and_then(|a| a.join()) {
             Ok(StartupTaskState::Enabled) | Ok(StartupTaskState::EnabledByPolicy) => Ok(()),
             Ok(StartupTaskState::DisabledByUser) => Err("Windows keeps it off because it was turned off there: turn it on in Settings > Apps > Startup.".into()),
             Ok(StartupTaskState::DisabledByPolicy) => Err("This machine's policy does not let applications start at sign-in.".into()),
