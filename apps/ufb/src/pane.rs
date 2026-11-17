@@ -43,6 +43,8 @@ pub struct Pane {
     restore: Option<Look>, reopen: Vec<Vec<String>>,
     /// (how many are chosen, the bytes of the chosen files)
     chosen: (usize, u64),
+    /// what was searched for below this folder, while the pane shows what was found (none: the folder itself is shown)
+    found: Option<String>,
     /// the search field's text for this pane (it filters the folder in view; a navigation clears it)
     pub search: String,
     /// set when the folder itself has just been read to its end (the window tells the thumbnails' cache)
@@ -127,12 +129,13 @@ pub fn set_cut(paths: &[PathBuf]) { *CUT.lock().unwrap() = paths.to_vec(); CUT_A
 
 impl Pane {
     pub fn new(path: PathBuf, port: &Port) -> Pane {
-        let mut p = Pane { root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
+        let mut p = Pane { found: None, root: None, cols: vec![0, 1, 2, 3], col_layout: ColLayout::all(), col_kind: None, history: History::new(path), model: Model::new(), table: Table::new(columns()), grid: Grid::new(96.0), mode: Mode::List, load: Load::Loading, free: None, mtime: None, inner: vec![], reqs: HashMap::new(), probe: None, restore: None, reopen: vec![], chosen: (0, 0), search: String::new(), listed: false, menu_at: None, drag_out: false, split: vec![], forced: vec![], preview: None, open_default: None, rect: Rect::ZERO, scale: 1.0 };
         p.read(port, None, vec![]); p
     }
     pub fn path(&self) -> &Path { self.history.current() }
     /// The folder's name, as a title.
-    pub fn title(&self) -> String { self.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.path().to_string_lossy().into_owned()) }
+    pub fn title(&self) -> String { if let Some(f) = &self.found { return format!("\u{201c}{f}\u{201d} in {} and below", self.folder_name()) } self.folder_name() }
+    fn folder_name(&self) -> String { self.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.path().to_string_lossy().into_owned()) }
     pub fn sel(&self) -> &Selection { if self.mode == Mode::List { &self.table.sel } else { &self.grid.sel } }
     fn sel_mut(&mut self) -> &mut Selection { if self.mode == Mode::List { &mut self.table.sel } else { &mut self.grid.sel } }
     fn scroll(&self) -> f64 { if self.mode == Mode::List { self.table.bar.offset } else { self.grid.bar.offset } }
@@ -148,10 +151,31 @@ impl Pane {
         for (_, (_, cancel)) in self.reqs.drain() { cancel.store(true, Ordering::Relaxed); }
         self.model.clear(); self.model.tree = self.mode == Mode::List; self.model.rebuild();
         self.table.sel.reset(); self.grid.sel.reset(); self.table.sel.resize(0); self.grid.sel.resize(0); self.table.bar.offset = 0.0; self.grid.bar.offset = 0.0;
-        self.free = None; self.inner.clear(); self.load = Load::Loading; self.restore = restore; self.reopen = reopen; self.chosen = (0, 0); self.probe = None; self.search.clear();
+        self.free = None; self.inner.clear(); self.load = Load::Loading; self.restore = restore; self.reopen = reopen; self.chosen = (0, 0); self.probe = None; self.search.clear(); self.found = None;
         let (req, cancel) = (lister::next_req(), Arc::new(AtomicBool::new(false)));
         self.reqs.insert(req, (TOP, cancel.clone())); lister::list(port, req, self.path().to_path_buf(), cancel);
     }
+    /// Search below the folder in view (rows 508 points 13-15, 514): the pane shows what is found, as it is found -
+    /// a flat listing of this folder whose entries are named by their paths from it, so everything a listing can do
+    /// (sort, choose, open, preview, copy, drag, the menu) is done to them as to any entry. Going anywhere, or
+    /// changing the search's words, leaves it.
+    pub fn search_below(&mut self, port: &Port, text: &str) {
+        let text = text.trim(); if text.is_empty() { return }
+        self.read_found(port, text, None);
+    }
+    fn read_found(&mut self, port: &Port, text: &str, restore: Option<Look>) {
+        for (_, (_, cancel)) in self.reqs.drain() { cancel.store(true, Ordering::Relaxed); }
+        self.model.clear(); self.model.tree = self.mode == Mode::List; self.model.set_filter(""); self.model.rebuild();
+        self.table.sel.reset(); self.grid.sel.reset(); self.table.sel.resize(0); self.grid.sel.resize(0); self.table.bar.offset = 0.0; self.grid.bar.offset = 0.0;
+        self.free = None; self.inner.clear(); self.load = Load::Loading; self.restore = restore; self.reopen = vec![]; self.chosen = (0, 0); self.probe = None;
+        self.search = text.to_string(); self.found = Some(text.to_string());
+        let (req, cancel) = (lister::next_req(), Arc::new(AtomicBool::new(false)));
+        self.reqs.insert(req, (TOP, cancel.clone())); lister::find(port, req, self.path().to_path_buf(), text.to_string(), self.model.show_hidden, cancel);
+    }
+    /// Back to the folder itself (the search's words were changed or taken away).
+    pub fn leave_found(&mut self, port: &Port) { if self.found.is_some() { self.found = None; self.read(port, None, vec![]); } }
+    /// What was searched for, while the pane shows what was found.
+    pub fn found(&self) -> Option<&str> { self.found.as_deref() }
     /// There is a folder above that this pane may go to: not above its root, when it has one.
     pub fn can_up(&self) -> bool { self.history.parent().is_some() && self.root.as_ref().is_none_or(|r| self.path() != r && self.path().starts_with(r)) }
     /// The pane is given to a folder it does not leave upward, and starts at `at` inside it with a history of its own:
@@ -168,9 +192,10 @@ impl Pane {
     /// To the enclosing folder; the folder left is the one chosen there.
     pub fn up(&mut self, port: &Port) { if !self.can_up() { return } let look = self.look(); if let Some(stop) = self.history.up(look) { self.read(port, Some(stop.look), vec![]); } }
     /// Read again what is shown: the choice, the scroll and the folders opened in place are kept as far as they still exist.
-    pub fn refresh(&mut self, port: &Port) { let (look, open, search) = (self.look(), self.model.expanded(), self.search.clone()); self.read(port, Some(look), open); self.model.set_filter(&search); self.search = search; }
+    pub fn refresh(&mut self, port: &Port) { if let Some(text) = self.found.clone() { let look = self.look(); self.read_found(port, &text, Some(look)); return } let (look, open, search) = (self.look(), self.model.expanded(), self.search.clone()); self.read(port, Some(look), open); self.model.set_filter(&search); self.search = search; }
     /// Read again and, once read, choose the entries with these names (what an operation made).
     pub fn refresh_choosing(&mut self, port: &Port, names: Vec<String>) {
+        if let Some(text) = self.found.clone() { let look = self.look(); self.read_found(port, &text, Some(look)); return }
         let (mut look, open, search) = (self.look(), self.model.expanded(), self.search.clone()); if !names.is_empty() { look.selected = names; }
         self.read(port, Some(look), open); self.model.set_filter(&search); self.search = search;
     }
@@ -189,7 +214,7 @@ impl Pane {
         self.model.find_ci(self.model.node(id).parent, name).is_some_and(|other| other != id)
     }
     /// The window became active: ask (off this thread) whether the folder changed since it was read.
-    pub fn activated(&mut self, port: &Port) { if self.load == Load::Loading || self.probe.is_some() { return } let req = lister::next_req(); self.probe = Some(req); lister::probe(port, req, self.path().to_path_buf(), self.inner.clone()); }
+    pub fn activated(&mut self, port: &Port) { if self.load == Load::Loading || self.probe.is_some() || self.found.is_some() { return } let req = lister::next_req(); self.probe = Some(req); lister::probe(port, req, self.path().to_path_buf(), self.inner.clone()); }
 
     /// Change the model (its entries, its options) and keep what is chosen, by entry, across the new rows.
     fn keep(&mut self, change: impl FnOnce(&mut Model)) {
@@ -271,7 +296,7 @@ impl Pane {
     pub fn set_hidden(&mut self, on: bool) { self.keep(|m| m.show_hidden = on); }
     pub fn set_folders_first(&mut self, on: bool) { self.keep(|m| m.folders_first = on); }
     /// The search field's text filters the folder in view.
-    pub fn set_search(&mut self, text: &str) { self.search = text.to_string(); if self.model.filter() != text.to_lowercase() { self.keep(|m| m.set_filter(text)); } }
+    pub fn set_search(&mut self, text: &str) { self.search = text.to_string(); if self.found.is_some() { return } if self.model.filter() != text.to_lowercase() { self.keep(|m| m.set_filter(text)); } }
     pub fn select_all(&mut self) { self.sel_mut().select_all(); self.count(); }
     /// Rows a..=b are chosen (the scripted looks).
     pub fn select_rows(&mut self, a: usize, b: usize) { let n = self.model.len(); if n == 0 { return } let s = self.sel_mut(); s.resize(n); s.select_only(a.min(n - 1)); s.extend_to(b.min(n - 1)); self.count(); }
@@ -439,9 +464,9 @@ impl Pane {
     /// The status bar's left: the items, the hidden ones, the chosen ones and their size.
     pub fn status(&self) -> String {
         if let Load::Failed(_) = self.load { return String::new() }
-        let (shown, hidden) = self.model.counts(); let mut s = if shown == 1 { "1 item".to_string() } else { format!("{} items", group(shown)) };
+        let (shown, hidden) = self.model.counts(); let mut s = if self.found.is_some() { format!("{} found", group(shown)) } else if shown == 1 { "1 item".to_string() } else { format!("{} items", group(shown)) };
         if hidden > 0 { s.push_str(&format!(", {} hidden", group(hidden))); }
-        if self.loading() { s.push_str("  \u{b7}  reading\u{2026}"); }
+        if self.loading() { s.push_str(if self.found.is_some() && self.load == Load::Loading { "  \u{b7}  searching\u{2026}" } else { "  \u{b7}  reading\u{2026}" }); }
         let (n, bytes) = self.chosen; if n > 0 { s.push_str(&format!("  \u{b7}  {} selected, {}", group(n), format::size_text(bytes, format::DECIMAL))); }
         // one sequence chosen: how many frames it has, and how many of its range are not there
         if n == 1 { if let Some((frames, missing)) = self.sel().iter().next().and_then(|i| self.model.row(i)).and_then(|id| self.model.frames(id)) { s.push_str(&format!("  \u{b7}  {} frames", group(frames))); if missing > 0 { s.push_str(&format!(", {} missing", group(missing))); } } }

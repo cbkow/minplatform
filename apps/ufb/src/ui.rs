@@ -1063,6 +1063,12 @@ impl Ui {
         if !crate::ops::allowed_in(self.pane().path()) { self.toast.show("This build changes nothing outside the folders it was started with.", min_ui::toast::ToastKind::Notice, Instant::now()); return }
         for archive in paths { crate::archive::submit(self.id, crate::archive::Job::Extract { archive, password: None }); }
     }
+    /// A found entry is shown where it lies: the pane goes to its folder and chooses it (row 508, point 15).
+    fn show_enclosing(&mut self) {
+        let Some((path, ..)) = self.pane().chosen_entries(1).into_iter().next() else { return };
+        let (Some(dir), Some(name)) = (path.parent().map(Path::to_path_buf), path.file_name().map(|n| n.to_string_lossy().into_owned())) else { return };
+        let port = self.port.clone(); self.search.clear(); self.pane().go_select(&port, dir, name);
+    }
     /// Transcode to MP4 for the chosen videos and sequences (rows 508 points 10-12, 513): a task of the lane each.
     fn transcode_chosen(&mut self) {
         let Some(sources) = self.pane().chosen_media() else { return };
@@ -1207,7 +1213,8 @@ impl Ui {
             Cmd::PasteMove => self.out.push(Out::PasteFiles { mv: true }),
             Cmd::CopyToOther => self.to_other_pane(false), Cmd::MoveToOther => self.to_other_pane(true),
             Cmd::NewFolder => { let dir = self.pane().path().to_path_buf(); crate::ops::submit(self.id, crate::ops::Op::NewFolder { dir }); }
-            Cmd::Rename => self.start_rename(),
+            // (a find is named by its path here: it is renamed where it lies)
+            Cmd::Rename => if self.pane().found().is_some() { self.toast.show("A found item is renamed in its own folder: Show in Enclosing Folder.", min_ui::toast::ToastKind::Notice, Instant::now()); } else { self.start_rename() },
             // (a sequence is duplicated AS a sequence: the copy's name on its base, the frame numbers kept)
             Cmd::Duplicate => { let (paths, seqs) = self.pane().chosen_for_duplicate(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Duplicate { paths }); } for frames in seqs { crate::ops::submit(self.id, crate::ops::Op::DuplicateSequence { frames }); } }
             Cmd::Trash => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Trash { paths }); } }
@@ -1280,6 +1287,7 @@ impl Ui {
                 // archives (row 508): what is chosen is compressed; chosen archives are unpacked where they lie
                 { let n = entries.len(); let archives = entries.iter().all(|e| !e.1 && e.0.file_name().is_some_and(|f| crate::archive::is_archive(&f.to_string_lossy())));
                     let mut add = vec![ctxmenu::Row::Sep]; if archives { add.push(ctxmenu::named(ctxmenu::EXTRACT, if n == 1 { "Extract Here".to_string() } else { format!("Extract {n} Archives Here") })); }
+                    if n == 1 && pane.found().is_some() { if let Some(k) = rows.iter().position(|r| *r == ctxmenu::Row::Reveal) { rows.insert(k, ctxmenu::named(ctxmenu::ENCLOSING, "Show in Enclosing Folder".to_string())); } }
                     if pane.chosen_media().is_some() { add.push(ctxmenu::named(ctxmenu::TRANSCODE, "Transcode to MP4".to_string())); }
                     add.push(ctxmenu::named(ctxmenu::COMPRESS, if n == 1 { "Compress to ZIP".to_string() } else { format!("Compress {n} Items to ZIP") }));
                     let at_row = rows.iter().rposition(|r| *r == ctxmenu::Row::Sep).unwrap_or(rows.len()); rows.splice(at_row..at_row, add); }
@@ -1346,6 +1354,7 @@ impl Ui {
             id if (SORT..SORT + 4).contains(&id) => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; } self.command(Cmd::Sort((id - SORT) as u8)); }
             NEW_WINDOW => self.out.push(Out::NewWindow(folder)),
             crate::ctxmenu::EXTRACT | crate::ctxmenu::COMPRESS | crate::ctxmenu::TRANSCODE => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; match id { crate::ctxmenu::EXTRACT => self.extract_chosen(), crate::ctxmenu::COMPRESS => self.compress_chosen(), _ => self.transcode_chosen() } },
+            crate::ctxmenu::ENCLOSING => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; self.show_enclosing(); },
             SPLIT => if let Some(i) = pane.filter(|i| *i < self.shown()) { self.panes[i].split_chosen(); },
             GROUP => if let Some(i) = pane.filter(|i| *i < self.shown()) { if !self.panes[i].group_chosen() { self.toast.show("These cannot be one sequence: their names differ in more than a number.", min_ui::toast::ToastKind::Notice, Instant::now()); } },
             REFRESH | RENAME | TRASH | NEW_FOLDER | DUPLICATE | COPY | PASTE | PREVIEW => { if let Some(i) = pane.filter(|i| *i < self.shown()) { self.active = i; }
@@ -1576,9 +1585,10 @@ impl Ui {
             Focus::Search => {
                 if matches!(k.key, Key::Named(Named::Down | Named::Tab)) { self.leave_search(); return }
                 match self.search.key(k, &mut self.fonts) {
-                    FieldResponse::Cancelled => { self.search.clear(); self.pane().set_search(""); self.leave_search(); }
-                    FieldResponse::Accepted => self.leave_search(),
-                    FieldResponse::Changed => { let text = self.search.text().to_string(); self.pane().set_search(&text); }
+                    FieldResponse::Cancelled => { self.search.clear(); let port = self.port.clone(); self.pane().leave_found(&port); self.pane().set_search(""); self.leave_search(); }
+                    // Return: the folders below are searched too (rows 508 point 13, 514); typing on leaves what was found
+                    FieldResponse::Accepted => { let (text, port) = (self.search.text().to_string(), self.port.clone()); self.pane().search_below(&port, &text); self.leave_search(); }
+                    FieldResponse::Changed => { let (text, port) = (self.search.text().to_string(), self.port.clone()); self.pane().leave_found(&port); self.pane().set_search(&text); }
                     FieldResponse::None => {}
                 }
                 // the command-key shortcuts still act from the search field (a second pane, the view), but not its own editing keys
@@ -1785,6 +1795,10 @@ impl Ui {
             "taskdismiss" => if let Some(t) = num(arg).and_then(|n| crate::tasks::list().get(n).cloned()) { crate::tasks::dismiss(t.id); },
             "taskclear" => crate::tasks::clear_finished(),
             // `extract` `compress` (the chosen entries) `password:<text>` (answer the password question)
+            // `searchbelow:<text>` (Return in the search field) `enclosing` (the chosen find, where it lies) `searchclear`
+            "searchbelow" => { self.search.set_text(arg); let port = self.port.clone(); self.pane().search_below(&port, arg); },
+            "enclosing" => self.show_enclosing(),
+            "searchclear" => { self.search.clear(); let port = self.port.clone(); self.pane().leave_found(&port); self.pane().set_search(""); },
             "extract" => self.extract_chosen(), "compress" => self.compress_chosen(), "transcode" => self.transcode_chosen(),
             "password" => if matches!(self.dialog, Some((_, Asked::Password(_)))) { if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.answer(1); },
             "all" => if let Some((d, _)) = self.dialog.as_mut() { if let Some(c) = d.check.as_mut() { c.1 = true; } },

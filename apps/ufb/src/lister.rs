@@ -112,6 +112,41 @@ pub fn free_space(path: &Path) -> Option<u64> {
 }
 
 /// Start reading `path` for request `req`.
+/// Search below a folder (canon rows 508 points 13-15, 514): our own walk, on the calling thread. Every entry of
+/// `root` and of the folders below it whose NAME holds `needle` (letters' case apart) is handed to `chunk` as it is
+/// found, named by its path from `root` (so it is one entry of a flat listing of `root`). Level by level - what is
+/// near comes first. Not gone into: a link to a folder, a package, and - unless `hidden` - a hidden folder; hidden
+/// entries are left out unless `hidden`. A folder that cannot be read is passed over. `cancel` set: it stops.
+pub fn walk(root: &Path, needle: &str, hidden: bool, cancel: &AtomicBool, mut chunk: impl FnMut(Vec<RawEntry>)) {
+    let needle = needle.to_lowercase(); let sep = std::path::MAIN_SEPARATOR;
+    let mut queue: std::collections::VecDeque<(PathBuf, String)> = std::collections::VecDeque::from([(root.to_path_buf(), String::new())]);
+    let (mut buf, mut last) = (Vec::new(), Instant::now());
+    while let Some((dir, rel)) = queue.pop_front() {
+        if cancel.load(Ordering::Relaxed) { return }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            if cancel.load(Ordering::Relaxed) { return }
+            let Some(mut r) = entry(&e) else { continue };
+            if r.hidden && !hidden { continue }
+            let at = if rel.is_empty() { r.name.clone() } else { format!("{rel}{sep}{}", r.name) };
+            // (a link to a folder is shown but not gone into: a walk must not go round in a ring)
+            if r.dir && !r.package && !e.file_type().is_ok_and(|t| t.is_symlink()) { queue.push_back((e.path(), at.clone())); }
+            if r.name.to_lowercase().contains(&needle) { r.name = at; buf.push(r); }
+            if !buf.is_empty() && (buf.len() >= 512 || last.elapsed() >= Duration::from_millis(120)) { chunk(std::mem::take(&mut buf)); last = Instant::now(); }
+        }
+        if !buf.is_empty() && last.elapsed() >= Duration::from_millis(120) { chunk(std::mem::take(&mut buf)); last = Instant::now(); }
+    }
+    if !buf.is_empty() { chunk(buf); }
+}
+/// The same on a thread of its own: its finds as chunks of `req`, then its end.
+pub fn find(port: &Port, req: u64, root: PathBuf, needle: String, hidden: bool, cancel: Arc<AtomicBool>) {
+    let port = port.clone();
+    let _ = std::thread::Builder::new().name("ufb-find".into()).spawn(move || {
+        walk(&root, &needle, hidden, &cancel, |entries| port.send(Msg::Chunk { req, entries }));
+        if !cancel.load(Ordering::Relaxed) { port.send(Msg::Done { req, mtime: None, free: free_space(&root) }); }
+    });
+}
+
 pub fn list(port: &Port, req: u64, path: PathBuf, cancel: Arc<AtomicBool>) {
     let port = port.clone();
     let _ = std::thread::Builder::new().name("ufb-list".into()).spawn(move || {
@@ -142,6 +177,20 @@ pub mod tests {
     impl Drop for Temp { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
     pub fn read_all(path: &Path) -> Result<Vec<RawEntry>, String> { let mut all = vec![]; read(path, &AtomicBool::new(false), |c| all.extend(c))?; Ok(all) }
 
+    #[test]
+    fn a_walk_finds_names_below_level_by_level_and_does_not_go_where_it_should_not() {
+        let t = Temp::new("walk"); t.file("plate_v1.exr", 1); t.file("notes.txt", 1); t.file("shots/010/Plate_v2.exr", 1); t.file("shots/010/comp.nk", 1); t.file("shots/plates/readme.txt", 1); t.hidden_file("shots/.plate_secret.exr", 1);
+        #[cfg(unix)] std::os::unix::fs::symlink(&t.0, t.0.join("shots/ring")).unwrap();
+        let find = |needle: &str, hidden: bool| { let mut all: Vec<String> = vec![]; walk(&t.0, needle, hidden, &AtomicBool::new(false), |c| all.extend(c.into_iter().map(|e| e.name.replace('\\', "/")))); all };
+        let f = find("PLATE", false);
+        // the near ones first; a folder whose name holds it is a find too; the link is not gone into (no ring)
+        assert_eq!(f[0], "plate_v1.exr"); let mut s = f.clone(); s.sort(); assert_eq!(s, ["plate_v1.exr", "shots/010/Plate_v2.exr", "shots/plates"]);
+        // hidden ones only when they are shown
+        let mut h = find("plate", true); h.sort(); assert_eq!(h, ["plate_v1.exr", "shots/.plate_secret.exr", "shots/010/Plate_v2.exr", "shots/plates"]);
+        assert!(find("zzz", true).is_empty());
+        // called off: nothing more comes
+        let mut n = 0; walk(&t.0, "e", true, &AtomicBool::new(true), |c| n += c.len()); assert_eq!(n, 0);
+    }
     #[test]
     fn a_folder_is_read_with_sizes_folders_and_hidden_entries() {
         let t = Temp::new("read"); t.file("plate.mov", 5000); t.file("shot_010_comp_v003.exr", 12); t.file(".hidden_notes", 3); t.dir("renders"); t.file("renders/beauty.exr", 1);
