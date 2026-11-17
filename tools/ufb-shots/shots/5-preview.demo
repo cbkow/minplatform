@@ -1,9 +1,10 @@
 wait:800
+side:3
 go:@ROOT@/Media/Plates
 grid
 size:230
 wait:2500
-select:3
+select:5
 preview
 wait:1500
 lbseek:0.4

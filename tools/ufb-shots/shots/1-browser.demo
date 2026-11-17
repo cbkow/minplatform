@@ -1,4 +1,5 @@
 wait:800
+side:3
 go:@ROOT@/Media/Stills
 grid
 size:230
