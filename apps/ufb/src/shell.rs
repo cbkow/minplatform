@@ -109,7 +109,7 @@ impl App {
             let small = image::imageops::resize(&image::RgbaImage::from_raw(info.width, info.height, rgba)?, 64, 64, image::imageops::FilterType::Triangle);
             tray_icon::Icon::from_rgba(small.into_raw(), 64, 64).ok() })();
         tray_icon::TrayIconEvent::set_event_handler(Some({ let p = self.proxy.clone(); move |e: tray_icon::TrayIconEvent| { if let tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. } = e { TRAY_CLICKED.store(true, std::sync::atomic::Ordering::Relaxed); p.wake_up(); } } }));
-        self.tray = icon.and_then(|icon| { let b = tray_icon::TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("UFB").with_menu_on_left_click(cfg!(target_os = "macos")); if cfg!(target_os = "macos") { b.with_icon_templated(icon) } else { b.with_icon(icon) }.build().ok() });
+        self.tray = icon.and_then(|icon| { let b = tray_icon::TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("UFB").with_menu_on_left_click(cfg!(target_os = "macos")); #[cfg(target_os = "macos")] let b = b.with_icon_templated(icon); #[cfg(not(target_os = "macos"))] let b = b.with_icon(icon); b.build().ok() });
         if self.tray.is_none() { eprintln!("UFB: no tray icon could be made: the application ends with its last window"); } self.tray_status = Some(status);
     }
     /// The tray's status line follows sync (set when it changes).
