@@ -64,7 +64,7 @@ enum ShareNews { /// how each stands (by its id)
     Connected(String, crate::shares::State, bool, bool), /// the stale placeholders found (by share), each look; a Fix ended
     Holders(Vec<(String, PathBuf)>), Fixed(String, Result<(), String>) }
 enum Made { /// a `union:` link's target was looked for (off the window's thread: a share may be slow): it is shown in the file manager, or said to be gone
-    Shown(PathBuf, bool), Job(Result<PathBuf, String>), Item(Result<PathBuf, String>), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
+    Shown(PathBuf, bool), /// a folder was chosen for a tracked item whose own is gone (none: the chooser was left)
     Relink(PathBuf, Option<PathBuf>) }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Drag { Sidebar(f64, f64), Split, /// the item list's edge in a job (the pointer's x and the width at the press)
@@ -490,13 +490,10 @@ impl Ui {
     }
     /// What was made off the window's thread has come.
     fn on_made(&mut self, m: Made) {
-        self.making = false; let now = Instant::now(); let port = self.port.clone();
+        self.making = false; let port = self.port.clone();
         let n = self.shown(); for p in self.panes.iter_mut().take(n) { p.activated(&port); }
         match m {
             Made::Shown(p, there) => if there { if std::env::var_os("UFB_DEMO").is_some() { eprintln!("UFB_DEMO: shown in the file manager: {}", p.display()); } else { crate::sysopen::reveal(&[p]); } } else { self.toast.show("That link leads to nothing that is there now.", min_ui::toast::ToastKind::Notice, Instant::now()); },
-            Made::Job(Ok(job)) => { let _ = crate::db::with(|d| d.subscribe(&job, "")); self.reload_jobs(); self.open_place(job, true); }
-            Made::Item(Ok(item)) => if let Some(j) = self.job.as_mut() { j.choose = Some(item); j.reload(); },
-            Made::Job(Err(e)) | Made::Item(Err(e)) => self.toast.show(&e, min_ui::toast::ToastKind::Negative, now),
             Made::Relink(old, Some(new)) => self.relink(old, new),
             Made::Relink(_, None) => {}
         }
@@ -996,6 +993,28 @@ impl Ui {
             p.refresh_choosing(&port, here);
         }
         self.follow_moves(&rep.moved);
+        // a job that an undo took away leaves the sidebar, and the tab that shows it (its metadata is not touched)
+        for gone in &rep.unmade {
+            if mine { let _ = crate::db::with(|d| d.unsubscribe(gone)); }
+            self.reload_jobs();
+            if self.job.as_ref().is_some_and(|j| &j.path == gone) { self.job = None; self.focus = Focus::Pane; for p in self.panes.iter_mut() { p.root = None; } if let Some(up) = gone.parent() { self.open_place(up.to_path_buf(), false); } }
+        }
+        if mine && rep.error.is_none() { match (rep.kind, rep.made.first()) {
+            // a new job is a job of the sidebar, starts with the columns its type gives its sections, and is shown
+            (Some(crate::ops::Kind::NewJob), Some(job)) => {
+                let ty = crate::jobview::type_for(job).ty;
+                let _ = crate::db::with(|d| { let _ = d.subscribe(job, "");
+                    for s in &ty.sections { for c in &s.columns {
+                        let mut taken: Vec<Option<String>> = c.options.iter().map(|o| o.color().map(str::to_string)).collect(); let mut opts = vec![];
+                        for (i, o) in c.options.iter().enumerate() { let col = match o.color() { Some(col) => col.to_string(), None => { let col = crate::chips::next_color(&taken); taken[i] = Some(col.clone()); col } }; opts.push((o.name().trim().to_string(), Some(col))); }
+                        // (a name that is there already - the job was made, undone and made again - stays as it is)
+                        let _ = d.add_column(job, &s.folder, &c.name, &c.kind, &opts);
+                    } } });
+                self.reload_jobs(); self.open_place(job.clone(), true);
+            }
+            (Some(crate::ops::Kind::AddItem), Some(item)) => if let Some(j) = self.job.as_mut() { j.choose = Some(item.clone()); },
+            _ => {}
+        } }
         if let Some(j) = self.job.as_mut() { if rep.changed.iter().any(|c| c.starts_with(&j.path) || j.path.starts_with(c)) { j.reload(); } }
         if let Some(t) = self.tracker.as_mut() { t.reload(); }
         // (the tabs behind show what is there when they come to the front)
@@ -1045,10 +1064,9 @@ impl Ui {
             Asked::Conflict(id) => { use crate::ops::Choice; crate::ops::answer(id, [Choice::Stop, Choice::Replace, Choice::Skip, Choice::KeepBoth][button.min(3)], d.checked()); }
             Asked::Delete(paths) => if button == 0 { crate::ops::submit(self.id, crate::ops::Op::Delete { paths }); },
             // (made off this thread: a skeleton may be copied to a share)
-            Asked::NewJob(parent) => if button == 1 { let (number, name, tx, port) = (d.value_at(0), d.value_at(1), self.made_tx.clone(), self.port.clone()); self.making = true;
-                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Job(crate::jobview::type_for(&parent).ty.new_job(&parent, &number, &name))); port.send(Msg::Icon); }); },
-            Asked::AddItem(dir) => if button == 1 { let (name, tx, port) = (d.value_at(0), self.made_tx.clone(), self.port.clone()); self.making = true;
-                let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let at = crate::jobview::type_for(&dir); let _ = tx.send(Made::Item(at.ty.add_item(&dir, &name, &at.skeletons, &crate::jobview::today()))); port.send(Msg::Icon); }); },
+            // (through the engine, as every change to the disk: one at a time, behind the belt, and undone by Undo)
+            Asked::NewJob(parent) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::NewJob { parent, number: d.value_at(0), name: d.value_at(1) }); },
+            Asked::AddItem(dir) => if button == 1 { crate::ops::submit(self.id, crate::ops::Op::AddItem { dir, name: d.value_at(0) }); },
             Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), d.value_at(2)); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
             Asked::ShareLetter(i) => if button == 1 { match crate::shares::letter_of(&d.value_at(0)) { Some(l) => if let Some(sh) = self.shares.get_mut(i) { sh.letter = l; crate::shares::save(&self.shares); }, None => self.toast.show("A drive letter is one letter, A to Z.", min_ui::toast::ToastKind::Notice, Instant::now()) } },
             Asked::AddShare => if button == 1 { let text = d.value_at(0); self.add_share(&text); },

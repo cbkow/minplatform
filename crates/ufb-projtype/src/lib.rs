@@ -29,8 +29,32 @@ pub struct Section {
     #[serde(default = "default_rename")] pub rename: Vec<String>,
     /// Folders made inside the section when the job is made.
     #[serde(default)] pub folders: Vec<String>,
-    /// The columns the section starts with. Kept as written; their shape belongs to the metadata side.
-    #[serde(default)] pub columns: Vec<toml::Value>,
+    /// The columns the section starts with: made in a job's section when the job is made (never later, and never in
+    /// a job that was made before the type named them).
+    #[serde(default)] pub columns: Vec<Column>,
+}
+/// The eight types a column has (1.4.2's list), as a type's file writes them.
+pub const COLUMN_TYPES: [&str; 8] = ["text", "dropdown", "date", "priority", "number", "checkbox", "links", "notes"];
+/// A column a section starts with: `{ name = "Status", type = "dropdown", options = ["Todo", { name = "Done", color = "#5fbf3f" }] }`.
+/// The type is `text` when none is written; options are for a `dropdown` or a `priority` alone.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Column {
+    pub name: String,
+    #[serde(default = "default_type", rename = "type")] pub kind: String,
+    #[serde(default)] pub options: Vec<ColumnOption>,
+}
+fn default_type() -> String { "text".into() }
+/// An option of a column: its name alone, or its name and its colour as `#rrggbb`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ColumnOption { Name(String), Full(FullOption) }
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FullOption { pub name: String, #[serde(default)] pub color: Option<String> }
+impl ColumnOption {
+    pub fn name(&self) -> &str { match self { ColumnOption::Name(n) => n, ColumnOption::Full(f) => &f.name } }
+    pub fn color(&self) -> Option<&str> { match self { ColumnOption::Name(_) => None, ColumnOption::Full(f) => f.color.as_deref() } }
 }
 fn default_rename() -> Vec<String> { vec!["template".into(), "_template".into()] }
 impl Section { pub fn label(&self) -> &str { self.label.as_deref().unwrap_or(&self.folder) } }
@@ -89,6 +113,23 @@ impl ProjectType {
             }
             for f in &s.folders { check_name("folder", f)?; }
             for r in &s.rename { check_name("rename", r)?; }
+            let mut cols: Vec<String> = Vec::new();
+            for c in &s.columns {
+                let (name, low) = (c.name.trim(), c.name.trim().to_lowercase());
+                if name.is_empty() { return Err(format!("section \"{}\": a column has no name", s.folder)) }
+                if cols.contains(&low) { return Err(format!("section \"{}\": the column \"{name}\" is there twice", s.folder)) }
+                cols.push(low);
+                if !COLUMN_TYPES.contains(&c.kind.as_str()) { return Err(format!("section \"{}\": the column \"{name}\" has the type \"{}\", which is none of {}", s.folder, c.kind, COLUMN_TYPES.join(", "))) }
+                if !c.options.is_empty() && c.kind != "dropdown" && c.kind != "priority" { return Err(format!("section \"{}\": the column \"{name}\" is a {} column and has options (a dropdown or a priority has them)", s.folder, c.kind)) }
+                let mut opts: Vec<String> = Vec::new();
+                for o in &c.options {
+                    let (on, olow) = (o.name().trim(), o.name().trim().to_lowercase());
+                    if on.is_empty() { return Err(format!("section \"{}\": the column \"{name}\" has an option without a name", s.folder)) }
+                    if opts.contains(&olow) { return Err(format!("section \"{}\": the column \"{name}\" has the option \"{on}\" twice", s.folder)) }
+                    opts.push(olow);
+                    if let Some(col) = o.color() { if !(col.len() == 7 && col.starts_with('#') && col[1..].bytes().all(|b| b.is_ascii_hexdigit())) { return Err(format!("section \"{}\": the option \"{on}\" has the colour \"{col}\", which is not #rrggbb", s.folder)) } }
+                }
+            }
         }
         Ok(())
     }
@@ -322,6 +363,17 @@ mod tests {
         let t = ProjectType::parse("name = \"Other\"\njob_name = \"{name}\"\n[[section]]\nfolder = \"comp\"\nlabel = \"Compositing\"\nkind = \"shot\"\nskeleton = \"nuke\"\nrename = [\"base\"]\ncolumns = [{ name = \"Status\" }]").unwrap();
         assert_eq!(t.section("COMP").unwrap().label(), "Compositing");
         assert_eq!(t.sections[0].columns.len(), 1);
+        assert_eq!((t.sections[0].columns[0].name.as_str(), t.sections[0].columns[0].kind.as_str()), ("Status", "text"));
+        // the columns a section starts with: a type, options by name or with a colour - and what is refused
+        let with = |cols: &str| ProjectType::parse(&format!("name = \"Other\"\n[[section]]\nfolder = \"comp\"\nkind = \"folder\"\ncolumns = [{cols}]"));
+        let t2 = with("{ name = \"Status\", type = \"dropdown\", options = [\"Todo\", { name = \"Done\", color = \"#5fbf3f\" }] }, { name = \"Due\", type = \"date\" }").unwrap();
+        let c = &t2.sections[0].columns; assert_eq!(c.len(), 2); assert_eq!(c[0].options.iter().map(|o| (o.name(), o.color())).collect::<Vec<_>>(), [("Todo", None), ("Done", Some("#5fbf3f"))]); assert_eq!(c[1].kind, "date");
+        assert!(with("{ name = \"A\" }, { name = \"a\" }").unwrap_err().contains("twice"));
+        assert!(with("{ name = \"A\", type = \"colour\" }").unwrap_err().contains("none of"));
+        assert!(with("{ name = \"A\", type = \"date\", options = [\"x\"] }").unwrap_err().contains("has options"));
+        assert!(with("{ name = \"A\", type = \"priority\", options = [{ name = \"x\", color = \"red\" }] }").unwrap_err().contains("#rrggbb"));
+        assert!(with("{ name = \" \" }").is_err() && with("{ name = \"A\", width = 3 }").is_err());
+        assert!(ProjectType::builtin().sections.iter().all(|s| s.columns.is_empty()), "the built-in type starts without columns (1.4.2)");
         assert_eq!(renamed("base.nk", "sh1", &t.sections[0].rename), "sh1_v001.nk");
     }
 }

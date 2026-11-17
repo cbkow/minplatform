@@ -52,10 +52,14 @@ pub enum Op {
     Delete { paths: Vec<PathBuf> },
     /// Copy (or move) these INTO the folder `dest`.
     Transfer { paths: Vec<PathBuf>, dest: PathBuf, mv: bool },
+    /// A job is made in the jobs folder `parent`, by that folder's project type (rows 461, 502).
+    NewJob { parent: PathBuf, number: String, name: String },
+    /// An item is added to a job's section `dir`, by the kind the project type gives the section.
+    AddItem { dir: PathBuf, name: String },
     Undo,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move }
+pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem }
 
 /// What to do about a name that is taken. `Stop`: nothing more of this operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,19 +85,22 @@ pub struct Report {
     pub error: Option<String>,
     /// Move to Trash on a volume that has none: these are still there, and the window asks whether to delete them
     pub no_trash: Vec<PathBuf>,
+    /// jobs an undo took away again (to the Trash): they leave the sidebar
+    pub unmade: Vec<PathBuf>,
 }
 
 /// (size, modification time) of what a copy made: undo leaves an item alone that is not as it was made.
 type Stamp = (u64, Option<std::time::SystemTime>);
 fn stamp(p: &Path) -> Option<Stamp> { let m = std::fs::symlink_metadata(p).ok()?; Some((if m.is_dir() { 0 } else { m.len() }, m.modified().ok())) }
 
-enum Record { NewFolder(PathBuf), Rename { from: PathBuf, to: PathBuf }, Copies(Vec<(PathBuf, Stamp)>), Trash(Vec<(PathBuf, PathBuf)>),
+enum Record { NewFolder(PathBuf), /// a job (`job`) or an item of a section, made by the project type
+    Made { path: PathBuf, job: bool }, Rename { from: PathBuf, to: PathBuf }, Copies(Vec<(PathBuf, Stamp)>), Trash(Vec<(PathBuf, PathBuf)>),
     /// a copy or a move into a folder: what was copied; what was moved (from, to); what was replaced (where it was, where in the Trash it is)
     Transfer { mv: bool, copied: Vec<(PathBuf, Stamp)>, moved: Vec<(PathBuf, PathBuf)>, replaced: Vec<(PathBuf, PathBuf)> } }
 impl Record {
     fn label(&self) -> String {
         let items = |n: usize| if n == 1 { "1 Item".to_string() } else { format!("{n} Items") };
-        match self { Record::NewFolder(_) => "New Folder".into(), Record::Rename { .. } => "Rename".into(), Record::Copies(v) => format!("Duplicate of {}", items(v.len())), Record::Trash(v) => format!("Move to Trash of {}", items(v.len())),
+        match self { Record::NewFolder(_) => "New Folder".into(), Record::Made { job, .. } => if *job { "New Job".into() } else { "Add Item".into() }, Record::Rename { .. } => "Rename".into(), Record::Copies(v) => format!("Duplicate of {}", items(v.len())), Record::Trash(v) => format!("Move to Trash of {}", items(v.len())),
             Record::Transfer { mv, copied, moved, .. } => format!("{} of {}", if *mv { "Move" } else { "Copy" }, items(copied.len() + moved.len())) }
     }
 }
@@ -476,6 +483,25 @@ impl Engine {
                 }
                 rep
             }
+            Op::NewJob { parent, number, name } => {
+                let mut rep = Report { kind: Some(Kind::NewJob), ..Default::default() };
+                if let Err(e) = self.guard.check(&parent.join("x")) { rep.error = Some(e); return rep }
+                match crate::jobview::type_for(&parent).ty.new_job(&parent, &number, &name) {
+                    Ok(job) => { rep.changed.push(parent); rep.made.push(job.clone()); self.done(Record::Made { path: job, job: true }); }
+                    Err(e) => rep.error = Some(e),
+                }
+                rep
+            }
+            Op::AddItem { dir, name } => {
+                let mut rep = Report { kind: Some(Kind::AddItem), ..Default::default() };
+                if let Err(e) = self.guard.check(&dir.join("x")) { rep.error = Some(e); return rep }
+                let at = crate::jobview::type_for(&dir);
+                match at.ty.add_item(&dir, &name, &at.skeletons, &crate::jobview::today()) {
+                    Ok(item) => { rep.changed.push(dir); rep.made.push(item.clone()); self.done(Record::Made { path: item, job: false }); }
+                    Err(e) => rep.error = Some(e),
+                }
+                rep
+            }
             Op::Undo => self.undo_last(),
         }
     }
@@ -512,6 +538,11 @@ impl Engine {
         match rec {
             // the folder goes to the Trash, whatever came into it since: nothing is deleted by an undo
             Record::NewFolder(p) => match trash(&p) { Ok(_) => note(&mut rep, p.parent()), Err(why) => rep.error = Some(format!("The new folder could not be taken back{}", why.map(|w| format!(": {w}")).unwrap_or_else(|| ": its volume has no Trash.".into()))) },
+            // a job or an item made by the project type: as a new folder - to the Trash with whatever came into it since
+            Record::Made { path, job } => match trash(&path) {
+                Ok(_) => { note(&mut rep, path.parent()); if job { rep.unmade.push(path); } }
+                Err(why) => rep.error = Some(format!("\u{201c}{}\u{201d} could not be taken back{}", name_of(&path), why.map(|w| format!(": {w}")).unwrap_or_else(|| ": its volume has no Trash.".into()))),
+            },
             Record::Rename { from, to } => match rename_no_replace(&to, &from) {
                 Ok(()) => { note(&mut rep, from.parent()); rep.moved.push((to.clone(), from.clone())); rep.made.push(from); }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => rep.error = Some(format!("The rename could not be undone: \u{201c}{}\u{201d} is taken again.", name_of(&from))),
@@ -555,7 +586,7 @@ static SHARED: OnceLock<Shared> = OnceLock::new();
 fn label_of(op: &Op) -> String {
     let items = |n: usize| if n == 1 { "1 item".to_string() } else { format!("{n} items") };
     match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", items(paths.len())), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", items(paths.len())), Op::Delete { paths } => format!("Delete {}", items(paths.len())),
-        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, items(paths.len()), name_of(dest)), Op::Undo => "Undo".into() }
+        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, items(paths.len()), name_of(dest)), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into() }
 }
 
 /// Start the engine's thread. `roots`: the folders this build may change things in.
@@ -630,6 +661,23 @@ mod tests {
             assert_eq!(e.run(op).error.as_deref(), Some(GUARDED)); }
         assert_eq!(names(&t.0), ["job", "outside.txt"], "nothing outside was touched"); assert!(e.undo_label().is_none());
         assert!(Engine::new(Guard::new(&[])).run(Op::NewFolder { dir: t.0.join("job") }).error.is_some(), "started with no folder: nothing may be changed");
+    }
+    #[test]
+    fn a_job_and_an_item_are_made_by_the_type_and_taken_back() {
+        let _sweep = Sweep; let t = Temp::new("made"); t.dir("job"); let mut e = Engine::new(Guard::new(&[t.0.join("job")])); let jobs = t.0.join("job");
+        // behind the belt: nothing is made outside
+        assert!(e.run(Op::NewJob { parent: t.0.clone(), number: "1".into(), name: "x".into() }).error.is_some()); assert!(!t.0.join("1_x").exists());
+        let r = ok(e.run(Op::NewJob { parent: jobs.clone(), number: "000123".into(), name: "A Film".into() })); let job = jobs.join("000123_A_Film");
+        assert_eq!(r.made, [job.clone()]); assert_eq!(r.kind, Some(Kind::NewJob)); assert!(job.join("3d/assets").is_dir()); assert_eq!(e.undo_label().as_deref(), Some("New Job"));
+        // the same again is refused, and leaves nothing to undo twice
+        assert!(e.run(Op::NewJob { parent: jobs.clone(), number: "000123".into(), name: "A Film".into() }).error.is_some_and(|w| w.contains("already exists")));
+        // an item in a folder the type does not name is a plain folder
+        std::fs::create_dir(job.join("misc")).unwrap();
+        let r = ok(e.run(Op::AddItem { dir: job.join("misc"), name: "one".into() })); assert_eq!(r.made, [job.join("misc/one")]); assert_eq!(r.changed, [job.join("misc")]); assert_eq!(e.undo_label().as_deref(), Some("Add Item"));
+        #[cfg(target_os = "macos")] {
+            let u = ok(e.run(Op::Undo)); assert!(!job.join("misc/one").exists() && u.unmade.is_empty()); assert_eq!(e.undo_label().as_deref(), Some("New Job"));
+            let u = ok(e.run(Op::Undo)); assert!(!job.exists(), "the job went to the Trash"); assert_eq!(u.unmade, [job.clone()]); assert_eq!(u.changed, [jobs]); assert!(e.undo_label().is_none());
+        }
     }
     #[test]
     fn a_new_folder_and_a_rename_and_their_undo() {
