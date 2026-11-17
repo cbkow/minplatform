@@ -743,7 +743,7 @@ impl Ui {
     /// What the menus show of this window.
     pub fn menu_state(&self) -> menu::State { let mut st = self.menu_state_of_pane(); if self.blank() { st.can_back = false; st.can_forward = false; st.can_up = false; st.chosen = 0; st.writable = false; st.other = false; } st }
     fn menu_state_of_pane(&self) -> menu::State { let p = &self.panes[self.active.min(self.panes.len() - 1)]; menu::State { grid: p.mode == Mode::Grid, hidden: self.hidden, folders_first: self.folders_first, second: self.two, sort: p.model.sort, can_back: p.history.can_back(), can_forward: p.history.can_forward(), can_up: p.can_up(),
-        chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
+        chosen: p.chosen_count().min(2) as u8, undo: crate::ops::undo_label().is_some(), redo: crate::ops::redo_label().is_some(), writable: crate::ops::allowed_in(p.path()),
         sequences: p.model.sequences, jobs_folder: !self.blank() && crate::jobview::is_jobs_folder(p.path()), columns: self.col_layouts[self.col_kind(self.active.min(self.panes.len() - 1))].show, typing: self.text_focus(), other: self.two && self.panes.len() > 1 && crate::ops::allowed_in(self.panes[1 - self.active.min(1)].path()) } }
 
     // ---------------------------------------------------------------- what the workers send
@@ -1237,7 +1237,7 @@ impl Ui {
         // and not under an open question (the system's menu keys would otherwise reach them from a text field)
         // (a question with a FIELD keeps copy, cut and paste: they are its field's - the menu's keys reach it this way on macOS)
         if let Some((d, _)) = self.dialog.as_ref() { let field = !d.fields.is_empty() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste); if !field && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther) { return } }
-        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewJob | Cmd::Subscribe) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
+        if matches!(c, Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Undo | Cmd::Redo | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewJob | Cmd::Subscribe) && (self.focus != Focus::Pane || self.dialog.is_some()) { return }
         // in a job with nothing chosen there is no pane to act on (row 486)
         if self.blank() && !self.text_focus() && matches!(c, Cmd::Copy | Cmd::Cut | Cmd::Paste | Cmd::PasteMove | Cmd::CopyToOther | Cmd::MoveToOther | Cmd::NewFolder | Cmd::Rename | Cmd::Duplicate | Cmd::Trash | Cmd::DeleteNow | Cmd::Open | Cmd::Preview | Cmd::SelectAll | Cmd::Back | Cmd::Forward | Cmd::Up | Cmd::Find | Cmd::Subscribe | Cmd::Sort(_)) { return }
         match c {
@@ -1253,7 +1253,7 @@ impl Ui {
             Cmd::Duplicate => { let (paths, seqs) = self.pane().chosen_for_duplicate(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Duplicate { paths }); } for frames in seqs { crate::ops::submit(self.id, crate::ops::Op::DuplicateSequence { frames }); } }
             Cmd::Trash => { let paths = self.chosen_paths(); if !paths.is_empty() { crate::ops::submit(self.id, crate::ops::Op::Trash { paths }); } }
             Cmd::DeleteNow => { let paths = self.chosen_paths(); self.ask_delete(paths, false); }
-            Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo),
+            Cmd::Undo => crate::ops::submit(self.id, crate::ops::Op::Undo), Cmd::Redo => crate::ops::submit(self.id, crate::ops::Op::Redo),
             Cmd::NewWindow => { let p = self.here(); self.out.push(Out::NewWindow(p)); }
             // tabs (row 480): a new one shows the folder of the one in front; closing the last closes the window
             Cmd::NewTab => { let p = self.here(); self.new_tab(p); }
@@ -1783,7 +1783,7 @@ impl Ui {
             "additem" => { self.ask_add_item(); if let Some((d, _)) = self.dialog.as_mut() { d.fields[0].1.set_text(arg); } self.dialog_preview(); if self.dialog.as_ref().is_some_and(|(d, _)| d.buttons.last().is_some_and(|b| b.enabled)) { self.answer(1); } },
             "tabs" => eprintln!("UFB_DEMO: tabs: {}", (0..self.tabs.len()).map(|i| { let (name, path) = self.tab_place(i); let panes = if i == self.tab { self.shown() } else if self.tabs[i].two { 2 } else { 1 }; format!("{}{name} [{}; {panes} pane(s)]", if i == self.tab { "*" } else { "" }, path.display()) }).collect::<Vec<_>>().join(" | ")),
             // the file operations, as the menus give them: `newfolder` `rename` `type:<text>` (into the name's field) `accept` `cancel` `duplicate` `trash` `deletenow` `undo` `answer:<button>`
-            "newfolder" => self.command(Cmd::NewFolder), "rename" => self.command(Cmd::Rename), "duplicate" => self.command(Cmd::Duplicate), "trash" => self.command(Cmd::Trash), "deletenow" => self.command(Cmd::DeleteNow), "undo" => self.command(Cmd::Undo),
+            "redo" => self.command(Cmd::Redo), "newfolder" => self.command(Cmd::NewFolder), "rename" => self.command(Cmd::Rename), "duplicate" => self.command(Cmd::Duplicate), "trash" => self.command(Cmd::Trash), "deletenow" => self.command(Cmd::DeleteNow), "undo" => self.command(Cmd::Undo),
             "type" => if let Some(r) = self.rename.as_mut() { r.field.set_text(arg); },
             "accept" => self.commit_rename(), "cancel" => self.end_rename(),
             "answer" => if let Some(b) = num(arg) { self.answer(b); },

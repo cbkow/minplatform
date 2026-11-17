@@ -208,7 +208,7 @@ impl App {
         // macOS (row 525): in the Dock while a window is open; with only the tray left, out of it (and out of the
         // application switcher) - 1.4.2 hid its Dock icon when it started hidden; a window opened again brings it back
         #[cfg(target_os = "macos")] if self.tray.is_some() { let want = !self.windows.is_empty(); if DOCK.swap(want, std::sync::atomic::Ordering::Relaxed) != want { dock(want); } }
-        #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); m.set_undo(crate::ops::undo_label()); }
+        #[cfg(target_os = "macos")] if let (Some(m), Some(w)) = (self.menu.as_mut(), self.focused.and_then(|id| self.windows.get(&id))) { m.sync(w.ui.menu_state()); m.set_undo(crate::ops::undo_label()); m.set_redo(crate::ops::redo_label()); }
     }
     /// The drawn menu bar's keys (Windows' rules, as minNotes'): Alt alone, F10, Alt with a letter; while it is open, the arrows, Return, Escape and letters are its own.
     fn menu_bar_takes(&mut self, id: WindowId, event: &winit::event::KeyEvent) -> bool {

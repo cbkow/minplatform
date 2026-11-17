@@ -63,6 +63,8 @@ pub enum Op {
     /// Something another worker made (an archive, what was unpacked from one) joins the undo list under its name.
     Note { made: PathBuf, label: &'static str },
     Undo,
+    /// What was undone last is done again (row 527).
+    Redo,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind { NewFolder, Rename, Duplicate, Trash, Delete, Undo, Copy, Move, NewJob, AddItem, Extract, Compress, Transcode }
@@ -397,17 +399,32 @@ fn forget_recycled(at: &Path) { #[cfg(windows)] { if let Some(name) = at.file_na
 // ---------------------------------------------------------------- the operations
 
 /// The engine's own state: the guard, and what can be undone (the newest last).
-pub struct Engine { pub guard: Guard, undo: Vec<Record> }
+pub struct Engine { pub guard: Guard, /// what can be undone, each with the operation that made it (none: something another worker made)
+    undo: Vec<(Record, Option<Op>)>, /// what was undone and can be done again, the newest last; a new operation empties it
+    redo: Vec<Op>, running: Option<Op> }
+/// An operation's name as the Edit menu says it after "Redo".
+fn op_name(op: &Op) -> &'static str { match op { Op::NewFolder { .. } => "New Folder", Op::Rename { .. } => "Rename", Op::Duplicate { .. } | Op::DuplicateSequence { .. } => "Duplicate", Op::Trash { .. } => "Move to Trash", Op::Delete { .. } => "Delete", Op::Transfer { mv, .. } => if *mv { "Move" } else { "Copy" }, Op::NewJob { .. } => "New Job", Op::AddItem { .. } => "Add Item", Op::Note { .. } | Op::Undo | Op::Redo => "" } }
 impl Engine {
-    pub fn new(guard: Guard) -> Engine { Engine { guard, undo: vec![] } }
+    pub fn new(guard: Guard) -> Engine { Engine { guard, undo: vec![], redo: vec![], running: None } }
     /// What Undo would undo, as the Edit menu names it.
-    pub fn undo_label(&self) -> Option<String> { self.undo.last().map(|r| r.label()) }
-    fn done(&mut self, r: Record) { self.undo.push(r); if self.undo.len() > 200 { self.undo.remove(0); } }
+    pub fn undo_label(&self) -> Option<String> { self.undo.last().map(|r| r.0.label()) }
+    /// What Redo would do again.
+    pub fn redo_label(&self) -> Option<String> { self.redo.last().map(|op| op_name(op).to_string()) }
+    fn done(&mut self, r: Record) { self.undo.push((r, self.running.clone())); if self.undo.len() > 200 { self.undo.remove(0); } }
 
     /// An operation that asks nobody (a name that is taken stops it) and tells nobody how it stands.
     #[cfg(test)]
     pub fn run(&mut self, op: Op) -> Report { let (cancel, status) = (AtomicBool::new(false), Mutex::new(None)); let mut ask = |_: &Conflict| (Choice::Stop, false); self.run_with(op, &mut Ctl { cancel: &cancel, status: &status, ask: &mut ask }) }
+    /// Redo (row 527): an operation that was undone is carried out AGAIN, as it was asked for the first time (it asks
+    /// again about a name that is taken; it is undone again by Undo). Whatever is done anew empties what could be redone.
     pub fn run_with(&mut self, op: Op, ctl: &mut Ctl) -> Report {
+        match op {
+            Op::Undo => self.run_op(Op::Undo, ctl),
+            Op::Redo => { let Some(again) = self.redo.pop() else { return Report { kind: Some(Kind::Undo), ..Default::default() } }; self.running = Some(again.clone()); self.run_op(again, ctl) }
+            op => { self.running = if matches!(op, Op::Note { .. }) { None } else { Some(op.clone()) }; let before = self.undo.len(); let rep = self.run_op(op, ctl); if self.undo.len() != before { self.redo.clear(); } rep }
+        }
+    }
+    fn run_op(&mut self, op: Op, ctl: &mut Ctl) -> Report {
         let cancel = ctl.cancel; let mut none = |_: u64| {}; let mut pr = Progress { cancel, bytes: &mut none };
         match op {
             Op::Transfer { paths, dest, mv } => self.transfer(paths, dest, mv, ctl),
@@ -515,6 +532,7 @@ impl Engine {
             }
             Op::Note { made, label } => { self.done(Record::Result { path: made, label }); Report::default() }
             Op::Undo => self.undo_last(),
+            Op::Redo => Report::default(),   // (taken in `run_with`)
         }
     }
 
@@ -545,7 +563,7 @@ impl Engine {
 
     fn undo_last(&mut self) -> Report {
         let mut rep = Report { kind: Some(Kind::Undo), ..Default::default() };
-        let Some(rec) = self.undo.pop() else { return rep };
+        let Some((rec, again)) = self.undo.pop() else { return rep };
         let note = |rep: &mut Report, dir: Option<&Path>| { if let Some(d) = dir { if !rep.changed.iter().any(|c| c == d) { rep.changed.push(d.to_path_buf()); } } };
         match rec {
             // the folder goes to the Trash, whatever came into it since: nothing is deleted by an undo
@@ -583,6 +601,8 @@ impl Engine {
                 for (orig, at) in moved { match rename_no_replace(&at, &orig) { Ok(()) => { forget_recycled(&at); note(&mut rep, orig.parent()); rep.made.push(orig); } Err(_) => left += 1 } }
                 if left > 0 { rep.error = Some(if left == 1 { "One item could not be put back: its name is taken, or it is no longer in the Trash.".into() } else { format!("{left} items could not be put back: their names are taken, or they are no longer in the Trash.") }); } }
         }
+        // (what was taken back whole can be done again)
+        if let (Some(op), None) = (again, &rep.error) { self.redo.push(op); if self.redo.len() > 200 { self.redo.remove(0); } }
         rep
     }
 }
@@ -592,7 +612,7 @@ impl Engine {
 /// A question the engine waits on: asked of the window that started the operation.
 #[derive(Debug)]
 pub struct Question { pub id: u64, pub origin: u64, pub conflict: Conflict }
-struct Shared { tx: Sender<(u64, Op, Option<(u64, Arc<AtomicBool>)>)>, /// the flag of the operation that runs now
+struct Shared { redo: Arc<Mutex<Option<String>>>, tx: Sender<(u64, Op, Option<(u64, Arc<AtomicBool>)>)>, /// the flag of the operation that runs now
     current: Arc<Mutex<Arc<AtomicBool>>>, undo: Arc<Mutex<Option<String>>>, guard: Guard, ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>>,
     /// the running operation: how it stands, how it is called off; what waits behind it (what the status bar says of each)
     status: Arc<Mutex<Option<Status>>>, waiting: Arc<Mutex<Vec<String>>>,
@@ -604,13 +624,13 @@ fn label_of(op: &Op) -> String {
     // (one item is said by its name: the tasks' panel shows several of these under one another)
     let what = |paths: &[PathBuf]| if paths.len() == 1 { format!("\u{201c}{}\u{201d}", name_of(&paths[0])) } else { format!("{} items", paths.len()) };
     match op { Op::NewFolder { .. } => "New folder".into(), Op::Rename { .. } => "Rename".into(), Op::Duplicate { paths } => format!("Duplicate {}", what(paths)), Op::DuplicateSequence { frames } => format!("Duplicate a sequence of {} frames", frames.len()), Op::Trash { paths } => format!("Move {} to the Trash", what(paths)), Op::Delete { paths } => format!("Delete {}", what(paths)),
-        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into() }
+        Op::Transfer { paths, dest, mv } => format!("{} {} to \u{201c}{}\u{201d}", if *mv { "Move" } else { "Copy" }, what(paths), name_of(dest)), Op::Note { .. } => "Note".into(), Op::NewJob { .. } => "New job".into(), Op::AddItem { name, .. } => format!("Add \u{201c}{name}\u{201d}"), Op::Undo => "Undo".into(), Op::Redo => "Redo".into() }
 }
 
 /// Start the engine's thread. `roots`: the folders this build may change things in.
 pub fn init(roots: &[PathBuf]) {
     let (tx, rx) = channel::<(u64, Op, Option<(u64, Arc<AtomicBool>)>)>(); let (answers, answered) = channel::<(u64, Choice, bool)>();
-    let undo = Arc::new(Mutex::new(None)); let ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>> = Arc::new(Mutex::new(vec![])); let guard = if crate::identity::belt() { Guard::new(roots) } else { Guard::none() };
+    let undo = Arc::new(Mutex::new(None)); let redo: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None)); let rd = redo.clone(); let ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>> = Arc::new(Mutex::new(vec![])); let guard = if crate::identity::belt() { Guard::new(roots) } else { Guard::none() };
     let (status, current, waiting, open) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(Mutex::new(None)));
     let (u, p, g, st, cur, wa, op) = (undo.clone(), ports.clone(), guard.clone(), status.clone(), current.clone(), waiting.clone(), open.clone());
     let _ = std::thread::Builder::new().name("ufb-ops".into()).spawn(move || {
@@ -631,13 +651,13 @@ pub fn init(roots: &[PathBuf]) {
                 while sent { match answered.recv_timeout(std::time::Duration::from_millis(100)) { Ok((a, choice, all)) if a == id => { got = (choice, all); break } Ok(_) => {} Err(_) => if ca.load(Ordering::Relaxed) { break } } }
                 *op.lock().unwrap() = None; got
             };
-            let mut rep = engine.run_with(job, &mut Ctl { cancel: &ca, status: &st, ask: &mut ask }); rep.origin = origin; *u.lock().unwrap() = engine.undo_label(); *st.lock().unwrap() = None;
+            let mut rep = engine.run_with(job, &mut Ctl { cancel: &ca, status: &st, ask: &mut ask }); rep.origin = origin; *u.lock().unwrap() = engine.undo_label(); *rd.lock().unwrap() = engine.redo_label(); *st.lock().unwrap() = None;
             if let Some((id, _)) = &task { crate::tasks::finish(*id, match &rep.error { Some(e) => Err(e.clone()), None => Ok(None) }); }
             // every window hears of it (a folder may be shown in several)
             let rep = Arc::new(rep); for (_, port) in p.lock().unwrap().iter() { port.send(crate::lister::Msg::Op(rep.clone())); }
         }
     });
-    let _ = SHARED.set(Shared { tx, current, undo, guard, ports, status, waiting, answers, open });
+    let _ = SHARED.set(Shared { redo, tx, current, undo, guard, ports, status, waiting, answers, open });
 }
 /// A window's port: it hears of every operation from now on, and is asked the questions of its own.
 pub fn subscribe(window: u64, port: crate::lister::Port) { if let Some(s) = SHARED.get() { s.ports.lock().unwrap().push((window, port)); } }
@@ -655,6 +675,7 @@ pub fn announce(rep: Report) { if let Some(s) = SHARED.get() { let rep = Arc::ne
 pub fn wake() { if let Some(s) = SHARED.get() { for (_, port) in s.ports.lock().unwrap().iter() { port.send(crate::lister::Msg::Icon); } } }
 pub fn answer(question: u64, choice: Choice, all: bool) { if let Some(s) = SHARED.get() { let _ = s.answers.send((question, choice, all)); } }
 pub fn undo_label() -> Option<String> { SHARED.get().and_then(|s| s.undo.lock().unwrap().clone()) }
+pub fn redo_label() -> Option<String> { SHARED.get().and_then(|s| s.redo.lock().unwrap().clone()) }
 /// The operation that runs now, and what waits behind it.
 pub fn status() -> Option<Status> { SHARED.get().and_then(|s| s.status.lock().unwrap().clone()) }
 pub fn waiting() -> Vec<String> { SHARED.get().map(|s| s.waiting.lock().unwrap().clone()).unwrap_or_default() }
@@ -710,6 +731,22 @@ mod tests {
             let u = ok(e.run(Op::Undo)); assert!(!job.join("misc/one").exists() && u.unmade.is_empty()); assert_eq!(e.undo_label().as_deref(), Some("New Job"));
             let u = ok(e.run(Op::Undo)); assert!(!job.exists(), "the job went to the Trash"); assert_eq!(u.unmade, [job.clone()]); assert_eq!(u.changed, [jobs]); assert!(e.undo_label().is_none());
         }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn what_was_undone_is_done_again_until_something_new_is_done() {
+        let _sweep = Sweep; let t = Temp::new("redo"); let mut e = engine(&t); t.file("a.exr", 3);
+        ok(e.run(Op::Rename { path: t.0.join("a.exr"), name: "plate.exr".into() })); let made = ok(e.run(Op::NewFolder { dir: t.0.clone() })).made[0].clone();
+        assert!(e.redo_label().is_none(), "nothing was undone yet"); assert!(e.run(Op::Redo).changed.is_empty());
+        // two undone, then done again in the order they were made
+        ok(e.run(Op::Undo)); assert!(!made.exists()); assert_eq!(e.redo_label().as_deref(), Some("New Folder"));
+        ok(e.run(Op::Undo)); assert!(t.0.join("a.exr").exists()); assert_eq!(e.redo_label().as_deref(), Some("Rename"));
+        ok(e.run(Op::Redo)); assert!(t.0.join("plate.exr").exists() && !t.0.join("a.exr").exists()); assert_eq!(e.undo_label().as_deref(), Some("Rename")); assert_eq!(e.redo_label().as_deref(), Some("New Folder"));
+        ok(e.run(Op::Redo)); assert!(made.exists()); assert!(e.redo_label().is_none()); assert_eq!(e.undo_label().as_deref(), Some("New Folder"));
+        // what was done again is undone again; and something NEW empties what could be done again
+        ok(e.run(Op::Undo)); assert!(!made.exists()); assert_eq!(e.redo_label().as_deref(), Some("New Folder"));
+        t.file("b.exr", 1); ok(e.run(Op::Trash { paths: vec![t.0.join("b.exr")] })); assert!(e.redo_label().is_none(), "a new operation: nothing to do again");
+        ok(e.run(Op::Undo)); assert!(t.0.join("b.exr").exists()); assert_eq!(e.redo_label().as_deref(), Some("Move to Trash")); ok(e.run(Op::Redo)); assert!(!t.0.join("b.exr").exists());
     }
     #[test]
     fn a_new_folder_and_a_rename_and_their_undo() {
