@@ -94,13 +94,15 @@ pub fn rows_for_sync(on: bool, leader: &str) -> Vec<Row> {
         with(SYNC_AUTO, tick(leader.is_empty(), "May Lead (Automatic)")), with(SYNC_LEAD, tick(leader == "leader", "Prefer This Machine as Leader")), with(SYNC_NEVER, tick(leader == "noleader", "Never Lead"))]
 }
 // A saved share of the sidebar (row 498).
-pub const SHARE_CONNECT: u32 = 70; pub const SHARE_DISCONNECT: u32 = 71; pub const SHARE_LAUNCH: u32 = 72; pub const SHARE_JOBS: u32 = 73; pub const SHARE_RENAME: u32 = 74; pub const SHARE_REMOVE: u32 = 75;
+pub const SHARE_CONNECT: u32 = 70; pub const SHARE_DISCONNECT: u32 = 71; pub const SHARE_LAUNCH: u32 = 72; pub const SHARE_JOBS: u32 = 73; pub const SHARE_RENAME: u32 = 74; pub const SHARE_REMOVE: u32 = 75; pub const SHARE_LETTER: u32 = 81;
 /// `there`: it is connected (`ours`: by this application - only then can it be disconnected); `network`: it is a share with an address (a folder has nothing to connect); the two ticks as they stand.
 pub fn rows_for_share(there: bool, mine: bool, network: bool, at_launch: bool, jobs: bool) -> Vec<Row> {
     let mut rows = vec![];
     if there { rows.extend([ours(OPEN, "Open"), ours(NEW_TAB, "Open in New Tab"), ours(NEW_WINDOW, "Open in New Window"), Row::Sep, Row::Reveal, Row::Sep]); }
     if network { if !there { rows.push(ours_row(SHARE_CONNECT, "Connect")); } else if mine { rows.push(ours_row(SHARE_DISCONNECT, "Disconnect")); }
-        rows.push(ours_row(SHARE_LAUNCH, if at_launch { "Do Not Connect at Launch" } else { "Connect at Launch" })); }
+        rows.push(ours_row(SHARE_LAUNCH, if at_launch { "Do Not Connect at Launch" } else { "Connect at Launch" }));
+        // (Windows: the letter it is given the next time it is connected)
+        if cfg!(windows) { rows.push(ours_row(SHARE_LETTER, "Drive Letter\u{2026}")); } }
     rows.extend([ours_row(SHARE_JOBS, if jobs { "Not a Jobs Folder" } else { "Is a Jobs Folder" }), Row::Sep, ours_row(SHARE_RENAME, "Rename\u{2026}"), ours_row(SHARE_REMOVE, "Remove from the Sidebar")]);
     rows
 }

@@ -54,7 +54,7 @@ enum Asked { /// delete these for good
     Extension { path: PathBuf, typed: String, kept: String }, /// the engine's question about a name that is taken (its number)
     Conflict(u64), /// a new job in this jobs folder (its number, its name); a new item in this section's folder
     NewJob(PathBuf), AddItem(PathBuf), /// a share to add (its address, or a folder); a share's name
-    AddShare, RenameShare(usize), /// sync's settings: the farm's folder, this machine's name, the belt
+    AddShare, RenameShare(usize), ShareLetter(usize), /// sync's settings: the farm's folder, this machine's name, the belt
     SyncSet }
 /// What was made off the window's thread (a job's folders, an item's skeleton): the path, or what went wrong.
 /// What a thread that looked at the shares, or asked the system to connect one, found.
@@ -634,7 +634,7 @@ impl Ui {
             ShareNews::Connected(id, st, asked, mounted) => { self.share_busy.remove(&id); if let Some(i) = self.shares.iter().position(|s| s.id == id) {
                 // connected by this request: it is ours to disconnect (one that was there already is not)
                 if st.root().is_some() { self.share_seen.insert(id.clone()); }
-                if mounted && !self.shares[i].ours { self.shares[i].ours = true; crate::shares::save(&self.shares); }
+                if mounted { self.shares[i].ours = true; if cfg!(windows) { if let Some(l) = st.root().and_then(|r| crate::shares::letter_of(&r.to_string_lossy().chars().take(2).collect::<String>())) { self.shares[i].letter = l; } } crate::shares::save(&self.shares); }
                 if asked { if let crate::shares::State::Unreachable(why) = &st { self.toast.show(why, min_ui::toast::ToastKind::Negative, now); } }
                 if self.share_states.len() <= i { self.share_states.resize(i + 1, crate::shares::State::NotConnected); } self.share_states[i] = st; } places::refresh(&self.port); }
         }
@@ -664,6 +664,7 @@ impl Ui {
             SHARE_LAUNCH => { self.shares[i].at_launch = !self.shares[i].at_launch; crate::shares::save(&self.shares); }
             SHARE_JOBS => { self.shares[i].jobs = !self.shares[i].jobs; crate::shares::save(&self.shares); self.apply_shares(); }
             SHARE_RENAME => { use min_ui::{dialog::Dialog, text_button::Variant}; let mut d = Dialog::new("Rename the Share", "Its name in the sidebar. The share itself is not touched.", vec![("Cancel", Variant::Secondary), ("Rename", Variant::Primary)]).with_field("Name", ""); d.show_with(&self.shares[i].name.clone(), &mut self.fonts); self.dialog = Some((d, Asked::RenameShare(i))); }
+            SHARE_LETTER => { use min_ui::{dialog::Dialog, text_button::Variant}; let mut d = Dialog::new("Drive Letter", "The letter the share is given the next time it is connected. Windows remembers the drive and brings it back at sign-in.", vec![("Cancel", Variant::Secondary), ("Set", Variant::Primary)]).with_field("Letter", "Z"); d.show_with(&self.shares[i].letter.clone(), &mut self.fonts); self.dialog = Some((d, Asked::ShareLetter(i))); }
             // (the share stays connected, as it is: only its row goes)
             SHARE_REMOVE => { self.shares.remove(i); if i < self.share_states.len() { self.share_states.remove(i); } crate::shares::save(&self.shares); self.apply_shares(); }
             _ => {}
@@ -1017,6 +1018,7 @@ impl Ui {
             Asked::AddItem(dir) => if button == 1 { let (name, tx, port) = (d.value_at(0), self.made_tx.clone(), self.port.clone()); self.making = true;
                 let _ = std::thread::Builder::new().name("ufb-make".into()).spawn(move || { let _ = tx.send(Made::Item(crate::jobview::project_type().add_item(&dir, &name, &crate::jobview::skeletons(), &crate::jobview::today()))); port.send(Msg::Icon); }); },
             Asked::SyncSet => if button == 1 { let (farm, node, only) = (d.value_at(0), d.value_at(1), d.value_at(2)); crate::settings::with(|s| { s.set_str("sync/farm", &farm); s.set_str("sync/node", &node); s.set_str("sync/only", &only); s.set_bool("sync/on", true); }); self.apply_sync(); },
+            Asked::ShareLetter(i) => if button == 1 { match crate::shares::letter_of(&d.value_at(0)) { Some(l) => if let Some(sh) = self.shares.get_mut(i) { sh.letter = l; crate::shares::save(&self.shares); }, None => self.toast.show("A drive letter is one letter, A to Z.", min_ui::toast::ToastKind::Notice, Instant::now()) } },
             Asked::AddShare => if button == 1 { let text = d.value_at(0); self.add_share(&text); },
             Asked::RenameShare(i) => if button == 1 { let name = d.value_at(0); if let Some(sh) = self.shares.get_mut(i).filter(|_| !name.is_empty()) { sh.name = name; crate::shares::save(&self.shares); } },
             Asked::Extension { path, typed, kept } => { let name = if button == 0 { typed } else { kept }; if path.file_name().is_some_and(|n| n.to_string_lossy() != name.as_str()) { crate::ops::submit(self.id, crate::ops::Op::Rename { path, name }); } }
@@ -1222,7 +1224,7 @@ impl Ui {
         use crate::ctxmenu::{COLUMN, SORT, SUBSCRIBE, UNSUBSCRIBE, CONTENTS, COPY, DUPLICATE, GROUP, NEW_FOLDER, NEW_TAB, NEW_WINDOW, OPEN, PASTE, PREVIEW, REFRESH, RENAME, SPLIT, TRASH};
         // (a saved share's own rows)
         if (crate::ctxmenu::SYNC_SET..=crate::ctxmenu::SYNC_NEVER).contains(&id) { return self.sync_chosen(id) }
-        if (crate::ctxmenu::SHARE_CONNECT..crate::ctxmenu::SYNC_SET).contains(&id) { return self.share_chosen(id) }
+        if (crate::ctxmenu::SHARE_CONNECT..crate::ctxmenu::SYNC_SET).contains(&id) || id == crate::ctxmenu::SHARE_LETTER { return self.share_chosen(id) }
         // (the item list's own rows: columns, options, the star)
         if (crate::ctxmenu::META_ADD..70).contains(&id) || id >= crate::ctxmenu::META_SHOW { return self.meta_chosen(id) }
         let Some((pane, folder)) = self.menu_for.clone() else { return };

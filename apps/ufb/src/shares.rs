@@ -197,13 +197,50 @@ mod platform {
         if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()).or_else(|e: String| if e.is_empty() { Err("It is in use.".to_string()) } else { Err(e) }) }
     }
 }
-#[cfg(not(target_os = "macos"))]
+/// The letter a share is given on Windows: the one asked for, else the first free one from Z down (as Explorer
+/// offers them). `taken`: the letters in use. None: the one asked for is taken, or none is free.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn pick_letter(wanted: &str, taken: &[char]) -> Option<char> {
+    match wanted.trim().chars().next().map(|c| c.to_ascii_uppercase()) { Some(c) if c.is_ascii_alphabetic() => (!taken.contains(&c)).then_some(c), _ => ('D'..='Z').rev().find(|c| !taken.contains(c)) }
+}
+/// A typed drive letter (`j`, `J:`, `J:\`) as `J`; none: it is not one.
+pub fn letter_of(text: &str) -> Option<String> { let t = text.trim().trim_end_matches('\\').trim_end_matches(':'); let mut it = t.chars(); match (it.next(), it.next()) { (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_uppercase().to_string()), _ => None } }
+
+#[cfg(windows)]
 mod platform {
     use super::*;
-    /// (Windows: connecting from here is not built yet - a share that Explorer, or Windows at sign-in, has connected is
-    /// found and used; a folder is used as it is.)
-    pub fn connect(_: &Share, _: bool) -> Result<(), State> { Err(State::Unreachable("Connecting from here is not built on this system yet: connect it in Explorer, and it is found.".into())) }
-    pub fn disconnect(_: &Path) -> Result<(), String> { Err("Not built on this system yet.".into()) }
+    use windows::core::{HSTRING, PCWSTR, PWSTR}; use windows::Win32::NetworkManagement::WNet::*; use windows::Win32::Storage::FileSystem::GetLogicalDrives;
+    /// A drive letter that Windows REMEMBERS (row 444: it is there again at the next sign-in, whether or not this
+    /// application runs - Windows' own doing, as a drive mapped in Explorer). Windows' own sign-in window only when the
+    /// user asked; no name and no password of ours.
+    pub fn connect(s: &Share, ui: bool) -> Result<(), State> {
+        let bits = unsafe { GetLogicalDrives() }; let taken: Vec<char> = ('A'..='Z').filter(|c| bits & (1 << (*c as u32 - 'A' as u32)) != 0).collect();
+        let Some(letter) = pick_letter(&s.letter, &taken) else { return Err(State::Unreachable(if s.letter.trim().is_empty() { "No drive letter is free.".into() } else { format!("The letter {}: is in use. Choose another (Drive Letter\u{2026}).", s.letter.trim().to_uppercase()) })) };
+        // (Windows connects the share itself; what the address names under it is a folder on that drive)
+        let top = s.share.split('/').next().unwrap_or(""); let mut remote: Vec<u16> = format!("\\\\{}\\{top}", s.server).encode_utf16().chain([0]).collect(); let mut local: Vec<u16> = format!("{letter}:").encode_utf16().chain([0]).collect();
+        let res = NETRESOURCEW { dwType: RESOURCETYPE_DISK, lpLocalName: PWSTR(local.as_mut_ptr()), lpRemoteName: PWSTR(remote.as_mut_ptr()), ..Default::default() };
+        let flags = NET_CONNECT_FLAGS(CONNECT_UPDATE_PROFILE.0 | if ui { CONNECT_INTERACTIVE.0 } else { 0 });
+        let code = unsafe { WNetAddConnection2W(&res, PCWSTR::null(), PCWSTR::null(), flags) }.0;
+        match code { 0 => Ok(()),
+            // who signs in is not known, or was refused; another name is already signed in to that server
+            5 | 86 | 1326 | 1327 | 1330 | 1331 | 2202 | 1219 | 1244 => Err(State::SignIn),
+            1223 => Err(State::NotConnected),   // the sign-in was left
+            85 => Err(State::Unreachable(format!("The letter {letter}: is in use."))),
+            53 | 67 | 2250 => Err(State::Unreachable(format!("{} has no share of that name.", s.server))),
+            c => Err(State::Unreachable(format!("Windows could not connect it ({c})."))) }
+    }
+    /// The drive is let go, and forgotten (it does not come back at sign-in). Not forced: files open on it keep it.
+    pub fn disconnect(root: &Path) -> Result<(), String> {
+        let t = root.to_string_lossy(); let Some(letter) = letter_of(&t[..t.len().min(2)]) else { return Err("It has no drive letter.".into()) };
+        let code = unsafe { WNetCancelConnection2W(&HSTRING::from(format!("{letter}:")), CONNECT_UPDATE_PROFILE, false) }.0;
+        match code { 0 => Ok(()), 2401 | 2404 => Err("Files on it are open.".into()), c => Err(format!("Windows said {c}.")) }
+    }
+}
+#[cfg(not(any(target_os = "macos", windows)))]
+mod platform {
+    use super::*;
+    pub fn connect(_: &Share, _: bool) -> Result<(), State> { Err(State::Unreachable("Connecting is not built on this system.".into())) }
+    pub fn disconnect(_: &Path) -> Result<(), String> { Err("Not built on this system.".into()) }
 }
 
 #[cfg(test)]
@@ -221,6 +258,9 @@ mod tests {
         // a folder deeper under the volumes' folder keeps its whole path on the other system: the same pair from either machine
         let d = parse(if cfg!(windows) { "C:\\Volumes\\gfx\\jobs" } else { "/Volumes/gfx/jobs" }).unwrap(); assert_eq!((d.name.as_str(), d.win.as_str(), d.mac.as_str()), ("jobs", "C:\\Volumes\\gfx\\jobs", "/Volumes/gfx/jobs"));
         assert_eq!(from_json(&to_json(&c)), Some(c));
+        // Windows' letters: the one asked for when it is free, else from Z down
+        assert_eq!(pick_letter("", &['C', 'Z']), Some('Y')); assert_eq!(pick_letter("j:", &['C']), Some('J')); assert_eq!(pick_letter("J", &['J']), None); assert_eq!(pick_letter("", &('D'..='Z').collect::<Vec<_>>()), None);
+        assert_eq!(letter_of("j"), Some("J".into())); assert_eq!(letter_of("J:\\"), Some("J".into())); assert_eq!(letter_of("JK"), None); assert_eq!(letter_of("7"), None); assert_eq!(letter_of(""), None);
     }
     #[test]
     fn a_share_is_where_the_system_says_it_is() {
