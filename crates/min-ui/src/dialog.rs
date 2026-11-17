@@ -59,6 +59,10 @@ impl Dialog {
         for (i, (_, f)) in self.fields.iter_mut().enumerate() { if i != self.focus { f.focused = false; } }
         d
     }
+    /// The clipboard's text into the field taking keys; the chosen text out of it (`cut` removes it). The default
+    /// button follows the field as it does for typed text.
+    pub fn paste(&mut self, text: &str, fonts: &mut Fonts) { if let Some((_, f)) = self.fields.get_mut(self.focus) { f.paste(text, fonts); self.sync_default(); } }
+    pub fn copy(&mut self, cut: bool, fonts: &mut Fonts) -> Option<String> { let r = self.fields.get_mut(self.focus).and_then(|(_, f)| f.copy(cut, fonts)); if cut { self.sync_default(); } r }
     pub fn ime(&mut self, e: &ImeEvent, fonts: &mut Fonts) { if let Some((_, f)) = self.fields.get_mut(self.focus) { f.ime(e, fonts); self.sync_default(); } }
     pub fn caret_rect(&self, fonts: &mut Fonts) -> Option<Rect> { self.fields.get(self.focus).filter(|_| self.open).and_then(|(_, f)| f.caret_rect(fonts)) }
     pub fn show(&mut self) { self.open = true; }
