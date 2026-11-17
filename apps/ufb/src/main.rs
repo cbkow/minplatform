@@ -72,7 +72,7 @@ fn main() {
     { let started: Vec<db::Mapping> = args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect(); shares::set_started_with(started.clone());
         // the saved shares (row 498) with where each is now, and those the build was started with: known before the database is opened
         let saved = shares::load(); let mounts = shares::mounts(); let states: Vec<shares::State> = saved.iter().map(|s| shares::resolve(s, &mounts, &|p| p.is_dir())).collect();
-        let mut maps = shares::mappings_of(&saved, &states); maps.extend(started); db::set_mappings(maps);
+        let _ = started; db::set_mappings(shares::mappings_now(&saved, &states, &mounts));
         jobview::set_share_roots(saved.iter().zip(states.iter()).filter(|(s, _)| s.jobs).filter_map(|(s, st)| st.root().map(|p| (p.to_path_buf(), s.ptype.clone()))).collect()); }
     // (files promised by another application arrive in a folder of our own first: the engine may take them out of it)
     let mut writes = writes; let incoming = dnd::staging(); if std::fs::create_dir_all(&incoming).is_ok() { writes.push(incoming); }

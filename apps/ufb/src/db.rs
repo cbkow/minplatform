@@ -307,6 +307,23 @@ impl Db {
     /// them, a subscription - in ONE step; the items' rows are stamped as changed (they are ordinary edits to whoever
     /// reads the database). A top-level folder of a job renamed in place takes the section's name in those rows along.
     /// What already lay at the new path is replaced. Returns how many rows moved.
+    /// A share's pair was changed (row 517): its identity is another, and this machine's rows under the old one are
+    /// the new one's from now on - the paths below the share stay as they are. What already lies under the new
+    /// identity at the same path makes way. How many rows changed.
+    pub fn rekey(&self, old_uuid: &str, new_uuid: &str) -> Result<usize, String> {
+        if old_uuid == new_uuid || old_uuid.is_empty() || new_uuid.is_empty() { return Ok(0) }
+        let (old, new) = (format!("vol:{old_uuid}"), format!("vol:{new_uuid}"));
+        let run = || -> rusqlite::Result<usize> {
+            let tx = self.conn.unchecked_transaction()?; let mut n = 0;
+            for (table, col, key) in [("item_metadata", "item_path", true), ("item_metadata", "job_path", false), ("column_definitions", "job_path", false), ("column_layout_personal", "job_path", false), ("subscriptions", "job_path", true), ("mesh_base", "item_path", true)] {
+                let under = format!("({col} = ?1 OR substr({col}, 1, length(?1) + 1) = ?1 || '/')"); let moved = format!("?2 || substr({col}, length(?1) + 1)");
+                if key { tx.execute(&format!("DELETE FROM {table} WHERE {col} IN (SELECT {moved} FROM {table} WHERE {under})"), rusqlite::params![old, new])?; }
+                n += tx.execute(&format!("UPDATE OR REPLACE {table} SET {col} = {moved} WHERE {under}"), rusqlite::params![old, new])?;
+            }
+            tx.commit()?; Ok(n)
+        };
+        run().map_err(|e| e.to_string())
+    }
     pub fn move_paths(&self, from: &Path, to: &Path) -> Result<usize, String> {
         let (old, new, now) = (to_identity(from), to_identity(to), now_ms()); let sep = sep_of(&old).to_string(); if old == new { return Ok(0) }
         // (a row is the folder's own, or lies under it: the text after the old path is kept)
@@ -723,6 +740,21 @@ mod tests {
         let (item, jobp): (String, String) = db.conn.query_row("SELECT item_path, job_path FROM item_metadata", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap(); assert_eq!(item, format!("vol:{}/jobs/0001_Test/3d/sh010", maps[0].uuid)); assert_eq!(jobp, stored[1]);
         assert_eq!(db.classify(&maps).unwrap(), 0, "done once");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_changed_pair_takes_its_rows_to_the_new_identity() {
+        let d = temp("rekey"); let db = Db::open(&d).unwrap();
+        for (path, job) in [("vol:aaaa/jobs/1/3d/sh010", "vol:aaaa/jobs/1"), ("vol:aaaa2/jobs/1/3d/sh010", "vol:aaaa2/jobs/1"), ("vol:bbbb/jobs/1/3d/sh010", "vol:bbbb/jobs/1"), ("native:mac/Users/x/job/3d/a", "native:mac/Users/x/job")] {
+            db.conn.execute("INSERT INTO item_metadata (item_path, job_path, folder_name, metadata_json, is_tracked, modified_time) VALUES (?1, ?2, '3d', ?3, 1, 5)", rusqlite::params![path, job, format!("{{\"from\":\"{path}\"}}")]).unwrap(); }
+        db.conn.execute("INSERT INTO column_definitions (job_path, folder_name, column_name, column_type, column_order, column_width, is_visible, modified_time, column_uuid) VALUES ('vol:aaaa/jobs/1', '3d', 'Status', 'text', 0, 120.0, 1, 1, 'u1')", []).unwrap();
+        // the rows under aaaa become bbbb's; the one already there at the same path makes way; another identity that only STARTS alike, and this machine's own, stay
+        assert!(db.rekey("aaaa", "bbbb").unwrap() >= 3); assert_eq!(db.rekey("aaaa", "bbbb").unwrap(), 0, "done once");
+        let rows: Vec<(String, String)> = db.conn.prepare("SELECT item_path, metadata_json FROM item_metadata ORDER BY item_path").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().flatten().collect();
+        assert_eq!(rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["native:mac/Users/x/job/3d/a", "vol:aaaa2/jobs/1/3d/sh010", "vol:bbbb/jobs/1/3d/sh010"]);
+        assert!(rows[2].1.contains("vol:aaaa/"), "the row that moved is the one kept");
+        let (job, col): (String, String) = db.conn.query_row("SELECT (SELECT job_path FROM item_metadata WHERE item_path = 'vol:bbbb/jobs/1/3d/sh010'), (SELECT job_path FROM column_definitions WHERE column_uuid = 'u1')", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((job.as_str(), col.as_str()), ("vol:bbbb/jobs/1", "vol:bbbb/jobs/1"));
+        assert_eq!(db.rekey("aaaa", "aaaa").unwrap(), 0); drop(db); let _ = std::fs::remove_dir_all(&d);
     }
     #[test]
     fn what_is_shared_waits_for_the_mesh_and_arrives_as_1_4_2_sends_it() {

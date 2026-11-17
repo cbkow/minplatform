@@ -81,6 +81,40 @@ pub fn started_with() -> Vec<Mapping> { STARTED_WITH.read().unwrap().clone() }
 fn to_json(s: &Share) -> Value { json!({ "id": s.id, "name": s.name, "server": s.server, "share": s.share, "local": s.local, "jobs": s.jobs, "atLaunch": s.at_launch, "letter": s.letter, "type": s.ptype, "win": s.win, "mac": s.mac, "ours": s.ours }) }
 fn from_json(v: &Value) -> Option<Share> { let t = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string(); let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
     let s = Share { id: t("id"), name: t("name"), server: t("server"), share: t("share"), local: t("local"), jobs: b("jobs"), at_launch: b("atLaunch"), letter: t("letter"), ptype: t("type"), win: t("win"), mac: t("mac"), ours: b("ours") }; (!s.id.is_empty() && (!s.server.is_empty() || !s.local.is_empty())).then_some(s) }
+/// A path mapping that is no saved share's (row 517): a share as both systems know it, written by hand - for a
+/// Windows side that is a drive letter or a folder, and for the very pairs an installed 1.4.x has.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Manual { pub name: String, pub win: String, pub mac: String, pub on: bool }
+pub fn load_manual() -> Vec<Manual> { let text = crate::settings::with(|s| s.string("mappings/list")); serde_json::from_str::<Value>(&text).ok().and_then(|v| v.as_array().map(|a| a.iter().map(|m| { let t = |k: &str| m[k].as_str().unwrap_or("").to_string(); Manual { name: t("name"), win: t("win"), mac: t("mac"), on: m["on"].as_bool().unwrap_or(true) } }).collect())).unwrap_or_default() }
+pub fn save_manual(list: &[Manual]) { let text = Value::Array(list.iter().map(|m| json!({ "name": m.name, "win": m.win, "mac": m.mac, "on": m.on })).collect()).to_string(); crate::settings::with(|s| s.set_str("mappings/list", &text)); }
+
+/// Where a mapping's share REALLY is on this machine now, when that is not where its own side says (rows 445, 517):
+/// - macOS, a side directly under `/Volumes`: the system's mount table is asked first - by server and share when the
+///   Windows side names them (`\\server\share`), else by the share's name; then the folders are looked at:
+///   `/Volumes/<name>` itself there -> nothing to say; else the ONE `/Volumes/<name>-<digits>` that is there.
+/// - Windows, a side that names a server and a share: the drive it is connected as.
+/// None: it is where its side says, or nowhere to be found (the side is then used as written).
+pub fn landed(win: &str, mac: &str, mounts: &[Mount], volumes: &[String]) -> Option<String> {
+    let unc = source(win);
+    if cfg!(windows) { let (server, share) = unc?; return mounts.iter().find(|m| m.server == server && (m.share == share || share.starts_with(&format!("{}/", m.share)))).map(|m| { let rest = share[m.share.len()..].trim_matches('/'); if rest.is_empty() { m.on.to_string_lossy().into_owned() } else { m.on.join(rest.replace('/', "\\")).to_string_lossy().into_owned() } }) }
+    let t = mac.trim().trim_end_matches('/'); let name = t.strip_prefix("/Volumes/").filter(|n| !n.is_empty() && !n.contains('/'))?; let low = name.to_lowercase();
+    let by_table = mounts.iter().find(|m| match &unc { Some((server, share)) => m.server == *server && m.share == *share, None => leaf(&m.share).to_lowercase() == low });
+    if let Some(m) = by_table { let on = m.on.to_string_lossy().into_owned(); return (on.trim_end_matches('/') != t).then_some(on) }
+    if volumes.iter().any(|v| v.to_lowercase() == low) { return None }
+    let numbered: Vec<&String> = volumes.iter().filter(|v| v.to_lowercase().strip_prefix(&format!("{low}-")).is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))).collect();
+    (numbered.len() == 1).then(|| format!("/Volumes/{}", numbered[0]))
+}
+/// The names directly under `/Volumes` (macOS; elsewhere none).
+pub fn volumes() -> Vec<String> { if cfg!(target_os = "macos") { std::fs::read_dir("/Volumes").map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default() } else { vec![] } }
+/// Every mapping in force: the saved shares with where each is, the hand-written ones that are on with where each
+/// landed, and those the build was started with.
+pub fn mappings_now(shares: &[Share], states: &[State], mounts: &[Mount]) -> Vec<Mapping> {
+    let mut maps = mappings_of(shares, states); let vols = volumes();
+    for m in load_manual().iter().filter(|m| m.on && !m.win.trim().is_empty() && !m.mac.trim().is_empty()) { let map = Mapping::new(&m.win, &m.mac); if maps.iter().any(|x| x.uuid == map.uuid) { continue } maps.push(map.at(landed(&m.win, &m.mac, mounts, &vols))); }
+    for m in started_with() { if !maps.iter().any(|x| x.uuid == m.uuid) { maps.push(m); } }
+    maps
+}
+
 pub fn load() -> Vec<Share> { let text = crate::settings::with(|s| s.string("shares/list")); serde_json::from_str::<Value>(&text).ok().and_then(|v| v.as_array().map(|a| a.iter().filter_map(from_json).collect())).unwrap_or_default() }
 pub fn save(shares: &[Share]) { let text = Value::Array(shares.iter().map(to_json).collect()).to_string(); crate::settings::with(|s| s.set_str("shares/list", &text)); }
 
@@ -247,6 +281,22 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    #[test]
+    fn where_a_mapping_really_landed() {
+        let m = |server: &str, share: &str, on: &str| Mount { server: server.into(), share: share.into(), on: PathBuf::from(on) }; let v = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // the mount table knows: by server and share when the Windows side names them, else by the share's name
+        assert_eq!(landed("\\\\nas\\Jobs", "/Volumes/Jobs", &[m("nas", "jobs", "/Volumes/Jobs-2")], &v(&["Jobs-2"])), Some("/Volumes/Jobs-2".into()));
+        assert_eq!(landed("\\\\nas\\Jobs", "/Volumes/Jobs", &[m("nas", "jobs", "/Volumes/Jobs")], &v(&["Jobs"])), None, "where its side says: nothing to tell");
+        assert_eq!(landed("P:\\", "/Volumes/Jobs", &[m("other", "jobs", "/Volumes/Jobs-1")], &v(&["Jobs-1"])), Some("/Volumes/Jobs-1".into()), "a drive letter on the other side: by the share's name");
+        assert_eq!(landed("\\\\nas\\Jobs", "/Volumes/Jobs", &[m("elsewhere", "jobs", "/Volumes/Jobs-2")], &v(&[])), None, "another server's share of that name is not it");
+        // no mount table entry (a disk, another protocol): the folders - the one numbered landing, and only digits count
+        assert_eq!(landed("C:\\Volumes\\gfx", "/Volumes/gfx", &[], &v(&["gfx-3", "other"])), Some("/Volumes/gfx-3".into()));
+        assert_eq!(landed("C:\\Volumes\\gfx", "/Volumes/gfx", &[], &v(&["gfx", "gfx-3"])), None, "the side itself is there");
+        assert_eq!(landed("C:\\Volumes\\gfx", "/Volumes/gfx", &[], &v(&["gfx-2", "gfx-3"])), None, "two candidates: none is taken");
+        assert_eq!(landed("C:\\Volumes\\gfx", "/Volumes/gfx", &[], &v(&["gfx-extra"])), None);
+        assert_eq!(landed("C:\\x", "/Users/a/gfx", &[], &v(&["gfx-2"])), None, "a side that is not directly under /Volumes is used as written");
+    }
     use super::*;
     #[test]
     fn an_address_is_read_in_either_systems_spelling() {

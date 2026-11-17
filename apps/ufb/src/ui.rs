@@ -573,10 +573,16 @@ impl Ui {
     }
     /// The Settings card (row 516): opened over the window; Save applies what it holds to this window's panes and, when
     /// sync's settings changed, starts sync again.
-    fn open_prefs(&mut self) { if self.prefs.is_some() || self.dialog.is_some() || self.lightbox.is_open() { return } self.ctx.close(); self.end_rename(); self.leave_path(); self.leave_search(); self.op_list = false; self.prefs = Some(crate::prefs::Prefs::open(&mut self.fonts)); }
+    fn open_prefs(&mut self) { if self.prefs.is_some() || self.dialog.is_some() || self.lightbox.is_open() { return } self.ctx.close(); self.end_rename(); self.leave_path(); self.leave_search(); self.op_list = false; self.prefs = Some(crate::prefs::Prefs::open(&mut self.fonts, &self.shares, &self.share_states)); }
     fn prefs_done(&mut self, out: crate::prefs::Out) {
         match out { crate::prefs::Out::None => {} crate::prefs::Out::Close => self.prefs = None,
-            crate::prefs::Out::Saved { sync } => { self.prefs = None; self.apply_view(); if sync { self.apply_sync(); } } }
+            crate::prefs::Out::Saved { sync, pairs, rekeys } => { self.prefs = None; self.apply_view();
+                // a saved share's pair as the card has it now; rows under a changed pair go to its new identity; then every path is read anew
+                let mut changed = false; for (id, win, mac) in pairs { if let Some(sh) = self.shares.iter_mut().find(|s| s.id == id) { if (sh.win.as_str(), sh.mac.as_str()) != (win.as_str(), mac.as_str()) { sh.win = win; sh.mac = mac; changed = true; } } }
+                if changed { crate::shares::save(&self.shares); }
+                for (old, new) in &rekeys { if let Some(Err(e)) = crate::db::with(|d| d.rekey(old, new)) { self.toast.show(&format!("The metadata could not be moved to the new mapping: {e}"), min_ui::toast::ToastKind::Negative, Instant::now()); } }
+                self.apply_shares(); if !rekeys.is_empty() { self.reload_jobs(); self.reload_lists(); if let Some(j) = self.job.as_mut() { j.reload(); } }
+                if sync { self.apply_sync(); } } }
     }
     /// The panes are made what the settings say they show (after Save; a new pane is made so from the start).
     fn apply_view(&mut self) {
@@ -614,7 +620,9 @@ impl Ui {
     }
     /// The shares, as they stand now, are what paths are read by: each one's place on this machine, its folders as jobs.
     fn apply_shares(&mut self) {
-        let mut maps = crate::shares::mappings_of(&self.shares, &self.share_states); maps.extend(crate::shares::started_with());
+        // (the system's mount table is read here only for hand-written mappings: a saved share's place came with its state)
+        let mounts = if crate::shares::load_manual().iter().any(|m| m.on) { crate::shares::mounts() } else { vec![] };
+        let maps = crate::shares::mappings_now(&self.shares, &self.share_states, &mounts);
         if maps != crate::db::mappings() { crate::db::set_mappings(maps);
             // (rows of this machine's own under a share that came are the share's from now on; the lists are read by the new places)
             let _ = crate::db::with(|d| d.classify(&crate::db::mappings())); self.reload_jobs(); self.reload_lists(); if let Some(j) = self.job.as_mut() { j.reload(); } }
@@ -1819,6 +1827,11 @@ impl Ui {
             "prefset" => if let (Some(p), Some((what, value))) = (self.prefs.as_mut(), arg.split_once(':')) { p.demo_set(what, value, &mut self.fonts); },
             "prefsave" => if let Some(p) = self.prefs.as_mut() { let out = p.demo_save(); if out == crate::prefs::Out::None { eprintln!("UFB_DEMO: settings not saved: {}", self.prefs.as_ref().and_then(|p| p.error()).unwrap_or("")); } self.prefs_done(out); },
             "prefcancel" => self.prefs = None,
+            "preftab" => if let (Some(p), Some(k)) = (self.prefs.as_mut(), num(arg)) { p.demo_tab(k); },
+            // `prefmap:add` (a new mapping's row) `prefmap:<n>:<name|win|mac>:<text>` `prefmap:<n>:off|on|remove` (the n-th hand-written one) `prefshare:<n>:<win|mac>:<text>` (a saved share's pair) `mapsay`
+            "prefmap" => if let Some(p) = self.prefs.as_mut() { p.demo_map(arg, false, &mut self.fonts); },
+            "prefshare" => if let Some(p) = self.prefs.as_mut() { p.demo_map(arg, true, &mut self.fonts); },
+            "mapsay" => eprintln!("UFB_DEMO: mappings: {}", crate::db::mappings().iter().map(|m| format!("[{} <-> {}{}]", m.win, m.mac, m.here.as_ref().map(|h| format!(" here {h}")).unwrap_or_default())).collect::<Vec<_>>().join(" ")),
             "prefsay" => { let v = crate::prefs::view(); eprintln!("UFB_DEMO: settings: hidden {} folders-first {} sequences {} grid {}; sync {}; this window: hidden {} mode {:?} sequences {}", v.0, v.1, v.2, v.3, crate::settings::with(|s| format!("{} farm \"{}\" node \"{}\"", s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"))), self.hidden, self.panes[self.active].mode, self.panes[self.active].model.sequences); },
             // `extract` `compress` (the chosen entries) `password:<text>` (answer the password question)
             // `searchbelow:<text>` (Return in the search field) `enclosing` (the chosen find, where it lies) `searchclear`
