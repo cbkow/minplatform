@@ -73,6 +73,9 @@ pub fn parse(args: &[String], home: &std::path::Path) -> (std::path::PathBuf, Ve
 fn main() {
     // a helper copy of the executable (thumbnails, canon row 456): the first branch, before anything else is set up
     if std::env::args_os().nth(1).is_some_and(|a| a == thumbs::pool::HELPER_ARG) { thumbs::helper::run() }
+    // the release on Windows keeps its data where 1.4.x does - the per-user LOCAL application-data folder, `ufb`
+    // (the family's settings service would take the roaming one): named once, here, for everything that asks (row 534)
+    #[cfg(windows)] if identity::kind() == identity::Kind::Release && std::env::var_os("UFB_SETTINGS_DIR").is_none() { if let Some(local) = std::env::var_os("LOCALAPPDATA") { unsafe { std::env::set_var("UFB_SETTINGS_DIR", std::path::PathBuf::from(local).join("ufb")); } } }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]... [--map <windows side>=<macOS side>]... [--mesh <farm folder> [--mesh-node <id>] [--mesh-only <folder>]]"); return }
     // `--import-1.4 <folder>`: what a UFB 1.4.x keeps in that data folder (or a copy of it) is taken into this build's
@@ -85,6 +88,10 @@ fn main() {
         if instance::hand_over(&dir, &asked) { return } instance::claim(&dir); } }
     // what the application says of itself goes to its log file (not in a scripted look, whose script reads the console)
     if logfile::wanted() { if let Some(p) = logfile::install(identity::data_name()) { eprintln!("UFB: the log is {}", p.display()); } }
+    // the release, at its first launch in a folder a 1.4.x has used: the move is made by itself, before anything opens
+    // the database (rows 532, 534). Should it fail, it is said in the log and tried again at the next launch.
+    if identity::kind() == identity::Kind::Release && settings::with(|s| s.string("migrate/from_1_4")).is_empty() {
+        if let Some(dir) = identity::data_dir() { if dir.join("ufb_v5.db").is_file() || dir.join("settings.json").is_file() { match migrate::import(&dir) { Ok(d) => eprintln!("UFB: taken over from 1.4.x:\n{}", migrate::report(&d)), Err(e) => eprintln!("UFB: the move from 1.4.x was not made: {e}") } } else { settings::with(|s| s.set_str("migrate/from_1_4", "nothing to take")); } } }
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
     // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
     { let started: Vec<db::Mapping> = args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect(); shares::set_started_with(started.clone());

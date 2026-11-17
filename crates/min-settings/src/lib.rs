@@ -72,8 +72,11 @@ impl Settings {
         std::env::var_os("XDG_CONFIG_HOME").filter(|x| !x.is_empty()).map(|x| PathBuf::from(x).join(app)).or_else(|| home.map(|h| h.join(".config").join(app)))
     }
     /// Open (and load) the app's store. `env_prefix` names the isolation variable (`QCV` → `QCV_SETTINGS_DIR`).
-    pub fn open(app: &str, env_prefix: &str, schema: &'static Schema) -> Settings {
-        let path = Self::dir_for(app, env_prefix).map(|d| d.join("settings.json"));
+    pub fn open(app: &str, env_prefix: &str, schema: &'static Schema) -> Settings { Self::open_named(app, env_prefix, schema, "settings.json") }
+    /// The same, under a file name of the application's own (UFB: its folder is also an older version's, whose
+    /// settings file is `settings.json` - canon row 534).
+    pub fn open_named(app: &str, env_prefix: &str, schema: &'static Schema, file: &str) -> Settings {
+        let path = Self::dir_for(app, env_prefix).map(|d| d.join(file));
         let mut s = Settings { schema, values: BTreeMap::new(), extra: BTreeMap::new(), path, generation: 0, dirty: false };
         s.load();
         s

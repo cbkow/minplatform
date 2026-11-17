@@ -39,10 +39,20 @@ static SCHEMA: Schema = Schema { keys: &[
     Key::str("columns/browser", "1,1,1|150,86,150"), Key::str("columns/job_top", "1,0,0|150,86,150"), Key::str("columns/job_low", "1,0,0|150,86,150"),
 ] };
 static STORE: OnceLock<Mutex<Settings>> = OnceLock::new();
+/// This application's own settings file (row 534). NOT `settings.json`: in the release this build's data folder is UFB
+/// 1.4.x's, and that name is 1.4.x's own file there - read once by the move (`migrate.rs`), never written by us.
+pub const FILE: &str = "ufb2-settings.json";
+/// Builds before row 534 kept their settings as `settings.json`: in the development build and the test package, whose
+/// folders are theirs alone, that file is taken over once. Never in the release - there it is 1.4.x's.
+fn carry_over() {
+    if crate::identity::kind() == crate::identity::Kind::Release { return }
+    let Some(dir) = crate::identity::data_dir() else { return }; let (old, new) = (dir.join("settings.json"), dir.join(FILE));
+    if !new.exists() && old.is_file() { let _ = std::fs::copy(&old, &new); }
+}
 
 /// Read or change the store. A change is written at once (the file is small).
 pub fn with<R>(f: impl FnOnce(&mut Settings) -> R) -> R {
-    let mut s = STORE.get_or_init(|| Mutex::new(Settings::open(crate::identity::data_name(), "UFB", &SCHEMA))).lock().unwrap();
+    let mut s = STORE.get_or_init(|| { carry_over(); Mutex::new(Settings::open_named(crate::identity::data_name(), "UFB", &SCHEMA, FILE)) }).lock().unwrap();
     let r = f(&mut s); let _ = s.save_if_dirty(); r
 }
 
@@ -73,6 +83,6 @@ mod tests {
         set_sequence_rate("/b/other.%04d.exr", (30000, 1001)); assert_eq!(sequence_rate("/a/shot.%04d.exr"), (25, 1), "each keeps its own"); assert_eq!(sequence_rate("/b/other.%04d.exr"), (30000, 1001)); assert_eq!(sequence_rate("/c/new.%04d.exr"), (30000, 1001));
         set_sequence_rate("/a/shot.%04d.exr", (60, 1)); assert_eq!(with(|s| s.string("player/sequence_rates")).lines().count(), 2, "one line a sequence");
         assert_eq!(parse_rate("24000/1001"), Some((24000, 1001))); assert_eq!(parse_rate("0/1"), None); assert_eq!(parse_rate("x"), None);
-        assert!(dir.join("settings.json").is_file(), "written to the store's file"); let _ = std::fs::remove_dir_all(&dir);
+        assert!(dir.join(FILE).is_file(), "written to the store's file"); let _ = std::fs::remove_dir_all(&dir);
     }
 }
