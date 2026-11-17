@@ -212,7 +212,7 @@ impl Prefs {
         // -- About
         line(scene, fonts, "About", ox0, y + head / 2.0, t::DETAIL_SIZE_M, true, sub, 200.0 * s); y += head;
         panel(scene, y, y + 40.0 * s + 20.0 * s); y += 10.0 * s;
-        line(scene, fonts, concat!("UFB ", env!("CARGO_PKG_VERSION"), "  \u{b7}  GPL-3.0-or-later"), lx, y + 10.0 * s, t::BODY_SIZE_S, false, ink, w - 2.0 * pad); y += 20.0 * s;
+        line(scene, fonts, &format!("{} {}  \u{b7}  GPL-3.0-or-later", crate::identity::display_name(), env!("CARGO_PKG_VERSION")), lx, y + 10.0 * s, t::BODY_SIZE_S, false, ink, w - 2.0 * pad); y += 20.0 * s;
         line(scene, fonts, "Updates and the licence notices come with the installed application.", lx, y + 10.0 * s, t::DETAIL_SIZE_S, false, sub, w - 2.0 * pad); y += 20.0 * s;
         }
         let (lx, x1) = (ox0, ox1); let _ = (y, fx);

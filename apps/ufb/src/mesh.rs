@@ -131,8 +131,8 @@ pub fn start_with(farm: &std::path::Path, node: &str, leader: &str, only: Option
     let mut tags: Vec<String> = std::env::var("UFB_MESH_TAGS").ok().map(|t| t.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
     if !leader.is_empty() && !tags.iter().any(|t| t == leader) { tags.push(leader.to_string()); }
     let abs = |p: &std::path::Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
-    start(Config { farm: abs(farm), node: node_name(node), epoch: std::env::var("UFB_MESH_EPOCH").ok().and_then(|e| e.parse().ok()).unwrap_or(TEST_EPOCH),
-        ctl: ports.first().copied().unwrap_or(TEST_PORTS.0), data: ports.get(1).copied().unwrap_or(TEST_PORTS.1), udp: ports.get(2).copied().unwrap_or(TEST_PORTS.2), tags, only: only.map(|p| crate::db::to_identity(&abs(p))) });
+    start(Config { farm: abs(farm), node: node_name(node), epoch: std::env::var("UFB_MESH_EPOCH").ok().and_then(|e| e.parse().ok()).unwrap_or(crate::identity::epoch()),
+        ctl: ports.first().copied().unwrap_or(crate::identity::ports().0), data: ports.get(1).copied().unwrap_or(crate::identity::ports().1), udp: ports.get(2).copied().unwrap_or(crate::identity::ports().2), tags, only: only.map(|p| crate::db::to_identity(&abs(p))) });
 }
 pub fn start(cfg: Config) {
     let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()), snap_needed: AtomicBool::new(true), snap_look: AtomicBool::new(true), written: AtomicU64::new(0), merged: AtomicU64::new(0), relayed: Default::default(), files_only: std::env::var_os("UFB_MESH_FILES_ONLY").is_some(), secret: Mutex::new(String::new()) });

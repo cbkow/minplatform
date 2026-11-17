@@ -136,7 +136,7 @@ mod imp {
         let msgs: Msgs = Default::default();
         let push = { let (m, w) = (msgs.clone(), wake.clone()); move |s: String| { m.borrow_mut().push(s); w(); } };
         let (p0, p1, p2, p3, p4) = (push.clone(), push.clone(), push.clone(), push.clone(), push.clone());
-        let data = crate::thumbs::cache_dir().unwrap_or_else(|| std::env::temp_dir().join("UFB-test")).join("webview2");
+        let data = crate::thumbs::cache_dir().unwrap_or_else(|| std::env::temp_dir().join(crate::identity::data_name())).join("webview2");
         let _ = std::fs::create_dir_all(&data);
         let mut ctx = wry::WebContext::new(Some(data));
         let root = format!("https://{HOST}/");

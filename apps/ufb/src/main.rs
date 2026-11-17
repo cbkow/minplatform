@@ -21,6 +21,7 @@ mod format;
 mod history;
 mod http;
 mod icons;
+mod identity;
 mod instance;
 mod itemlist;
 mod jobview;
@@ -74,11 +75,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") { println!("UFB [folder] [--favorite <path>]... [--jobs <folder>]... [--allow-writes <folder>]... [--map <windows side>=<macOS side>]... [--mesh <farm folder> [--mesh-node <id>] [--mesh-only <folder>]]"); return }
     // one UFB a user (row 519): a second launch hands what it was asked to open to the one that runs, and ends
-    if instance::takes_part() { if let Some(dir) = min_settings::Settings::dir_for("UFB-test", "UFB") {
+    if instance::takes_part() { if let Some(dir) = identity::data_dir() {
         let asked = positional(&args).unwrap_or_default(); let asked = if asked.is_empty() || asked.starts_with("ufb:") || asked.starts_with("union:") { asked } else { std::path::absolute(&asked).map(|p| p.to_string_lossy().into_owned()).unwrap_or(asked) };
         if instance::hand_over(&dir, &asked) { return } instance::claim(&dir); } }
     // what the application says of itself goes to its log file (not in a scripted look, whose script reads the console)
-    if logfile::wanted() { if let Some(p) = logfile::install("UFB-test") { eprintln!("UFB: the log is {}", p.display()); } }
+    if logfile::wanted() { if let Some(p) = logfile::install(identity::data_name()) { eprintln!("UFB: the log is {}", p.display()); } }
     let (folder, favorites, writes, jobs) = parse(&args, &places::home()); jobview::set_roots(jobs);
     // shared paths (row 494): `--map <windows side>=<macOS side>` names a share as both systems know it - what is under it is shared with the other machines
     { let started: Vec<db::Mapping> = args.windows(2).filter(|w| w[0] == "--map").filter_map(|w| w[1].split_once('=')).map(|(win, mac)| db::Mapping::new(win, mac)).collect(); shares::set_started_with(started.clone());

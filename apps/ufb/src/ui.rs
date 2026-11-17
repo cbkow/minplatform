@@ -702,7 +702,7 @@ impl Ui {
     /// The places project types are looked for: the farm's folder, then this machine's settings folder.
     fn set_type_dirs() {
         let mut dirs = vec![]; if let Some(f) = crate::mesh::farm() { dirs.push(f.join("types")); } else { let f = crate::settings::with(|s| s.string("sync/farm")); if !f.trim().is_empty() { dirs.push(Path::new(f.trim()).join("types")); } }
-        if let Some(d) = min_settings::Settings::dir_for("UFB-test", "UFB") { dirs.push(d.join("types")); }
+        if let Some(d) = crate::identity::data_dir() { dirs.push(d.join("types")); }
         crate::jobview::set_type_dirs(dirs);
     }
     /// A row of a share's menu was chosen.

@@ -73,7 +73,7 @@ pub fn cache_dir() -> Option<std::path::PathBuf> {
     if let Some(v) = std::env::var_os("UFB_THUMB_CACHE") { return (!v.is_empty() && v != "off").then(|| PathBuf::from(v)) }
     let base = if cfg!(target_os = "macos") { std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches")) } else if cfg!(windows) { std::env::var_os("LOCALAPPDATA").map(PathBuf::from) }
         else { std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or(std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))) };
-    base.map(|b| b.join("UFB-test"))
+    base.map(|b| b.join(crate::identity::data_name()))
 }
 
 enum Slot { Waiting { id: u64, seen: u64 }, Ready { img: peniko::ImageBrush, bytes: usize, used: u64 } }

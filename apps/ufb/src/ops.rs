@@ -24,13 +24,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 /// The folders this build may change things in.
 #[derive(Clone, Debug, Default)]
-pub struct Guard { roots: Vec<PathBuf> }
+pub struct Guard { roots: Vec<PathBuf>, /// no belt (the test package, the release - `identity.rs`): everything may be changed
+    open: bool }
 pub const GUARDED: &str = "This development build only changes files inside the folders it was started with.";
 impl Guard {
-    pub fn new(roots: &[PathBuf]) -> Guard { Guard { roots: roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect() } }
+    pub fn new(roots: &[PathBuf]) -> Guard { Guard { roots: roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect(), open: false } }
+    /// The guard of a build without the belt: it allows everything.
+    pub fn none() -> Guard { Guard { roots: vec![], open: true } }
     /// `path` (it need not exist yet) lies INSIDE one of the folders - the folders themselves are not to be renamed or
     /// removed. Its enclosing folder is resolved, so that a link cannot lead outside.
     pub fn allows(&self, path: &Path) -> bool {
+        if self.open { return true }
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return false };
         let Ok(parent) = std::fs::canonicalize(parent) else { return false }; let full = parent.join(name);
         self.roots.iter().any(|r| full.starts_with(r) && full != *r)
@@ -606,7 +610,7 @@ fn label_of(op: &Op) -> String {
 /// Start the engine's thread. `roots`: the folders this build may change things in.
 pub fn init(roots: &[PathBuf]) {
     let (tx, rx) = channel::<(u64, Op, Option<(u64, Arc<AtomicBool>)>)>(); let (answers, answered) = channel::<(u64, Choice, bool)>();
-    let undo = Arc::new(Mutex::new(None)); let ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>> = Arc::new(Mutex::new(vec![])); let guard = Guard::new(roots);
+    let undo = Arc::new(Mutex::new(None)); let ports: Arc<Mutex<Vec<(u64, crate::lister::Port)>>> = Arc::new(Mutex::new(vec![])); let guard = if crate::identity::belt() { Guard::new(roots) } else { Guard::none() };
     let (status, current, waiting, open) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), Arc::new(Mutex::new(Vec::<String>::new())), Arc::new(Mutex::new(None)));
     let (u, p, g, st, cur, wa, op) = (undo.clone(), ports.clone(), guard.clone(), status.clone(), current.clone(), waiting.clone(), open.clone());
     let _ = std::thread::Builder::new().name("ufb-ops".into()).spawn(move || {

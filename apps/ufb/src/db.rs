@@ -597,7 +597,7 @@ impl Db {
 static DB: OnceLock<Option<Mutex<Db>>> = OnceLock::new();
 /// The application's database, opened at its first use. None: it could not be opened (said once on the error stream).
 pub fn with<R>(f: impl FnOnce(&Db) -> R) -> Option<R> {
-    let db = DB.get_or_init(|| { let dir = min_settings::Settings::dir_for("UFB-test", "UFB")?; match Db::open(&dir) { Ok(d) => Some(Mutex::new(d)), Err(e) => { eprintln!("UFB: the database: {e}"); None } } });
+    let db = DB.get_or_init(|| { let dir = crate::identity::data_dir()?; match Db::open(&dir) { Ok(d) => Some(Mutex::new(d)), Err(e) => { eprintln!("UFB: the database: {e}"); None } } });
     db.as_ref().map(|m| f(&m.lock().unwrap()))
 }
 

@@ -33,7 +33,7 @@ static STORE: OnceLock<Mutex<Settings>> = OnceLock::new();
 
 /// Read or change the store. A change is written at once (the file is small).
 pub fn with<R>(f: impl FnOnce(&mut Settings) -> R) -> R {
-    let mut s = STORE.get_or_init(|| Mutex::new(Settings::open("UFB-test", "UFB", &SCHEMA))).lock().unwrap();
+    let mut s = STORE.get_or_init(|| Mutex::new(Settings::open(crate::identity::data_name(), "UFB", &SCHEMA))).lock().unwrap();
     let r = f(&mut s); let _ = s.save_if_dirty(); r
 }
 
