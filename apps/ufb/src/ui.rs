@@ -1970,6 +1970,7 @@ impl Ui {
             "prefset" => if let (Some(p), Some((what, value))) = (self.prefs.as_mut(), arg.split_once(':')) { p.demo_set(what, value, &mut self.fonts); },
             "prefsave" => if let Some(p) = self.prefs.as_mut() { let out = p.demo_save(); if out == crate::prefs::Out::None { eprintln!("UFB_DEMO: settings not saved: {}", self.prefs.as_ref().and_then(|p| p.error()).unwrap_or("")); } self.prefs_done(out); },
             "prefcancel" => self.prefs = None,
+            "loginsay" => eprintln!("UFB_DEMO: start at sign-in: can be switched {}; now {}", crate::login::available(), crate::login::enabled()),
             "preftab" => if let (Some(p), Some(k)) = (self.prefs.as_mut(), num(arg)) { p.demo_tab(k); },
             // `prefmap:add` (a new mapping's row) `prefmap:<n>:<name|win|mac>:<text>` `prefmap:<n>:off|on|remove` (the n-th hand-written one) `prefshare:<n>:<win|mac>:<text>` (a saved share's pair) `mapsay`
             "prefmap" => if let Some(p) = self.prefs.as_mut() { p.demo_map(arg, false, &mut self.fonts); },

@@ -48,6 +48,9 @@ pub fn serve(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
         }
     });
 }
+/// Something to open came another way than from a second launch (macOS: a link the system handed to the application
+/// that runs - `shell.rs`): it joins what second launches asked for.
+pub fn ask(text: String) { ASKED.lock().unwrap().push(text); }
 /// What second launches asked for since the last look (an empty text: only "come forward").
 pub fn take() -> Vec<String> { std::mem::take(&mut *ASKED.lock().unwrap()) }
 /// The application ends: its file goes (when it is still its own).

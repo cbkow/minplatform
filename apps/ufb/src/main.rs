@@ -28,6 +28,7 @@ mod jobview;
 mod lightbox;
 mod lister;
 mod logfile;
+mod login;
 mod menu;
 mod migrate;
 mod mesh;

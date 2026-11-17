@@ -302,6 +302,8 @@ impl ApplicationHandler for App {
         // was asked for is opened in it - a `union:` link is shown in the file manager instead, as at a start
         for asked in crate::instance::take() {
             eprintln!("UFB: a second launch asked for {}", if asked.is_empty() { "a window" } else { asked.as_str() });
+            // (the test package's own scheme reads as the application's: `ufbtest:` is `ufb:`)
+            let asked = match asked.strip_prefix("ufbtest:") { Some(rest) => format!("ufb:{rest}"), None => asked };
             if crate::db::is_union(&asked) { if let Some(p) = crate::db::from_link(&asked) { if p.exists() { crate::sysopen::reveal(&[p]); } } continue }
             self.tray_open(el);
             if !asked.is_empty() { if let Some(w) = self.focused.and_then(|id| self.windows.get_mut(&id)).or(None) { w.ui.open_text(&asked); w.window.request_redraw(); } }
@@ -328,6 +330,7 @@ pub fn run(folder: PathBuf, favorites: Vec<Place>) {
     #[cfg(target_os = "macos")] crate::menu::AppMenu::quiet_appkit_extras();   // before the application launches: AppKit reads these then
     let el = EventLoop::new().expect("the event loop"); let proxy = Arc::new(el.create_proxy());
     { let p = proxy.clone(); crate::instance::serve(Arc::new(move || p.wake_up())); }
+    #[cfg(target_os = "macos")] { let p = proxy.clone(); links::install(Arc::new(move || p.wake_up())); }
     { let p = proxy.clone(); muda::MenuEvent::set_event_handler(Some(move |ev: muda::MenuEvent| { MENU_EVENTS.lock().unwrap().push(ev); p.wake_up(); })); }
     let _ = el.run_app(App { tray: None, tray_status: None, tray_says: String::new(), home: crate::places::home(), first: Some(folder), favorites, proxy, windows: HashMap::new(), focused: None, mods: (false, false, false), ctrl: false, alt_clean: false, clipboard: None, cut: None, #[cfg(target_os = "macos")] menu: None });
 }
@@ -337,4 +340,36 @@ fn quit_anyway() -> bool {
     let n = crate::tasks::counts().0;
     let r = rfd::MessageDialog::new().set_level(rfd::MessageLevel::Warning).set_title("Quit UFB?").set_description(if n == 1 { "A task is still running. What is done stays done; the rest is stopped.".to_string() } else { format!("{n} tasks are still running or waiting. What is done stays done; the rest is stopped.") }).set_buttons(rfd::MessageButtons::OkCancelCustom("Quit".into(), "Cancel".into())).show();
     matches!(r, rfd::MessageDialogResult::Ok) || r == rfd::MessageDialogResult::Custom("Quit".into())
+}
+
+/// macOS: a `ufb:` or `union:` link the system hands to the application (canon rows 519 point 5, 535) - opened from a
+/// mail, a chat, a browser, another UFB. The system sends it as an Apple event ("get URL") to the application that is
+/// registered for the scheme, whether it was running or was started for it; a handler of our own takes it and puts
+/// the link where a second launch's request goes (`instance.rs`), so it is opened the same way. (On Windows the
+/// system starts the application with the link as its argument: that IS a second launch.)
+#[cfg(target_os = "macos")]
+mod links {
+    use objc2::rc::Retained; use objc2::runtime::{AnyObject, NSObject}; use objc2::{class, define_class, msg_send, sel, MainThreadMarker, MainThreadOnly};
+    use std::sync::{Arc, OnceLock};
+    static WAKE: OnceLock<Arc<dyn Fn() + Send + Sync>> = OnceLock::new();
+    define_class!(
+        #[unsafe(super(NSObject))] #[thread_kind = MainThreadOnly] #[name = "UFBLinkHandler"]
+        struct Handler;
+        impl Handler {
+            #[unsafe(method(handleLink:withReply:))]
+            fn handle(&self, event: &AnyObject, _reply: &AnyObject) {
+                // the event's direct object ('----') is the address, as text
+                let text: Option<String> = unsafe { let d: *mut AnyObject = msg_send![event, paramDescriptorForKeyword: 0x2d2d_2d2du32]; if d.is_null() { None } else { let s: *mut objc2_foundation::NSString = msg_send![d, stringValue]; s.as_ref().map(|s| s.to_string()) } };
+                if let Some(t) = text.filter(|t| !t.trim().is_empty()) { crate::instance::ask(t.trim().to_string()); if let Some(w) = WAKE.get() { w(); } }
+            }
+        }
+    );
+    pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
+        let Some(mtm) = MainThreadMarker::new() else { return }; let _ = WAKE.set(wake);
+        let h: Retained<Handler> = unsafe { msg_send![Handler::alloc(mtm), init] };
+        unsafe { let mgr: *mut AnyObject = msg_send![class!(NSAppleEventManager), sharedAppleEventManager]; if mgr.is_null() { return }
+            // event class and id 'GURL': "get URL"
+            let _: () = msg_send![mgr, setEventHandler: &*h, andSelector: sel!(handleLink:withReply:), forEventClass: 0x4755_524cu32, andEventID: 0x4755_524cu32]; }
+        std::mem::forget(h);   // (the manager does not keep its handlers alive: this one lives as long as the application)
+    }
 }

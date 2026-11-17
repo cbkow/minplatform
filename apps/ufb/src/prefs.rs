@@ -55,7 +55,8 @@ impl Prefs {
         let maps: Vec<Row> = crate::shares::load_manual().into_iter().map(|m| { let here = here_words(&m.win, &m.mac, None, &mounts, &vols); Row { name: field(&m.name, "Name", fonts), win: field(&m.win, "\\\\server\\share or P:\\", fonts), mac: field(&m.mac, "/Volumes/Name", fonts), on: Switch::new(m.on), remove: TextButton::new("Remove", Variant::Secondary).size_s(), was: Some((m.win, m.mac)), here } }).collect();
         let (hidden, folders_first, sequences, grid) = view();
         let (on, farm, node, only, sign_in) = crate::settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/only"), s.bool("general/start_at_sign_in")));
-        let mut sign = Switch::new(sign_in); sign.enabled = false;
+        // (start at sign-in is the installed application's: how it stands is the SYSTEM's to say, not a setting of ours)
+        let _ = sign_in; let mut sign = Switch::new(crate::login::enabled()); sign.enabled = crate::login::available();
         let mut me = Prefs { hidden: Switch::new(hidden), folders_first: Switch::new(folders_first), sequences: Switch::new(sequences), grid: Switch::new(grid), sign_in: sign,
             sync: Switch::new(on), farm: field(&farm, "a folder on shared storage", fonts), browse: TextButton::new("Browse", Variant::Secondary).size_s(), node: field(&node, &crate::mesh::node_name(""), fonts), only: field(&only, "a folder; empty: everything shared", fonts),
             pairs, maps, add: TextButton::new("Add Mapping", Variant::Secondary).size_s(), confirmed: false, tab: 0, tabs: ["General", "Sync", "Path mappings", "About"].map(|n| TextButton::new(n, Variant::Secondary).size_s()),
@@ -89,6 +90,8 @@ impl Prefs {
         if !rekeys.is_empty() && !self.confirmed { self.confirmed = true; self.tab = 2; self.error = Some(format!("{} changed: this machine's metadata under {} moves to the new pair, and every machine must have the same pair. Save again to do it.", if rekeys.len() == 1 { "A pair in use was" } else { "Pairs in use were" }, if rekeys.len() == 1 { "it" } else { "them" })); return Out::None }
         crate::shares::save_manual(&self.maps.iter().filter(|m| !t(&m.win).is_empty()).map(|m| crate::shares::Manual { name: t(&m.name), win: t(&m.win), mac: t(&m.mac), on: m.on.on }).collect::<Vec<_>>());
         let pairs: Vec<(String, String, String)> = self.pairs.iter().map(|p| (p.id.clone(), t(&p.win), t(&p.mac))).collect();
+        // start at sign-in: asked of the system when the switch was moved; what it will not do is said, and nothing is saved
+        if self.sign_in.enabled && self.sign_in.on != crate::login::enabled() { if let Err(why) = crate::login::set(self.sign_in.on) { self.tab = 0; self.sign_in.set(crate::login::enabled(), Instant::now()); self.error = Some(why); return Out::None } }
         let now = (self.sync.on, farm, node, only);
         crate::settings::with(|s| { s.set_bool("view/hidden", self.hidden.on); s.set_bool("view/folders_first", self.folders_first.on); s.set_bool("view/sequences", self.sequences.on); s.set_bool("view/grid", self.grid.on);
             s.set_bool("sync/on", now.0); s.set_str("sync/farm", &now.1); s.set_str("sync/node", &now.2); s.set_str("sync/only", &now.3); });
@@ -120,7 +123,7 @@ impl Prefs {
         if self.cancel.event(e, now).0 { return Out::Close } if self.save.event(e, now).0 { return self.commit() }
         { let mut to = None; for (k, b) in self.tabs.iter_mut().enumerate() { if b.event(e, now).0 { to = Some(k); } } if let Some(k) = to { self.tab = k; self.set_focus(usize::MAX); return Out::None } }
         if self.browse.event(e, now).0 { let (picked, at) = (self.picked.clone(), self.farm.text().to_string()); std::thread::spawn(move || { let mut d = rfd::FileDialog::new().set_title("The farm's folder"); if std::path::Path::new(&at).is_dir() { d = d.set_directory(&at); } if let Some(p) = d.pick_folder() { *picked.lock().unwrap() = Some(p.to_string_lossy().into_owned()); } }); return Out::None }
-        for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.sync] { sw.event(e, now); }
+        for sw in [&mut self.hidden, &mut self.folders_first, &mut self.sequences, &mut self.grid, &mut self.sync, &mut self.sign_in] { sw.event(e, now); }
         if self.add.event(e, now).0 { self.add_row(fonts); return Out::None }
         let mut gone = None; for (i, m) in self.maps.iter_mut().enumerate() { m.on.event(e, now); if m.remove.event(e, now).0 { gone = Some(i); } } if let Some(i) = gone { self.maps.remove(i); self.set_focus(usize::MAX); return Out::None }
         if let Event::Down { x, y, button: Button::Primary } = *e { let hit = self.fields().iter().position(|f| f.hit(x, y)); self.set_focus(hit.unwrap_or(usize::MAX)); }
@@ -174,7 +177,8 @@ impl Prefs {
         toggle(scene, fonts, "Image sequences as one entry", &mut self.sequences, "", &mut y);
         toggle(scene, fonts, "Show folders as a grid", &mut self.grid, "", &mut y);
         y += 6.0 * s + 10.0 * s; panel(scene, y, y + row + 12.0 * s); y += 6.0 * s;
-        toggle(scene, fonts, "Start at sign-in", &mut self.sign_in, "with the installed application", &mut y);
+        let note = if self.sign_in.enabled { "" } else { "with the installed application" };
+        toggle(scene, fonts, "Start at sign-in", &mut self.sign_in, note, &mut y);
         }
         if self.tab == 1 {
         // -- Sync
