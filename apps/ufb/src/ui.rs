@@ -562,10 +562,11 @@ impl Ui {
             .with_field("Farm folder", "a folder on shared storage").with_field("This machine's name", &crate::mesh::node_name("")).with_field("Only under (this test build's belt)", "a folder; empty: everything shared");
         d.show_with(&farm, &mut self.fonts); d.fields[1].1.set_text_end(&node, &mut self.fonts); d.fields[2].1.set_text_end(&only, &mut self.fonts); self.dialog = Some((d, Asked::SyncSet));
     }
-    /// Sync as the settings have it is started when it is not running; what cannot change under a running node is said.
+    /// Sync is made what the settings say (row 500): stopped, started, or started again with the new settings.
     fn apply_sync(&mut self) {
         let (on, farm, node, leader, only) = crate::settings::with(|s| (s.bool("sync/on"), s.string("sync/farm"), s.string("sync/node"), s.string("sync/leader"), s.string("sync/only"))); let now = Instant::now();
-        if crate::mesh::running() { self.toast.show("Saved. It takes effect the next time UFB is opened.", min_ui::toast::ToastKind::Notice, now); return }
+        // (a node that runs is stopped first: it starts again with what the settings say now, or stays off)
+        if crate::mesh::running() { crate::mesh::stop(); self.reload_lists(); }
         if !on { return } if farm.trim().is_empty() { self.ask_sync(); return }
         if !Path::new(farm.trim()).is_dir() { self.toast.show("The farm's folder is not there.", min_ui::toast::ToastKind::Negative, now); return }
         crate::mesh::start_with(Path::new(farm.trim()), &node, &leader, (!only.trim().is_empty()).then(|| Path::new(only.trim())));
@@ -1579,6 +1580,7 @@ impl Ui {
             "share" => { let (what, rest) = arg.split_once(':').unwrap_or((arg, "")); match what { "add" => self.add_share(rest), "connect" => if let Some(n) = num(rest) { self.connect_share(n, true); }, other => if let Some(n) = num(rest) { self.share_menu = Some(n); self.share_chosen(match other { "disconnect" => crate::ctxmenu::SHARE_DISCONNECT, "jobs" => crate::ctxmenu::SHARE_JOBS, "remove" => crate::ctxmenu::SHARE_REMOVE, _ => 0 }); } } },
             // sync's settings as its dialog saves them: `sync:<farm>|<name>|<only>`
             "sync" => { let mut it = arg.split('|'); let (farm, node, only) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or("")); crate::settings::with(|s| { s.set_str("sync/farm", farm); s.set_str("sync/node", node); s.set_str("sync/only", only); s.set_bool("sync/on", true); }); self.apply_sync(); },
+            "syncoff" => self.sync_chosen(crate::ctxmenu::SYNC_ONOFF),
             "shares" => eprintln!("UFB_DEMO: shares: {}", self.shares.iter().enumerate().map(|(i, sh)| format!("{} [{}{}{}] {:?}", sh.name, if sh.server.is_empty() { format!("folder {}", sh.local) } else { format!("smb://{}/{}", sh.server, sh.share) }, if sh.jobs { ", jobs" } else { "" }, if sh.ours { ", ours" } else { "" }, self.share_states.get(i))).collect::<Vec<_>>().join(" | ")),
             "joblist" => if let Ok(px) = arg.parse::<f64>() { self.job_w = px.clamp(JOB_LIST_MIN, 1200.0); },
             "pane2toggle" => self.command(Cmd::SecondPane),

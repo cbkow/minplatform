@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// 1.4.2's numbers.
@@ -76,19 +76,27 @@ struct Shared { cfg: Config, peers: Mutex<HashMap<String, Peer>>, leader: Mutex<
     files_only: bool,
     /// the farm's secret as this node holds it (empty: the folder gave none)
     secret: Mutex<String> }
-static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
+static SHARED: std::sync::RwLock<Option<Arc<Shared>>> = std::sync::RwLock::new(None);
+fn shared() -> Option<Arc<Shared>> { SHARED.read().unwrap().clone() }
+/// The node is stopped (row 500): its threads end with their pass, its servers close, its entry leaves the phonebook
+/// (the others would find it silent anyway). What is still queued stays queued in the database for the next start.
+pub fn stop() {
+    let Some(s) = SHARED.write().unwrap().take() else { return }; s.stop.store(true, Ordering::Relaxed);
+    if !s.files_only { http::wake(s.cfg.ctl); http::wake(s.cfg.data); }
+    let _ = std::fs::remove_dir_all(phonebook(&s).join(&s.cfg.node)); say(&s, "stopped");
+}
 fn now_ms() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0) }
 fn say(s: &Shared, what: &str) { if std::env::var_os("UFB_MESH_LOG").is_some() { eprintln!("UFB_MESH[{}]: {what}", s.cfg.node); } }
 
 /// The mesh's state, for the window; none when the mesh is not running.
-pub fn status() -> Option<Status> { let s = SHARED.get()?; let leader = s.leader.lock().unwrap().clone();
+pub fn status() -> Option<Status> { let s = shared()?; let leader = s.leader.lock().unwrap().clone();
     // (each lock taken and let go in a statement of its own: two of one lock in one expression wait for each other for good)
     let mine = fingerprint(&s.secret.lock().unwrap()); let strangers = s.peers.lock().unwrap().values().filter(|p| p.alive && p.print.as_ref().is_some_and(|f| *f != mine)).count(); let peers = s.peers.lock().unwrap().values().filter(|p| p.alive).count();
     Some(Status { node: s.cfg.node.clone(), leading: leader.as_deref() == Some(s.cfg.node.as_str()), leader, peers, pending: s.pending.load(Ordering::Relaxed), written: s.written.load(Ordering::Relaxed) as i64, merged: s.merged.load(Ordering::Relaxed) as i64, secret: mine, strangers }) }
 /// A number that changes whenever something arrived from another node (the windows read their lists again).
-pub fn rev() -> u64 { SHARED.get().map(|s| s.rev.load(Ordering::Relaxed)).unwrap_or(0) }
+pub fn rev() -> u64 { shared().map(|s| s.rev.load(Ordering::Relaxed)).unwrap_or(0) }
 /// A window asks to be woken when something arrives.
-pub fn on_change(wake: Arc<dyn Fn() + Send + Sync>) { if let Some(s) = SHARED.get() { s.wakers.lock().unwrap().push(wake); } }
+pub fn on_change(wake: Arc<dyn Fn() + Send + Sync>) { if let Some(s) = shared() { s.wakers.lock().unwrap().push(wake); } }
 fn changed(s: &Shared) { s.rev.fetch_add(1, Ordering::Relaxed); for w in s.wakers.lock().unwrap().iter() { w(); } }
 
 /// Who leads, of these: (the node's id, its tags). 1.4.2's sort - `leader` first, `noleader` last, then the id.
@@ -107,7 +115,7 @@ fn local_ip() -> String { UdpSocket::bind("0.0.0.0:0").and_then(|s| { s.connect(
 /// The ports a development build's node takes when nothing says otherwise: never 1.4.2's (an installed UFB on this
 /// machine holds those).
 pub const TEST_PORTS: (u16, u16, u16) = (49321, 49322, 4365);
-pub fn running() -> bool { SHARED.get().is_some() }
+pub fn running() -> bool { shared().is_some() }
 /// This machine's name as a node's id: `given`, else the system's; only letters, digits, `-` and `_`.
 pub fn node_name(given: &str) -> String {
     let name = if given.trim().is_empty() { std::env::var("COMPUTERNAME").ok().or_else(|| std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())).unwrap_or_else(|| "node".into()) } else { given.trim().to_string() };
@@ -126,7 +134,7 @@ pub fn start_with(farm: &std::path::Path, node: &str, leader: &str, only: Option
 }
 pub fn start(cfg: Config) {
     let s = Arc::new(Shared { cfg, peers: Default::default(), leader: Default::default(), pending: AtomicUsize::new(0), rev: AtomicU64::new(0), stop: Arc::new(AtomicBool::new(false)), wakers: Default::default(), ip: Mutex::new(local_ip()), snap_needed: AtomicBool::new(true), snap_look: AtomicBool::new(true), written: AtomicU64::new(0), merged: AtomicU64::new(0), relayed: Default::default(), files_only: std::env::var_os("UFB_MESH_FILES_ONLY").is_some(), secret: Mutex::new(String::new()) });
-    if SHARED.set(s.clone()).is_err() { return }
+    { let mut slot = SHARED.write().unwrap(); if slot.is_some() { return } *slot = Some(s.clone()); }
     // the farm's secret: the folder's, or one made now (a test can hold another: `UFB_MESH_SECRET`)
     *s.secret.lock().unwrap() = std::env::var("UFB_MESH_SECRET").ok().unwrap_or_else(|| farm_secret(&s, true).unwrap_or_default());
     say(&s, &format!("epoch {} farm {} ports {}/{}/{} only {:?}", s.cfg.epoch, s.cfg.farm.display(), s.cfg.ctl, s.cfg.data, s.cfg.udp, s.cfg.only));
@@ -178,7 +186,7 @@ fn relay(s: &Shared, path: &str, body: &str) -> bool {
         if !ok { say(s, &format!("{id} did not take {path}")); all = false; } }
     all
 }
-fn post(at: &str, path: &str, body: &str) -> bool { let secret = SHARED.get().map(|s| s.secret.lock().unwrap().clone()).filter(|x| !x.is_empty()); http::call(at, "POST", path, secret.as_deref(), Some(body), Duration::from_secs(3), Duration::from_secs(5)).is_some_and(|(code, _)| (200..300).contains(&code)) }
+fn post(at: &str, path: &str, body: &str) -> bool { let secret = shared().map(|s| s.secret.lock().unwrap().clone()).filter(|x| !x.is_empty()); http::call(at, "POST", path, secret.as_deref(), Some(body), Duration::from_secs(3), Duration::from_secs(5)).is_some_and(|(code, _)| (200..300).contains(&code)) }
 /// The first four bytes of the secret's SHA-256, in hex (minRender's fingerprint): what a node shows of its secret.
 pub fn fingerprint(secret: &str) -> String { use sha2::Digest; if secret.is_empty() { return String::new() } sha2::Sha256::digest(secret.as_bytes()).iter().take(4).map(|b| format!("{b:02x}")).collect() }
 /// A request is taken: it carries this node's secret; or it carries none - a 1.4.2 node's - while a 1.4.2 node is
