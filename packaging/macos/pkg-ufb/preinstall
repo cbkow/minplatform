@@ -1,0 +1,24 @@
+#!/bin/bash
+# UFB 2 installer - preinstall (runs as root, before the payload lands). Canon rows 457, 539.
+#
+# The one-time move from UFB 1.4.x's layout to a single application:
+# 1. Stop a running UFB and 1.4.x's mount agent, so Installer never writes into a bundle that is in use (an update
+#    through Sparkle arrives with the application already quit; the agent may still be up).
+# 2. Take away what 1.4.x installed: the whole /Applications/UFB folder - UFB.app, ufb-agent.app (with it the Finder
+#    extension, which lived inside the old application), the old uninstaller - and an earlier copy of the new
+#    application, so the package is the single source of what is installed.
+#
+# Deliberately NOT here: anything per user (the data folder, the settings, the mount folders under the home folder).
+# The data is taken over by the application itself at its first launch (it opens it in place, after one copy kept
+# beside it); root-side work in a user's home is where installers go wrong.
+
+pkill -x ufb       2>/dev/null || true
+pkill -x UFB       2>/dev/null || true
+pkill -x ufb-agent 2>/dev/null || true
+sleep 1
+pkill -9 -x ufb       2>/dev/null || true
+pkill -9 -x UFB       2>/dev/null || true
+pkill -9 -x ufb-agent 2>/dev/null || true
+
+rm -rf "/Applications/UFB" "/Applications/UFB.app"
+exit 0

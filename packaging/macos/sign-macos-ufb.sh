@@ -5,10 +5,9 @@
 #             inside-out: every dylib, FFmpeg's program, the app last), notarized, stapled ->
 #             target/dist/release-ufb/UFB-Test-<version>-macOS.dmg, signed, notarized and stapled too. It installs
 #             beside a real UFB 1.4.x (its own bundle id, data and mesh).
-#   release   target/dist/UFB.app (Sparkle's parts signed first) -> the same, as UFB-<version>-macOS.dmg. THE RELEASE'S
-#             FIRST VERSION ALSO NEEDS THE ONE-TIME INSTALLER PACKAGE (row 457: an installed 1.4.x expects a package,
-#             and what it leaves behind - its agent, its Finder extension, its mount folders, /Applications/UFB/ - must
-#             be cleared): that package is NOT made here yet.
+#   release   target/dist/UFB.app (Sparkle's parts signed first) -> the same, as UFB-<version>-macOS.dmg, AND the one-time
+#             installer package UFB-<version>-arm64.pkg (row 457: an installed 1.4.x is updated by a package, and what
+#             it laid down - /Applications/UFB/ with its agent and its Finder extension - must go; see below).
 # No entitlements, as QCView 3: nothing here runs a script engine or loads a library signed by another team.
 # The identity and the notary profile live in the login keychain; nothing secret is in this file.
 # Run from the repo root:  zsh packaging/macos/sign-macos-ufb.sh [test|release] [--skip-notarize]
@@ -46,6 +45,30 @@ if [ $SKIP = 0 ]; then
   echo "==> notarize the DMG"
   notarize "$DMG"; xcrun stapler staple -q "$DMG"; spctl --assess --type open --context context:primary-signature -vv "$DMG"
 fi
-# (the signed copy of the release's bundle carries 1.4.x's identity and link schemes: it is not left lying on this machine)
-[ "$MODE" = release ] && rm -rf "$APP"
+# The release's ONE-TIME INSTALLER PACKAGE (rows 457, 539; UFB 1.4.x's build-mac-pkg.sh as the model): an installed 1.4.x
+# is updated by a package (its Sparkle runs a guided install), and what it laid down - /Applications/UFB/ with UFB.app,
+# ufb-agent.app and the uninstaller - must go. The payload is /Applications/UFB.app alone; the preinstall script stops
+# the old processes and removes the old folder; the package id is 1.4.x's, so its receipt is replaced. Signed with the
+# Developer ID INSTALLER identity (not the application's: Installer refuses that), notarized and stapled.
+# UFB-<version>-arm64.pkg is the name 1.4.x's feed entries link to.
+if [ "$MODE" = release ]; then
+  echo "==> the installer package"
+  INSTALLER="${INSTALLER_IDENTITY:-$(security find-identity -v | sed -n "s/.*\"\(Developer ID Installer: .*(${TEAM})\)\".*/\1/p" | head -1)}"
+  [ -n "$INSTALLER" ] || { echo "no Developer ID Installer identity for team $TEAM in the keychain" >&2; exit 1; }
+  PKG="$OUT/UFB-$VERSION-arm64.pkg"; ST="$OUT/pkg-stage"; rm -rf "$ST" "$PKG"; mkdir -p "$ST/root/Applications" "$ST/pkgs" "$ST/scripts"
+  ditto "$APP" "$ST/root/Applications/UFB.app"
+  cp "$ROOT/packaging/macos/pkg-ufb/preinstall" "$ST/scripts/preinstall"; chmod 755 "$ST/scripts/preinstall"
+  pkgbuild --analyze --root "$ST/root" "$ST/components.plist" > /dev/null
+  i=0; while /usr/libexec/PlistBuddy -c "Print :$i" "$ST/components.plist" > /dev/null 2>&1; do
+    /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "$ST/components.plist" 2> /dev/null || /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$ST/components.plist"
+    i=$((i + 1)); done
+  pkgbuild --root "$ST/root" --component-plist "$ST/components.plist" --identifier dev.ufb.UFB --version "$VERSION" --install-location / --scripts "$ST/scripts" "$ST/pkgs/UFB-core.pkg" > /dev/null
+  sed "s/@VERSION@/$VERSION/g" "$ROOT/packaging/macos/pkg-ufb/distribution.xml" > "$ST/distribution.xml"
+  productbuild --distribution "$ST/distribution.xml" --package-path "$ST/pkgs" --sign "$INSTALLER" --timestamp "$PKG" > /dev/null
+  rm -rf "$ST"; pkgutil --check-signature "$PKG" | sed 's/^/  /' | head -3
+  if [ $SKIP = 0 ]; then echo "==> notarize the package"; notarize "$PKG"; xcrun stapler staple -q "$PKG"; spctl --assess --type install -vv "$PKG"; fi
+  echo "==> $PKG ($(du -h "$PKG" | cut -f1)) sha256 $(shasum -a 256 "$PKG" | awk '{print $1}')"
+  # (the signed copy of the release's bundle carries 1.4.x's identity and link schemes: it is not left lying on this machine)
+  rm -rf "$APP"
+fi
 echo "==> $DMG ($(du -h "$DMG" | cut -f1)) sha256 $(shasum -a 256 "$DMG" | awk '{print $1}')"

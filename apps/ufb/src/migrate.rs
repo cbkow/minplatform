@@ -13,6 +13,7 @@
 //! - **Sync** (`meshSync`): the farm's folder and this machine's name. Whether sync is ON is taken over by the
 //!   release alone - any other build speaks a mesh of its own and is switched on by hand.
 //! - Not taken: the window's place, the open tabs, the views kept per folder, the thumbnails (made anew).
+//! - macOS, in place: the EMPTY folders 1.4.x's sync mounts appeared at (`~/ufb/mounts/...`) are taken away.
 //!
 //! `UFB --import-1.4 <folder>` does it by hand and says what it did, in numbers (a look at a COPY of real data).
 use std::path::{Path, PathBuf};
@@ -76,6 +77,12 @@ pub fn import(from: &Path) -> Result<Imported, String> {
     let (farm, node) = (spelled(v["meshSync"]["farmPath"].as_str().unwrap_or("").trim()), v["meshSync"]["nodeId"].as_str().unwrap_or("").trim().to_string());
     if !farm.is_empty() { let on = v["meshSync"]["enabled"].as_bool().unwrap_or(false) && crate::identity::kind() == crate::identity::Kind::Release;
         crate::settings::with(|s| { s.set_str("sync/farm", &farm); if !node.is_empty() { s.set_str("sync/node", &node); } if on { s.set_bool("sync/on", true); } }); done.farm = true; done.sync = on; }
+    // -- macOS, the move in place: the folders 1.4.x's sync mounts appeared at (`~/ufb/mounts/<share>`) are taken away
+    // when they are EMPTY - a folder that still holds something (a mount that is up) is never touched
+    // (the release alone does it: a move tried on a copy must leave the real home folder as it is)
+    if same && cfg!(target_os = "macos") && crate::identity::kind() == crate::identity::Kind::Release { let base = home().join("ufb"); let mounts = base.join("mounts");
+        if let Ok(rd) = std::fs::read_dir(&mounts) { for e in rd.flatten() { let _ = std::fs::remove_dir(e.path()); } }
+        let _ = std::fs::remove_dir(&mounts); let _ = std::fs::remove_dir(&base); }
     crate::settings::with(|s| s.set_str("migrate/from_1_4", &crate::format::now_secs().to_string()));
     Ok(done)
 }

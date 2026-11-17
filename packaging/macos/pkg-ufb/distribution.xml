@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- productbuild Distribution for UFB 2's one-time installer (canon rows 457, 539; 1.4.x's own as the model).
+     @VERSION@ is put in by sign-macos-ufb.sh. The payload is /Applications/UFB.app alone; the component package is
+     non-relocatable, so Installer can never redirect it onto a copy elsewhere. The package id is 1.4.x's: its receipt
+     is replaced. -->
+<installer-gui-script minSpecVersion="2">
+    <title>UFB @VERSION@</title>
+    <organization>dev.ufb</organization>
+    <domains enable_localSystem="true"/>
+    <options customize="never" require-scripts="true" rootVolumeOnly="true" hostArchitectures="arm64"/>
+    <allowed-os-versions>
+        <os-version min="13.0"/>
+    </allowed-os-versions>
+    <choices-outline>
+        <line choice="default">
+            <line choice="dev.ufb.UFB"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="dev.ufb.UFB" visible="false">
+        <pkg-ref id="dev.ufb.UFB"/>
+    </choice>
+    <pkg-ref id="dev.ufb.UFB" version="@VERSION@" onConclusion="none">UFB-core.pkg</pkg-ref>
+</installer-gui-script>
