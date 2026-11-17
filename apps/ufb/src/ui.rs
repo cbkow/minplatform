@@ -1481,7 +1481,8 @@ impl Ui {
             items.push(item); rows.push(row); }
         while rows.last() == Some(&CtxRow::Rule) { rows.pop(); items.pop(); }
         // Explorer's own menu for the same files, with everything installed on the machine
-        if cfg!(windows) || std::env::var_os("UFB_DRAWN_MENU").is_some() { items.push(min_ui::MenuItem::Separator); rows.push(CtxRow::Rule); items.push(min_ui::MenuItem::action("Show more options", cfg!(windows))); rows.push(CtxRow::More); }
+        // (Explorer's menu is about files: a menu about nothing with a path - a share that is not there, Sync - has no such row)
+        if (cfg!(windows) || std::env::var_os("UFB_DRAWN_MENU").is_some()) && !ask.paths.is_empty() { items.push(min_ui::MenuItem::Separator); rows.push(CtxRow::Rule); items.push(min_ui::MenuItem::action("Show more options", cfg!(windows))); rows.push(CtxRow::More); }
         let size = self.window.surface_size(); let s = self.scale();
         self.ctx_rows = rows; self.ctx_paths = ask.paths; self.ctx_at = ask.at;
         self.ctx.open_at(items, &mut self.fonts, ask.at.0, ask.at.1, Rect::new(0.0, 0.0, size.width as f64, size.height as f64), s);
@@ -1638,6 +1639,9 @@ impl Ui {
         // the shares: the plus in their header (a new share), the action on a row (Connect, Sign In), a row's own menu
         if self.share_add.rect.width() > 0.0 && self.share_add.event(e, now) == Response::Clicked { use min_ui::{dialog::Dialog, text_button::Variant};
             let mut d = Dialog::new("Add a Share", "Its address - smb://server/share or \\\\server\\share - or a folder on this machine that holds the same storage.", vec![("Cancel", Variant::Secondary), ("Add", Variant::Primary)]).with_field("Address or folder", "smb://server/share"); d.show_with("", &mut self.fonts); self.dialog = Some((d, Asked::AddShare)); return }
+        // (the OTHER button is the row's menu, wherever on the row it is pressed - also on the row's own button. Taken by
+        // the button, a share that would not connect had most of its row deaf to it: no way to its Remove - row 550)
+        if !matches!(*e, Event::Down { button: Button::Secondary, .. } | Event::Up { button: Button::Secondary, .. })
         { let mut go = None; for (k, b) in self.share_btns.iter_mut().enumerate() { if b.rect.width() > 0.0 && b.event(e, now) == Response::Clicked { go = Some(k); } } if let Some(k) = go { if self.shares.get(k).is_some_and(|sh| self.share_holders.contains_key(&sh.id)) { self.fix_share(k); } else { self.connect_share(k, true); } return }
             if let Event::Down { x, y, .. } = *e { if self.share_btns.iter().any(|b| b.rect.width() > 0.0 && b.hit(x, y)) || (self.share_add.rect.width() > 0.0 && self.share_add.hit(x, y)) { return } } }
         // the Sync entry: a press opens its settings (or turns it on when they are there), the other button its menu
