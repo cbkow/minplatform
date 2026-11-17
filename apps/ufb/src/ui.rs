@@ -744,6 +744,8 @@ impl Ui {
     fn connect_share(&mut self, i: usize, asked: bool) {
         let Some(sh) = self.shares.get(i).cloned() else { return }; if sh.server.is_empty() || !self.share_busy.insert(sh.id.clone()) { return }
         if let Some(st) = self.share_states.get_mut(i) { *st = crate::shares::State::Connecting; }
+        // (said in the log, with what came of it: a share that keeps being asked for must be readable there afterwards)
+        eprintln!("UFB: share {:?}: connecting ({})", sh.name, if asked { "asked for by hand: the system may ask who signs in" } else { "by itself, silently" });
         let (tx, port) = (self.share_tx.clone(), self.port.clone());
         let _ = std::thread::Builder::new().name("ufb-share-connect".into()).spawn(move || { let (st, mounted) = crate::shares::connect(&sh, asked); let _ = tx.send(ShareNews::Connected(sh.id.clone(), st, asked, mounted)); port.send(Msg::Icon); });
     }
@@ -768,8 +770,9 @@ impl Ui {
                 // a share that was there in this run and dropped (the network went, the machine slept) is asked for ONCE, silently
                 if st.root().is_some() { self.share_seen.insert(id.clone()); } else if self.share_seen.remove(&id) && self.shares[i].at_launch && !self.shares[i].server.is_empty() { again.push(i); }
                 if st.root().is_some() || !matches!(self.share_states[i], crate::shares::State::SignIn | crate::shares::State::Unreachable(_)) { self.share_states[i] = st; } } }
-                for i in again { self.connect_share(i, false); } },
+                for i in again { eprintln!("UFB: share {:?} was there and is gone: asked for once more", self.shares[i].name); self.connect_share(i, false); } },
             ShareNews::Connected(id, st, asked, mounted) => { self.share_busy.remove(&id); if let Some(i) = self.shares.iter().position(|s| s.id == id) {
+                eprintln!("UFB: share {:?}: {} ({})", self.shares[i].name, st.words(), if mounted { "connected by this request" } else if st.root().is_some() { "it was there already" } else { "not connected" });
                 // connected by this request: it is ours to disconnect (one that was there already is not)
                 if st.root().is_some() { self.share_seen.insert(id.clone()); }
                 if mounted { self.shares[i].ours = true; if cfg!(windows) { if let Some(l) = st.root().and_then(|r| crate::shares::letter_of(&r.to_string_lossy().chars().take(2).collect::<String>())) { self.shares[i].letter = l; } } crate::shares::save(&self.shares); }
